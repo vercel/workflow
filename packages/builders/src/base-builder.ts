@@ -1158,6 +1158,7 @@ export const __steps_registered = true;
           bundleTransitiveLocalStepDependencies,
           rewriteTsExtensions,
           sideEffectEntries: normalizedSideEffectEntries,
+          hostResolver: this.config.hostResolver,
         }),
       ],
       // Plugin should catch most things, but this lets users hard override
@@ -1393,6 +1394,7 @@ export const __steps_registered = true;
           workflowManifest,
           onAfterTransform: this.config.onAfterTransform,
           sideEffectEntries: normalizedWorkflowSideEffectEntries,
+          hostResolver: this.config.hostResolver,
         }),
         // This plugin must run after the swc plugin to ensure dead code elimination
         // happens first, preventing false positives on Node.js imports in unused code paths

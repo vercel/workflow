@@ -47,6 +47,8 @@ export {
 export { StandaloneBuilder } from './standalone.js';
 export {
   createSwcPlugin,
+  HOST_MODULE_NAMESPACE,
+  type HostModuleResolver,
   type WorkflowAfterTransformHook,
   type WorkflowTransformResult,
 } from './swc-esbuild-plugin.js';

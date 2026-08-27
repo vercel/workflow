@@ -21,6 +21,18 @@ const FAST_DISCOVERY_SOURCE_EXTENSIONS = [
 const FAST_DISCOVERY_SOURCE_EXTENSION_SET = new Set(
   FAST_DISCOVERY_SOURCE_EXTENSIONS
 );
+
+/**
+ * TypeScript source extensions to try when an import specifier names a
+ * JavaScript *output* extension that has no file on disk — the NodeNext/ESM
+ * convention where `./db.js` refers to `./db.ts`.
+ */
+const TS_SOURCE_EXTENSIONS_FOR_OUTPUT: Record<string, string[]> = {
+  '.js': ['.ts', '.tsx'],
+  '.jsx': ['.tsx'],
+  '.mjs': ['.mts'],
+  '.cjs': ['.cts'],
+};
 const fastDiscoveryResolve = promisify(
   enhancedResolveOriginal.create({
     extensions: [...FAST_DISCOVERY_SOURCE_EXTENSIONS, '.json', '.node'],
@@ -753,7 +765,22 @@ export async function fastDiscoverEntries({
       : resolve(dirname(importer), strippedSpecifier);
     const extension = extname(basePath);
     if (FAST_DISCOVERY_SOURCE_EXTENSION_SET.has(extension)) {
-      return (await fileExists(basePath)) ? normalizePath(basePath) : null;
+      if (await fileExists(basePath)) {
+        return normalizePath(basePath);
+      }
+      // TypeScript's NodeNext/ESM style writes the *output* extension, so
+      // `./db.js` names `./db.ts` on disk. Without this the import edge is
+      // dropped: the file is never scanned for directives, and callers that
+      // ask whether a step reaches it (`parentHasChild`) get a false negative.
+      // See vercel/workflow#3859.
+      for (const candidate of TS_SOURCE_EXTENSIONS_FOR_OUTPUT[extension] ??
+        []) {
+        const candidatePath = `${basePath.slice(0, -extension.length)}${candidate}`;
+        if (await fileExists(candidatePath)) {
+          return normalizePath(candidatePath);
+        }
+      }
+      return null;
     }
 
     for (const candidate of [

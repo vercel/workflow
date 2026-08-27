@@ -32,6 +32,37 @@ export type WorkflowAfterTransformHook = (
   result: WorkflowTransformResult
 ) => void | Promise<void>;
 
+/**
+ * A resolver backed by the host bundler, used as a last resort for module ids
+ * that nothing on disk can satisfy.
+ *
+ * Step bundles are produced by a standalone esbuild pass, so ids that only the
+ * host's plugin pipeline knows about — Vite virtual modules such as
+ * `virtual:env/server`, `\0`-prefixed ids, framework-injected aliases — are
+ * unresolvable there. When the integration can reach the host's plugin
+ * container it supplies one of these, and the bundle inlines the host's own
+ * module source rather than failing. See vercel/workflow#3859.
+ */
+export interface HostModuleResolver {
+  /**
+   * Resolve `source` (optionally relative to `importer`) to a host module id,
+   * or return null/undefined to decline.
+   */
+  resolveId(
+    source: string,
+    importer?: string
+  ): Promise<string | null | undefined>;
+  /** Load the source for a host module id, or decline. */
+  load(id: string): Promise<string | null | undefined>;
+}
+
+/**
+ * esbuild namespace for modules whose contents come from
+ * {@link HostModuleResolver}. These ids are not files, so they must never
+ * reach esbuild's own file-backed resolution or loading.
+ */
+export const HOST_MODULE_NAMESPACE = 'workflow-host-module';
+
 export interface SwcPluginOptions {
   mode: 'step' | 'workflow';
   entriesToBundle?: string[];
@@ -77,6 +108,12 @@ export interface SwcPluginOptions {
    * `package.json` and silently drops bare imports of these modules.
    */
   sideEffectEntries?: string[];
+  /**
+   * Last-resort resolver for module ids only the host bundler can satisfy.
+   * Consulted only after on-disk resolution and esbuild's own resolver have
+   * both declined, so it never shadows a real file.
+   */
+  hostResolver?: HostModuleResolver;
 }
 
 const NODE_RESOLVE_OPTIONS = {
@@ -98,6 +135,17 @@ const NODE_RESOLVE_OPTIONS = {
     '.json',
     '.node',
   ],
+  // TypeScript's NodeNext/ESM style writes `./db.js` for a file that is
+  // `./db.ts` on disk. Without this mapping the resolve below fails, the
+  // specifier falls through to esbuild, and the dependency gets inlined into
+  // the steps bundle instead of staying external — which is how a host-only
+  // module id (e.g. a Vite virtual module) reachable from that file turns into
+  // a hard "Could not resolve" error. See vercel/workflow#3859.
+  extensionAlias: {
+    '.js': ['.ts', '.tsx', '.js', '.jsx'],
+    '.mjs': ['.mts', '.mjs'],
+    '.cjs': ['.cts', '.cjs'],
+  },
   enforceExtensions: false,
   symlinks: true,
   mainFields: ['main'],
@@ -153,6 +201,73 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
         }
       };
 
+      /**
+       * Ask the host bundler to resolve a specifier. Never throws: a host
+       * plugin that errors must not take the workflow build down with it, and
+       * declining here just restores the previous behaviour (esbuild reports
+       * the unresolved import).
+       */
+      const resolveViaHost = async (
+        specifier: string,
+        importer: string | undefined
+      ): Promise<string | undefined> => {
+        if (!options.hostResolver) return undefined;
+        try {
+          const id = await options.hostResolver.resolveId(
+            specifier,
+            importer || undefined
+          );
+          return id ?? undefined;
+        } catch (_) {
+          return undefined;
+        }
+      };
+
+      // Imports *inside* a host-provided module. Their importer is a host id
+      // rather than a file, so on-disk resolution cannot be attempted first;
+      // the host owns this whole subgraph.
+      build.onResolve(
+        { filter: /.*/, namespace: HOST_MODULE_NAMESPACE },
+        async (args) => {
+          const hostId = await resolveViaHost(args.path, args.importer);
+          return hostId
+            ? { path: hostId, namespace: HOST_MODULE_NAMESPACE }
+            : null;
+        }
+      );
+
+      build.onLoad(
+        { filter: /.*/, namespace: HOST_MODULE_NAMESPACE },
+        async (args) => {
+          let contents: string | null | undefined;
+          try {
+            contents = await options.hostResolver?.load(args.path);
+          } catch (error) {
+            return {
+              errors: [
+                {
+                  text: `Host bundler failed to load "${args.path}": ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                },
+              ],
+            };
+          }
+          if (contents == null) {
+            return {
+              errors: [
+                {
+                  text: `Host bundler resolved "${args.path}" but returned no source for it.`,
+                },
+              ],
+            };
+          }
+          // `ts` also parses plain JS, and host virtual modules are commonly
+          // emitted as TS-flavoured source.
+          return { contents, loader: 'ts' as const };
+        }
+      );
+
       // Pre-compute the normalized side-effect entries set for O(1) lookups.
       const normalizedSideEffectEntries = new Set(
         options.sideEffectEntries?.map((e) => e.replace(/\\/g, '/'))
@@ -160,6 +275,9 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
 
       build.onResolve({ filter: /.*/ }, async (args) => {
         if (args.pluginData?.skipSwcPlugin) return null;
+        // Handled above; these importers have no resolve directory, so the
+        // on-disk resolution below would be meaningless for them.
+        if (args.namespace === HOST_MODULE_NAMESPACE) return null;
 
         if (
           !options.entriesToBundle &&
@@ -240,6 +358,14 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
                   external: true,
                   path: specifier,
                 };
+              } else if (!didResolve && options.hostResolver) {
+                // Nothing on disk satisfies this specifier. Before letting
+                // esbuild fail it, ask the host bundler: it may be a virtual
+                // module only the host's plugin pipeline can provide.
+                const hostId = await resolveViaHost(specifier, args.importer);
+                if (hostId) {
+                  return { path: hostId, namespace: HOST_MODULE_NAMESPACE };
+                }
               }
             }
           }

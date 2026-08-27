@@ -1,4 +1,4 @@
-import { createBuildQueue } from '@workflow/builders';
+import { createBuildQueue, type HostModuleResolver } from '@workflow/builders';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Nitro } from 'nitro/types';
@@ -8,11 +8,45 @@ import { LocalBuilder } from './builders.js';
 import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
 
+/**
+ * Vite's plugin container, narrowed to the two hooks the workflow builder
+ * needs. Typed structurally so this compiles against Vite versions whose
+ * container types differ.
+ */
+interface VitePluginContainer {
+  resolveId(
+    id: string,
+    importer?: string
+  ): Promise<{ id: string } | null | undefined>;
+  load(id: string): Promise<string | { code: string } | null | undefined>;
+}
+
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder;
   let devNitro: Nitro | undefined;
   let nitroBuildDir: string;
   const enqueue = createBuildQueue();
+
+  // Populated in `configureServer`. Until then there is no container to ask,
+  // which is exactly why the initial dev build is deferred to that point.
+  let pluginContainer: VitePluginContainer | undefined;
+
+  /**
+   * Last-resort resolver handed to the builder. Held as a stable object so it
+   * can be attached at Nitro-setup time and start working once the dev server
+   * fills in `pluginContainer`.
+   */
+  const hostResolver: HostModuleResolver = {
+    async resolveId(source, importer) {
+      const resolved = await pluginContainer?.resolveId(source, importer);
+      return resolved?.id ?? null;
+    },
+    async load(id) {
+      const loaded = await pluginContainer?.load(id);
+      if (loaded == null) return null;
+      return typeof loaded === 'string' ? loaded : loaded.code;
+    },
+  };
 
   // Create a lazy transform plugin that excludes Nitro build artifacts.
   // The exclusion path is set during nitro setup, so we need to defer plugin creation
@@ -48,6 +82,8 @@ export function workflow(options?: ModuleOptions): Plugin[] {
             ...nitro.options.workflow,
             ...options,
             _vite: true,
+            _deferInitialBuild: nitro.options.dev,
+            _hostResolver: hostResolver,
           };
           if (nitro.options.dev) {
             devNitro = nitro;
@@ -64,8 +100,27 @@ export function workflow(options?: ModuleOptions): Plugin[] {
       // NOTE: This is a workaround because Nitro passes the 404 requests to the dev server to handle.
       // For workflow routes, we override to send an empty body to prevent Hono/Vite's SPA fallback.
       configureServer(server) {
+        // The SSR environment's container is what resolves the module ids a
+        // step can legitimately reach on the server. Now that it exists, run
+        // the initial build that `build:before` deferred.
+        const ssr = server.environments?.ssr as
+          | { pluginContainer?: VitePluginContainer }
+          | undefined;
+        // `server.pluginContainer` is the pre-environment-API shape. If
+        // neither is present the resolver simply declines everything, which is
+        // the behaviour from before this hook existed.
+        pluginContainer =
+          ssr?.pluginContainer ??
+          (server as { pluginContainer?: VitePluginContainer }).pluginContainer;
+
         // Add middleware to intercept 404s on workflow routes before Vite's SPA fallback
-        return () => {
+        return async () => {
+          if (builder) {
+            // Awaited before the server starts listening, so no request can
+            // reach a workflow route ahead of the generated bundles.
+            await enqueue(() => builder.build());
+          }
+
           server.middlewares.use((req, res, next) => {
             // Only handle workflow webhook routes
             if (!req.url?.startsWith('/.well-known/workflow/v1/')) {
