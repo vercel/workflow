@@ -389,6 +389,15 @@ export const MessagingOperationType = SemanticConvention<
   'publish' | 'receive' | 'process'
 >('messaging.operation.type');
 
+/**
+ * Messages carried by one batched publish (standard OTEL:
+ * messaging.batch.message_count). Set only on the batch send, so a span
+ * without it is a single-message publish.
+ */
+export const MessagingBatchMessageCount = SemanticConvention<number>(
+  'messaging.batch.message_count'
+);
+
 /** Time taken to enqueue the message in milliseconds (workflow-specific) */
 export const QueueOverheadMs = SemanticConvention<number>(
   'workflow.queue.overhead_ms'

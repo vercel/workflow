@@ -5,6 +5,7 @@ import { globalSingleton } from '@workflow/utils';
 import {
   MessageId,
   type Queue,
+  type QueueBatchResult,
   type QueueOptions,
   type QueuePayload,
   QueuePayloadSchema,
@@ -20,6 +21,46 @@ import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
+
+/**
+ * Messages per `experimental_sendBatch` request. VQS caps a batch at 100 and
+ * rejects the whole request above it, so this is the API's ceiling rather
+ * than a tuning knob; `queueBatch` splits anything larger.
+ */
+const MAX_QUEUE_SEND_BATCH = 100;
+
+/**
+ * Maps one `experimental_sendBatch` outcome onto the World's
+ * {@link QueueBatchResult}.
+ *
+ * `undefined` means the server returned fewer results than the batch carried.
+ * That is reported as a retryable failure rather than left as a hole the
+ * caller would read as success: republishing under the same idempotency keys
+ * is safe, silently dropping a step's message is not.
+ */
+function toBatchResult(
+  outcome:
+    | Awaited<ReturnType<QueueClient['experimental_sendBatch']>>[number]
+    | undefined
+): QueueBatchResult {
+  if (outcome === undefined) {
+    return {
+      messageId: null,
+      error: 'Queue batch returned no result for this message',
+      retryable: true,
+    };
+  }
+  if (outcome.status === 'failed') {
+    return {
+      messageId: null,
+      error: outcome.error,
+      retryable: outcome.retryable,
+    };
+  }
+  return {
+    messageId: outcome.messageId ? MessageId.parse(outcome.messageId) : null,
+  };
+}
 
 /**
  * CBOR-based queue transport. Encodes values with cbor-x on send and
@@ -429,9 +470,16 @@ export function createQueue(config?: APIConfig): Queue {
     headers: Object.fromEntries(headers.entries()),
   };
 
-  const queue: QueueFunction = async (
-    queueName,
-    payload,
+  /**
+   * Resolves everything a send needs from one (payload, opts) pair: the
+   * routing dimensions that decide WHICH client the message goes through
+   * (region / deploymentId / transport / physical topic) and the per-message
+   * arguments. Shared by `queue` and `queueBatch` so a batched send routes
+   * byte-for-byte the same way the single send would have.
+   */
+  const prepareSend = (
+    queueName: ValidQueueName,
+    payload: QueuePayload,
     opts?: QueueOptions
   ) => {
     // Check if we have a deployment ID either from options or environment
@@ -448,7 +496,6 @@ export function createQueue(config?: APIConfig): Queue {
     const useCbor =
       (opts?.specVersion ?? SPEC_VERSION_CURRENT) >=
       SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
-    const transport = useCbor ? cborTransport : jsonTransport;
 
     // Resolve the destination region. Explicit `opts.region` wins, otherwise
     // we decode it from the payload's tagged run ID so messages produced by
@@ -457,7 +504,43 @@ export function createQueue(config?: APIConfig): Queue {
     // behavior for legacy / untagged run IDs.
     const region = resolveTargetRegion(payload, opts);
 
-    const client = new QueueClient({
+    const topic = getPhysicalQueueName(queueName, payload).replace(
+      /[^A-Za-z0-9-_]/g,
+      '-'
+    );
+
+    return {
+      deploymentId,
+      useCbor,
+      region,
+      topic,
+      // The CborTransport handles CBOR encoding inside serialize(),
+      // preserving Uint8Array values (workflow input in specVersion >= 2).
+      wrapper: {
+        payload,
+        // Keep the logical queue name so the handler and re-enqueue path
+        // resolve the same per-run physical topic on the next invocation.
+        queueName,
+        // Store deploymentId in the message so it can be preserved when re-enqueueing
+        deploymentId: opts?.deploymentId,
+      },
+      sendOptions: {
+        idempotencyKey: opts?.idempotencyKey,
+        delaySeconds: opts?.delaySeconds,
+        headers: {
+          ...getHeadersFromPayload(payload),
+          ...opts?.headers,
+        },
+      },
+    };
+  };
+
+  const clientFor = (route: {
+    region: string;
+    deploymentId: string;
+    useCbor: boolean;
+  }) =>
+    new QueueClient({
       ...clientOptions,
       // When sending through the api.vercel.com proxy, the fixed
       // `resolveBaseUrl` above replaces the queue SDK's own
@@ -468,44 +551,95 @@ export function createQueue(config?: APIConfig): Queue {
       ...(usingProxy && {
         headers: {
           ...clientOptions.headers,
-          'x-vercel-queue-region': region,
+          'x-vercel-queue-region': route.region,
         },
       }),
-      region,
-      deploymentId,
-      transport,
+      region: route.region,
+      deploymentId: route.deploymentId,
+      transport: route.useCbor ? cborTransport : jsonTransport,
     });
 
-    // The CborTransport handles CBOR encoding inside serialize(),
-    // preserving Uint8Array values (workflow input in specVersion >= 2).
-    const wrapper = {
-      payload,
-      // Keep the logical queue name so the handler and re-enqueue path
-      // resolve the same per-run physical topic on the next invocation.
-      queueName,
-      // Store deploymentId in the message so it can be preserved when re-enqueueing
-      deploymentId: opts?.deploymentId,
-    };
-    const sanitizedQueueName = getPhysicalQueueName(queueName, payload).replace(
-      /[^A-Za-z0-9-_]/g,
-      '-'
-    );
+  const queue: QueueFunction = async (
+    queueName,
+    payload,
+    opts?: QueueOptions
+  ) => {
+    const prepared = prepareSend(queueName, payload, opts);
+    const client = clientFor(prepared);
     // A repeated `idempotencyKey` is accepted rather than rejected: the send
     // returns a fresh message ID and only one of the messages is delivered, so
     // there is no conflict for the caller to handle here.
-    const { messageId } = await client.send(sanitizedQueueName, wrapper, {
-      idempotencyKey: opts?.idempotencyKey,
-      delaySeconds: opts?.delaySeconds,
-      headers: {
-        ...getHeadersFromPayload(payload),
-        ...opts?.headers,
-      },
-    });
+    const { messageId } = await client.send(
+      prepared.topic,
+      prepared.wrapper,
+      prepared.sendOptions
+    );
     return {
       // messageId may be null when the queue fails over to a different region:
       // the event is ingested but the responding region cannot return an ID.
       messageId: messageId ? MessageId.parse(messageId) : null,
     };
+  };
+
+  const queueBatch: NonNullable<Queue['queueBatch']> = async (
+    queueName,
+    messages
+  ) => {
+    const results = new Array<QueueBatchResult>(messages.length);
+    if (messages.length === 0) return results;
+
+    // Group by the routing dimensions a single VQS request cannot span. In
+    // the case this exists for — one run's fan-out to one logical queue —
+    // every message lands in one group, so this is one request per
+    // MAX_QUEUE_SEND_BATCH messages. Mixed input still works, it just costs
+    // one request per distinct route.
+    const groups = new Map<
+      string,
+      {
+        route: { region: string; deploymentId: string; useCbor: boolean };
+        entries: {
+          index: number;
+          topic: string;
+          message: Parameters<QueueClient['experimental_sendBatch']>[1][number];
+        }[];
+      }
+    >();
+    for (const [index, entry] of messages.entries()) {
+      const prepared = prepareSend(queueName, entry.message, entry.opts);
+      const key = `${prepared.region} ${prepared.deploymentId} ${prepared.useCbor} ${prepared.topic}`;
+      const group = groups.get(key) ?? {
+        route: prepared,
+        entries: [],
+      };
+      group.entries.push({
+        index,
+        topic: prepared.topic,
+        message: { payload: prepared.wrapper, ...prepared.sendOptions },
+      });
+      groups.set(key, group);
+    }
+
+    await Promise.all(
+      [...groups.values()].map(async ({ route, entries }) => {
+        const client = clientFor(route);
+        for (
+          let offset = 0;
+          offset < entries.length;
+          offset += MAX_QUEUE_SEND_BATCH
+        ) {
+          const chunk = entries.slice(offset, offset + MAX_QUEUE_SEND_BATCH);
+          const sent = await client.experimental_sendBatch(
+            // biome-ignore lint/style/noNonNullAssertion: chunks are non-empty
+            chunk[0]!.topic,
+            chunk.map((entry) => entry.message)
+          );
+          for (const [position, entry] of chunk.entries()) {
+            results[entry.index] = toBatchResult(sent[position]);
+          }
+        }
+      })
+    );
+    return results;
   };
 
   const createQueueHandler: Queue['createQueueHandler'] = (
@@ -606,6 +740,7 @@ export function createQueue(config?: APIConfig): Queue {
 
   return {
     queue,
+    queueBatch,
     createQueueHandler,
     getDeploymentId,
     isDeploymentUnavailableError,

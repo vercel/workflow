@@ -427,6 +427,23 @@ export interface QueueOptions {
   region?: string;
 }
 
+/**
+ * Outcome of one message in a {@link Queue.queueBatch} call, in input order.
+ *
+ * `messageId: null` with no `error` means accepted for deferred processing
+ * (the same "accepted, no ID yet" case {@link Queue.queue} reports), so
+ * `error === undefined` is the success test, not a non-null `messageId`.
+ */
+export type QueueBatchResult =
+  | { messageId: MessageId | null; error?: undefined }
+  | {
+      messageId: null;
+      /** Human-readable failure description for this message. */
+      error: string;
+      /** Republishing the batch may succeed. */
+      retryable: boolean;
+    };
+
 export interface Queue {
   getDeploymentId(): Promise<string>;
 
@@ -449,6 +466,37 @@ export interface Queue {
     message: QueuePayload,
     opts?: QueueOptions
   ): Promise<{ messageId: MessageId | null }>;
+
+  /**
+   * Enqueues several messages to the SAME logical queue in as few round trips
+   * as the backing transport allows. Optional: callers MUST fall back to
+   * per-message {@link Queue.queue} when a World does not implement it.
+   *
+   * Exists for wide fan-outs. Publishing an N-branch `Promise.all` one message
+   * at a time costs N round trips through a bounded connection pool, and that
+   * cost is paid before the fan-out's first step body runs, so it lands
+   * directly on time-to-first-step.
+   *
+   * Contract:
+   *
+   * - Results are returned in input order, one per input message.
+   * - Partial failure is normal. A rejected entry reports `error`; a
+   *   `retryable` entry may succeed if the whole batch is published again.
+   *   Implementations MUST NOT throw for a per-entry failure — reserve
+   *   rejection for request-level failures where no entry outcome is known.
+   * - Callers are expected to pass `opts.idempotencyKey` per message, because
+   *   the recovery for both a request-level failure and a retryable entry is
+   *   to republish the batch: without keys that redelivers the entries that
+   *   already succeeded.
+   * - Every message must target one logical `queueName`. Implementations are
+   *   free to split the batch (by transport cap, or by any per-message routing
+   *   dimension they derive from the payload, such as region or physical
+   *   topic); the split must not be observable in the returned order.
+   */
+  queueBatch?(
+    queueName: ValidQueueName,
+    messages: readonly { message: QueuePayload; opts?: QueueOptions }[]
+  ): Promise<QueueBatchResult[]>;
 
   /**
    * Creates an HTTP queue handler for processing messages from a specific queue.

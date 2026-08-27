@@ -59,6 +59,7 @@ import {
   type LoadedEventLog,
   maxEventSlot,
   queueMessage,
+  queueMessages,
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
@@ -1602,29 +1603,34 @@ export async function handleSuspension({
           const stepEntries = chunk.filter((entry) => entry.kind === 'step');
           if (stepEntries.length === 0) return;
           const traceCarrier = await getStepDispatchTraceCarrier();
-          await Promise.all(
-            stepEntries.map((entry) =>
-              queueMessage(
-                world,
-                // biome-ignore lint/style/noNonNullAssertion: publishEagerSteps implies presence
-                stepDispatch!.queueName,
-                {
-                  runId,
-                  stepId: entry.correlationId,
+          // One batched publish per chunk instead of one round trip per step.
+          // The publishes are the fan-out's serialization point: they ride the
+          // shared 8-connection HTTP/1.1 agent (see `getQueueDispatcher` in
+          // world-vercel), and the caller awaits all of them before running
+          // the first inline step body, so N round trips land directly on
+          // time-to-first-step. `queueMessages` falls back to concurrent
+          // single sends on a World with no batch support.
+          await queueMessages(
+            world,
+            // biome-ignore lint/style/noNonNullAssertion: publishEagerSteps implies presence
+            stepDispatch!.queueName,
+            stepEntries.map((entry) => ({
+              message: {
+                runId,
+                stepId: entry.correlationId,
+                // biome-ignore lint/style/noNonNullAssertion: set on every 'step' entry at enqueue
+                stepName: entry.stepName!,
+                traceCarrier,
+                requestedAt: new Date(),
+              },
+              opts: {
+                idempotencyKey: stepDispatchIdempotencyKey(
+                  entry.correlationId,
                   // biome-ignore lint/style/noNonNullAssertion: set on every 'step' entry at enqueue
-                  stepName: entry.stepName!,
-                  traceCarrier,
-                  requestedAt: new Date(),
-                },
-                {
-                  idempotencyKey: stepDispatchIdempotencyKey(
-                    entry.correlationId,
-                    // biome-ignore lint/style/noNonNullAssertion: set on every 'step' entry at enqueue
-                    entry.stepName!
-                  ),
-                }
-              )
-            )
+                  entry.stepName!
+                ),
+              },
+            }))
           );
         };
 
