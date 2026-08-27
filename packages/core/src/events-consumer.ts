@@ -78,6 +78,11 @@ const getDeferredCheckDelayMs = (): number =>
  * is the failure this file exists to stop, so the whole type is tolerated. The
  * cost is that a divergence involving `attr_set` surfaces at the end of the
  * replay, through `strandedEvent`, rather than at the offending event.
+ *
+ * Parking here is for an `attr_set` the walk reaches *before* the body has made
+ * the call that claims it. A second event under an id already claimed is a
+ * different thing and never reaches this set: `attr_set` has an entity event
+ * class, so the duplicate skip takes it first.
  */
 const PARKABLE_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set([
   'hook_received',

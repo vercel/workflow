@@ -1002,6 +1002,70 @@ describe('EventsConsumer', () => {
       });
     });
 
+    it('skips a second attr_set for an id the walk already resolved', async () => {
+      // Concurrent replays at the same body position draw the same attribute
+      // id, and a World that commits both leaves two events under it. The
+      // dispatcher's consumer deregisters on the first, so without the class
+      // the second would park for a consumer that cannot come and be reported
+      // as stranded once the workflow function returns.
+      const corr = 'attr_A';
+      const events = [
+        realEvent('attr_set', corr),
+        realEvent('attr_set', corr),
+        realEvent('step_created', 'step_B'),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+      });
+
+      consumer.subscribe(entityConsumer(corr, 'attr_set'));
+      consumer.subscribe(entityConsumer('step_B', 'step_created'));
+
+      await afterDeferredCheck(() => {
+        expect(onDuplicateEvent).toHaveBeenCalledWith(events[1], 'attr_set');
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+        // Nothing held: the run can return without being declared corrupt.
+        expect(consumer.strandedEvent).toBeUndefined();
+        // The walk still reached the event after the duplicate.
+        expect(consumer.eventIndex).toBe(events.length);
+      });
+    });
+
+    it('parks an attr_set whose consumer has not subscribed yet', async () => {
+      // The duplicate skip must not swallow a first arrival: a replay can walk
+      // past an attribute event before the body reaches the call that claims
+      // it, and that one is still owed to a consumer.
+      const corr = 'attr_A';
+      const events = [
+        realEvent('attr_set', corr),
+        realEvent('step_created', 'step_B'),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+      });
+
+      // Only the later entity has a consumer, so the walk has to get past the
+      // attribute event to reach it.
+      consumer.subscribe(entityConsumer('step_B', 'step_created'));
+      await afterDeferredCheck(() => {
+        expect(consumer.strandedEvent).toEqual(events[0]);
+        expect(onDuplicateEvent).not.toHaveBeenCalled();
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+      });
+
+      // A late subscriber still gets it out of the parked set.
+      consumer.subscribe(entityConsumer(corr, 'attr_set'));
+      await afterDeferredCheck(() => {
+        expect(consumer.strandedEvent).toBeUndefined();
+      });
+    });
+
     it('does not track hook deliveries, whose consumers subscribe lazily', async () => {
       // A hook legitimately fires many times under one id, so a second
       // hook_received is not a repeat of a decided outcome. It keeps the

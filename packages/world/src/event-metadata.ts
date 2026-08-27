@@ -40,16 +40,29 @@ export function isSealedNoopEvent(event: { eventType: string }): boolean {
  * it already recorded for that entity and which no consumer wants (see
  * `EventsConsumer`), and only then.
  *
+ * `attr_set` is here for the correlation id a workflow-body attribute write
+ * draws, which resolves exactly once: the dispatcher's consumer takes the
+ * matching event and deregisters, so a second event under that id has no
+ * callback left and never will. Without a class it would instead be parked for
+ * a consumer that cannot come, and parking is only ever settled by the
+ * workflow function returning, at which point it is reported as a stranded
+ * event and kills a run that did all its work correctly. An attribute write
+ * from a *step* body carries no correlation id and is claimed by the
+ * structural lifecycle consumer in `workflow.ts` on the way past, so it is
+ * consumed rather than skipped and several of them never collapse into one
+ * class.
+ *
  * Note the omissions, all of them types a mapping would be dead weight for.
  * `hook_received` and `hook_conflict` are deliveries whose consumer subscribes
- * lazily, `attr_set` is written on every attribute write, and `run_created`
- * precedes every replay. The terminal run types are absent for a different
- * reason: recording a class requires a consumer to take an event of it, and no
- * consumer takes `run_completed` / `run_failed` / `run_cancelled`: the runtime
- * exits before replaying the body once the log holds one, so they never reach a
- * consumer at all. An entry for them could never match.
+ * lazily, and `run_created` precedes every replay. The terminal run types are
+ * absent for a different reason: recording a class requires a consumer to take
+ * an event of it, and no consumer takes `run_completed` / `run_failed` /
+ * `run_cancelled`: the runtime exits before replaying the body once the log
+ * holds one, so they never reach a consumer at all. An entry for them could
+ * never match.
  */
 const ENTITY_EVENT_CLASS_BY_TYPE = {
+  attr_set: 'attr_set',
   step_created: 'step_created',
   step_started: 'step_started',
   step_retrying: 'step_retrying',
