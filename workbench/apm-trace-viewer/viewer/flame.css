@@ -144,3 +144,7 @@ a.ddlink {
 a.ddlink:hover { color: #a78bfa; border-color: #6d5bb0; text-decoration: none; }
 .bhead a.ddlink { margin-left: auto; }
 .bhead a.ddlink + .backb { margin-left: 8px; }
+
+/* grab-to-pan affordance; during a drag the whole surface reads as grabbing */
+.frames { cursor: grab; }
+.frames.grabbing, .frames.grabbing .fr { cursor: grabbing; }

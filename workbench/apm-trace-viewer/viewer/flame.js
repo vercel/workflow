@@ -63,6 +63,7 @@ let replaySkipped = 0;
 let userStepName = new Map(); // inner span id -> step name (inner spans are unnamed)
 let selectedGap = null;
 let selectedSpan = null;
+let showingSpanDetail = false; // panel shows span attributes, not the window rollup
 
 function rebuild() {
   spans = reparent ? applyReparent(run.spans, plan.map) : run.spans;
@@ -279,10 +280,15 @@ function renderCrumbs() {
 }
 
 function renderBreakdown() {
+  showingSpanDetail = false;
   const { from, to } = view;
   const rows = windowBreakdown(spans, from, to, forest.kids).slice(0, 14);
   if (!rows.length) {
-    breakdownEl.innerHTML = '';
+    // Say so rather than going blank: on a durable run the empty stretches are the
+    // suspends between invocations, and a silent panel reads like a broken view.
+    breakdownEl.innerHTML =
+      `<div class="bhead">Nothing ran between ${fmtMs(from)} and ${fmtMs(to)}` +
+      `<span class="hint">no spans in this window - on a durable run a long empty stretch is a suspend between invocations</span></div>`;
     return;
   }
   const head = selectedGap
@@ -331,7 +337,9 @@ function renderViewport() {
   }
   clearTimeout(breakdownTimer);
   breakdownTimer = setTimeout(() => {
-    if (!selectedSpan) renderBreakdown();
+    // Only hold off while the panel is actually showing a span's attributes; a
+    // still-highlighted span must not freeze the window rollup on a stale window.
+    if (!showingSpanDetail) renderBreakdown();
   }, 90);
 }
 
@@ -370,7 +378,67 @@ framesEl.addEventListener('mouseleave', () => {
   tip.style.display = 'none';
 });
 
+// Grab to pan: left-drag or middle-drag anywhere on the graph. Panning is computed
+// against the window captured at pointerdown rather than accumulated per move, so a
+// slow drag cannot drift and releasing lands exactly where the pointer says.
+let grab = null;
+let suppressClick = false;
+
+framesEl.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0 && e.button !== 1) return;
+  if (e.button === 1) e.preventDefault(); // middle click otherwise starts autoscroll
+  suppressClick = false;
+  grab = {
+    x: e.clientX,
+    y: e.clientY,
+    from: view.from,
+    span: view.to - view.from,
+    pointerId: e.pointerId,
+  };
+  // Capture is deliberately NOT taken here. Capturing on pointerdown retargets the
+  // click that ends a plain press to this container, so `closest('.fr')` finds nothing
+  // and clicking a span stops selecting it. Take it only once a drag is real.
+});
+
+framesEl.addEventListener('pointermove', (e) => {
+  if (!grab) return;
+  const dx = e.clientX - grab.x;
+  // A few pixels of slack, so selecting a thin span is not read as a pan.
+  if (!suppressClick && Math.abs(dx) < 3 && Math.abs(e.clientY - grab.y) < 3)
+    return;
+  if (!suppressClick) {
+    suppressClick = true;
+    // Now that this is unambiguously a drag, capture so it survives leaving the element.
+    framesEl.setPointerCapture(grab.pointerId);
+    framesEl.classList.add('grabbing');
+    tip.style.display = 'none';
+  }
+  const w = Math.max(framesEl.getBoundingClientRect().width, 1);
+  view = clampView(grab.from - (dx / w) * grab.span, grab.span);
+  renderViewport();
+});
+
+function endGrab() {
+  if (!grab) return;
+  const { pointerId } = grab;
+  grab = null;
+  framesEl.classList.remove('grabbing');
+  if (framesEl.hasPointerCapture(pointerId))
+    framesEl.releasePointerCapture(pointerId);
+}
+framesEl.addEventListener('pointerup', endGrab);
+framesEl.addEventListener('pointercancel', endGrab);
+// Middle-click emits auxclick, which would otherwise paste-on-Linux or autoscroll.
+framesEl.addEventListener('auxclick', (e) => {
+  if (e.button === 1) e.preventDefault();
+});
+
 framesEl.addEventListener('click', (e) => {
+  // The click that ends a pan is not a selection.
+  if (suppressClick) {
+    suppressClick = false;
+    return;
+  }
   const el = e.target.closest('.fr');
   if (!el) return;
   const s = RENDERED[+el.dataset.i];
@@ -399,6 +467,7 @@ function ddLink(s) {
 }
 
 function showSpanDetail(s) {
+  showingSpanDetail = true;
   const attrs = Object.entries(s.attrs ?? {})
     .flatMap(function walk([k, v]) {
       return v && typeof v === 'object' && !Array.isArray(v)
@@ -441,8 +510,12 @@ flameEl.addEventListener(
     const dy = e.deltaY * unit;
     const dx = e.deltaX * unit;
 
+    // Browsers move the delta onto the X axis themselves when Shift is held (macOS
+    // always does), so the scroll amount can arrive on either axis. Read whichever one
+    // actually carries it rather than assuming, or shift-scroll pans by zero.
+    const amount = Math.abs(dx) > Math.abs(dy) ? dx : dy;
     if (e.shiftKey || Math.abs(dx) > Math.abs(dy)) {
-      panBy((view.to - view.from) * ((e.shiftKey ? dy : dx) / w));
+      panBy((view.to - view.from) * (amount / w));
     } else {
       const frac = Math.min(Math.max((e.clientX - r.left) / w, 0), 1);
       // exp() makes every notch a constant ratio, so zooming in and back out lands

@@ -71,12 +71,17 @@ merged into one cluster first, so a gap always means "no step body was running" 
 than a meaningless negative from subtracting overlapping spans. And gaps are computed
 per trace, because a boundary between traces is a durable suspend/resume, not overhead.
 
-Navigating it: **scroll to zoom** at the pointer, **shift-scroll** (or a horizontal
-trackpad swipe) to pan, **alt-scroll** to fall through to native vertical scrolling on
-traces deep enough to overflow. Double-click a frame to zoom to it, drag across the ruler
-to select a range, breadcrumbs and `Esc` to go back, click a frame for its attributes.
-Wheel gestures deliberately do not push breadcrumbs - a crumb per notch would bury the
-gap and span entries worth stepping back to.
+Navigating it: **scroll to zoom** at the pointer, **drag to pan** (left or middle mouse,
+anywhere on the graph), **shift-scroll** or a horizontal trackpad swipe to pan, and
+**alt-scroll** to fall through to native vertical scrolling on traces deep enough to
+overflow. Double-click a frame to zoom to it, drag across the ruler to select a range,
+breadcrumbs and `Esc` to go back, click a frame for its attributes.
+
+A drag only becomes a pan past a few pixels of travel, so clicking a thin span still
+selects it; pointer capture is taken at that same moment rather than on mouse-down,
+because capturing earlier retargets the ending click and selection stops working.
+Wheel and drag gestures deliberately do not push breadcrumbs - a crumb per notch would
+bury the gap and span entries worth stepping back to.
 
 ### Deep links back to Datadog
 
