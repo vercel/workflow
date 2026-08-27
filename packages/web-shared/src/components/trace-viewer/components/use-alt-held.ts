@@ -15,14 +15,11 @@ function isTypingTarget(target: EventTarget | null): boolean {
 }
 
 /**
- * Tracks whether Alt/Option is held for the timeline delta overlay.
+ * Whether Alt/Option is held, for the timeline delta overlay.
  *
- * Chrome's default Alt handling (menu bar / access keys) blurs the page and
- * suppresses hover until the window is focused again. preventDefault on Alt
- * is how in-app Alt+hover shortcuts (VS Code, Figma) keep hover working after
- * a click. Listeners run in the capture phase so a focused detail-panel
- * control cannot swallow the key. Window pointermove recovers if keydown was
- * missed; blur still clears the flag so the overlay cannot stick after Alt+Tab.
+ * preventDefault stops Chrome from taking the menu bar (which kills hover).
+ * Capture-phase keys; pointermove recovers if keydown was missed; blur
+ * clears after Alt+Tab.
  */
 export function useAltHeld(): { altHeld: boolean } {
   const [altHeld, setAltHeld] = useState(false);
