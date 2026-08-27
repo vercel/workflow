@@ -1674,7 +1674,9 @@ export async function getWorkflowRunEventsV4(
         { code: 'SCHEMA_VALIDATION' }
       );
     }
-    events.push(...consumed.events);
+    for (const event of consumed.events) {
+      events.push(event);
+    }
   } while (consumed.partialError);
 
   return {
