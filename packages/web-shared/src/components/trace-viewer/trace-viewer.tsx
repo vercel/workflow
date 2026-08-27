@@ -27,6 +27,7 @@ import {
   type TimelineHover,
 } from './components/timeline';
 import { TraceShortcutHelper } from './components/trace-shortcut-helper';
+import { useAltHeld } from './components/use-alt-held';
 import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 import { searchSpans } from './search';
@@ -370,29 +371,16 @@ function TraceViewerContent({
     [setActiveSpan, scrollSpanIntoView, cancelPendingZoom, focusViewportOnSpan]
   );
 
-  const [altHeld, setAltHeld] = useState(false);
+  const { altHeld, setAltHeldFromPointer } = useAltHeld();
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         handleClearActiveSpan();
-      } else if (e.key === 'Alt') {
-        setAltHeld(true);
       }
     };
-    const onKeyUp = (e: KeyboardEvent): void => {
-      if (e.key === 'Alt') setAltHeld(false);
-    };
-    const onBlur = (): void => setAltHeld(false);
-
     window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    window.addEventListener('blur', onBlur);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('blur', onBlur);
-    };
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleClearActiveSpan]);
 
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -407,6 +395,7 @@ function TraceViewerContent({
 
   const handleTimelineMouseMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
+      setAltHeldFromPointer(e.altKey);
       const el = timelineRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
@@ -424,7 +413,7 @@ function TraceViewerContent({
         rowIndex: Math.floor((e.clientY - rect.top) / ROW_HEIGHT_PX),
       });
     },
-    []
+    [setAltHeldFromPointer]
   );
 
   const handleTimelineMouseLeave = useCallback(() => {
