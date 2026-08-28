@@ -4805,18 +4805,24 @@ describe.concurrent('e2e', () => {
           }
         );
 
-        // `await run.returnValue` is deliberately NOT asserted here.
-        //
         // The purge races the caller's own read of the result and generally
-        // wins, so the value that comes back is usually the expired-data
-        // placeholder rather than the run's return value. That is a known
-        // limitation of `experimental_retention: 0`, documented on the option
-        // and in the observability docs; the point of this test is what the
-        // World did to the data, not who won that race. Waiting on the purge
-        // itself is also a strictly stronger wait than waiting on the return
-        // value — it cannot happen before the run is terminal.
+        // wins, so `returnValue` resolves after the data is already gone.
+        // What it must NOT do is hand back the expired-data placeholder as
+        // though the workflow had returned it — that is indistinguishable
+        // from a real result. It throws instead, carrying whatever metadata
+        // outlived the payloads so a caller can still tell success from
+        // failure.
         //
-        // The same race is why nothing is asserted about the payloads
+        // Accepting either outcome would make this assertion worthless, so it
+        // insists on the throw. If the client ever starts winning the race
+        // this test fails loudly, which is the right way to find out.
+        await expect(run.returnValue).rejects.toMatchObject({
+          name: 'RunExpiredError',
+          runId: run.runId,
+          runStatus: 'completed',
+        });
+
+        // That same race is why nothing is asserted about the payloads
         // *before* the purge: there is no reliable window in which to read
         // them.
         const afterPurge = await cliInspectJsonUntil(

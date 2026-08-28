@@ -53,8 +53,8 @@ set. They are kept for the World's normal period so the run stays visible in
 the CLI and web UI. A purged run is still listed and still traceable; its
 payloads simply read back as expired.
 
-Reading a payload from a purged run returns an expired-data marker rather than
-an error. The Workflow CLI renders it as `<data expired>`:
+Inspecting a purged run shows its payloads as expired rather than failing.
+The Workflow CLI renders them as `<data expired>`:
 
 ```bash
 workflow inspect runs wrun_...
@@ -63,13 +63,20 @@ workflow inspect runs wrun_...
 <Callout type="warn">
   **You cannot read the return value of a run started with
   `experimental_retention: 0`.** The deletion races your own read of the
-  result and generally wins, so `await run.returnValue` usually resolves to
-  the expired-data marker instead of the value.
+  result and generally wins, so `await run.returnValue` throws
+  [`RunExpiredError`](/docs/errors/run-expired) instead of resolving.
 
   This is a known limitation. If you need the result, send it somewhere you
   control — a step that writes it to your own store, or a
   [hook](/docs/foundations/hooks) — rather than reading it back off the run.
 </Callout>
+
+`RunExpiredError` is not specific to `experimental_retention: 0`. Any run read
+after its retention window has passed throws it, and the error carries
+`runId`, `runStatus` and `expiredAt` when the World still has them — so a
+caller can tell a successful run whose result is gone from a failed one whose
+error is gone. If the run's metadata is gone too, the World reports the run as
+missing and you get `WorkflowRunNotFoundError` instead.
 
 ## Retention is implemented by the World
 

@@ -775,12 +775,35 @@ export class EntityConflictError extends WorkflowWorldError {
  * Thrown when a run is no longer available, either because it has been
  * cleaned up, expired, or already reached a terminal state (completed/failed).
  *
- * The workflow runtime handles this error automatically. Users interacting
- * with world storage backends directly may encounter it.
+ * Also thrown by `await run.returnValue` when the run's data passed its
+ * retention boundary — because it was started with
+ * `experimental_retention: 0`, or simply because it aged out of the World's
+ * default window. The run's metadata usually outlives its payloads, so
+ * `runStatus` and `expiredAt` are populated when the World still has them: the
+ * caller can tell "it succeeded, but the result is gone" from "it failed".
+ * When even the metadata is gone the World reports the run as missing and you
+ * get {@link WorkflowRunNotFoundError} instead.
+ *
+ * This is terminal. Retrying cannot bring the data back.
  */
 export class RunExpiredError extends WorkflowWorldError {
-  constructor(message: string) {
-    super(message);
+  constructor(
+    message: string,
+    /** The run whose data expired, when the caller knew it. */
+    readonly runId?: string,
+    /**
+     * The run's terminal status, when its metadata outlived its payloads.
+     * Lets a caller distinguish a successful run whose result is gone from a
+     * failed one whose error is gone.
+     *
+     * Named `runStatus` rather than `status` because the base
+     * {@link WorkflowWorldError} already carries the HTTP `status`.
+     */
+    readonly runStatus?: string,
+    /** When the data passed its retention boundary, if the World reports it. */
+    readonly expiredAt?: Date
+  ) {
+    super(message, { status: 410, code: 'run-expired' });
     this.name = 'RunExpiredError';
   }
 

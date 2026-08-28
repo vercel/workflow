@@ -181,10 +181,10 @@ export interface StartOptionsBase {
    *
    * **Known limitation at `0`.** The purge races your own read of the run's
    * result and generally wins, so `await run.returnValue` on a
-   * `experimental_retention: 0` run usually resolves to an expired-data
-   * placeholder rather than the value. If you need the result, return it
-   * through a channel you control — a step that writes it somewhere, or a
-   * hook — rather than reading it back off the run.
+   * `experimental_retention: 0` run usually throws `RunExpiredError` rather
+   * than resolving. If you need the result, return it through a channel you
+   * control — a step that writes it somewhere, or a hook — rather than
+   * reading it back off the run.
    *
    * Recorded on the run as the reserved `$retention` attribute, so it
    * requires a World implementing spec version 4 or later. `'default'` is
