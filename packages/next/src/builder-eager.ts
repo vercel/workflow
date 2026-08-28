@@ -7,6 +7,48 @@ import Watchpack from 'watchpack';
 
 let CachedNextBuilderEager: any;
 
+const appEntrypoint =
+  /^(?:page|route|layout|default|error|loading|template|not-found|forbidden|unauthorized|sitemap|(?:icon|apple-icon|opengraph-image|twitter-image)\d?)$/;
+const appRootEntrypoint = /^(?:global-error|global-not-found|robots|manifest)$/;
+const rootEntrypoint = /^(?:instrumentation|middleware|proxy)$/;
+const rootModuleEntrypoint =
+  /^(?:instrumentation-client|mdx-components)\.(?:mjs|[jt]sx?)$/;
+const rootModuleNames = ['instrumentation-client', 'mdx-components'];
+const rootModuleExtensions = ['js', 'mjs', 'tsx', 'ts', 'jsx'];
+
+export function createNextEntrypointMatcher(pageExtensions: readonly string[]) {
+  const extensions = [...pageExtensions].sort((a, b) => b.length - a.length);
+
+  return (entry: string): boolean => {
+    if (/\.d\.(?:cts|mts|ts)$/.test(entry)) return false;
+
+    const sourceEntry = entry.replace(/^src\//, '');
+    const path = sourceEntry.split('/');
+    const filename = path[path.length - 1];
+    if (rootModuleEntrypoint.test(sourceEntry)) return true;
+
+    const extension = extensions.find((extension) =>
+      sourceEntry.endsWith(`.${extension}`)
+    );
+    if (!extension) return false;
+
+    const name = filename.slice(0, -extension.length - 1);
+    if (path[0] === 'pages') return true;
+
+    if (path[0] === 'app') {
+      const segments = path.slice(1, -1);
+      if (segments.some((segment) => segment.startsWith('_'))) return false;
+
+      return (
+        appEntrypoint.test(name) ||
+        (path.length === 2 && appRootEntrypoint.test(name))
+      );
+    }
+
+    return rootEntrypoint.test(sourceEntry.slice(0, -extension.length - 1));
+  };
+}
+
 // Create the eager Next builder dynamically by extending the ESM BaseBuilder.
 // Exported as getNextBuilderEager() to allow CommonJS modules to import from
 // the ESM @workflow/builders package via dynamic import at runtime.
@@ -416,30 +458,33 @@ export async function getNextBuilderEager() {
 
     protected async getInputFiles(): Promise<string[]> {
       const inputFiles = await super.getInputFiles();
+      const isNextEntrypoint = createNextEntrypointMatcher(
+        this.config.pageExtensions
+      );
+      const inputFileSet = new Set(inputFiles);
+      const rootModuleFiles = new Set(
+        rootModuleNames.flatMap((name) => {
+          const file = ['src', '']
+            .flatMap((directory) =>
+              rootModuleExtensions.map((extension) =>
+                join(this.config.workingDir, directory, `${name}.${extension}`)
+              )
+            )
+            .find((candidate) => inputFileSet.has(candidate));
+          return file ? [file] : [];
+        })
+      );
+
       return inputFiles.filter((file) => {
         const entry = relative(this.config.workingDir, file).replaceAll(
           '\\',
           '/'
         );
-
-        // Match App Router route, page, and layout entrypoints in app/ or src/app/.
-        if (/^(?:app|src\/app)\/(?:.*\/)?(?:route|page|layout)\./.test(entry)) {
-          return true;
+        const rootModule = entry.startsWith('src/') ? entry.slice(4) : entry;
+        if (rootModuleEntrypoint.test(rootModule)) {
+          return rootModuleFiles.has(file);
         }
-
-        // Match every Pages Router entrypoint in pages/ or src/pages/.
-        if (/^(?:pages|src\/pages)\//.test(entry)) {
-          return true;
-        }
-
-        // Match Next.js root entrypoints at the project root or under src/.
-        return ['instrumentation', 'middleware', 'proxy'].some((name) =>
-          this.config.pageExtensions.some(
-            (extension) =>
-              entry === `${name}.${extension}` ||
-              entry === `src/${name}.${extension}`
-          )
-        );
+        return isNextEntrypoint(entry);
       });
     }
 
