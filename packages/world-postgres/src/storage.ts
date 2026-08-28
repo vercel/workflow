@@ -76,6 +76,7 @@ import {
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
+import { purgeRunUserDataIfZeroRetention } from './retention.js';
 import {
   getRunStatusPollIntervalMs,
   notifyRunTerminal,
@@ -633,6 +634,18 @@ async function handleLegacyEventPostgres(
         .from(Schema.runs)
         .where(eq(Schema.runs.runId, runId))
         .limit(1);
+
+      // This shortcut is a terminal transition like any other, so a legacy
+      // run that carries `$retention: 0` has to be purged here too. In
+      // practice it never does — attributes postdate the legacy spec — but
+      // the check is a read of an in-memory map, and a terminal path that
+      // silently skips retention is exactly the kind of gap that survives.
+      await purgeRunUserDataIfZeroRetention(
+        drizzle,
+        runId,
+        updatedRun?.attributes,
+        now
+      );
 
       // Wake `runs.waitForTerminalStatus` waiters. This shortcut returns
       // before the notify in `createEventsStorage`, so without this a legacy
@@ -2389,6 +2402,20 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // (specVersion < 2) `run_cancelled` shortcut, which returns from
       // `handleLegacyEventPostgres` and notifies for itself.
       if (run && isTerminalWorkflowRunStatus(run.status)) {
+        // Honor `$retention: 0` before the announcement, not after. The
+        // terminal event row committed above is itself payload-bearing
+        // (`run_completed` carries the output), so this is the first point
+        // where a purge can cover the whole run; and going before the notify
+        // means a waiter woken by it re-reads an already-expired run instead
+        // of catching the output on its way out. `run` is only set on the
+        // writer that won the conditional terminal UPDATE, so this fires once
+        // per run rather than on every idempotent retry.
+        await purgeRunUserDataIfZeroRetention(
+          drizzle,
+          effectiveRunId,
+          run.attributes,
+          now
+        );
         await notifyRunTerminal(drizzle, effectiveRunId);
       }
 
