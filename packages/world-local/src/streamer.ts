@@ -16,6 +16,7 @@ import {
   readFirstByte,
   readJSONWithFallback,
   taggedPath,
+  withWindowsRetry,
   write,
   writeJSON,
 } from './fs.js';
@@ -142,6 +143,94 @@ async function listChunkFilesForStream(
   const files = [...extMap.keys()].sort();
 
   return { files, extMap, dir };
+}
+
+/**
+ * Chunk id of the end-of-stream tombstone a zero-retention purge leaves in
+ * place of a stream's contents.
+ *
+ * All zeros because chunks are ordered by the plain lexical sort of their ids
+ * and `0` is the lowest character of the ULID alphabet: this id sorts before
+ * every real `chnk_` in the directory. That is what makes it a *tombstone*
+ * and not just another chunk — every reader walks it first, sees EOF, and
+ * stops, so the stream reads as empty-and-finished from the instant the
+ * tombstone lands, before a single byte behind it has been deleted.
+ */
+const PURGED_STREAM_TOMBSTONE_ID = `chnk_${'0'.repeat(26)}`;
+
+/**
+ * Replace a run's stream contents with an end-of-stream tombstone.
+ *
+ * A stream's chunks are user data, so a zero-retention run's streams have to
+ * go with its payloads. They cannot simply be unlinked, though: EOF is itself
+ * a chunk, and a stream with no chunks at all is indistinguishable from one
+ * whose writer has not started, so a reader would poll it forever. Writing
+ * the tombstone first and deleting afterwards turns the stream into a
+ * definite, empty, finished answer — the local analogue of the expiry error a
+ * server-side read of a purged stream raises.
+ *
+ * The ordering is the point: the tombstone makes the data unreadable strictly
+ * before the deletes make it unrecoverable, so no reader can be mid-walk over
+ * a chunk file that is disappearing under it.
+ *
+ * The run → streams mapping is left alone. The stream still exists; only what
+ * was in it is gone.
+ *
+ * Failures are logged and skipped, never thrown: this runs after the run is
+ * already terminal, where nothing retries, and a stream that resists cleanup
+ * must not fail the run.
+ */
+export async function purgeRunStreamData(
+  basedir: string,
+  runId: string,
+  tag?: string
+): Promise<void> {
+  const chunksBaseDir = path.join(basedir, 'streams', 'chunks');
+  const tagSuffix = tag ? `.${tag}` : '';
+  let names: string[];
+  try {
+    assertSafeEntityId('runId', runId);
+    const mapping = await readJSONWithFallback(
+      basedir,
+      'streams/runs',
+      runId,
+      RunStreamsSchema,
+      tag
+    );
+    names = mapping?.streams ?? [];
+  } catch (error) {
+    logStreamPurgeFailure(`streams of ${runId}`, error);
+    return;
+  }
+
+  for (const name of names) {
+    try {
+      const dir = chunkDirForStream(chunksBaseDir, name);
+      await write(
+        path.join(dir, `${PURGED_STREAM_TOMBSTONE_ID}${tagSuffix}.bin`),
+        serializeChunk({ chunk: Buffer.from([]), eof: true }),
+        { overwrite: true }
+      );
+      for (const entry of await listChunkEntries(dir)) {
+        if (entry.startsWith(PURGED_STREAM_TOMBSTONE_ID)) continue;
+        if (!entry.endsWith('.bin') && !entry.endsWith('.json')) continue;
+        await withWindowsRetry(() => fs.unlink(path.join(dir, entry))).catch(
+          (error: NodeJS.ErrnoException) => {
+            if (error.code !== 'ENOENT') logStreamPurgeFailure(entry, error);
+          }
+        );
+      }
+    } catch (error) {
+      logStreamPurgeFailure(name, error);
+    }
+  }
+}
+
+function logStreamPurgeFailure(target: string, error: unknown): void {
+  console.warn(
+    `[world-local] Failed to purge stream data for ${target}:`,
+    error instanceof Error ? error.message : error
+  );
 }
 
 export function createStreamer(basedir: string, tag?: string): Streamer {
