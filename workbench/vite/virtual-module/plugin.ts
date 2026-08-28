@@ -15,11 +15,8 @@ export function virtualEnv(): Plugin {
   let databaseUrl = 'before-build-start';
   return {
     name: 'workbench:virtual-env',
-    perEnvironmentStartEndDuringDev: true,
     buildStart() {
-      if (this.environment.config.consumer === 'server') {
-        databaseUrl = 'postgres://virtual';
-      }
+      databaseUrl = 'postgres://virtual';
     },
     resolveId(source) {
       if (source === id && this.environment.config.consumer === 'server') {
