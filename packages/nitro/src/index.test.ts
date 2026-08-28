@@ -169,16 +169,21 @@ describe('@workflow/nitro builder lifecycle', () => {
 
   it('awaits the initial workflow build after host plugins initialize', async () => {
     const events: string[] = [];
-    vi.spyOn(LocalBuilder.prototype, 'build').mockImplementation(async () => {
-      events.push('workflow build');
-    });
+    const build = vi
+      .spyOn(LocalBuilder.prototype, 'build')
+      .mockImplementation(async () => {
+        events.push('workflow build');
+      });
     const { nitro, plugins } = await setupViteHarness();
 
     const server = await createServer({
       configFile: false,
       logLevel: 'silent',
       root: nitro.options.rootDir,
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        perEnvironmentStartEndDuringDev: true,
+      },
       plugins: [
         {
           name: 'stateful-host-plugin',
@@ -191,7 +196,9 @@ describe('@workflow/nitro builder lifecycle', () => {
       ],
     });
 
-    expect(events).toEqual(['host buildStart', 'workflow build']);
+    await server.environments.ssr.pluginContainer.buildStart();
+    expect(events.slice(0, 2)).toEqual(['host buildStart', 'workflow build']);
+    expect(build).toHaveBeenCalledOnce();
     await server.close();
   });
 

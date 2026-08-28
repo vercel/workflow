@@ -115,6 +115,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           // Vite awaits buildStart before listening, after host plugins have
           // initialized. Keep this out of createBuildQueue so startup errors
           // reject server creation instead of being swallowed.
+          if (this.environment.name !== 'client') return;
           return pluginContainer ? builder?.build() : undefined;
         },
       },
