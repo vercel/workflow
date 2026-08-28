@@ -7,7 +7,6 @@ prerequisites:
   - /docs/ai
 related:
   - /docs/ai/chat-session-modeling
-  - /docs/api-reference/workflow-ai/durable-agent
   - /docs/api-reference/workflow/define-hook
 ---
 
@@ -32,17 +31,17 @@ If you need basic multi-turn conversations where messages arrive between turns, 
 The `prepareStep` callback runs before each step in the agent loop. It receives the current state and can modify the messages sent to the model:
 
 ```typescript lineNumbers
-import type { ModelMessage, LanguageModel } from "ai";
+import type { LanguageModel, ModelMessage, StepResult } from "ai";
 
 interface PrepareStepInfo {
-  model: string | (() => Promise<LanguageModel>);    // Current model
+  model: LanguageModel;                              // Current model
   stepNumber: number;                                // 0-indexed step count
   steps: StepResult[];                               // Previous step results
   messages: ModelMessage[];                          // Messages to be sent
 }
 
 interface PrepareStepResult {
-  model?: string | (() => Promise<LanguageModel>);   // Override model
+  model?: LanguageModel;                             // Override model
   messages?: ModelMessage[];                         // Override messages
 }
 ```
@@ -66,7 +65,7 @@ export async function chat(initialMessages: ModelMessage[]) {
   const messageQueue: Array<{ role: "user"; content: string }> = []; // [!code highlight]
 
   const agent = new WorkflowAgent({
-    model: "bedrock/claude-haiku-4-5-20251001-v1",
+    model: "zai/glm-5.2",
     instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });

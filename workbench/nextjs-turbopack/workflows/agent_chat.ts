@@ -69,7 +69,7 @@ export async function chat(messages: UIMessage[], model?: string) {
 
   const modelMessages = await convertToModelMessages(messages);
 
-  const selectedModel = model || 'anthropic/claude-sonnet-4-20250514';
+  const selectedModel = model || 'zai/glm-5.2';
 
   // Enable reasoning for models that support it
   const isAnthropic = selectedModel.includes('anthropic/');

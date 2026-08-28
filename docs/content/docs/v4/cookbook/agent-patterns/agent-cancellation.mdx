@@ -113,7 +113,7 @@ export async function stoppableAgent(messages: ModelMessage[]) {
   const hook = stopHook.create({ token: `stop:${workflowRunId}` }); // [!code highlight]
 
   const agent = new DurableAgent({
-    model: "anthropic/claude-haiku-4.5",
+    model: "zai/glm-5.2",
     instructions: "You are a research assistant. Search and analyze data as needed.",
     tools: {
       searchWeb: {

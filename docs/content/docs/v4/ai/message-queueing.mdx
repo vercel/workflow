@@ -66,7 +66,7 @@ export async function chat(initialMessages: ModelMessage[]) {
   const messageQueue: Array<{ role: "user"; content: string }> = []; // [!code highlight]
 
   const agent = new WorkflowAgent({
-    model: "bedrock/claude-haiku-4-5-20251001-v1",
+    model: "zai/glm-5.2",
     instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });

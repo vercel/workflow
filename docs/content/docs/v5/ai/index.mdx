@@ -57,56 +57,16 @@ cd workflow-examples/flight-booking-app
 
 <Step>
 
-### Set up API keys
+### Configure AI Gateway
 
-To connect to an LLM, set up an API key. You can use Vercel Gateway, which works with all providers at zero markup, or configure a custom provider.
-<Tabs items={['Gateway', 'Custom Provider']}>
+AI SDK uses [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) as its default global provider, so plain `"provider/model"` strings need no provider-specific package. Vercel deployments authenticate with OIDC automatically. For local development, link the project and pull a short-lived OIDC token:
 
-<Tab value="Gateway">
-
-Get a Gateway API key from the [Vercel Gateway](https://vercel.com/docs/ai-gateway/authentication) page.
-
-Then add it to your `.env.local` file:
-
-```bash title=".env.local" lineNumbers
-GATEWAY_API_KEY=...
+```bash
+vercel link
+vercel env pull .env.local
 ```
 
-</Tab>
-
-<Tab value="Custom Provider">
-
-This is an example of how to use the OpenAI provider for AI SDK. For details on other providers and more details, see the [AI SDK provider guide](https://ai-sdk.dev/providers/ai-sdk-providers).
-
-```package-install
-npm i @ai-sdk/openai
-```
-
-Set your OpenAI API key in your environment variables:
-
-```bash title=".env.local" lineNumbers
-OPENAI_API_KEY=...
-```
-
-Then modify your API endpoint to use the OpenAI provider:
-
-{/* @skip-typecheck: incomplete code sample */}
-```typescript title="app/api/chat/route.ts" lineNumbers
-// ...
-import { openai } from "@ai-sdk/openai"; // [!code highlight]
-
-export async function POST(req: Request) {
-  // ...
-  const agent = new Agent({
-    // This uses the OPENAI_API_KEY environment variable by default, but you
-    // can also pass { apiKey: string } as an option.
-    model: openai("gpt-5.1"), // [!code highlight]
-    // ...
-  });
-```
-
-</Tab>
-</Tabs>
+You can alternatively set `AI_GATEWAY_API_KEY` from the [AI Gateway authentication](https://vercel.com/docs/ai-gateway/authentication) page.
 </Step>
 
 <Step>
@@ -131,7 +91,7 @@ import { convertToModelMessages, createUIMessageStreamResponse } from "ai";
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
   const agent = new ToolLoopAgent({ // [!code highlight]
-    model: "bedrock/claude-4-5-haiku-20251001-v1",
+    model: "zai/glm-5.2",
     instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
@@ -257,12 +217,10 @@ export default withWorkflow(nextConfig);
 
 Move the agent logic into a separate function, which will serve as our workflow definition.
 
-{/* @skip-typecheck: Shows two mutually exclusive model options */}
 ```typescript title="workflows/chat/workflow.ts" lineNumbers
 import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow"; // [!code highlight]
 import { getWritable } from "workflow"; // [!code highlight]
 import { tools } from "@/ai/tools";
-import { openai } from "@ai-sdk/openai";
 import { convertToModelMessages, type UIMessage } from "ai";
 
 export async function chatWorkflow(messages: UIMessage[]) {
@@ -271,13 +229,8 @@ export async function chatWorkflow(messages: UIMessage[]) {
   const writable = getWritable<ModelCallStreamPart>(); // [!code highlight]
 
   const agent = new WorkflowAgent({ // [!code highlight]
-
-    // If using AI Gateway, specify the model name as a string:
-    model: "bedrock/claude-4-5-haiku-20251001-v1", // [!code highlight]
-
-    // ELSE if using a custom provider, pass the provider call as an argument:
-    model: openai("gpt-5.1"), // [!code highlight]
-
+    // Plain model strings use Vercel AI Gateway.
+    model: "zai/glm-5.2", // [!code highlight]
     instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });

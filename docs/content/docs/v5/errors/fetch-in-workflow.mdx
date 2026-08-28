@@ -35,14 +35,13 @@ Import the `fetch` step function from the `workflow` package and assign it to `g
 
 ```typescript lineNumbers title="workflows/ai.ts"
 import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
 
 export async function chatWorkflow(prompt: string) {
   "use workflow";
 
   // Error - generateText() calls fetch() under the hood
   const result = await generateText({ // [!code highlight]
-    model: openai("gpt-4"), // [!code highlight]
+    model: "zai/glm-5.2", // [!code highlight]
     prompt, // [!code highlight]
   }); // [!code highlight]
 
@@ -54,7 +53,6 @@ export async function chatWorkflow(prompt: string) {
 
 ```typescript lineNumbers title="workflows/ai.ts"
 import { generateText } from "ai";
-import { openai } from "@ai-sdk/openai";
 import { fetch } from "workflow"; // [!code highlight]
 
 export async function chatWorkflow(prompt: string) {
@@ -64,7 +62,7 @@ export async function chatWorkflow(prompt: string) {
 
   // Now generateText() can make HTTP requests via the fetch step
   const result = await generateText({
-    model: openai("gpt-4"),
+    model: "zai/glm-5.2",
     prompt,
   });
 
@@ -80,7 +78,6 @@ This is the most common scenario - using AI SDK functions that make HTTP request
 
 ```typescript lineNumbers
 import { generateText, streamText } from "ai";
-import { openai } from "@ai-sdk/openai";
 import { fetch } from "workflow"; // [!code highlight]
 
 export async function aiWorkflow(userMessage: string) {
@@ -88,9 +85,9 @@ export async function aiWorkflow(userMessage: string) {
 
   globalThis.fetch = fetch; // [!code highlight]
 
-  // generateText makes HTTP requests to OpenAI
+  // Plain model strings route through Vercel AI Gateway
   const response = await generateText({
-    model: openai("gpt-4"),
+    model: "zai/glm-5.2",
     prompt: userMessage,
   });
 

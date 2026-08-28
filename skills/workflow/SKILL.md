@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.11'
+  version: '1.12'
 ---
 
 ## *Critical*: Always use correct `workflow` documentation
@@ -31,7 +31,8 @@ Documentation structure in `node_modules/workflow/docs/`:
 
 Related packages also include bundled docs:
 
-- `@workflow/ai`: `node_modules/@workflow/ai/docs/` - DurableAgent and AI integration
+- `@ai-sdk/workflow`: `node_modules/ai/docs/` - WorkflowAgent and AI SDK integration
+- `@workflow/ai`: `node_modules/@workflow/ai/docs/` - deprecated DurableAgent APIs for existing applications
 - `@workflow/core`: `node_modules/@workflow/core/docs/` - Core runtime (foundations, how-it-works)
 - `@workflow/next`: `node_modules/@workflow/next/docs/` - Next.js integration
 
@@ -71,8 +72,8 @@ import { workflow } from "workflow/vite";
 import { workflow } from "workflow/astro";
 // Or use modules: ["workflow/nitro"] for Nitro/Nuxt
 
-// AI agent
-import { DurableAgent } from "@workflow/ai/agent";
+// AI agent (Workflow 5)
+import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
 ```
 
 ## Prefer step functions to avoid sandbox errors
@@ -91,7 +92,7 @@ async function processWithAI(data: any) {
   "use step";
   // AI SDK works in steps without workarounds
   return await generateText({
-    model: openai("gpt-4"),
+    model: "zai/glm-5.2",
     prompt: `Process: ${JSON.stringify(data)}`,
   });
 }
@@ -129,17 +130,17 @@ export async function myWorkflow() {
 }
 ```
 
-**Note:** `DurableAgent` from `@workflow/ai` handles the fetch assignment automatically.
+**Note:** Plain `"provider/model"` strings use Vercel AI Gateway. Do not construct a direct provider instance unless the user explicitly needs a provider-only feature.
 
-## DurableAgent: AI agents in workflows
+## WorkflowAgent: AI agents in Workflow 5
 
-Use `DurableAgent` to build AI agents that maintain state and survive interruptions. It handles the workflow sandbox automatically (no manual `globalThis.fetch` needed).
+Use AI SDK's `WorkflowAgent` for durable agents on Workflow 5. It replaces the deprecated `DurableAgent` API from `@workflow/ai` and checkpoints model calls and step-backed tools.
 
 ```typescript
-import { DurableAgent } from "@workflow/ai/agent";
+import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
+import { isStepCount, tool } from "ai";
 import { getWritable } from "workflow";
 import { z } from "zod";
-import type { UIMessageChunk } from "ai";
 
 async function lookupData({ query }: { query: string }) {
   "use step";
@@ -150,22 +151,22 @@ async function lookupData({ query }: { query: string }) {
 export async function myAgentWorkflow(userMessage: string) {
   "use workflow";
 
-  const agent = new DurableAgent({
-    model: "anthropic/claude-sonnet-4-5",
-    system: "You are a helpful assistant.",
+  const agent = new WorkflowAgent({
+    model: "zai/glm-5.2",
+    instructions: "You are a helpful assistant.",
     tools: {
-      lookupData: {
+      lookupData: tool({
         description: "Search for information",
         inputSchema: z.object({ query: z.string() }),
         execute: lookupData,
-      },
+      }),
     },
   });
 
   const result = await agent.stream({
     messages: [{ role: "user", content: userMessage }],
-    writable: getWritable<UIMessageChunk>(),
-    maxSteps: 10,
+    writable: getWritable<ModelCallStreamPart>(),
+    stopWhen: isStepCount(10),
   });
 
   return result.messages;
@@ -173,13 +174,14 @@ export async function myAgentWorkflow(userMessage: string) {
 ```
 
 **Key points:**
-- `getWritable<UIMessageChunk>()` streams output to the workflow run's default stream
+- A plain `"provider/model"` string routes through Vercel AI Gateway; `zai/glm-5.2` is the default model in Workflow examples
+- `getWritable<ModelCallStreamPart>()` streams durable model-call output; convert it with `createModelCallToUIChunkTransform()` in an HTTP route
 - Tool `execute` functions that need Node.js/npm access should use `"use step"`
 - Tool `execute` functions that use workflow primitives (`sleep()`, `createHook()`) should **NOT** use `"use step"` because they run at the workflow level
-- `maxSteps` limits the number of LLM calls (default is unlimited)
+- `stopWhen` limits the number of model calls; the default is to stop when the model stops calling tools
 - Multi-turn: pass `result.messages` plus new user messages to subsequent `agent.stream()` calls
 
-**For more details on `DurableAgent`, check the AI docs in `node_modules/@workflow/ai/docs/`.**
+**For more details, check the WorkflowAgent docs in the installed AI SDK package or at https://ai-sdk.dev/v7/docs/agents/workflow-agent.**
 
 ## Starting workflows & child workflows
 

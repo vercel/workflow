@@ -91,7 +91,7 @@ async function runTurn(messages: ModelMessage[]) {
   "use step";
 
   const result = streamText({
-    model: "anthropic/claude-haiku-4.5",
+    model: "zai/glm-5.2",
     system: "You are a customer support agent.",
     messages,
     tools: TOOLS,

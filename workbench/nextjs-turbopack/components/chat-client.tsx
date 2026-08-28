@@ -66,6 +66,7 @@ const SUGGESTIONS = [
 ];
 
 const MODELS = [
+  { id: 'zai/glm-5.2', name: 'GLM 5.2' },
   { id: 'anthropic/claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
   { id: 'anthropic/claude-sonnet-4-20250514', name: 'Claude Sonnet 4' },
   { id: 'anthropic/claude-opus-4-5', name: 'Claude Opus 4.5' },

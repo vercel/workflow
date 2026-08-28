@@ -337,7 +337,7 @@ export interface DurableAgentOptions<TTools extends ToolSet = ToolSet>
   /**
    * The model provider to use for the agent.
    *
-   * This should be a string compatible with the Vercel AI Gateway (e.g., 'anthropic/claude-opus'),
+   * This should be a string compatible with the Vercel AI Gateway (e.g., 'zai/glm-5.2'),
    * or a step function that returns a LanguageModelV3 instance.
    */
   model: string | (() => Promise<CompatibleLanguageModel>);
@@ -769,7 +769,7 @@ export interface DurableAgentStreamResult<
  * @example
  * ```typescript
  * const agent = new DurableAgent({
- *   model: 'anthropic/claude-opus',
+ *   model: 'zai/glm-5.2',
  *   tools: {
  *     getWeather: {
  *       description: 'Get weather for a location',
