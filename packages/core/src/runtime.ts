@@ -464,7 +464,8 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
 }
 
 const HOOK_RESUME_BARRIER_PROBE_DELAYS_MS = [0, 25, 100] as const;
-const HOOK_RESUME_PENDING_MAX_DELIVERIES = 3;
+// This bounds a pending wake well below MAX_QUEUE_DELIVERIES (48); each retry costs one full log read plus incremental reads, not a full reload per attempt.
+const HOOK_RESUME_PENDING_MAX_DELIVERIES = 8;
 
 /** How many of `ids` are absent from `present`. */
 function countMissingIds(ids: Iterable<string>, present: Set<string>): number {
@@ -2478,6 +2479,8 @@ export function workflowEntrypoint(
                   // New producers only send this shape to consumers whose run
                   // marker attests this barrier; legacy hookInput messages keep
                   // their materialization path below.
+                  // hookResume.version is the wake-envelope format (currently
+                  // 1); hookResumeInputVersion is the consumer protocol (2).
                   if (hookResume) {
                     if (
                       hookResume.strategy !== 'producer_committed' ||
@@ -2496,6 +2499,9 @@ export function workflowEntrypoint(
                           version: hookResume.version,
                         }
                       );
+                      span?.setAttributes({
+                        'workflow.hook.wake_outcome': 'unsupported_envelope',
+                      });
                       return;
                     }
 
@@ -2525,6 +2531,9 @@ export function workflowEntrypoint(
                           resumeId: hookResume.resumeId,
                         }
                       );
+                      span?.setAttributes({
+                        'workflow.hook.wake_outcome': 'permanently_refused',
+                      });
                       return;
                     }
 
@@ -2559,6 +2568,9 @@ export function workflowEntrypoint(
                               resumeId: hookResume.resumeId,
                             }
                           );
+                          span?.setAttributes({
+                            'workflow.hook.wake_outcome': 'permanently_refused',
+                          });
                           return;
                         }
                       }
@@ -2574,14 +2586,37 @@ export function workflowEntrypoint(
                         // safer than letting the global delivery ceiling fail
                         // the run; the producer has already received an
                         // ambiguous failure and may retry with a fresh resume.
-                        runLogger.error(
-                          'Orphan producer-committed hook wake was consumed',
-                          {
-                            hookId: hookResume.hookId,
-                            resumeId: hookResume.resumeId,
-                            deliveryAttempt: metadata.attempt,
-                          }
-                        );
+                        const worldDroppedResumeId =
+                          barrierEvents?.some(
+                            (event) =>
+                              event.eventType === 'hook_received' &&
+                              event.correlationId === hookResume.hookId &&
+                              event.resumeId === undefined
+                          ) === true;
+                        if (worldDroppedResumeId) {
+                          runLogger.error(
+                            'World contract violation: hookResumeDedup requires events.list() to return hook_received.resumeId; withhold hookResumeDedup until resumeId is preserved',
+                            {
+                              hookId: hookResume.hookId,
+                              resumeId: hookResume.resumeId,
+                              deliveryAttempt: metadata.attempt,
+                            }
+                          );
+                        } else {
+                          runLogger.error(
+                            'Orphan producer-committed hook wake was consumed',
+                            {
+                              hookId: hookResume.hookId,
+                              resumeId: hookResume.resumeId,
+                              deliveryAttempt: metadata.attempt,
+                            }
+                          );
+                        }
+                        span?.setAttributes({
+                          'workflow.hook.wake_outcome': 'orphan_consumed',
+                          'workflow.hook.wake_delivery_attempts':
+                            metadata.attempt,
+                        });
                         return;
                       }
                       throw new WorkflowWorldError(
@@ -2592,6 +2627,9 @@ export function workflowEntrypoint(
                         }
                       );
                     }
+                    span?.setAttributes({
+                      'workflow.hook.wake_outcome': 'replayed',
+                    });
                   }
 
                   // Legacy lazy hook resume: idempotently ensure the event from

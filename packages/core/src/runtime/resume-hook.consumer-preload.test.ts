@@ -157,6 +157,8 @@ async function runResumeConsumerScenario(options: {
   deliveryAttempt?: number;
   /** Make the producer event visible during this barrier list call. */
   commitResumeOnListCall?: number;
+  /** Simulate a World that strips hook_received.resumeId from events.list. */
+  stripResumeIdFromList?: boolean;
   /** Put a durable hook_disposed in the log before delivery. */
   logHasDisposedEvent?: boolean;
   /**
@@ -317,8 +319,15 @@ async function runResumeConsumerScenario(options: {
         resumeId,
       } as Event);
     }
+    const listedEvents = options.stripResumeIdFromList
+      ? durableEvents.map((entry) =>
+          entry.eventType === 'hook_received'
+            ? ({ ...entry, resumeId: undefined } as Event)
+            : entry
+        )
+      : [...durableEvents];
     return {
-      data: [...durableEvents],
+      data: listedEvents,
       hasMore: false,
       cursor: durableEvents.at(-1)?.eventId ?? null,
     };
@@ -802,6 +811,9 @@ describe('lazy hook resume consumer preload', () => {
           'Unsupported producer-committed hook wake was consumed'
         )
       );
+      expect(finishedSpanAttributes()['workflow.hook.wake_outcome']).toBe(
+        'unsupported_envelope'
+      );
     } finally {
       error.mockRestore();
     }
@@ -827,7 +839,7 @@ describe('lazy hook resume consumer preload', () => {
         await runResumeConsumerScenario({
           preloadHasHookReceived: false,
           producerCommittedWake: true,
-          deliveryAttempt: 3,
+          deliveryAttempt: 8,
         });
 
       expect(handlerError).toBeUndefined();
@@ -836,6 +848,34 @@ describe('lazy hook resume consumer preload', () => {
       expect(error).toHaveBeenCalledWith(
         expect.stringContaining(
           'Orphan producer-committed hook wake was consumed'
+        )
+      );
+      const attributes = finishedSpanAttributes();
+      expect(attributes['workflow.hook.wake_outcome']).toBe('orphan_consumed');
+      expect(attributes['workflow.hook.wake_delivery_attempts']).toBe(8);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('diagnoses a World that advertises dedup but drops resumeId from events.list', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { handlerError, listEvents, runCompletedCreates } =
+        await runResumeConsumerScenario({
+          preloadHasHookReceived: false,
+          producerCommittedWake: true,
+          deliveryAttempt: 8,
+          commitResumeOnListCall: 1,
+          stripResumeIdFromList: true,
+        });
+
+      expect(handlerError).toBeUndefined();
+      expect(listEvents).toHaveBeenCalled();
+      expect(runCompletedCreates).toHaveLength(0);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'hookResumeDedup requires events.list() to return hook_received.resumeId'
         )
       );
     } finally {
@@ -853,6 +893,9 @@ describe('lazy hook resume consumer preload', () => {
     expect(handlerError).toBeUndefined();
     expect(hookReceivedCreates).toHaveLength(0);
     expect(runCompletedCreates).toHaveLength(1);
+    expect(finishedSpanAttributes()['workflow.hook.wake_outcome']).toBe(
+      'replayed'
+    );
   });
 
   it('consumes a permanently refused producer-committed wake', async () => {
@@ -872,6 +915,9 @@ describe('lazy hook resume consumer preload', () => {
         expect.stringContaining(
           'Producer-committed hook wake was permanently refused'
         )
+      );
+      expect(finishedSpanAttributes()['workflow.hook.wake_outcome']).toBe(
+        'permanently_refused'
       );
     } finally {
       warn.mockRestore();
