@@ -1042,12 +1042,10 @@ jobs:
 
       - name: Setup canary
         if: ${{ matrix.app.canary }}
-        env:
-          APP_NAME: ${{ matrix.app.name }}
-        run: |
-          jq --arg version "$NEXT_CANARY_VERSION" '.devDependencies.next=$version' packages/next/package.json > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          jq --arg version "$NEXT_CANARY_VERSION" '.dependencies.next=$version' "workbench/$APP_NAME/package.json" > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
-          pnpm install --no-frozen-lockfile
+        uses: ./.github/actions/setup-next-canary
+        with:
+          app-name: ${{ matrix.app.name }}
+          next-version: ${{ env.NEXT_CANARY_VERSION }}
 
       - name: Install Dependencies
         if: ${{ !matrix.app.canary }}
@@ -1059,10 +1057,6 @@ jobs:
         with:
           name: e2e-package-build-artifacts
           path: packages
-
-      - name: Run Initial Build for Next.js canary
-        if: ${{ matrix.app.canary }}
-        run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Prepare workbench path
         id: prepare-workbench
@@ -1133,12 +1127,10 @@ jobs:
 
       - name: Setup canary
         if: ${{ matrix.app.canary }}
-        env:
-          APP_NAME: ${{ matrix.app.name }}
-        run: |
-          jq --arg version "$NEXT_CANARY_VERSION" '.devDependencies.next=$version' packages/next/package.json > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          jq --arg version "$NEXT_CANARY_VERSION" '.dependencies.next=$version' "workbench/$APP_NAME/package.json" > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
-          pnpm install --no-frozen-lockfile
+        uses: ./.github/actions/setup-next-canary
+        with:
+          app-name: ${{ matrix.app.name }}
+          next-version: ${{ env.NEXT_CANARY_VERSION }}
 
       - name: Install Dependencies
         if: ${{ !matrix.app.canary }}
@@ -1150,10 +1142,6 @@ jobs:
         with:
           name: e2e-package-build-artifacts
           path: packages
-
-      - name: Run Initial Build for Next.js canary
-        if: ${{ matrix.app.canary }}
-        run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Prepare workbench path
         id: prepare-workbench
@@ -1253,12 +1241,10 @@ jobs:
 
       - name: Setup canary
         if: ${{ matrix.app.canary }}
-        env:
-          APP_NAME: ${{ matrix.app.name }}
-        run: |
-          jq --arg version "$NEXT_CANARY_VERSION" '.devDependencies.next=$version' packages/next/package.json > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          jq --arg version "$NEXT_CANARY_VERSION" '.dependencies.next=$version' "workbench/$APP_NAME/package.json" > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
-          pnpm install --no-frozen-lockfile
+        uses: ./.github/actions/setup-next-canary
+        with:
+          app-name: ${{ matrix.app.name }}
+          next-version: ${{ env.NEXT_CANARY_VERSION }}
 
       - name: Install Dependencies
         if: ${{ !matrix.app.canary }}
@@ -1270,10 +1256,6 @@ jobs:
         with:
           name: e2e-package-build-artifacts
           path: packages
-
-      - name: Run Initial Build for Next.js canary
-        if: ${{ matrix.app.canary }}
-        run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Setup PostgreSQL Database
         run: ./packages/world-postgres/bin/setup.js
