@@ -33,14 +33,14 @@ export class ReplayPayloadCache {
     Promise<PreparedReplayPayload>
   >();
   private readonly primitiveStepResults = new Map<string, unknown>();
+  private readonly encryptionKey: Promise<PayloadKey | undefined>;
 
   constructor(
-    private readonly encryptionKey:
-      | PayloadKey
-      | undefined
-      | PromiseLike<PayloadKey | undefined>,
+    encryptionKey: PayloadKey | undefined | Promise<PayloadKey | undefined>,
     private readonly preparer: ReplayPayloadPreparer = prepareReplayPayload
-  ) {}
+  ) {
+    this.encryptionKey = Promise.resolve(encryptionKey);
+  }
 
   /** Start preparing an event payload as soon as its frame is decoded. */
   prepareEvent(event: Event): void {
