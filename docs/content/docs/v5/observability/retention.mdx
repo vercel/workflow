@@ -53,12 +53,17 @@ set. They are kept for the World's normal period so the run stays visible in
 the CLI and web UI. A purged run is still listed and still traceable; its
 payloads simply read back as expired.
 
-Inspecting a purged run shows its payloads as expired rather than failing.
-The Workflow CLI renders them as `<data expired>`:
+Inspecting a purged run shows it as expired rather than failing. The Workflow
+CLI renders the run's own input, output and error as `<data expired>`:
 
 ```bash
 workflow inspect runs wrun_...
 ```
+
+Step, hook and event payloads read back empty. On the Vercel World they also
+render as `<data expired>`; on Worlds that clear the stored value outright
+they simply show as empty. Either way the data is gone — the difference is
+only in how the absence is labelled.
 
 <Callout type="warn">
   **You cannot read the return value of a run started with

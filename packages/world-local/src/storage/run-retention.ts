@@ -1,79 +1,38 @@
 import path from 'node:path';
 import type { WorkflowRun } from '@workflow/world';
-import { getEventDataRefFields, RETENTION_ATTRIBUTE } from '@workflow/world';
+import {
+  getEventDataRefFields,
+  RETENTION_ATTRIBUTE,
+  readRunRetention,
+} from '@workflow/world';
 import { z } from 'zod';
 import { listJSONFiles, readJSON, taggedPath, writeJSON } from '../fs.js';
 import { purgeRunStreamData } from '../streamer.js';
 import { ensureHookIndexes, listHookByRunMarkers } from './hook-index.js';
 
 /**
- * ============================ READ THIS FIRST ============================
+ * Whether a finished run asked for its user data to be deleted now.
  *
- * `$retention` is a duration written as a decimal integer, and **its unit is
- * deliberately not decided yet.**
+ * The decision itself is `@workflow/world`'s {@link readRunRetention}, shared
+ * with every other World that implements retention — two independently
+ * written parsers can drift, and drift here means one World deleting a run
+ * another keeps.
  *
- * The only value implemented is `0`, and zero is the one value that means the
- * same thing in every unit — "keep this for no time at all" is zero seconds,
- * zero milliseconds and zero days alike. That is precisely why it can ship
- * ahead of the decision: it commits to a *shape* (a number, so the namespace
- * has somewhere to grow) without committing to a *scale*.
- *
- * So, for whoever implements the second value:
- *
- * - The unit will most likely be **seconds or milliseconds**, chosen for
- *   granularity. It is **NOT days**. If you find yourself naming a variable
- *   `days`, stop.
- * - Nothing in this file, its callers, or the wire format encodes a unit
- *   today, and nothing should start to until the decision is made.
- * - Every non-zero value resolves to this World's default, which is to keep
- *   the data. That is load-bearing: an SDK that starts sending a unit-bearing
- *   value to a World that predates the decision must get the *safe*
- *   behavior.
- *
- * The complete set of values this World honors today:
- *
- * | Value              | Behavior                                    |
- * | ------------------ | ------------------------------------------- |
- * | absent             | World default (keep)                        |
- * | `'default'`        | World default, said explicitly              |
- * | `'0'`              | purge user data when the run finishes       |
- * | anything else      | World default, warned about as unsupported  |
- *
- * =========================================================================
- */
-const RETENTION_INTEGER_PATTERN = /^(?:0|[1-9]\d*)$/;
-
-/** Delete user data as soon as the run reaches a terminal state. */
-const RETENTION_ZERO = '0';
-
-/** Apply this World's default. Written as an explicit no-op value. */
-const RETENTION_DEFAULT = 'default';
-
-/**
- * Whether a run's attributes ask for its user data to be deleted the moment
- * the run finishes.
- *
- * Anything other than `'0'` answers false: `'default'` and absence say so
- * outright, a non-zero duration cannot be honored until the unit is settled,
- * and a World-specific string meant for some other World must not change
- * behavior here. Keeping the data is the safe direction — it never deletes on
- * the strength of a value this World does not understand.
- *
- * An unrecognized value is warned about rather than silently ignored: an SDK
- * sending one is a rollout problem, and a dev server's output is where it can
- * still be noticed.
+ * What this World adds is the warning. An unrecognized value is a rollout
+ * problem (an SDK speaking a dialect this version predates), and a dev
+ * server's output is where a developer can still notice it.
  */
 export function purgesUserDataOnFinish(
   attributes: Record<string, string> | undefined
 ): boolean {
-  const raw = attributes?.[RETENTION_ATTRIBUTE];
-  if (raw === undefined || raw === RETENTION_DEFAULT) return false;
-  if (RETENTION_INTEGER_PATTERN.test(raw)) return raw === RETENTION_ZERO;
-  console.warn(
-    `[world-local] Ignoring unrecognized ${RETENTION_ATTRIBUTE} value ` +
-      `${JSON.stringify(raw)}; keeping the run's data.`
-  );
-  return false;
+  const retention = readRunRetention(attributes);
+  if (retention.unsupported) {
+    console.warn(
+      `[world-local] Ignoring unrecognized ${RETENTION_ATTRIBUTE} value ` +
+        `${JSON.stringify(retention.raw)}; keeping the run's data.`
+    );
+  }
+  return retention.mode === 'none';
 }
 
 /**

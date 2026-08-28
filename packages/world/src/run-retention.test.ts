@@ -1,6 +1,15 @@
-import { RETENTION_ATTRIBUTE } from '@workflow/world';
+/**
+ * The retention resolver is shared by every World that implements retention,
+ * so its tests live with it rather than with any one World. Drift between two
+ * hand-written parsers would mean one World deleting a run another keeps —
+ * these cases are what stop that.
+ */
 import { describe, expect, it } from 'vitest';
-import { readRunRetention } from './retention.js';
+import {
+  purgesUserDataOnFinish,
+  RETENTION_ATTRIBUTE,
+  readRunRetention,
+} from './attributes-validation.js';
 
 const attrs = (value: string) => ({ [RETENTION_ATTRIBUTE]: value });
 
@@ -53,5 +62,28 @@ describe('readRunRetention', () => {
   it('separates "a duration we cannot scale" from "a value we do not know"', () => {
     expect(readRunRetention(attrs('7')).wellFormed).toBe(true);
     expect(readRunRetention(attrs('none')).wellFormed).toBe(false);
+  });
+});
+
+describe('purgesUserDataOnFinish', () => {
+  it('is true only for the literal "0"', () => {
+    expect(purgesUserDataOnFinish({ [RETENTION_ATTRIBUTE]: '0' })).toBe(true);
+  });
+
+  it.each([
+    ['absent', undefined],
+    ['empty attributes', {}],
+    ['default', { [RETENTION_ATTRIBUTE]: 'default' }],
+    ['a non-zero duration', { [RETENTION_ATTRIBUTE]: '7' }],
+    ['a malformed word', { [RETENTION_ATTRIBUTE]: 'none' }],
+    ['a padded zero', { [RETENTION_ATTRIBUTE]: ' 0 ' }],
+    ['a suffixed zero', { [RETENTION_ATTRIBUTE]: '0s' }],
+    ['a float zero', { [RETENTION_ATTRIBUTE]: '0.0' }],
+    ['a signed zero', { [RETENTION_ATTRIBUTE]: '-0' }],
+    ['a padded-digit zero', { [RETENTION_ATTRIBUTE]: '00' }],
+  ])('is false for %s', (_label, attributes) => {
+    // Every entry here is a value a lenient parser might read as zero. The
+    // failure that matters is deleting data nobody asked to delete.
+    expect(purgesUserDataOnFinish(attributes as never)).toBe(false);
   });
 });
