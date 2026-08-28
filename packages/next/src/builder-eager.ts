@@ -27,17 +27,31 @@ const importEsm = new Function('specifier', 'return import(specifier)') as <T>(
   specifier: string
 ) => Promise<T>;
 
-const appEntrypoint =
-  /^(?:page|route|layout|default|error|loading|template|not-found|forbidden|unauthorized|sitemap|(?:icon|apple-icon|opengraph-image|twitter-image)\d?)$/;
-const appRootEntrypoint = /^(?:global-error|global-not-found|robots|manifest)$/;
 const rootEntrypoint = /^(?:instrumentation|middleware|proxy)$/;
-const rootModuleEntrypoint =
+const rootModuleCandidate =
   /^(?:instrumentation-client|mdx-components)\.(?:mjs|[jt]sx?)$/;
 const rootModuleNames = ['instrumentation-client', 'mdx-components'];
 const rootModuleExtensions = ['js', 'mjs', 'tsx', 'ts', 'jsx'];
 
-export function createNextEntrypointMatcher(pageExtensions: readonly string[]) {
+export function createNextEntrypointMatcher({
+  pageExtensions,
+  bundler,
+  globalNotFound,
+}: {
+  pageExtensions: readonly string[];
+  bundler: 'webpack' | 'turbopack';
+  globalNotFound: boolean;
+}) {
   const extensions = [...pageExtensions].sort((a, b) => b.length - a.length);
+  const appEntrypoint = new RegExp(
+    `^(?:page|route|layout|default|error|loading|template|not-found|forbidden|unauthorized|sitemap|(?:icon|apple-icon|opengraph-image|twitter-image)\\d${bundler === 'turbopack' ? '*' : '?'})$`
+  );
+  const appRootEntrypoint = new RegExp(
+    `^(?:global-error${globalNotFound ? '|global-not-found' : ''}|robots|manifest)$`
+  );
+  const rootModuleEntrypoint = new RegExp(
+    `^(?:instrumentation-client${pageExtensions.some((extension) => /(?:^|\.)mdx?$/.test(extension)) ? '|mdx-components' : ''})\\.(?:mjs|[jt]sx?)$`
+  );
 
   return (entry: string): boolean => {
     if (/\.d\.(?:cts|mts|ts)$/.test(entry)) return false;
@@ -91,6 +105,7 @@ export async function getNextBuilderEager(
     protected declare config: BuilderNextConfig & {
       pageExtensions: NonNullable<ProjectNextConfig['pageExtensions']>;
       distDir: string;
+      globalNotFound: boolean;
     };
 
     async build() {
@@ -463,13 +478,20 @@ export async function getNextBuilderEager(
       ).replaceAll('\\', '/');
       assert(appDirectory === 'app' || appDirectory === 'src/app');
       const sourceDirectory = appDirectory === 'app' ? '.' : 'src';
-      const isNextEntrypoint = createNextEntrypointMatcher(
-        this.config.pageExtensions
-      );
+      const bundler = process.env.TURBOPACK ? 'turbopack' : 'webpack';
+      const isNextEntrypoint = createNextEntrypointMatcher({
+        pageExtensions: this.config.pageExtensions,
+        bundler,
+        globalNotFound: this.config.globalNotFound,
+      });
       const inputFileSet = new Set(inputFiles);
       const rootModuleFiles = new Set(
         rootModuleNames.flatMap((name) => {
-          const file = ['src', '']
+          const directories =
+            name === 'mdx-components' && bundler === 'turbopack'
+              ? ['', 'src']
+              : ['src', ''];
+          const file = directories
             .flatMap((directory) =>
               rootModuleExtensions.map((extension) =>
                 join(this.config.workingDir, directory, `${name}.${extension}`)
@@ -486,8 +508,8 @@ export async function getNextBuilderEager(
           '/'
         );
         const rootModule = entry.startsWith('src/') ? entry.slice(4) : entry;
-        if (rootModuleEntrypoint.test(rootModule)) {
-          return rootModuleFiles.has(file);
+        if (rootModuleCandidate.test(rootModule)) {
+          return rootModuleFiles.has(file) && isNextEntrypoint(entry);
         }
         if (entry.startsWith('src/') !== (sourceDirectory === 'src')) {
           return false;
