@@ -104,6 +104,11 @@ import {
   rebuildLiveHookByTokenFromEventLog,
 } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
+import {
+  purgeRunEntityData,
+  purgesUserDataOnFinish,
+  withRunPayloadsPurged,
+} from './run-retention.js';
 import { signalRunTerminal } from './run-status-signal.js';
 import { withRunFileLock } from './runs-storage.js';
 
@@ -549,16 +554,32 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
   runId: string,
   tag: string | undefined,
   proposed: T
-): Promise<T> {
+): Promise<{ run: T; purged: boolean }> {
   return withRunFileLock(runId, async () => {
     const fresh = await readJSON(
       taggedPath(basedir, 'runs', runId, tag),
       WorkflowRunSchema
     );
-    const next: T = {
-      ...proposed,
-      attributes: fresh?.attributes ?? proposed.attributes,
-    };
+    const attributes = fresh?.attributes ?? proposed.attributes;
+    let next: T = { ...proposed, attributes };
+    // Zero retention (`$retention: '0'`): the run's own payloads go, and the
+    // `expiredAt` boundary that makes their absence legible goes with them,
+    // in this one atomic replace. Read from the freshest attributes on disk
+    // rather than the caller's snapshot — the same reason the attributes
+    // themselves are re-read here.
+    //
+    // This is only the run's half. Its steps, events, hooks and streams are
+    // purged by the caller once the terminal event is in the log, and doing
+    // the boundary here rather than there is deliberate: it lands in the same
+    // write that makes the run terminal, so a purged run is never observable
+    // still holding its output. The rest of the deletes then all happen
+    // strictly after the data was declared expired.
+    const purged =
+      isTerminalWorkflowRunStatus(next.status) &&
+      purgesUserDataOnFinish(attributes);
+    if (purged) {
+      next = withRunPayloadsPurged(next, new Date());
+    }
     await writeJSON(taggedPath(basedir, 'runs', runId, tag), next, {
       overwrite: true,
     });
@@ -570,7 +591,7 @@ async function writeRunUnderLifecycleLock<T extends WorkflowRun>(
     if (isTerminalWorkflowRunStatus(next.status)) {
       signalRunTerminal(runId);
     }
-    return next;
+    return { run: next, purged };
   });
 }
 
@@ -1589,6 +1610,12 @@ export function createEventsStorage(
 
         // Track entity created/updated for EventResult
         let run: WorkflowRun | undefined;
+        /**
+         * Whether the lifecycle write below purged the run's own payloads for
+         * `$retention: '0'`. The rest of the run's user data is deleted on the
+         * strength of this, once the terminal event is in the log.
+         */
+        let runPurged = false;
         let step: Step | undefined;
         let hook: Hook | undefined;
         let wait: Wait | undefined;
@@ -1733,7 +1760,7 @@ export function createEventsStorage(
               };
             }
 
-            run = await writeRunUnderLifecycleLock(
+            const written = await writeRunUnderLifecycleLock(
               basedir,
               effectiveRunId,
               tag,
@@ -1756,12 +1783,14 @@ export function createEventsStorage(
                 encryptionPublicKey: currentRun.encryptionPublicKey,
               }
             );
+            run = written.run;
+            runPurged = written.purged;
           }
         } else if (data.eventType === 'run_completed' && 'eventData' in data) {
           const completedData = data.eventData as { output?: any };
           // Reuse currentRun from validation (already read above)
           if (currentRun) {
-            run = await writeRunUnderLifecycleLock(
+            const written = await writeRunUnderLifecycleLock(
               basedir,
               effectiveRunId,
               tag,
@@ -1784,6 +1813,8 @@ export function createEventsStorage(
                 encryptionPublicKey: currentRun.encryptionPublicKey,
               }
             );
+            run = written.run;
+            runPurged = written.purged;
             await Promise.all([
               deleteAllHooksForRun(basedir, effectiveRunId),
               deleteAllWaitsForRun(basedir, effectiveRunId),
@@ -1799,7 +1830,7 @@ export function createEventsStorage(
             // The error field is SerializedData (Uint8Array) produced by
             // dehydrateRunError. We store it verbatim. Consumers hydrate it
             // via hydrateRunError to reconstruct the original thrown value.
-            run = await writeRunUnderLifecycleLock(
+            const written = await writeRunUnderLifecycleLock(
               basedir,
               effectiveRunId,
               tag,
@@ -1823,6 +1854,8 @@ export function createEventsStorage(
                 encryptionPublicKey: currentRun.encryptionPublicKey,
               }
             );
+            run = written.run;
+            runPurged = written.purged;
             await Promise.all([
               deleteAllHooksForRun(basedir, effectiveRunId),
               deleteAllWaitsForRun(basedir, effectiveRunId),
@@ -1831,7 +1864,7 @@ export function createEventsStorage(
         } else if (data.eventType === 'run_cancelled') {
           // Reuse currentRun from validation (already read above)
           if (currentRun) {
-            run = await writeRunUnderLifecycleLock(
+            const written = await writeRunUnderLifecycleLock(
               basedir,
               effectiveRunId,
               tag,
@@ -1854,6 +1887,8 @@ export function createEventsStorage(
                 encryptionPublicKey: currentRun.encryptionPublicKey,
               }
             );
+            run = written.run;
+            runPurged = written.purged;
             await Promise.all([
               deleteAllHooksForRun(basedir, effectiveRunId),
               deleteAllWaitsForRun(basedir, effectiveRunId),
@@ -2933,6 +2968,28 @@ export function createEventsStorage(
             hook,
             hookEntityWriteOptions
           );
+        }
+
+        // Zero retention, second half: the run's own payloads and its
+        // `expiredAt` boundary landed with the terminal state write above;
+        // everything else the run owns goes now.
+        //
+        // It has to be now and not earlier. The terminal event carries the
+        // run's output, and it only became part of the log on the line
+        // above — purging before it was published would delete every copy of
+        // the payload except the one that matters.
+        //
+        // The trigger is what the lifecycle write reported doing, not the
+        // `expiredAt` it left behind. An `expiredAt` that arrived some other
+        // way — a run imported from a World that sets one, a future
+        // plan-default boundary — is a retention deadline, not a request to
+        // delete anything now, and inferring one from the other would purge
+        // data nobody asked to purge.
+        if (runPurged) {
+          await purgeRunEntityData(basedir, effectiveRunId, tag);
+          // Cached events predate the scrub and would serve payloads that are
+          // no longer on disk.
+          clearRunCache(effectiveRunId);
         }
 
         const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
