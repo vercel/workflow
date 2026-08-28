@@ -2,6 +2,8 @@ import { generateText, stepCountIs } from 'ai';
 import { FatalError } from 'workflow';
 import z from 'zod/v4';
 
+const DEFAULT_AI_MODEL = 'zai/glm-5.2';
+
 async function getWeatherInformation({ city }: { city: string }) {
   'use step';
 
@@ -32,7 +34,7 @@ export async function ai(prompt: string) {
   // AI SDK's `generateText` just works natively in a workflow thanks to
   // workflow's automatic fetch hoisting functionality
   const { text } = await generateText({
-    model: 'zai/glm-5.2',
+    model: DEFAULT_AI_MODEL,
     prompt,
   });
 
@@ -49,7 +51,7 @@ export async function agent(prompt: string) {
   // You can also provide tools, and if those tools are `steps` - voila, you have yourself
   // a durable agent with fetches and steps being offloaded
   const { text } = await generateText({
-    model: 'zai/glm-5.2',
+    model: DEFAULT_AI_MODEL,
     prompt,
     tools: {
       getWeatherInformation: {

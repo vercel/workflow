@@ -220,7 +220,7 @@ Move the agent logic into a separate function, which will serve as our workflow 
 ```typescript title="workflows/chat/workflow.ts" lineNumbers
 import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow"; // [!code highlight]
 import { getWritable } from "workflow"; // [!code highlight]
-import { tools } from "@/ai/tools";
+import { flightBookingTools, FLIGHT_ASSISTANT_PROMPT } from "@/ai/tools";
 import { convertToModelMessages, type UIMessage } from "ai";
 
 export async function chatWorkflow(messages: UIMessage[]) {

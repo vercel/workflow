@@ -131,13 +131,18 @@ export async function chatSession(initialMessages: ModelMessage[]) {
     tools: flightBookingTools,
   });
 
-  for (let turn = 0; turn < 100; turn++) {
+  const maxTurns = 100;
+  for (let turn = 0; turn < maxTurns; turn++) {
     const result = await agent.stream({
       messages,
       writable,
       preventClose: true,
+      sendFinish: false,
     });
     messages = result.messages;
+
+    // Do not accept a follow-up that this run has no remaining turn to process.
+    if (turn === maxTurns - 1) break;
 
     const { message } = await hook;
     if (message === "/done") break;
@@ -148,7 +153,7 @@ export async function chatSession(initialMessages: ModelMessage[]) {
 }
 ```
 
-Create the Hook once, outside the loop. Recreating the same token on every turn causes a Hook conflict.
+Create the Hook once, outside the loop. Recreating the same token on every turn causes a Hook conflict. Intermediate turns use `preventClose: true` with `sendFinish: false`; the workflow closes the durable stream and emits the final UI `finish` when the run returns.
 
 ### Start and resume the session
 
@@ -219,6 +224,10 @@ export async function GET(
 ```
 
 Persist `UIMessage[]` separately if the client must reconstruct user messages and UI metadata after a refresh. The workflow-owned `ModelMessage[]` history is the model's durable context, not a replacement for an application chat table.
+
+<Callout type="info">
+The reconnect route replays raw `ModelCallStreamPart` values from index `0` because raw parts and transformed UI chunks do not have matching indexes. `uiStartIndex` prevents already-delivered UI chunks from being sent to the client again, but the server still transforms the earlier raw history. For very long streams, split conversations into bounded runs until WorkflowAgent exposes a persisted raw-to-UI cursor mapping.
+</Callout>
 
 Use the multi-turn pattern when:
 

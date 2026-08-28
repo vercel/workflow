@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.12'
+  version: '1.13'
 ---
 
 ## *Critical*: Always use correct `workflow` documentation
@@ -185,7 +185,7 @@ export async function myAgentWorkflow(userMessage: string) {
 
 ## Starting workflows & child workflows
 
-Use `start()` to launch workflows from API routes. **`start()` cannot be called directly in workflow context**, so wrap it in a step function.
+Use `start()` to launch workflows from API routes. In Workflow 5, `start()` can also be called directly from a workflow function to spawn a child run; it is step-backed and records a deterministic boundary in the parent's event log.
 
 ```typescript
 import { start } from "workflow/api";
@@ -200,26 +200,20 @@ export async function POST() {
 const run = await start(noArgWorkflow);
 ```
 
-**Starting child workflows from inside a workflow requires a step:**
+**Starting child workflows from inside a Workflow 5 workflow:**
 
 ```typescript
 import { start } from "workflow/api";
 
-// Wrap start() in a step function
-async function triggerChild(data: string) {
-  "use step";
-  const run = await start(childWorkflow, [data]);
-  return run.runId;
-}
-
 export async function parentWorkflow() {
   "use workflow";
-  const childRunId = await triggerChild("some data");  // Fire-and-forget via step
+  const childRun = await start(childWorkflow, ["some data"]);
   await sleep("1h");
+  return { childRunId: childRun.runId };
 }
 ```
 
-`start()` returns immediately and doesn't wait for the workflow to complete. Use `run.returnValue` to await completion.
+`start()` returns after creating the child run and doesn't wait for it to complete. Use `childRun.returnValue` only when the parent should wait for the child; each `Run` property access or method call inside a workflow is a step.
 
 ## Hooks: pause & resume with external events
 

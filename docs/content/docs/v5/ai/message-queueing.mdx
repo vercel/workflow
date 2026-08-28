@@ -28,27 +28,24 @@ If you need basic multi-turn conversations where messages arrive between turns, 
 
 ## The `prepareStep` callback
 
-The `prepareStep` callback runs before each step in the agent loop. It receives the current state and can modify the messages sent to the model:
+The `prepareStep` callback runs before each step in the agent loop. Use WorkflowAgent's exported types rather than redeclaring its normalized provider-prompt contract:
 
 ```typescript lineNumbers
-import type { LanguageModel, ModelMessage, StepResult } from "ai";
+import type {
+  PrepareStepInfo,
+  PrepareStepResult,
+} from "@ai-sdk/workflow";
 
-interface PrepareStepInfo {
-  model: LanguageModel;                              // Current model
-  stepNumber: number;                                // 0-indexed step count
-  steps: StepResult[];                               // Previous step results
-  messages: ModelMessage[];                          // Messages to be sent
-}
-
-interface PrepareStepResult {
-  model?: LanguageModel;                             // Override model
-  messages?: ModelMessage[];                         // Override messages
-}
+const prepareStep = (
+  { messages }: PrepareStepInfo
+): PrepareStepResult => ({ messages });
 ```
 
-## Injecting queued messages
+`PrepareStepInfo.messages` is a normalized `LanguageModelV4Prompt`, not the application-level `ModelMessage[]` accepted by `WorkflowAgent.stream()`.
 
-Once you have a [multi-turn workflow](/docs/ai/chat-session-modeling#multi-turn-workflows), you can combine a message queue with `prepareStep` to inject messages that arrive during processing:
+## Queueing messages during and between turns
+
+Use one async Hook consumer and one FIFO. `prepareStep` atomically drains messages that arrived during a model turn; messages that arrive after the final model step become input to the next turn. Each Hook payload therefore has exactly one ownership path.
 
 ```typescript title="workflows/chat/index.ts" lineNumbers
 import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
@@ -62,7 +59,10 @@ export async function chat(initialMessages: ModelMessage[]) {
 
   const { workflowRunId: runId } = getWorkflowMetadata();
   const writable = getWritable<ModelCallStreamPart>();
+  let messages: ModelMessage[] = [...initialMessages];
   const messageQueue: Array<{ role: "user"; content: string }> = []; // [!code highlight]
+  let stopped = false;
+  let notifyMessage: (() => void) | undefined;
 
   const agent = new WorkflowAgent({
     model: "zai/glm-5.2",
@@ -70,103 +70,65 @@ export async function chat(initialMessages: ModelMessage[]) {
     tools: flightBookingTools,
   });
 
-  // Listen for messages in background (non-blocking) // [!code highlight]
   const hook = chatMessageHook.create({ token: runId }); // [!code highlight]
-  hook.then(({ message }) => { // [!code highlight]
-    messageQueue.push({ role: "user", content: message }); // [!code highlight]
-  }); // [!code highlight]
-
-  await agent.stream({
-    messages: initialMessages,
-    writable,
-    prepareStep: ({ messages: currentMessages }) => { // [!code highlight]
-      // Inject any queued messages before the next LLM call // [!code highlight]
-      if (messageQueue.length > 0) { // [!code highlight]
-        const newMessages = messageQueue.splice(0); // Drain queue // [!code highlight]
-        return { // [!code highlight]
-          messages: [ // [!code highlight]
-            ...currentMessages, // [!code highlight]
-            ...newMessages.map((m) => ({ // [!code highlight]
-              role: m.role, // [!code highlight]
-              content: [{ type: "text" as const, text: m.content }], // [!code highlight]
-            })), // [!code highlight]
-          ], // [!code highlight]
-        }; // [!code highlight]
+  // This is the only code path that consumes Hook payloads. // [!code highlight]
+  const consumeMessages = (async () => { // [!code highlight]
+    for await (const { message } of hook) { // [!code highlight]
+      if (message === "/done") { // [!code highlight]
+        stopped = true; // [!code highlight]
+        notifyMessage?.(); // [!code highlight]
+        break; // [!code highlight]
       } // [!code highlight]
-      return {}; // [!code highlight]
-    }, // [!code highlight]
-  });
-}
-```
-
-Messages sent via `chatMessageHook.resume()` accumulate in the queue and get injected before the next step, whether that's a tool call or another LLM request.
-
-<Callout type="info">
-The `prepareStep` callback receives messages in `ModelMessage[]` format (with content arrays), which is the internal format used by the AI SDK.
-</Callout>
-
-## Combining with multi-turn sessions
-
-You can also combine message queueing with the standard multi-turn pattern:
-
-```typescript title="workflows/chat/index.ts" lineNumbers
-import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
-import { getWritable, getWorkflowMetadata } from "workflow";
-import { chatMessageHook } from "./hooks/chat-message";
-import type { ModelMessage } from "ai";
-
-export async function chat(initialMessages: ModelMessage[]) {
-  "use workflow";
-
-  const { workflowRunId: runId } = getWorkflowMetadata();
-  const writable = getWritable<ModelCallStreamPart>();
-  const messages: ModelMessage[] = [...initialMessages];
-  const messageQueue: Array<{ role: "user"; content: string }> = [];
-
-  const agent = new WorkflowAgent({ /* ... */ });
-  const hook = chatMessageHook.create({ token: runId });
-
-  while (true) {
-    // Set up non-blocking listener for mid-turn messages // [!code highlight]
-    let pendingMessage: string | null = null; // [!code highlight]
-    hook.then(({ message }) => { // [!code highlight]
-      if (message === "/done") return; // [!code highlight]
       messageQueue.push({ role: "user", content: message }); // [!code highlight]
-      pendingMessage = message; // [!code highlight]
-    }); // [!code highlight]
+      notifyMessage?.(); // [!code highlight]
+      notifyMessage = undefined; // [!code highlight]
+    } // [!code highlight]
+  })(); // [!code highlight]
 
+  const waitForMessage = async () => {
+    while (messageQueue.length === 0 && !stopped) {
+      await new Promise<void>((resolve) => {
+        notifyMessage = resolve;
+      });
+    }
+  };
+
+  while (!stopped) {
     const result = await agent.stream({
       messages,
       writable,
       preventClose: true,
+      sendFinish: false,
       prepareStep: ({ messages: currentMessages }) => {
-        // Inject queued messages during turn // [!code highlight]
-        if (messageQueue.length > 0) {
-          const newMessages = messageQueue.splice(0);
-          return {
-            messages: [
-              ...currentMessages,
-              ...newMessages.map((m) => ({
-                role: m.role,
-                content: [{ type: "text" as const, text: m.content }],
-              })),
-            ],
-          };
-        }
-        return {};
+        const queued = messageQueue.splice(0); // Atomic drain // [!code highlight]
+        if (queued.length === 0) return {};
+        return {
+          messages: [
+            ...currentMessages,
+            ...queued.map(({ role, content }) => ({
+              role,
+              content: [{ type: "text" as const, text: content }],
+            })),
+          ],
+        };
       },
     });
+    messages = result.messages;
 
-    messages.push(...result.messages.slice(messages.length));
+    if (stopped) break;
+    await waitForMessage(); // [!code highlight]
+    if (stopped) break;
 
-    // Wait for next message (either queued during turn or new) // [!code highlight]
-    const { message: followUp } = pendingMessage ? { message: pendingMessage } : await hook; // [!code highlight]
-    if (followUp === "/done") break;
-
-    messages.push({ role: "user", content: followUp });
+    // Anything not consumed by prepareStep arrived after the final model step.
+    messages = [...messages, ...messageQueue.splice(0)]; // [!code highlight]
   }
+
+  await consumeMessages;
+  return { messages };
 }
 ```
+
+Messages sent via `chatMessageHook.resume()` accumulate until either `prepareStep` or the between-turn branch drains the FIFO. Send `/done` to stop the consumer and let the workflow return.
 
 ## Related documentation
 

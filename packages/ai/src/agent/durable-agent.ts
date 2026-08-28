@@ -43,12 +43,16 @@ export { Output };
 
 /**
  * Infer the type of the tools of a durable agent.
+ *
+ * @deprecated Use `InferWorkflowAgentTools` from `@ai-sdk/workflow` for Workflow 5 applications.
  */
 export type InferDurableAgentTools<DURABLE_AGENT> =
   DURABLE_AGENT extends DurableAgent<infer TOOLS> ? TOOLS : never;
 
 /**
  * Infer the UI message type of a durable agent.
+ *
+ * @deprecated Use `InferWorkflowAgentUIMessage` from `@ai-sdk/workflow` for Workflow 5 applications.
  */
 export type InferDurableAgentUIMessage<
   DURABLE_AGENT,
@@ -331,6 +335,8 @@ export type PrepareStepCallback<TTools extends ToolSet = ToolSet> = (
 
 /**
  * Configuration options for creating a {@link DurableAgent} instance.
+ *
+ * @deprecated Use `WorkflowAgentOptions` from `@ai-sdk/workflow` for Workflow 5 applications.
  */
 export interface DurableAgentOptions<TTools extends ToolSet = ToolSet>
   extends GenerationSettings {
@@ -464,6 +470,8 @@ export type StreamTextOnAbortCallback<TTools extends ToolSet = ToolSet> =
 
 /**
  * Options for the {@link DurableAgent.stream} method.
+ *
+ * @deprecated Use `WorkflowAgentStreamOptions` from `@ai-sdk/workflow` for Workflow 5 applications.
  */
 export interface DurableAgentStreamOptions<
   TTools extends ToolSet = ToolSet,
@@ -693,6 +701,8 @@ export interface ToolResult {
 
 /**
  * Result of the DurableAgent.stream method.
+ *
+ * @deprecated Use `WorkflowAgentStreamResult` from `@ai-sdk/workflow` for Workflow 5 applications.
  */
 export interface DurableAgentStreamResult<
   TTools extends ToolSet = ToolSet,
@@ -785,6 +795,8 @@ export interface DurableAgentStreamResult<
  *   writable: getWritable<UIMessageChunk>(),
  * });
  * ```
+ *
+ * @deprecated Use `WorkflowAgent` from `@ai-sdk/workflow` for Workflow 5 applications. `DurableAgent` remains supported for Workflow 4 maintenance applications.
  */
 export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
   private model: string | (() => Promise<CompatibleLanguageModel>);

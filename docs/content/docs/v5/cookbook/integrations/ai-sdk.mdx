@@ -373,7 +373,7 @@ This example stores the `runId` after the first response. For strict one-session
 | **Tool call durability** | Not individually durable: re-executes with the parent turn | Per tool: mark `"use step"` for a durable, retryable step, or keep at workflow level for `sleep()` / hooks |
 | **Stop conditions** | `stopWhen`, `prepareStep` | `stopWhen`, `prepareStep` |
 | **Structured output** | `Output.object()`, `Output.array()` | `output` (`Output.object()`, `Output.text()`) |
-| **Step callbacks** | `onStepFinish`, `onChunk`, and others | `onStepFinish`, `onFinish`, `onError`, `onAbort` (`onChunk` not available) |
+| **Step callbacks** | `onStepFinish`, `onChunk`, and others | `onStepEnd`, `onEnd`, `onError`, `onAbort` (`onChunk` not available) |
 | **Setup** | Manual stream piping and turn slicing | Automatic |
 
 Use `WorkflowAgent` for most agent use cases. Use `streamText` when you need the raw AI SDK surface or a per-turn durability boundary.
