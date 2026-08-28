@@ -39,7 +39,7 @@ export function createNextEntrypointMatcher({
   globalNotFound,
 }: {
   pageExtensions: readonly string[];
-  bundler: 'webpack' | 'turbopack';
+  bundler: 'webpack' | 'turbopack' | 'rspack';
   globalNotFound: boolean;
 }) {
   const extensions = [...pageExtensions].sort((a, b) => b.length - a.length);
@@ -478,7 +478,11 @@ export async function getNextBuilderEager(
       ).replaceAll('\\', '/');
       assert(appDirectory === 'app' || appDirectory === 'src/app');
       const sourceDirectory = appDirectory === 'app' ? '.' : 'src';
-      const bundler = process.env.TURBOPACK ? 'turbopack' : 'webpack';
+      const bundler = process.env.NEXT_RSPACK
+        ? 'rspack'
+        : process.env.TURBOPACK
+          ? 'turbopack'
+          : 'webpack';
       const isNextEntrypoint = createNextEntrypointMatcher({
         pageExtensions: this.config.pageExtensions,
         bundler,
