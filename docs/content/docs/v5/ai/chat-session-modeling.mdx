@@ -225,6 +225,18 @@ export async function GET(
 
 Persist `UIMessage[]` separately if the client must reconstruct user messages and UI metadata after a refresh. The workflow-owned `ModelMessage[]` history is the model's durable context, not a replacement for an application chat table.
 
+### Persist and display the full session
+
+A multi-turn chat has three related records with different responsibilities:
+
+1. **Workflow model history**: `ModelMessage[]` is the durable context sent back to the model on each turn.
+2. **Workflow run stream**: `ModelCallStreamPart` values contain durable model and tool output for live delivery and reconnection.
+3. **Application chat history**: `UIMessage[]` preserves user messages, display metadata, attachments, and application-specific parts.
+
+When the user sends the first message, start the run, store its run ID with the application chat record, and connect to the run stream. For each follow-up, optimistically add and persist the user `UIMessage`, then resume `chatMessageHook` with the corresponding text. After a refresh, load the persisted UI messages and reconnect through the stream route above using the last persisted UI chunk cursor. If you persist only user messages, replay model output from the beginning and merge by stable message IDs.
+
+Do not treat the run stream as the only chat database. `WorkflowAgent` deliberately stores raw model-call parts, and user messages resumed through a Hook are not automatically written to that output stream. Keeping the application history separate avoids synthetic stream markers and preserves UI information that cannot be reconstructed from `ModelMessage[]`.
+
 <Callout type="info">
 The reconnect route replays raw `ModelCallStreamPart` values from index `0` because raw parts and transformed UI chunks do not have matching indexes. `uiStartIndex` prevents already-delivered UI chunks from being sent to the client again, but the server still transforms the earlier raw history. For very long streams, split conversations into bounded runs until WorkflowAgent exposes a persisted raw-to-UI cursor mapping.
 </Callout>
@@ -244,9 +256,88 @@ Use the multi-turn pattern when:
 | Deployment version | Latest deployment per turn | Deployment that started the run |
 | Message injection | Start another run | Resume a Hook |
 | Workflow complexity | Lower | Higher |
+| Workflow time horizon | One model turn | Hours or longer |
 | Observability scope | Per turn | Full session |
 
-Start with single-turn workflows when integrating an existing chat application. Use multi-turn workflows when durable session orchestration and server-side message injection justify the additional lifecycle management.
+**Multi-turn works well for new durable sessions.** The workflow owns model context, accepts messages from users and backend systems through the same Hook, and provides one full-session trace.
+
+**Single-turn works well when adapting an existing architecture.** If the application already manages message state and you want to adopt durable agents incrementally, one workflow run per turn requires fewer lifecycle changes and always uses the latest deployment.
+
+## Multiplayer chat sessions
+
+The multi-turn pattern also supports messages from system events, external services, and multiple users. Every source resumes the same Hook; the workflow queues those messages and processes them between model turns.
+
+<Tabs items={['System event', 'External service', 'Multiple users']}>
+
+<Tab value="System event">
+
+Scheduled tasks, background jobs, or database triggers can inject updates into an active conversation:
+
+```typescript title="app/api/internal/flight-update/route.ts" lineNumbers
+import { chatMessageHook } from "@/workflows/chat-session";
+
+export async function POST(request: Request) {
+  const { runId, flightNumber, newStatus } = await request.json();
+
+  await chatMessageHook.resume(runId, {
+    message: `[System] Flight ${flightNumber} status updated: ${newStatus}`,
+  });
+
+  return Response.json({ success: true });
+}
+```
+
+</Tab>
+
+<Tab value="External service">
+
+A third-party webhook can notify the conversation about an external event:
+
+```typescript title="app/api/webhooks/payment/route.ts" lineNumbers
+import { chatMessageHook } from "@/workflows/chat-session";
+
+export async function POST(request: Request) {
+  const { runId, paymentStatus, amount } = await request.json();
+
+  if (paymentStatus === "succeeded") {
+    await chatMessageHook.resume(runId, {
+      message: `[Payment] Payment of $${amount.toFixed(2)} received. Your booking is confirmed.`,
+    });
+  }
+
+  return Response.json({ received: true });
+}
+```
+
+</Tab>
+
+<Tab value="Multiple users">
+
+Multiple authenticated users can participate in the same workflow-owned session. Persist the attributed `UIMessage` in the application chat record as well as resuming the Hook:
+
+```typescript title="app/api/chat/[runId]/message/route.ts" lineNumbers
+import { chatMessageHook } from "@/workflows/chat-session";
+import { getUser } from "@/lib/auth";
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ runId: string }> }
+) {
+  const { runId } = await params;
+  const { message } = await request.json();
+  const user = await getUser(request);
+
+  await chatMessageHook.resume(runId, {
+    message: `[${user.name}] ${message}`,
+  });
+
+  return Response.json({ success: true });
+}
+```
+
+</Tab>
+
+</Tabs>
 
 ## Related documentation
 

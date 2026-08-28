@@ -85,7 +85,7 @@ export async function aiWorkflow(userMessage: string) {
 
   globalThis.fetch = fetch; // [!code highlight]
 
-  // Plain model strings route through Vercel AI Gateway
+  // generateText makes an HTTP request under the hood
   const response = await generateText({
     model: "xai/grok-4.6",
     prompt: userMessage,

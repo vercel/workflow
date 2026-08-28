@@ -6,7 +6,7 @@ summary: Cancel a running WorkflowAgent cooperatively with AbortController so th
 ---
 
 <CopyPrompt
-  text="Add cancellation to this AI SDK WorkflowAgent. For hard cancellation, expose a server route that receives `runId` and calls `getRun(runId).cancel()` from `workflow/api`. For graceful model cancellation, define `stopHook` with `defineHook()` from `workflow`, create it with a stable token such as the workflow run ID, and race `WorkflowAgent.stream()` against the stop hook using `Promise.race`. Pass an `AbortController` signal to the agent and return a stopped status after the hook calls `controller.abort()`. Wire the UI Stop button to the route that resumes the hook or falls back to `getRun(runId).cancel()`. Document that an already-running tool step or external side effect is not interrupted by WorkflowAgent's signal, and verify stale run IDs are handled."
+  text="Add cancellation to this AI SDK WorkflowAgent. For hard cancellation, expose a server route that receives `runId` and calls `getRun(runId).cancel()` from `workflow/api`. For graceful cancellation, define `stopHook` with `defineHook()` from `workflow`, create it with a stable token such as the workflow run ID, and race `WorkflowAgent.stream()` against the stop hook using `Promise.race`. Pass an `AbortController` signal to the agent and return a stopped status after the hook calls `controller.abort()`. Wire the UI Stop button to the route that resumes the hook or falls back to `getRun(runId).cancel()`, and verify stale run IDs are handled."
 />
 
 Cancel a running agent from the outside through a **Stop** button in a chat user interface (UI), an admin cancellation endpoint, or a timeout fallback.
@@ -14,10 +14,6 @@ Cancel a running agent from the outside through a **Stop** button in a chat user
 ## Pattern
 
 Create an `AbortController` in the workflow and race the agent (passing its signal) against a stop hook. When the hook fires, `controller.abort()` is called: the signal propagates into the agent and cancels the underlying model stream. The workflow return value records whether it completed or stopped; read that value through the run API or persist it in application state.
-
-<Callout type="warn">
-`WorkflowAgent` currently applies its `abortSignal` to model calls, not to a tool's `execute` function ([AI SDK issue #19966](https://github.com/vercel/ai/issues/19966)). A tool step that has already started can continue after this workflow returns `stopped`, and canceling a run cannot undo an external side effect already sent. Make consequential tools idempotent and use application-level cancellation checks where required.
-</Callout>
 
 {/* @skip-typecheck: requires AI SDK 7 and @ai-sdk/workflow */}
 ```typescript lineNumbers

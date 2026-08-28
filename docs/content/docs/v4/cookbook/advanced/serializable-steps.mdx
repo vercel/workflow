@@ -1,8 +1,8 @@
 ---
 title: Serializable Steps
-description: Wrap non-serializable third-party objects inside step factory functions so they can cross the workflow boundary.
+description: Wrap non-serializable third-party objects, including AI provider models and cloud clients, inside step factory functions.
 type: guide
-summary: Return a callback from a step to defer construction of a non-owned class until execution time, making it usable inside durable workflows.
+summary: Defer construction of non-owned AI provider models and cloud SDK clients until step execution so they remain usable in durable workflows.
 related:
   - /docs/foundations/serialization
   - /docs/foundations/serialization#custom-class-serialization
@@ -10,7 +10,7 @@ related:
 ---
 
 <CopyPrompt
-  text="Make this non-serializable dependency usable inside a durable workflow with the step-as-factory pattern. Instead of passing the object into the workflow, export a factory that returns an async callback marked with &quot;use step&quot; which constructs and returns the object at execution time. Pass the factory across the workflow boundary (the compiler serializes the function reference, not the instance) and invoke it inside steps where full Node.js access is available. Keep the factory's constructor arguments serializable. Verify the workflow builds, replays deterministically, and the dependency is only instantiated during step execution."
+  text="Make this non-serializable dependency usable inside a durable workflow with the step-as-factory pattern. Instead of passing an AI provider model, cloud SDK client, or other class instance into the workflow, export a factory that returns an async callback marked with &quot;use step&quot;. Capture only serializable constructor options, construct the provider or client inside the step, and keep the instance inside that step's execution. Prefer a plain Vercel AI Gateway model string when an AI SDK API supports one. Verify the workflow builds, replays deterministically, and never serializes the live dependency."
 />
 
 <Callout>
@@ -22,11 +22,11 @@ This is an advanced guide. It dives into workflow internals and is not required 
 Workflow functions run inside a sandboxed VM where every value that crosses a function boundary must be serializable. There are two ways to get a non-serializable object across that boundary, depending on whether you own the class:
 
 - **You own the class**: implement the [`WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE` protocol](/docs/foundations/serialization#custom-class-serialization). The instance becomes a first-class serializable value: you can pass it as a workflow input, return it from a step, and call `"use step"` instance methods on it directly. This is the right tool when the class is yours to modify.
-- **You don't own the class**: you can't add serialization methods to `new S3Client({...})` from `@aws-sdk/client-s3`. Instead, wrap construction in a `"use step"` factory function and pass the factory across the boundary. That's what this page covers.
+- **You don't own the class**: you can't add serialization methods to `openai("gpt-5.6-sol")` from `@ai-sdk/openai` or `new S3Client({...})` from `@aws-sdk/client-s3`. Instead, wrap construction and use in a `"use step"` factory function. That's what this page covers.
 
 ## The problem
 
-Third-party clients often contain methods, closures, sockets, and internal state. Passing one across a workflow boundary causes a serialization error, and you can't add `WORKFLOW_SERIALIZE` to a class you don't own.
+AI SDK provider models and cloud SDK clients often contain methods, closures, sockets, and internal state. Passing one across a workflow boundary causes a serialization error, and you can't add `WORKFLOW_SERIALIZE` to a class you don't own.
 
 ```typescript lineNumbers
 import { S3Client } from "@aws-sdk/client-s3";
@@ -52,10 +52,38 @@ Apply the same pattern to any non-serializable dependency. The key rule: **the o
 AI models don't need a factory when you use Vercel AI Gateway. Pass a serializable model string such as `"xai/grok-4.6"` to AI SDK instead of constructing a provider object.
 </Callout>
 
+### AI provider example
+
+If you intentionally authenticate with a provider directly, construct and use its model inside the step. The outer factory captures only the serializable model ID:
+
+```typescript lineNumbers
+import { openai } from "@ai-sdk/openai";
+import { generateText } from "ai";
+
+export function createOpenAIGenerator(modelId: string) {
+  return async (prompt: string) => {
+    "use step";
+    const { text } = await generateText({ model: openai(modelId), prompt });
+    return text;
+  };
+}
+
+export async function summarize(prompt: string) {
+  "use workflow";
+
+  const generate = createOpenAIGenerator("gpt-5.6-sol");
+  return generate(prompt);
+}
+```
+
+The same structure works with provider packages such as `@ai-sdk/anthropic` and `@ai-sdk/google`: capture serializable configuration in the outer function and keep the provider object inside the step.
+
+### Cloud client example
+
 ```typescript lineNumbers
 import type { S3Client as S3ClientType } from "@aws-sdk/client-s3";
 
-// The arguments (region, bucket) are plain strings, which are serializable
+// The region is a plain string, which is serializable
 export function createS3Client(region: string) {
   return async (): Promise<S3ClientType> => {
     "use step";
@@ -94,4 +122,5 @@ async function uploadFile(
 
 - [`"use step"`](/docs/foundations/workflows-and-steps#step-functions): Marks a function for extraction and serialization.
 - [`"use workflow"`](/docs/foundations/workflows-and-steps#workflow-functions): Declares the orchestrator function.
+- [AI SDK providers](https://ai-sdk.dev/providers/ai-sdk-providers): Lists direct provider packages and configuration.
 - [Custom class serialization](/docs/foundations/serialization#custom-class-serialization): Provides the companion pattern for classes you own (`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`).

@@ -57,7 +57,11 @@ cd workflow-examples/flight-booking-app
 
 <Step>
 
-### Configure AI Gateway
+### Configure model access
+
+<Tabs items={['AI Gateway', 'Provider package']}>
+
+<Tab value="AI Gateway">
 
 AI SDK uses [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) as its default global provider, so plain `"provider/model"` strings need no provider-specific package. Vercel deployments authenticate with OIDC automatically. For local development, link the project and pull a short-lived OIDC token:
 
@@ -67,6 +71,36 @@ vercel env pull .env.local
 ```
 
 You can alternatively set `AI_GATEWAY_API_KEY` from the [AI Gateway authentication](https://vercel.com/docs/ai-gateway/authentication) page.
+
+</Tab>
+
+<Tab value="Provider package">
+
+AI Gateway is the default in this guide, but `WorkflowAgent` also accepts AI SDK provider instances. For example, install the OpenAI provider package:
+
+```package-install
+npm i @ai-sdk/openai
+```
+
+Set the provider's API key:
+
+```bash title=".env.local" lineNumbers
+OPENAI_API_KEY=...
+```
+
+Then construct the model with the provider package:
+
+```typescript
+import { openai } from "@ai-sdk/openai";
+
+const model = openai("gpt-5.6-sol");
+```
+
+See the [AI SDK provider guide](https://ai-sdk.dev/providers/ai-sdk-providers) for Anthropic, Google, Amazon Bedrock, and other providers.
+
+</Tab>
+
+</Tabs>
 </Step>
 
 <Step>
@@ -243,6 +277,10 @@ export async function chatWorkflow(messages: UIMessage[]) {
   });
 }
 ```
+
+<Callout type="info">
+The example defaults to AI Gateway. If you use a provider package directly, import its provider and pass the model instance instead, for example `model: openai("gpt-5.6-sol")` from `@ai-sdk/openai`. The rest of the `WorkflowAgent` integration is unchanged.
+</Callout>
 
 Key changes:
 
