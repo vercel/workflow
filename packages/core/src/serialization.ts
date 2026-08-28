@@ -1293,8 +1293,24 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     let inFlightChunks = 0;
     let inFlightBytes = 0;
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
-    /** The in-flight dispatch chain. At most one, preserving chunk order. */
-    let inFlight: Promise<void> | null = null;
+    type ActiveGroup = {
+      id: number;
+      chunkSeq: number;
+      chunks: Uint8Array[];
+      bytes: number;
+      groupT0: number | undefined;
+    };
+    const activeGroups = new Map<number, ActiveGroup>();
+    let nextGroupId = 1;
+    let dispatchScheduled = false;
+    let resolvedDispatchDepth: number | undefined;
+    const dispatchDepth = writeSessionPromise.then((session) => {
+      const advertised = session?.maxInFlightWrites;
+      if (typeof advertised !== 'number' || !Number.isFinite(advertised)) {
+        return 1;
+      }
+      return Math.min(4, Math.max(1, Math.floor(advertised)));
+    });
     /**
      * Sticky failure: once a dispatch fails, the failed group is re-queued
      * (retained, exactly as the previous implementation retained its buffer)
@@ -1358,13 +1374,6 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     };
 
     /**
-     * Dispatch loop: while chunks are buffered, send them group by group.
-     * Exactly one loop runs at a time (`inFlight`), so groups reach the
-     * server in write order. Chunks that arrive while a group's request is
-     * in flight accumulate and form the next group: the group-commit
-     * behavior, now independent of how the producer pipes.
-     */
-    /**
      * Send one group to the server: gate on run readiness, then one
      * `writeMulti` (or sequential `write`s when the world lacks it). Emits
      * the write-flush span; dwell is measured up to just before the RPC so a
@@ -1374,14 +1383,15 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     const sendGroup = async (
       group: Uint8Array[],
       bytes: number,
-      groupT0: number | undefined
+      groupT0: number | undefined,
+      chunkSeq: number
     ): Promise<void> => {
       await ensureRunReady();
       const world = await worldPromise;
       const session = await writeSessionPromise;
       const dispatchAt = Date.now();
       if (session) {
-        await session.write(nextChunkSeq, group);
+        await session.write(chunkSeq, group);
       } else if (
         typeof world.streams.writeMulti === 'function' &&
         group.length > 1
@@ -1393,7 +1403,6 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
           await world.streams.write(runId, name, chunk);
         }
       }
-      nextChunkSeq += group.length;
       if (groupT0 !== undefined) {
         recordStreamWriteFlush(
           groupT0,
@@ -1407,74 +1416,98 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       }
     };
 
-    const dispatchLoop = async (): Promise<void> => {
-      while (buffer.length > 0) {
-        if (flushTimer) {
-          clearTimeout(flushTimer);
-          flushTimer = null;
-        }
-        const groupT0 = bufferT0;
-        const groupTakenAt = Date.now();
-        const { group, bytes } = takeGroup();
-        inFlightChunks = group.length;
-        inFlightBytes = bytes;
-        bufferT0 = buffer.length > 0 ? groupTakenAt : undefined;
-
-        try {
-          await sendGroup(group, bytes, groupT0);
-          inFlightChunks = 0;
-          inFlightBytes = 0;
-        } catch (error) {
-          // Retain the failed group (and its original t0) at the front of
-          // the buffer, poison the sink, and surface the failure to every
-          // blocked writer and drain waiter.
-          buffer = group.concat(buffer);
-          bufferBytes += bytes;
-          inFlightChunks = 0;
-          inFlightBytes = 0;
-          bufferT0 =
-            groupT0 !== undefined && bufferT0 !== undefined
-              ? Math.min(groupT0, bufferT0)
-              : (groupT0 ?? bufferT0);
-          throw error;
-        }
-
-        // This group is durable: relieve writers blocked on the bound (they
-        // re-check it and may block again).
-        const relieved = capacityWaiters;
-        capacityWaiters = [];
-        for (const w of relieved) w.resolve();
-      }
+    const settleIfDrained = (): void => {
+      if (buffer.length > 0 || activeGroups.size > 0) return;
+      const settled = drainWaiters;
+      drainWaiters = [];
+      for (const waiter of settled) waiter.resolve();
     };
 
-    /** Start (or join) the dispatch chain. Never leaves an unhandled rejection. */
-    const startDispatch = (): void => {
-      if (inFlight || sinkError !== undefined || buffer.length === 0) return;
-      inFlight = dispatchLoop().then(
-        () => {
-          inFlight = null;
-          // A write can land in the microtask gap between the loop's
-          // empty-buffer exit and this reaction. scheduleGroupCommit saw
-          // inFlight still set and armed no timer, so without this check
-          // the chunk would sit stranded until a later write/close/drain.
-          // Treat it like an in-request arrival: dispatch immediately (the
-          // new chain settles the drain waiters when it finishes).
-          if (buffer.length > 0) {
-            startDispatch();
-            return;
-          }
-          // Fully idle (the loop only exits with an empty buffer): settle
-          // the durability barrier.
-          const settled = drainWaiters;
-          drainWaiters = [];
-          for (const w of settled) w.resolve();
-        },
-        (error) => {
-          inFlight = null;
-          sinkError ??= error;
-          rejectWaiters(sinkError);
-        }
+    const failActiveGroups = (error: unknown): void => {
+      if (sinkError !== undefined) return;
+      sinkError = error;
+      const unresolved = [...activeGroups.values()].sort(
+        (a, b) => a.chunkSeq - b.chunkSeq
       );
+      activeGroups.clear();
+      inFlightChunks = 0;
+      inFlightBytes = 0;
+      if (unresolved.length > 0) {
+        buffer = unresolved.flatMap((item) => item.chunks).concat(buffer);
+        bufferBytes += unresolved.reduce((sum, item) => sum + item.bytes, 0);
+        const firstT0 = unresolved.reduce<number | undefined>(
+          (earliest, item) =>
+            item.groupT0 === undefined
+              ? earliest
+              : Math.min(earliest ?? item.groupT0, item.groupT0),
+          bufferT0
+        );
+        bufferT0 = firstT0;
+      }
+      rejectWaiters(sinkError);
+    };
+
+    const launchGroup = (): void => {
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      const groupT0 = bufferT0;
+      const groupTakenAt = Date.now();
+      const { group, bytes } = takeGroup();
+      const chunkSeq = nextChunkSeq;
+      nextChunkSeq += group.length;
+      const active: ActiveGroup = {
+        id: nextGroupId++,
+        chunkSeq,
+        chunks: group,
+        bytes,
+        groupT0,
+      };
+      activeGroups.set(active.id, active);
+      inFlightChunks += group.length;
+      inFlightBytes += bytes;
+      bufferT0 = buffer.length > 0 ? groupTakenAt : undefined;
+      void sendGroup(group, bytes, groupT0, chunkSeq).then(() => {
+        if (!activeGroups.delete(active.id)) return;
+        inFlightChunks -= group.length;
+        inFlightBytes -= bytes;
+        const relieved = capacityWaiters;
+        capacityWaiters = [];
+        for (const waiter of relieved) waiter.resolve();
+        startDispatch();
+        settleIfDrained();
+      }, failActiveGroups);
+    };
+
+    const fillPipeline = (depth: number): void => {
+      while (
+        sinkError === undefined &&
+        buffer.length > 0 &&
+        activeGroups.size < depth
+      ) {
+        launchGroup();
+      }
+      settleIfDrained();
+    };
+
+    /** Fill the advertised session pipeline without changing serial Worlds. */
+    const startDispatch = (): void => {
+      if (sinkError !== undefined || buffer.length === 0) return;
+      // Preserve zero-dwell leading dispatch before async session creation
+      // reveals whether this World supports more than one active group.
+      if (activeGroups.size === 0) launchGroup();
+      if (resolvedDispatchDepth !== undefined) {
+        fillPipeline(resolvedDispatchDepth);
+        return;
+      }
+      if (dispatchScheduled) return;
+      dispatchScheduled = true;
+      void dispatchDepth.then((depth) => {
+        dispatchScheduled = false;
+        resolvedDispatchDepth = depth;
+        fillPipeline(depth);
+      }, failActiveGroups);
     };
 
     /**
@@ -1496,7 +1529,11 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
      * `sendGroup` awaits the same promise before any request leaves.
      */
     const scheduleGroupCommit = (): void => {
-      if (flushTimer || inFlight) return;
+      if (flushTimer) return;
+      if (activeGroups.size > 0) {
+        startDispatch();
+        return;
+      }
       if (resolvedFlushIntervalMs === undefined) {
         // Promise.resolve: everywhere else the world is only ever awaited,
         // which tolerates a synchronous value (tests stub getWorldLazy that
@@ -1540,7 +1577,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     const drain = async (): Promise<void> => {
       while (true) {
         if (sinkError !== undefined) throw sinkError;
-        if (buffer.length === 0 && !inFlight) return;
+        if (buffer.length === 0 && activeGroups.size === 0) return;
         startDispatch();
         await new Promise<void>((resolve, reject) => {
           drainWaiters.push({ resolve, reject });

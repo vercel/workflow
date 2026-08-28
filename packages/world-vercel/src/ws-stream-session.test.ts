@@ -97,9 +97,12 @@ beforeEach(() => {
   sockets.length = 0;
   injectTraceContextIntoHeaders.mockClear();
   delete process.env.WORKFLOW_STREAMS_TRANSPORT;
+  delete process.env.WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH;
 });
 
 afterEach(() => {
+  delete process.env.WORKFLOW_REQUEST_TIMEOUT_MS;
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -118,6 +121,20 @@ function makeSession() {
 }
 
 describe('v1 stream WebSocket writer lifecycle', () => {
+  it.each([
+    [undefined, 1],
+    ['1', 1],
+    ['2', 2],
+    ['4', 4],
+  ])('advertises effective pipeline depth %j', (value, expected) => {
+    if (value === undefined) {
+      delete process.env.WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH;
+    } else {
+      process.env.WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH = value;
+    }
+    expect(makeSession().session.maxInFlightWrites).toBe(expected);
+  });
+
   it('keeps HTTP as the default without constructing a socket', async () => {
     const { session, writeHttp, closeHttp } = makeSession();
     await session.write(0, ['one']);
@@ -156,6 +173,46 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(sockets[0].closed).toContainEqual([1000, 'connect budget expired']);
     sockets[0].open();
     expect(sockets[0].closed).toContainEqual([1000, 'HTTP fallback selected']);
+  });
+
+  it('keeps pre-open HTTP fallback writes serial at pipelined depth', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH = '4';
+    let releaseFirst: (() => void) | undefined;
+    const firstHttp = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const { session, writeHttp } = makeSession();
+    writeHttp.mockImplementationOnce(async () => firstHttp);
+    const first = session.write(0, ['one']);
+    const second = session.write(1, ['two']);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].emit('unexpected-response', {}, {});
+    await vi.waitFor(() => expect(writeHttp).toHaveBeenCalledTimes(1));
+    releaseFirst?.();
+    await Promise.all([first, second]);
+    expect(writeHttp.mock.calls).toEqual([[['one']], [['two']]]);
+  });
+
+  it('stops pre-open HTTP fallback after its first failed write', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH = '4';
+    const failure = new Error('first HTTP write failed');
+    const { session, writeHttp } = makeSession();
+    writeHttp.mockRejectedValueOnce(failure);
+    const writes = [
+      session.write(0, ['one']),
+      session.write(1, ['two']),
+      session.write(2, ['three']),
+    ];
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].emit('unexpected-response', {}, {});
+
+    for (const write of writes) {
+      await expect(write).rejects.toBe(failure);
+    }
+    expect(writeHttp).toHaveBeenCalledTimes(1);
+    expect(writeHttp).toHaveBeenCalledWith(['one']);
   });
 
   it('uses the same bounded decision when close is the first operation', async () => {
@@ -247,6 +304,43 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     await writing;
   });
 
+  it('caps split-group frames at the global pipeline depth', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH = '2';
+    const { session } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    const writing = session.write(
+      0,
+      Array.from({ length: 2001 }, () => new Uint8Array([1]))
+    );
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    expect((await decodeOne(socket.sent[0])).meta).toMatchObject({
+      reqId: 1,
+      chunkSeq: 0,
+      numChunks: 1000,
+    });
+    expect((await decodeOne(socket.sent[1])).meta).toMatchObject({
+      reqId: 2,
+      chunkSeq: 1000,
+      numChunks: 1000,
+    });
+    socket.reply(
+      encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
+    );
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
+    expect((await decodeOne(socket.sent[2])).meta).toMatchObject({
+      reqId: 3,
+      chunkSeq: 2000,
+      numChunks: 1,
+    });
+    for (const reqId of [2, 3]) {
+      socket.reply(encodeFrame({ type: 'write_ack', reqId }, new Uint8Array()));
+    }
+    await writing;
+  });
+
   it('poisons a synchronous frame-build failure without stale pending work', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
     const { session } = makeSession();
@@ -273,6 +367,170 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     await expect(session.write(0, ['later'])).rejects.toThrow(
       'sync send failed'
     );
+  });
+
+  it('bounds and correlates pipelined writes by reqId', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH = '4';
+    const { session } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+
+    const writes = Array.from({ length: 5 }, (_, index) =>
+      session.write(index, [new Uint8Array([index])])
+    );
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(4));
+    const metas = await Promise.all(
+      socket.sent.map((frame) => decodeOne(frame))
+    );
+    expect(metas.map(({ meta }) => meta)).toMatchObject([
+      { reqId: 1, chunkSeq: 0 },
+      { reqId: 2, chunkSeq: 1 },
+      { reqId: 3, chunkSeq: 2 },
+      { reqId: 4, chunkSeq: 3 },
+    ]);
+
+    socket.reply(
+      encodeFrame({ type: 'write_ack', reqId: 3 }, new Uint8Array())
+    );
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(5));
+    expect((await decodeOne(socket.sent[4])).meta).toMatchObject({
+      reqId: 5,
+      chunkSeq: 4,
+    });
+    for (const reqId of [1, 2, 4, 5]) {
+      socket.reply(encodeFrame({ type: 'write_ack', reqId }, new Uint8Array()));
+    }
+    await Promise.all(writes);
+  });
+
+  it('ignores a duplicate acknowledgement for a completed request', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH = '2';
+    const { session } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    const first = session.write(0, ['one']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+    const ack = encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array());
+    socket.reply(ack);
+    await first;
+    socket.reply(ack);
+
+    const second = session.write(1, ['two']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    socket.reply(
+      encodeFrame({ type: 'write_ack', reqId: 2 }, new Uint8Array())
+    );
+    await expect(second).resolves.toBeUndefined();
+  });
+
+  it('does not send close until every pipelined write is acknowledged', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH = '2';
+    const { session } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    const first = session.write(0, ['one']);
+    const second = session.write(1, ['two']);
+    const closing = session.close();
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    socket.reply(
+      encodeFrame({ type: 'write_ack', reqId: 2 }, new Uint8Array())
+    );
+    await second;
+    expect(socket.sent).toHaveLength(2);
+    socket.reply(
+      encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
+    );
+    await first;
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
+    expect((await decodeOne(socket.sent[2])).meta).toEqual({
+      type: 'close',
+      reqId: 3,
+    });
+    socket.reply(
+      encodeFrame({ type: 'close_ack', reqId: 3 }, new Uint8Array())
+    );
+    await closing;
+  });
+
+  it('poisons every pipelined write when one request times out', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH = '2';
+    process.env.WORKFLOW_REQUEST_TIMEOUT_MS = '10000';
+    const { session, writeHttp } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    vi.useFakeTimers();
+    try {
+      const writes = [session.write(0, ['one']), session.write(1, ['two'])];
+      await vi.advanceTimersByTimeAsync(0);
+      expect(socket.sent).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(10_000);
+      for (const write of writes) {
+        await expect(write).rejects.toThrow('timed out with no reply');
+      }
+      // A late success cannot make an already-unknown outcome reusable.
+      socket.reply(
+        encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
+      );
+      await expect(session.write(2, ['later'])).rejects.toThrow(
+        'timed out with no reply'
+      );
+      expect(writeHttp).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      delete process.env.WORKFLOW_REQUEST_TIMEOUT_MS;
+    }
+  });
+
+  it('rejects every pipelined write on an unknown socket outcome', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH = '2';
+    const { session, writeHttp } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    const writes = [
+      session.write(0, ['one']),
+      session.write(1, ['two']),
+      session.write(2, ['three']),
+    ];
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    socket.emit('close');
+    for (const write of writes) {
+      await expect(write).rejects.toThrow('closed before reply');
+    }
+    expect(socket.sent).toHaveLength(2);
+    expect(writeHttp).not.toHaveBeenCalled();
+  });
+
+  it('poisons all pipelined writes after an earlier server error', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH = '4';
+    const { session, writeHttp } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    const writes = Array.from({ length: 5 }, (_, index) =>
+      session.write(index, [new Uint8Array([index])])
+    );
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(4));
+    socket.reply(
+      encodeFrame(
+        { type: 'error', reqId: 1, status: 429, message: 'fail stop' },
+        new Uint8Array()
+      )
+    );
+    for (const write of writes)
+      await expect(write).rejects.toThrow('fail stop');
+    expect(socket.sent).toHaveLength(4);
+    expect(writeHttp).not.toHaveBeenCalled();
   });
 
   it('poisons a correlated server error and prevents queued work', async () => {
