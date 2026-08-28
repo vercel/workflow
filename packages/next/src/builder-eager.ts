@@ -129,6 +129,7 @@ export async function getNextBuilderEager(
           ? pathname
           : resolve(this.config.workingDir, pathname)
         ).replace(/\\/g, '/');
+      const normalizedWorkingDir = normalizePath(this.config.workingDir);
       let relevantFiles = new Set<string>();
       const isWatchableFile = (path: string) =>
         isSourceFile(path) || relevantFiles.has(path);
@@ -138,6 +139,11 @@ export async function getNextBuilderEager(
         projectRoot: this.transformProjectRoot,
         extraFragments: [workflowGeneratedDir.replace(/\\/g, '/')],
       });
+      const sourceWatcherCovers = (file: string) =>
+        file.startsWith(`${normalizedWorkingDir}/`) &&
+        !file.startsWith(`${normalizedDistDir}/`) &&
+        !isIgnoredWatchPath(file) &&
+        isSourceFile(file);
       const logDevHmr = (...args: unknown[]) => {
         if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
           console.log(...args);
@@ -306,8 +312,17 @@ export async function getNextBuilderEager(
 
         const replaceDependencyWatcher = async () => {
           const dependencyDirectories = new Set(
-            [...relevantFiles].map(dirname)
+            [...relevantFiles]
+              .filter((file) => !sourceWatcherCovers(file))
+              .map(dirname)
           );
+          if (dependencyDirectories.size === 0) {
+            const previousWatcher = dependencyWatcher;
+            dependencyWatcher = undefined;
+            await previousWatcher?.close();
+            return;
+          }
+
           const nextWatcher = chokidar.watch([...dependencyDirectories], {
             depth: 0,
             ignoreInitial: true,
