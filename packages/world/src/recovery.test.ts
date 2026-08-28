@@ -48,4 +48,50 @@ describe('reenqueueActiveRuns', () => {
       runId: 'wrun_AAA',
     });
   });
+
+  it('recovers runs without logging', async () => {
+    // Resuming active runs is what a restart is for, so a successful recovery
+    // is not news: this printed on every dev-server restart with work in
+    // flight.
+    vi.stubEnv('DEBUG', '');
+    const spies = (['log', 'debug', 'info', 'warn', 'error'] as const).map(
+      (level) => vi.spyOn(console, level).mockImplementation(() => {})
+    );
+
+    await reenqueueActiveRuns(createRuns(), vi.fn<Queue['queue']>(), 'test');
+
+    for (const spy of spies) {
+      expect(spy).not.toHaveBeenCalled();
+      spy.mockRestore();
+    }
+  });
+
+  it('reports the recovery under DEBUG', async () => {
+    vi.stubEnv('DEBUG', 'workflow:*');
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+
+    await reenqueueActiveRuns(createRuns(), vi.fn<Queue['queue']>(), 'test');
+
+    expect(debugSpy.mock.calls.map((args) => args.join(' ')).join('\n')).toBe(
+      '[test] Re-enqueued 1 active run(s) on startup'
+    );
+    debugSpy.mockRestore();
+  });
+
+  it('always reports a run it could not re-enqueue', async () => {
+    // The other side of the gate: this one leaves a run unresumed, so it must
+    // not need DEBUG to be seen.
+    vi.stubEnv('DEBUG', '');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const enqueue = vi
+      .fn<Queue['queue']>()
+      .mockRejectedValue(new Error('nope'));
+
+    await reenqueueActiveRuns(createRuns(), enqueue, 'test');
+
+    expect(
+      warnSpy.mock.calls.map((args) => args.join(' ')).join('\n')
+    ).toContain('Failed to re-enqueue run wrun_AAA');
+    warnSpy.mockRestore();
+  });
 });
