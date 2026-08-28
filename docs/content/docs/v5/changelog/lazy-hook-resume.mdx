@@ -23,14 +23,17 @@ workflow wake have succeeded.
 - A compatible producer publishes a payload-less wake in parallel with that
   write. The wake identifies the expected `resumeId` and hook.
 - The consumer does not replay or acknowledge a producer-committed wake until
-  the matching durable event is visible. If the event is still in flight, the
-  delivery fails transiently so the queue redelivers it.
+  the matching durable event is visible. It performs bounded local probes
+  before asking the queue to redeliver an event that may still be in flight.
 - If the durable log proves the run ended or the hook was disposed without the
   matching event, the consumer safely consumes the permanently refused wake.
-- Queue publication is retried a bounded number of times. A publish failure is
-  still returned to the caller, but the committed event is retained.
+- A wake that remains unmatched after bounded redeliveries is reported and
+  consumed instead of exhausting the global queue budget and failing the run.
+- Retryable queue publication failures are retried a bounded number of times.
+  A publish failure is still returned to the caller, but the committed event is
+  retained.
 - `ResumedHook.resilientResume` remains on the type for source compatibility and
-  is no longer set. The internal `resumeHookDurable()` entry point is deprecated
+  is no longer set. The internal `resumeHookDurable()` entry point was removed
   because `resumeHook()` now provides the same guarantee.
 
 A resolved call proves that the event is durable and the wake was accepted.

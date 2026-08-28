@@ -151,6 +151,12 @@ async function runResumeConsumerScenario(options: {
   producerCommittedWake?: boolean;
   /** Override the producer-committed wake envelope version. */
   hookResumeVersion?: number;
+  /** Override the producer-committed wake strategy. */
+  hookResumeStrategy?: string;
+  /** Delivery attempt reported by the queue. */
+  deliveryAttempt?: number;
+  /** Make the producer event visible during this barrier list call. */
+  commitResumeOnListCall?: number;
   /** Put a durable hook_disposed in the log before delivery. */
   logHasDisposedEvent?: boolean;
   /**
@@ -291,11 +297,32 @@ async function runResumeConsumerScenario(options: {
   const createdParams: Array<CreateEventParams | undefined> = [];
   let reEnsureRejection = options.reEnsureRejection;
 
-  const listEvents = vi.fn(async () => ({
-    data: [...durableEvents],
-    hasMore: false,
-    cursor: durableEvents.at(-1)?.eventId ?? null,
-  }));
+  let listCall = 0;
+  const listEvents = vi.fn(async () => {
+    listCall++;
+    if (
+      options.commitResumeOnListCall === listCall &&
+      !durableEvents.some(
+        (entry) =>
+          entry.eventType === 'hook_received' && entry.resumeId === resumeId
+      )
+    ) {
+      durableEvents.push({
+        ...event({
+          eventType: 'hook_received',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: hookCorrelationId,
+          eventData: { token: hookToken, payload: payloadBytes },
+        }),
+        resumeId,
+      } as Event);
+    }
+    return {
+      data: [...durableEvents],
+      hasMore: false,
+      cursor: durableEvents.at(-1)?.eventId ?? null,
+    };
+  });
 
   const createEvent = vi.fn(
     async (
@@ -406,7 +433,7 @@ async function runResumeConsumerScenario(options: {
         hookResume: {
           hookId: hookCorrelationId,
           resumeId,
-          strategy: 'producer_committed',
+          strategy: options.hookResumeStrategy ?? 'producer_committed',
           version: options.hookResumeVersion ?? 1,
         },
       }
@@ -449,7 +476,7 @@ async function runResumeConsumerScenario(options: {
     await capturedHandler?.(delivery, {
       queueName: `__wkf_workflow_${workflowName}`,
       messageId: 'msg_workflow',
-      attempt: 1,
+      attempt: options.deliveryAttempt ?? 1,
     });
   } catch (err) {
     handlerError = err;
@@ -746,7 +773,7 @@ describe('lazy hook resume consumer preload', () => {
     });
 
     expect(hookReceivedCreates).toHaveLength(0);
-    expect(listEvents).toHaveBeenCalledTimes(1);
+    expect(listEvents).toHaveBeenCalledTimes(3);
     expect(handlerError).toMatchObject({
       code: 'hook-resume-event-pending',
       status: 503,
@@ -754,24 +781,66 @@ describe('lazy hook resume consumer preload', () => {
     expect(runCompletedCreates).toHaveLength(0);
   });
 
-  it('rejects an unsupported wake version with run-aware diagnostics', async () => {
+  it.each([
+    ['version', { hookResumeVersion: 2 }],
+    ['strategy', { hookResumeStrategy: 'future_strategy' }],
+  ])('consumes and reports an unsupported wake %s', async (_name, envelope) => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { handlerError, listEvents, runCompletedCreates } =
+        await runResumeConsumerScenario({
+          preloadHasHookReceived: false,
+          producerCommittedWake: true,
+          ...envelope,
+        });
+
+      expect(handlerError).toBeUndefined();
+      expect(listEvents).not.toHaveBeenCalled();
+      expect(runCompletedCreates).toHaveLength(0);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'Unsupported producer-committed hook wake was consumed'
+        )
+      );
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it('observes an in-flight producer event within the local probe window', async () => {
     const { handlerError, listEvents, runCompletedCreates } =
       await runResumeConsumerScenario({
         preloadHasHookReceived: false,
         producerCommittedWake: true,
-        hookResumeVersion: 2,
+        commitResumeOnListCall: 2,
       });
 
-    expect(handlerError).toMatchObject({
-      code: 'hook-resume-wake-version-unsupported',
-      status: 503,
-      message: expect.stringContaining(
-        'Workflow run wrun_resume_consumer_preload'
-      ),
-    });
-    expect((handlerError as Error).message).toContain('unsupported version 2');
-    expect(listEvents).not.toHaveBeenCalled();
-    expect(runCompletedCreates).toHaveLength(0);
+    expect(handlerError).toBeUndefined();
+    expect(listEvents).toHaveBeenCalledTimes(2);
+    expect(runCompletedCreates).toHaveLength(1);
+  });
+
+  it('consumes and reports an orphan wake before the global delivery ceiling', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { handlerError, listEvents, runCompletedCreates } =
+        await runResumeConsumerScenario({
+          preloadHasHookReceived: false,
+          producerCommittedWake: true,
+          deliveryAttempt: 3,
+        });
+
+      expect(handlerError).toBeUndefined();
+      expect(listEvents).toHaveBeenCalledTimes(3);
+      expect(runCompletedCreates).toHaveLength(0);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'Orphan producer-committed hook wake was consumed'
+        )
+      );
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it('replays a producer-committed wake once its matching event is visible', async () => {

@@ -431,18 +431,25 @@ async function recordFatalRunError({
   }
 }
 
-function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
+function findRecordedTerminalRunEvent(
+  events: Event[],
+  runId: string
+): Event | undefined {
   // Terminal run events are always last by construction (no event creation
   // succeeds against a terminal run), but scan the full array for
   // defense-in-depth: a World/backend ordering bug shouldn't make us miss an
   // actual termination signal.
-  const terminalRunEvent = events.find(
+  return events.find(
     (e) =>
       e.runId === runId &&
       (e.eventType === 'run_completed' ||
         e.eventType === 'run_failed' ||
         e.eventType === 'run_cancelled')
   );
+}
+
+function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
+  const terminalRunEvent = findRecordedTerminalRunEvent(events, runId);
 
   if (!terminalRunEvent) {
     return false;
@@ -455,6 +462,9 @@ function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
   });
   return true;
 }
+
+const HOOK_RESUME_BARRIER_PROBE_DELAYS_MS = [0, 25, 100] as const;
+const HOOK_RESUME_PENDING_MAX_DELIVERIES = 3;
 
 /** How many of `ids` are absent from `present`. */
 function countMissingIds(ids: Iterable<string>, present: Set<string>): number {
@@ -2468,49 +2478,112 @@ export function workflowEntrypoint(
                   // New producers only send this shape to consumers whose run
                   // marker attests this barrier; legacy hookInput messages keep
                   // their materialization path below.
-                  if (hookResume?.strategy === 'producer_committed') {
-                    if (hookResume.version !== 1) {
-                      throw new WorkflowWorldError(
-                        `Workflow run ${runId} received hook wake ${hookResume.resumeId} for ${hookResume.hookId} with unsupported version ${hookResume.version}`,
+                  if (hookResume) {
+                    if (
+                      hookResume.strategy !== 'producer_committed' ||
+                      hookResume.version !== 1
+                    ) {
+                      // This envelope is permanently unsupported by this
+                      // consumer. Redelivery cannot change that verdict and
+                      // would eventually fail an otherwise healthy run at the
+                      // global queue-delivery ceiling, so report and consume.
+                      runLogger.error(
+                        'Unsupported producer-committed hook wake was consumed',
                         {
-                          status: 503,
-                          code: 'hook-resume-wake-version-unsupported',
+                          hookId: hookResume.hookId,
+                          resumeId: hookResume.resumeId,
+                          strategy: hookResume.strategy,
+                          version: hookResume.version,
                         }
                       );
+                      return;
                     }
 
                     const matchesResume = (event: Event): boolean =>
                       event.eventType === 'hook_received' &&
                       event.resumeId === hookResume.resumeId;
+                    const isPermanentlyRefused = (events: Event[]): boolean =>
+                      findRecordedTerminalRunEvent(events, runId) !==
+                        undefined ||
+                      events.some(
+                        (event) =>
+                          event.eventType === 'hook_disposed' &&
+                          event.correlationId === hookResume.hookId
+                      );
                     let barrierEvents =
                       eventLog.type === 'loadAll' ? undefined : eventLog.events;
 
-                    if (!barrierEvents?.some(matchesResume)) {
-                      const loaded = await loadWorkflowRunEvents(runId);
-                      eventLog = { ...loaded, type: 'ready' };
-                      barrierEvents = loaded.events;
+                    if (
+                      barrierEvents &&
+                      !barrierEvents.some(matchesResume) &&
+                      isPermanentlyRefused(barrierEvents)
+                    ) {
+                      runLogger.warn(
+                        'Producer-committed hook wake was permanently refused',
+                        {
+                          hookId: hookResume.hookId,
+                          resumeId: hookResume.resumeId,
+                        }
+                      );
+                      return;
                     }
 
-                    if (!barrierEvents.some(matchesResume)) {
-                      const permanentlyRefused =
-                        hasRecordedTerminalRunEvent(barrierEvents, runId) ||
-                        barrierEvents.some(
-                          (event) =>
-                            event.eventType === 'hook_disposed' &&
-                            event.correlationId === hookResume.hookId
+                    if (!barrierEvents?.some(matchesResume)) {
+                      for (const delayMs of HOOK_RESUME_BARRIER_PROBE_DELAYS_MS) {
+                        if (delayMs > 0) {
+                          await new Promise((resolve) =>
+                            setTimeout(resolve, delayMs)
+                          );
+                        }
+
+                        const loaded = await loadWorkflowRunEvents(
+                          runId,
+                          eventLog.type === 'loadAll'
+                            ? undefined
+                            : (eventLog.cursor ?? undefined)
                         );
-                      if (permanentlyRefused) {
-                        runtimeLogger.warn(
-                          'Producer-committed hook wake was permanently refused',
+                        if (eventLog.type === 'loadAll') {
+                          eventLog = { ...loaded, type: 'ready' };
+                        } else {
+                          appendEventLog(eventLog, loaded);
+                          eventLog = { ...eventLog, type: 'ready' };
+                        }
+                        barrierEvents = eventLog.events;
+
+                        if (barrierEvents.some(matchesResume)) break;
+                        if (isPermanentlyRefused(barrierEvents)) {
+                          runLogger.warn(
+                            'Producer-committed hook wake was permanently refused',
+                            {
+                              hookId: hookResume.hookId,
+                              resumeId: hookResume.resumeId,
+                            }
+                          );
+                          return;
+                        }
+                      }
+                    }
+
+                    if (!barrierEvents?.some(matchesResume)) {
+                      if (
+                        metadata.attempt >= HOOK_RESUME_PENDING_MAX_DELIVERIES
+                      ) {
+                        // The publish succeeded but no matching event became
+                        // visible after bounded local probes and queue
+                        // redeliveries. Treat this as an orphan wake. Acking is
+                        // safer than letting the global delivery ceiling fail
+                        // the run; the producer has already received an
+                        // ambiguous failure and may retry with a fresh resume.
+                        runLogger.error(
+                          'Orphan producer-committed hook wake was consumed',
                           {
-                            workflowRunId: runId,
                             hookId: hookResume.hookId,
                             resumeId: hookResume.resumeId,
+                            deliveryAttempt: metadata.attempt,
                           }
                         );
                         return;
                       }
-
                       throw new WorkflowWorldError(
                         `Hook resume ${hookResume.resumeId} is not committed yet`,
                         {

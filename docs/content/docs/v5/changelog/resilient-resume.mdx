@@ -6,11 +6,12 @@ description: resumeHook() now tolerates transient event storage failures when th
 # Resilient `resumeHook()`
 
 <Callout type="info">
-  Superseded by [lazy hook resume](/docs/changelog/lazy-hook-resume):
-  `resumeHook()` no longer writes the `hook_received` event at all on the fast
-  path, so the two-writer design and the `resilientResume` flag described below
-  are historical. The `(runId, resumeId)` constraint and the queue-carried
-  payload remain.
+  Superseded by [durable hook resume](/docs/changelog/lazy-hook-resume): the
+  producer now always writes `hook_received` and resolves only after both that
+  durable write and the workflow wake succeed. Compatible consumers receive a
+  payload-less wake carrying the expected `resumeId`; older consumers use
+  write-then-publish. The queue-carried payload and `resilientResume` behavior
+  described below are historical.
 </Callout>
 
 ## Motivation

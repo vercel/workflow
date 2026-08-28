@@ -497,13 +497,17 @@ export interface WorldCapabilities {
    * the backend half of `resumeHook()`'s durable parallel path: producer
    * retries with the same `resumeId` must converge on exactly one event.
    * Legacy `hookInput` redeliveries use the same constraint.
+   * `events.list()` must also round-trip that committed event's `resumeId` as
+   * a top-level event field. The consumer barrier uses that readback to prove
+   * the producer write is visible before replaying a payload-less wake.
    *
    * The core runtime fails closed on this: the parallel path is taken ONLY when
    * the World declares `hookResumeDedup === true` AND the target run's
    * deployment supports the producer-committed wake barrier (see the
    * execution-context marker `hookResumeInputVersion`). A World that accepts a `resumeId` but
    * does not enforce the `(runId, resumeId)` constraint must leave this unset
-   * so the runtime keeps the sequential single-writer path.
+   * — as must a World that does not return `resumeId` from `events.list()` — so
+   * the runtime keeps the sequential single-writer path.
    *
    * Enabled statically for `world-local` (filesystem sidecar claim keyed on
    * `(runId, resumeId)`; the adapter and its backend ship together, so a static

@@ -1,7 +1,9 @@
 import {
+  EntityConflictError,
   HookNotFoundError,
   RunExpiredError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import {
   HOOK_RESUME_DEDUP_VERSION,
@@ -11,13 +13,17 @@ import {
   type World,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resumeHook, resumeHookDurable, resumeWebhook } from './resume-hook.js';
+import { resumeHook, resumeWebhook } from './resume-hook.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
+const telemetrySpan = vi.hoisted(() => ({
+  setAttributes: vi.fn(),
+  addLink: vi.fn(),
+}));
 vi.mock('../telemetry.js', () => ({
   linkToTraceCarrier: vi.fn(),
-  trace: vi.fn((_name, fn) => fn(undefined)),
+  trace: vi.fn((_name, fn) => fn(telemetrySpan)),
 }));
 
 const PAYLOAD_BYTES = new Uint8Array([1, 2, 3, 4]);
@@ -30,7 +36,13 @@ vi.mock('../serialization.js', async (importActual) => {
         value: unknown,
         _runId: string,
         _key: unknown,
-        ops: Promise<unknown>[] = []
+        ops: Promise<unknown>[] = [],
+        _global?: unknown,
+        _v1Compat?: boolean,
+        _framedByteStreams?: boolean,
+        _compression?: boolean,
+        _runReadyBarrier?: Promise<unknown>,
+        readbackOps: Promise<unknown>[] = ops
       ) => {
         if (
           typeof value === 'object' &&
@@ -41,6 +53,22 @@ vi.mock('../serialization.js', async (importActual) => {
             Promise.reject(
               (value as { payloadOpRejection: unknown }).payloadOpRejection
             )
+          );
+        }
+        if (
+          typeof value === 'object' &&
+          value !== null &&
+          'payloadOp' in value
+        ) {
+          ops.push((value as { payloadOp: Promise<unknown> }).payloadOp);
+        }
+        if (
+          typeof value === 'object' &&
+          value !== null &&
+          'payloadReadbackOp' in value
+        ) {
+          readbackOps.push(
+            (value as { payloadReadbackOp: Promise<unknown> }).payloadReadbackOp
           );
         }
         return PAYLOAD_BYTES;
@@ -54,6 +82,7 @@ describe('resumeHook durable resume', () => {
   afterEach(() => {
     setWorld(undefined);
     delete process.env.WORKFLOW_DISABLE_LAZY_HOOK_RESUME;
+    vi.clearAllMocks();
   });
 
   const baseHook = {
@@ -131,6 +160,29 @@ describe('resumeHook durable resume', () => {
       version: 1,
     });
     expect(wake.hookResumeTiming.strategy).toBe('parallel');
+
+    const attributes = Object.assign(
+      {},
+      ...telemetrySpan.setAttributes.mock.calls.map(([value]) => value)
+    );
+    expect(attributes['workflow.hook.resume_strategy']).toBe('parallel');
+    expect(attributes['workflow.hook.resume_fallback_reason']).toBeUndefined();
+  });
+
+  it('opens the resumeHook timing window at public entry', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const { queue } = makeWorld(hook);
+    const before = Date.now();
+
+    await resumeHook(hook.token, { foo: 'bar' });
+
+    const after = Date.now();
+    const timing = queue.mock.calls[0][1].hookResumeTiming;
+    expect(timing.resumeRequestedAtMs).toBeGreaterThanOrEqual(before);
+    expect(timing.queuePublishRequestedAtMs).toBeGreaterThanOrEqual(
+      timing.resumeRequestedAtMs
+    );
+    expect(timing.queuePublishRequestedAtMs).toBeLessThanOrEqual(after);
   });
 
   it('starts the durable write and wake in parallel, but awaits both', async () => {
@@ -200,6 +252,35 @@ describe('resumeHook durable resume', () => {
     expect(queue).not.toHaveBeenCalled();
   });
 
+  it('awaits producer uploads before writing or waking', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const upload = Promise.withResolvers<void>();
+    const { createEvent, queue } = makeWorld(hook);
+
+    const resume = resumeHook(hook.token, { payloadOp: upload.promise });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
+
+    upload.resolve();
+    await resume;
+    expect(createEvent).toHaveBeenCalledTimes(1);
+    expect(queue).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not await workflow readback pipes before writing and waking', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const readback = new Promise<void>(() => {});
+    const { createEvent, queue } = makeWorld(hook);
+
+    await expect(
+      resumeHook(hook.token, { payloadReadbackOp: readback })
+    ).resolves.toBeDefined();
+    expect(createEvent).toHaveBeenCalledTimes(1);
+    expect(queue).toHaveBeenCalledTimes(1);
+  });
+
   it('does not report success when the durable write rejects a disposed or ended hook', async () => {
     const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
     const createEvent = vi
@@ -215,12 +296,43 @@ describe('resumeHook durable resume', () => {
     expect(queue).toHaveBeenCalledTimes(1);
   });
 
+  it('stops wake retries once the parallel write proves the hook is gone', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const createEvent = vi
+      .fn()
+      .mockRejectedValue(new RunExpiredError('run has expired'));
+    const queue = vi.fn().mockRejectedValue(
+      new WorkflowWorldError('queue unavailable', {
+        status: 503,
+      })
+    );
+    makeWorld(hook, { createEvent, queue });
+
+    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toSatisfy(
+      (error: unknown) => HookNotFoundError.is(error)
+    );
+    expect(queue).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves an ambiguous EntityConflictError on the parallel path', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const conflict = new EntityConflictError('resume claim is in flight');
+    const createEvent = vi.fn().mockRejectedValue(conflict);
+    const { queue } = makeWorld(hook, { createEvent });
+
+    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toBe(conflict);
+    expect(queue).toHaveBeenCalledTimes(1);
+  });
+
   it('retries the wake and resolves only after it is accepted', async () => {
     const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const transient = new WorkflowWorldError('queue unavailable', {
+      status: 503,
+    });
     const queue = vi
       .fn()
-      .mockRejectedValueOnce(new Error('first failure'))
-      .mockRejectedValueOnce(new Error('second failure'))
+      .mockRejectedValueOnce(transient)
+      .mockRejectedValueOnce(transient)
       .mockResolvedValueOnce(undefined);
     const { createEvent } = makeWorld(hook, { queue });
 
@@ -239,7 +351,7 @@ describe('resumeHook durable resume', () => {
       queueError
     );
     expect(createEvent).toHaveBeenCalledTimes(1);
-    expect(queue).toHaveBeenCalledTimes(3);
+    expect(queue).toHaveBeenCalledTimes(1);
   });
 
   it('does not report HookNotFound when only the wake failed', async () => {
@@ -254,7 +366,7 @@ describe('resumeHook durable resume', () => {
     expect(error).toBeInstanceOf(WorkflowRuntimeError);
     expect(HookNotFoundError.is(error)).toBe(false);
     expect(createEvent).toHaveBeenCalledTimes(1);
-    expect(queue).toHaveBeenCalledTimes(3);
+    expect(queue).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -283,6 +395,34 @@ describe('resumeHook durable resume', () => {
     const [, wake] = queue.mock.calls[0];
     expect(wake.hookResume).toBeUndefined();
     expect(wake.hookResumeTiming.strategy).toBe('sequential');
+
+    const attributes = Object.assign(
+      {},
+      ...telemetrySpan.setAttributes.mock.calls.map(([value]) => value)
+    );
+    expect(attributes['workflow.hook.resume_strategy']).toBe('sequential');
+    expect(attributes['workflow.hook.resume_fallback_reason']).toBe(
+      dedup ? 'consumer_unsupported' : 'backend_unsupported'
+    );
+  });
+
+  it('maps EntityConflictError to HookNotFoundError on the sequential path', async () => {
+    const hook = {
+      ...baseHook,
+      resumeContext: {
+        ...currentContext,
+        hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION - 1,
+      },
+    } satisfies Hook;
+    const createEvent = vi
+      .fn()
+      .mockRejectedValue(new EntityConflictError('hook is no longer writable'));
+    const { queue } = makeWorld(hook, { createEvent });
+
+    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toSatisfy(
+      (error: unknown) => HookNotFoundError.is(error)
+    );
+    expect(queue).not.toHaveBeenCalled();
   });
 
   it('uses write-then-publish when the kill switch is enabled', async () => {
@@ -296,6 +436,20 @@ describe('resumeHook durable resume', () => {
     await resumeHook(hook.token, { foo: 'bar' });
 
     expect(order).toEqual(['write', 'wake']);
+  });
+
+  it.each([
+    'true',
+    '01',
+    'yes',
+  ])('does not enable the kill switch for %s', async (value) => {
+    process.env.WORKFLOW_DISABLE_LAZY_HOOK_RESUME = value;
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const { queue } = makeWorld(hook);
+
+    await resumeHook(hook.token, { foo: 'bar' });
+
+    expect(queue.mock.calls[0][1].hookResume).toBeDefined();
   });
 
   it('only trusts dynamic backend capability from the current token lookup', async () => {
@@ -316,16 +470,6 @@ describe('resumeHook durable resume', () => {
     expect(second.queue.mock.calls[0][1].hookResume).toBeUndefined();
   });
 
-  it('keeps resumeHookDurable as a compatibility alias', async () => {
-    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
-    const { createEvent, queue } = makeWorld(hook);
-
-    await resumeHookDurable(hook.token, { aborted: true });
-
-    expect(createEvent).toHaveBeenCalledTimes(1);
-    expect(queue).toHaveBeenCalledTimes(1);
-  });
-
   it('uses the same durable path for webhooks', async () => {
     const hook = {
       ...baseHook,
@@ -342,5 +486,40 @@ describe('resumeHook durable resume', () => {
     expect(response.status).toBe(202);
     expect(createEvent).toHaveBeenCalledTimes(1);
     expect(queue.mock.calls[0][1].hookResume).toBeDefined();
+  });
+
+  it('opens the resumeWebhook timing window before its hook lookup', async () => {
+    let clock = 1_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      const hook = {
+        ...baseHook,
+        isWebhook: true,
+        resumeContext: currentContext,
+        resumeCapabilities: {
+          hookResumeDedupVersion: HOOK_RESUME_DEDUP_VERSION,
+        },
+      } satisfies Hook;
+      const { queue } = makeWorld(
+        hook,
+        {
+          getByToken: vi.fn(async () => {
+            clock += 500;
+            return hook;
+          }),
+        },
+        {}
+      );
+
+      await resumeWebhook(hook.token, new Request('http://x'));
+
+      const timing = queue.mock.calls[0][1].hookResumeTiming;
+      expect(timing.resumeRequestedAtMs).toBe(1_000);
+      expect(
+        timing.queuePublishRequestedAtMs - timing.resumeRequestedAtMs
+      ).toBeGreaterThanOrEqual(500);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 });

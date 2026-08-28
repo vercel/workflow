@@ -233,8 +233,7 @@ export function getMaxInlineSteps(): number {
  * messages on its fast inline path instead of paying an S3 store+fetch
  * double-hop for bytes that already live in the event log. Above this size
  * the dispatch falls back to the sequential path (`step_created` write, then
- * a payload-less queue message). Matches `MAX_INLINE_RESUME_PAYLOAD_BYTES`
- * on the resilient hook resume path.
+ * a payload-less queue message).
  */
 export const MAX_RESILIENT_STEP_INPUT_BYTES = 128 * 1024;
 
@@ -244,7 +243,7 @@ export const MAX_RESILIENT_STEP_INPUT_BYTES = 128 * 1024;
  * step-execution queue publish, carrying the serialized step input in the
  * queue message (`stepInput`) so the consumer can idempotently re-ensure the
  * event if the direct write failed transiently. Mirrors the resilient start
- * (`runInput`) and resilient hook resume (`hookInput`) patterns.
+ * (`runInput`) pattern; durable hook resume now sends a payload-less wake.
  *
  * **Off by default.** Enable via `WORKFLOW_RESILIENT_STEP_DISPATCH=1`.
  *

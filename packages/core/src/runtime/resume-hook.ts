@@ -20,7 +20,9 @@ import {
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { getRunCapabilities } from '../capabilities.js';
+import { isRetryableWorldError } from '../classify-error.js';
 import { importKey } from '../encryption.js';
+import { runtimeLogger } from '../logger.js';
 import { decodeRunPublicKey } from '../sealed-box.js';
 import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import {
@@ -35,7 +37,7 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { linkToTraceCarrier, trace } from '../telemetry.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
-import { waitedUntil } from './wait-until.js';
+import { safeWaitUntil, waitedUntil } from './wait-until.js';
 
 /** Monotonic ULID factory for per-call resume idempotency keys. */
 const generateResumeId = monotonicFactory();
@@ -57,8 +59,12 @@ async function computeResumePayloadDigest(bytes: Uint8Array): Promise<string> {
 
 const HOOK_WAKE_RETRY_DELAYS_MS = [25, 100] as const;
 
+// A publish may succeed even when its response is lost. Retrying can therefore
+// enqueue duplicate wakes, all carrying the same resumeId; the consumer barrier
+// and deterministic replay make those duplicates idempotent.
 async function publishHookWakeWithRetry(
-  publish: () => Promise<unknown>
+  publish: () => Promise<unknown>,
+  shouldRetry: () => boolean = () => true
 ): Promise<void> {
   let lastError: unknown;
   for (
@@ -71,9 +77,13 @@ async function publishHookWakeWithRetry(
       return;
     } catch (error) {
       lastError = error;
+      if (!isRetryableWorldError(error) || !shouldRetry()) {
+        break;
+      }
       const delayMs = HOOK_WAKE_RETRY_DELAYS_MS[attempt];
       if (delayMs !== undefined) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (!shouldRetry()) break;
       }
     }
   }
@@ -282,18 +292,6 @@ export async function resumeHook<T = any>(
 }
 
 /**
- * @deprecated Use {@link resumeHook}. It now has the same durable-before-resolve
- * guarantee. Kept for one release because this internal subpath is importable.
- */
-export async function resumeHookDurable<T = any>(
-  tokenOrHook: string | Hook,
-  payload: T,
-  encryptionKeyOverride?: PayloadKey
-): Promise<ResumedHook> {
-  return resumeHook(tokenOrHook, payload, encryptionKeyOverride);
-}
-
-/**
  * Internal implementation of {@link resumeHook}. NOT exported: the
  * `hookFreshlyLookedUp` attestation must never be reachable by public callers
  * (see the wrapper above).
@@ -414,6 +412,7 @@ async function resumeHookImpl<T = any>(
 
         // Dehydrate the payload for storage
         const ops: Promise<any>[] = [];
+        const readbackOps: Promise<any>[] = [];
         const v1Compat = isLegacySpecVersion(hook.specVersion);
         const dehydratedPayload = await dehydrateStepReturnValue(
           payload,
@@ -423,7 +422,9 @@ async function resumeHookImpl<T = any>(
           globalThis,
           v1Compat,
           capabilities.framedByteStreams,
-          compression
+          compression,
+          undefined,
+          readbackOps
         );
         // A hook_received event is not durable while its payload still points
         // at stream uploads in flight. Finish them before committing the event.
@@ -437,6 +438,17 @@ async function resumeHookImpl<T = any>(
             })
           )
         );
+        // Readback pipes (notably a manual webhook response writable) can only
+        // finish after the workflow wakes and writes to them. Keep them alive,
+        // but never place them in the durability barrier above.
+        safeWaitUntil(Promise.all(readbackOps), (err) => {
+          if (err === undefined) return;
+          runtimeLogger.warn('Background readback of hook payload failed', {
+            workflowRunId: hook.runId,
+            hookId: hook.hookId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
 
         span?.setAttributes({
           ...Attribute.WorkflowName(resumeContext.workflowName),
@@ -509,11 +521,9 @@ async function resumeHookImpl<T = any>(
           span?.setAttributes({ 'workflow.hook.resume_id': resumeId });
         }
 
-        const isHookGoneError = (err: unknown): boolean =>
-          HookNotFoundError.is(err) ||
-          EntityConflictError.is(err) ||
-          RunExpiredError.is(err);
-        const writeHookReceived = async (): Promise<void> => {
+        const writeHookReceived = async (
+          mapConflictToHookNotFound: boolean
+        ): Promise<void> => {
           try {
             await world.events.create(
               hook.runId,
@@ -534,7 +544,11 @@ async function resumeHookImpl<T = any>(
               }
             );
           } catch (err) {
-            if (isHookGoneError(err)) {
+            if (
+              HookNotFoundError.is(err) ||
+              RunExpiredError.is(err) ||
+              (mapConflictToHookNotFound && EntityConflictError.is(err))
+            ) {
               throw new HookNotFoundError(hook.token);
             }
             throw err;
@@ -568,14 +582,22 @@ async function resumeHookImpl<T = any>(
 
         if (useParallelResume) {
           const queuePublishRequestedAtMs = Date.now();
+          let writeKnownGone = false;
+          const write = writeHookReceived(false).catch((error) => {
+            if (HookNotFoundError.is(error)) writeKnownGone = true;
+            throw error;
+          });
           const [writeResult, wakeResult] = await Promise.allSettled([
-            writeHookReceived(),
-            publishHookWakeWithRetry(publishWake(queuePublishRequestedAtMs)),
+            write,
+            publishHookWakeWithRetry(
+              publishWake(queuePublishRequestedAtMs),
+              () => !writeKnownGone
+            ),
           ]);
           if (writeResult.status === 'rejected') throw writeResult.reason;
           if (wakeResult.status === 'rejected') throw wakeResult.reason;
         } else {
-          await writeHookReceived();
+          await writeHookReceived(true);
           const queuePublishRequestedAtMs = Date.now();
           await publishHookWakeWithRetry(
             publishWake(queuePublishRequestedAtMs)
