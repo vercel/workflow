@@ -2,6 +2,7 @@
  * Utils used by the bundler when transforming code
  */
 
+import { WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { WorldCapabilities } from '@workflow/world';
 import type { EventsConsumer } from './events-consumer.js';
@@ -233,8 +234,8 @@ export type DeliveryKind = 'hook' | 'wait' | 'step';
 
 interface DeliveryBarrierEntry {
   kind: DeliveryKind;
-  /** Resolves once this delivery has resolved to the workflow. */
-  delivered: Promise<void>;
+  /** Resolves once this delivery is handed to the workflow or retired. */
+  released: Promise<void>;
   /**
    * Whether this delivery is committed to reaching the workflow without any
    * further action by workflow code. True for wait completions and step
@@ -247,11 +248,15 @@ interface DeliveryBarrierEntry {
    * once a consumer takes the payload.
    */
   armed: boolean;
+  /** Whether this entry has been removed and its `released` promise settled. */
+  retired: boolean;
   /**
-   * Retire this entry: resolve `delivered` and remove it from the registry,
-   * exactly as `markDelivered` would. Called only by the context's safety-net
-   * dispenser ({@link ensureBarrierSafetyNet}), and only on the lowest-index
-   * entry at delivery idle. Idempotent.
+   * Retire this entry: resolve `released` and remove it from the registry,
+   * without marking the handle delivered to the workflow. A safety-retired
+   * buffered payload may therefore install a fresh entry if it is claimed by
+   * a retained VM later. Called only by the context's safety-net dispenser
+   * ({@link ensureBarrierSafetyNet}), and only on the lowest-index entry at
+   * delivery idle. Idempotent.
    */
   retire: () => void;
 }
@@ -573,7 +578,7 @@ export async function awaitEarlierDeliveries(
     if (!gatesOn(kind, eventIndex, index, entry)) {
       continue;
     }
-    earlier.push(entry.delivered);
+    earlier.push(entry.released);
   }
   if (earlier.length > 0) {
     await Promise.all(earlier);
@@ -612,7 +617,7 @@ export async function awaitEarlierDeliveries(
 export interface DeliveryBarrier {
   /**
    * Mark this delivery as delivered to the workflow. Resolves its
-   * `delivered` promise so any later-in-log delivery gated on it (via
+   * `released` promise so any later-in-log delivery gated on it (via
    * {@link awaitEarlierDeliveries}) may proceed, and removes it from the
    * registry. Idempotent.
    */
@@ -659,17 +664,22 @@ export function registerDeliveryBarrier(
   }
 
   const install = (armed: boolean): DeliveryBarrierEntry => {
-    let retired = false;
+    if (barriers.has(eventIndex)) {
+      throw new WorkflowRuntimeError(
+        `Delivery barrier already registered at event index ${eventIndex}`
+      );
+    }
     const { promise, resolve } = withResolvers<void>();
     const entry: DeliveryBarrierEntry = {
       kind,
-      delivered: promise,
+      released: promise,
       armed,
+      retired: false,
       retire: () => {
-        if (retired) {
+        if (entry.retired) {
           return;
         }
-        retired = true;
+        entry.retired = true;
         if (barriers.get(eventIndex) === entry) {
           barriers.delete(eventIndex);
         }
@@ -691,27 +701,32 @@ export function registerDeliveryBarrier(
   };
 
   let entry = install(options.armed ?? true);
-  let delivered = false;
+  let deliveredToWorkflow = false;
 
   return {
     markDelivered: () => {
-      if (delivered) {
+      if (deliveredToWorkflow) {
         return;
       }
-      delivered = true;
+      deliveredToWorkflow = true;
       entry.retire();
     },
     arm: () => {
-      if (delivered) {
+      if (deliveredToWorkflow) {
         return;
       }
       // The idle safety net may retire an unclaimed buffered hook payload
       // while a retained VM keeps its `claim()` closure alive. If workflow
       // code later claims that payload, replace the settled entry so delivery
       // remains non-idle until the claim reaches the workflow.
-      if (barriers.get(eventIndex) !== entry) {
+      if (entry.retired) {
         entry = install(true);
         return;
+      }
+      if (barriers.get(eventIndex) !== entry) {
+        throw new WorkflowRuntimeError(
+          `Delivery barrier lost ownership of event index ${eventIndex}`
+        );
       }
       entry.armed = true;
     },
