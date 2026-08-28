@@ -658,41 +658,61 @@ export function registerDeliveryBarrier(
     return { markDelivered: () => {}, arm: () => {} };
   }
 
-  let done = false;
-  const { promise, resolve } = withResolvers<void>();
+  const install = (armed: boolean): DeliveryBarrierEntry => {
+    let retired = false;
+    const { promise, resolve } = withResolvers<void>();
+    const entry: DeliveryBarrierEntry = {
+      kind,
+      delivered: promise,
+      armed,
+      retire: () => {
+        if (retired) {
+          return;
+        }
+        retired = true;
+        if (barriers.get(eventIndex) === entry) {
+          barriers.delete(eventIndex);
+        }
+        resolve();
+      },
+    };
+    barriers.set(eventIndex, entry);
 
-  const finish = () => {
-    if (done) {
-      return;
-    }
-    done = true;
-    if (barriers.get(eventIndex) === entry) {
-      barriers.delete(eventIndex);
-    }
-    resolve();
+    // Safety net: if this delivery is never delivered to the workflow (its
+    // branch was not taken / the run is suspending, or a buffered hook payload
+    // is only claimed after a later delivery the workflow is still waiting
+    // on), it is retired at idle so a later delivery gated on it cannot
+    // deadlock and the registry cannot leak an entry per abandoned delivery.
+    // Retirement goes through the context's single ordered dispenser rather
+    // than a per-barrier idle poll. See {@link ensureBarrierSafetyNet} for why
+    // the ORDER of these retirements is load-bearing.
+    ensureBarrierSafetyNet(ctx);
+    return entry;
   };
 
-  const entry: DeliveryBarrierEntry = {
-    kind,
-    delivered: promise,
-    armed: options.armed ?? true,
-    retire: finish,
-  };
-  barriers.set(eventIndex, entry);
-
-  // Safety net: if this delivery is never delivered to the workflow (its
-  // branch was not taken / the run is suspending, or a buffered hook payload
-  // is only claimed after a later delivery the workflow is still waiting on),
-  // it is retired at idle so a later delivery gated on it cannot deadlock and
-  // the registry cannot leak an entry per abandoned delivery. Retirement goes
-  // through the context's single ordered dispenser rather than a per-barrier
-  // idle poll. See {@link ensureBarrierSafetyNet} for why the ORDER of these
-  // retirements is load-bearing.
-  ensureBarrierSafetyNet(ctx);
+  let entry = install(options.armed ?? true);
+  let delivered = false;
 
   return {
-    markDelivered: finish,
+    markDelivered: () => {
+      if (delivered) {
+        return;
+      }
+      delivered = true;
+      entry.retire();
+    },
     arm: () => {
+      if (delivered) {
+        return;
+      }
+      // The idle safety net may retire an unclaimed buffered hook payload
+      // while a retained VM keeps its `claim()` closure alive. If workflow
+      // code later claims that payload, replace the settled entry so delivery
+      // remains non-idle until the claim reaches the workflow.
+      if (barriers.get(eventIndex) !== entry) {
+        entry = install(true);
+        return;
+      }
       entry.armed = true;
     },
   };
