@@ -457,6 +457,12 @@ export async function getNextBuilderEager(
 
     protected async getInputFiles(): Promise<string[]> {
       const inputFiles = await super.getInputFiles();
+      const appDirectory = relative(
+        this.config.workingDir,
+        await this.findAppDirectory()
+      ).replaceAll('\\', '/');
+      assert(appDirectory === 'app' || appDirectory === 'src/app');
+      const sourceDirectory = appDirectory === 'app' ? '.' : 'src';
       const isNextEntrypoint = createNextEntrypointMatcher(
         this.config.pageExtensions
       );
@@ -482,6 +488,9 @@ export async function getNextBuilderEager(
         const rootModule = entry.startsWith('src/') ? entry.slice(4) : entry;
         if (rootModuleEntrypoint.test(rootModule)) {
           return rootModuleFiles.has(file);
+        }
+        if (entry.startsWith('src/') !== (sourceDirectory === 'src')) {
+          return false;
         }
         return isNextEntrypoint(entry);
       });
