@@ -76,6 +76,17 @@ const DISTRIBUTED_CLOCK_TOLERANCE_MS = 1_000;
 // enough to flake without being any better at catching the regression.
 const RACE_WINNER_MAX_DURATION_MS = 8_000;
 const EVENT_POLL_PAGE_SIZE = 100;
+/**
+ * What a purged payload looks like in `workflow inspect --json`.
+ *
+ * The server replaces expired payloads with a devalue stub that hydrates to
+ * `{ expiredAt: "<ISO>" }`; the CLI recognizes it with core's `isExpiredStub`
+ * and swaps in its `ExpiredDataRef` placeholder, whose `toJSON()` is this
+ * string. Asserting on it therefore exercises the same matcher the CLI and
+ * the web UI use, one layer up — the World returns payloads as raw devalue
+ * bytes, so there is nothing to run the predicate against down there.
+ */
+const EXPIRED_DATA_JSON = '<data expired>';
 
 function expectElapsedAtLeast(
   actualMs: number,
@@ -4751,6 +4762,92 @@ describe.concurrent('e2e', () => {
         await expect(
           start(workflow, [1], { attributes: { note: 'v'.repeat(257) } })
         ).rejects.toThrow(/exceeds limit 256/);
+      }
+    );
+  });
+
+  // ==========================================================================
+  // retention
+  // ==========================================================================
+
+  /**
+   * Vercel World only.
+   *
+   * `start({ retention: 0 })` seeds `$retention: '0'`, which the Vercel World
+   * reads at terminal cleanup and honors by deleting the run's user payloads.
+   * The unit tests in `start-retention.test.ts` cover the SDK's half — that
+   * the attribute is encoded and sent. This covers the half only a real
+   * server can answer: that the data is afterwards actually gone.
+   *
+   * The local and Postgres Worlds have no terminal-cleanup pass, so the
+   * attribute is inert there and nothing would ever expire. Gated on
+   * `WORKFLOW_VERCEL_ENV` — the same marker `setupWorld` uses to choose the
+   * Vercel world — rather than on `!isLocalDeployment()`, which is also true
+   * for the Postgres lane.
+   */
+  describe.skipIf(!process.env.WORKFLOW_VERCEL_ENV)('retention', () => {
+    test(
+      'retention: 0 purges the run payloads once the run finishes',
+      { timeout: 240_000 },
+      async () => {
+        const run = await start(await e2e('addTenWorkflow'), [123], {
+          retention: 0,
+        });
+
+        expect(await run.returnValue).toBe(133);
+
+        // Read the payloads back *before* asserting the purge, and assert
+        // them. Two reasons: it proves the run really carried this data
+        // rather than never having written any, and it is the only chance to
+        // capture it — once the purge lands, the harness's failure
+        // diagnostics replay the run and find nothing but stubs.
+        const { json: beforePurge } = await cliInspectJson(
+          `runs ${run.runId} --withData`
+        );
+        expect(beforePurge).toMatchObject({
+          runId: run.runId,
+          status: 'completed',
+          input: [123],
+          output: 133,
+        });
+
+        // The purge is fire-and-forget from the server's terminal-cleanup
+        // path, so it lands some time *after* the run reports completion.
+        // Poll for it rather than sleeping on a guessed delay.
+        const afterPurge = await cliInspectJsonUntil(
+          `runs ${run.runId} --withData`,
+          (json) => json?.output === EXPIRED_DATA_JSON,
+          { timeoutMs: 180_000, intervalMs: 5_000 }
+        );
+        expect(afterPurge).toMatchObject({
+          runId: run.runId,
+          input: EXPIRED_DATA_JSON,
+          output: EXPIRED_DATA_JSON,
+          // Only user data goes. The run itself survives on the plan's
+          // default TTL so it stays listable in observability.
+          status: 'completed',
+        });
+
+        // Step payloads go with it, not just the run's own input/output.
+        const steps = await cliInspectJsonUntil(
+          `steps --runId ${run.runId} --withData`,
+          (json) =>
+            Array.isArray(json) &&
+            json.length > 0 &&
+            json.every((step: any) => step.output === EXPIRED_DATA_JSON),
+          { timeoutMs: 60_000, intervalMs: 5_000 }
+        );
+        expect(steps.length).toBeGreaterThan(0);
+        for (const step of steps) {
+          expect(step.output).toBe(EXPIRED_DATA_JSON);
+        }
+
+        // And the run carries the marker the CLI and web UI gate their
+        // "<data expired>" rendering on: an `expiredAt` in the past.
+        const world = await getWorld();
+        const persisted = await world.runs.get(run.runId);
+        expect(persisted.expiredAt).toBeInstanceOf(Date);
+        expect(persisted.expiredAt?.getTime()).toBeLessThanOrEqual(Date.now());
       }
     );
   });
