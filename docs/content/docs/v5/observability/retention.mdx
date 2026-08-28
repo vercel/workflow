@@ -96,8 +96,8 @@ All three first-party Worlds implement it:
 | World | Behavior at `experimental_retention: 0` |
 | --- | --- |
 | [Vercel](/worlds/vercel) | Deletes payload blobs and stream contents, and scrubs payloads stored inline. Run, step and event metadata is kept for your plan's default period. |
-| Local | Deletes the payloads held in the run's on-disk records. |
-| Postgres | Clears the payload columns on the run's rows. |
+| Local | Drops the payloads from the run's on-disk records and empties its streams. |
+| Postgres | Clears the payload columns on the run's rows and empties its stream chunks, in one transaction. |
 
 A World that does not implement retention — including a third-party one —
 **keeps the data**. That is the deliberate fallback: a World that does not
