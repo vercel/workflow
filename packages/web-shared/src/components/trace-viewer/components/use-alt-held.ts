@@ -36,11 +36,7 @@ export function useAltHeld(): { altHeld: boolean } {
       if (isAltModifierKey(e.key)) setAltHeld(false);
     };
     const onBlur = (): void => setAltHeld(false);
-    // Only latch true. preventDefault on Alt can make the next pointermove
-    // report altKey false and would clear the no-selection gap overlay.
-    const onPointerMove = (e: PointerEvent): void => {
-      if (e.altKey) setAltHeld(true);
-    };
+    const onPointerMove = (e: PointerEvent): void => setAltHeld(e.altKey);
 
     window.addEventListener('keydown', onKeyDown, true);
     window.addEventListener('keyup', onKeyUp, true);
