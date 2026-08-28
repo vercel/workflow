@@ -49,11 +49,15 @@ import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
 import {
+  isWorkflowBundleFileName,
   serializeWorkflowBundle,
   WORKFLOW_BUNDLE_DIRECTORY,
   workflowBundleFileName,
 } from './workflow-bundle-module.js';
-import { extractWorkflowGraphs } from './workflows-extractor.js';
+import {
+  extractWorkflowGraphs,
+  type WorkflowGraphCache,
+} from './workflows-extractor.js';
 import { hasSameContent, writeFileIfChanged } from './write-if-changed.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
@@ -246,8 +250,7 @@ function createWorkflowBundleLoaders(bundles: WorkflowBundle[]): string {
   const loaders = bundles
     .map(({ fileName }, index) => {
       const modulePath = `./${WORKFLOW_BUNDLE_DIRECTORY}/${fileName}`;
-      return `let workflowBundlePromise${index};
-const loadWorkflowBundle${index} = () => workflowBundlePromise${index} ??= import('${modulePath}').then((module) => Buffer.from(module.default, 'base64').toString('utf8'));`;
+      return `const loadWorkflowBundle${index} = /* @__PURE__ */ createWorkflowBundleLoader(() => import('${modulePath}'));`;
     })
     .join('\n');
   const entries = bundles
@@ -259,7 +262,11 @@ const loadWorkflowBundle${index} = () => workflowBundlePromise${index} ??= impor
     )
     .join('\n');
 
-  return `${loaders}\nconst workflowCode = {\n${entries}\n};`;
+  return `const createWorkflowBundleLoader = (loadModule) => {
+  let promise;
+  return () => (promise ??= loadModule().then((module) => Buffer.from(module.default, 'base64').toString('utf8')));
+};
+${loaders}\nconst workflowCode = {\n${entries}\n};`;
 }
 
 /**
@@ -278,6 +285,7 @@ export abstract class BaseBuilder {
   private warnedExternalPackages = new Set<string>();
   private workflowBuildStartTime: number | undefined;
   private manifestTransformCache = new Map<string, CachedManifestTransform>();
+  private readonly workflowGraphCache: WorkflowGraphCache = new Map();
 
   constructor(config: WorkflowConfig) {
     this.config = config;
@@ -1385,8 +1393,8 @@ export const __steps_registered = true;
 
     const workflowBundleDir = join(dirname(outfile), WORKFLOW_BUNDLE_DIRECTORY);
     const desiredFiles = new Set(bundles.map(({ fileName }) => fileName));
-    const generatedFiles = (await readdir(workflowBundleDir)).filter((file) =>
-      file.endsWith('.mjs')
+    const generatedFiles = (await readdir(workflowBundleDir)).filter(
+      isWorkflowBundleFileName
     );
     await Promise.all(
       generatedFiles
@@ -1408,8 +1416,8 @@ export const __steps_registered = true;
   }): Promise<WorkflowBundleBuild> {
     // Discovery can report the same module through a symlink, package export,
     // or direct path. Build each canonical module only once.
-    const uniqueFiles = (files: string[], excluded = new Set<string>()) => {
-      const identities = new Set(excluded);
+    const uniqueFiles = (files: string[]) => {
+      const identities = new Set<string>();
       return files.filter((file) => {
         const identity = moduleIdentityKey(file, this.moduleSpecifierRoot);
         if (identities.has(identity)) return false;
@@ -2383,7 +2391,14 @@ export const OPTIONS = handler;`;
     this.logCreateManifestInfo('Creating manifest...');
 
     try {
-      const workflowGraphs = await extractWorkflowGraphs(workflowBundlePath);
+      const hasWorkflows = getWorkflowIds(manifest).length > 0;
+      if (!hasWorkflows) this.workflowGraphCache.clear();
+      const workflowGraphs = hasWorkflows
+        ? await extractWorkflowGraphs(
+            workflowBundlePath,
+            this.workflowGraphCache
+          )
+        : {};
 
       const steps = this.convertStepsManifest(manifest.steps);
       const workflows = this.convertWorkflowsManifest(

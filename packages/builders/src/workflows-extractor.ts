@@ -227,6 +227,14 @@ export interface Manifest {
   };
 }
 
+export type WorkflowGraphs = Record<
+  string,
+  Record<string, ManifestWorkflowEntry>
+>;
+
+/** Parsed graphs keyed by their immutable, content-addressed sidecar name. */
+export type WorkflowGraphCache = Map<string, WorkflowGraphs>;
+
 // =============================================================================
 // Extraction Functions
 // =============================================================================
@@ -235,11 +243,10 @@ export interface Manifest {
  * Extracts workflow graphs from a bundled workflow file.
  * Returns workflow entries organized by file path, ready for merging into Manifest.
  */
-export async function extractWorkflowGraphs(bundlePath: string): Promise<{
-  [filePath: string]: {
-    [workflowName: string]: ManifestWorkflowEntry;
-  };
-}> {
+export async function extractWorkflowGraphs(
+  bundlePath: string,
+  cache: WorkflowGraphCache = new Map()
+): Promise<WorkflowGraphs> {
   const lazyBundleDir = join(dirname(bundlePath), WORKFLOW_BUNDLE_DIRECTORY);
   const routeCode = await readFile(bundlePath, 'utf8').catch(
     (error: NodeJS.ErrnoException) => {
@@ -256,11 +263,32 @@ export async function extractWorkflowGraphs(bundlePath: string): Promise<{
     );
   }
 
-  const lazyBundles = await Promise.all(
+  const activeBundleFiles = new Set(lazyBundleFiles);
+  for (const cachedFile of cache.keys()) {
+    if (!activeBundleFiles.has(cachedFile)) cache.delete(cachedFile);
+  }
+
+  const lazyBundleGraphs = await Promise.all(
     lazyBundleFiles.map(async (file) => {
+      const cached = cache.get(file);
+      if (cached) return cached;
+
       try {
         const moduleCode = await readFile(join(lazyBundleDir, file), 'utf8');
-        return { file, code: deserializeWorkflowBundle(moduleCode) };
+        const workflowCode = deserializeWorkflowBundle(moduleCode);
+        const ast = parseSync(workflowCode, {
+          syntax: 'ecmascript',
+          target: 'es2022',
+        });
+        const stepDeclarations = extractStepDeclarations(workflowCode);
+        const graphs = extractWorkflows(
+          ast,
+          stepDeclarations,
+          buildFunctionMap(ast, stepDeclarations),
+          buildVariableMap(ast)
+        );
+        cache.set(file, graphs);
+        return graphs;
       } catch (error) {
         throw new WorkflowBuildError(
           `Failed to extract workflow graph from lazy bundle "${file}"`,
@@ -270,32 +298,10 @@ export async function extractWorkflowGraphs(bundlePath: string): Promise<{
     })
   );
 
-  const graphs: Record<string, Record<string, ManifestWorkflowEntry>> = {};
-  const mergeWorkflowCode = (workflowCode: string) => {
-    const ast = parseSync(workflowCode, {
-      syntax: 'ecmascript',
-      target: 'es2022',
-    });
-    const stepDeclarations = extractStepDeclarations(workflowCode);
-    const bundleGraphs = extractWorkflows(
-      ast,
-      stepDeclarations,
-      buildFunctionMap(ast, stepDeclarations),
-      buildVariableMap(ast)
-    );
+  const graphs: WorkflowGraphs = {};
+  for (const bundleGraphs of lazyBundleGraphs) {
     for (const [filePath, workflows] of Object.entries(bundleGraphs)) {
       graphs[filePath] = { ...graphs[filePath], ...workflows };
-    }
-  };
-
-  for (const { file, code } of lazyBundles) {
-    try {
-      mergeWorkflowCode(code);
-    } catch (error) {
-      throw new WorkflowBuildError(
-        `Failed to extract workflow graph from lazy bundle "${file}"`,
-        { cause: error }
-      );
     }
   }
 

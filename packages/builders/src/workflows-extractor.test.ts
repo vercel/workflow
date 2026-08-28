@@ -6,7 +6,10 @@ import {
   serializeWorkflowBundle,
   workflowBundleFileName,
 } from './workflow-bundle-module.js';
-import { extractWorkflowGraphs } from './workflows-extractor.js';
+import {
+  extractWorkflowGraphs,
+  type WorkflowGraphCache,
+} from './workflows-extractor.js';
 
 describe('extractWorkflowGraphs', () => {
   let tempDir: string | undefined;
@@ -101,6 +104,34 @@ describe('extractWorkflowGraphs', () => {
         }),
       },
     });
+  });
+
+  it('reuses cached graphs for immutable sidecars and prunes inactive hashes', async () => {
+    tempDir = await mkdtemp(join(tmpdir(), 'workflow-builders-'));
+    const bundlePath = join(tempDir, 'workflow-bundle.js');
+    const bundlesDir = join(tempDir, 'workflow-bundles');
+    await mkdir(bundlesDir);
+    const code =
+      'function cachedWorkflow() {}\ncachedWorkflow.workflowId = "workflow//./cached.ts//cachedWorkflow";';
+    const activeBundle = workflowBundleFileName(code);
+    const inactiveBundle = `${'2'.repeat(64)}.mjs`;
+    await writeFile(
+      join(bundlesDir, activeBundle),
+      serializeWorkflowBundle(code)
+    );
+    await writeFile(bundlePath, routeFor([activeBundle]));
+
+    const cache: WorkflowGraphCache = new Map();
+    const activeGraphs = await extractWorkflowGraphs(bundlePath, cache);
+    cache.set(inactiveBundle, {});
+    // A content-addressed filename is immutable. Make the backing file invalid
+    // so this second extraction also proves that the active cache entry is used.
+    await writeFile(join(bundlesDir, activeBundle), 'malformed');
+
+    await expect(extractWorkflowGraphs(bundlePath, cache)).resolves.toEqual(
+      activeGraphs
+    );
+    expect([...cache.keys()]).toEqual([activeBundle]);
   });
 
   it('rejects a route without lazy workflow bundle references', async () => {

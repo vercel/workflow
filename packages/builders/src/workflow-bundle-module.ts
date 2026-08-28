@@ -3,8 +3,14 @@ import { createHash } from 'node:crypto';
 
 export const WORKFLOW_BUNDLE_DIRECTORY = 'workflow-bundles';
 
+const WORKFLOW_BUNDLE_FILE_NAME_PATTERN = /^[a-f0-9]{64}\.mjs$/;
+
 const WORKFLOW_BUNDLE_REFERENCE =
   /import\(\s*['"]\.\/workflow-bundles\/([a-f0-9]{64}\.mjs)['"]\s*\)/g;
+
+export function isWorkflowBundleFileName(fileName: string): boolean {
+  return WORKFLOW_BUNDLE_FILE_NAME_PATTERN.test(fileName);
+}
 
 export function workflowBundleFileName(code: string): string {
   const hash = createHash('sha256').update(code).digest('hex');

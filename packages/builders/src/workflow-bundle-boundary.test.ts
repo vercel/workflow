@@ -12,10 +12,12 @@ import {
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { WorkflowManifest } from './apply-swc-transform.js';
 import { BaseBuilder, type DiscoveredEntries } from './base-builder.js';
 import type { StandaloneConfig } from './types.js';
 import {
   deserializeWorkflowBundle,
+  isWorkflowBundleFileName,
   referencedWorkflowBundleFileNames,
   serializeWorkflowBundle,
 } from './workflow-bundle-module.js';
@@ -49,6 +51,22 @@ class TestBuilder extends BaseBuilder {
       flowOutfile,
       bundleFinalOutput: true,
       discoveredEntries,
+    });
+  }
+
+  createManifestForTest({
+    workflowBundlePath,
+    manifestDir,
+    manifest,
+  }: {
+    workflowBundlePath: string;
+    manifestDir: string;
+    manifest: WorkflowManifest;
+  }) {
+    return this.createManifest({
+      workflowBundlePath,
+      manifestDir,
+      manifest,
     });
   }
 }
@@ -231,8 +249,9 @@ export async function alsoFirst() { "use workflow"; return 2; }`
     writeWorkflowBuiltinsFixture(outputDir);
     mkdirSync(workflowBundleDir);
     writeFileSync(join(workflowBundleDir, 'keep.txt'), 'user-owned');
-    writeFileSync(join(workflowBundleDir, '0.mjs'), 'stale');
-    writeFileSync(join(workflowBundleDir, '0-0123456789abcdef.mjs'), 'stale');
+    writeFileSync(join(workflowBundleDir, 'keep.mjs'), 'user-owned');
+    const staleBundle = `${'0'.repeat(64)}.mjs`;
+    writeFileSync(join(workflowBundleDir, staleBundle), 'stale');
 
     await new TestBuilder(config).createCombinedWorkflowBundle(
       [first, second],
@@ -242,16 +261,21 @@ export async function alsoFirst() { "use workflow"; return 2; }`
     );
 
     const bundleFiles = readdirSync(workflowBundleDir)
-      .filter((file) => file.endsWith('.mjs'))
+      .filter(isWorkflowBundleFileName)
       .sort();
     expect(bundleFiles).toHaveLength(2);
-    expect(bundleFiles.every((file) => /^[a-f0-9]{64}\.mjs$/.test(file))).toBe(
-      true
-    );
     expect(readFileSync(join(workflowBundleDir, 'keep.txt'), 'utf8')).toBe(
       'user-owned'
     );
+    expect(readFileSync(join(workflowBundleDir, 'keep.mjs'), 'utf8')).toBe(
+      'user-owned'
+    );
+    expect(() => readFileSync(join(workflowBundleDir, staleBundle))).toThrow(
+      /ENOENT/
+    );
     const route = readFileSync(config.workflowsBundlePath, 'utf8');
+    expect(route).toContain('createWorkflowBundleLoader');
+    expect(route).not.toContain('workflowBundlePromise');
     expect(route).toContain(`workflow-bundles/${bundleFiles[0]}`);
     expect(route).toContain(`workflow-bundles/${bundleFiles[1]}`);
     expect(route.match(/: loadWorkflowBundle0,/g)).toHaveLength(2);
@@ -268,6 +292,51 @@ export async function alsoFirst() { "use workflow"; return 2; }`
     expect(firstCode).toContain('lazy-first-marker');
     expect(firstCode).not.toContain('lazy-second-marker');
     expect(secondCode).toContain('HybridSerde');
+  });
+
+  it('creates a step-only manifest without a lazy workflow bundle', async () => {
+    const workingDir = join(repoRoot, 'workbench/nextjs-turbopack');
+    const outputDir = mkdtempSync(join(workingDir, '.workflow-step-only-'));
+    outputDirs.push(outputDir);
+    const stepFile = join(outputDir, 'step.ts');
+    writeFileSync(
+      stepFile,
+      `export async function onlyStep() { "use step"; return "done"; }`
+    );
+    writeWorkflowBuiltinsFixture(outputDir);
+
+    const config = createConfig(repoRoot, outputDir, outputDir, false);
+    const builder = new TestBuilder(config);
+    const { manifest } = await builder.createCombinedWorkflowBundle(
+      [stepFile],
+      config.stepsBundlePath,
+      config.workflowsBundlePath,
+      {
+        discoveredSteps: new Set([stepFile]),
+        discoveredWorkflows: new Set(),
+        discoveredSerdeFiles: new Set(),
+      }
+    );
+
+    const route = readFileSync(config.workflowsBundlePath, 'utf8');
+    expect(referencedWorkflowBundleFileNames(route)).toEqual([]);
+    await expect(
+      builder.createManifestForTest({
+        workflowBundlePath: config.workflowsBundlePath,
+        manifestDir: outputDir,
+        manifest,
+      })
+    ).resolves.toBeDefined();
+    const generatedManifest = JSON.parse(
+      readFileSync(join(outputDir, 'manifest.json'), 'utf8')
+    );
+    expect(
+      Object.values<Record<string, unknown>>(generatedManifest.steps).flatMap(
+        (steps) => Object.keys(steps)
+      )
+    ).toContain('onlyStep');
+    expect(generatedManifest.workflows).toEqual({});
+    expect(generatedManifest.classes).toEqual({});
   });
 
   it('keeps unchanged sidecar names with inline maps after insertion', async () => {
