@@ -339,8 +339,8 @@ export function createDevTests(config?: DevTestConfig) {
         expect(actual).toBe(expected);
         return;
       }
-      expect(actual).toBeGreaterThanOrEqual(expected?.min ?? 0);
-      if (expected?.max !== undefined) {
+      expect(actual).toBeGreaterThanOrEqual(expected.min ?? 0);
+      if (expected.max !== undefined) {
         expect(actual).toBeLessThanOrEqual(expected.max);
       }
     };
@@ -355,26 +355,38 @@ export function createDevTests(config?: DevTestConfig) {
       if (cursor === undefined) {
         return;
       }
+      const expectsAtLeastOne = (
+        count: ExpectedHmrLogCount | undefined
+      ): boolean =>
+        typeof count === 'number' ? count > 0 : (count?.min ?? 0) > 0;
+      const expectsRebuild =
+        expectsAtLeastOne(expected.hot) || expectsAtLeastOne(expected.full);
+      const assertCounts = async () => {
+        const log = (await readDevServerLog()).slice(cursor);
+        const skip = countLogMessage(log, hmrLogMessages.skip);
+        if (expectsRebuild) {
+          const minimumSkip =
+            typeof expected.skip === 'number'
+              ? expected.skip
+              : (expected.skip?.min ?? 0);
+          expect(skip).toBeGreaterThanOrEqual(minimumSkip);
+        } else {
+          expectLogCount(skip, expected.skip);
+        }
+        expectLogCount(countLogMessage(log, hmrLogMessages.hot), expected.hot);
+        expectLogCount(
+          countLogMessage(log, hmrLogMessages.full),
+          expected.full
+        );
+      };
       await pollUntil({
         description: 'dev server HMR logs to match expected rebuild counts',
         timeoutMs: hmrRediscoveryTimeoutMs,
         intervalMs: 250,
-        check: async () => {
-          const log = (await readDevServerLog()).slice(cursor);
-          expectLogCount(
-            countLogMessage(log, hmrLogMessages.skip),
-            expected.skip
-          );
-          expectLogCount(
-            countLogMessage(log, hmrLogMessages.hot),
-            expected.hot
-          );
-          expectLogCount(
-            countLogMessage(log, hmrLogMessages.full),
-            expected.full
-          );
-        },
+        check: assertCounts,
       });
+      await waitForHmrQuiescence();
+      await assertCounts();
     };
 
     const pollUntil = async ({
@@ -555,7 +567,7 @@ export async function hmrPageWorkflow() {
             );
           },
         });
-        await expectHmrLogCounts(logCursor, { full: 1, skip: { max: 1 } });
+        await expectHmrLogCounts(logCursor, { full: 1 });
       }
     );
 

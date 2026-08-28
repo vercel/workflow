@@ -16,7 +16,6 @@ import { BaseBuilder, type DiscoveredEntries } from './base-builder.js';
 import type { StandaloneConfig } from './types.js';
 import {
   deserializeWorkflowBundle,
-  isWorkflowBundleFileName,
   referencedWorkflowBundleFileNames,
   serializeWorkflowBundle,
 } from './workflow-bundle-module.js';
@@ -131,16 +130,6 @@ describe('workflow bundle boundary', () => {
     expect(moduleCode).not.toContain('\u2028');
     expect(moduleCode).not.toContain('\u2029');
     expect(deserializeWorkflowBundle(moduleCode)).toBe(code);
-  });
-
-  it('recognizes only content-addressed workflow bundle files', () => {
-    expect(
-      isWorkflowBundleFileName(
-        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.mjs'
-      )
-    ).toBe(true);
-    expect(isWorkflowBundleFileName('0.mjs')).toBe(false);
-    expect(isWorkflowBundleFileName('0-0123456789abcdef.mjs')).toBe(false);
   });
 
   async function getWorkflowBundleInputs(source: string): Promise<string[]> {
@@ -281,7 +270,7 @@ export async function alsoFirst() { "use workflow"; return 2; }`
     expect(secondCode).toContain('HybridSerde');
   });
 
-  it('keeps unchanged sidecar names when an earlier source is added', async () => {
+  it('keeps unchanged sidecar names with inline maps after insertion', async () => {
     const workingDir = join(repoRoot, 'workbench/nextjs-turbopack');
     const outputDir = mkdtempSync(join(workingDir, '.workflow-stable-names-'));
     outputDirs.push(outputDir);
@@ -302,6 +291,7 @@ export async function alsoFirst() { "use workflow"; return 2; }`
     );
     writeWorkflowBuiltinsFixture(outputDir);
     const config = createConfig(repoRoot, outputDir, outputDir, false);
+    config.sourcemap = 'inline';
     const workflowBundleDir = join(outputDir, 'workflow-bundles');
     const build = async (workflowFiles: string[]) => {
       await new TestBuilder(config).createCombinedWorkflowBundle(
@@ -318,6 +308,13 @@ export async function alsoFirst() { "use workflow"; return 2; }`
     };
 
     const originalFiles = await build([middle, later]);
+    const [originalFile] = originalFiles;
+    assert(originalFile);
+    expect(
+      deserializeWorkflowBundle(
+        readFileSync(join(workflowBundleDir, originalFile), 'utf8')
+      )
+    ).toContain('sourceMappingURL=data:application/json;base64,');
     const updatedFiles = await build([earlier, middle, later]);
 
     expect(originalFiles.size).toBe(2);

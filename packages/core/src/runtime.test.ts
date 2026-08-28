@@ -253,7 +253,12 @@ describe('workflowEntrypoint replay guards', () => {
     );
 
     expect(createdEvents).toContainEqual(
-      expect.objectContaining({ eventType: 'run_failed' })
+      expect.objectContaining({
+        eventType: 'run_failed',
+        eventData: expect.objectContaining({
+          errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
+        }),
+      })
     );
   });
 

@@ -711,7 +711,14 @@ async function loadWorkflowCode(
   }
   const load = workflowCode[workflowName];
   if (!load) throw new WorkflowNotRegisteredError(workflowName);
-  return load();
+  try {
+    return await load();
+  } catch (error) {
+    throw new WorkflowRuntimeError(
+      `Failed to load workflow bundle for "${workflowName}"`,
+      { cause: error }
+    );
+  }
 }
 
 export function workflowEntrypoint(
