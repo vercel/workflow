@@ -57,6 +57,13 @@ import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
  */
 const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
 
+/**
+ * Wire encoding of `retention: 0`. Attribute values are strings, and the
+ * `$retention` value is a duration written as a decimal integer — so zero
+ * travels as `'0'`, not as the name of a mode.
+ */
+const RETENTION_ZERO_ATTRIBUTE_VALUE = '0';
+
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
 
@@ -157,12 +164,16 @@ export interface StartOptionsBase {
    * chunks), the event log, and any analytics data. Options are:
    * - `'default'`: same as omission, the World will decide. On Vercel, this
    *   is based on your team's plan.
-   * - `'none'`: if supported, data is deleted immediately after your run
+   * - `0`: if supported, data is deleted immediately after your run
    *   completes/fails. On Vercel, user data is deleted, but metadata may
    *   persist for your plan's default retention period.
-   * - `string`: Custom value to pass to the World. Refer to your World's
-   *   documentation on which values are supported. Not currently supported
-   *   on Vercel.
+   *
+   * The value is a duration, and zero is the only one implemented. The unit
+   * durations will be measured in has not been decided yet, and zero is the
+   * one value that means the same thing whichever unit wins — so it can ship
+   * ahead of that decision. Other durations are rejected rather than
+   * accepted and quietly ignored, which is why the type is the literal `0`
+   * and not `number`.
    *
    * Recorded on the run as the reserved `$retention` attribute, so it
    * requires a World implementing spec version 4 or later. `'default'` is
@@ -457,33 +468,32 @@ export async function start<TArgs extends unknown[], TResult>(
       }
 
       // `retention` is the typed spelling of the reserved `$retention`
-      // attribute. `'default'` means "let the World decide", which is
-      // already what an absent attribute means, so it is not written: that
-      // keeps `'default'` exactly equivalent to omitting the option and
-      // spends none of the per-run attribute budget.
+      // attribute, whose value is a duration written as a decimal integer.
+      // `'default'` means "let the World decide", which is already what an
+      // absent attribute means, so it is not written: that keeps
+      // `'default'` exactly equivalent to omitting the option and spends
+      // none of the per-run attribute budget.
       let retentionAttribute: Record<string, string> | undefined;
       if (opts.retention !== undefined && opts.retention !== 'default') {
+        // The types allow only `0`, but an untyped JS caller can still get
+        // here with some other duration — and there is no unit to interpret
+        // it in yet, so no World can honor it. Reject it rather than seed a
+        // value that would silently resolve to the World's default.
+        if (opts.retention !== 0) {
+          throw new WorkflowRuntimeError(
+            `start({ retention }) must be 0 or 'default'; received ${JSON.stringify(
+              opts.retention
+            )}.`
+          );
+        }
         if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
           throw new WorkflowRuntimeError(
             'start({ retention }) requires a World that supports spec version 4 or later.'
           );
         }
-        if (typeof opts.retention !== 'string' || opts.retention === '') {
-          throw new WorkflowRuntimeError(
-            `start({ retention }) must be a non-empty string; received ${JSON.stringify(
-              opts.retention
-            )}.`
-          );
-        }
-        // Run through the same validation as caller attributes so an
-        // oversized custom World value fails here, with the attribute
-        // error message, rather than at the World boundary.
-        retentionAttribute = Object.fromEntries(
-          normalizeAttributeChanges(
-            { [RETENTION_ATTRIBUTE]: opts.retention },
-            { allowReservedAttributes: true }
-          ).map(({ key, value }) => [key, value as string])
-        );
+        retentionAttribute = {
+          [RETENTION_ATTRIBUTE]: RETENTION_ZERO_ATTRIBUTE_VALUE,
+        };
       }
 
       // Cross-run lineage: the reserved keys ride on the run's existing

@@ -1,5 +1,4 @@
 import {
-  ATTRIBUTE_VALUE_MAX_BYTES,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
 } from '@workflow/world';
@@ -17,8 +16,14 @@ vi.mock('../telemetry.js', () => ({
 /**
  * `start({ retention })` is the typed spelling of the reserved `$retention`
  * attribute. The World reads it when the run reaches a terminal state to
- * decide how long user data is kept; the SDK only has to seed it, and to keep
- * `'default'` indistinguishable from omission.
+ * decide how long user data is kept; the SDK only has to encode it, and to
+ * keep `'default'` indistinguishable from omission.
+ *
+ * The attribute value is a duration written as a decimal integer, so the
+ * option's `0` travels as the string `'0'`. Zero is the only duration
+ * implemented — the unit is still undecided, and zero is the one value that
+ * means the same thing in every unit — so anything else is rejected here
+ * rather than sent to a World that could not scale it.
  */
 describe('start() retention', () => {
   let eventsCreate: ReturnType<typeof vi.fn>;
@@ -58,16 +63,18 @@ describe('start() retention', () => {
     return eventsCreate.mock.calls[0]?.[1]?.eventData?.allowReservedAttributes;
   }
 
-  it('seeds $retention and opts into the reserved namespace', async () => {
-    await start(wf('test-workflow'), [], { retention: 'none' });
+  it('encodes 0 as $retention and opts into the reserved namespace', async () => {
+    await start(wf('test-workflow'), [], { retention: 0 });
 
-    expect(seededAttributes()).toEqual({ $retention: 'none' });
+    // The number is an integer duration on the wire, so it is written as
+    // the string '0' — not as the name of a mode.
+    expect(seededAttributes()).toEqual({ $retention: '0' });
     // Without this the server rejects the reserved key with a 400.
     expect(seededAllowReserved()).toBe(true);
     // Must also ride the resilient-start queue input, or a run created
     // through that path silently loses the retention preference.
     expect(queue.mock.calls[0]?.[1]?.runInput?.attributes).toEqual({
-      $retention: 'none',
+      $retention: '0',
     });
   });
 
@@ -80,12 +87,6 @@ describe('start() retention', () => {
 
     expect(withDefault).toBeUndefined();
     expect(seededAttributes()).toBeUndefined();
-  });
-
-  it('passes a custom World value through untouched', async () => {
-    await start(wf('test-workflow'), [], { retention: '90d' });
-
-    expect(seededAttributes()).toEqual({ $retention: '90d' });
   });
 
   it('keeps caller attributes and lineage alongside retention', async () => {
@@ -110,7 +111,7 @@ describe('start() retention', () => {
       () =>
         start(wf('child-workflow'), [], {
           attributes: { tenant: 't1' },
-          retention: 'none',
+          retention: 0,
         })
     );
 
@@ -118,7 +119,7 @@ describe('start() retention', () => {
       $rootRunId: 'wrun_root',
       $parentRunId: 'wrun_parent',
       tenant: 't1',
-      $retention: 'none',
+      $retention: '0',
     });
   });
 
@@ -126,15 +127,15 @@ describe('start() retention', () => {
     await start(wf('test-workflow'), [], {
       attributes: { $retention: 'default' },
       allowReservedAttributes: true,
-      retention: 'none',
+      retention: 0,
     });
 
-    expect(seededAttributes()).toEqual({ $retention: 'none' });
+    expect(seededAttributes()).toEqual({ $retention: '0' });
   });
 
   it('still rejects a hand-written $retention without the escape hatch', async () => {
     await expect(
-      start(wf('test-workflow'), [], { attributes: { $retention: 'none' } })
+      start(wf('test-workflow'), [], { attributes: { $retention: '0' } })
     ).rejects.toThrow(/reserved prefix/);
   });
 
@@ -142,7 +143,7 @@ describe('start() retention', () => {
     await expect(
       start(wf('test-workflow'), [], {
         specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES - 1,
-        retention: 'none',
+        retention: 0,
       })
     ).rejects.toThrow(/spec version 4 or later/);
   });
@@ -158,17 +159,22 @@ describe('start() retention', () => {
     expect(seededAttributes()).toBeUndefined();
   });
 
-  it('rejects a custom value that exceeds the attribute value limit', async () => {
+  it('rejects a non-zero duration from an untyped caller', async () => {
+    // The type allows only `0`, but JS callers are not bound by it. There is
+    // no unit for `7` yet, so no World can honor it — failing here is better
+    // than seeding a value that silently resolves to the World's default.
     await expect(
       start(wf('test-workflow'), [], {
-        retention: 'x'.repeat(ATTRIBUTE_VALUE_MAX_BYTES + 1),
+        retention: 7 as unknown as 0,
       })
-    ).rejects.toThrow(/exceeds limit/);
+    ).rejects.toThrow(/must be 0 or 'default'/);
   });
 
-  it('rejects an empty retention value', async () => {
+  it('rejects a retention string from an untyped caller', async () => {
     await expect(
-      start(wf('test-workflow'), [], { retention: '' })
-    ).rejects.toThrow(/non-empty string/);
+      start(wf('test-workflow'), [], {
+        retention: 'none' as unknown as 0,
+      })
+    ).rejects.toThrow(/must be 0 or 'default'/);
   });
 });

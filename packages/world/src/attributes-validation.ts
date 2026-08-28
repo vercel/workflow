@@ -12,15 +12,32 @@ export const PARENT_RUN_ID_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}parentRu
  * by `start({ retention })`. Worlds read it when a run reaches a terminal
  * state to decide how long user data is kept. Absent means "the World
  * decides", which is also what `'default'` requests.
+ *
+ * The value is a duration written as a decimal integer, and **its unit is
+ * deliberately not decided yet**. `'0'` is the only duration implemented,
+ * and zero is the one value that means the same thing in every unit, so it
+ * can ship ahead of that decision: it commits to a shape without committing
+ * to a scale. A World that reads a non-zero value must treat it as
+ * unsupported and fall back to its own default — that is the safe direction,
+ * because it keeps data that was asked to be kept rather than deleting data
+ * on the strength of a number it cannot scale.
  */
 export const RETENTION_ATTRIBUTE = `${RESERVED_ATTRIBUTE_KEY_PREFIX}retention`;
 
 /**
- * Value of {@link RETENTION_ATTRIBUTE}. `'none'` and `'default'` are the two
- * World-independent values; any other string is passed through untouched for
- * Worlds that define their own retention vocabulary.
+ * Value accepted by `start({ retention })`, before it is encoded into
+ * {@link RETENTION_ATTRIBUTE}.
+ *
+ * - `0` — delete user data as soon as the run reaches a terminal state.
+ * - `'default'` — let the World decide; the same as omitting the option.
+ *
+ * A number rather than a string because the value is a duration and this
+ * namespace is meant to grow. It is the literal `0` rather than `number`
+ * because zero is the only duration that can be honored while the unit is
+ * undecided: the narrow type is what stops a caller writing some other
+ * duration and silently getting the World's default instead.
  */
-export type RunRetention = 'none' | 'default' | (string & {});
+export type RunRetention = 0 | 'default';
 export const ATTRIBUTE_KEY_MAX_LENGTH = 256;
 export const ATTRIBUTE_VALUE_MAX_BYTES = 256;
 export const ATTRIBUTE_MAX_PER_RUN = 64;
