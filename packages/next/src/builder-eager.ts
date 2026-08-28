@@ -13,6 +13,7 @@ import {
   classifyRebuild,
   createRebuildScheduler,
   createSourceSnapshot,
+  getAffectedWorkflowFiles,
   getRelevantFiles,
   type HotRebuildTarget,
   isSourceFile,
@@ -82,7 +83,6 @@ export async function getNextBuilderEager(
     BaseBuilder: BaseBuilderClass,
     analyzeWorkflowSource,
     getWorkflowQueueTrigger,
-    importGraphHasChild,
     writeFileIfChanged,
   } = buildersModule ??
   (await importEsm<typeof import('@workflow/builders')>('@workflow/builders'));
@@ -165,8 +165,6 @@ export async function getNextBuilderEager(
       await this.writeFunctionsConfig(outputDir);
 
       if (this.config.watch) {
-        // TODO: implement watch mode for combined bundle
-        // For now, fall back to full rebuild on file changes
         if (!combinedResult?.interimBundleCtx || !combinedResult.bundleFinal) {
           throw new Error(
             'Invariant: expected workflow build context in watch mode'
@@ -191,6 +189,11 @@ export async function getNextBuilderEager(
             ? pathname
             : resolve(this.config.workingDir, pathname)
           ).replace(/\\/g, '/');
+        let affectedWorkflowFiles = getAffectedWorkflowFiles({
+          discoveredEntries,
+          importGraph: discoveredEntries.importParents,
+          normalizePath,
+        });
         let sourceSnapshots = new Map<string, SourceSnapshot>();
 
         const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
@@ -288,6 +291,11 @@ export async function getNextBuilderEager(
 
           const previousWorkflowsCtx = workflowsCtx.interimBundleCtx;
           discoveredEntries = newCombined.discoveredEntries;
+          affectedWorkflowFiles = getAffectedWorkflowFiles({
+            discoveredEntries,
+            importGraph: discoveredEntries.importParents,
+            normalizePath,
+          });
           stepsManifest = newCombined.stepsManifest;
           workflowsManifest = newCombined.workflowsManifest;
           workflowsCtx = {
@@ -341,16 +349,11 @@ export async function getNextBuilderEager(
 
         const processFileChanges = async (files: string[]) => {
           const decision = await classifyRebuild({
+            affectedWorkflowFiles,
             files,
             discoveredEntries,
             inputFiles: options.inputFiles,
             normalizePath,
-            parentHasChild: (parent, child) =>
-              importGraphHasChild(
-                discoveredEntries.importParents,
-                parent,
-                child
-              ),
             readSnapshot: readSourceSnapshot,
             sourceSnapshots,
           });

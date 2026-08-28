@@ -62,7 +62,7 @@ export const importParents: ImportParents = new Map();
 // e.g. if a dependency needs to be bundled because it has
 // a 'use workflow/'use step' directive in it
 export function importGraphHasChild(
-  importParents: ImportParents,
+  importGraph: ImportParents,
   parent: string,
   childToFind: string,
   {
@@ -75,15 +75,15 @@ export function importGraphHasChild(
   const excluded = new Set(excludedRoots);
   const queue: string[] = [parent];
 
-  while (queue.length > 0) {
-    const current = queue.shift()!;
+  for (let index = 0; index < queue.length; index++) {
+    const current = queue[index];
 
     if (visited.has(current)) {
       continue;
     }
     visited.add(current);
 
-    const children = importParents.get(current);
+    const children = importGraph.get(current);
     if (!children) {
       continue;
     }

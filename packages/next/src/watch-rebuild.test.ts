@@ -4,6 +4,7 @@ import {
   classifyRebuild,
   createRebuildScheduler,
   createSourceSnapshotFromSource,
+  getAffectedWorkflowFiles,
   isSourceFile,
   type SourceSnapshot,
   sourceSnapshotsMatch,
@@ -82,6 +83,28 @@ describe('watch-rebuild scheduling', () => {
 });
 
 describe('watch-rebuild source snapshots', () => {
+  test('precomputes files imported by workflows', () => {
+    const workflowFile = '/app/workflow.ts';
+    const helperFile = '/app/helper.ts';
+    const nestedFile = '/app/nested.ts';
+
+    expect(
+      getAffectedWorkflowFiles({
+        discoveredEntries: {
+          discoveredSteps: new Set(),
+          discoveredWorkflows: new Set([workflowFile]),
+          discoveredSerdeFiles: new Set(),
+          discoveredFiles: new Set([workflowFile, helperFile, nestedFile]),
+        },
+        importGraph: new Map([
+          [workflowFile, new Set([helperFile])],
+          [helperFile, new Set([nestedFile])],
+          [nestedFile, new Set([workflowFile])],
+        ]),
+      })
+    ).toEqual(new Set([workflowFile, helperFile, nestedFile]));
+  });
+
   test('only treats JavaScript and TypeScript files as source', () => {
     expect(isSourceFile('/app/workflow.ts')).toBe(true);
     expect(isSourceFile('/app/workflow.json')).toBe(false);
@@ -164,6 +187,7 @@ export const allWorkflows = {
 
     await expect(
       classifyRebuild({
+        affectedWorkflowFiles: new Set(),
         discoveredEntries: {
           discoveredSteps: new Set(),
           discoveredWorkflows: new Set([workflowFile]),
@@ -172,7 +196,6 @@ export const allWorkflows = {
         },
         files: [registryFile],
         inputFiles: [pageFile],
-        parentHasChild: () => false,
         readSnapshot: async (file) =>
           createSourceSnapshotFromSource(
             sources.get(file) ?? '',
@@ -194,6 +217,7 @@ export const allWorkflows = {} as const;
 
     await expect(
       classifyRebuild({
+        affectedWorkflowFiles: new Set(),
         discoveredEntries: {
           discoveredSteps: new Set(),
           discoveredWorkflows: new Set(),
@@ -202,7 +226,6 @@ export const allWorkflows = {} as const;
         },
         files: [stepFile, registryFile],
         inputFiles: [registryFile],
-        parentHasChild: () => false,
         readSnapshot: async (file) =>
           createSourceSnapshotFromSource(
             sources.get(file) ?? '',
@@ -218,6 +241,7 @@ export const allWorkflows = {} as const;
 
     await expect(
       classifyRebuild({
+        affectedWorkflowFiles: new Set(),
         discoveredEntries: {
           discoveredSteps: new Set(),
           discoveredWorkflows: new Set(),
@@ -226,7 +250,6 @@ export const allWorkflows = {} as const;
         },
         files: [buildInput],
         inputFiles: [],
-        parentHasChild: () => false,
         readSnapshot: async () => {
           throw new Error('Non-source inputs are not hot rebuilt');
         },
@@ -245,6 +268,7 @@ export const allWorkflows = {} as const;
 
     await expect(
       classifyRebuild({
+        affectedWorkflowFiles: new Set(),
         discoveredEntries: {
           discoveredSteps: new Set(),
           discoveredWorkflows: new Set([workflowFile]),
@@ -253,7 +277,6 @@ export const allWorkflows = {} as const;
         },
         files: [workflowFile],
         inputFiles: [workflowFile],
-        parentHasChild: () => false,
         readSnapshot: async () => snapshot,
         sourceSnapshots: new Map([[workflowFile, snapshot]]),
       })
@@ -265,6 +288,7 @@ export const allWorkflows = {} as const;
 
     await expect(
       classifyRebuild({
+        affectedWorkflowFiles: new Set(),
         discoveredEntries: {
           discoveredSteps: new Set(),
           discoveredWorkflows: new Set(),
@@ -273,7 +297,6 @@ export const allWorkflows = {} as const;
         },
         files: [helperFile],
         inputFiles: [],
-        parentHasChild: () => false,
         readSnapshot: async () =>
           createSourceSnapshotFromSource(
             "export const value = 'helper';\n",
@@ -305,6 +328,7 @@ export const allWorkflows = {} as const;
 
     await expect(
       classifyRebuild({
+        affectedWorkflowFiles: new Set(),
         discoveredEntries: {
           discoveredSteps: new Set([stepFile]),
           discoveredWorkflows: new Set(),
@@ -313,7 +337,6 @@ export const allWorkflows = {} as const;
         },
         files: [stepFile],
         inputFiles: [],
-        parentHasChild: () => false,
         readSnapshot: async () => nextSnapshot,
         sourceSnapshots: new Map([[stepFile, previousSnapshot]]),
       })
@@ -342,6 +365,7 @@ export async function step() { 'use step'; }
 
     await expect(
       classifyRebuild({
+        affectedWorkflowFiles: new Set([workflowFile, stepFile]),
         discoveredEntries: {
           discoveredSteps: new Set([stepFile]),
           discoveredWorkflows: new Set([workflowFile]),
@@ -350,8 +374,6 @@ export async function step() { 'use step'; }
         },
         files: [stepFile],
         inputFiles: [],
-        parentHasChild: (parent, child) =>
-          parent === workflowFile && child === stepFile,
         readSnapshot: async () => nextSnapshot,
         sourceSnapshots: new Map([[stepFile, previousSnapshot]]),
       })
@@ -379,6 +401,7 @@ export async function step() { 'use step'; }
 
     await expect(
       classifyRebuild({
+        affectedWorkflowFiles: new Set(),
         discoveredEntries: {
           discoveredSteps: new Set(),
           discoveredWorkflows: new Set(),
@@ -387,7 +410,6 @@ export async function step() { 'use step'; }
         },
         files: [serdeFile],
         inputFiles: [],
-        parentHasChild: () => false,
         readSnapshot: async () => nextSnapshot,
         sourceSnapshots: new Map([[serdeFile, previousSnapshot]]),
       })
@@ -403,6 +425,7 @@ export async function step() { 'use step'; }
 
     await expect(
       classifyRebuild({
+        affectedWorkflowFiles: new Set(),
         discoveredEntries: {
           discoveredSteps: new Set(),
           discoveredWorkflows: new Set(),
@@ -411,7 +434,6 @@ export async function step() { 'use step'; }
         },
         files: [routeFile],
         inputFiles: [],
-        parentHasChild: () => false,
         readSnapshot: async () =>
           createSourceSnapshotFromSource(
             "import './workflow';\n",
@@ -435,6 +457,7 @@ export async function step() { 'use step'; }
     );
     await expect(
       classifyRebuild({
+        affectedWorkflowFiles: new Set([workflowFile, helperFile]),
         discoveredEntries: {
           discoveredSteps: new Set(),
           discoveredWorkflows: new Set([workflowFile]),
@@ -443,8 +466,6 @@ export async function step() { 'use step'; }
         },
         files: [helperFile],
         inputFiles: [workflowFile],
-        parentHasChild: (parent, child) =>
-          parent === workflowFile && child === helperFile,
         readSnapshot: async () => nextHelperSnapshot,
         sourceSnapshots: new Map([[helperFile, previousHelperSnapshot]]),
       })

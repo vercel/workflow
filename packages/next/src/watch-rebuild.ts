@@ -9,6 +9,8 @@ export interface DiscoveredEntriesLike {
   discoveredFiles: Set<string>;
 }
 
+type ImportGraph = ReadonlyMap<string, ReadonlySet<string>>;
+
 export type ScheduledRebuild =
   | { kind: 'files'; files: string[] }
   | { kind: 'full' };
@@ -104,6 +106,35 @@ export const getRelevantFiles = ({
   new Set(
     [...inputFiles, ...discoveredEntries.discoveredFiles].map(normalizePath)
   );
+
+export const getAffectedWorkflowFiles = ({
+  discoveredEntries,
+  importGraph,
+  normalizePath = defaultNormalizePath,
+}: {
+  discoveredEntries: DiscoveredEntriesLike;
+  importGraph: ImportGraph;
+  normalizePath?: (path: string) => string;
+}) => {
+  const affectedFiles = new Set(
+    [...discoveredEntries.discoveredWorkflows].map(normalizePath)
+  );
+  const pendingFiles = [...affectedFiles];
+
+  for (let index = 0; index < pendingFiles.length; index++) {
+    const file = pendingFiles[index];
+    for (const child of importGraph.get(file) ?? []) {
+      const normalizedChild = normalizePath(child);
+      if (affectedFiles.has(normalizedChild)) {
+        continue;
+      }
+      affectedFiles.add(normalizedChild);
+      pendingFiles.push(normalizedChild);
+    }
+  }
+
+  return affectedFiles;
+};
 
 export const readSourceSnapshots = async ({
   discoveredEntries,
@@ -206,21 +237,18 @@ export const createRebuildScheduler = (
 };
 
 const getHotRebuildTarget = ({
+  affectedWorkflowFiles,
   changedFiles,
   discoveredEntries,
   normalizePath,
-  parentHasChild,
 }: {
+  affectedWorkflowFiles: ReadonlySet<string>;
   changedFiles: string[];
   discoveredEntries: DiscoveredEntriesLike;
   normalizePath: (path: string) => string;
-  parentHasChild: (parent: string, child: string) => boolean;
 }): HotRebuildTarget | undefined => {
-  const workflowEntryFiles = [...discoveredEntries.discoveredWorkflows].map(
-    normalizePath
-  );
-  const stepEntryFiles = [...discoveredEntries.discoveredSteps].map(
-    normalizePath
+  const stepEntryFiles = new Set(
+    [...discoveredEntries.discoveredSteps].map(normalizePath)
   );
   const serdeFiles = new Set(
     [...discoveredEntries.discoveredSerdeFiles].map(normalizePath)
@@ -234,18 +262,11 @@ const getHotRebuildTarget = ({
       rebuildSteps = true;
       continue;
     }
-    if (workflowEntryFiles.includes(changedFile)) {
+    if (affectedWorkflowFiles.has(changedFile)) {
       rebuildWorkflows = true;
     }
-    if (stepEntryFiles.includes(changedFile)) {
+    if (stepEntryFiles.has(changedFile)) {
       rebuildSteps = true;
-    }
-    if (
-      workflowEntryFiles.some((workflowFile) =>
-        parentHasChild(workflowFile, changedFile)
-      )
-    ) {
-      rebuildWorkflows = true;
     }
   }
 
@@ -261,19 +282,19 @@ const getHotRebuildTarget = ({
 };
 
 export const classifyRebuild = async ({
+  affectedWorkflowFiles,
   files,
   discoveredEntries,
   inputFiles,
   normalizePath = defaultNormalizePath,
-  parentHasChild,
   readSnapshot,
   sourceSnapshots,
 }: {
+  affectedWorkflowFiles: ReadonlySet<string>;
   files: string[];
   discoveredEntries: DiscoveredEntriesLike;
   inputFiles: string[];
   normalizePath?: (path: string) => string;
-  parentHasChild: (parent: string, child: string) => boolean;
   readSnapshot: (file: string) => Promise<SourceSnapshot>;
   sourceSnapshots: Map<string, SourceSnapshot>;
 }): Promise<RebuildDecision> => {
@@ -322,10 +343,10 @@ export const classifyRebuild = async ({
 
   const changedFiles = [...snapshots.keys()];
   const target = getHotRebuildTarget({
+    affectedWorkflowFiles,
     changedFiles,
     discoveredEntries,
     normalizePath,
-    parentHasChild,
   });
   return target
     ? { kind: 'hot', target, snapshots }
