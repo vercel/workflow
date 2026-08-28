@@ -115,7 +115,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
           // Vite awaits buildStart before listening, after host plugins have
           // initialized. Keep this out of createBuildQueue so startup errors
           // reject server creation instead of being swallowed.
-          return builder?.build();
+          return pluginContainer ? builder?.build() : undefined;
         },
       },
       // NOTE: This is a workaround because Nitro passes the 404 requests to the dev server to handle.
