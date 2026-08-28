@@ -4771,49 +4771,54 @@ describe.concurrent('e2e', () => {
   // ==========================================================================
 
   /**
-   * Vercel World only.
+   * `start({ experimental_retention: 0 })` seeds `$retention: '0'`, which a
+   * World that implements retention honors at terminal cleanup by deleting
+   * the run's user payloads. The unit tests in `start-retention.test.ts`
+   * cover the SDK's half — that the attribute is encoded and sent. This
+   * covers the half only a real World can answer: that the data is
+   * afterwards actually gone.
    *
-   * `start({ retention: 0 })` seeds `$retention: '0'`, which the Vercel World
-   * reads at terminal cleanup and honors by deleting the run's user payloads.
-   * The unit tests in `start-retention.test.ts` cover the SDK's half — that
-   * the attribute is encoded and sent. This covers the half only a real
-   * server can answer: that the data is afterwards actually gone.
-   *
-   * The local and Postgres Worlds have no terminal-cleanup pass, so the
-   * attribute is inert there and nothing would ever expire. Gated on
-   * `WORKFLOW_VERCEL_ENV` — the same marker `setupWorld` uses to choose the
-   * Vercel world — rather than on `!isLocalDeployment()`, which is also true
-   * for the Postgres lane.
+   * Gated on `WORKFLOW_VERCEL_ENV` — the same marker `setupWorld` uses to
+   * choose the Vercel world — rather than on `!isLocalDeployment()`, which is
+   * also true for the Postgres lane. The Local and Postgres Worlds implement
+   * retention too, but their coverage lives in their own package tests where
+   * the storage can be inspected directly.
    */
   describe.skipIf(!process.env.WORKFLOW_VERCEL_ENV)('retention', () => {
     test(
-      'retention: 0 purges the run payloads once the run finishes',
+      'experimental_retention: 0 purges the run payloads once the run finishes',
       { timeout: 240_000 },
       async () => {
-        const run = await start(await e2e('addTenWorkflow'), [123], {
-          retention: 0,
-        });
-
-        expect(await run.returnValue).toBe(133);
-
-        // Read the payloads back *before* asserting the purge, and assert
-        // them. Two reasons: it proves the run really carried this data
-        // rather than never having written any, and it is the only chance to
-        // capture it — once the purge lands, the harness's failure
-        // diagnostics replay the run and find nothing but stubs.
-        const { json: beforePurge } = await cliInspectJson(
-          `runs ${run.runId} --withData`
+        // Padded past the ~422-byte inline-ref cutoff on purpose. Below it a
+        // payload lives inside the database row and is scrubbed in place;
+        // above it the World writes a blob and has to delete the object. A
+        // small payload exercises only the first path, and this feature's
+        // whole claim is about the second. `metadataFromHelperWorkflow`
+        // echoes its label, so one big argument puts a blob behind the run's
+        // input, its output, and the step's on both sides.
+        const label = `retention-purge-${'x'.repeat(2048)}`;
+        const run = await start(
+          await e2e('metadataFromHelperWorkflow'),
+          [label],
+          {
+            experimental_retention: 0,
+          }
         );
-        expect(beforePurge).toMatchObject({
-          runId: run.runId,
-          status: 'completed',
-          input: [123],
-          output: 133,
-        });
 
-        // The purge is fire-and-forget from the server's terminal-cleanup
-        // path, so it lands some time *after* the run reports completion.
-        // Poll for it rather than sleeping on a guessed delay.
+        // `await run.returnValue` is deliberately NOT asserted here.
+        //
+        // The purge races the caller's own read of the result and generally
+        // wins, so the value that comes back is usually the expired-data
+        // placeholder rather than the run's return value. That is a known
+        // limitation of `experimental_retention: 0`, documented on the option
+        // and in the observability docs; the point of this test is what the
+        // World did to the data, not who won that race. Waiting on the purge
+        // itself is also a strictly stronger wait than waiting on the return
+        // value — it cannot happen before the run is terminal.
+        //
+        // The same race is why nothing is asserted about the payloads
+        // *before* the purge: there is no reliable window in which to read
+        // them.
         const afterPurge = await cliInspectJsonUntil(
           `runs ${run.runId} --withData`,
           (json) => json?.output === EXPIRED_DATA_JSON,
@@ -4823,8 +4828,8 @@ describe.concurrent('e2e', () => {
           runId: run.runId,
           input: EXPIRED_DATA_JSON,
           output: EXPIRED_DATA_JSON,
-          // Only user data goes. The run itself survives on the plan's
-          // default TTL so it stays listable in observability.
+          // Only user data goes. The run itself survives on the World's
+          // default retention so it stays listable in observability.
           status: 'completed',
         });
 

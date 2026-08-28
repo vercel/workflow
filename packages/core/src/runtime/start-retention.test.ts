@@ -64,7 +64,7 @@ describe('start() retention', () => {
   }
 
   it('encodes 0 as $retention and opts into the reserved namespace', async () => {
-    await start(wf('test-workflow'), [], { retention: 0 });
+    await start(wf('test-workflow'), [], { experimental_retention: 0 });
 
     // The number is an integer duration on the wire, so it is written as
     // the string '0' — not as the name of a mode.
@@ -79,7 +79,7 @@ describe('start() retention', () => {
   });
 
   it("writes nothing for 'default', matching omission exactly", async () => {
-    await start(wf('test-workflow'), [], { retention: 'default' });
+    await start(wf('test-workflow'), [], { experimental_retention: 'default' });
     const withDefault = seededAttributes();
 
     eventsCreate.mockClear();
@@ -111,7 +111,7 @@ describe('start() retention', () => {
       () =>
         start(wf('child-workflow'), [], {
           attributes: { tenant: 't1' },
-          retention: 0,
+          experimental_retention: 0,
         })
     );
 
@@ -127,7 +127,7 @@ describe('start() retention', () => {
     await start(wf('test-workflow'), [], {
       attributes: { $retention: 'default' },
       allowReservedAttributes: true,
-      retention: 0,
+      experimental_retention: 0,
     });
 
     expect(seededAttributes()).toEqual({ $retention: '0' });
@@ -143,7 +143,7 @@ describe('start() retention', () => {
     await expect(
       start(wf('test-workflow'), [], {
         specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES - 1,
-        retention: 0,
+        experimental_retention: 0,
       })
     ).rejects.toThrow(/spec version 4 or later/);
   });
@@ -153,7 +153,7 @@ describe('start() retention', () => {
     // on an old World into an error.
     await start(wf('test-workflow'), [], {
       specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES - 1,
-      retention: 'default',
+      experimental_retention: 'default',
     });
 
     expect(seededAttributes()).toBeUndefined();
@@ -165,7 +165,7 @@ describe('start() retention', () => {
     // than seeding a value that silently resolves to the World's default.
     await expect(
       start(wf('test-workflow'), [], {
-        retention: 7 as unknown as 0,
+        experimental_retention: 7 as unknown as 0,
       })
     ).rejects.toThrow(/must be 0 or 'default'/);
   });
@@ -173,7 +173,7 @@ describe('start() retention', () => {
   it('rejects a retention string from an untyped caller', async () => {
     await expect(
       start(wf('test-workflow'), [], {
-        retention: 'none' as unknown as 0,
+        experimental_retention: 'none' as unknown as 0,
       })
     ).rejects.toThrow(/must be 0 or 'default'/);
   });

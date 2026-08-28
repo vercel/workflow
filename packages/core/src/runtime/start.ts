@@ -160,13 +160,17 @@ export interface StartOptionsBase {
   /**
    * Set a preference for data retention after run completion.
    *
+   * **Experimental.** Prefixed rather than named `retention` because both the
+   * unit and the set of accepted values are expected to change; treat the
+   * name as unstable and expect a rename when it settles.
+   *
    * Worlds control the retention of user data (event payloads and stream
    * chunks), the event log, and any analytics data. Options are:
    * - `'default'`: same as omission, the World will decide. On Vercel, this
    *   is based on your team's plan.
-   * - `0`: if supported, data is deleted immediately after your run
-   *   completes/fails. On Vercel, user data is deleted, but metadata may
-   *   persist for your plan's default retention period.
+   * - `0`: data is deleted as soon as your run completes or fails. On
+   *   Vercel, user data is deleted, but metadata may persist for your plan's
+   *   default retention period.
    *
    * The value is a duration, and zero is the only one implemented. The unit
    * durations will be measured in has not been decided yet, and zero is the
@@ -175,12 +179,21 @@ export interface StartOptionsBase {
    * accepted and quietly ignored, which is why the type is the literal `0`
    * and not `number`.
    *
+   * **Known limitation at `0`.** The purge races your own read of the run's
+   * result and generally wins, so `await run.returnValue` on a
+   * `experimental_retention: 0` run usually resolves to an expired-data
+   * placeholder rather than the value. If you need the result, return it
+   * through a channel you control — a step that writes it somewhere, or a
+   * hook — rather than reading it back off the run.
+   *
    * Recorded on the run as the reserved `$retention` attribute, so it
    * requires a World implementing spec version 4 or later. `'default'` is
    * not written at all, keeping it exactly equivalent to omitting the
-   * option.
+   * option. Retention is enforced by the World: the first-party Worlds
+   * (Vercel, Local, Postgres) implement it, and a World that does not
+   * recognize the value keeps the data.
    */
-  retention?: RunRetention;
+  experimental_retention?: RunRetention;
 
   /**
    * The ID of an existing run this run is being replayed from, if any.
@@ -474,21 +487,24 @@ export async function start<TArgs extends unknown[], TResult>(
       // `'default'` exactly equivalent to omitting the option and spends
       // none of the per-run attribute budget.
       let retentionAttribute: Record<string, string> | undefined;
-      if (opts.retention !== undefined && opts.retention !== 'default') {
+      if (
+        opts.experimental_retention !== undefined &&
+        opts.experimental_retention !== 'default'
+      ) {
         // The types allow only `0`, but an untyped JS caller can still get
         // here with some other duration — and there is no unit to interpret
         // it in yet, so no World can honor it. Reject it rather than seed a
         // value that would silently resolve to the World's default.
-        if (opts.retention !== 0) {
+        if (opts.experimental_retention !== 0) {
           throw new WorkflowRuntimeError(
-            `start({ retention }) must be 0 or 'default'; received ${JSON.stringify(
-              opts.retention
+            `start({ experimental_retention }) must be 0 or 'default'; received ${JSON.stringify(
+              opts.experimental_retention
             )}.`
           );
         }
         if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
           throw new WorkflowRuntimeError(
-            'start({ retention }) requires a World that supports spec version 4 or later.'
+            'start({ experimental_retention }) requires a World that supports spec version 4 or later.'
           );
         }
         retentionAttribute = {
