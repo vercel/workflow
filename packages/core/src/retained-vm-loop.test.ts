@@ -130,6 +130,20 @@ const openHookRaceWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
+// An open sleep and a step both signal the first suspension. The step wins the
+// Promise.race, then a second step advances the same inline replay loop. A
+// retained session must absorb the losing sleep's same-generation suspension
+// signal and keep the one VM alive across both step completions.
+const openWaitRaceWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
+  async function workflow() {
+    const a = await Promise.race([sleep("1h").then(() => 999), s1()]);
+    const b = await s2();
+    return a + b;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
 // The first invocation owns r_concurrent_s1 while a hook wake starts a cold
 // peer. The peer takes the hook branch and owns r_concurrent_s2 before the
 // retained invocation resumes, exercising the real two-replay ownership race.
@@ -286,7 +300,40 @@ registerStepFunction('r_echo', async (value) => value);
 type DriveMode =
   | { type: 'normal' }
   | { type: 'fail-event'; eventType: Event['eventType'] }
-  | { type: 'inject-hook' };
+  | { type: 'inject-hook' }
+  | { type: 'inject-wait' };
+
+function injectWaitCompletion({
+  mode,
+  eventType,
+  events,
+  runId,
+  nextEventId,
+}: {
+  mode: DriveMode;
+  eventType: Event['eventType'];
+  events: Event[];
+  runId: string;
+  nextEventId: () => Event['eventId'];
+}): DriveMode {
+  if (eventType !== 'step_started' || mode.type !== 'inject-wait') {
+    return mode;
+  }
+  const waitCreated = events.find(
+    (candidate) => candidate.eventType === 'wait_created'
+  );
+  assert(waitCreated, 'expected wait_created before step');
+  events.push({
+    eventId: nextEventId(),
+    runId,
+    eventType: 'wait_completed',
+    specVersion: SPEC_VERSION_CURRENT,
+    correlationId: waitCreated.correlationId,
+    eventData: { resumeAt: waitCreated.eventData.resumeAt },
+    createdAt: new Date(),
+  });
+  return { type: 'normal' };
+}
 
 type NormalizedDurableEvent = {
   eventType: Event['eventType'];
@@ -390,6 +437,13 @@ async function drive(
         createdAt: new Date(),
       });
     }
+    mode = injectWaitCompletion({
+      mode,
+      eventType: data.eventType,
+      events,
+      runId,
+      nextEventId: () => slotToEventId(++seq),
+    });
     // step_started returns a running step entity so executeStep proceeds to
     // run the body and write step_completed.
     if (data.eventType === 'step_started') {
@@ -733,6 +787,40 @@ describe('retained VM through the inline replay loop', () => {
     );
     expect(result).toBe(30);
     expect(vmBuilds).toBe(1);
+  });
+
+  it('retains one VM while an open sleep loses to inline steps', async () => {
+    process.env.WORKFLOW_RETAINED_VM = '0';
+    const off = await drive('wrun_retained_open_wait', openWaitRaceWorkflow);
+    createContextSpy.mockClear();
+    delete process.env.WORKFLOW_RETAINED_VM;
+
+    const on = await drive('wrun_retained_open_wait', openWaitRaceWorkflow);
+    expect(on.result).toBe(30);
+    expect(on.vmBuilds).toBe(1);
+    expect(on.durableLog).toEqual(off.durableLog);
+  });
+
+  it('retains when wait_completed extends the log during an inline step', async () => {
+    process.env.WORKFLOW_RETAINED_VM = '0';
+    const off = await drive(
+      'wrun_retained_wait_between_step_events',
+      openWaitRaceWorkflow,
+      { type: 'inject-wait' }
+    );
+    createContextSpy.mockClear();
+    delete process.env.WORKFLOW_RETAINED_VM;
+
+    const on = await drive(
+      'wrun_retained_wait_between_step_events',
+      openWaitRaceWorkflow,
+      { type: 'inject-wait' }
+    );
+    // The wait completion precedes step_completed in the durable log, so it
+    // wins the race on resume while the already-started step still completes.
+    expect(on.result).toBe(1019);
+    expect(on.vmBuilds).toBe(1);
+    expect(on.durableLog).toEqual(off.durableLog);
   });
 
   it('retains when hook_received extends the log between step_started and step_completed', async () => {
