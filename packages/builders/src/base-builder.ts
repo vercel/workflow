@@ -921,10 +921,19 @@ export const __steps_registered = true;
     rewriteTsExtensions?: boolean;
     discoveredEntries?: DiscoveredEntries;
     /**
-     * When true, skip the `createRequire` banner on the steps bundle.
-     * Used by `createCombinedBundle` with `bundleFinalOutput: true` where
-     * the outer esbuild pass provides its own banner, preventing the
+     * When true, skip the ESM interop banner on the steps bundle. Despite the
+     * name, that banner declares `require`, `__filename` *and* `__dirname`, so
+     * skipping it drops all three.
+     *
+     * Used by `createCombinedBundle` with `bundleFinalOutput: true`, where the
+     * outer esbuild pass provides its own banner, preventing the
      * `__createRequire` identifier from being declared twice after inlining.
+     *
+     * Do not reach for this to silence a duplicate `require` declaration
+     * introduced elsewhere (see #3778): it also removes the
+     * `__dirname`/`__filename` shim, reintroducing `ReferenceError: __dirname
+     * is not defined in ES module scope` for CJS dependencies that reference
+     * those at module scope.
      */
     skipEsmRequireBanner?: boolean;
   }): Promise<{

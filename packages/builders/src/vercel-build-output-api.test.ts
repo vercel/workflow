@@ -152,10 +152,20 @@ export async function gaxWorkflow(): Promise<string> {
       // The shim is declared exactly once: the inner steps bundle skips its
       // banner when the outer combined pass provides one
       // (skipEsmRequireBanner), so the import bindings don't collide.
+      //
+      // Note this only covers createCombinedBundle. The same banner is also
+      // emitted by createWorkflowsBundle's final wrapper and by
+      // createWebhookBundle, which are not exercised here.
       const bundle = await readFile(
         join(getFlowFuncDir(workingDir), 'index.mjs'),
         'utf8'
       );
+      // The import binding is the assertion that matters: a duplicated banner
+      // fails at parse time on the redeclared import, before the `var` ever
+      // runs.
+      expect(
+        bundle.match(/import \{ fileURLToPath as __fileURLToPath \}/g)
+      ).toHaveLength(1);
       expect(
         bundle.match(/var __dirname = __pathDirname\(__filename\);/g)
       ).toHaveLength(1);
