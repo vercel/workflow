@@ -1,0 +1,98 @@
+---
+title: Data retention
+description: Control how long a run's data is kept after it finishes.
+type: reference
+summary: Ask the World to delete a run's user data as soon as the run ends.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/observability
+  - /docs/api-reference/workflow-api/start
+---
+
+A finished run leaves data behind: the inputs and outputs of the workflow and
+each of its steps, the payloads on its event log, and anything written to its
+streams. How long that data is kept is decided by the World you are running
+on, not by the SDK.
+
+`experimental_retention` on [`start()`](/docs/api-reference/workflow-api/start)
+lets a run ask for something shorter than the World's default.
+
+## Deleting a run's data as soon as it ends
+
+{/* @skip-typecheck: abbreviated usage; processDocumentWorkflow is the reader's own workflow */}
+```typescript lineNumbers
+const run = await start(processDocumentWorkflow, [documentId], {
+  experimental_retention: 0, // [!code highlight]
+})
+```
+
+`0` asks the World to delete the run's **user data** the moment the run
+completes or fails, rather than keeping it for the World's default window.
+
+Two values are accepted today:
+
+| Value | Meaning |
+| --- | --- |
+| `0` | Delete user data as soon as the run reaches a terminal state. |
+| `'default'` | Use the World's default. Identical to omitting the option. |
+
+<Callout type="warn">
+  The option is prefixed `experimental_` because both its name and the set of
+  values it accepts are expected to change. Expect a rename.
+</Callout>
+
+## What is deleted, and what is not
+
+**Deleted:** the run's input, output and error; every step's input, output and
+error; the payloads on the event log; and stream contents.
+
+**Kept:** the run, step and event records themselves — their ids, timestamps,
+status, step names, and any [attributes](/docs/observability/attributes) you
+set. They are kept for the World's normal period so the run stays visible in
+the CLI and web UI. A purged run is still listed and still traceable; its
+payloads simply read back as expired.
+
+Reading a payload from a purged run returns an expired-data marker rather than
+an error. The Workflow CLI renders it as `<data expired>`:
+
+```bash
+workflow inspect runs wrun_...
+```
+
+<Callout type="warn">
+  **You cannot read the return value of a run started with
+  `experimental_retention: 0`.** The deletion races your own read of the
+  result and generally wins, so `await run.returnValue` usually resolves to
+  the expired-data marker instead of the value.
+
+  This is a known limitation. If you need the result, send it somewhere you
+  control — a step that writes it to your own store, or a
+  [hook](/docs/foundations/hooks) — rather than reading it back off the run.
+</Callout>
+
+## Retention is implemented by the World
+
+The SDK records your preference; it does not enforce it. `start()` writes the
+value onto the run as the reserved `$retention` attribute, and the World
+decides what to do when the run ends. This means the option requires a World
+implementing spec version 4 or later, and that the guarantee you get is the
+World's guarantee, not the SDK's.
+
+All three first-party Worlds implement it:
+
+| World | Behavior at `experimental_retention: 0` |
+| --- | --- |
+| [Vercel](/worlds/vercel) | Deletes payload blobs and stream contents, and scrubs payloads stored inline. Run, step and event metadata is kept for your plan's default period. |
+| Local | Deletes the payloads held in the run's on-disk records. |
+| Postgres | Clears the payload columns on the run's rows. |
+
+A World that does not implement retention — including a third-party one —
+**keeps the data**. That is the deliberate fallback: a World that does not
+understand the value must not act on it, because keeping data you meant to
+delete is recoverable and deleting data you meant to keep is not. The same
+rule applies to any value other than `0` and `'default'`.
+
+If you need certainty that a specific World deletes your data, confirm it
+against that World's own documentation rather than the presence of this
+option.
