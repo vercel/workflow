@@ -76,7 +76,7 @@ You can alternatively set `AI_GATEWAY_API_KEY` from the [AI Gateway authenticati
 
 <Tab value="Provider package">
 
-AI Gateway is the default in this guide, but `WorkflowAgent` also accepts AI SDK provider instances. For example, install the OpenAI provider package:
+`WorkflowAgent` accepts any AI SDK provider. To use OpenAI, install its provider package:
 
 ```package-install
 npm i @ai-sdk/openai
@@ -279,7 +279,7 @@ export async function chatWorkflow(messages: UIMessage[]) {
 ```
 
 <Callout type="info">
-The example defaults to AI Gateway. If you use a provider package directly, import its provider and pass the model instance instead, for example `model: openai("gpt-5.6-sol")` from `@ai-sdk/openai`. The rest of the `WorkflowAgent` integration is unchanged.
+`WorkflowAgent` accepts any AI SDK provider. Import the provider and pass its model instance, for example `model: openai("gpt-5.6-sol")` from `@ai-sdk/openai`. The rest of the integration is unchanged.
 </Callout>
 
 Key changes:
