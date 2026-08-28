@@ -153,9 +153,9 @@ export async function gaxWorkflow(): Promise<string> {
       // banner when the outer combined pass provides one
       // (skipEsmRequireBanner), so the import bindings don't collide.
       //
-      // Note this only covers createCombinedBundle. The same banner is also
-      // emitted by createWorkflowsBundle's final wrapper and by
-      // createWebhookBundle, which are not exercised here.
+      // Note this covers createCombinedBundle and createWebhookBundle. The
+      // same banner is also emitted by createWorkflowsBundle's final wrapper,
+      // which is not exercised here.
       const bundle = await readFile(
         join(getFlowFuncDir(workingDir), 'index.mjs'),
         'utf8'
@@ -168,6 +168,24 @@ export async function gaxWorkflow(): Promise<string> {
       ).toHaveLength(1);
       expect(
         bundle.match(/var __dirname = __pathDirname\(__filename\);/g)
+      ).toHaveLength(1);
+
+      // The webhook route is a separately deployed function built by the same
+      // build() through its own esbuild pass (createWebhookBundle) — a CJS
+      // dependency referencing __dirname reachable from it would have crashed
+      // the same way, so it needs the shim too.
+      const webhookBundle = await readFile(
+        join(
+          workingDir,
+          '.vercel/output/functions/.well-known/workflow/v1/webhook/[token].func/index.mjs'
+        ),
+        'utf8'
+      );
+      expect(
+        webhookBundle.match(/import \{ fileURLToPath as __fileURLToPath \}/g)
+      ).toHaveLength(1);
+      expect(
+        webhookBundle.match(/var __dirname = __pathDirname\(__filename\);/g)
       ).toHaveLength(1);
     }
   );
