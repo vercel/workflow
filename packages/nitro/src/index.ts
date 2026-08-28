@@ -99,7 +99,7 @@ export default {
     });
 
     // NOTE: Temporary workaround for debug unenv mock
-    if (!nitro.options.workflow?._vite) {
+    if (!nitro.options.workflow?._integration) {
       nitro.options.alias.debug ??= 'debug';
     }
 
@@ -225,16 +225,23 @@ export default {
     // (storage, database, runtime config, virtual imports, etc.).
     if (!useLegacyVercelBuild) {
       const builder = new LocalBuilder(nitro);
-      let isInitialBuild = true;
+      const integration = nitro.options.dev
+        ? nitro.options.workflow?._integration
+        : undefined;
+      const viteIntegration =
+        integration?.kind === 'vite' ? integration : undefined;
+      if (viteIntegration) {
+        viteIntegration.builder = builder;
+      }
 
       nitro.hooks.hook('build:before', async () => {
         // Under Vite in dev this hook runs inside Vite's `config` hook, before
         // any plugin container exists, so a step reaching a Vite virtual
         // module could not be resolved here at all. `workflow/vite` runs the
-        // initial build from `configureServer` instead, with a host resolver
-        // attached. Nothing reads the generated files before then: dev loads
-        // them from disk at request time.
-        if (nitro.options.dev && nitro.options.workflow?._deferInitialBuild) {
+        // initial build after Vite completes client `buildStart` and
+        // `configureServer` has attached the host resolver. Nothing reads the
+        // generated files before then: dev loads them from disk at request time.
+        if (viteIntegration) {
           return;
         }
         await builder.build();
@@ -251,7 +258,8 @@ export default {
       });
 
       // Allows for HMR - but skip the first dev:reload since build:before already ran
-      if (nitro.options.dev) {
+      if (nitro.options.dev && !viteIntegration) {
+        let isInitialBuild = true;
         nitro.hooks.hook('dev:reload', async () => {
           if (isInitialBuild) {
             isInitialBuild = false;

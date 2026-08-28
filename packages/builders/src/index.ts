@@ -44,10 +44,11 @@ export {
   type SerdeCheckResult,
   type SerdeClassCheckResult,
 } from './serde-checker.js';
+export { isWorkflowSourceFile } from './source-extensions.js';
 export { StandaloneBuilder } from './standalone.js';
 export {
   createSwcPlugin,
-  HOST_MODULE_NAMESPACE,
+  type HostModuleResolution,
   type HostModuleResolver,
   type WorkflowAfterTransformHook,
   type WorkflowTransformResult,

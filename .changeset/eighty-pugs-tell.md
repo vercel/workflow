@@ -1,5 +1,7 @@
 ---
 '@workflow/nitro': patch
+'@workflow/nuxt': patch
+'@workflow/vite': patch
 ---
 
-Fix `vite dev` failing to start when a step reaches a Vite virtual module. The initial dev build now runs once Vite's plugin container exists, so those ids resolve instead of erroring.
+Fix Vite virtual modules in step bundles by awaiting plugin initialization and using Vite's complete server transform pipeline in development. Rebuild only once when a workflow or one of its dependencies changes.

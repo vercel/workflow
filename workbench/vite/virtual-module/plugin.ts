@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import type { Plugin } from 'vite';
 
 /**
@@ -12,14 +13,25 @@ import type { Plugin } from 'vite';
 export function virtualEnv(): Plugin {
   const id = 'virtual:env/server';
   const resolved = `\0${id}`;
+  const helper = fileURLToPath(new URL('./helper.ts', import.meta.url));
+  let databaseUrl = 'before-build-start';
   return {
     name: 'workbench:virtual-env',
-    resolveId(source) {
+    buildStart() {
+      databaseUrl = 'postgres://virtual';
+    },
+    resolveId(source, importer) {
       if (source === id) return resolved;
+      if (source === './helper.ts' && importer === resolved) return helper;
     },
     load(loadId) {
       if (loadId === resolved) {
-        return `export const env = { DATABASE_URL: 'postgres://virtual' };`;
+        return `import { appendDatabaseName } from './helper.ts';\nexport const env = { DATABASE_URL: appendDatabaseName('${databaseUrl}', '/raw') };`;
+      }
+    },
+    transform(code, transformId) {
+      if (transformId === resolved) {
+        return code.replace("'/raw'", "'/transformed'");
       }
     },
   };

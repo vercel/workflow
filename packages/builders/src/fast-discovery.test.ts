@@ -80,9 +80,18 @@ describe('fast workflow discovery', () => {
     const entryFile = join(testRoot, 'src', 'entry.ts');
     const workflowFile = join(testRoot, 'src', 'workflow.ts');
     const stepFile = join(testRoot, 'src', 'step.ts');
+    const unrelatedFile = join(testRoot, 'src', 'unrelated.ts');
 
     writeFile(entryFile, `import './workflow';\n`);
-    writeFile(workflowFile, `import { doStep } from './step';\nvoid doStep;\n`);
+    writeFile(
+      workflowFile,
+      `import { doStep } from './step';
+export async function run() {
+  'use workflow';
+  await doStep();
+}
+`
+    );
     writeFile(
       stepFile,
       `export async function doStep() {
@@ -91,9 +100,11 @@ describe('fast workflow discovery', () => {
 }
 `
     );
+    writeFile(unrelatedFile, `export const unrelated = true;\n`);
 
-    const discovered = await createBuilder(testRoot).discoverEntriesPublic(
-      [entryFile],
+    const builder = createBuilder(testRoot);
+    const discovered = await builder.discoverEntriesPublic(
+      [entryFile, unrelatedFile],
       join(testRoot, 'out')
     );
 
@@ -101,6 +112,28 @@ describe('fast workflow discovery', () => {
     expect(parentHasChild(normalize(entryFile), normalize(stepFile))).toBe(
       true
     );
+    expect(discovered.workflowDependencyFiles).toEqual(
+      new Set([
+        normalize(entryFile),
+        normalize(workflowFile),
+        normalize(stepFile),
+      ])
+    );
+    expect(builder.fileAffectsWorkflowBuild(entryFile)).toBe(true);
+    expect(builder.fileAffectsWorkflowBuild(workflowFile)).toBe(true);
+    expect(builder.fileAffectsWorkflowBuild(unrelatedFile)).toBe(false);
+  });
+
+  it('recognizes dependencies tracked by the host resolver', () => {
+    const hostFile = join(testRoot, 'src', 'host-helper.ts');
+    const builder = createBuilder(testRoot, {
+      hostResolver: {
+        resolve: async () => null,
+        isDependency: (file) => file === normalize(hostFile),
+      },
+    });
+
+    expect(builder.fileAffectsWorkflowBuild(hostFile)).toBe(true);
   });
 
   it('discovers relative JS imports whose basename includes .step', async () => {
@@ -169,6 +202,13 @@ describe('fast workflow discovery', () => {
     expect(
       parentHasChild(normalize(packageIndex), normalize(packageWorkflow))
     ).toBe(true);
+    expect(discovered.workflowDependencyFiles).toEqual(
+      new Set([
+        normalize(entryFile),
+        normalize(packageIndex),
+        normalize(packageWorkflow),
+      ])
+    );
   });
 
   it('does not descend into node_modules when discoverWorkflowsInNodeModules is false', async () => {

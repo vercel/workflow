@@ -1,11 +1,7 @@
 /**
- * Reproduction for vercel/workflow#3859.
- *
- * A step that (transitively) imports a module id only the host bundler can
- * resolve — a Vite virtual module such as `virtual:env/server` from
- * `@vite-env/core` — fails the workflow steps bundle, because that bundle is
- * produced by a standalone esbuild pass with no access to the host bundler's
- * plugin container.
+ * Reproduction coverage for vercel/workflow#3859. Step bundles are produced by
+ * standalone esbuild, so modules that only the host bundler can understand
+ * have to cross the HostModuleResolver boundary as bundle-ready source.
  */
 import {
   mkdirSync,
@@ -29,29 +25,24 @@ vi.mock('./apply-swc-transform.js', () => ({
 
 import { importParents } from './discover-entries-esbuild-plugin.js';
 import { fastDiscoverEntries } from './fast-discovery.js';
-import { createSwcPlugin } from './swc-esbuild-plugin.js';
+import {
+  createSwcPlugin,
+  type HostModuleResolver,
+} from './swc-esbuild-plugin.js';
 
 const realTmpdir = realpathSync(tmpdir());
+const resolveExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
 
 function writeFile(path: string, contents = ''): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, contents, 'utf-8');
 }
 
-const RESOLVE_EXTENSIONS = [
-  '.ts',
-  '.tsx',
-  '.js',
-  '.jsx',
-  '.mjs',
-  '.cjs',
-] as const;
-
-describe('host-provided (bundler-virtual) module ids in step bundles', () => {
+describe('host-provided modules in step bundles', () => {
   let testRoot: string;
 
   beforeEach(() => {
-    testRoot = mkdtempSync(join(realTmpdir, 'workflow-host-virtual-'));
+    testRoot = mkdtempSync(join(realTmpdir, 'workflow-host-module-'));
     importParents.clear();
     applySwcTransformMock.mockReset();
     applySwcTransformMock.mockImplementation(
@@ -67,49 +58,52 @@ describe('host-provided (bundler-virtual) module ids in step bundles', () => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 
-  /**
-   * Mirrors what `BaseBuilder.discoverEntries` does: the real builder walks
-   * imports with `fastDiscoverEntries` (a source scan that tolerates
-   * unresolvable ids), not with an esbuild pass. Using the esbuild-based
-   * discovery plugin here would fail on the virtual id before the bundle step
-   * under test ever ran.
-   */
-  async function discover(stepFile: string): Promise<void> {
+  function createProject({
+    dependencyExtension = '.ts',
+    dependencyImport = '../db/index',
+    dependencySource = "import { env } from 'virtual:env/server';\nexport const url = env.DATABASE_URL;",
+  }: {
+    dependencyExtension?: string;
+    dependencyImport?: string;
+    dependencySource?: string;
+  } = {}) {
+    const stepFile = join(testRoot, 'workflows', 'my-workflow.ts');
+    const dependencyFile = join(testRoot, 'db', `index${dependencyExtension}`);
+    writeFile(dependencyFile, dependencySource);
+    writeFile(
+      stepFile,
+      `import { url } from '${dependencyImport}';\nexport async function myStep() {\n  'use step';\n  return url;\n}`
+    );
+    return { dependencyFile, stepFile };
+  }
+
+  async function discover(stepFile: string) {
+    const state = {
+      discoveredSteps: new Set<string>(),
+      discoveredWorkflows: new Set<string>(),
+      discoveredSerdeFiles: new Set<string>(),
+      discoveredFiles: new Set<string>(),
+    };
     await fastDiscoverEntries({
       entryPoints: [stepFile],
-      state: {
-        discoveredSteps: new Set<string>(),
-        discoveredWorkflows: new Set<string>(),
-        discoveredSerdeFiles: new Set<string>(),
-        discoveredFiles: new Set<string>(),
-      },
+      state,
       defaultTsconfigPath: undefined,
       workingDir: testRoot,
     });
+    return state;
   }
 
-  /**
-   * Without a host resolver there is nothing that can satisfy the id, so the
-   * build still fails — that is the pre-fix behaviour, kept as the baseline
-   * the resolver-backed case below is measured against.
-   */
-  it('fails without a host resolver when a local dependency imports a bundler-virtual id', async () => {
+  async function buildStep({
+    bundleTransitiveLocalStepDependencies = true,
+    hostResolver,
+    stepFile,
+  }: {
+    bundleTransitiveLocalStepDependencies?: boolean;
+    hostResolver?: HostModuleResolver;
+    stepFile: string;
+  }): Promise<esbuild.BuildResult | esbuild.BuildFailure> {
     const outdir = join(testRoot, 'out');
-    const stepFile = join(testRoot, 'workflows', 'my-workflow.ts');
-    const dbFile = join(testRoot, 'db', 'index.ts');
-
-    writeFile(
-      dbFile,
-      `import { env } from 'virtual:env/server';\nexport const url = env.DATABASE_URL;`
-    );
-    writeFile(
-      stepFile,
-      `import { url } from '../db/index';\nexport async function myStep() {\n  'use step';\n  return url;\n}`
-    );
-
-    await discover(stepFile);
-
-    const result = await esbuild
+    return await esbuild
       .build({
         entryPoints: [stepFile],
         absWorkingDir: testRoot,
@@ -119,185 +113,205 @@ describe('host-provided (bundler-virtual) module ids in step bundles', () => {
         platform: 'node',
         write: false,
         logLevel: 'silent',
-        resolveExtensions: [...RESOLVE_EXTENSIONS],
+        resolveExtensions,
         plugins: [
           createSwcPlugin({
             mode: 'step',
             entriesToBundle: [stepFile],
             outdir,
-            bundleTransitiveLocalStepDependencies: true,
+            bundleTransitiveLocalStepDependencies,
+            hostResolver,
           }),
         ],
       })
       .catch((error: esbuild.BuildFailure) => error);
+  }
 
-    const errors = 'errors' in result ? result.errors : [];
-    expect(errors.map((e) => e.text).join('\n')).toContain(
+  function errorText(result: esbuild.BuildResult | esbuild.BuildFailure) {
+    return result.errors.map((error) => error.text).join('\n');
+  }
+
+  function outputText(result: esbuild.BuildResult | esbuild.BuildFailure) {
+    return 'outputFiles' in result ? result.outputFiles?.[0]?.text || '' : '';
+  }
+
+  it('fails without a host resolver for a host-only module', async () => {
+    const { stepFile } = createProject();
+    await discover(stepFile);
+
+    const result = await buildStep({ stepFile });
+
+    expect(errorText(result)).toContain(
       'Could not resolve "virtual:env/server"'
     );
   });
 
-  /**
-   * Defect 1: the dev path (`bundleTransitiveLocalStepDependencies: true`)
-   * inlines project-local files reachable from a step, so a virtual id in that
-   * graph is a hard error unless something can provide it. Given a resolver
-   * backed by the host bundler's plugin container, the module's source is
-   * inlined into the steps bundle instead.
-   */
-  it('inlines a bundler-virtual dependency through the host resolver', async () => {
-    const outdir = join(testRoot, 'out');
-    const stepFile = join(testRoot, 'workflows', 'my-workflow.ts');
-    const dbFile = join(testRoot, 'db', 'index.ts');
-
-    writeFile(
-      dbFile,
-      `import { env } from 'virtual:env/server';\nexport const url = env.DATABASE_URL;`
-    );
-    writeFile(
-      stepFile,
-      `import { url } from '../db/index';\nexport async function myStep() {\n  'use step';\n  return url;\n}`
-    );
-
+  it('inlines bundle-ready source from the host resolver', async () => {
+    const { dependencyFile, stepFile } = createProject();
     await discover(stepFile);
-
-    const resolveId = vi.fn(async (source: string) =>
-      source === 'virtual:env/server' ? '\0virtual:env/server' : null
-    );
-    const load = vi.fn(async (id: string) =>
-      id === '\0virtual:env/server'
-        ? `export const env = { DATABASE_URL: 'postgres://from-host' };`
+    const resolve = vi.fn<HostModuleResolver['resolve']>(async (source) =>
+      source === 'virtual:env/server'
+        ? {
+            id: '\0virtual:env/server',
+            external: false,
+            code: `export const env = { DATABASE_URL: 'postgres://from-host' };`,
+          }
         : null
     );
 
-    const result = await esbuild
-      .build({
-        entryPoints: [stepFile],
-        absWorkingDir: testRoot,
-        outdir,
-        bundle: true,
-        format: 'esm',
-        platform: 'node',
-        write: false,
-        logLevel: 'silent',
-        resolveExtensions: [...RESOLVE_EXTENSIONS],
-        plugins: [
-          createSwcPlugin({
-            mode: 'step',
-            entriesToBundle: [stepFile],
-            outdir,
-            bundleTransitiveLocalStepDependencies: true,
-            hostResolver: { resolveId, load },
-          }),
-        ],
-      })
-      .catch((error: esbuild.BuildFailure) => error);
+    const result = await buildStep({ stepFile, hostResolver: { resolve } });
 
-    const errors = 'errors' in result ? result.errors : [];
-    expect(errors.map((e) => e.text).join('\n')).toBe('');
-    const output = 'outputFiles' in result ? result.outputFiles![0].text : '';
-    expect(output).toContain('postgres://from-host');
-    expect(output).not.toMatch(/from\s+["']virtual:env\/server["']/);
-    expect(resolveId).toHaveBeenCalledWith('virtual:env/server', dbFile);
+    expect(errorText(result)).toBe('');
+    expect(outputText(result)).toContain('postgres://from-host');
+    expect(outputText(result)).not.toMatch(
+      /from\s+["']virtual:env\/server["']/
+    );
+    expect(resolve).toHaveBeenCalledWith('virtual:env/server', dependencyFile);
   });
 
-  /**
-   * The host resolver is a last resort, not an override: a specifier that
-   * resolves on disk must never be handed to it.
-   */
-  it('does not consult the host resolver for specifiers that resolve on disk', async () => {
-    const outdir = join(testRoot, 'out');
-    const stepFile = join(testRoot, 'workflows', 'my-workflow.ts');
-    const helperFile = join(testRoot, 'db', 'index.ts');
-
-    writeFile(helperFile, `export const url = 'postgres://from-disk';`);
-    writeFile(
-      stepFile,
-      `import { url } from '../db/index';\nexport async function myStep() {\n  'use step';\n  return url;\n}`
+  it('falls back to the host for unresolved path-style imports', async () => {
+    const { dependencyFile, stepFile } = createProject({
+      dependencySource: `import { env } from './generated';\nexport const url = env.DATABASE_URL;`,
+    });
+    await discover(stepFile);
+    const resolve = vi.fn<HostModuleResolver['resolve']>(async (source) =>
+      source === './generated'
+        ? {
+            id: '\0virtual:generated',
+            external: false,
+            code: `export const env = { DATABASE_URL: 'postgres://generated' };`,
+          }
+        : null
     );
 
+    const result = await buildStep({ stepFile, hostResolver: { resolve } });
+
+    expect(errorText(result)).toBe('');
+    expect(outputText(result)).toContain('postgres://generated');
+    expect(resolve).toHaveBeenCalledWith('./generated', dependencyFile);
+  });
+
+  it('bundles transformed nested host files and preserves external imports', async () => {
+    const { stepFile } = createProject({
+      dependencySource: `export { url } from 'virtual:env/server';`,
+    });
+    await discover(stepFile);
+    const helperFile = join(testRoot, 'host', 'helper.ts');
+    const resolve = vi.fn<HostModuleResolver['resolve']>(
+      async (source, importer) => {
+        if (source === 'virtual:env/server') {
+          return {
+            id: '\0virtual:env/server',
+            external: false,
+            code: `export { url } from './helper.ts';`,
+          };
+        }
+        if (source === './helper.ts' && importer === '\0virtual:env/server') {
+          return {
+            id: helperFile,
+            external: false,
+            code: `import { basename } from 'node:path';\nexport const url = basename('/host/transformed');`,
+          };
+        }
+        if (source === 'node:path') {
+          return { id: 'node:path', external: true };
+        }
+        return null;
+      }
+    );
+
+    const result = await buildStep({ stepFile, hostResolver: { resolve } });
+
+    expect(errorText(result)).toBe('');
+    expect(outputText(result)).toContain('node:path');
+    expect(outputText(result)).toContain('/host/transformed');
+  });
+
+  it('preserves host resolution errors', async () => {
+    const { stepFile } = createProject();
+    await discover(stepFile);
+    const hostResolver: HostModuleResolver = {
+      async resolve() {
+        throw new Error('host transform failed');
+      },
+    };
+
+    const result = await buildStep({ stepFile, hostResolver });
+
+    expect(errorText(result)).toContain('host transform failed');
+  });
+
+  it('does not consult the host for modules that resolve on disk', async () => {
+    const { stepFile } = createProject({
+      dependencySource: `export const url = 'postgres://from-disk';`,
+    });
+    await discover(stepFile);
+    const resolve = vi.fn<HostModuleResolver['resolve']>(async () => ({
+      id: '\0should-not-be-used',
+      external: false,
+      code: `export const url = 'from-host';`,
+    }));
+
+    const result = await buildStep({ stepFile, hostResolver: { resolve } });
+
+    expect(errorText(result)).toBe('');
+    expect(outputText(result)).toContain('postgres://from-disk');
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('keeps a `.js`-suffixed TypeScript dependency external in production', async () => {
+    const { stepFile } = createProject({ dependencyImport: '../db/index.js' });
     await discover(stepFile);
 
-    const resolveId = vi.fn(async () => '\0should-not-be-used');
-    const load = vi.fn(async () => `export const url = 'from-host';`);
-
-    const result = await esbuild.build({
-      entryPoints: [stepFile],
-      absWorkingDir: testRoot,
-      outdir,
-      bundle: true,
-      format: 'esm',
-      platform: 'node',
-      write: false,
-      logLevel: 'silent',
-      resolveExtensions: [...RESOLVE_EXTENSIONS],
-      plugins: [
-        createSwcPlugin({
-          mode: 'step',
-          entriesToBundle: [stepFile],
-          outdir,
-          bundleTransitiveLocalStepDependencies: true,
-          hostResolver: { resolveId, load },
-        }),
-      ],
+    const result = await buildStep({
+      bundleTransitiveLocalStepDependencies: false,
+      stepFile,
     });
 
-    expect(result.errors).toHaveLength(0);
-    expect(result.outputFiles[0].text).toContain('postgres://from-disk');
-    expect(resolveId).not.toHaveBeenCalled();
-    expect(load).not.toHaveBeenCalled();
+    expect(errorText(result)).toBe('');
+    expect(outputText(result)).toMatch(
+      /from\s+["'][^"']*db\/index\.(ts|js)["']/
+    );
   });
 
-  /**
-   * Defect 2: with the same graph but `bundleTransitiveLocalStepDependencies`
-   * off (the production path), the local dependency is supposed to stay
-   * external so the host bundler resolves it — and it does, but only when the
-   * import specifier is extensionless. A TypeScript NodeNext-style `./x.js`
-   * specifier is not resolved by the plugin's enhanced-resolve pass (no
-   * `extensionAlias` mapping), so it falls through to esbuild, gets inlined,
-   * and fails the production build too.
-   */
-  it('keeps a `.js`-suffixed local dependency external in the production path', async () => {
-    const outdir = join(testRoot, 'out');
-    const stepFile = join(testRoot, 'workflows', 'my-workflow.ts');
-    const dbFile = join(testRoot, 'db', 'index.ts');
+  it('resolves `.jsx` output specifiers to `.tsx` source consistently', async () => {
+    const { dependencyFile, stepFile } = createProject({
+      dependencyExtension: '.tsx',
+      dependencyImport: '../db/index.jsx',
+      dependencySource: `export const url: string = 'tsx-source';`,
+    });
+    const state = await discover(stepFile);
 
-    writeFile(
-      dbFile,
-      `import { env } from 'virtual:env/server';\nexport const url = env.DATABASE_URL;`
-    );
-    writeFile(
+    const result = await buildStep({
+      bundleTransitiveLocalStepDependencies: false,
       stepFile,
-      `import { url } from '../db/index.js';\nexport async function myStep() {\n  'use step';\n  return url;\n}`
+    });
+
+    expect(state.discoveredFiles).toContain(dependencyFile);
+    expect(errorText(result)).toBe('');
+    expect(outputText(result)).toMatch(/from\s+["'][^"']*db\/index\.tsx["']/);
+  });
+
+  it('uses the exact JavaScript file in both discovery and bundling', async () => {
+    const { dependencyFile, stepFile } = createProject({
+      dependencyExtension: '.js',
+      dependencyImport: '../db/index.js',
+      dependencySource: `export const url = 'javascript-source';`,
+    });
+    writeFile(
+      join(testRoot, 'db', 'index.ts'),
+      `export const url = 'typescript-source';`
     );
+    const state = await discover(stepFile);
 
-    await discover(stepFile);
+    const result = await buildStep({
+      bundleTransitiveLocalStepDependencies: false,
+      stepFile,
+    });
 
-    const result = await esbuild
-      .build({
-        entryPoints: [stepFile],
-        absWorkingDir: testRoot,
-        outdir,
-        bundle: true,
-        format: 'esm',
-        platform: 'node',
-        write: false,
-        logLevel: 'silent',
-        resolveExtensions: [...RESOLVE_EXTENSIONS],
-        plugins: [
-          createSwcPlugin({
-            mode: 'step',
-            entriesToBundle: [stepFile],
-            outdir,
-          }),
-        ],
-      })
-      .catch((error: esbuild.BuildFailure) => error);
-
-    // Expected: `db/index` stays external, so the virtual id is never seen
-    // here and the host bundler resolves both later.
-    const errors = 'errors' in result ? result.errors : [];
-    expect(errors).toHaveLength(0);
-    const output = 'outputFiles' in result ? result.outputFiles![0].text : '';
-    expect(output).toMatch(/from\s+["'][^"']*db\/index\.(ts|js)["']/);
+    expect(state.discoveredFiles).toContain(dependencyFile);
+    expect(errorText(result)).toBe('');
+    expect(outputText(result)).toContain('db/index.js');
+    expect(outputText(result)).not.toContain('db/index.ts');
   });
 });

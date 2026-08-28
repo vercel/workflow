@@ -6,33 +6,17 @@ import enhancedResolveOriginal from 'enhanced-resolve';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
 import { importParents } from './discover-entries-esbuild-plugin.js';
+import {
+  getSourceExtensionFallbacks,
+  SOURCE_EXTENSIONS,
+} from './source-extensions.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 
-const FAST_DISCOVERY_SOURCE_EXTENSIONS = [
-  '.ts',
-  '.tsx',
-  '.mts',
-  '.cts',
-  '.js',
-  '.jsx',
-  '.mjs',
-  '.cjs',
-];
-const FAST_DISCOVERY_SOURCE_EXTENSION_SET = new Set(
+const FAST_DISCOVERY_SOURCE_EXTENSIONS = SOURCE_EXTENSIONS;
+const FAST_DISCOVERY_SOURCE_EXTENSION_SET = new Set<string>(
   FAST_DISCOVERY_SOURCE_EXTENSIONS
 );
 
-/**
- * TypeScript source extensions to try when an import specifier names a
- * JavaScript *output* extension that has no file on disk — the NodeNext/ESM
- * convention where `./db.js` refers to `./db.ts`.
- */
-const TS_SOURCE_EXTENSIONS_FOR_OUTPUT: Record<string, string[]> = {
-  '.js': ['.ts', '.tsx'],
-  '.jsx': ['.tsx'],
-  '.mjs': ['.mts'],
-  '.cjs': ['.cts'],
-};
 const fastDiscoveryResolve = promisify(
   enhancedResolveOriginal.create({
     extensions: [...FAST_DISCOVERY_SOURCE_EXTENSIONS, '.json', '.node'],
@@ -62,11 +46,14 @@ export interface DiscoveredEntries {
   discoveredWorkflows: Set<string>;
   discoveredSerdeFiles: Set<string>;
   /**
-   * All JS/TS files visited while walking the workflow import graph.
-   * Watch-mode integrations use this to distinguish relevant HMR changes from
-   * unrelated application file edits.
+   * All JS/TS files visited during discovery, including unrelated scan roots.
    */
   discoveredFiles?: Set<string>;
+  /**
+   * Workflow/step/serde roots, their transitive dependencies, and the import
+   * chain that made each root discoverable.
+   */
+  workflowDependencyFiles?: Set<string>;
 }
 
 interface FastDiscoverEntriesOptions {
@@ -252,15 +239,71 @@ function isNodeModulesPath(filePath: string): boolean {
   );
 }
 
-function addImportParent(parent: string, child: string): void {
+function addImportEdge(
+  graph: Map<string, Set<string>>,
+  parent: string,
+  child: string
+): void {
   const normalizedParent = normalizePath(parent);
   const normalizedChild = normalizePath(child);
-  let children = importParents.get(normalizedParent);
+  let children = graph.get(normalizedParent);
   if (!children) {
     children = new Set<string>();
-    importParents.set(normalizedParent, children);
+    graph.set(normalizedParent, children);
   }
   children.add(normalizedChild);
+}
+
+function reverseImportGraph(
+  graph: Map<string, Set<string>>
+): Map<string, Set<string>> {
+  const reversed = new Map<string, Set<string>>();
+  for (const [parent, children] of graph) {
+    for (const child of children) {
+      let parents = reversed.get(child);
+      if (!parents) {
+        parents = new Set();
+        reversed.set(child, parents);
+      }
+      parents.add(parent);
+    }
+  }
+  return reversed;
+}
+
+function collectReachableFiles(
+  roots: Set<string>,
+  graph: Map<string, Set<string>>
+): Set<string> {
+  const reachable = new Set(roots);
+  const queue = [...roots];
+  for (const file of queue) {
+    for (const next of graph.get(file) ?? []) {
+      if (reachable.has(next)) continue;
+      reachable.add(next);
+      queue.push(next);
+    }
+  }
+  return reachable;
+}
+
+function collectWorkflowDependencyFiles(
+  state: DiscoveredEntries,
+  graph: Map<string, Set<string>>
+): Set<string> {
+  const roots = new Set([
+    ...state.discoveredSteps,
+    ...state.discoveredWorkflows,
+    ...state.discoveredSerdeFiles,
+  ]);
+  // Downward reachability covers bundle dependencies. Upward reachability
+  // covers files that can add or remove the import making a root discoverable.
+  // Keeping the traversals separate avoids pulling in unrelated siblings of
+  // those ancestors.
+  return new Set([
+    ...collectReachableFiles(roots, graph),
+    ...collectReachableFiles(roots, reverseImportGraph(graph)),
+  ]);
 }
 
 const REGEX_PREFIX_CHARS = new Set([
@@ -661,6 +704,7 @@ export async function fastDiscoverEntries({
   workingDir,
   discoverWorkflowsInNodeModules = true,
 }: FastDiscoverEntriesOptions): Promise<void> {
+  const currentImportGraph = new Map<string, Set<string>>();
   const readLimit = createLimiter(FAST_DISCOVERY_READ_CONCURRENCY);
   const resolveLimit = createLimiter(FAST_DISCOVERY_RESOLVE_CONCURRENCY);
   const resolveCache = new Map<string, Promise<string | null>>();
@@ -773,8 +817,7 @@ export async function fastDiscoverEntries({
       // dropped: the file is never scanned for directives, and callers that
       // ask whether a step reaches it (`parentHasChild`) get a false negative.
       // See vercel/workflow#3859.
-      for (const candidate of TS_SOURCE_EXTENSIONS_FOR_OUTPUT[extension] ??
-        []) {
+      for (const candidate of getSourceExtensionFallbacks(extension)) {
         const candidatePath = `${basePath.slice(0, -extension.length)}${candidate}`;
         if (await fileExists(candidatePath)) {
           return normalizePath(candidatePath);
@@ -986,7 +1029,8 @@ export async function fastDiscoverEntries({
       return;
     }
 
-    addImportParent(filePath, resolved);
+    addImportEdge(importParents, filePath, resolved);
+    addImportEdge(currentImportGraph, filePath, resolved);
     if (!isJsTsFile(resolved) || isGeneratedBuildArtifactPath(resolved)) {
       return;
     }
@@ -1071,4 +1115,8 @@ export async function fastDiscoverEntries({
   }
 
   state.discoveredFiles = processedFiles;
+  state.workflowDependencyFiles = collectWorkflowDependencyFiles(
+    state,
+    currentImportGraph
+  );
 }

@@ -80,7 +80,10 @@ export class LocalBuilder extends BaseBuilder {
       // Vite virtual module anywhere in that graph has to be resolvable here.
       // `workflow/vite` supplies this; a bare Nitro app has no host bundler to
       // ask and leaves it undefined.
-      hostResolver: nitro.options.workflow?._hostResolver,
+      hostResolver:
+        nitro.options.workflow?._integration?.kind === 'vite'
+          ? nitro.options.workflow._integration.hostResolver
+          : undefined,
     });
     this.#outDir = outDir;
   }
@@ -117,6 +120,18 @@ export class LocalBuilder extends BaseBuilder {
   }
 
   async #buildOnce(): Promise<void> {
+    const hostResolver = this.config.hostResolver;
+    hostResolver?.beginBuild?.();
+    try {
+      await this.#buildArtifacts();
+      hostResolver?.endBuild?.(true);
+    } catch (error) {
+      hostResolver?.endBuild?.(false);
+      throw error;
+    }
+  }
+
+  async #buildArtifacts(): Promise<void> {
     const inputFiles = await this.getInputFiles();
     await mkdir(this.#outDir, { recursive: true });
 

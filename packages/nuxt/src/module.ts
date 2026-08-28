@@ -30,7 +30,7 @@ const module: NuxtModule<ModuleOptions> = defineNuxtModule({
       nuxt.options.nitro.workflow.typescriptPlugin = options.typescriptPlugin;
       // Signal to @workflow/nitro that Vite handles SSR externalization,
       // so the Nitro module should not override Nitro externals config.
-      nuxt.options.nitro.workflow._vite = true;
+      nuxt.options.nitro.workflow._integration = { kind: 'vite-ssr' };
       nuxt.options.nitro.modules.push('@workflow/nitro');
     }
 

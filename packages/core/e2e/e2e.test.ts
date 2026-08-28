@@ -2038,6 +2038,29 @@ describe.concurrent('e2e', () => {
     }
   );
 
+  test.runIf(process.env.APP_NAME === 'vite')(
+    'Vite host modules are initialized and transformed in step bundles',
+    { timeout: 60_000 },
+    async () => {
+      const response = await fetch(
+        new URL('/api/virtual-module', deploymentUrl),
+        {
+          method: 'POST',
+          headers: await getTrustedSourcesHeaders(),
+        }
+      );
+      if (!response.ok) {
+        throw new Error(
+          `Failed to run the Vite virtual-module workflow: ${response.status} ${await response.text()}`
+        );
+      }
+
+      await expect(response.json()).resolves.toMatchObject({
+        returnValue: 'postgres://virtual/transformed',
+      });
+    }
+  );
+
   test(
     'hookCleanupTestWorkflow - hook token reuse after workflow completion',
     { timeout: 60_000 },
