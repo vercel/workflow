@@ -48,7 +48,9 @@ export interface HostModuleResolver {
   resolveId(
     source: string,
     importer?: string
-  ): Promise<string | null | undefined>;
+  ): Promise<
+    { readonly id: string; readonly external?: boolean } | null | undefined
+  >;
   /** Load the source for a host module id, or decline. */
   load(id: string): Promise<string | null | undefined>;
 }
@@ -299,12 +301,31 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
                 // Nothing on disk satisfies this specifier. Before letting
                 // esbuild fail it, ask the host bundler: it may be a virtual
                 // module only the host's plugin pipeline can provide.
-                const hostId = await hostResolver.resolveId(
-                  specifier,
-                  args.importer || undefined
-                );
-                if (hostId) {
-                  return { path: hostId, namespace: HOST_MODULE_NAMESPACE };
+                try {
+                  const hostResolution = await hostResolver.resolveId(
+                    specifier,
+                    args.importer || undefined
+                  );
+                  if (hostResolution?.external) {
+                    return { path: hostResolution.id, external: true };
+                  }
+                  if (hostResolution) {
+                    return {
+                      path: hostResolution.id,
+                      namespace: HOST_MODULE_NAMESPACE,
+                    };
+                  }
+                } catch (error) {
+                  return {
+                    errors: [
+                      {
+                        text:
+                          error instanceof Error
+                            ? error.message
+                            : String(error),
+                      },
+                    ],
+                  };
                 }
               }
             }

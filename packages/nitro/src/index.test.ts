@@ -178,6 +178,7 @@ describe('@workflow/nitro builder lifecycle', () => {
 
     const server = await createServer({
       configFile: false,
+      environments: { nitro: { consumer: 'server' } },
       logLevel: 'silent',
       root: nitro.options.rootDir,
       server: {
@@ -196,17 +197,17 @@ describe('@workflow/nitro builder lifecycle', () => {
       ],
     });
 
-    await server.environments.ssr.pluginContainer.buildStart();
     expect(events.slice(0, 2)).toEqual(['host buildStart', 'workflow build']);
     expect(build).toHaveBeenCalledOnce();
     await server.close();
   });
 
-  it('declines modules the host marks as external', async () => {
+  it('preserves modules the host marks as external', async () => {
     vi.spyOn(LocalBuilder.prototype, 'build').mockResolvedValue();
     const { nitro, plugins } = await setupViteHarness();
     const server = await createServer({
       configFile: false,
+      environments: { nitro: { consumer: 'server' } },
       logLevel: 'silent',
       root: nitro.options.rootDir,
       server: { middlewareMode: true },
@@ -225,7 +226,7 @@ describe('@workflow/nitro builder lifecycle', () => {
 
     await expect(
       nitro.options.workflow._hostResolver.resolveId('optional-native-module')
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ id: 'optional-native-module', external: true });
     await server.close();
   });
 
@@ -238,6 +239,7 @@ describe('@workflow/nitro builder lifecycle', () => {
     await expect(
       createServer({
         configFile: false,
+        environments: { nitro: { consumer: 'server' } },
         logLevel: 'silent',
         root: nitro.options.rootDir,
         server: { middlewareMode: true },

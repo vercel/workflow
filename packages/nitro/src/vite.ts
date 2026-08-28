@@ -3,34 +3,10 @@ import { workflowTransformPlugin } from '@workflow/rollup';
 import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { Nitro } from 'nitro/types';
 import type {} from 'nitro/vite';
-import type { Plugin, TransformResult } from 'vite';
+import type { Plugin, PluginContainer, TransformResult } from 'vite';
 import { LocalBuilder } from './builders.js';
 import type { ModuleOptions } from './index.js';
 import nitroModule from './index.js';
-
-/**
- * Vite's plugin container, narrowed to the two hooks the workflow builder
- * needs. Typed structurally so this compiles against Vite versions whose
- * container types differ.
- */
-interface VitePluginContainer {
-  resolveId(
-    id: string,
-    importer?: string,
-    options?: { ssr: true }
-  ): Promise<
-    | {
-        id: string;
-        external?: boolean | 'absolute' | 'relative';
-      }
-    | null
-    | undefined
-  >;
-  load(
-    id: string,
-    options?: { ssr: true }
-  ): Promise<string | { code: string } | null | undefined>;
-}
 
 export function workflow(options?: ModuleOptions): Plugin[] {
   let builder: LocalBuilder;
@@ -40,8 +16,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
 
   // Populated in `configureServer`. Until then there is no container to ask,
   // which is exactly why the initial dev build is deferred to that point.
-  let pluginContainer: VitePluginContainer | undefined;
-  let legacyContainer = false;
+  let pluginContainer: Pick<PluginContainer, 'resolveId' | 'load'> | undefined;
 
   /**
    * Last-resort resolver handed to the builder. Held as a stable object so it
@@ -50,20 +25,13 @@ export function workflow(options?: ModuleOptions): Plugin[] {
    */
   const hostResolver: HostModuleResolver = {
     async resolveId(source, importer) {
-      const resolved = await pluginContainer?.resolveId(
-        source,
-        importer,
-        legacyContainer ? { ssr: true } : undefined
-      );
-      // External results have no host-provided source to load. Decline them so
-      // esbuild preserves its existing handling (for example optional requires).
-      return resolved && !resolved.external ? resolved.id : null;
+      const resolved = await pluginContainer?.resolveId(source, importer);
+      return resolved
+        ? { id: resolved.id, external: Boolean(resolved.external) }
+        : null;
     },
     async load(id) {
-      const loaded = await pluginContainer?.load(
-        id,
-        legacyContainer ? { ssr: true } : undefined
-      );
+      const loaded = await pluginContainer?.load(id);
       if (loaded == null) return null;
       return typeof loaded === 'string' ? loaded : loaded.code;
     },
@@ -134,20 +102,7 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         // The server environment's container resolves module ids reached by
         // server-side steps. The awaited buildStart hook runs the deferred
         // initial build after this container is captured.
-        const environment = (server.environments?.nitro ??
-          server.environments?.ssr) as
-          | { pluginContainer?: VitePluginContainer }
-          | undefined;
-        // `server.pluginContainer` is the pre-environment-API shape. If
-        // neither is present the resolver simply declines everything, which is
-        // the behaviour from before this hook existed.
-        pluginContainer = environment?.pluginContainer;
-        if (!pluginContainer) {
-          pluginContainer = (
-            server as { pluginContainer?: VitePluginContainer }
-          ).pluginContainer;
-          legacyContainer = true;
-        }
+        pluginContainer = server.environments.nitro?.pluginContainer;
 
         // Add middleware to intercept 404s on workflow routes before Vite's SPA fallback
         return () => {
