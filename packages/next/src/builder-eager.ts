@@ -23,79 +23,46 @@ const importEsm = new Function('specifier', 'return import(specifier)') as <T>(
   specifier: string
 ) => Promise<T>;
 
-const appEntrypoints = new Set([
-  'page',
-  'route',
-  'layout',
-  'default',
-  'error',
-  'loading',
-  'template',
-  'not-found',
-  'forbidden',
-  'unauthorized',
-  'sitemap',
-  'icon',
-  'apple-icon',
-  'opengraph-image',
-  'twitter-image',
-]);
-const appRootEntrypoints = new Set([
-  'global-error',
-  'global-not-found',
-  'robots',
-  'manifest',
-]);
-const rootEntrypoints = new Set([
-  'instrumentation',
-  'instrumentation-client',
-  'middleware',
-  'proxy',
-]);
-const numberedMetadataEntrypoint =
-  /^(?:icon|apple-icon|opengraph-image|twitter-image)\d+$/;
-const mdxComponentsEntrypoint = /^mdx-components\.[jt]sx?$/;
+const appEntrypoint =
+  /^(?:page|route|layout|default|error|loading|template|not-found|forbidden|unauthorized|sitemap|(?:icon|apple-icon|opengraph-image|twitter-image)\d?)$/;
+const appRootEntrypoint = /^(?:global-error|global-not-found|robots|manifest)$/;
+const rootEntrypoint = /^(?:instrumentation|middleware|proxy)$/;
+const rootModuleEntrypoint =
+  /^(?:instrumentation-client|mdx-components)\.(?:mjs|[jt]sx?)$/;
+const rootModuleNames = ['instrumentation-client', 'mdx-components'];
+const rootModuleExtensions = ['js', 'mjs', 'tsx', 'ts', 'jsx'];
 
-export function isNextEntrypoint(
-  entry: string,
-  pageExtensions: readonly string[]
-): boolean {
-  if (entry.endsWith('.d.ts')) return false;
+export function createNextEntrypointMatcher(pageExtensions: readonly string[]) {
+  const extensions = [...pageExtensions].sort((a, b) => b.length - a.length);
 
-  const path = entry.split('/');
-  const filename = path.at(-1)!;
-  const inSrc = path[0] === 'src';
-  const rootDepth = inSrc ? 2 : 1;
-  if (path.length === rootDepth && mdxComponentsEntrypoint.test(filename)) {
-    return true;
-  }
+  return (entry: string): boolean => {
+    if (/\.d\.(?:cts|mts|ts)$/.test(entry)) return false;
 
-  const extension = [...pageExtensions]
-    .sort((a, b) => b.length - a.length)
-    .find((extension) => entry.endsWith(`.${extension}`));
-  if (!extension) return false;
+    const sourceEntry = entry.replace(/^src\//, '');
+    const path = sourceEntry.split('/');
+    const filename = path[path.length - 1];
+    if (rootModuleEntrypoint.test(sourceEntry)) return true;
 
-  const name = filename.slice(0, -extension.length - 1);
-  const directory = path[inSrc ? 1 : 0];
+    const extension = extensions.find((extension) =>
+      sourceEntry.endsWith(`.${extension}`)
+    );
+    if (!extension) return false;
 
-  if (directory === 'pages') return true;
+    const name = filename.slice(0, -extension.length - 1);
+    if (path[0] === 'pages') return true;
 
-  if (directory === 'app') {
-    const segments = path.slice(inSrc ? 2 : 1, -1);
-    if (segments.some((segment) => segment.startsWith('_'))) return false;
+    if (path[0] === 'app') {
+      const segments = path.slice(1, -1);
+      if (segments.some((segment) => segment.startsWith('_'))) return false;
 
-    if (appEntrypoints.has(name) || numberedMetadataEntrypoint.test(name)) {
-      return true;
+      return (
+        appEntrypoint.test(name) ||
+        (path.length === 2 && appRootEntrypoint.test(name))
+      );
     }
-    const appRootDepth = inSrc ? 3 : 2;
-    return path.length === appRootDepth && appRootEntrypoints.has(name);
-  }
 
-  if (path.length === rootDepth) {
-    return rootEntrypoints.has(name);
-  }
-
-  return false;
+    return rootEntrypoint.test(sourceEntry.slice(0, -extension.length - 1));
+  };
 }
 
 // Create the eager Next builder dynamically by extending the ESM BaseBuilder.
@@ -697,12 +664,34 @@ export async function getNextBuilderEager(
 
     protected async getInputFiles(): Promise<string[]> {
       const inputFiles = await super.getInputFiles();
-      return inputFiles.filter((file) =>
-        isNextEntrypoint(
-          relative(this.config.workingDir, file).replaceAll('\\', '/'),
-          this.config.pageExtensions
-        )
+      const isNextEntrypoint = createNextEntrypointMatcher(
+        this.config.pageExtensions
       );
+      const inputFileSet = new Set(inputFiles);
+      const rootModuleFiles = new Set(
+        rootModuleNames.flatMap((name) => {
+          const file = ['src', '']
+            .flatMap((directory) =>
+              rootModuleExtensions.map((extension) =>
+                join(this.config.workingDir, directory, `${name}.${extension}`)
+              )
+            )
+            .find((candidate) => inputFileSet.has(candidate));
+          return file ? [file] : [];
+        })
+      );
+
+      return inputFiles.filter((file) => {
+        const entry = relative(this.config.workingDir, file).replaceAll(
+          '\\',
+          '/'
+        );
+        const rootModule = entry.startsWith('src/') ? entry.slice(4) : entry;
+        if (rootModuleEntrypoint.test(rootModule)) {
+          return rootModuleFiles.has(file);
+        }
+        return isNextEntrypoint(entry);
+      });
     }
 
     private async writeFunctionsConfig(outputDir: string) {
