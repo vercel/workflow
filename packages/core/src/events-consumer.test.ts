@@ -1066,6 +1066,125 @@ describe('EventsConsumer', () => {
       });
     });
 
+    it('releases a parked attr_set once a sibling copy is consumed', async () => {
+      // The order the walk cannot decide at the event. Neither copy has a
+      // consumer when the walk reaches them, so both park: the first because
+      // the body has not made its call yet, the second in the same tick, with
+      // no class recorded because nothing has been *consumed*. When the body
+      // finally subscribes, the drain claims the first and the second is left
+      // held by a consumer list that can never grow the callback it needs.
+      // Before `dropParkedDuplicates` that survivor was `strandedEvent`, and a
+      // run whose every step had succeeded died as CORRUPTED_EVENT_LOG.
+      const corr = 'attr_A';
+      const events = [
+        realEvent('attr_set', corr),
+        realEvent('attr_set', corr),
+        realEvent('step_created', 'step_B'),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+      });
+
+      // Only the later entity has a consumer, so the walk parks both copies on
+      // its way to it.
+      consumer.subscribe(entityConsumer('step_B', 'step_created'));
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(events.length);
+        expect(consumer.parkedSummary?.count).toBe(2);
+      });
+
+      // The body reaches its `setAttributes()` call.
+      consumer.subscribe(entityConsumer(corr, 'attr_set'));
+      await afterDeferredCheck(() => {
+        // The first is consumed and the second is released as the repeat it
+        // is, so the workflow function can return.
+        expect(consumer.strandedEvent).toBeUndefined();
+        expect(consumer.parkedSummary).toBeUndefined();
+        expect(onDuplicateEvent).toHaveBeenCalledWith(events[1], 'attr_set');
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+      });
+    });
+
+    it('releases a parked wait_completed once a sibling copy is consumed', async () => {
+      // Same shape, different type: the release is a property of one-shot
+      // resolution, not of attributes. `ONE_SHOT_EVENT_TYPES` already covers a
+      // repeat that arrives after the consumption, and this is the order it
+      // cannot see, because nothing is in `resolved` while both are parked.
+      const corr = 'wait_A';
+      const events = [
+        realEvent('wait_completed', corr),
+        realEvent('wait_completed', corr),
+        realEvent('step_created', 'step_B'),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+      });
+
+      consumer.subscribe(entityConsumer('step_B', 'step_created'));
+      await afterDeferredCheck(() => {
+        expect(consumer.parkedSummary?.count).toBe(2);
+      });
+
+      consumer.subscribe(entityConsumer(corr, 'wait_completed'));
+      await afterDeferredCheck(() => {
+        expect(consumer.strandedEvent).toBeUndefined();
+        expect(onDuplicateEvent).toHaveBeenCalledWith(
+          events[1],
+          'wait_completed'
+        );
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+      });
+    });
+
+    it('does not collapse the attr_set events a step body writes', async () => {
+      // A step-written attribute event carries no correlation id, so there is
+      // no entity to track a class under and each one is its own write. They
+      // are claimed by the structural lifecycle consumer in `workflow.ts` on
+      // the way past, and a run can carry dozens: reading the second as a
+      // repeat of the first would hide writes that really happened.
+      const events = [
+        realEvent('attr_set', undefined),
+        realEvent('attr_set', undefined),
+        realEvent('attr_set', undefined),
+        realEvent('step_created', 'step_B'),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const onConsumedEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+        onConsumedEvent,
+      });
+
+      // Stands in for the structural consumer, which takes every attribute
+      // event a step wrote and never deregisters.
+      consumer.subscribe((event: Event | null) =>
+        event !== null && event.eventType === 'attr_set'
+          ? EventConsumerResult.Consumed
+          : EventConsumerResult.NotConsumed
+      );
+      consumer.subscribe(entityConsumer('step_B', 'step_created'));
+
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(events.length);
+        // Every one of them was observed by the run, none stepped over.
+        expect(onDuplicateEvent).not.toHaveBeenCalled();
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+        expect(
+          onConsumedEvent.mock.calls.filter(
+            ([event]: [Event]) => event.eventType === 'attr_set'
+          )
+        ).toHaveLength(3);
+      });
+    });
+
     it('does not track hook deliveries, whose consumers subscribe lazily', async () => {
       // A hook legitimately fires many times under one id, so a second
       // hook_received is not a repeat of a decided outcome. It keeps the

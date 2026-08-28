@@ -84,6 +84,71 @@ export function entityEventClass(
   return getOwnProperty(ENTITY_EVENT_CLASS_BY_TYPE, eventType);
 }
 
+/** Entity key for a class the log records once per run rather than per entity. */
+export const RUN_ENTITY_KEY = '';
+
+/** The class an event belongs to, and the entity that class is tracked under. */
+export interface EntityEventClassification {
+  eventClass: EntityEventClass;
+  /** The event's `correlationId`, or {@link RUN_ENTITY_KEY} for run classes. */
+  entity: string;
+}
+
+/**
+ * Classes whose event closes its entity: the consumer deregisters on it, so
+ * nothing claims another event under that correlation id afterwards.
+ *
+ * This is what makes a later event of an already-recorded class a straggler
+ * rather than another attempt. A class not listed here leaves its entity open,
+ * and a repeat is claimed by the live consumer: each retry of a step writes
+ * another `step_started`, and a step that has not finished absorbs a second
+ * `step_created`.
+ *
+ * `attr_set` is one of these. The dispatcher's consumer in
+ * `attribute-dispatcher.ts` returns `Finished` on the event it matches, so an
+ * attribute id closes on the first event under it.
+ */
+export const TERMINAL_EVENT_CLASSES: ReadonlySet<EntityEventClass> = new Set([
+  'attr_set',
+  'step_terminal',
+  'wait_completed',
+  'hook_disposed',
+]);
+
+/**
+ * The class and entity an event is tracked under, or `undefined` when it is
+ * tracked under none and can therefore never be read as a repeat of one.
+ *
+ * The single home for the rule, because two codebases apply it and a run is
+ * misread if they disagree: the runtime skips an event by it while replaying
+ * (`EventsConsumer`), and the observability UI greys one out by it after the
+ * fact (`@workflow/web-shared`). A shared fixture corpus pins them together
+ * (see `test-support/duplicate-event-fixtures.ts`).
+ *
+ * An entity class needs an entity. Every classed type carries a correlation id
+ * except two: `run_started`, whose class is the run's own and keys off
+ * {@link RUN_ENTITY_KEY}, and an `attr_set` written from a *step* body, which
+ * has no workflow-body call behind it and so names no entity. Without this the
+ * step-written ones would all collapse into one class for the run and the
+ * second of them would read as a repeat of the first, which would hide
+ * attribute writes that really happened — a run can carry dozens.
+ */
+export function classifyEntityEvent(event: {
+  eventType: string;
+  correlationId?: string | null;
+}): EntityEventClassification | undefined {
+  const eventClass = entityEventClass(event.eventType);
+  if (eventClass === undefined) {
+    return undefined;
+  }
+  if (eventClass === 'run_started') {
+    return { eventClass, entity: RUN_ENTITY_KEY };
+  }
+  return event.correlationId
+    ? { eventClass, entity: event.correlationId }
+    : undefined;
+}
+
 /** Opaque payload fields removed when events load without referenced data. */
 const EVENT_DATA_REF_FIELDS_BY_EVENT_TYPE = {
   run_created: ['input'],
