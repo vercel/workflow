@@ -18,7 +18,14 @@ interface VitePluginContainer {
     id: string,
     importer?: string,
     options?: { ssr: true }
-  ): Promise<{ id: string } | null | undefined>;
+  ): Promise<
+    | {
+        id: string;
+        external?: boolean | 'absolute' | 'relative';
+      }
+    | null
+    | undefined
+  >;
   load(
     id: string,
     options?: { ssr: true }
@@ -48,7 +55,9 @@ export function workflow(options?: ModuleOptions): Plugin[] {
         importer,
         legacyContainer ? { ssr: true } : undefined
       );
-      return resolved?.id ?? null;
+      // External results have no host-provided source to load. Decline them so
+      // esbuild preserves its existing handling (for example optional requires).
+      return resolved && !resolved.external ? resolved.id : null;
     },
     async load(id) {
       const loaded = await pluginContainer?.load(

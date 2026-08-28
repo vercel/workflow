@@ -202,6 +202,33 @@ describe('@workflow/nitro builder lifecycle', () => {
     await server.close();
   });
 
+  it('declines modules the host marks as external', async () => {
+    vi.spyOn(LocalBuilder.prototype, 'build').mockResolvedValue();
+    const { nitro, plugins } = await setupViteHarness();
+    const server = await createServer({
+      configFile: false,
+      logLevel: 'silent',
+      root: nitro.options.rootDir,
+      server: { middlewareMode: true },
+      plugins: [
+        {
+          name: 'external-host-plugin',
+          resolveId(id) {
+            if (id === 'optional-native-module') {
+              return { id, external: true };
+            }
+          },
+        },
+        ...plugins,
+      ],
+    });
+
+    await expect(
+      nitro.options.workflow._hostResolver.resolveId('optional-native-module')
+    ).resolves.toBeNull();
+    await server.close();
+  });
+
   it('rejects Vite startup when the initial workflow build fails', async () => {
     vi.spyOn(LocalBuilder.prototype, 'build').mockRejectedValue(
       new Error('initial workflow build failed')
