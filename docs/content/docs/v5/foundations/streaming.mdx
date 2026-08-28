@@ -391,7 +391,7 @@ export async function aiAssistantWorkflow(userMessage: string) {
   "use workflow";
 
   const agent = new WorkflowAgent({
-    model: "zai/glm-5.2",
+    model: "xai/grok-4.6",
     instructions: "You are a helpful flight assistant.",
     tools: {
       searchFlights: tool({

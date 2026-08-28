@@ -42,7 +42,7 @@ export async function chat(messages: UIMessage[]) {
   const writable = getWritable<UIMessageChunk>();
 
   const agent = new DurableAgent({
-    model: "zai/glm-5.2",
+    model: "xai/grok-4.6",
     instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
@@ -185,7 +185,7 @@ export async function chat(initialMessages: UIMessage[]) {
   } // [!code highlight]
 
   const agent = new DurableAgent({
-    model: "zai/glm-5.2",
+    model: "xai/grok-4.6",
     instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });

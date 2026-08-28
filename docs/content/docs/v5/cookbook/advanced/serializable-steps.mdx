@@ -49,7 +49,7 @@ export async function brokenUpload(region: string, key: string) {
 Apply the same pattern to any non-serializable dependency. The key rule: **the outer function captures serializable arguments, and the inner `"use step"` function constructs the real object at runtime**.
 
 <Callout type="info">
-AI models don't need a factory when you use Vercel AI Gateway. Pass a serializable model string such as `"zai/glm-5.2"` to `WorkflowAgent` instead of constructing a provider object.
+AI models don't need a factory when you use Vercel AI Gateway. Pass a serializable model string such as `"xai/grok-4.6"` to `WorkflowAgent` instead of constructing a provider object.
 </Callout>
 
 ```typescript lineNumbers

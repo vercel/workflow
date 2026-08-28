@@ -148,7 +148,7 @@ export async function bookingAgent(messages: ModelMessage[]) {
   "use workflow";
 
   const agent = new DurableAgent({
-    model: "zai/glm-5.2",
+    model: "xai/grok-4.6",
     instructions: "You help book flights. Always request approval before booking.",
     tools: {
       searchFlights: {

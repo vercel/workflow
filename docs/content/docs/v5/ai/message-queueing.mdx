@@ -65,7 +65,7 @@ export async function chat(initialMessages: ModelMessage[]) {
   let notifyMessage: (() => void) | undefined;
 
   const agent = new WorkflowAgent({
-    model: "zai/glm-5.2",
+    model: "xai/grok-4.6",
     instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
