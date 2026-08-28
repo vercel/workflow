@@ -1,4 +1,3 @@
-import { fileURLToPath } from 'node:url';
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
 import { createServer } from 'vite';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -66,7 +65,7 @@ async function setupViteHarness() {
     (candidate) => candidate.name === 'workflow:nitro'
   ) as any;
   await workflowPlugin.nitro.setup(nitro);
-  return { nitro, plugins, workflowPlugin };
+  return { nitro, plugins };
 }
 
 describe('@workflow/nitro virtual handlers', () => {
@@ -134,36 +133,15 @@ describe('@workflow/nitro virtual handlers', () => {
 });
 
 describe('@workflow/nitro builder lifecycle', () => {
-  it('keeps the debug alias disabled for Vite SSR integrations', async () => {
-    const nitro = createNitroStub({
-      routing: true,
-      workflow: { _integration: { kind: 'vite-ssr' } } as any,
-    });
-
-    await nitroModule.setup(nitro);
-
-    expect(nitro.options.alias.debug).toBeUndefined();
-  });
-
-  it('preserves unresolved host imports for the later production Vite build', async () => {
-    const nitro = createNitroStub({ routing: true });
-    const workflowPlugin = viteWorkflow().find(
+  it('closes a development Nitro instance with its Vite plugin container', async () => {
+    const nitro = createNitroStub({ routing: true, dev: true });
+    nitro.close = vi.fn(async () => {});
+    const plugin = viteWorkflow().find(
       (candidate) => candidate.name === 'workflow:nitro'
     ) as any;
 
-    await workflowPlugin.nitro.setup(nitro);
-
-    await expect(
-      nitro.options.workflow._integration.hostResolver.resolve(
-        'virtual:env/server'
-      )
-    ).resolves.toEqual({ id: 'virtual:env/server', external: true });
-  });
-
-  it('closes a development Nitro instance with its Vite plugin container', async () => {
-    const { nitro, workflowPlugin } = await setupViteHarness();
-
-    await workflowPlugin.buildEnd?.();
+    await plugin.nitro.setup(nitro);
+    await plugin.buildEnd?.();
 
     expect(nitro.close).toHaveBeenCalledOnce();
   });
@@ -189,13 +167,11 @@ describe('@workflow/nitro builder lifecycle', () => {
     expect(dispose).toHaveBeenCalledTimes(2);
   });
 
-  it('runs the initial workflow build after host plugins finish buildStart', async () => {
+  it('awaits the initial workflow build after host plugins initialize', async () => {
     const events: string[] = [];
-    const build = vi
-      .spyOn(LocalBuilder.prototype, 'build')
-      .mockImplementation(async () => {
-        events.push('workflow build');
-      });
+    vi.spyOn(LocalBuilder.prototype, 'build').mockImplementation(async () => {
+      events.push('workflow build');
+    });
     const { nitro, plugins } = await setupViteHarness();
 
     const server = await createServer({
@@ -204,26 +180,22 @@ describe('@workflow/nitro builder lifecycle', () => {
       root: nitro.options.rootDir,
       server: { middlewareMode: true },
       plugins: [
-        ...plugins,
         {
           name: 'stateful-host-plugin',
-          buildStart: {
-            order: 'post',
-            async handler() {
-              await new Promise<void>((resolve) => setTimeout(resolve, 0));
-              events.push('host buildStart');
-            },
+          async buildStart() {
+            await Promise.resolve();
+            events.push('host buildStart');
           },
         },
+        ...plugins,
       ],
     });
 
     expect(events).toEqual(['host buildStart', 'workflow build']);
-    expect(build).toHaveBeenCalledOnce();
     await server.close();
   });
 
-  it('fails Vite startup when the initial workflow build fails', async () => {
+  it('rejects Vite startup when the initial workflow build fails', async () => {
     vi.spyOn(LocalBuilder.prototype, 'build').mockRejectedValue(
       new Error('initial workflow build failed')
     );
@@ -238,146 +210,6 @@ describe('@workflow/nitro builder lifecycle', () => {
         plugins,
       })
     ).rejects.toThrow('initial workflow build failed');
-  });
-
-  it('registers its 404 middleware synchronously in the post hook', async () => {
-    vi.spyOn(LocalBuilder.prototype, 'build').mockResolvedValue();
-    const { workflowPlugin } = await setupViteHarness();
-    const use = vi.fn();
-
-    const postHook = workflowPlugin.configureServer({
-      environments: {
-        ssr: { pluginContainer: {} },
-      },
-      middlewares: { use },
-    });
-    postHook?.();
-
-    expect(use).toHaveBeenCalledOnce();
-  });
-
-  it('returns initialized and transformed modules from Vite', async () => {
-    vi.spyOn(LocalBuilder.prototype, 'build').mockResolvedValue();
-    const { nitro, plugins } = await setupViteHarness();
-    let value = 'before-build-start';
-    const physicalModule = fileURLToPath(import.meta.url);
-    const watchedDependency = fileURLToPath(
-      new URL('./builders.ts', import.meta.url)
-    );
-
-    const server = await createServer({
-      configFile: false,
-      logLevel: 'silent',
-      root: nitro.options.rootDir,
-      server: { middlewareMode: true },
-      plugins: [
-        {
-          name: 'stateful-host-module',
-          async buildStart() {
-            await new Promise<void>((resolve) => setTimeout(resolve, 0));
-            value = 'after-build-start';
-          },
-          resolveId(id: string) {
-            if (id === 'virtual:stateful') return '\0virtual:stateful';
-          },
-          load(id: string) {
-            if (id === '\0virtual:stateful') {
-              return `export const value = '${value}';`;
-            }
-          },
-          transform(code: string, id: string) {
-            if (id === '\0virtual:stateful') {
-              this.addWatchFile(watchedDependency);
-              return code.replace('after-build-start', 'transformed');
-            }
-            if (id === physicalModule) {
-              return `${code}\nexport const hostUpdateValue = '${value}';`;
-            }
-          },
-        },
-        ...plugins,
-      ],
-    });
-
-    const hostResolver = nitro.options.workflow._integration.hostResolver;
-    const resolve = hostResolver.resolve;
-    hostResolver.beginBuild();
-    await expect(resolve('virtual:stateful')).resolves.toMatchObject({
-      id: '\0virtual:stateful',
-      external: false,
-      code: expect.stringContaining('transformed'),
-    });
-    hostResolver.endBuild(true);
-    expect(hostResolver.isDependency(watchedDependency)).toBe(true);
-    await expect(resolve('node:path', '\0virtual:stateful')).resolves.toEqual({
-      id: 'node:path',
-      external: true,
-    });
-    expect(hostResolver.beginBuild).toEqual(expect.any(Function));
-    expect(hostResolver.endBuild).toEqual(expect.any(Function));
-    expect(hostResolver.invalidate).toEqual(expect.any(Function));
-    hostResolver.beginBuild();
-    await expect(
-      resolve(physicalModule, '\0virtual:stateful')
-    ).resolves.toMatchObject({
-      external: false,
-      code: expect.stringContaining('after-build-start'),
-    });
-    hostResolver.endBuild(true);
-    expect(hostResolver.isDependency(physicalModule)).toBe(true);
-
-    value = 'after-update';
-    hostResolver.invalidate(physicalModule, 2);
-    await expect(
-      resolve(physicalModule, '\0virtual:stateful')
-    ).resolves.toMatchObject({
-      code: expect.stringContaining('after-update'),
-    });
-
-    hostResolver.beginBuild();
-    await resolve(watchedDependency, '\0virtual:stateful');
-    hostResolver.endBuild(false);
-    expect(hostResolver.isDependency(physicalModule)).toBe(true);
-    expect(hostResolver.isDependency(watchedDependency)).toBe(true);
-
-    hostResolver.beginBuild();
-    await resolve('virtual:stateful');
-    hostResolver.endBuild(true);
-    expect(hostResolver.isDependency(physicalModule)).toBe(false);
-    await server.close();
-  });
-
-  it('uses SSR resolution and transforms with legacy Vite containers', async () => {
-    vi.spyOn(LocalBuilder.prototype, 'build').mockResolvedValue();
-    const { nitro, workflowPlugin } = await setupViteHarness();
-    const resolveId = vi.fn(async () => ({ id: '\0virtual:legacy' }));
-    const load = vi.fn(async () => `export const value = 'loaded';`);
-    const transform = vi.fn(async (code: string) => ({
-      code: code.replace('loaded', 'transformed'),
-    }));
-    const postHook = workflowPlugin.configureServer({
-      middlewares: { use: vi.fn() },
-      moduleGraph: { ensureEntryFromUrl: vi.fn(async () => {}) },
-      pluginContainer: { resolveId, load, transform },
-    });
-    postHook?.();
-
-    await expect(
-      nitro.options.workflow._integration.hostResolver.resolve('virtual:legacy')
-    ).resolves.toEqual({
-      id: '\0virtual:legacy',
-      external: false,
-      code: `export const value = 'transformed';`,
-    });
-    expect(resolveId).toHaveBeenCalledWith('virtual:legacy', undefined, {
-      ssr: true,
-    });
-    expect(load).toHaveBeenCalledWith('\0virtual:legacy', { ssr: true });
-    expect(transform).toHaveBeenCalledWith(
-      `export const value = 'loaded';`,
-      '\0virtual:legacy',
-      { ssr: true }
-    );
   });
 });
 

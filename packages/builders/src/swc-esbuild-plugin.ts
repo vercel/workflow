@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { relative } from 'node:path';
 import { promisify } from 'node:util';
 import enhancedResolveOrig from 'enhanced-resolve';
-import type { OnResolveResult, Plugin } from 'esbuild';
+import type { Plugin } from 'esbuild';
 import {
   applySwcTransform,
   type WorkflowManifest,
@@ -17,10 +17,6 @@ import {
   mergeWorkflowManifest,
 } from './manifest-ids.js';
 import { resolveModuleSpecifier } from './module-specifier.js';
-import {
-  SOURCE_EXTENSION_ALIASES,
-  SOURCE_EXTENSIONS,
-} from './source-extensions.js';
 import { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
 
 export interface WorkflowTransformResult {
@@ -40,38 +36,21 @@ export type WorkflowAfterTransformHook = (
  * A resolver backed by the host bundler, used as a last resort for module ids
  * that nothing on disk can satisfy.
  *
- * Step bundles are produced by a standalone esbuild pass, so ids that only the
- * host's plugin pipeline knows about — Vite virtual modules such as
- * `virtual:env/server`, `\0`-prefixed ids, framework-injected aliases — are
- * unresolvable there. When the integration can reach the host's plugin
- * container it supplies one of these, and the bundle inlines the host's own
- * module source rather than failing. See vercel/workflow#3859.
+ * Step bundles are produced by a standalone esbuild pass, so Vite virtual
+ * modules such as `virtual:env/server` are otherwise unresolvable there. See
+ * vercel/workflow#3859.
  */
-export type HostModuleResolution =
-  | { id: string; external: true }
-  | { id: string; external: false; code: string };
-
 export interface HostModuleResolver {
   /**
-   * Resolve a host-owned module to either an external import or source that
-   * has completed the host's loading and transform pipeline.
+   * Resolve `source` (optionally relative to `importer`) to a host module id,
+   * or return null/undefined to decline.
    */
-  resolve(
+  resolveId(
     source: string,
     importer?: string
-  ): Promise<HostModuleResolution | null | undefined>;
-
-  /** Start tracking the host-owned files used by a workflow build. */
-  beginBuild?(): void;
-
-  /** Commit or discard the files tracked by the current workflow build. */
-  endBuild?(successful: boolean): void;
-
-  /** Whether a host-owned file participates in the current workflow bundle. */
-  isDependency?(file: string): boolean;
-
-  /** Invalidate host transform caches before rebuilding for a file change. */
-  invalidate?(file: string, timestamp: number): void;
+  ): Promise<string | null | undefined>;
+  /** Load the source for a host module id, or decline. */
+  load(id: string): Promise<string | null | undefined>;
 }
 
 /**
@@ -141,14 +120,18 @@ const NODE_RESOLVE_OPTIONS = {
   importsFields: ['imports'],
   conditionNames: ['node', 'require'],
   descriptionFiles: ['package.json'],
-  extensions: [...SOURCE_EXTENSIONS, '.json', '.node'],
-  // TypeScript's NodeNext/ESM style writes `./db.js` for a file that is
-  // `./db.ts` on disk. Without this mapping the resolve below fails, the
-  // specifier falls through to esbuild, and the dependency gets inlined into
-  // the steps bundle instead of staying external — which is how a host-only
-  // module id (e.g. a Vite virtual module) reachable from that file turns into
-  // a hard "Could not resolve" error. See vercel/workflow#3859.
-  extensionAlias: SOURCE_EXTENSION_ALIASES,
+  extensions: [
+    '.ts',
+    '.tsx',
+    '.mts',
+    '.cts',
+    '.cjs',
+    '.mjs',
+    '.js',
+    '.jsx',
+    '.json',
+    '.node',
+  ],
   enforceExtensions: false,
   symlinks: true,
   mainFields: ['main'],
@@ -204,58 +187,25 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
         }
       };
 
-      const resolveViaHost = async (
-        specifier: string,
-        importer: string | undefined
-      ): Promise<HostModuleResolution | undefined> => {
-        if (!options.hostResolver) return undefined;
-        return (
-          (await options.hostResolver.resolve(
-            specifier,
-            importer || undefined
-          )) ?? undefined
-        );
-      };
-
-      const toHostResolveResult = (
-        resolved: HostModuleResolution
-      ): OnResolveResult =>
-        resolved.external
-          ? { path: resolved.id, external: true }
-          : {
-              path: resolved.id,
-              namespace: HOST_MODULE_NAMESPACE,
-              pluginData: { code: resolved.code },
-            };
-
-      // Imports *inside* a host-provided module. Their importer is a host id
-      // rather than a file, so on-disk resolution cannot be attempted first;
-      // the host owns this whole subgraph.
-      build.onResolve(
-        { filter: /.*/, namespace: HOST_MODULE_NAMESPACE },
-        async (args) => {
-          const resolved = await resolveViaHost(args.path, args.importer);
-          return resolved ? toHostResolveResult(resolved) : null;
-        }
-      );
-
-      build.onLoad(
-        { filter: /.*/, namespace: HOST_MODULE_NAMESPACE },
-        async (args) => {
-          const code = (args.pluginData as { code?: unknown } | undefined)
-            ?.code;
-          if (typeof code !== 'string') {
-            return {
-              errors: [
-                {
-                  text: `Host bundler returned no source for "${args.path}".`,
-                },
-              ],
-            };
+      const hostResolver = options.hostResolver;
+      if (hostResolver) {
+        build.onLoad(
+          { filter: /.*/, namespace: HOST_MODULE_NAMESPACE },
+          async (args) => {
+            const contents = await hostResolver.load(args.path);
+            if (contents == null) {
+              return {
+                errors: [
+                  {
+                    text: `Host bundler resolved "${args.path}" but returned no source for it.`,
+                  },
+                ],
+              };
+            }
+            return { contents, loader: 'js' as const };
           }
-          return { contents: code, loader: 'js' as const };
-        }
-      );
+        );
+      }
 
       // Pre-compute the normalized side-effect entries set for O(1) lookups.
       const normalizedSideEffectEntries = new Set(
@@ -264,8 +214,6 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
 
       build.onResolve({ filter: /.*/ }, async (args) => {
         if (args.pluginData?.skipSwcPlugin) return null;
-        // Handled above; these importers have no resolve directory, so the
-        // on-disk resolution below would be meaningless for them.
         if (args.namespace === HOST_MODULE_NAMESPACE) return null;
 
         if (
@@ -283,204 +231,206 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           return null;
         }
 
-        const specifier = args.path;
-        const specifierIsPath =
-          specifier.startsWith('.') || specifier.startsWith('/');
+        try {
+          const specifier = args.path;
+          const specifierIsPath =
+            specifier.startsWith('.') || specifier.startsWith('/');
 
-        let resolvedPath: string | false | undefined;
-        // Path-style specifiers (./foo, ../foo, /abs/path) externalize as
-        // relative paths from `outdir`. Bare specifiers (npm packages)
-        // externalize as-is so Node can resolve them at runtime.
-        const shouldMakeRelative = specifierIsPath;
+          let resolvedPath: string | false | undefined;
+          // Path-style specifiers (./foo, ../foo, /abs/path) externalize as
+          // relative paths from `outdir`. Bare specifiers (npm packages)
+          // externalize as-is so Node can resolve them at runtime.
+          const shouldMakeRelative = specifierIsPath;
 
-        if (specifierIsPath) {
-          resolvedPath = await enhancedResolve(
-            args.resolveDir,
-            specifier
-          ).catch(() => undefined);
-          if (!resolvedPath) {
-            const hostModule = await resolveViaHost(specifier, args.importer);
-            if (hostModule) {
-              return toHostResolveResult(hostModule);
-            }
-          }
-        } else {
-          // Resolve from project root so nested deps aren't externalized
-          resolvedPath = await enhancedResolve(
-            build.initialOptions.absWorkingDir || process.cwd(),
-            specifier
-          ).catch(() => undefined); // swallow so esbuild fallback below can try
+          if (specifierIsPath) {
+            resolvedPath = await enhancedResolve(args.resolveDir, specifier);
+          } else {
+            // Resolve from project root so nested deps aren't externalized
+            resolvedPath = await enhancedResolve(
+              build.initialOptions.absWorkingDir || process.cwd(),
+              specifier
+            ).catch(() => undefined); // swallow so esbuild fallback below can try
 
-          // Fall back to esbuild for aliases/tsconfig paths.
-          //
-          // If the specifier resolves to a project-local file via an
-          // alias/path mapping (e.g. tsconfig `paths`, esbuild `alias`,
-          // self-referencing package names like `@my-pkg/lib/foo`), we
-          // bundle it inline rather than externalizing.
-          //
-          // Externalizing such files is unsafe: we'd emit a relative
-          // import to the original source on disk, but that source can
-          // contain further alias imports. At runtime, Node's ESM loader
-          // doesn't know about tsconfig paths or build-time aliases, so
-          // those transitive imports throw `ERR_MODULE_NOT_FOUND` /
-          // `Package subpath ... is not defined by "exports"`.
-          //
-          // Bundling inline ensures alias-based imports are resolved at
-          // build time (where the alias map is known) and the runtime
-          // never sees an unresolvable specifier.
-          if (!resolvedPath) {
-            const esbuildResult = await build.resolve(specifier, {
-              resolveDir: args.resolveDir,
-              kind: args.kind,
-              pluginData: { skipSwcPlugin: true },
-            });
-            const didResolve =
-              !!esbuildResult.path && !esbuildResult.errors.length;
-            const isProjectLocalFile =
-              didResolve &&
-              !esbuildResult.external &&
-              !esbuildResult.path
-                .replace(/\\/g, '/')
-                .includes('/node_modules/');
-            if (isProjectLocalFile) {
-              // Let esbuild bundle this aliased project-local file inline
-              // (return null to defer to esbuild's normal pipeline). The
-              // SWC `onLoad` handler will still process it.
-              return null;
-            } else if (
-              options.entriesToBundle &&
-              esbuildResult.path?.endsWith('.node')
-            ) {
-              return {
-                external: true,
-                path: specifier,
-              };
-            } else if (!didResolve && options.hostResolver) {
-              // Nothing on disk satisfies this specifier. Before letting
-              // esbuild fail it, ask the host bundler: it may be a virtual
-              // module only the host's plugin pipeline can provide.
-              const hostModule = await resolveViaHost(specifier, args.importer);
-              if (hostModule) {
-                return toHostResolveResult(hostModule);
+            // Fall back to esbuild for aliases/tsconfig paths.
+            //
+            // If the specifier resolves to a project-local file via an
+            // alias/path mapping (e.g. tsconfig `paths`, esbuild `alias`,
+            // self-referencing package names like `@my-pkg/lib/foo`), we
+            // bundle it inline rather than externalizing.
+            //
+            // Externalizing such files is unsafe: we'd emit a relative
+            // import to the original source on disk, but that source can
+            // contain further alias imports. At runtime, Node's ESM loader
+            // doesn't know about tsconfig paths or build-time aliases, so
+            // those transitive imports throw `ERR_MODULE_NOT_FOUND` /
+            // `Package subpath ... is not defined by "exports"`.
+            //
+            // Bundling inline ensures alias-based imports are resolved at
+            // build time (where the alias map is known) and the runtime
+            // never sees an unresolvable specifier.
+            if (!resolvedPath) {
+              const esbuildResult = await build.resolve(specifier, {
+                resolveDir: args.resolveDir,
+                kind: args.kind,
+                pluginData: { skipSwcPlugin: true },
+              });
+              const didResolve =
+                !!esbuildResult.path && !esbuildResult.errors.length;
+              const isProjectLocalFile =
+                didResolve &&
+                !esbuildResult.external &&
+                !esbuildResult.path
+                  .replace(/\\/g, '/')
+                  .includes('/node_modules/');
+              if (isProjectLocalFile) {
+                // Let esbuild bundle this aliased project-local file inline
+                // (return null to defer to esbuild's normal pipeline). The
+                // SWC `onLoad` handler will still process it.
+                return null;
+              } else if (
+                options.entriesToBundle &&
+                esbuildResult.path?.endsWith('.node')
+              ) {
+                return {
+                  external: true,
+                  path: specifier,
+                };
+              } else if (!didResolve && hostResolver) {
+                // Nothing on disk satisfies this specifier. Before letting
+                // esbuild fail it, ask the host bundler: it may be a virtual
+                // module only the host's plugin pipeline can provide.
+                const hostId = await hostResolver.resolveId(
+                  specifier,
+                  args.importer || undefined
+                );
+                if (hostId) {
+                  return { path: hostId, namespace: HOST_MODULE_NAMESPACE };
+                }
               }
             }
           }
-        }
 
-        if (!resolvedPath) return null;
+          if (!resolvedPath) return null;
 
-        // Normalize to forward slashes for cross-platform comparison
-        const normalizedResolvedPath = normalizePath(resolvedPath);
-        const workingDir = build.initialOptions.absWorkingDir || process.cwd();
-        const projectRoot = options.projectRoot || workingDir;
-        const moduleSpecifierRoot = options.moduleSpecifierRoot || projectRoot;
+          // Normalize to forward slashes for cross-platform comparison
+          const normalizedResolvedPath = normalizePath(resolvedPath);
+          const workingDir =
+            build.initialOptions.absWorkingDir || process.cwd();
+          const projectRoot = options.projectRoot || workingDir;
+          const moduleSpecifierRoot =
+            options.moduleSpecifierRoot || projectRoot;
 
-        if (
-          options.entriesToBundle &&
-          normalizedResolvedPath.endsWith('.node')
-        ) {
-          return {
-            external: true,
-            path: specifier,
-          };
-        }
-
-        // Check if this module is a discovered entry whose SWC-transformed
-        // code contains side effects (workflow/step/class registration).
-        // Override the package.json "sideEffects": false so esbuild does not
-        // drop bare imports of these modules.
-        const hasSideEffects = normalizedSideEffectEntries.has(
-          normalizedResolvedPath
-        );
-
-        if (options.entriesToBundle) {
-          let shouldBundle = false;
-          for (const entryToBundle of options.entriesToBundle) {
-            const normalizedEntry = entryToBundle.replace(/\\/g, '/');
-
-            if (normalizedResolvedPath === normalizedEntry) {
-              shouldBundle = true;
-              break;
-            }
-
-            // if the current entry imports a child that needs
-            // to be bundled then it needs to also be bundled so
-            // that the child can have our transform applied
-            if (parentHasChild(normalizedResolvedPath, normalizedEntry)) {
-              shouldBundle = true;
-              break;
-            }
-
-            // Bundle project-local source files that are imported by a
-            // step/serde entry so direct runtime loaders do not see raw TS
-            // extensionless imports. Keep package dependencies external
-            // unless they are themselves in entriesToBundle or are parents
-            // of a discovered workflow/step/serde file via the check above.
-            if (
-              options.bundleTransitiveLocalStepDependencies &&
-              isProjectLocalFile(normalizedResolvedPath, moduleSpecifierRoot) &&
-              parentHasChild(normalizedEntry, normalizedResolvedPath)
-            ) {
-              shouldBundle = true;
-              break;
-            }
+          if (
+            options.entriesToBundle &&
+            normalizedResolvedPath.endsWith('.node')
+          ) {
+            return {
+              external: true,
+              path: specifier,
+            };
           }
 
-          if (shouldBundle) {
-            // Let esbuild bundle this entry, but override sideEffects if needed.
-            // We must return the resolved `path` alongside `sideEffects` because
-            // returning only `{ sideEffects: true }` without a path causes esbuild
-            // to fall through to its own resolver, which re-reads the package.json
-            // and applies `"sideEffects": false` from there.
-            return hasSideEffects
-              ? { path: resolvedPath, sideEffects: true }
-              : null;
-          }
+          // Check if this module is a discovered entry whose SWC-transformed
+          // code contains side effects (workflow/step/class registration).
+          // Override the package.json "sideEffects": false so esbuild does not
+          // drop bare imports of these modules.
+          const hasSideEffects = normalizedSideEffectEntries.has(
+            normalizedResolvedPath
+          );
 
-          let externalPath: string;
-          if (shouldMakeRelative) {
-            // When the resolved file lives inside node_modules, let
-            // esbuild bundle it rather than externalizing with a deeply
-            // nested relative path. Downstream bundlers (Rollup/Vite)
-            // can't rewrite opaque `__require()` calls in CJS shims, so
-            // relative paths computed for `outdir` break once the output
-            // is rebundled to a different directory.
-            if (normalizedResolvedPath.includes('/node_modules/')) {
-              return null; // let esbuild bundle it
+          if (options.entriesToBundle) {
+            let shouldBundle = false;
+            for (const entryToBundle of options.entriesToBundle) {
+              const normalizedEntry = entryToBundle.replace(/\\/g, '/');
+
+              if (normalizedResolvedPath === normalizedEntry) {
+                shouldBundle = true;
+                break;
+              }
+
+              // if the current entry imports a child that needs
+              // to be bundled then it needs to also be bundled so
+              // that the child can have our transform applied
+              if (parentHasChild(normalizedResolvedPath, normalizedEntry)) {
+                shouldBundle = true;
+                break;
+              }
+
+              // Bundle project-local source files that are imported by a
+              // step/serde entry so direct runtime loaders do not see raw TS
+              // extensionless imports. Keep package dependencies external
+              // unless they are themselves in entriesToBundle or are parents
+              // of a discovered workflow/step/serde file via the check above.
+              if (
+                options.bundleTransitiveLocalStepDependencies &&
+                isProjectLocalFile(
+                  normalizedResolvedPath,
+                  moduleSpecifierRoot
+                ) &&
+                parentHasChild(normalizedEntry, normalizedResolvedPath)
+              ) {
+                shouldBundle = true;
+                break;
+              }
             }
 
-            externalPath = relative(
-              options.outdir || process.cwd(),
-              resolvedPath
-            ).replace(/\\/g, '/');
-
-            if (options.rewriteTsExtensions) {
-              // Rewrite TypeScript extensions to their JS equivalents so the
-              // externalized import is loadable by Node's native ESM loader.
-              externalPath = externalPath
-                .replace(/\.tsx?$/, '.js')
-                .replace(/\.mts$/, '.mjs')
-                .replace(/\.cts$/, '.cjs');
+            if (shouldBundle) {
+              // Let esbuild bundle this entry, but override sideEffects if needed.
+              // We must return the resolved `path` alongside `sideEffects` because
+              // returning only `{ sideEffects: true }` without a path causes esbuild
+              // to fall through to its own resolver, which re-reads the package.json
+              // and applies `"sideEffects": false` from there.
+              return hasSideEffects
+                ? { path: resolvedPath, sideEffects: true }
+                : null;
             }
-          } else {
-            externalPath = specifier;
+
+            let externalPath: string;
+            if (shouldMakeRelative) {
+              // When the resolved file lives inside node_modules, let
+              // esbuild bundle it rather than externalizing with a deeply
+              // nested relative path. Downstream bundlers (Rollup/Vite)
+              // can't rewrite opaque `__require()` calls in CJS shims, so
+              // relative paths computed for `outdir` break once the output
+              // is rebundled to a different directory.
+              if (normalizedResolvedPath.includes('/node_modules/')) {
+                return null; // let esbuild bundle it
+              }
+
+              externalPath = relative(
+                options.outdir || process.cwd(),
+                resolvedPath
+              ).replace(/\\/g, '/');
+
+              if (options.rewriteTsExtensions) {
+                // Rewrite TypeScript extensions to their JS equivalents so the
+                // externalized import is loadable by Node's native ESM loader.
+                externalPath = externalPath
+                  .replace(/\.tsx?$/, '.js')
+                  .replace(/\.mts$/, '.mjs')
+                  .replace(/\.cts$/, '.cjs');
+              }
+            } else {
+              externalPath = specifier;
+            }
+
+            return {
+              external: true,
+              path: externalPath,
+              sideEffects: hasSideEffects || undefined,
+            };
           }
 
-          return {
-            external: true,
-            path: externalPath,
-            sideEffects: hasSideEffects || undefined,
-          };
-        }
-
-        // No entriesToBundle, so only override sideEffects when needed.
-        // We must return the resolved `path` alongside `sideEffects` because
-        // returning only `{ sideEffects: true }` without a path causes esbuild
-        // to fall through to its own resolver, which re-reads the package.json
-        // and applies `"sideEffects": false` from there.
-        return hasSideEffects
-          ? { path: resolvedPath, sideEffects: true }
-          : null;
+          // No entriesToBundle, so only override sideEffects when needed.
+          // We must return the resolved `path` alongside `sideEffects` because
+          // returning only `{ sideEffects: true }` without a path causes esbuild
+          // to fall through to its own resolver, which re-reads the package.json
+          // and applies `"sideEffects": false` from there.
+          return hasSideEffects
+            ? { path: resolvedPath, sideEffects: true }
+            : null;
+        } catch (_) {}
+        return null;
       });
 
       // Handle TypeScript and JavaScript files

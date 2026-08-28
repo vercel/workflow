@@ -99,7 +99,7 @@ export default {
     });
 
     // NOTE: Temporary workaround for debug unenv mock
-    if (!nitro.options.workflow?._integration) {
+    if (!nitro.options.workflow?._vite) {
       nitro.options.alias.debug ??= 'debug';
     }
 
@@ -225,23 +225,13 @@ export default {
     // (storage, database, runtime config, virtual imports, etc.).
     if (!useLegacyVercelBuild) {
       const builder = new LocalBuilder(nitro);
-      const integration = nitro.options.dev
-        ? nitro.options.workflow?._integration
-        : undefined;
-      const viteIntegration =
-        integration?.kind === 'vite' ? integration : undefined;
-      if (viteIntegration) {
-        viteIntegration.builder = builder;
-      }
+      let isInitialBuild = true;
 
       nitro.hooks.hook('build:before', async () => {
-        // Under Vite in dev this hook runs inside Vite's `config` hook, before
-        // any plugin container exists, so a step reaching a Vite virtual
-        // module could not be resolved here at all. `workflow/vite` runs the
-        // initial build after Vite completes client `buildStart` and
-        // `configureServer` has attached the host resolver. Nothing reads the
-        // generated files before then: dev loads them from disk at request time.
-        if (viteIntegration) {
+        // Vite invokes this hook from its `config` hook, before a plugin
+        // container exists. The Vite plugin runs the initial workflow build
+        // from its awaited `buildStart` hook instead.
+        if (nitro.options.dev && nitro.options.workflow?._hostResolver) {
           return;
         }
         await builder.build();
@@ -258,8 +248,7 @@ export default {
       });
 
       // Allows for HMR - but skip the first dev:reload since build:before already ran
-      if (nitro.options.dev && !viteIntegration) {
-        let isInitialBuild = true;
+      if (nitro.options.dev) {
         nitro.hooks.hook('dev:reload', async () => {
           if (isInitialBuild) {
             isInitialBuild = false;

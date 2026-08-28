@@ -4,7 +4,6 @@ import enhancedResolveOriginal from 'enhanced-resolve';
 import type { Plugin } from 'esbuild';
 import type { WorkflowManifest } from './apply-swc-transform.js';
 import { applySwcTransform } from './apply-swc-transform.js';
-import { SOURCE_EXTENSIONS, SOURCE_FILE_REGEX } from './source-extensions.js';
 import {
   detectWorkflowPatterns,
   isGeneratedWorkflowFile,
@@ -12,13 +11,24 @@ import {
 
 const enhancedResolve = promisify(
   enhancedResolveOriginal.create({
-    extensions: [...SOURCE_EXTENSIONS, '.json', '.node'],
+    extensions: [
+      '.ts',
+      '.tsx',
+      '.mts',
+      '.cts',
+      '.js',
+      '.jsx',
+      '.mjs',
+      '.cjs',
+      '.json',
+      '.node',
+    ],
     fullySpecified: false,
     conditionNames: ['node', 'import', 'require'],
   })
 );
 
-export const jsTsRegex = SOURCE_FILE_REGEX;
+export const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
 
 /** Returns true if a manifest section has at least one entry. */
 function hasManifestEntries(

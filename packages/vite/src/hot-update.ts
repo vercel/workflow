@@ -2,47 +2,20 @@ import {
   type BaseBuilder,
   detectWorkflowPatterns,
   isGeneratedWorkflowFile,
-  isWorkflowSourceFile,
 } from '@workflow/builders';
 import type { HotUpdateOptions, Plugin } from 'vite';
-
-type WorkflowBuilder = Pick<
-  BaseBuilder,
-  'build' | 'fileAffectsWorkflowBuild' | 'invalidateWorkflowDependency'
->;
 
 interface WorkflowHotUpdatePluginOptions {
   /**
    * Builder instance or a getter function.
    * Use a getter when the builder is created lazily (e.g., Nitro where it depends on the nitro object).
    */
-  builder: WorkflowBuilder | (() => WorkflowBuilder | undefined) | undefined;
+  builder: BaseBuilder | (() => BaseBuilder | undefined) | undefined;
   /**
    * Optional build queue function to prevent concurrent builds.
    * If not provided, builds will run directly.
    */
   enqueue?: (fn: () => Promise<void>) => Promise<void>;
-}
-
-async function fileTriggersWorkflowBuild(
-  { file, read }: HotUpdateOptions,
-  builder: WorkflowBuilder
-): Promise<boolean> {
-  if (isGeneratedWorkflowFile(file)) return false;
-
-  const affectsWorkflowBuild = builder.fileAffectsWorkflowBuild(file);
-  if (affectsWorkflowBuild) return true;
-  if (!isWorkflowSourceFile(file)) {
-    return false;
-  }
-
-  try {
-    const patterns = detectWorkflowPatterns(await read());
-    return patterns.hasDirective || patterns.hasSerde;
-  } catch {
-    // A deleted source file may have removed a workflow entry or dependency.
-    return true;
-  }
 }
 
 /**
@@ -59,12 +32,6 @@ export function workflowHotUpdatePlugin(
 
   // Default enqueue runs the function directly
   const runBuild = enqueue ?? ((fn: () => Promise<void>) => fn());
-  let latestDecision:
-    | { file: string; timestamp: number; promise: Promise<boolean> }
-    | undefined;
-  let latestBuild:
-    | { file: string; timestamp: number; promise: Promise<void> }
-    | undefined;
 
   return {
     name: 'workflow:hot-update',
@@ -78,41 +45,41 @@ export function workflowHotUpdatePlugin(
         return;
       }
 
-      const decision =
-        latestDecision?.file === ctx.file &&
-        latestDecision.timestamp === ctx.timestamp
-          ? latestDecision.promise
-          : fileTriggersWorkflowBuild(ctx, resolvedBuilder);
-      latestDecision = {
-        file: ctx.file,
-        timestamp: ctx.timestamp,
-        promise: decision,
-      };
+      const { file, read } = ctx;
 
-      if (!(await decision)) return;
-      await rebuild(resolvedBuilder, ctx.file, ctx.timestamp);
+      // Check if this is a TS/JS file that might contain workflow directives
+      const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs)$/;
+      if (!jsTsRegex.test(file)) {
+        return;
+      }
+
+      // Skip generated workflow route files to avoid infinite rebuild loops
+      if (isGeneratedWorkflowFile(file)) {
+        return;
+      }
+
+      // Read the file to check for workflow/step directives
+      let content: string;
+      try {
+        content = await read();
+      } catch {
+        // File might have been deleted - trigger rebuild to update generated routes
+        console.log('Workflow file changed, rebuilding...');
+        await runBuild(() => resolvedBuilder.build());
+        return;
+      }
+
+      // Detect workflow patterns using shared utilities
+      const patterns = detectWorkflowPatterns(content);
+
+      if (!patterns.hasDirective && !patterns.hasSerde) {
+        return;
+      }
+
+      console.log('Workflow file changed, rebuilding...');
+      await runBuild(() => resolvedBuilder.build());
       // Let Vite handle the normal HMR for the changed file
       return;
     },
   };
-
-  async function rebuild(
-    resolvedBuilder: WorkflowBuilder,
-    file: string,
-    timestamp: number
-  ): Promise<void> {
-    if (latestBuild) {
-      if (timestamp < latestBuild.timestamp) return;
-      if (timestamp === latestBuild.timestamp && file === latestBuild.file) {
-        await latestBuild.promise;
-        return;
-      }
-    }
-
-    console.log('Workflow file changed, rebuilding...');
-    resolvedBuilder.invalidateWorkflowDependency(file, timestamp);
-    const promise = runBuild(() => resolvedBuilder.build());
-    latestBuild = { file, timestamp, promise };
-    await promise;
-  }
 }

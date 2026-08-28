@@ -44,7 +44,6 @@ import {
 } from './module-specifier.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
-import { SOURCE_EXTENSIONS, SOURCE_FILE_GLOB } from './source-extensions.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
@@ -359,7 +358,7 @@ export abstract class BaseBuilder {
     const results = await Promise.all(
       this.config.dirs.map((dir) => {
         const cwd = resolve(this.config.workingDir, dir);
-        return glob([SOURCE_FILE_GLOB], {
+        return glob(['**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}'], {
           cwd,
           ignore,
           absolute: true,
@@ -379,34 +378,9 @@ export abstract class BaseBuilder {
    */
   private discoveredEntries: WeakMap<string[], DiscoveredEntries> =
     new WeakMap();
-  private latestDiscoveredEntries: DiscoveredEntries | undefined;
 
   public clearDiscoveredEntriesCache(): void {
     this.discoveredEntries = new WeakMap();
-  }
-
-  private resolveWorkflowFile(file: string): string {
-    return resolve(this.config.workingDir, file).replace(/\\/g, '/');
-  }
-
-  /** Whether a file was part of the latest workflow discovery or host bundle. */
-  public fileAffectsWorkflowBuild(file: string): boolean {
-    const normalizedFile = this.resolveWorkflowFile(file);
-    return (
-      (this.latestDiscoveredEntries?.workflowDependencyFiles?.has(
-        normalizedFile
-      ) ??
-        false) ||
-      (this.config.hostResolver?.isDependency?.(normalizedFile) ?? false)
-    );
-  }
-
-  /** Invalidate host-bundler caches before rebuilding for a file change. */
-  public invalidateWorkflowDependency(file: string, timestamp: number): void {
-    this.config.hostResolver?.invalidate?.(
-      this.resolveWorkflowFile(file),
-      timestamp
-    );
   }
 
   public clearManifestTransformCache(): void {
@@ -529,7 +503,6 @@ export abstract class BaseBuilder {
     const previousResult = this.discoveredEntries.get(inputs);
 
     if (previousResult) {
-      this.latestDiscoveredEntries = previousResult;
       return previousResult;
     }
     const state: DiscoveredEntries = {
@@ -577,7 +550,6 @@ export abstract class BaseBuilder {
     await this.warnAboutExternalWorkflowPackages();
 
     this.discoveredEntries.set(inputs, state);
-    this.latestDiscoveredEntries = state;
     return state;
   }
 
@@ -1153,7 +1125,16 @@ export const __steps_registered = true;
       // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.
       ...esbuildTsconfigOptions,
       define: importMetaDefine,
-      resolveExtensions: [...SOURCE_EXTENSIONS],
+      resolveExtensions: [
+        '.ts',
+        '.tsx',
+        '.mts',
+        '.cts',
+        '.js',
+        '.jsx',
+        '.mjs',
+        '.cjs',
+      ],
       // Source maps for better stack traces in step execution. Steps execute
       // in Node.js context and inline sourcemaps give meaningful stack traces
       // with proper file names and line numbers when errors occur in deeply
@@ -1392,7 +1373,16 @@ export const __steps_registered = true;
       // Use tsconfig for path alias resolution.
       // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.
       ...esbuildTsconfigOptions,
-      resolveExtensions: [...SOURCE_EXTENSIONS],
+      resolveExtensions: [
+        '.ts',
+        '.tsx',
+        '.mts',
+        '.cts',
+        '.js',
+        '.jsx',
+        '.mjs',
+        '.cjs',
+      ],
       plugins: [
         // Handle pseudo-packages like 'server-only' and 'client-only' by providing
         // empty modules. Must run first to intercept these before other resolution.
@@ -1404,7 +1394,6 @@ export const __steps_registered = true;
           workflowManifest,
           onAfterTransform: this.config.onAfterTransform,
           sideEffectEntries: normalizedWorkflowSideEffectEntries,
-          hostResolver: this.config.hostResolver,
         }),
         // This plugin must run after the swc plugin to ensure dead code elimination
         // happens first, preventing false positives on Node.js imports in unused code paths
@@ -1942,7 +1931,16 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       write: true,
       treeShaking: true,
       external: ['@workflow/core'],
-      resolveExtensions: [...SOURCE_EXTENSIONS],
+      resolveExtensions: [
+        '.ts',
+        '.tsx',
+        '.mts',
+        '.cts',
+        '.js',
+        '.jsx',
+        '.mjs',
+        '.cjs',
+      ],
       plugins: [
         createSwcPlugin({
           mode: 'step',
@@ -2041,7 +2039,16 @@ export const OPTIONS = handler;`;
       treeShaking: true,
       keepNames: true,
       minify: false,
-      resolveExtensions: [...SOURCE_EXTENSIONS],
+      resolveExtensions: [
+        '.ts',
+        '.tsx',
+        '.mts',
+        '.cts',
+        '.js',
+        '.jsx',
+        '.mjs',
+        '.cjs',
+      ],
       sourcemap: this.resolveSourcemap(EMIT_SOURCEMAPS_FOR_DEBUGGING),
       mainFields: ['module', 'main'],
       // Don't externalize anything - bundle everything including workflow packages

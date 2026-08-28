@@ -26,7 +26,6 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist",
-    "test": "vitest run src",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -36,7 +35,6 @@
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "typescript": "catalog:",
-    "vite": "7.3.6",
-    "vitest": "catalog:"
+    "vite": "7.3.6"
   }
 }

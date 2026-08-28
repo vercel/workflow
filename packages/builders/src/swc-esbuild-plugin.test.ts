@@ -51,6 +51,53 @@ describe('createSwcPlugin externalizeNonSteps', () => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 
+  it('inlines a host-provided virtual module in a local step dependency', async () => {
+    const outdir = join(testRoot, 'out');
+    const stepFile = join(testRoot, 'workflows', 'my-workflow.ts');
+    const dbFile = join(testRoot, 'db.ts');
+
+    writeFile(
+      dbFile,
+      `import { env } from 'virtual:env/server';\nexport const url = env.DATABASE_URL;`
+    );
+    writeFile(
+      stepFile,
+      `import { url } from '../db';\nexport async function myStep() {\n  'use step';\n  return url;\n}`
+    );
+    importParents.set(stepFile, new Set([dbFile]));
+
+    const resolveId = vi.fn(async (source: string) =>
+      source === 'virtual:env/server' ? '\0virtual:env/server' : null
+    );
+    const load = vi.fn(async (id: string) =>
+      id === '\0virtual:env/server'
+        ? `export const env = { DATABASE_URL: 'postgres://from-host' };`
+        : null
+    );
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          outdir,
+          bundleTransitiveLocalStepDependencies: true,
+          hostResolver: { resolveId, load },
+        }),
+      ],
+    });
+
+    expect(result.outputFiles[0].text).toContain('postgres://from-host');
+    expect(resolveId).toHaveBeenCalledWith('virtual:env/server', dbFile);
+  });
+
   it('reports authoritative transform results to an optional observer', async () => {
     const srcDir = join(testRoot, 'src');
     const stepFile = join(srcDir, 'step.ts');
