@@ -216,21 +216,6 @@ export const HookResumeInputSchema = z.object({
 export type HookResumeInput = z.infer<typeof HookResumeInputSchema>;
 
 /**
- * Wake emitted while the producer's durable `hook_received` write is in
- * flight. A hook-resume protocol v2 consumer waits for the matching event
- * before replaying. Current producers emit envelope version 1. The schema
- * accepts future numeric versions so the run-aware consumer barrier can reject
- * them with useful context instead of throwing an opaque payload-parse error.
- */
-export const HookResumeWakeSchema = z.object({
-  resumeId: z.string(),
-  hookId: z.string(),
-  strategy: z.literal('producer_committed'),
-  version: z.number().int().positive(),
-});
-export type HookResumeWake = z.infer<typeof HookResumeWakeSchema>;
-
-/**
  * Wall-clock boundaries of a hook-triggered resume, carried on the queue
  * message so the SDK can report end-to-end time-to-resume (TTR, entry into
  * `resumeHook()` through to the first line of the next durable step) and its
@@ -265,8 +250,9 @@ export const HookResumeTimingSchema = z.object({
   /** Epoch ms immediately before the queue publish was requested. */
   queuePublishRequestedAtMs: z.number(),
   /**
-   * Which `resumeHook()` dispatch path ran. Current producers use `parallel`
-   * or `sequential`; older producers may report `lazy`.
+   * Which `resumeHook()` dispatch path ran. Current producers always report
+   * `sequential` (durable write, then wake); older producers may report
+   * `lazy` or `parallel`.
    */
   strategy: z.string().optional(),
   /** Epoch ms the final consumer's queue handler was entered. */
@@ -350,14 +336,6 @@ export const WorkflowInvokePayloadSchema = z.object({
    * before replaying.
    */
   hookInput: HookResumeInputSchema.optional(),
-  /**
-   * Producer-committed hook wake. Unlike `hookInput`, this carries no payload:
-   * the producer writes `hook_received`, and the consumer only verifies that
-   * the matching event is visible before replay. The nested schema accepts
-   * numeric future versions, but the run-aware barrier rejects unsupported
-   * versions before replay. Malformed or missing versions fail message parsing.
-   */
-  hookResume: HookResumeWakeSchema.optional(),
   /**
    * Resilient step dispatch data, only present alongside `stepId` when the
    * producer parallelized the `step_created` write with this queue publish. A

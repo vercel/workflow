@@ -24,11 +24,11 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
  * T7 immediately before stepFn.apply()
  * ```
  *
- * On the parallel path the producer's `hook_received` write overlaps queue
- * publication; on the sequential path it is awaited inside `producer_prep`.
- * Older producers may report `lazy`, where the consumer materializes the event
- * from `hookInput`. The write has no phase of its own; it remains visible as a
- * contextual span (`hook.resume`).
+ * The producer's `hook_received` write is awaited inside `producer_prep`
+ * (the wake is only published after it commits). Older producers may report
+ * `lazy`, where the consumer materializes the event from `hookInput`, or
+ * `parallel`, where the write raced the publish. The write has no phase of
+ * its own; it remains visible as a contextual span (`hook.resume`).
  *
  * T0/T1 are stamped on the producer's machine and T2..T7 on the consumer's, so
  * the measurement is subject to cross-machine clock skew. Rather than clamp
@@ -43,8 +43,9 @@ export type ResumeTrigger = 'hook';
 /**
  * Which `resumeHook()` dispatch path produced this resume.
  *
- * Current producers send `parallel` or `sequential`. Older producers may send
- * `lazy`, where the consumer materializes the event from `hookInput`.
+ * Current producers always send `sequential` (durable write, then wake).
+ * Older producers may send `lazy` (the consumer materializes the event from
+ * `hookInput`) or `parallel` (the write raced the publish).
  */
 export type ResumeStrategy = 'lazy' | 'parallel' | 'sequential';
 

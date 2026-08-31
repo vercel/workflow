@@ -81,14 +81,6 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: `3`
 - Recovery replays before replay divergence is recorded as corruption.
 
-### `WORKFLOW_DISABLE_LAZY_HOOK_RESUME`
-
-- Default: enabled (parallel durable hook resume on)
-- Resuming a hook durably writes `hook_received` and publishes a payload-less workflow wake in parallel. The consumer waits for the matching event before replaying or acknowledging the wake. `resumeHook()` resolves only after both operations succeed.
-- The runtime falls back to write-then-publish when the consumer does not advertise the wake barrier or the backend does not attest atomic `(runId, resumeId)` claims.
-- A refused event write, including disposal or an ended run, surfaces as `HookNotFoundError` and the call does not report success.
-- Set `1` to force the sequential path as a kill switch. The chosen strategy is reported on the resume span as `workflow.hook.resume_strategy`.
-
 ### `WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES`
 
 - Default: `3`
@@ -100,7 +92,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 ### `WORKFLOW_RESILIENT_STEP_DISPATCH`
 
 - Default: disabled
-- When a suspension hands newly created steps to the queue, the runtime publishes each step's execution message in parallel with its `step_created` event write instead of sequencing them, cutting a round trip per dispatched step. The message also carries the serialized step input (`stepInput`), so a transient `step_created` write failure (429 / 5xx / transport) still executes the step. The queue consumer idempotently re-ensures the event before running it, converging with the producer's write on the step's correlation ID. This mirrors resilient start (`runInput`) and the lazy hook resume (`hookInput`).
+- When a suspension hands newly created steps to the queue, the runtime publishes each step's execution message in parallel with its `step_created` event write instead of sequencing them, cutting a round trip per dispatched step. The message also carries the serialized step input (`stepInput`), so a transient `step_created` write failure (429 / 5xx / transport) still executes the step. The queue consumer idempotently re-ensures the event before running it, converging with the producer's write on the step's correlation ID. This mirrors resilient start (`runInput`) and the legacy lazy hook resume's `hookInput` (which current producers no longer send; see [durable hook resume](/docs/changelog/lazy-hook-resume)).
 - It is off by default because the publish races the create's verdict, and a create can come back refused: as a duplicate this replay should stop pursuing, or as a [stale write](#stale-reads-and-why-nothing-has-to-be-rejected) on a World that refuses rather than reports. Either way the message carrying the payload is already out, so the consumer can materialize a step whose create was refused, and nothing orders the verdict before the consumer's redelivery re-ensure. The sequential path is the only one that gives the message a happens-after edge over it.
 - Even when enabled, the runtime falls back to the sequential create-then-publish dispatch when the step input is too large to inline on the queue message, or when the run's queue transport cannot carry binary payloads (pre-CBOR spec versions).
 - Producer-side recoveries are reported on the suspension span as `workflow.step.resilient_dispatch_recovered`; a consumer that materialized the event reports `workflow.step.resilient_dispatch_materialized`.

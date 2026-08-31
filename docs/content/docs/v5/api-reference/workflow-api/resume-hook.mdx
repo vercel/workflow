@@ -12,11 +12,11 @@ related:
 
 Resumes a workflow run by sending a payload to a hook identified by its token.
 
-It durably writes the `hook_received` event and publishes a workflow wake. The call resolves only after both operations succeed.
+It durably writes the `hook_received` event and only then publishes a workflow wake. The call resolves only after both operations succeed, in that order.
 
 `resumeHook()` throws `HookNotFoundError` when no hook holds the token or when its `hook_received` write is refused because the hook was disposed or the run ended. See [durable hook resume](/docs/changelog/lazy-hook-resume).
 
-If `resumeHook()` throws any other error, the outcome is ambiguous: the event may already be durable even though the workflow wake failed. Calling `resumeHook()` again creates a new `resumeId` and can append a second `hook_received`. Callers that need at-most-once behavior across separate invocations must retain and deduplicate their own request key.
+If `resumeHook()` throws any other error, the outcome is ambiguous only in dispatch, never in durability: the event may already be durable even though the workflow wake failed, and any later wake of the run delivers it. Calling `resumeHook()` again creates a new `resumeId` and can append a second `hook_received`. Callers that need at-most-once behavior across separate invocations must retain and deduplicate their own request key.
 
 <Callout type="warn">
 `resumeHook` is a runtime function that must be called from outside a workflow function.

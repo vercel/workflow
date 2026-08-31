@@ -96,6 +96,7 @@ import {
   ABORT_READER_CANCEL,
   ABORT_STREAM_NAME,
   BODY_INIT_SYMBOL,
+  CONSUMER_SETTLED_OP,
   STABLE_ULID,
   STREAM_DRAIN_SYMBOL,
   STREAM_FRAMING_SYMBOL,
@@ -1634,6 +1635,21 @@ import type {
 // mode-specific Request/Response/Stream reducers below.
 
 /**
+ * Tag an `ops` promise as consumer-settled: it resolves only once the
+ * counterpart workflow acts (see {@link CONSUMER_SETTLED_OP}). Callers that
+ * flush ops before dispatching that workflow's wake must background these.
+ */
+function markConsumerSettledOp<T extends Promise<unknown>>(op: T): T {
+  (op as any)[CONSUMER_SETTLED_OP] = true;
+  return op;
+}
+
+/** Whether an `ops` promise was tagged by {@link markConsumerSettledOp}. */
+export function isConsumerSettledOp(op: Promise<unknown>): boolean {
+  return (op as any)?.[CONSUMER_SETTLED_OP] === true;
+}
+
+/**
  * Base reducers shared across all serialization boundaries.
  * Composes: class + step-function + common reducers from the modular modules.
  */
@@ -1981,7 +1997,10 @@ export function getExternalReducers(
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
       const readable = new WorkflowServerReadableStream(runId, name);
-      ops.push(readable.pipeTo(value));
+      // A dehydrated WritableStream pushes a server-stream READER: it settles
+      // only when the counterpart workflow writes into `name`, so it must
+      // never be awaited ahead of the dispatch that wakes that workflow.
+      ops.push(markConsumerSettledOp(readable.pipeTo(value)));
 
       return { name };
     },
@@ -2296,15 +2315,22 @@ function getStepReducers(
       if (!name) {
         const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
+        // A dehydrated WritableStream pushes a server-stream READER: it
+        // settles only when the counterpart workflow writes into `name` (a
+        // manual webhook's `responseWritable` is the canonical case), so it
+        // must never be awaited ahead of the dispatch that wakes that
+        // workflow — resumeHook's pre-write ops flush would deadlock on it.
         ops.push(
-          new WorkflowServerReadableStream(runId, name)
-            .pipeThrough(
-              getDeserializeStream(
-                getStepRevivers(global, ops, runId, cryptoKey),
-                cryptoKey
+          markConsumerSettledOp(
+            new WorkflowServerReadableStream(runId, name)
+              .pipeThrough(
+                getDeserializeStream(
+                  getStepRevivers(global, ops, runId, cryptoKey),
+                  cryptoKey
+                )
               )
-            )
-            .pipeTo(value)
+              .pipeTo(value)
+          )
         );
       }
 

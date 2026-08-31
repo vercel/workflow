@@ -493,17 +493,22 @@ export interface WorldCapabilities {
   /**
    * The World's `events.create` deduplicates concurrent `hook_received` writes
    * that carry the same `(runId, resumeId)`, collapsing them onto a single
-   * committed event and returning the canonical one to every caller. This is
-   * the backend half of `resumeHook()`'s durable parallel path: producer
-   * retries with the same `resumeId` must converge on exactly one event.
-   * Legacy `hookInput` redeliveries use the same constraint.
+   * committed event and returning the canonical one to every caller. Two
+   * writers rely on it: `resumeHook()`'s durable write attaches a `resumeId` +
+   * payload digest so transport-level retries of one write converge on exactly
+   * one event, and legacy `hookInput` queue redeliveries (from older
+   * producers) converge through the same constraint.
    *
-   * The core runtime fails closed on this: the parallel path is taken ONLY when
-   * the World declares `hookResumeDedup === true` AND the target run's
-   * deployment supports the producer-committed wake barrier (see the
-   * execution-context marker `hookResumeInputVersion`). A World that accepts a `resumeId` but
-   * does not enforce the `(runId, resumeId)` constraint must leave this unset
-   * so the runtime keeps the sequential single-writer path.
+   * The core runtime fails closed on this: a `resumeId` is attached ONLY when
+   * the World declares `hookResumeDedup === true` (or the live backend attests
+   * it per-lookup, below). A World that accepts a `resumeId` but does not
+   * enforce the `(runId, resumeId)` constraint must leave this unset so the
+   * runtime keeps the plain single-shot write.
+   *
+   * Declaring this also commits the World to ROUND-TRIPPING the key:
+   * `events.list` must return `resumeId` on `hook_received` events it
+   * persisted with one, because the legacy `hookInput` consumer path detects
+   * an already-materialized resume by matching `resumeId` in the loaded log.
    *
    * Enabled statically for `world-local` (filesystem sidecar claim keyed on
    * `(runId, resumeId)`; the adapter and its backend ship together, so a static
@@ -511,8 +516,8 @@ export interface WorldCapabilities {
    * leaves this UNSET and instead attests support per-lookup via the
    * server-computed, response-only `Hook.resumeCapabilities.hookResumeDedupVersion`
    * (see `HookResumeCapabilitiesSchema`), so a server rollback or kill switch
-   * degrades new resumes to the sequential path immediately without redeploying
-   * the adapter. `world-postgres` leaves it unset for now and stays sequential.
+   * degrades new resumes to plain writes immediately without redeploying
+   * the adapter. `world-postgres` leaves it unset for now.
    *
    * The resume gate treats EITHER signal as backend support (see
    * `resume-hook.ts`): this static capability OR a current

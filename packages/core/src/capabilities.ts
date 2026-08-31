@@ -37,11 +37,12 @@
  *   which a run only carries if the deployment that created it could also
  *   open `encp`. The entry exists so the capability set stays a complete,
  *   auditable description of a run's decoding ability.
- * - Hook-resume consumer protocol: deliberately NOT tracked here. Rather than
- *   predict a release cutoff, the run's creating deployment stamps an explicit
- *   `hookResumeInputVersion` execution-context marker; `resumeHook()` gates its
- *   parallel path on that marker (mirrored onto the hook's resumeContext by the
- *   server).
+ * - Hook-resume consumer protocol ("consumer re-ensures `hook_received` from
+ *   `hookInput`"): deliberately NOT tracked here. Rather than predict a
+ *   release cutoff, the run's creating deployment stamps an explicit
+ *   `hookResumeInputVersion` execution-context marker (mirrored onto the
+ *   hook's resumeContext by the server); older producers gate their lazy path
+ *   on that marker.
  */
 
 import semver from 'semver';
@@ -115,11 +116,13 @@ const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   // consumers that cannot unframe them (silent corruption); too-high merely
   // delays the optimization (safe).
   { capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' },
-  // NOTE: the hook-resume consumer protocol is intentionally NOT gated here. A
-  // version-compare against a predicted release cutoff is a guess; instead the
-  // run's creating deployment stamps an explicit `hookResumeInputVersion`
-  // marker into its execution context, which the server mirrors onto the hook's
-  // resumeContext. `resumeHook()` gates the parallel path on that marker.
+  // NOTE: the hook-resume consumer protocol ("does the consumer re-ensure
+  // `hook_received` from the queue message's `hookInput`?") is intentionally
+  // NOT gated here. A version-compare against a predicted release cutoff is a
+  // guess; instead the run's creating deployment stamps an explicit
+  // `hookResumeInputVersion` marker into its execution context, which the
+  // server mirrors onto the hook's resumeContext. Older producers gate their
+  // lazy path on that marker.
 ];
 
 /**

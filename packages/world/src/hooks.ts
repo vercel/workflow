@@ -27,26 +27,32 @@ export const HookResumeContextSchema = z.object({
   // sealed envelopes and on projects with encryption disabled, where the
   // resume falls back to the symmetric per-run key.
   encryptionPublicKey: z.string().optional(),
-  // Feature marker: the version of the hook-resume consumer protocol the
-  // run's creating deployment supports. Version 1 materializes legacy
-  // `hookInput` messages. Version 2 additionally fences producer-committed
-  // wake messages: it will not replay or acknowledge one until the matching
-  // durable `hook_received` is visible. Because a run is pinned to its creating
-  // deployment, this marker is a reliable per-run attestation, unlike inferring
-  // support from a version compare against a predicted release cutoff. Absent
-  // on runs created before the marker existed (fall back to the sequential
-  // path).
+  // Feature marker: the version of the lazy-hook-resume consumer protocol the
+  // run's creating deployment supports. Present (>= 1) means that deployment's
+  // `@workflow/core` re-ensures the `hook_received` event from a queue
+  // message's `hookInput` on replay. Current producers no longer send
+  // `hookInput` (the durable write happens before the wake is published), so
+  // they never read this marker; it remains stamped so OLDER producers, which
+  // still gate their lazy path on it, keep working against new runs. Because a
+  // run is pinned to its creating deployment, this marker is a reliable
+  // per-run attestation, unlike inferring support from a version compare
+  // against a predicted release cutoff.
   hookResumeInputVersion: z.number().optional(),
 });
 
 export type HookResumeContext = z.infer<typeof HookResumeContextSchema>;
 
 /**
- * Current version of the hook-resume consumer protocol. Version 1 attests
- * legacy `hookInput` materialization. Version 2 additionally attests the
- * producer-committed wake barrier used by durable `resumeHook()`.
+ * Current version of the lazy-hook-resume consumer protocol. A run's creating
+ * deployment stamps this into its execution context (and the server mirrors it
+ * onto `HookResumeContext.hookResumeInputVersion`) to attest that its
+ * `@workflow/core` re-ensures the `hook_received` event from a queue message's
+ * `hookInput`. Current producers write the event durably BEFORE publishing the
+ * wake and do not read this marker; it exists for older producers whose lazy
+ * path requires the target run's marker to be at least this value. Bump only
+ * on a breaking change to the `hookInput` re-ensure contract.
  */
-export const HOOK_RESUME_INPUT_VERSION = 2;
+export const HOOK_RESUME_INPUT_VERSION = 1;
 
 /**
  * Current version of the backend lazy-hook-resume dedup contract: the live

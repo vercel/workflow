@@ -69,6 +69,19 @@ export const WEBHOOK_RESPONSE_WRITABLE = Symbol.for(
 );
 
 /**
+ * Tag on a serialization `ops` promise marking it as settled by the CONSUMER,
+ * not the producer. Most ops are producer-push uploads (a `ReadableStream`
+ * piped to the server) that settle on their own; a dehydrated `WritableStream`
+ * instead pushes a server-stream *reader* piped into the local sink, which
+ * only settles once the counterpart workflow writes to it. A producer that
+ * awaits its ops before dispatching the very message that wakes that workflow
+ * (e.g. `resumeHook`'s durable `hook_received` write) would deadlock on these:
+ * the op waits for the workflow, the workflow waits for the dispatch. Tagged
+ * ops must be backgrounded, never awaited ahead of dispatch.
+ */
+export const CONSUMER_SETTLED_OP = Symbol.for('WORKFLOW_CONSUMER_SETTLED_OP');
+
+/**
  * Symbol used to store the class registry on globalThis in workflow mode.
  * This allows the deserializer to find classes by classId in the VM context.
  */

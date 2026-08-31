@@ -162,46 +162,6 @@ describe('QueuePayloadSchema', () => {
     ).toEqual({ runId: 'wrun_01ABC', stepId: 'step_1' });
   });
 
-  it('round-trips a producer-committed hook wake', () => {
-    const hookResume = {
-      resumeId: 'resume_1',
-      hookId: 'hook_1',
-      strategy: 'producer_committed',
-      version: 1,
-    } as const;
-
-    expect(
-      QueuePayloadSchema.parse({ runId: 'wrun_01ABC', hookResume })
-    ).toEqual({ runId: 'wrun_01ABC', hookResume });
-  });
-
-  it('preserves a future numeric hook wake version for contextual rejection', () => {
-    expect(
-      QueuePayloadSchema.parse({
-        runId: 'wrun_01ABC',
-        hookResume: {
-          resumeId: 'resume_1',
-          hookId: 'hook_1',
-          strategy: 'producer_committed',
-          version: 2,
-        },
-      })
-    ).toMatchObject({ hookResume: { version: 2 } });
-  });
-
-  it('rejects a hook wake with a missing version', () => {
-    expect(
-      QueuePayloadSchema.safeParse({
-        runId: 'wrun_01ABC',
-        hookResume: {
-          resumeId: 'resume_1',
-          hookId: 'hook_1',
-          strategy: 'producer_committed',
-        },
-      }).success
-    ).toBe(false);
-  });
-
   // Resilient step dispatch: a step message may carry `stepInput` with the
   // serialized (binary) step input, which the consumer re-ensures the
   // step_created event from. The bytes must survive parsing untouched.

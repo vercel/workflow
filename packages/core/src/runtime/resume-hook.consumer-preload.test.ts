@@ -143,16 +143,11 @@ async function runResumeConsumerScenario(options: {
    */
   reEnsureRejection?: Error;
   /**
-   * Drive the queue message through the real lazy `resumeHook()` producer,
-   * then commit `hook_disposed` before delivering it to the consumer.
+   * Drive the queue message through the real (serial, durable-first)
+   * `resumeHook()` producer, then commit `hook_disposed` before delivering
+   * its wake to the consumer.
    */
-  disposeAfterLazyPublish?: boolean;
-  /** Deliver the new payload-less producer-committed wake shape. */
-  producerCommittedWake?: boolean;
-  /** Override the producer-committed wake envelope version. */
-  hookResumeVersion?: number;
-  /** Put a durable hook_disposed in the log before delivery. */
-  logHasDisposedEvent?: boolean;
+  disposeAfterDurableResume?: boolean;
   /**
    * When set, the queue message's hookInput carries the producer-stamped
    * pinned deployment id, activating the consumer's cheap pre-write
@@ -276,16 +271,6 @@ async function runResumeConsumerScenario(options: {
       } as CreateEventRequest)
     );
   }
-  if (options.logHasDisposedEvent) {
-    durableEvents.push(
-      event({
-        eventType: 'hook_disposed',
-        specVersion: SPEC_VERSION_CURRENT,
-        correlationId: hookCorrelationId,
-        eventData: { token: hookToken },
-      })
-    );
-  }
 
   const createdEvents: CreateEventRequest[] = [];
   const createdParams: Array<CreateEventParams | undefined> = [];
@@ -400,36 +385,28 @@ async function runResumeConsumerScenario(options: {
   await handler(new Request('http://localhost', { method: 'POST' }));
   expect(capturedHandler).toBeDefined();
 
-  let delivery: unknown = options.producerCommittedWake
-    ? {
-        runId,
-        hookResume: {
-          hookId: hookCorrelationId,
-          resumeId,
-          strategy: 'producer_committed',
-          version: options.hookResumeVersion ?? 1,
-        },
-      }
-    : {
-        runId,
-        hookInput: {
-          hookId: hookCorrelationId,
-          resumeId,
-          token: hookToken,
-          payload: payloadBytes,
-          payloadDigest,
-          ...(options.hookDeploymentId !== undefined
-            ? { deploymentId: options.hookDeploymentId }
-            : {}),
-        },
-      };
+  let delivery: unknown = {
+    runId,
+    hookInput: {
+      hookId: hookCorrelationId,
+      resumeId,
+      token: hookToken,
+      payload: payloadBytes,
+      payloadDigest,
+      ...(options.hookDeploymentId !== undefined
+        ? { deploymentId: options.hookDeploymentId }
+        : {}),
+    },
+  };
   let resumedHook: Hook | undefined;
-  if (options.disposeAfterLazyPublish) {
+  if (options.disposeAfterDurableResume) {
     resumedHook = await resumeHook(hookToken, { value: 'hook-wins' });
     delivery = queue.mock.calls.at(-1)?.[1];
 
     // The producer returned only after hook_received was durable. Commit
-    // disposal before delivering its payload-less wake.
+    // disposal before delivering its payload-less wake: any hook_received
+    // write attempted from here on is refused, like the real server's
+    // disposal marker would refuse it.
     reEnsureRejection = new HookNotFoundError(hookToken);
     durableEvents.push(
       event({
@@ -734,81 +711,6 @@ describe('lazy hook resume consumer preload', () => {
     expect(runCompletedCreates).toHaveLength(0);
   });
 
-  it('rethrows a producer-committed wake until its matching event is visible', async () => {
-    const {
-      handlerError,
-      hookReceivedCreates,
-      listEvents,
-      runCompletedCreates,
-    } = await runResumeConsumerScenario({
-      preloadHasHookReceived: false,
-      producerCommittedWake: true,
-    });
-
-    expect(hookReceivedCreates).toHaveLength(0);
-    expect(listEvents).toHaveBeenCalledTimes(1);
-    expect(handlerError).toMatchObject({
-      code: 'hook-resume-event-pending',
-      status: 503,
-    });
-    expect(runCompletedCreates).toHaveLength(0);
-  });
-
-  it('rejects an unsupported wake version with run-aware diagnostics', async () => {
-    const { handlerError, listEvents, runCompletedCreates } =
-      await runResumeConsumerScenario({
-        preloadHasHookReceived: false,
-        producerCommittedWake: true,
-        hookResumeVersion: 2,
-      });
-
-    expect(handlerError).toMatchObject({
-      code: 'hook-resume-wake-version-unsupported',
-      status: 503,
-      message: expect.stringContaining(
-        'Workflow run wrun_resume_consumer_preload'
-      ),
-    });
-    expect((handlerError as Error).message).toContain('unsupported version 2');
-    expect(listEvents).not.toHaveBeenCalled();
-    expect(runCompletedCreates).toHaveLength(0);
-  });
-
-  it('replays a producer-committed wake once its matching event is visible', async () => {
-    const { handlerError, hookReceivedCreates, runCompletedCreates } =
-      await runResumeConsumerScenario({
-        preloadHasHookReceived: true,
-        producerCommittedWake: true,
-      });
-
-    expect(handlerError).toBeUndefined();
-    expect(hookReceivedCreates).toHaveLength(0);
-    expect(runCompletedCreates).toHaveLength(1);
-  });
-
-  it('consumes a permanently refused producer-committed wake', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      const { handlerError, hookReceivedCreates, runCompletedCreates } =
-        await runResumeConsumerScenario({
-          preloadHasHookReceived: false,
-          producerCommittedWake: true,
-          logHasDisposedEvent: true,
-        });
-
-      expect(handlerError).toBeUndefined();
-      expect(hookReceivedCreates).toHaveLength(0);
-      expect(runCompletedCreates).toHaveLength(0);
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining(
-          'Producer-committed hook wake was permanently refused'
-        )
-      );
-    } finally {
-      warn.mockRestore();
-    }
-  });
-
   it('does not lose a resume when disposal commits after publish', async () => {
     const {
       durableEvents,
@@ -818,11 +720,12 @@ describe('lazy hook resume consumer preload', () => {
       resumedHook,
     } = await runResumeConsumerScenario({
       preloadHasHookReceived: false,
-      disposeAfterLazyPublish: true,
+      disposeAfterDurableResume: true,
     });
 
-    // resumeHook() returned only after the payload was durable. Disposal may
-    // commit before the wake is consumed, but it cannot erase that event.
+    // resumeHook() returned only after hook_received was durable and the wake
+    // was accepted. Disposal may commit before the wake is consumed, but it
+    // cannot erase that event, and the delivery replays it from the log.
     expect(resumedHook?.token).toBe('resume-consumer-token');
     expect(queue).toHaveBeenCalledTimes(1);
     expect(hookReceivedCreates).toHaveLength(1);

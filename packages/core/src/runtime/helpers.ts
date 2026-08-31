@@ -105,14 +105,14 @@ export interface HealthCheckResult {
   encryptionPublicKey?: string;
   /**
    * The responding deployment's `HOOK_RESUME_INPUT_VERSION`: the protocol
-   * version supported by the *consumer* (queue-message target). Version 1
-   * materializes legacy `hookInput`; version 2 also fences producer-committed
-   * wakes until `hook_received` is visible. A cross-deployment
+   * version at which the *consumer* (queue-message target) materializes the
+   * `hook_received` event from `hookInput` on replay. A cross-deployment
    * `start()` stamps the *target's* value (not the caller's) into the new
-   * run's `executionContext.hookResumeInputVersion` so that `resumeHook()`
-   * only takes the parallel path when the deployment that will actually
-   * consume the queue message is known to honor its wake barrier. Omitted when
-   * the responding deployment predates this field, which fails the gate closed.
+   * run's `executionContext.hookResumeInputVersion`. Current producers write
+   * the event durably before publishing the wake and do not read the marker;
+   * OLDER producers still gate their lazy path on it, so it keeps being
+   * stamped. Omitted when the responding deployment predates this field,
+   * which fails that gate closed.
    */
   hookResumeInputVersion?: number;
 }
