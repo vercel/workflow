@@ -10,4 +10,4 @@
 'workflow': patch
 ---
 
-Upgrade runtime validation to Zod 4.5, use the stable Zod 4 subpath, and enable compilation on all supported SDK-owned Zod schemas.
+Upgrade runtime validation to Zod 4.5, use namespace imports from the package root, and enable compilation on all supported SDK-owned Zod schemas.

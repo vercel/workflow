@@ -5,7 +5,7 @@ import { WorkflowWorldError } from '@workflow/errors';
 import type { SerializedData } from '@workflow/world';
 import { nodeHttpFetch } from '@workflow/world/node-http.js';
 import { decode, encode } from 'cbor-x';
-import type * as z from 'zod/v4';
+import type * as z from 'zod';
 import {
   getDispatcher,
   getNodeHttpAgents,

@@ -1,5 +1,5 @@
 import { defineHook, getWritable } from '@workflow/core';
-import * as z from 'zod/v4';
+import * as z from 'zod';
 
 export const Hook = defineHook({
   schema: z.compile(

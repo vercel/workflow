@@ -19,7 +19,7 @@ import {
   WorkflowRunBaseSchema,
   type WorkflowRunWithoutData,
 } from '@workflow/world';
-import * as z from 'zod/v4';
+import * as z from 'zod';
 import { getRequestTimeoutMs } from './http-core.js';
 import { normalizeWorkflowRunData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';

@@ -1,5 +1,5 @@
 import { decodeTime } from 'ulid';
-import * as z from 'zod/v4';
+import * as z from 'zod';
 import { isSlotBody } from './slot-identity.js';
 
 const UlidSchema = z.compile(z.string().ulid());

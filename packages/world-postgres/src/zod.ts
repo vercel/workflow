@@ -1,4 +1,4 @@
-import * as z from 'zod/v4';
+import * as z from 'zod';
 
 export const Base64Buffer = z.compile(
   z.codec(z.base64(), z.instanceof(Buffer), {

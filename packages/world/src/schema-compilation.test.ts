@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import * as z from 'zod/v4';
+import * as z from 'zod';
 import * as worldExports from './index.js';
 import { zodJsonSchema } from './shared.js';
 
@@ -38,7 +38,7 @@ function listRuntimeSourceFiles(directory: string): string[] {
 const zodRuntimeModules = runtimeSourceDirectories
   .flatMap(listRuntimeSourceFiles)
   .filter((path) =>
-    readFileSync(path, 'utf8').includes("import * as z from 'zod/v4';")
+    readFileSync(path, 'utf8').includes("import * as z from 'zod';")
   )
   .map((path) => ({
     label: relative(repositoryRoot, path),

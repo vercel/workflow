@@ -7,7 +7,7 @@
  */
 
 import { getVercelOidcToken } from '@vercel/oidc';
-import * as z from 'zod/v4';
+import * as z from 'zod';
 import { missingDeploymentIdMessage } from './deployment-id.js';
 import { getDispatcher } from './http-client.js';
 import { instrumentedFetch, resolveVercelApiToken } from './http-core.js';

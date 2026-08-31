@@ -3,7 +3,7 @@ import path from 'node:path';
 import { globalSingleton } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import { EventSchema, HookSchema } from '@workflow/world';
-import * as z from 'zod/v4';
+import * as z from 'zod';
 import {
   assertSafeEntityId,
   deleteJSON,

@@ -4,7 +4,7 @@ import {
   geistdocsMetaSchema,
 } from '@vercel/geistdocs/source-config';
 import { defineDocs } from 'fumadocs-mdx/config';
-import * as z from 'zod/v4';
+import * as z from 'zod';
 
 // You can customise Zod schemas for frontmatter and `meta.json` here
 // see https://fumadocs.dev/docs/mdx/collections

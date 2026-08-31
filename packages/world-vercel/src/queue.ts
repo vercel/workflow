@@ -13,7 +13,7 @@ import {
   ValidQueueName,
 } from '@workflow/world';
 import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
-import * as z from 'zod/v4';
+import * as z from 'zod';
 import { missingDeploymentIdMessage } from './deployment-id.js';
 import { getQueueDispatcher } from './http-client.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';

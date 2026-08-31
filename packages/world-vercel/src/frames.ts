@@ -9,7 +9,7 @@
  */
 
 import { decode, encode } from 'cbor-x';
-import * as z from 'zod/v4';
+import * as z from 'zod';
 
 export const V4_FRAME_CONTENT_TYPE = 'application/vnd.workflow.v4-frames';
 

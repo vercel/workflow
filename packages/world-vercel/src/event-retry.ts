@@ -70,7 +70,7 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type { EventTypeSchema } from '@workflow/world';
-import type * as z from 'zod/v4';
+import type * as z from 'zod';
 
 /** Every event type the world knows about (includes the server-only
  * `hook_conflict`, which the SDK never POSTs). */

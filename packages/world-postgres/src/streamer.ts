@@ -8,7 +8,7 @@ import type {
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { Client, type Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
-import * as z from 'zod/v4';
+import * as z from 'zod';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import { Mutex } from './util.js';
 

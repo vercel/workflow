@@ -1,6 +1,6 @@
 import { generateText, stepCountIs } from 'ai';
 import { FatalError } from 'workflow';
-import * as z from 'zod/v4';
+import * as z from 'zod';
 
 async function getWeatherInformation({ city }: { city: string }) {
   'use step';

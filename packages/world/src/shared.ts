@@ -1,4 +1,4 @@
-import * as z from 'zod/v4';
+import * as z from 'zod';
 
 // Zod 4.5 cannot compile recursive schemas. Keep this on the standard parser;
 // wrapping it in z.compile() would silently return this same schema unchanged.

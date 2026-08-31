@@ -12,7 +12,7 @@
 
 import { webcrypto } from 'node:crypto';
 import type { WorkflowRun, World } from '@workflow/world';
-import * as z from 'zod/v4';
+import * as z from 'zod';
 import { getDispatcher } from './http-client.js';
 import { instrumentedFetch, resolveVercelApiToken } from './http-core.js';
 
