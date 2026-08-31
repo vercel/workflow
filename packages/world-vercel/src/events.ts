@@ -53,7 +53,7 @@ import {
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
-import { withEventPostRetry } from './event-retry.js';
+import { ReplayEventObserverError, withEventPostRetry } from './event-retry.js';
 import {
   createHookReceivedPreloadEventV4,
   createWorkflowRunEventsBatchV4,
@@ -637,6 +637,7 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     }
     return result as EventResult<T['eventType']>;
   } catch (err) {
+    if (err instanceof ReplayEventObserverError) throw err.error;
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
       isHookEventRequiringExistence(data.eventType) &&
@@ -751,51 +752,22 @@ async function createWorkflowRunEventInner(
   };
 
   if (data.eventType === 'run_started' && !params?.skipPreload) {
-    const result = await createWorkflowRunStartedEventV4(input, config);
-    const runCreated = result.events.find(
-      (event) => event.eventType === 'run_created'
+    const result = await createWorkflowRunStartedEventV4(
+      input,
+      config,
+      params?.replayEventObserver
     );
-    const runStarted = result.events.find(
-      (event) => event.eventType === 'run_started'
-    );
-    if (!runCreated) {
+    const replayRun = reconstructRunFromReplayEvents(result.events);
+    if (!replayRun) {
       throw new WorkflowWorldError(
-        'v4 createEvent: run_started stream is missing run_created',
+        'v4 createEvent: run_started stream is missing lifecycle events',
         { code: 'SCHEMA_VALIDATION' }
       );
-    }
-    if (!runStarted) {
-      throw new WorkflowWorldError(
-        'v4 createEvent: run_started stream is missing run_started',
-        { code: 'SCHEMA_VALIDATION' }
-      );
-    }
-
-    let attributes = runCreated.eventData.attributes ?? {};
-    let updatedAt = runStarted.createdAt;
-    for (const event of result.events) {
-      if (event.eventType === 'attr_set') {
-        attributes = applyAttributeChanges(attributes, event.eventData.changes);
-        updatedAt = event.createdAt;
-      }
     }
 
     return {
-      event: runStarted,
-      run: {
-        runId: runCreated.runId,
-        status: 'running',
-        deploymentId: runCreated.eventData.deploymentId,
-        workflowName: runCreated.eventData.workflowName,
-        specVersion: runCreated.specVersion,
-        executionContext: runCreated.eventData.executionContext,
-        input: runCreated.eventData.input,
-        attributes,
-        encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
-        startedAt: runStarted.createdAt,
-        createdAt: runCreated.createdAt,
-        updatedAt,
-      },
+      event: replayRun.event,
+      run: replayRun.run,
       events: result.events,
       cursor: result.cursor,
       hasMore: result.hasMore,
@@ -820,7 +792,8 @@ async function createWorkflowRunEventInner(
     // an S3-backed hook payload the runtime would discard anyway.
     const outcome = await createHookReceivedPreloadEventV4(
       { ...input, remoteRefBehavior: 'lazy' },
-      config
+      config,
+      params.replayEventObserver
     );
     if (outcome.kind === 'materialized') {
       // Older server (or optimization declined): the write still succeeded
@@ -835,10 +808,10 @@ async function createWorkflowRunEventInner(
     // Unlike lifecycle streams, a preload missing run_created/run_started is
     // not fatal here: the write has already converged, so return the page
     // without a run and let the runtime take its safe fallback.
-    const run = reconstructRunFromReplayEvents(events);
+    const replayRun = reconstructRunFromReplayEvents(events);
     return {
       ...(canonicalEvent ? { event: canonicalEvent } : {}),
-      ...(run ? { run } : {}),
+      ...(replayRun ? { run: replayRun.run } : {}),
       events,
       cursor,
       hasMore,
@@ -857,20 +830,16 @@ async function createWorkflowRunEventInner(
 /**
  * Reconstruct the run entity from a streamed replay log: identity and input
  * from `run_created`, start time from `run_started`, later `attr_set` events
- * folded into `attributes`/`updatedAt`. Returns undefined when the log does
- * not contain both lifecycle events (the caller decides whether that is
- * fatal). The reconstructed status is always `running`: a terminal event
+ * folded into `attributes`/`updatedAt`. Returns undefined when reconstruction
+ * is incomplete so each caller can choose whether that is fatal. The
+ * reconstructed status is always `running`: a terminal event
  * committed concurrently still rides in the log itself, and the runtime's
  * replay-time terminal detection handles it.
  */
-function reconstructRunFromReplayEvents(
-  events: Event[]
-): (WorkflowRun & { startedAt: Date }) | undefined {
+function reconstructRunFromReplayEvents(events: Event[]) {
   const runCreated = events.find((event) => event.eventType === 'run_created');
   const runStarted = events.find((event) => event.eventType === 'run_started');
-  if (!runCreated || !runStarted) {
-    return undefined;
-  }
+  if (!runCreated || !runStarted) return;
 
   let attributes = runCreated.eventData.attributes ?? {};
   let updatedAt = runStarted.createdAt;
@@ -882,17 +851,20 @@ function reconstructRunFromReplayEvents(
   }
 
   return {
-    runId: runCreated.runId,
-    status: 'running',
-    deploymentId: runCreated.eventData.deploymentId,
-    workflowName: runCreated.eventData.workflowName,
-    specVersion: runCreated.specVersion,
-    executionContext: runCreated.eventData.executionContext,
-    input: runCreated.eventData.input,
-    attributes,
-    encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
-    startedAt: runStarted.createdAt,
-    createdAt: runCreated.createdAt,
-    updatedAt,
+    event: runStarted,
+    run: {
+      runId: runCreated.runId,
+      status: 'running' as const,
+      deploymentId: runCreated.eventData.deploymentId,
+      workflowName: runCreated.eventData.workflowName,
+      specVersion: runCreated.specVersion,
+      executionContext: runCreated.eventData.executionContext,
+      input: runCreated.eventData.input,
+      attributes,
+      encryptionPublicKey: runCreated.eventData.encryptionPublicKey,
+      startedAt: runStarted.createdAt,
+      createdAt: runCreated.createdAt,
+      updatedAt,
+    },
   };
 }

@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { gzipSync } from 'node:zlib';
+import { WorkflowWorldError } from '@workflow/errors';
 import type { AnyEventRequest, CreateEventParams } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
@@ -778,6 +779,42 @@ describe('splitEventDataForV4 attribute fields', () => {
 });
 
 describe('createWorkflowRunEvent response coercion', () => {
+  it('surfaces streamed event observer failures unchanged', async () => {
+    const agent = mockAgent();
+    const observerError = new WorkflowWorldError('observer failed', {
+      code: 'TRANSPORT',
+    });
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(200, runStartedResponse(), {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': STARTED_AT.toISOString(),
+          'x-wf-max-events': '10000',
+        },
+      });
+
+    await expect(
+      createWorkflowRunEvent(
+        'wrun_1',
+        { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
+        {
+          replayEventObserver: () => {
+            throw observerError;
+          },
+        },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toBe(observerError);
+    agent.assertNoPendingInterceptors();
+  });
+
   it('accepts a current region-tagged run_created runId', async () => {
     const taggedRunId = `wrun_${encodeRunId(ulid(), REGION_IDS.sfo1)}`;
     const agent = mockAgent();

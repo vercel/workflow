@@ -145,10 +145,10 @@ export interface CompiledWorkflowScripts {
 /**
  * Compile the workflow bundle before its run snapshot is available.
  *
- * Compilation depends only on the route's bundle string and workflow name,
- * not the event log or VM context. The runtime starts this promise while
- * `run_started` loads the replay snapshot, then evaluates the scripts only
- * after it has created the fresh context.
+ * Compilation depends only on the route's bundle string and the workflow name
+ * persisted on the run, not the event log or VM context. The runtime starts
+ * this promise while `run_started` loads the replay snapshot, then evaluates
+ * the scripts only after it has created the fresh context.
  */
 export function compileWorkflowBundle(
   workflowCode: string,
