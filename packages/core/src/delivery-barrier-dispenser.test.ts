@@ -117,6 +117,18 @@ const resumeAtA = new Date('2026-07-27T12:00:05.000Z');
 const resumeAtB = new Date('2026-07-27T12:00:06.000Z');
 
 describe('barrier safety-net dispenser', () => {
+  it('rejects a second barrier owner for the same event index', () => {
+    const ctx = setupWorkflowContext([]);
+    const barrier = registerDeliveryBarrier(ctx, 0, 'hook', { armed: false });
+
+    expect(() => registerDeliveryBarrier(ctx, 0, 'step')).toThrowError(
+      'Delivery barrier already registered at event index 0'
+    );
+
+    barrier.markDelivered();
+    expect(isDeliveryIdle(ctx)).toBe(true);
+  });
+
   it('suspends only after deliveries parked behind an unclaimed payload have run', async () => {
     const ops: Promise<any>[] = [];
     const payload = await dehydrateStepReturnValue(
