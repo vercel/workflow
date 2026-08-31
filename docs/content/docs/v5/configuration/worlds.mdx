@@ -125,7 +125,7 @@ The Local World is the default outside Vercel and is intended for development.
 
 ## Postgres World
 
-The Postgres World is a self-hosted durable backend for long-running server processes.
+The Postgres World is a self-hosted durable backend for long-running server processes. It is a reference implementation: none of the options below configure authentication, because the World does not authenticate Workflow's internal HTTP routes at all. Restrict them yourself — see [Postgres World security](/worlds/postgres#security).
 
 ### `connectionString`
 

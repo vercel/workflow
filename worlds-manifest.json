@@ -16,7 +16,7 @@
       "type": "official",
       "package": "@workflow/world-postgres",
       "name": "Postgres",
-      "description": "Production-ready, self-hosted world using PostgreSQL for durable storage and graphile-worker for reliable job processing.",
+      "description": "Self-hosted reference world using PostgreSQL for durable storage and graphile-worker for reliable job processing. Bring your own authentication.",
       "docs": "/worlds/postgres",
       "example": "https://github.com/vercel/workflow-examples/tree/main/postgres",
       "features": [],

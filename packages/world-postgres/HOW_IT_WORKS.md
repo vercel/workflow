@@ -38,6 +38,8 @@ When the runtime returns `{ timeoutSeconds }`, the worker schedules a new Graphi
 
 The worker sends workflow orchestration and queued step messages to the combined `.well-known/workflow/v1/flow` endpoint.
 
+That endpoint is not authenticated. The queue HTTP handler is inherited from `@workflow/world-local` and validates the `x-vqs-*` header shape, the queue-name prefix, and the payload schema — never the identity of the caller. Any client that can reach the route can forge a delivery or replay one it captured, so restricting the route is left to the deployment. See [Security](./README.md#security) in the README.
+
 In **Next.js**, the `world.start()` call needs to be added to `instrumentation.ts|js` to ensure workers start before request handling. Use `workflow/runtime` for `getWorld` (same as the testing server and other framework plugins):
 
 ```ts

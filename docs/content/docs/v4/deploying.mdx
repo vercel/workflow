@@ -74,6 +74,17 @@ For self-hosting or deploying to other cloud providers, you can use community-ma
   </Card>
 </Cards>
 
+<Callout type="warn">
+  Self-hosted Worlds bring their own security model. The Vercel World
+  authenticates Workflow's internal HTTP routes for you; a self-hosted World
+  generally does not. The [Postgres World](/worlds/postgres#security), for
+  example, accepts any request that reaches
+  `/.well-known/workflow/v1/flow` — so a client that can reach that route can
+  forge or replay workflow and step invocations. Restrict those routes at your
+  ingress, reverse proxy, or firewall before exposing a self-hosted deployment,
+  and check the security section of whichever World you pick.
+</Callout>
+
 ### Using a Third-Party World
 
 To use a different World implementation, set the `WORKFLOW_TARGET_WORLD` environment variable:
