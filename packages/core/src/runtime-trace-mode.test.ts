@@ -81,7 +81,10 @@ const simpleWorkflow = `async function workflow() {
     return 'done';
   }${getWorkflowTransformCode('workflow')}`;
 
-async function makeRunningRun(runId: string): Promise<WorkflowRun> {
+async function makeRunningRun(
+  runId: string,
+  executionContext?: WorkflowRun['executionContext']
+): Promise<WorkflowRun> {
   return {
     runId,
     workflowName: 'workflow',
@@ -91,6 +94,7 @@ async function makeRunningRun(runId: string): Promise<WorkflowRun> {
     updatedAt: new Date('2024-01-01T00:00:00.000Z'),
     startedAt: new Date('2024-01-01T00:00:00.000Z'),
     deploymentId: 'test-deployment',
+    executionContext,
   };
 }
 
@@ -105,12 +109,16 @@ async function driveHandler(opts: {
   workflowCode: string;
   traceCarrier?: Record<string, string>;
   routeModuleBodyStartedAt?: number;
+  includeRunInput?: boolean;
+  executionContext?: WorkflowRun['executionContext'];
+  whileRunStartedPending?: () => Promise<void>;
 }) {
-  const workflowRun = await makeRunningRun(opts.runId);
+  const workflowRun = await makeRunningRun(opts.runId, opts.executionContext);
   const queuedMessages: any[] = [];
 
   const eventsCreate = vi.fn(async (_runId: string, data: any) => {
     if (data.eventType === 'run_started') {
+      await opts.whileRunStartedPending?.();
       return { run: workflowRun, events: [] as Event[] };
     }
     return {
@@ -136,10 +144,23 @@ async function driveHandler(opts: {
               runId: workflowRun.runId,
               requestedAt: new Date('2024-01-01T00:00:00.000Z'),
               traceCarrier: opts.traceCarrier,
+              ...(opts.includeRunInput
+                ? {
+                    runInput: {
+                      input: workflowRun.input,
+                      deploymentId: workflowRun.deploymentId,
+                      workflowName: workflowRun.workflowName,
+                      specVersion: SPEC_VERSION_CURRENT,
+                      executionContext: workflowRun.executionContext,
+                    },
+                  }
+                : {}),
             },
             {
               requestId: 'req_test',
-              attempt: 1,
+              // Keep this trace harness on the awaited run_started path even
+              // when a test supplies runInput for pre-response VM selection.
+              attempt: opts.includeRunInput ? 2 : 1,
               queueName: '__wkf_workflow_workflow',
               messageId: 'msg_test',
             }
@@ -201,7 +222,6 @@ async function driveHandler(opts: {
   const getWorldSpan = exporter
     .getFinishedSpans()
     .find((s) => s.name === 'workflow.route.get_world');
-
   return {
     workflowSpan,
     routeSpan,
@@ -247,6 +267,57 @@ describe('getWorkflowTraceMode', () => {
 });
 
 describe('workflowEntrypoint trace modes', () => {
+  it('compiles while run_started is loading, without evaluating early', async () => {
+    let observedOverlap = false;
+    await driveHandler({
+      runId: 'wrun_trace_compile_overlap',
+      workflowCode: simpleWorkflow,
+      includeRunInput: true,
+      whileRunStartedPending: async () => {
+        expect(
+          exporter
+            .getFinishedSpans()
+            .find((span) => span.name === 'workflow.bundle.evaluate')
+        ).toBeUndefined();
+        await vi.waitFor(() => {
+          expect(
+            exporter
+              .getFinishedSpans()
+              .find((span) => span.name === 'workflow.bundle.compile')
+          ).toBeDefined();
+        });
+        expect(
+          exporter
+            .getFinishedSpans()
+            .find((span) => span.name === 'workflow.bundle.evaluate')
+        ).toBeUndefined();
+        observedOverlap = true;
+      },
+    });
+
+    expect(observedOverlap).toBe(true);
+    expect(
+      exporter
+        .getFinishedSpans()
+        .find((span) => span.name === 'workflow.bundle.evaluate')
+    ).toBeDefined();
+  });
+
+  it('does not compile a Node bundle for a known QuickJS run', async () => {
+    await driveHandler({
+      runId: 'wrun_trace_quickjs_compile',
+      workflowCode: simpleWorkflow,
+      includeRunInput: true,
+      executionContext: { workflowVm: 'quickjs' },
+    });
+
+    expect(
+      exporter
+        .getFinishedSpans()
+        .find((span) => span.name === 'workflow.bundle.compile')
+    ).toBeUndefined();
+  });
+
   it('linked (default): nests under the flow route context with a link to the run-origin context', async () => {
     const {
       workflowSpan,
@@ -287,7 +358,6 @@ describe('workflowEntrypoint trace modes', () => {
     );
     expect(getWorldSpan).toBeDefined();
     expect(getWorldSpan?.parentSpanId).toBe(routeSpan?.spanContext().spanId);
-
     expect(workflowSpan).toBeDefined();
     // Child of the local /flow route span — same trace, so one
     // invocation is a single bounded trace rather than a new root.
@@ -315,6 +385,17 @@ describe('workflowEntrypoint trace modes', () => {
     expect(
       runStartedCreateEvent?.attributes['workflow.run_started.skip_preload']
     ).toBe(false);
+
+    const replayLoadSpan = exporter
+      .getFinishedSpans()
+      .find((finished) => finished.name === 'workflow.replay.load');
+    expect(replayLoadSpan?.parentSpanId).toBe(
+      workflowSpan?.spanContext().spanId
+    );
+    expect(replayLoadSpan?.attributes).toMatchObject({
+      'workflow.replay.load.source': 'run_started',
+      'workflow.events.count': 0,
+    });
 
     // Queue-delivered invocation spans use the CONSUMER kind, matching
     // queue-delivered step.execute spans.

@@ -759,13 +759,15 @@ async function createWorkflowRunEventInner(
       (event) => event.eventType === 'run_started'
     );
     if (!runCreated) {
-      throw new Error(
-        'v4 createEvent: run_started stream is missing run_created'
+      throw new WorkflowWorldError(
+        'v4 createEvent: run_started stream is missing run_created',
+        { code: 'SCHEMA_VALIDATION' }
       );
     }
     if (!runStarted) {
-      throw new Error(
-        'v4 createEvent: run_started stream is missing run_started'
+      throw new WorkflowWorldError(
+        'v4 createEvent: run_started stream is missing run_started',
+        { code: 'SCHEMA_VALIDATION' }
       );
     }
 
