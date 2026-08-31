@@ -5,7 +5,7 @@ import { monotonicFactory } from 'ulid';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { EventsConsumer } from './events-consumer.js';
-import type { WorkflowOrchestratorContext } from './private.js';
+import { isDeliveryIdle, type WorkflowOrchestratorContext } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import {
   dehydrateStepError,
@@ -763,5 +763,49 @@ describe('async deserialization ordering', () => {
     await sleep(resumeAt);
 
     expect(ctx.pendingDeliveryBarriers?.size).toBe(0);
+  });
+
+  it('should restore delivery protection when a buffered hook payload is claimed after its barrier retires', async () => {
+    const payload = await dehydrateStepReturnValue(
+      'buffered',
+      'wrun_test',
+      undefined
+    );
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_test',
+        eventType: 'hook_received',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: { payload },
+        createdAt: new Date(),
+      },
+    ]);
+
+    // Model another payload hydrating in the same replay so the idle safety
+    // net cannot retire this hook's barrier before the test observes it.
+    ctx.pendingDeliveries = 1;
+    const createHook = createCreateHook(ctx);
+    const hook = createHook<string>();
+
+    // The payload arrived before a consumer requested it, so it starts with
+    // an unarmed barrier and remains buffered after the idle safety net retires
+    // that barrier.
+    await vi.waitFor(() => {
+      expect(ctx.pendingDeliveryBarriers?.size).toBe(1);
+    });
+    await ctx.promiseQueue;
+    expect(ctx.pendingDeliveryBarriers?.size).toBe(1);
+    ctx.pendingDeliveries = 0;
+    await vi.waitFor(() => {
+      expect(ctx.pendingDeliveryBarriers?.size).toBe(0);
+    });
+
+    // Claiming the buffered payload commits it to reaching this consumer. Its
+    // delivery must become non-idle again until the claim resolves.
+    const delivery = hook.then((value) => value);
+    expect(isDeliveryIdle(ctx)).toBe(false);
+    await expect(delivery).resolves.toBe('buffered');
+    expect(isDeliveryIdle(ctx)).toBe(true);
   });
 });

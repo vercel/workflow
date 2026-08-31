@@ -13,6 +13,7 @@ import {
   type ReadableSpan,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
+import { RUN_ERROR_CODES } from '@workflow/errors';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
@@ -81,16 +82,21 @@ const simpleWorkflow = `async function workflow() {
     return 'done';
   }${getWorkflowTransformCode('workflow')}`;
 
-async function makeRunningRun(runId: string): Promise<WorkflowRun> {
+async function makeRunningRun(
+  runId: string,
+  executionContext?: WorkflowRun['executionContext'],
+  workflowName = 'workflow'
+): Promise<WorkflowRun> {
   return {
     runId,
-    workflowName: 'workflow',
+    workflowName,
     status: 'running',
     input: await dehydrateWorkflowArguments([], runId, undefined, []),
     createdAt: new Date('2024-01-01T00:00:00.000Z'),
     updatedAt: new Date('2024-01-01T00:00:00.000Z'),
     startedAt: new Date('2024-01-01T00:00:00.000Z'),
     deploymentId: 'test-deployment',
+    executionContext,
   };
 }
 
@@ -105,13 +111,48 @@ async function driveHandler(opts: {
   workflowCode: string;
   traceCarrier?: Record<string, string>;
   routeModuleBodyStartedAt?: number;
+  executionContext?: WorkflowRun['executionContext'];
+  persistedWorkflowName?: string;
+  includeRunInput?: boolean;
+  streamRunCreatedBeforeResponse?: boolean;
+  onRunStartedRequest?: () => void;
+  whileRunStartedPending?: (state: {
+    getEncryptionKeyForRun: ReturnType<typeof vi.fn>;
+  }) => Promise<void>;
 }) {
-  const workflowRun = await makeRunningRun(opts.runId);
+  const workflowRun = await makeRunningRun(
+    opts.runId,
+    opts.executionContext,
+    opts.persistedWorkflowName
+  );
   const queuedMessages: any[] = [];
+  const getEncryptionKeyForRun = vi.fn(async () => undefined);
 
-  const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+  const eventsCreate = vi.fn(async (_runId: string, data: any, params: any) => {
     if (data.eventType === 'run_started') {
-      return { run: workflowRun, events: [] as Event[] };
+      opts.onRunStartedRequest?.();
+      let streamedRunCreated: Event | undefined;
+      if (opts.streamRunCreatedBeforeResponse) {
+        streamedRunCreated = {
+          eventId: 'evnt_00000000000000000000000001',
+          runId: workflowRun.runId,
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          createdAt: workflowRun.createdAt,
+          eventData: {
+            deploymentId: workflowRun.deploymentId,
+            workflowName: workflowRun.workflowName,
+            input: workflowRun.input,
+            executionContext: workflowRun.executionContext,
+          },
+        };
+        params?.replayEventObserver?.(streamedRunCreated);
+      }
+      await opts.whileRunStartedPending?.({ getEncryptionKeyForRun });
+      return {
+        run: workflowRun,
+        events: streamedRunCreated ? [streamedRunCreated] : ([] as Event[]),
+      };
     }
     return {
       event: {
@@ -136,6 +177,17 @@ async function driveHandler(opts: {
               runId: workflowRun.runId,
               requestedAt: new Date('2024-01-01T00:00:00.000Z'),
               traceCarrier: opts.traceCarrier,
+              ...(opts.includeRunInput
+                ? {
+                    runInput: {
+                      input: workflowRun.input,
+                      deploymentId: workflowRun.deploymentId,
+                      workflowName: 'workflow',
+                      specVersion: SPEC_VERSION_CURRENT,
+                      executionContext: opts.executionContext,
+                    },
+                  }
+                : {}),
             },
             {
               requestId: 'req_test',
@@ -163,7 +215,7 @@ async function driveHandler(opts: {
       queuedMessages.push(message);
       return { messageId: null };
     }),
-    getEncryptionKeyForRun: vi.fn(async () => undefined),
+    getEncryptionKeyForRun,
   } as any);
 
   const handler = workflowEntrypoint(
@@ -201,7 +253,6 @@ async function driveHandler(opts: {
   const getWorldSpan = exporter
     .getFinishedSpans()
     .find((s) => s.name === 'workflow.route.get_world');
-
   return {
     workflowSpan,
     routeSpan,
@@ -210,6 +261,8 @@ async function driveHandler(opts: {
     getWorldSpan,
     deliverySpan,
     queuedMessages,
+    eventsCreate,
+    getEncryptionKeyForRun,
   };
 }
 
@@ -247,6 +300,151 @@ describe('getWorkflowTraceMode', () => {
 });
 
 describe('workflowEntrypoint trace modes', () => {
+  it('starts Node replay work while loading the authoritative run', async () => {
+    vi.stubEnv('WORKFLOW_TURBO', '0');
+    const persistedWorkflowCode = `async function persistedWorkflow() {
+      return 'done';
+    }${getWorkflowTransformCode('persistedWorkflow')}`;
+
+    const { eventsCreate, workflowSpan } = await driveHandler({
+      runId: 'wrun_trace_persisted_workflow',
+      workflowCode: persistedWorkflowCode,
+      persistedWorkflowName: 'persistedWorkflow',
+      includeRunInput: true,
+      streamRunCreatedBeforeResponse: true,
+      onRunStartedRequest: () => {
+        expect(
+          exporter
+            .getFinishedSpans()
+            .find((span) => span.name === 'workflow.bundle.compile')
+        ).toBeUndefined();
+      },
+      whileRunStartedPending: async ({ getEncryptionKeyForRun }) => {
+        expect(getEncryptionKeyForRun).toHaveBeenCalledWith(
+          'wrun_trace_persisted_workflow',
+          undefined
+        );
+        await vi.waitFor(() => {
+          expect(
+            exporter
+              .getFinishedSpans()
+              .find((span) => span.name === 'workflow.bundle.compile')
+          ).toBeDefined();
+        });
+        expect(
+          exporter
+            .getFinishedSpans()
+            .find((span) => span.name === 'workflow.bundle.evaluate')
+        ).toBeUndefined();
+      },
+    });
+
+    expect(
+      eventsCreate.mock.calls.some(
+        ([, event]) => event.eventType === 'run_completed'
+      )
+    ).toBe(true);
+    expect(
+      eventsCreate.mock.calls.some(
+        ([, event]) => event.eventType === 'run_failed'
+      )
+    ).toBe(false);
+    const compileSpans = exporter
+      .getFinishedSpans()
+      .filter((span) => span.name === 'workflow.bundle.compile');
+    expect(compileSpans).toHaveLength(2);
+    expect(
+      compileSpans.every(
+        (span) => span.parentSpanId === workflowSpan?.spanContext().spanId
+      )
+    ).toBe(true);
+    expect(
+      exporter
+        .getFinishedSpans()
+        .find((span) => span.name === 'workflow.bundle.evaluate')
+    ).toBeDefined();
+    const replayLoadSpan = exporter
+      .getFinishedSpans()
+      .find((span) => span.name === 'workflow.replay.load');
+    expect(replayLoadSpan?.attributes['workflow.events.count']).toBe(1);
+  });
+
+  it.each([
+    '0',
+    '1',
+  ])('records invalid VM configuration as setup failure with turbo=%s', async (turbo) => {
+    vi.stubEnv('WORKFLOW_TURBO', turbo);
+    const { eventsCreate } = await driveHandler({
+      runId: `wrun_trace_invalid_vm_${turbo}`,
+      workflowCode: simpleWorkflow,
+      includeRunInput: true,
+      executionContext: { workflowVm: 'bogus' },
+    });
+
+    expect(eventsCreate).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        eventType: 'run_failed',
+        eventData: expect.objectContaining({
+          errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
+        }),
+      }),
+      expect.anything()
+    );
+  });
+
+  it('does not leak a streamed replay-load rejection after synchronous setup failure', async () => {
+    vi.stubEnv('WORKFLOW_TURBO', '0');
+    const unhandledRejection = vi.fn();
+    process.on('unhandledRejection', unhandledRejection);
+
+    try {
+      const { eventsCreate } = await driveHandler({
+        runId: 'wrun_trace_streamed_invalid_vm',
+        workflowCode: simpleWorkflow,
+        includeRunInput: true,
+        streamRunCreatedBeforeResponse: true,
+        executionContext: { workflowVm: 'bogus' },
+      });
+
+      expect(eventsCreate).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          eventType: 'run_failed',
+          eventData: expect.objectContaining({
+            errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
+          }),
+        }),
+        expect.anything()
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandledRejection).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandledRejection);
+    }
+  });
+
+  it('does not compile a Node bundle for a known QuickJS run', async () => {
+    const { getEncryptionKeyForRun } = await driveHandler({
+      runId: 'wrun_trace_quickjs_compile',
+      workflowCode: simpleWorkflow,
+      includeRunInput: true,
+      streamRunCreatedBeforeResponse: true,
+      executionContext: { workflowVm: 'quickjs' },
+    });
+
+    expect(
+      exporter
+        .getFinishedSpans()
+        .find((span) => span.name === 'workflow.bundle.compile')
+    ).toBeUndefined();
+    expect(getEncryptionKeyForRun).toHaveBeenCalledTimes(1);
+    expect(getEncryptionKeyForRun).not.toHaveBeenCalledWith(
+      'wrun_trace_quickjs_compile',
+      undefined
+    );
+  });
+
   it('linked (default): nests under the flow route context with a link to the run-origin context', async () => {
     const {
       workflowSpan,
@@ -287,7 +485,6 @@ describe('workflowEntrypoint trace modes', () => {
     );
     expect(getWorldSpan).toBeDefined();
     expect(getWorldSpan?.parentSpanId).toBe(routeSpan?.spanContext().spanId);
-
     expect(workflowSpan).toBeDefined();
     // Child of the local /flow route span — same trace, so one
     // invocation is a single bounded trace rather than a new root.
@@ -315,6 +512,17 @@ describe('workflowEntrypoint trace modes', () => {
     expect(
       runStartedCreateEvent?.attributes['workflow.run_started.skip_preload']
     ).toBe(false);
+
+    const replayLoadSpan = exporter
+      .getFinishedSpans()
+      .find((finished) => finished.name === 'workflow.replay.load');
+    expect(replayLoadSpan?.parentSpanId).toBe(
+      workflowSpan?.spanContext().spanId
+    );
+    expect(replayLoadSpan?.attributes).toMatchObject({
+      'workflow.replay.load.source': 'run_started',
+      'workflow.events.count': 0,
+    });
 
     // Queue-delivered invocation spans use the CONSUMER kind, matching
     // queue-delivered step.execute spans.
