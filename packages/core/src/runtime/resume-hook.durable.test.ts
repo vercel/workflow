@@ -152,13 +152,16 @@ describe('resumeHook durable resume', () => {
     });
 
     expect(queue).toHaveBeenCalledTimes(1);
-    const [, wake] = queue.mock.calls[0];
+    const [, wake, wakeOptions] = queue.mock.calls[0];
     // The wake is a plain trigger: the payload lives in the event log, so
     // nothing rides on the queue message but the runId (+ timing metadata).
     expect(wake.runId).toBe(hook.runId);
     expect(wake.hookInput).toBeUndefined();
     expect(wake.hookResume).toBeUndefined();
     expect(wake.hookResumeTiming.strategy).toBe('sequential');
+    // Publish retries whose response was lost dedup on the claim key, so a
+    // duplicate wake (one full replay of the run) is not enqueued.
+    expect(wakeOptions.idempotencyKey).toBe(`hook-${params.resumeId}`);
 
     const attributes = Object.assign(
       {},
@@ -295,19 +298,20 @@ describe('resumeHook durable resume', () => {
     expect(queue).not.toHaveBeenCalled();
   });
 
-  it('maps EntityConflictError on the durable write to HookNotFoundError', async () => {
-    // The wake is only published after the write succeeds, so at write time
-    // no queue message is in flight and a conflict has no consumer to
-    // converge on: it means the hook is no longer writable.
+  it('passes a transient write conflict (409) through as retryable, not HookNotFound', async () => {
+    // Every 409 the backend emits on this write today is transient (an
+    // event-slot conflict past the server's internal retry budget, or a
+    // resume-claim race mid-resolution) and its transaction committed
+    // nothing. Re-keying it to HookNotFoundError told the caller a retryable
+    // failure was permanent — a webhook route would answer 404 and the
+    // sender would drop the resume.
     const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
-    const createEvent = vi
-      .fn()
-      .mockRejectedValue(new EntityConflictError('hook is no longer writable'));
+    const conflict = new EntityConflictError('event slot is already taken');
+    const createEvent = vi.fn().mockRejectedValue(conflict);
     const { queue } = makeWorld(hook, { createEvent });
 
-    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toSatisfy(
-      (error: unknown) => HookNotFoundError.is(error)
-    );
+    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toBe(conflict);
+    expect(HookNotFoundError.is(conflict)).toBe(false);
     expect(queue).not.toHaveBeenCalled();
   });
 
@@ -340,16 +344,50 @@ describe('resumeHook durable resume', () => {
     expect(queue).toHaveBeenCalledTimes(3);
   });
 
-  it('does not spend the wake retry budget on a definitive 4xx', async () => {
+  it.each([
+    // @vercel/queue errors carry no status field; they classify by name.
+    [
+      'a named queue 4xx',
+      Object.assign(new Error('bad request'), { name: 'BadRequestError' }),
+    ],
+    [
+      'a numeric-status 4xx',
+      Object.assign(new Error('bad request'), { status: 400 }),
+    ],
+  ])('does not spend the wake retry budget on %s', async (_name, badRequest) => {
     const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
-    const badRequest = Object.assign(new Error('bad request'), {
-      status: 400,
-    });
     const queue = vi.fn().mockRejectedValue(badRequest);
     makeWorld(hook, { queue });
 
     await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toBe(
       badRequest
+    );
+    expect(queue).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry the wake against an unavailable deployment', async () => {
+    // A deployment the queue cannot discover will not come back within the
+    // ~125ms retry budget; the World's own classifier decides.
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const discovery = Object.assign(new Error('no consumer'), {
+      name: 'ConsumerDiscoveryError',
+    });
+    const queue = vi.fn().mockRejectedValue(discovery);
+    const { getByToken } = makeWorld(hook, { queue });
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { hookResumeDedup: true },
+      hooks: { getByToken },
+      runs: { get: vi.fn() },
+      events: { create: vi.fn() },
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      queue,
+      isDeploymentUnavailableError: (error: unknown) =>
+        (error as Error)?.name === 'ConsumerDiscoveryError',
+    } as unknown as World);
+
+    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toBe(
+      discovery
     );
     expect(queue).toHaveBeenCalledTimes(1);
   });

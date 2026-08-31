@@ -48,6 +48,22 @@ after the write leaves the event committed, and any later wake of the run
 `hook_received`; callers that need at-most-once behavior across separate
 invocations must deduplicate on their own request key.
 
+## Behavior change: resumes against an ended run
+
+The lazy path never observed the server's rejection — it published a message
+and resolved, so a resume against a run that had already ended reported
+success (reachable whenever the hook record outlives its run, e.g. token
+retention). The durable write restores the check: **a resume against an ended
+run now throws `HookNotFoundError`**, and a late webhook delivery to a
+finished run answers 404 where it previously answered 202. Senders that treat
+4xx as terminal will stop retrying such deliveries; that is the correct
+signal, since nothing can resume an ended run.
+
+A transient write conflict (HTTP 409, e.g. an event-slot conflict that
+escaped the server's internal retry budget under contention) is no longer
+re-keyed to `HookNotFoundError`. It surfaces as a retryable error, and its
+rejected transaction committed nothing, so retrying the resume is safe.
+
 ## Compatibility
 
 Nothing about the queue message changes: the wake has the same shape the

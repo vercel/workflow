@@ -440,6 +440,34 @@ export const HookResilientResume = SemanticConvention<boolean>(
 );
 
 /**
+ * Producer-side signal (on the `hook.resume` span) that the durable
+ * `hook_received` write COMMITTED. Stamped after the write resolves, so it
+ * distinguishes a committed resume from an attempted one — an entry-time
+ * attribute cannot, because a span that later records an exception may have
+ * failed either before or after the commit.
+ */
+export const HookResumeCommitted = SemanticConvention<boolean>(
+  'workflow.hook.resume_committed'
+);
+
+/**
+ * Producer-side signal (on the `hook.resume` span) that the workflow wake was
+ * ACCEPTED by the queue, stamped after the publish resolves.
+ *
+ * Together with {@link HookResumeCommitted} this makes stranded resumes
+ * queryable: `resume_committed=true` with `wake_published` absent is a resume
+ * whose durable event exists but whose wake publish failed (the caller was
+ * told, but nothing re-drives it), and `resume_committed=true` +
+ * `wake_published=true` with no subsequent workflow execution for the run is
+ * a wake the queue accepted but never delivered. Both are detection-only
+ * signals — nothing recovers such a run automatically today beyond a later
+ * wake from any other source.
+ */
+export const HookWakePublished = SemanticConvention<boolean>(
+  'workflow.hook.wake_published'
+);
+
+/**
  * Consumer-side signal (on the workflow execution span) that this replay
  * materialized the `hook_received` event from the queue message's `hookInput`
  * because no committed event was found, which completes the recovery path

@@ -1,5 +1,4 @@
 import {
-  EntityConflictError,
   ERROR_SLUGS,
   HookNotFoundError,
   RunExpiredError,
@@ -59,22 +58,40 @@ const HOOK_WAKE_RETRY_DELAYS_MS = [25, 100] as const;
 
 /**
  * A wake failure worth retrying is transport-shaped (network error, 5xx,
- * throttle). A definitive 4xx from the queue (bad request, auth) will not
- * change on a 25ms retry, so spending the budget on it only delays the
- * caller's error.
+ * throttle). A definitive rejection will not change on a 25ms retry, so
+ * spending the budget on it only delays the caller's error.
+ *
+ * `@vercel/queue` errors carry no `status` field — they are bare `Error`
+ * subclasses distinguished by `name` — so classification checks the World's
+ * deployment-unavailable hook first (a deployment the queue cannot discover
+ * will not come back within this function's ~125ms budget), then a numeric
+ * status when one exists (non-Vercel queue implementations), then the queue
+ * client's definitive-4xx error names.
  */
-function isRetryableWakeError(error: unknown): boolean {
+function isRetryableWakeError(
+  error: unknown,
+  isDeploymentUnavailableError?: (error: unknown) => boolean
+): boolean {
+  if (isDeploymentUnavailableError?.(error)) return false;
   const status = (error as { status?: unknown; statusCode?: unknown }) ?? {};
   const code = status.status ?? status.statusCode;
-  if (typeof code !== 'number') return true;
-  return code >= 500 || code === 408 || code === 429;
+  if (typeof code === 'number') {
+    return code >= 500 || code === 408 || code === 429;
+  }
+  const name = (error as Error | null)?.name;
+  return (
+    name !== 'BadRequestError' &&
+    name !== 'UnauthorizedError' &&
+    name !== 'ForbiddenError'
+  );
 }
 
 // A publish may succeed even when its response is lost, so a retry can
 // enqueue a duplicate wake. That is harmless: the event is already durable,
 // and deterministic replay makes a second delivery of the same run a no-op.
 async function publishHookWakeWithRetry(
-  publish: () => Promise<unknown>
+  publish: () => Promise<unknown>,
+  isDeploymentUnavailableError?: (error: unknown) => boolean
 ): Promise<void> {
   let lastError: unknown;
   for (
@@ -87,7 +104,7 @@ async function publishHookWakeWithRetry(
       return;
     } catch (error) {
       lastError = error;
-      if (!isRetryableWakeError(error)) break;
+      if (!isRetryableWakeError(error, isDeploymentUnavailableError)) break;
       const delayMs = HOOK_WAKE_RETRY_DELAYS_MS[attempt];
       if (delayMs !== undefined) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -258,6 +275,15 @@ export type ResumedHook = Hook & { resilientResume?: boolean };
  * event. Any other error after the write is ambiguous only in dispatch, never
  * in durability: the event may already be committed, and a later wake of the
  * run (from any source) will deliver it.
+ *
+ * Prefer passing the token string over a cached {@link Hook} object. A token
+ * is looked up fresh, so the live backend can attest its atomic resume claim
+ * and the durable write becomes idempotent-on-retry (transport retries of the
+ * same write converge on one event). A supplied Hook object may carry a stale
+ * attestation, so it is deliberately ignored and the write is claim-less —
+ * meaning a lost response cannot be retried safely: retrying at the
+ * application level mints a fresh claim and can commit a second
+ * `hook_received`.
  *
  * @param tokenOrHook - The unique token identifying the hook, or the hook object itself
  * @param payload - The data payload to send to the hook
@@ -540,17 +566,19 @@ async function resumeHookImpl<T = any>(
         //   - a terminal run on world-local / world-postgres rejects with
         //     RunExpiredError.
         //
-        // An EntityConflictError (HTTP 409) is also treated as "hook gone"
-        // here: the wake is only published AFTER this write succeeds, so at
-        // this point no queue message is in flight and a conflict has no
-        // consumer to converge on. (A 422 resumeId-reuse error is deliberately
-        // NOT re-keyed — it means the caller replayed a resumeId with a
-        // different payload, and hiding that behind "not found" would mask
-        // the bug.)
+        // An EntityConflictError (HTTP 409) is deliberately NOT re-keyed,
+        // breaking with the historical mapping: every 409 the backend emits
+        // on this write today is TRANSIENT — a slot conflict that escaped the
+        // server's own retry budget under contention, or a resume-claim race
+        // mid-resolution — and its transaction committed nothing. Re-keying
+        // it to HookNotFoundError told the caller (and a webhook sender, via
+        // 404) that a retryable failure was permanent, silently dropping the
+        // resume. It now surfaces as-is: retryable, with nothing committed.
+        // (A 422 resumeId-reuse error likewise passes through unmapped — it
+        // means the caller replayed a resumeId with a different payload, and
+        // hiding that behind "not found" would mask the bug.)
         const isHookGoneError = (err: unknown): boolean =>
-          HookNotFoundError.is(err) ||
-          EntityConflictError.is(err) ||
-          RunExpiredError.is(err);
+          HookNotFoundError.is(err) || RunExpiredError.is(err);
         try {
           await world.events.create(
             hook.runId,
@@ -576,27 +604,45 @@ async function resumeHookImpl<T = any>(
           }
           throw err;
         }
+        // Stamped AFTER the write resolves (entry-time attributes cannot tell
+        // an attempted resume from a committed one): together with
+        // HookWakePublished below, this is what makes a stranded resume — a
+        // committed event whose wake never went out or was never delivered —
+        // queryable from traces. See the alerting note on HookWakePublished.
+        span?.setAttributes(Attribute.HookResumeCommitted(true));
 
         // T1 of the TTR window. Stamped immediately before the publish so
         // `producer_prep` covers exactly the work above it (hook lookup, key
         // resolution, serialization, and the awaited hook_received write,
         // which is genuinely serial here).
         const queuePublishRequestedAtMs = Date.now();
-        await publishHookWakeWithRetry(() =>
-          world.queue(
-            queueName,
-            {
-              runId: hook.runId,
-              traceCarrier: resumeContext.traceCarrier ?? undefined,
-              hookResumeTiming: {
-                resumeRequestedAtMs,
-                queuePublishRequestedAtMs,
-                strategy: 'sequential',
-              },
-            } satisfies WorkflowInvokePayload,
-            queueOptions
-          )
+        await publishHookWakeWithRetry(
+          () =>
+            world.queue(
+              queueName,
+              {
+                runId: hook.runId,
+                traceCarrier: resumeContext.traceCarrier ?? undefined,
+                hookResumeTiming: {
+                  resumeRequestedAtMs,
+                  queuePublishRequestedAtMs,
+                  strategy: 'sequential',
+                },
+              } satisfies WorkflowInvokePayload,
+              {
+                ...queueOptions,
+                // Dedup retried publishes whose response was lost: a
+                // duplicate wake is harmless for correctness (deterministic
+                // replay) but costs a full replay of the run, and the queue
+                // accepts a repeated idempotency key by delivering only one
+                // of the messages. Claim-less writes have no resumeId and
+                // keep the previous behavior.
+                ...(resumeId ? { idempotencyKey: `hook-${resumeId}` } : {}),
+              }
+            ),
+          world.isDeploymentUnavailableError?.bind(world)
         );
+        span?.setAttributes(Attribute.HookWakePublished(true));
 
         return hook satisfies ResumedHook;
       } catch (err) {
