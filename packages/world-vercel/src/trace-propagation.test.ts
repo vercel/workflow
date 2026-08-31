@@ -53,6 +53,9 @@ vi.mock('ws', () => ({
     on() {
       return this;
     }
+    once() {
+      return this;
+    }
     send() {}
     close() {}
     terminate() {}
@@ -322,6 +325,42 @@ describe('streamer write trace propagation', () => {
     expect(traceparent).toBe(
       `00-${traceId}-${clientSpan?.spanContext().spanId}-01`
     );
+  });
+});
+
+describe('ws stream transport upgrade trace propagation', () => {
+  beforeEach(() => {
+    vi.stubEnv('WORKFLOW_STREAMS_TRANSPORT', 'ws');
+  });
+
+  afterEach(() => {
+    wsUpgrades.length = 0;
+  });
+
+  it('injects traceparent from the stream connect span', async () => {
+    const { createStreamWriteSession } = await import('./ws-stream-session.js');
+    const tracer = otelTrace.getTracer('test');
+    let traceId = '';
+    let spanId = '';
+    await tracer.startActiveSpan('flow-invocation', async (span) => {
+      traceId = span.spanContext().traceId;
+      spanId = span.spanContext().spanId;
+      createStreamWriteSession(
+        'wrun_1',
+        'user',
+        'wrtr_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+        { token: 'test-token' },
+        async () => {},
+        async () => {}
+      );
+      await vi.waitFor(() => expect(wsUpgrades).toHaveLength(1));
+      span.end();
+    });
+
+    const traceparent = wsUpgrades[0]?.headers.traceparent;
+    expect(traceparent).toMatch(new RegExp(`^00-${traceId}-[0-9a-f]{16}-01$`));
+    expect(traceparent).not.toBe(`00-${traceId}-${spanId}-01`);
+    expect(wsUpgrades[0]?.headers.authorization).toBe('Bearer test-token');
   });
 });
 
