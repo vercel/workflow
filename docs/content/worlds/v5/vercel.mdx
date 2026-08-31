@@ -206,6 +206,10 @@ Experimental stream-write transport capability. Default: `http`. Set `WORKFLOW_S
 
 This setting does not own tenant rollout policy and does not infer server support from package versions. HTTP remains the compatibility path. The protocol route (`/websockets/v1`) is versioned independently from REST v2/v4 and persisted workflow `specVersion` values.
 
+### `WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH`
+
+Experimental WebSocket writer request depth. Default: `1`. Supported exact values are `1`, `2`, and `4`; invalid values fail closed to `1`. HTTP writers remain serial. Any unknown outcome poisons the writer and is never replayed.
+
 Writes and close requests execute serially. The first operation waits up to 250 ms for an opted-in socket to open; this is an implementation-level measurement knob, not protocol semantics. If the budget expires, or the upgrade fails or is declined before acceptance, the writer uses HTTP without racing the same operation over both transports. After the socket accepts a write, a missing acknowledgement has an unknown outcome: the writer fails rather than replaying the write over HTTP and risking a duplicate append. There is no v1 drain/de-opt control frame, so an accepted connection never proactively switches transports.
 
 ### `WORKFLOW_STREAM_READS_TRANSPORT`

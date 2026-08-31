@@ -42,6 +42,9 @@ import type {
 } from './steps.js';
 
 export interface StreamWriteSession {
+  /** Maximum ordered write requests core may dispatch concurrently. */
+  readonly maxInFlightWrites?: number;
+
   /**
    * Write one ordered group from this in-memory writer lifetime.
    * `chunkSeq` is writer-local and identifies the first chunk in `chunks`.

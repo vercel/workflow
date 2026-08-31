@@ -137,6 +137,177 @@ describe('WorkflowServerWritableStream', () => {
       expect(group.map((c: Uint8Array) => c[0])).toEqual([1, 2, 3, 4]);
     });
 
+    it('pipelines only for a session that advertises bounded depth', async () => {
+      const releases: Array<() => void> = [];
+      const session = {
+        maxInFlightWrites: 4,
+        write: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              releases.push(resolve);
+            })
+        ),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      mockStreams.createWriteSession = vi.fn(() => session);
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+      const writer = stream.getWriter();
+
+      for (let i = 0; i < 6; i++) await writer.write(new Uint8Array([i]));
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(4));
+      expect(session.write.mock.calls.map(([seq]) => seq)).toEqual([
+        0, 1, 2, 3,
+      ]);
+
+      const closing = writer.close();
+      expect(session.close).not.toHaveBeenCalled();
+      releases.shift()?.();
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(5));
+      expect(session.write.mock.calls[4]?.[0]).toBe(4);
+      expect(session.write.mock.calls[4]?.[1]).toHaveLength(2);
+      while (releases.length > 0) releases.shift()?.();
+      await closing;
+      expect(session.close).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [1.5, 1],
+      [2.5, 2],
+      [Number.NaN, 1],
+      [Number.POSITIVE_INFINITY, 1],
+    ])('normalizes arbitrary session depth %s to %i active groups', async (maxInFlightWrites, expected) => {
+      const releases: Array<() => void> = [];
+      const session = {
+        maxInFlightWrites,
+        write: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              releases.push(resolve);
+            })
+        ),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      mockStreams.createWriteSession = vi.fn(() => session);
+      const writer = new WorkflowServerWritableStream(
+        'run-123',
+        'test-stream'
+      ).getWriter();
+      for (let index = 0; index < 4; index++) {
+        await writer.write(new Uint8Array([index]));
+      }
+      await waitFor(() =>
+        expect(session.write).toHaveBeenCalledTimes(expected)
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(session.write).toHaveBeenCalledTimes(expected);
+      const closing = writer.close();
+      for (let attempt = 0; attempt < 4; attempt++) {
+        while (releases.length > 0) releases.shift()?.();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      await closing;
+    });
+
+    it('poisons drain when any active pipelined group fails', async () => {
+      let rejectFirst: ((error: Error) => void) | undefined;
+      const pending = new Promise<void>((_resolve, reject) => {
+        rejectFirst = reject;
+      });
+      const session = {
+        maxInFlightWrites: 4,
+        write: vi
+          .fn()
+          .mockImplementationOnce(() => pending)
+          .mockImplementation(() => new Promise<void>(() => {})),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      mockStreams.createWriteSession = vi.fn(() => session);
+      const writer = new WorkflowServerWritableStream(
+        'run-123',
+        'test-stream'
+      ).getWriter();
+      for (let i = 0; i < 3; i++) await writer.write(new Uint8Array([i]));
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(3));
+      const closing = writer.close();
+      rejectFirst?.(new Error('pipeline failed'));
+      await expect(closing).rejects.toThrow('pipeline failed');
+      expect(session.close).not.toHaveBeenCalled();
+    });
+
+    it('counts every active pipelined group against the chunk bound', async () => {
+      process.env.WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS = '2';
+      const releases: Array<() => void> = [];
+      const session = {
+        maxInFlightWrites: 4,
+        write: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              releases.push(resolve);
+            })
+        ),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      mockStreams.createWriteSession = vi.fn(() => session);
+      try {
+        const writer = new WorkflowServerWritableStream(
+          'run-123',
+          'test-stream'
+        ).getWriter();
+        await writer.write(new Uint8Array([0]));
+        const second = writer.write(new Uint8Array([1]));
+        await waitFor(() => expect(session.write).toHaveBeenCalledTimes(2));
+        let secondSettled = false;
+        void second.then(() => {
+          secondSettled = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(secondSettled).toBe(false);
+        releases.shift()?.();
+        await second;
+        releases.shift()?.();
+        await writer.close();
+      } finally {
+        delete process.env.WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS;
+      }
+    });
+
+    it('counts every active pipelined group against the byte bound', async () => {
+      process.env.WORKFLOW_STREAM_MAX_BUFFERED_BYTES = '2';
+      const releases: Array<() => void> = [];
+      const session = {
+        maxInFlightWrites: 4,
+        write: vi.fn(
+          () =>
+            new Promise<void>((resolve) => {
+              releases.push(resolve);
+            })
+        ),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      mockStreams.createWriteSession = vi.fn(() => session);
+      try {
+        const writer = new WorkflowServerWritableStream(
+          'run-123',
+          'test-stream'
+        ).getWriter();
+        await writer.write(new Uint8Array([0]));
+        const second = writer.write(new Uint8Array([1]));
+        await waitFor(() => expect(session.write).toHaveBeenCalledTimes(2));
+        let secondSettled = false;
+        void second.then(() => {
+          secondSettled = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(secondSettled).toBe(false);
+        releases.shift()?.();
+        await second;
+        releases.shift()?.();
+        await writer.close();
+      } finally {
+        delete process.env.WORKFLOW_STREAM_MAX_BUFFERED_BYTES;
+      }
+    });
+
     it('should fall back to sequential writes when writeMulti is unavailable', async () => {
       // Remove writeMulti from mock world
       delete (mockStreams as any).writeMulti;

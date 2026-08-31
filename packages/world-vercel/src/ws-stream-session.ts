@@ -22,9 +22,19 @@ import {
   beginNormalWsClose,
   STREAM_WS_CONNECT_BUDGET_MS,
 } from './ws-stream-connect.js';
-import { isWsStreamsTransportEnabled } from './ws-transport-enabled.js';
+import {
+  getWsStreamWritePipelineDepth,
+  isWsStreamsTransportEnabled,
+} from './ws-transport-enabled.js';
 
 type Mode = 'connecting' | 'ws' | 'http' | 'closed' | 'poisoned';
+type PendingRequest = {
+  reqId: number;
+  frame: Uint8Array;
+  resolve: (meta: Record<string, unknown>) => void;
+  reject: (error: unknown) => void;
+  timer?: ReturnType<typeof setTimeout>;
+};
 const MAX_IDLE_RECONNECTS = 3;
 
 async function decodeOne(raw: Uint8Array): Promise<DecodedFrame> {
@@ -48,26 +58,25 @@ function asBytes(raw: unknown): Uint8Array {
 }
 
 /**
- * One stateful stream-writer lifetime. Requests are deliberately serialized;
- * an unacknowledged frame has an unknown outcome and poisons the session rather
- * than being replayed over HTTP or another socket.
+ * One stateful stream-writer lifetime. Pipelined requests are emitted in order;
+ * any unknown outcome poisons every unresolved request rather than replaying it.
  */
 class VercelStreamWriteSession implements StreamWriteSession {
   private mode: Mode = 'connecting';
   private socket: WebSocket | undefined;
   private connect: Promise<void>;
   private transportDecision: Promise<void>;
-  private tail = Promise.resolve();
+  readonly maxInFlightWrites = getWsStreamWritePipelineDepth();
+  private httpTail = Promise.resolve();
   private inbound = Promise.resolve();
   private nextReqId = 1;
-  private pending:
-    | {
-        reqId: number;
-        resolve: (meta: Record<string, unknown>) => void;
-        reject: (error: unknown) => void;
-        timer: ReturnType<typeof setTimeout>;
-      }
-    | undefined;
+  private activeRequests = 0;
+  private requestQueue: PendingRequest[] = [];
+  private pending = new Map<number, PendingRequest>();
+  private completedThroughReqId = 0;
+  private completedOutOfOrderReqIds = new Set<number>();
+  private writeOperations = new Set<Promise<void>>();
+  private closing = false;
   private poisonError: unknown;
   private wsUrl: string | undefined;
   private closeAcknowledged = false;
@@ -88,23 +97,45 @@ class VercelStreamWriteSession implements StreamWriteSession {
   }
 
   write(chunkSeq: number, chunks: (string | Uint8Array)[]): Promise<void> {
-    return this.enqueue(async () => {
-      this.assertUsable();
-      await this.transportDecision;
-      if (this.mode === 'http') {
-        await this.writeHttp(chunks);
-        return;
-      }
-      for (
-        let offset = 0;
-        offset < chunks.length;
-        offset += STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
-      ) {
-        const batch = chunks.slice(
-          offset,
-          offset + STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
-        );
-        const reply = await this.request((reqId) =>
+    if (this.closing)
+      return Promise.reject(new Error('stream writer is closing'));
+    const operation = this.writeInternal(chunkSeq, chunks);
+    this.writeOperations.add(operation);
+    void operation.then(
+      () => this.writeOperations.delete(operation),
+      () => this.writeOperations.delete(operation)
+    );
+    return operation;
+  }
+
+  private async writeInternal(
+    chunkSeq: number,
+    chunks: (string | Uint8Array)[]
+  ): Promise<void> {
+    this.assertUsable();
+    await this.transportDecision;
+    this.assertUsable();
+    if (this.mode === 'http') {
+      const result = this.httpTail.then(() => this.writeHttp(chunks));
+      // Preserve a rejected tail so every already-launched later group inherits
+      // the first failure without issuing another HTTP write. Observe it on a
+      // separate branch solely to avoid an unhandled rejection.
+      this.httpTail = result;
+      void result.catch(() => {});
+      return result;
+    }
+    const requests: Array<Promise<Record<string, unknown>>> = [];
+    for (
+      let offset = 0;
+      offset < chunks.length;
+      offset += STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
+    ) {
+      const batch = chunks.slice(
+        offset,
+        offset + STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
+      );
+      requests.push(
+        this.request((reqId) =>
           encodeStreamWsWriteRequest(
             {
               type: 'write',
@@ -114,54 +145,51 @@ class VercelStreamWriteSession implements StreamWriteSession {
             },
             batch
           )
+        )
+      );
+    }
+    const replies = await Promise.all(requests);
+    for (const reply of replies) {
+      if (reply.type !== 'write_ack') {
+        const error = new Error(
+          `stream WebSocket write received ${reply.type}`
         );
-        if (reply.type !== 'write_ack') {
-          throw this.poison(
-            new Error(`stream WebSocket write received ${reply.type}`)
-          );
-        }
+        this.failUnknown(error);
+        throw this.poisonError;
       }
-    });
+    }
   }
 
   dispose(): void {
     if (this.mode === 'closed') return;
+    const error = new Error('stream writer transport disposed');
     this.mode = 'closed';
-    const pending = this.pending;
-    this.pending = undefined;
-    if (pending) {
-      clearTimeout(pending.timer);
-      pending.reject(new Error('stream writer transport disposed'));
-    }
+    this.rejectAll(error);
     this.socket?.close(1000, 'stream writer disposed');
   }
 
-  close(): Promise<void> {
-    return this.enqueue(async () => {
-      this.assertUsable();
-      await this.transportDecision;
-      if (this.mode === 'http') {
-        await this.closeHttp();
-        this.mode = 'closed';
-        return;
-      }
-      const reply = await this.request((reqId) =>
-        encodeStreamWsCloseRequest({ type: 'close', reqId })
-      );
-      if (reply.type !== 'close_ack') {
-        throw this.poison(
-          new Error(`stream WebSocket close received ${reply.type}`)
-        );
-      }
+  async close(): Promise<void> {
+    this.assertUsable();
+    this.closing = true;
+    await Promise.all(this.writeOperations);
+    await this.transportDecision;
+    this.assertUsable();
+    if (this.mode === 'http') {
+      await this.httpTail;
+      await this.closeHttp();
       this.mode = 'closed';
-      if (this.socket) beginNormalWsClose(this.socket, 'stream closed');
-    });
-  }
-
-  private enqueue(operation: () => Promise<void>): Promise<void> {
-    const result = this.tail.then(operation);
-    this.tail = result.catch(() => {});
-    return result;
+      return;
+    }
+    const reply = await this.request((reqId) =>
+      encodeStreamWsCloseRequest({ type: 'close', reqId })
+    );
+    if (reply.type !== 'close_ack') {
+      const error = new Error(`stream WebSocket close received ${reply.type}`);
+      this.failUnknown(error);
+      throw this.poisonError;
+    }
+    this.mode = 'closed';
+    if (this.socket) beginNormalWsClose(this.socket, 'stream closed');
   }
 
   private assertUsable(): void {
@@ -296,28 +324,43 @@ class VercelStreamWriteSession implements StreamWriteSession {
     try {
       const frame = await decodeOne(raw);
       const reply = parseStreamWsReply(frame.meta, frame.body);
-      const pending = this.pending;
-      if (
-        !pending ||
-        reply.reqId === undefined ||
-        reply.reqId !== pending.reqId
-      ) {
+      const pending =
+        reply.reqId === undefined ? undefined : this.pending.get(reply.reqId);
+      if (!pending) {
+        if (
+          reply.reqId !== undefined &&
+          (reply.reqId <= this.completedThroughReqId ||
+            this.completedOutOfOrderReqIds.has(reply.reqId)) &&
+          ((reply.type === 'write_ack' && !this.closeAcknowledged) ||
+            (reply.type === 'close_ack' && this.closeAcknowledged))
+        ) {
+          return;
+        }
         throw new Error('stream WebSocket reply cannot be correlated');
       }
-      this.pending = undefined;
-      clearTimeout(pending.timer);
+      this.pending.delete(pending.reqId);
+      this.activeRequests--;
+      if (pending.timer) clearTimeout(pending.timer);
       if (reply.type === 'close_ack') this.closeAcknowledged = true;
       if (reply.type === 'error') {
-        pending.reject(
-          this.poison(
-            new Error(
-              `stream WebSocket request failed (${reply.status}): ${reply.message ?? 'unknown error'}`
-            )
+        const poisoned = this.poison(
+          new Error(
+            `stream WebSocket request failed (${reply.status}): ${reply.message ?? 'unknown error'}`
           )
         );
+        pending.reject(poisoned);
+        this.rejectAll(poisoned);
         this.socket?.close(1011, 'stream request failed');
       } else {
+        if (reply.type === 'write_ack') this.idleReconnects = 0;
+        this.completedOutOfOrderReqIds.add(pending.reqId);
+        while (
+          this.completedOutOfOrderReqIds.delete(this.completedThroughReqId + 1)
+        ) {
+          this.completedThroughReqId++;
+        }
         pending.resolve(reply);
+        this.pumpRequests();
       }
     } catch (error) {
       this.failUnknown(error);
@@ -333,7 +376,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
     ) {
       return;
     }
-    if (this.pending) {
+    if (this.pending.size > 0 || this.requestQueue.length > 0) {
       this.failUnknown(new Error('stream WebSocket closed before reply'));
       return;
     }
@@ -352,21 +395,23 @@ class VercelStreamWriteSession implements StreamWriteSession {
     this.transportDecision = this.makeTransportDecision();
   }
 
-  private async request(
+  private request(
     buildFrame: (reqId: number) => Uint8Array
   ): Promise<Record<string, unknown>> {
     this.assertUsable();
-    const ws = this.socket;
-    if (this.mode !== 'ws' || !ws || ws.readyState !== 1) {
-      throw this.poison(new Error('stream WebSocket is not open'));
-    }
     const reqId = this.nextReqId++;
     let frame: Uint8Array;
     try {
       frame = buildFrame(reqId);
     } catch (error) {
-      throw this.poison(error);
+      this.failUnknown(error);
+      return Promise.reject(this.poisonError);
     }
+    // Queue synchronously so concurrent span setup cannot reorder frames.
+    const response = new Promise<Record<string, unknown>>((resolve, reject) => {
+      this.requestQueue.push({ reqId, frame, resolve, reject });
+      this.pumpRequests();
+    });
     return withHttpClientSpan(
       {
         method: 'POST',
@@ -377,37 +422,57 @@ class VercelStreamWriteSession implements StreamWriteSession {
           'workflow.stream.ws.req_id': reqId,
         },
       },
-      async () =>
-        new Promise<Record<string, unknown>>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            this.failUnknown(
-              new Error(
-                `stream WebSocket request ${reqId} timed out with no reply`
-              )
-            );
-          }, getRequestTimeoutMs());
-          timer.unref?.();
-          this.pending = { reqId, resolve, reject, timer };
-          try {
-            ws.send(frame, (error) => {
-              if (!error) return;
-              this.failUnknown(error);
-            });
-          } catch (error) {
-            this.failUnknown(error);
-          }
-        })
+      async () => response
     );
+  }
+
+  private pumpRequests(): void {
+    while (
+      this.activeRequests < this.maxInFlightWrites &&
+      this.requestQueue.length > 0 &&
+      this.mode === 'ws'
+    ) {
+      const request = this.requestQueue.shift();
+      if (!request) return;
+      const ws = this.socket;
+      if (!ws || ws.readyState !== 1) {
+        this.failUnknown(new Error('stream WebSocket is not open'));
+        return;
+      }
+      this.activeRequests++;
+      this.pending.set(request.reqId, request);
+      request.timer = setTimeout(() => {
+        this.failUnknown(
+          new Error(
+            `stream WebSocket request ${request.reqId} timed out with no reply`
+          )
+        );
+      }, getRequestTimeoutMs());
+      request.timer.unref?.();
+      try {
+        ws.send(request.frame, (error) => {
+          if (error) this.failUnknown(error);
+        });
+      } catch (error) {
+        this.failUnknown(error);
+      }
+    }
+  }
+
+  private rejectAll(error: unknown): void {
+    const requests = [...this.pending.values(), ...this.requestQueue];
+    this.pending.clear();
+    this.requestQueue = [];
+    this.activeRequests = 0;
+    for (const request of requests) {
+      if (request.timer) clearTimeout(request.timer);
+      request.reject(error);
+    }
   }
 
   private failUnknown(error: unknown): void {
     const poisoned = this.poison(error);
-    const pending = this.pending;
-    this.pending = undefined;
-    if (pending) {
-      clearTimeout(pending.timer);
-      pending.reject(poisoned);
-    }
+    this.rejectAll(poisoned);
     this.socket?.close(1011, 'unknown stream write outcome');
   }
 
