@@ -34,7 +34,11 @@ import type {
   WorkflowSuspension,
 } from '../global.js';
 import { runtimeLogger } from '../logger.js';
-import type { GuestCodeStats } from '../serialization/hardened.js';
+import {
+  GUEST_CODE_EXECUTION_SAMPLE_LIMIT,
+  type GuestCodeExecution,
+  type GuestCodeStats,
+} from '../serialization/hardened.js';
 import {
   dehydrateStepArguments,
   dehydrateStepError,
@@ -71,7 +75,7 @@ export interface SuspensionHandlerParams {
   /**
    * The runtime's loaded event log. Every event creation this suspension makes
    * names the position it was derived from, so a backend that has recorded
-   * events the replay did not see can report them back on the write — or, if
+   * events the replay did not see can report them back on the write, or, if
    * it would rather refuse than report, reject it with a 412. A rejection is
    * not retried here: the event's correlation id was minted by *this* replay's
    * seeded sequence, so re-committing it against a corrected log would persist
@@ -93,14 +97,14 @@ export interface SuspensionHandlerParams {
   replayRecoveryReporter?: ReplayRecoveryReporter;
   /**
    * Resilient step dispatch: when provided (and the per-step eligibility gates
-   * pass — see the step ops below), each newly created non-inline step's
+   * pass, see the step ops below), each newly created non-inline step's
    * `step_created` write is parallelized with its step-execution queue
    * publish, and the queue message carries the serialized step input
    * (`stepInput`) so the consumer can idempotently re-ensure the event if the
    * direct write failed transiently. Steps queued this way are reported in
    * {@link SuspensionHandlerResult.queuedStepCorrelationIds} so the caller
    * skips them in its own dispatch pass. Omitted by callers that must not
-   * queue (terminal drain, tests) — creates then behave exactly as before.
+   * queue (terminal drain, tests); creates then behave exactly as before.
    */
   stepDispatch?: {
     /** The unified workflow queue this run's step messages are published to. */
@@ -115,9 +119,9 @@ export interface SuspensionHandlerParams {
    * Inline step ownership: the queue message ID of the invocation this
    * suspension runs in (the queue handler's meta). When present AND the
    * batched fan-out engages, the lazy-inline steps' deferred writes are
-   * folded into the batch as `step_created` + `step_started` pairs — the
+   * folded into the batch as `step_created` + `step_started` pairs (the
    * started row stamped with this ID, exactly like the lazy claim it
-   * replaces — pre-claiming the steps the caller is about to run inline. See
+   * replaces), pre-claiming the steps the caller is about to run inline. See
    * {@link SuspensionHandlerResult.inlineClaims}. Callers that never
    * inline-execute (terminal drain) omit it, keeping their lazy steps on the
    * plain deferred path.
@@ -127,8 +131,8 @@ export interface SuspensionHandlerParams {
    * Lets the batched fan-out return before every chunk has committed: only
    * the chunk carrying the pre-claimed inline pairs gates the handler's
    * return (its claims are what the caller starts bodies from), while the
-   * trailing chunks' commits — and every chunk's in-flush step-message
-   * publishes — ride {@link SuspensionHandlerResult.deferredBatchWork}. A
+   * trailing chunks' commits (and every chunk's in-flush step-message
+   * publishes) ride {@link SuspensionHandlerResult.deferredBatchWork}. A
    * caller that opts in MUST await that promise before acking its delivery:
    * the durability contract ("every create durable before ack") moves from
    * the handler's return to that join, and nothing else re-drives a lost
@@ -149,17 +153,17 @@ export interface SuspensionHandlerResult {
    * Correlation IDs for which this suspension call actually wrote the
    * step_created event (as opposed to catching EntityConflictError because
    * a concurrent handler wrote it first). Only the handler that wrote the
-   * step_created event should queue / inline-execute the step — this
+   * step_created event should queue / inline-execute the step; this
    * guarantees a single owner per step, even when multiple handlers race
    * into the same batch boundary.
    */
   createdStepCorrelationIds: Set<string>;
   /**
    * Correlation IDs of steps whose arguments failed to serialize. Each was
-   * finalized here as `step_created` (with a placeholder input — the real
+   * finalized here as `step_created` (with a placeholder input; the real
    * input is precisely what refused to serialize) followed by `step_failed`
    * carrying the SerializationError, so the next replay rejects the step's
-   * promise and a try/catch around the step call observes the error —
+   * promise and a try/catch around the step call observes the error,
    * exactly like a step-body failure. No step-execution message is
    * dispatched for these, so the caller MUST force an in-process replay:
    * when the failed step was the only pending work, nothing else will ever
@@ -170,7 +174,7 @@ export interface SuspensionHandlerResult {
    * Correlation IDs of steps this suspension call already published
    * step-execution queue messages for, via resilient step dispatch (the
    * `step_created` write parallelized with a `stepInput`-carrying queue
-   * publish). The caller MUST NOT dispatch these again — the message is
+   * publish). The caller MUST NOT dispatch these again: the message is
    * already out (a duplicate would be deduped by its idempotency key, but
    * costs a wasted round-trip). Empty when {@link SuspensionHandlerParams.stepDispatch}
    * was not provided or no step was eligible.
@@ -205,12 +209,12 @@ export interface SuspensionHandlerResult {
    * Pre-claimed inline starts, by correlation id: the per-step verdicts of
    * the `step_created` + `step_started` pairs the batched fan-out committed
    * for the lazy-inline steps. A step with an entry here is passed to
-   * `executeStep` as `preclaimedStart` INSTEAD of `lazyStepInput` — its
+   * `executeStep` as `preclaimedStart` INSTEAD of `lazyStepInput`: its
    * input already rode the pair, and the claim is settled: `owned: true`
    * carries the started attempt-1 entity (input re-attached) so the body
    * runs straight off the batch commit with no start write of its own;
    * `owned: false` lost the pair's atomic create-claim to a concurrent
-   * writer, and executeStep returns `skipped` without running the body —
+   * writer, and executeStep returns `skipped` without running the body,
    * the same outcome as losing the lazy claim. Empty whenever the fold did
    * not engage (batching off, no `ownerMessageId`, or the lone-inline case,
    * which keeps the optimistic lazy path and its claim/body overlap).
@@ -218,20 +222,20 @@ export interface SuspensionHandlerResult {
    * Crash window: the pair commits before the caller runs the body, so a
    * crash between them leaves a started step stamped with this message's
    * ID. Redelivery of the same message re-executes it via the owned-recovery
-   * path — the exact machinery the lazy claim's crash window already uses.
+   * path, the exact machinery the lazy claim's crash window already uses.
    */
   inlineClaims: Map<string, PreclaimedInlineStart>;
   /**
    * The highest slot the batched fan-out committed, when it ran. The batch's
    * own events are not in the caller's loaded log (the next reload picks
    * them up), so the caller folds this ceiling into the slot snapshot it
-   * hands the inline executions — otherwise every inline terminal write
+   * hands the inline executions; otherwise every inline terminal write
    * would name a pre-batch position and be answered with a skipped-slot
    * report echoing the events this suspension just wrote. Under
    * {@link SuspensionHandlerParams.allowDeferredBatchWork} this covers the
    * chunks that had committed by the handler's return (always the pair
    * chunk); a trailing chunk that commits later is echoed back on the
-   * terminal writes like any foreign event — reports the executor reads for
+   * terminal writes like any foreign event: reports the executor reads for
    * position and discards.
    *
    * So the echo is only fully suppressed for a SINGLE-chunk fold. On a
@@ -239,7 +243,7 @@ export interface SuspensionHandlerResult {
    * chunks are still in flight, and an inline terminal write issued in that
    * window still names a position below them and still draws a report for
    * their events. Bounded (trailing chunks only, large fan-outs only) and
-   * self-correcting on the next reload — recorded so a report seen there
+   * self-correcting on the next reload, and recorded so a report seen there
    * reads as expected rather than as a bug.
    */
   batchCommittedSlotCeiling?: number;
@@ -249,7 +253,7 @@ export interface SuspensionHandlerResult {
    * trailing work exists: the commits of every chunk except the pair chunk,
    * plus every chunk's step-message publishes (each chained on ITS OWN
    * chunk's commit, so publish-after-create holds per step). The caller
-   * MUST await it before acking — a rejection here is a failed suspension
+   * MUST await it before acking: a rejection here is a failed suspension
    * write and fails the delivery exactly as it would have at the handler's
    * return. Steps whose messages this work publishes are already in
    * {@link queuedStepCorrelationIds} at return time.
@@ -284,13 +288,15 @@ export interface SuspensionHandlerResult {
    * durably creating the user's hooks doesn't count as runtime overhead.
    */
   hookCreationMs: number;
-  /**
-   * Whether serializing this suspension's new step inputs was passive (did
-   * not execute workflow-owned code such as getters, proxy traps, or custom
-   * serializers). `false` means the retained VM may have diverged from what
-   * a cold replay would compute, so the caller must demote to replay.
-   */
-  retainedStepInputsSafe: boolean;
+  /** Exact number of workflow-code executions observed during serialization. */
+  serializationBlockerCount: number;
+  /** Bounded sample used only for retention diagnostics. */
+  serializationBlockers: SuspensionSerializationBlocker[];
+}
+
+export interface SuspensionSerializationBlocker extends GuestCodeExecution {
+  source: 'step_input' | 'hook_metadata' | 'hook_abort';
+  correlationId: string;
 }
 
 async function createHookEvent({
@@ -370,7 +376,7 @@ async function createHookEvent({
 
 /**
  * Handles a workflow suspension by processing all pending operations (hooks, steps, waits).
- * Creates events for all operations but does NOT queue step messages — returns the pending
+ * Creates events for all operations but does NOT queue step messages; returns the pending
  * steps so the caller can decide which to execute inline vs queue to background.
  *
  * Processing order:
@@ -405,7 +411,7 @@ export async function handleSuspension({
       try {
         await runReadyBarrier;
       } catch {
-        // intentional: ordering barrier only — see above.
+        // intentional: ordering barrier only, see above.
       }
     }
   };
@@ -418,8 +424,8 @@ export async function handleSuspension({
    * in flight. That matters for a 412: the caller reacts by reloading the event
    * log and restarting the replay, so a sibling create that lands after the
    * rejection escaped commits an event whose correlation id came from the
-   * abandoned replay's seeded sequence — an event the fresh replay never
-   * produces — and it races the restart's reload while doing so. Settling first
+   * abandoned replay's seeded sequence (an event the fresh replay never
+   * produces), and it races the restart's reload while doing so. Settling first
    * makes this phase's write set final before the caller acts on the failure.
    * It mirrors the runtime's inline step claim, which settles the in-flight
    * step executions before escalating a 412.
@@ -449,7 +455,7 @@ export async function handleSuspension({
   // Adds the optimistic-concurrency guard when the caller supplied a loaded
   // event log; without one it creates directly (callers with no replay
   // snapshot, e.g. tests). A stale (412) rejection propagates to the caller,
-  // which restarts the replay from a corrected log — it is not retried here,
+  // which restarts the replay from a corrected log. It is not retried here,
   // because the event's correlation id was minted by *this* replay's seeded
   // sequence, so re-committing it against a corrected log would persist an
   // event no correct replay produces.
@@ -465,8 +471,8 @@ export async function handleSuspension({
     });
     // Bump-and-report: the write landed above the slot it asked for, so the
     // report holds the events it was decided without. Absorbing here rather
-    // than at each call site means the rest of this phase's writes — which read
-    // the same array to build their own snapshot — ask for a slot above them,
+    // than at each call site means the rest of this phase's writes (which read
+    // the same array to build their own snapshot) ask for a slot above them,
     // and the replay that resumes from this log sees them without a reload.
     const report = absorbSkippedSlotReport(log.events, result);
     reportedEvents += report.added;
@@ -488,16 +494,16 @@ export async function handleSuspension({
     return result;
   };
   // Separate queue items by type
-  const stepItems = suspension.steps.filter(
+  const stepItems = suspension.items.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
   );
-  const allHookItems = suspension.steps.filter(
+  const allHookItems = suspension.items.filter(
     (item): item is HookInvocationQueueItem => item.type === 'hook'
   );
-  const waitItems = suspension.steps.filter(
+  const waitItems = suspension.items.filter(
     (item): item is WaitInvocationQueueItem => item.type === 'wait'
   );
-  const attributeItems = suspension.steps.filter(
+  const attributeItems = suspension.items.filter(
     (item): item is AttributeInvocationQueueItem => item.type === 'attribute'
   );
 
@@ -508,15 +514,15 @@ export async function handleSuspension({
   // Group hook items that need work by token, preserving queue-insertion
   // (workflow code) order within each token. Operations on one token must
   // apply in code order: a dispose() of an earlier hook releases the token
-  // before a later same-token hook's creation is validated — otherwise the
+  // before a later same-token hook's creation is validated (otherwise the
   // new hook records a spurious hook_conflict against the run's own
-  // disposed hook — while a hook created and disposed within the same
+  // disposed hook), while a hook created and disposed within the same
   // suspension is still created before it is disposed. Different tokens
   // have no claim interaction, so token groups are processed in parallel.
   const hookItemsByToken = new Map<string, HookInvocationQueueItem[]>();
   for (const item of allHookItems) {
     if (item.hasCreatedEvent && !item.disposed) {
-      continue; // already committed and still live — nothing to do
+      continue; // already committed and still live: nothing to do
     }
     const group = hookItemsByToken.get(item.token);
     if (group) {
@@ -534,6 +540,37 @@ export async function handleSuspension({
   const compression =
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
 
+  let serializationBlockerCount = 0;
+  const serializationBlockers: SuspensionSerializationBlocker[] = [];
+  async function dehydrateInput(
+    value: unknown,
+    context: Pick<SuspensionSerializationBlocker, 'source' | 'correlationId'>
+  ): Promise<SerializedData> {
+    const stats: GuestCodeStats = { executions: [] };
+    try {
+      return (await dehydrateStepArguments(
+        value,
+        runId,
+        encryptionKey,
+        suspension.globalThis,
+        false,
+        compression,
+        stats
+      )) as SerializedData;
+    } finally {
+      serializationBlockerCount +=
+        stats.totalExecutions ?? stats.executions.length;
+      serializationBlockers.push(
+        ...stats.executions
+          .slice(
+            0,
+            GUEST_CODE_EXECUTION_SAMPLE_LIMIT - serializationBlockers.length
+          )
+          .map((execution) => ({ ...context, ...execution }))
+      );
+    }
+  }
+
   async function disposeHook(
     queueItem: HookInvocationQueueItem
   ): Promise<void> {
@@ -549,7 +586,7 @@ export async function handleSuspension({
       await createGuarded(hookDisposedEvent, { requestId });
     } catch (err) {
       if (EntityConflictError.is(err)) {
-        // Hook was already disposed by a concurrent invocation — safe to skip
+        // Hook was already disposed by a concurrent invocation, safe to skip
         runtimeLogger.info(
           'Hook already disposed, skipping duplicate disposal',
           {
@@ -581,7 +618,7 @@ export async function handleSuspension({
   }
 
   // Process hooks first to prevent race conditions with webhook receivers.
-  // Track any hook conflicts that occur — these are returned to the caller
+  // Track any hook conflicts that occur: these are returned to the caller
   // so the V2 handler can re-invoke immediately.
   let hasHookConflict = false;
   let hasAwaitedHookCreation = false;
@@ -596,17 +633,13 @@ export async function handleSuspension({
           let creationConflicted = false;
 
           if (!queueItem.hasCreatedEvent) {
-            const hookMetadata: SerializedData | undefined =
+            const hookMetadata =
               typeof queueItem.metadata === 'undefined'
                 ? undefined
-                : ((await dehydrateStepArguments(
-                    queueItem.metadata,
-                    runId,
-                    encryptionKey,
-                    suspension.globalThis,
-                    false,
-                    compression
-                  )) as SerializedData);
+                : await dehydrateInput(queueItem.metadata, {
+                    source: 'hook_metadata',
+                    correlationId: queueItem.correlationId,
+                  });
             const hookEvent: CreateEventRequest = {
               eventType: 'hook_created' as const,
               specVersion: SPEC_VERSION_CURRENT,
@@ -643,7 +676,7 @@ export async function handleSuspension({
     hookCreationMs = Date.now() - hookPhaseStart;
   }
 
-  // Process abort requests — resume the hook with abort payload and write stream packet
+  // Process abort requests: resume the hook with abort payload and write stream packet
   const hooksNeedingAbort = allHookItems.filter(
     (item) => item.abortRequested && !item.disposed
   );
@@ -654,13 +687,15 @@ export async function handleSuspension({
       hooksNeedingAbort.map(async (queueItem) => {
         try {
           // Dehydrate the abort payload for storage
-          const abortPayload = await dehydrateStepArguments(
-            { aborted: true, reason: queueItem.abortReason },
-            runId,
-            encryptionKey,
-            suspension.globalThis,
-            false,
-            compression
+          const abortPayload = await dehydrateInput(
+            {
+              aborted: true,
+              reason: queueItem.abortReason,
+            },
+            {
+              source: 'hook_abort',
+              correlationId: queueItem.correlationId,
+            }
           );
 
           // Create hook_received event with abort payload
@@ -690,7 +725,7 @@ export async function handleSuspension({
             );
             await world.streams.close(runId, streamName);
           } catch {
-            // Best-effort stream write — hook event provides the durable fallback
+            // Best-effort stream write: hook event provides the durable fallback
             runtimeLogger.debug(
               'Failed to write abort stream packet, hook event will provide fallback',
               {
@@ -718,7 +753,7 @@ export async function handleSuspension({
   }
 
   // Create step events for steps that don't have them yet.
-  // Unlike V1, we do NOT queue step messages from here — the caller
+  // Unlike V1, we do NOT queue step messages from here: the caller
   // decides which steps to execute inline vs. queue to background.
   // Wait events are also created in parallel below.
   const stepsNeedingCreation = new Set(
@@ -729,12 +764,12 @@ export async function handleSuspension({
 
   // Correlation IDs for which THIS suspension call actually wrote the
   // step_created event. Populated by the ops below after a successful
-  // events.create — used by the caller to claim ownership and avoid
+  // events.create, used by the caller to claim ownership and avoid
   // racing with concurrent handlers on step execution.
   const createdStepCorrelationIds = new Set<string>();
 
   // Correlation IDs of steps finalized as failed because their arguments
-  // refused to serialize — see finalizeUnserializableStep below.
+  // refused to serialize: see finalizeUnserializableStep below.
   const failedStepCorrelationIds = new Set<string>();
 
   /**
@@ -748,7 +783,7 @@ export async function handleSuspension({
    * precisely what refused to serialize) followed by `step_failed` carrying
    * the SerializationError. The next replay rejects the step's promise with
    * it, so a try/catch around the step call observes the error; uncaught, it
-   * propagates out of the workflow body and fails the run as a USER_ERROR —
+   * propagates out of the workflow body and fails the run as a USER_ERROR,
    * without burning queue redeliveries either way.
    */
   const finalizeUnserializableStep = async (
@@ -793,7 +828,7 @@ export async function handleSuspension({
       );
     } catch (createErr) {
       if (EntityConflictError.is(createErr)) {
-        // A concurrent handler already created the step — the failure is
+        // A concurrent handler already created the step: the failure is
         // deterministic, so it is racing toward the same step_failed below.
         runtimeLogger.info('Step already exists, continuing', {
           workflowRunId: runId,
@@ -801,7 +836,7 @@ export async function handleSuspension({
           message: createErr.message,
         });
       } else if (RunExpiredError.is(createErr)) {
-        // Run already finished — nothing to observe the failure.
+        // Run already finished: nothing to observe the failure.
         return;
       } else {
         throw createErr;
@@ -816,7 +851,7 @@ export async function handleSuspension({
           eventData: {
             stepName: queueItem.stepName,
             // The error itself is a plain WorkflowError (name, message with
-            // framed hint, cause chain) — serializable even though the step
+            // framed hint, cause chain), serializable even though the step
             // input was not. Error detection is realm-independent
             // (types.isNativeError), so the host-created error serializes
             // the same under either global; the VM global is passed for
@@ -856,23 +891,11 @@ export async function handleSuspension({
     // Release the inline slot bookkeeping: the step never runs, so it must
     // not appear in the rebuilt `lazyInlineSteps`. (Its slot in the first-N
     // selection and in `inlinePairFoldEligible`'s arithmetic was consumed
-    // before dehydration could reveal the failure — inherent to selecting
+    // before dehydration could reveal the failure, inherent to selecting
     // before serializing, and bounded to one wasted slot on a pass that
     // ends in a forced replay anyway.)
     lazyInlineCorrelationIds.delete(queueItem.correlationId);
   };
-
-  // Serialization always runs through the one ordinary path below, so the
-  // durable bytes cannot depend on retention. What retention needs to know is
-  // whether that serialization *executed* workflow code (getters, proxy
-  // traps, custom serializers) — side effects a cold replay would not
-  // repeat, since a replay skips dehydration for already-recorded steps.
-  // The hardened serializer records exactly that into this sink (see
-  // ../serialization/hardened.ts); when any input in the batch records an
-  // execution, the caller demotes the session so the side effects land in a
-  // VM that is about to be discarded, exactly like the pre-retention
-  // runtime.
-  const guestCodeStats: GuestCodeStats = { executions: [] };
 
   // Lazy inline start: defer the step_created write for up to
   // `getMaxInlineSteps()` steps the caller will run inline (in parallel). Each
@@ -880,9 +903,9 @@ export async function handleSuspension({
   // (saving a round-trip per step). We never defer when a `hook.getConflict()`
   // awaiter is present, because in that case the caller executes nothing inline
   // (it re-invokes immediately to resolve the awaiter), so deferring would
-  // leave the steps uncreated and unqueued. We pick the first N uncreated steps
-  // — matching the caller's inline-candidate selection — and dehydrate their
-  // input here so executeStep can ship it as the step_started payload.
+  // leave the steps uncreated and unqueued. We pick the first N uncreated
+  // steps (matching the caller's inline-candidate selection) and dehydrate
+  // their input here so executeStep can ship it as the step_started payload.
   const lazyInlineCorrelationIds = new Set<string>(
     hasAwaitedHookCreation === false
       ? stepItems
@@ -910,13 +933,13 @@ export async function handleSuspension({
   // Resilient step dispatch eligibility, shared by every step op below (the
   // per-step input-size check is applied inside the op). All must hold:
   //
-  //  - The caller provided a dispatch target (`stepDispatch`) — terminal
+  //  - The caller provided a dispatch target (`stepDispatch`): terminal
   //    drains and other create-only callers never queue.
   //  - The feature is enabled (`WORKFLOW_RESILIENT_STEP_DISPATCH` opt-in).
   //    It is off by default because the publish races the create's verdict,
   //    and a create can come back refused: as a duplicate the replay should
-  //    stop pursuing, or — on a World that would rather refuse a stale write
-  //    than report what it missed — as a 412. Either way the queue message
+  //    stop pursuing, or (on a World that would rather refuse a stale write
+  //    than report what it missed) as a 412. Either way the queue message
   //    carrying the payload is already out, and the consumer can materialize a
   //    step whose create was refused. Nothing orders that verdict before the
   //    consumer's redelivery re-ensure, so no backend-side revocation
@@ -934,8 +957,8 @@ export async function handleSuspension({
   // Batched fan-out: fold this suspension's step_created + wait_created
   // writes into one `events.createBatch` call (one durable write, per-event
   // outcomes) instead of one write per event. Engages only for a CLEAN
-  // fan-out — no attribute writes, no hook writes, no resilient dispatch
-  // (whose creates are each paired with a queue publish) — on a World that
+  // fan-out (no attribute writes, no hook writes, no resilient dispatch
+  // whose creates are each paired with a queue publish) on a World that
   // implements the optional method and a run whose events are slot-numbered.
   // Everything outside the gate keeps the single-event path byte-for-byte.
   const batchFanoutEligible =
@@ -965,14 +988,14 @@ export async function handleSuspension({
 
   // Pre-claimed inline pairs: fold each lazy-inline step's deferred
   // `step_created` (carrying its input) AND its `step_started` claim (bare,
-  // ownership-stamped) into the batch, so the whole fan-out — the inline
-  // steps' claims included — commits in the one durable write and the caller
+  // ownership-stamped) into the batch, so the whole fan-out (the inline
+  // steps' claims included) commits in the one durable write and the caller
   // starts the bodies straight off that commit instead of posting one claim
   // per inline step. The lone-inline case (nothing else to batch with) is
   // excluded: a pair-only batch costs the same round trip as the single lazy
   // claim while giving up the optimistic claim/body overlap and the
   // bump-and-report that `createGuarded` provides, so it stays on the lazy
-  // path. Requires the caller's `ownerMessageId` — the started row must
+  // path. Requires the caller's `ownerMessageId`: the started row must
   // stamp ownership exactly like the lazy claim it replaces (and a caller
   // that does not inline-execute never provides one).
   const uncreatedWaitCount = waitItems.filter(
@@ -1002,8 +1025,8 @@ export async function handleSuspension({
   // Producer-side resilient recovery count for the suspension span attribute.
   let resilientDispatchRecovered = 0;
 
-  // Steps: create step_created events (no queuing — V2 returns pending steps
-  // to caller — EXCEPT on the resilient dispatch path, which parallelizes the
+  // Steps: create step_created events (no queuing, V2 returns pending steps
+  // to caller, EXCEPT on the resilient dispatch path, which parallelizes the
   // create with the step's queue publish and reports it in
   // `queuedStepCorrelationIds`).
   let batchOrderCounter = 0;
@@ -1011,8 +1034,8 @@ export async function handleSuspension({
     if (stepsNeedingCreation.has(queueItem.correlationId)) {
       // Deterministic position in the batched fold (assigned in stepItems
       // order, before the concurrent dehydration runs). A pair-folded inline
-      // step occupies two consecutive positions — created row then started
-      // row — which the flush keeps adjacent and never splits across chunks,
+      // step occupies two consecutive positions (created row then started
+      // row), which the flush keeps adjacent and never splits across chunks,
       // so a World can fold them into one born-running create.
       const pairFolded =
         inlinePairFoldEligible &&
@@ -1020,31 +1043,22 @@ export async function handleSuspension({
       const stepOrder = batchOrderCounter;
       batchOrderCounter += pairFolded ? 2 : 1;
       const stepOp = (async () => {
-        // Per-step sink, merged below: the dehydrate wrapper emits span
-        // attributes from the sink it is handed, so sharing one across
-        // steps would re-emit (and misattribute) earlier steps' entries.
-        const stepGuestCode: GuestCodeStats = { executions: [] };
-        let dehydratedInput: Uint8Array | unknown;
+        let dehydratedInput: SerializedData;
         try {
-          dehydratedInput = await dehydrateStepArguments(
+          dehydratedInput = await dehydrateInput(
             {
               args: queueItem.args,
               closureVars: queueItem.closureVars,
               thisVal: queueItem.thisVal,
             },
-            runId,
-            encryptionKey,
-            suspension.globalThis,
-            false,
-            compression,
-            stepGuestCode
+            {
+              source: 'step_input',
+              correlationId: queueItem.correlationId,
+            }
           );
         } catch (err) {
-          // The sink records executions as they happen, so guest code that
-          // ran before the failure still counts against retention.
-          guestCodeStats.executions.push(...stepGuestCode.executions);
           if (!SerializationError.is(err)) {
-            // e.g. RuntimeDecryptionError — an SDK fault, not a user value
+            // e.g. RuntimeDecryptionError: an SDK fault, not a user value
             // problem. Keep its identity (RUNTIME_ERROR) and current
             // fail-the-suspension behavior.
             throw err;
@@ -1055,7 +1069,7 @@ export async function handleSuspension({
             // test caller). The run is already completing/failing, so
             // writing step_created + step_failed here would leave e.g. a
             // COMPLETED run carrying a failed step nothing can ever
-            // observe — reading as a bug from the dashboard. Rethrow
+            // observe, reading as a bug from the dashboard. Rethrow
             // instead; the drain's own catch swallows it, preserving its
             // pre-existing behavior (no rows for the unawaited step).
             throw err;
@@ -1063,7 +1077,6 @@ export async function handleSuspension({
           await finalizeUnserializableStep(queueItem, err);
           return;
         }
-        guestCodeStats.executions.push(...stepGuestCode.executions);
         // Deferred (lazy) inline step: skip the step_created write — the
         // caller's inline executeStep will send a lazy step_started carrying
         // this input, and the world creates the step (entity + synthetic
@@ -1074,13 +1087,13 @@ export async function handleSuspension({
           lazyInlineByCorrelationId.set(queueItem.correlationId, {
             correlationId: queueItem.correlationId,
             stepName: queueItem.stepName,
-            dehydratedInput: dehydratedInput as SerializedData,
+            dehydratedInput,
           });
           if (pairFolded) {
             // Enqueue the pair the deferral would otherwise leave to the
             // caller's lazy `step_started`: the created row carries the
             // input (payloads ride creates in a batch), the started row is
-            // bare and stamps this invocation's ownership — the same claim
+            // bare and stamps this invocation's ownership, the same claim
             // shape the lazy start would have sent, settled by the batch.
             batchQueue.push({
               order: stepOrder,
@@ -1128,7 +1141,7 @@ export async function handleSuspension({
         };
 
         // Resilient step dispatch: fire the step_created write and the
-        // step-execution queue publish in parallel — the message carries the
+        // step-execution queue publish in parallel: the message carries the
         // same serialized input (`stepInput`) so the consumer can
         // idempotently re-ensure the event if the direct write failed
         // transiently. Mirrors the resilient start (`runInput`) and
@@ -1156,10 +1169,10 @@ export async function handleSuspension({
                 stepInput: { input: dehydratedInput },
               },
               // Same key as the caller's dispatch pass and any concurrent
-              // handler's — redundant publishes for this step dedupe. The
+              // handler's, so redundant publishes for this step dedupe. The
               // key is step-identity-scoped so a revoked message for a
               // reassigned correlation id cannot absorb the corrected
-              // schedule's dispatch — see stepDispatchIdempotencyKey.
+              // schedule's dispatch: see stepDispatchIdempotencyKey.
               {
                 idempotencyKey: stepDispatchIdempotencyKey(
                   queueItem.correlationId,
@@ -1172,7 +1185,7 @@ export async function handleSuspension({
           // the message the step would rely on the create alone, and if the
           // create ALSO failed there would be no durable record at all.
           // Propagating redelivers the orchestrator message, which
-          // re-creates the (idempotent) step_created and re-dispatches —
+          // re-creates the (idempotent) step_created and re-dispatches,
           // the same recovery as the sequential path.
           if (queueResult.status === 'rejected') {
             throw queueResult.reason;
@@ -1181,7 +1194,7 @@ export async function handleSuspension({
           if (createResult.status === 'rejected') {
             const err = createResult.reason;
             if (EntityConflictError.is(err)) {
-              // Concurrent handler wrote it first — same as the sequential
+              // Concurrent handler wrote it first, same as the sequential
               // path. The step message is already out; a duplicate publish
               // by that handler dedupes on the shared idempotency key.
               runtimeLogger.info('Step already exists, continuing', {
@@ -1191,8 +1204,8 @@ export async function handleSuspension({
               });
             } else if (isRetryableWorldError(err)) {
               // Resilient: the write failed transiently (429 / 5xx /
-              // transport) but the step message — carrying the same
-              // serialized input — was published, so the consumer
+              // transport) but the step message (carrying the same
+              // serialized input) was published, so the consumer
               // idempotently re-ensures the step_created before executing.
               resilientDispatchRecovered++;
               runtimeLogger.warn(
@@ -1249,7 +1262,7 @@ export async function handleSuspension({
       if (batchFanoutEligible) {
         // The flush op waits for every prep before committing; a prep that
         // rejected already surfaces through `ops`, so the flush's own wait
-        // swallows it and commits whatever was successfully enqueued —
+        // swallows it and commits whatever was successfully enqueued,
         // preserving today's per-op independence.
         batchPreps.push(stepOp.catch(() => {}));
       }
@@ -1268,7 +1281,7 @@ export async function handleSuspension({
         },
       };
       if (batchFanoutEligible) {
-        // Waits need no dehydration, so they enqueue synchronously — after
+        // Waits need no dehydration, so they enqueue synchronously, after
         // every step's order slot, preserving steps-then-waits scheduling
         // order in the log.
         batchQueue.push({
@@ -1301,20 +1314,20 @@ export async function handleSuspension({
   }
 
   // The batched fold's flush: the clean fan-out commits through
-  // `createBatch` in chunks of MAX_BATCH_FANOUT_EVENTS — all chunks IN
+  // `createBatch` in chunks of MAX_BATCH_FANOUT_EVENTS, all chunks IN
   // FLIGHT CONCURRENTLY. Slot assignment is the server's, so parallel
   // chunks race for slot ranges exactly like the pre-fold path's parallel
   // single writes did; entity conditions, not commit order, carry
   // correctness (sibling fan-out events have no cross-order the replay
-  // depends on — it matches by correlation id). Each event reports the
+  // depends on; it matches by correlation id). Each event reports the
   // outcome its own single create would have had: a 409 is the same
   // already-exists tolerance as the single path, anything else fails the
   // delivery the way a single-path rejection would.
   //
   // Latency shape: only the chunk carrying the pre-claimed inline pairs
   // gates the handler's return (the caller starts bodies off its claims).
-  // Every other chunk's commit — and every chunk's step-message publishes,
-  // which fire the moment ITS creates are durable — rides
+  // Every other chunk's commit (and every chunk's step-message publishes,
+  // which fire the moment ITS creates are durable) rides
   // `deferredBatchWork` when the caller opted in, joined before ack. A slow
   // sibling chunk therefore delays neither the inline bodies nor another
   // chunk's queue messages, while publish-after-create still holds per
@@ -1335,7 +1348,7 @@ export async function handleSuspension({
         await ensureRunReady();
         // A batch of ONE gains nothing over the single write (same round
         // trip) and loses the slot-snapshot params + bump-and-report that
-        // createGuarded provides — so a lone eager event takes the ordinary
+        // createGuarded provides, so a lone eager event takes the ordinary
         // single path, with the same conflict tolerance and ownership
         // bookkeeping it would have had without the fold.
         if (entries.length === 1) {
@@ -1364,8 +1377,8 @@ export async function handleSuspension({
           return;
         }
         // Seed for the foreign-interleaving diagnostic below. With chunks
-        // committing in parallel there is no per-chunk "expected next slot"
-        // — the whole fold's committed span is compared against the seed
+        // committing in parallel there is no per-chunk "expected next slot";
+        // the whole fold's committed span is compared against the seed
         // once every chunk has settled: committed slots are dense per the
         // World's invariant, so any excess of (max committed slot − seed +
         // 1) over the fold's own committed count is events OTHER writers
@@ -1374,8 +1387,8 @@ export async function handleSuspension({
           ? (maxEventSlot(eventLog.events) ?? 0) + 1
           : undefined;
         // Pair-aware chunking: a pre-claimed pair's two rows must land in
-        // the same createBatch call — adjacent, so a World can fold them
-        // into one born-running create — and never straddle a chunk
+        // the same createBatch call (adjacent, so a World can fold them
+        // into one born-running create) and never straddle a chunk
         // boundary, which would turn the started row into a standalone
         // claim racing its own create's commit.
         const chunks: (typeof entries)[] = [];
@@ -1406,7 +1419,7 @@ export async function handleSuspension({
         }
         // Steps whose queue messages THIS FLUSH will publish (the eager
         // creates), recorded before any chunk settles so the caller's
-        // dispatch pass — which runs off the handler's return — skips them.
+        // dispatch pass (which runs off the handler's return) skips them.
         // The sends are guaranteed-or-failed by the trailing work the
         // caller joins before acking, so "will be published by this flush"
         // and "already published" are equivalent from the caller's side.
@@ -1427,7 +1440,7 @@ export async function handleSuspension({
         const commitChunk = async (chunk: typeof entries): Promise<void> => {
           // Anchors for the pre-claimed steps' telemetry: the POST instant
           // is the claim's "start POST sent" (RSFS's end), the return is the
-          // claim's completion (TTR's T6) — the same two instants the lazy
+          // claim's completion (TTR's T6), the same two instants the lazy
           // claim's own POST would have produced.
           const batchPostSentAtMs = Date.now();
           // biome-ignore lint/style/noNonNullAssertion: batchFanoutEligible implies presence
@@ -1458,7 +1471,7 @@ export async function handleSuspension({
                 // readback entity is authoritative where present; a World
                 // that omitted it gets the same locally synthesized running
                 // attempt-1 the optimistic path executes against. Either
-                // way the input is re-attached locally — batch responses
+                // way the input is re-attached locally: batch responses
                 // return refs lazily, and the body's hydration wants the
                 // exact bytes the pair's created row carried. (The created
                 // row's success is deliberately NOT membership in
@@ -1515,12 +1528,12 @@ export async function handleSuspension({
               ) {
                 // The pair lost its atomic create-claim: a concurrent writer
                 // already owns this step (an earlier delivery's create, or a
-                // racing handler's claim). Recorded as a lost claim — the
+                // racing handler's claim). Recorded as a lost claim: the
                 // caller's executeStep returns `skipped` without running the
                 // body, the same outcome as losing the lazy claim. A World
                 // that folds the pair reports the 409 on both rows (set
                 // twice, harmless); one that evaluates rows independently
-                // has the started row — processed second — decide, which is
+                // has the started row (processed second) decide, which is
                 // exactly the single path's semantics (create lost + claim
                 // won still runs the body; create won + claim lost skips).
                 inlineClaims.set(entry.correlationId, { owned: false });
@@ -1579,7 +1592,7 @@ export async function handleSuspension({
         };
 
         // Publish the chunk's eager steps' queue messages the moment ITS
-        // creates are durable — the per-chunk half of publish-after-create.
+        // creates are durable, the per-chunk half of publish-after-create.
         // Same message shape and step-identity-scoped idempotency key as the
         // caller's dispatch pass, so anything double-published dedupes.
         const publishChunkSteps = async (
@@ -1667,7 +1680,7 @@ export async function handleSuspension({
         // `step_started` that would race this same fold's still-in-flight
         // pair for the same step. Today pairs always land in one chunk
         // (they sort first, and two rows per inline step fit inside one
-        // chunk — pinned by constants.test.ts), so this is at most one
+        // chunk, pinned by constants.test.ts), so this is at most one
         // commit; the filter is what keeps the property true if either cap
         // moves.
         const pairCommits = chunks.flatMap((chunk, index) =>
@@ -1679,7 +1692,7 @@ export async function handleSuspension({
           // The trailing work is the caller's to join before ack. Attach a
           // handler now so a rejection that races that join (or a foreground
           // failure that prevents the caller from ever reaching it) is never
-          // an unhandledRejection — awaiting the promise still observes it.
+          // an unhandledRejection; awaiting the promise still observes it.
           trailing.catch(() => {});
           deferredBatchWork = trailing;
           // Only the pair chunks gate the return: their claims are what the
@@ -1691,7 +1704,7 @@ export async function handleSuspension({
               await Promise.all(pairCommits);
             } catch (err) {
               // A pair chunk failed, so this phase's write set is NOT the
-              // caller's to join any more — `deferredBatchWork` never
+              // caller's to join any more: `deferredBatchWork` never
               // reaches it once handleSuspension throws. Settle the rest
               // before the rejection escapes, for the reason `settlePhase`
               // gives: a sibling create landing after the throw commits an
@@ -1716,7 +1729,7 @@ export async function handleSuspension({
           // Guarded like every other suspension write: an attr_set is a
           // replay-derived event with a correlation id from this replay's
           // seeded sequence, so it must not land on a log the replay never
-          // saw. Rejecting it is cheap — a run with attribute events already
+          // saw. Rejecting it is cheap: a run with attribute events already
           // forces an in-process replay, so the restart costs the replay it
           // was going to do anyway.
           await createGuarded(
@@ -1745,7 +1758,7 @@ export async function handleSuspension({
               }
             );
           } else if (isWorldValidationFailure(err)) {
-            // Deterministic validation rejection from the World — e.g. the
+            // Deterministic validation rejection from the World, e.g. the
             // cumulative per-run attribute cap, which only the World can
             // check against the run's existing attributes. Redelivering the
             // orchestrator message replays the workflow into the exact same
@@ -1776,20 +1789,6 @@ export async function handleSuspension({
   // message is not acked and VQS redelivers, re-creates the (idempotent)
   // step_created and re-dispatches, and recovers the run instead of orphaning it.
   await settlePhase(ops);
-
-  // The step-input dehydrations above have settled, so the sink is final.
-  const retainedStepInputsSafe = guestCodeStats.executions.length === 0;
-  if (!retainedStepInputsSafe) {
-    runtimeLogger.debug(
-      'Serializing step inputs executed workflow code; falling back to replay instead of retaining the VM',
-      {
-        workflowRunId: runId,
-        executions: guestCodeStats.executions
-          .slice(0, 5)
-          .map((e) => (e.detail ? `${e.kind}(${e.detail})` : e.kind)),
-      }
-    );
-  }
 
   // Rebuild the inline batch in deterministic order. `lazyInlineCorrelationIds`
   // is a Set seeded from the ordered first-N slice, so iterating it preserves
@@ -1847,7 +1846,8 @@ export async function handleSuspension({
     hasAttributeEvents: attributeItems.length > 0,
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
-    retainedStepInputsSafe,
+    serializationBlockerCount,
+    serializationBlockers,
     reportedEventCount: reportedEvents,
   };
 }

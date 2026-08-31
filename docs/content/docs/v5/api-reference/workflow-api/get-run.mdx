@@ -9,7 +9,7 @@ related:
   - /docs/foundations/idempotency
 ---
 
-Retrieves the workflow run metadata and status information for a given run ID. This function provides immediate access to workflow run details without waiting for completion, making it ideal for status checking and monitoring.
+Retrieves workflow run metadata and status information for a given run ID. This function provides immediate access to workflow run details without waiting for completion.
 
 Use this function when you need to check workflow status, get timing information, or access workflow metadata without blocking on workflow completion.
 
@@ -23,7 +23,7 @@ import { getRun } from "workflow/api";
 const run = getRun("my-run-id");
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -47,7 +47,7 @@ showSections={["returns"]}
 
 #### WorkflowReadableStream
 
-`run.getReadable()` returns a `WorkflowReadableStream` — a standard `ReadableStream` extended with a `getTailIndex()` helper:
+`run.getReadable()` returns a `WorkflowReadableStream`, a standard `ReadableStream` extended with a `getTailIndex()` helper:
 
 <TSDoc
 definition={`
@@ -83,7 +83,7 @@ export default StopSleepResult;`}
 
 ## Examples
 
-### Check if a Run Exists
+### Check if a run exists
 
 Use the `exists` getter to check whether a workflow run exists without throwing when the run is not found:
 
@@ -112,7 +112,7 @@ export async function GET(req: Request) {
 }
 ```
 
-### Basic Status Check
+### Basic status check
 
 Check the current status of a workflow run:
 
@@ -141,7 +141,7 @@ export async function GET(req: Request) {
 }
 ```
 
-### Wake Up a Sleeping Workflow
+### Wake up a sleeping workflow
 
 Interrupt pending `sleep()` calls to resume a workflow early. This is useful for testing workflows or building custom UIs that let users skip wait periods:
 
@@ -170,7 +170,7 @@ const { stoppedCount } = await run.wakeUp({
 });
 ```
 
-### Cancel a Run
+### Cancel a run
 
 Cancel a workflow run. You can pass an optional free-text `cancelReason` (up to 512 characters) that is recorded on the run's cancellation event and shown in the run detail view:
 
@@ -187,8 +187,8 @@ export async function POST(req: Request) {
 }
 ```
 
-The options object is optional — `await run.cancel()` cancels the run without recording a reason.
+The options object is optional: `await run.cancel()` cancels the run without recording a reason.
 
-## Related Functions
+## Related functions
 
-- [`start()`](/docs/api-reference/workflow-api/start) - Start a new workflow and get its run ID.
+- [`start()`](/docs/api-reference/workflow-api/start): Start a new workflow and get its run ID.

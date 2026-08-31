@@ -1002,6 +1002,189 @@ describe('EventsConsumer', () => {
       });
     });
 
+    it('skips a second attr_set for an id the walk already resolved', async () => {
+      // Concurrent replays at the same body position draw the same attribute
+      // id, and a World that commits both leaves two events under it. The
+      // dispatcher's consumer deregisters on the first, so without the class
+      // the second would park for a consumer that cannot come and be reported
+      // as stranded once the workflow function returns.
+      const corr = 'attr_A';
+      const events = [
+        realEvent('attr_set', corr),
+        realEvent('attr_set', corr),
+        realEvent('step_created', 'step_B'),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+      });
+
+      consumer.subscribe(entityConsumer(corr, 'attr_set'));
+      consumer.subscribe(entityConsumer('step_B', 'step_created'));
+
+      await afterDeferredCheck(() => {
+        expect(onDuplicateEvent).toHaveBeenCalledWith(events[1], 'attr_set');
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+        // Nothing held: the run can return without being declared corrupt.
+        expect(consumer.strandedEvent).toBeUndefined();
+        // The walk still reached the event after the duplicate.
+        expect(consumer.eventIndex).toBe(events.length);
+      });
+    });
+
+    it('parks an attr_set whose consumer has not subscribed yet', async () => {
+      // The duplicate skip must not swallow a first arrival: a replay can walk
+      // past an attribute event before the body reaches the call that claims
+      // it, and that one is still owed to a consumer.
+      const corr = 'attr_A';
+      const events = [
+        realEvent('attr_set', corr),
+        realEvent('step_created', 'step_B'),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+      });
+
+      // Only the later entity has a consumer, so the walk has to get past the
+      // attribute event to reach it.
+      consumer.subscribe(entityConsumer('step_B', 'step_created'));
+      await afterDeferredCheck(() => {
+        expect(consumer.strandedEvent).toEqual(events[0]);
+        expect(onDuplicateEvent).not.toHaveBeenCalled();
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+      });
+
+      // A late subscriber still gets it out of the parked set.
+      consumer.subscribe(entityConsumer(corr, 'attr_set'));
+      await afterDeferredCheck(() => {
+        expect(consumer.strandedEvent).toBeUndefined();
+      });
+    });
+
+    it('releases a parked attr_set once a sibling copy is consumed', async () => {
+      // The order the walk cannot decide at the event. Neither copy has a
+      // consumer when the walk reaches them, so both park: the first because
+      // the body has not made its call yet, the second in the same tick, with
+      // no class recorded because nothing has been *consumed*. When the body
+      // finally subscribes, the drain claims the first and the second is left
+      // held by a consumer list that can never grow the callback it needs.
+      // Before `dropParkedDuplicates` that survivor was `strandedEvent`, and a
+      // run whose every step had succeeded died as CORRUPTED_EVENT_LOG.
+      const corr = 'attr_A';
+      const events = [
+        realEvent('attr_set', corr),
+        realEvent('attr_set', corr),
+        realEvent('step_created', 'step_B'),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+      });
+
+      // Only the later entity has a consumer, so the walk parks both copies on
+      // its way to it.
+      consumer.subscribe(entityConsumer('step_B', 'step_created'));
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(events.length);
+        expect(consumer.parkedSummary?.count).toBe(2);
+      });
+
+      // The body reaches its `setAttributes()` call.
+      consumer.subscribe(entityConsumer(corr, 'attr_set'));
+      await afterDeferredCheck(() => {
+        // The first is consumed and the second is released as the repeat it
+        // is, so the workflow function can return.
+        expect(consumer.strandedEvent).toBeUndefined();
+        expect(consumer.parkedSummary).toBeUndefined();
+        expect(onDuplicateEvent).toHaveBeenCalledWith(events[1], 'attr_set');
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+      });
+    });
+
+    it('releases a parked wait_completed once a sibling copy is consumed', async () => {
+      // Same shape, different type: the release is a property of one-shot
+      // resolution, not of attributes. `ONE_SHOT_EVENT_TYPES` already covers a
+      // repeat that arrives after the consumption, and this is the order it
+      // cannot see, because nothing is in `resolved` while both are parked.
+      const corr = 'wait_A';
+      const events = [
+        realEvent('wait_completed', corr),
+        realEvent('wait_completed', corr),
+        realEvent('step_created', 'step_B'),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+      });
+
+      consumer.subscribe(entityConsumer('step_B', 'step_created'));
+      await afterDeferredCheck(() => {
+        expect(consumer.parkedSummary?.count).toBe(2);
+      });
+
+      consumer.subscribe(entityConsumer(corr, 'wait_completed'));
+      await afterDeferredCheck(() => {
+        expect(consumer.strandedEvent).toBeUndefined();
+        expect(onDuplicateEvent).toHaveBeenCalledWith(
+          events[1],
+          'wait_completed'
+        );
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+      });
+    });
+
+    it('does not collapse the attr_set events a step body writes', async () => {
+      // A step-written attribute event carries no correlation id, so there is
+      // no entity to track a class under and each one is its own write. They
+      // are claimed by the structural lifecycle consumer in `workflow.ts` on
+      // the way past, and a run can carry dozens: reading the second as a
+      // repeat of the first would hide writes that really happened.
+      const events = [
+        realEvent('attr_set', undefined),
+        realEvent('attr_set', undefined),
+        realEvent('attr_set', undefined),
+        realEvent('step_created', 'step_B'),
+      ];
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const onConsumedEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+        onConsumedEvent,
+      });
+
+      // Stands in for the structural consumer, which takes every attribute
+      // event a step wrote and never deregisters.
+      consumer.subscribe((event: Event | null) =>
+        event !== null && event.eventType === 'attr_set'
+          ? EventConsumerResult.Consumed
+          : EventConsumerResult.NotConsumed
+      );
+      consumer.subscribe(entityConsumer('step_B', 'step_created'));
+
+      await afterDeferredCheck(() => {
+        expect(consumer.eventIndex).toBe(events.length);
+        // Every one of them was observed by the run, none stepped over.
+        expect(onDuplicateEvent).not.toHaveBeenCalled();
+        expect(onUnconsumedEvent).not.toHaveBeenCalled();
+        expect(
+          onConsumedEvent.mock.calls.filter(
+            ([event]: [Event]) => event.eventType === 'attr_set'
+          )
+        ).toHaveLength(3);
+      });
+    });
+
     it('does not track hook deliveries, whose consumers subscribe lazily', async () => {
       // A hook legitimately fires many times under one id, so a second
       // hook_received is not a repeat of a decided outcome. It keeps the
@@ -1165,5 +1348,166 @@ describe('EventsConsumer', () => {
         expect(onConsumedEvent).not.toHaveBeenCalledWith(events[2]);
       });
     });
+  });
+});
+
+describe('sealed-log noop events (specVersion 7)', () => {
+  function logEvent(eventType: Event['eventType'], id: string): Event {
+    return createMockEvent({ id, eventId: id, eventType } as Partial<Event>);
+  }
+
+  function consumerFor(ids: string[]) {
+    const seen: string[] = [];
+    const callback = (event: Event | null) => {
+      if (event && ids.includes(event.id) && !seen.includes(event.id)) {
+        seen.push(event.id);
+        return EventConsumerResult.Consumed;
+      }
+      return EventConsumerResult.NotConsumed;
+    };
+    return { seen, callback };
+  }
+
+  it('steps over a noop without offering it to any consumer', async () => {
+    // The backend sealed an abandoned slot between two real events. The walk
+    // must pass through it as if the position never had a writer: both real
+    // events land, nothing is reported unconsumed, and the callback is never
+    // even offered the noop.
+    const noop = logEvent('noop' as Event['eventType'], 'noop-1');
+    const before = logEvent('wait_created', 'wait-1');
+    const after = logEvent('wait_completed', 'wait-2');
+    const onUnconsumedEvent = vi.fn();
+    const offered: (string | null)[] = [];
+    const consumer = new EventsConsumer([before, noop, after], {
+      onUnconsumedEvent,
+      getPromiseQueue: () => Promise.resolve(),
+      isDeliveryIdle: () => true,
+    });
+    const reals = consumerFor(['wait-1', 'wait-2']);
+    consumer.subscribe((event) => {
+      offered.push(event === null ? null : event.id);
+      return reals.callback(event);
+    });
+
+    await vi.waitFor(() => {
+      expect(reals.seen).toEqual(['wait-1', 'wait-2']);
+    });
+    expect(consumer.eventIndex).toBe(3);
+    expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    expect(offered).not.toContain('noop-1');
+  });
+
+  it('never advances the deterministic clock off a noop', async () => {
+    // A noop's createdAt is the SEALER's wall clock — it can postdate every
+    // real event around it. Letting it reach onConsumedEvent would leak that
+    // timestamp into replay Date.now() and diverge from a log whose hole was
+    // filled by the real writer instead.
+    const noop = createMockEvent({
+      id: 'noop-1',
+      eventId: 'noop-1',
+      eventType: 'noop',
+      createdAt: new Date(Date.now() + 60_000),
+    } as Partial<Event>);
+    const real = logEvent('wait_created', 'wait-1');
+    const onConsumedEvent = vi.fn();
+    const consumer = new EventsConsumer([noop, real], {
+      ...defaultOptions,
+      onConsumedEvent,
+    });
+    const reals = consumerFor(['wait-1']);
+    consumer.subscribe(reals.callback);
+
+    await vi.waitFor(() => {
+      expect(reals.seen).toEqual(['wait-1']);
+    });
+    expect(onConsumedEvent).toHaveBeenCalledTimes(1);
+    expect(onConsumedEvent).toHaveBeenCalledWith(real);
+  });
+
+  it('is scheduling-neutral: same offers, same tick, as the log without noops', async () => {
+    // The skip is a synchronous `continue` inside the walk pass — it consumes
+    // no extra micro- or macrotask. This pins that: a log with noops
+    // interleaved at the head, middle, and tail is fully consumed after the
+    // SAME single tick as its noop-free twin, and the sequence of events
+    // offered to consumers is byte-for-byte identical. Deterministic
+    // scheduling is what keeps replay ULID draws (and therefore correlation
+    // ids) stable across branches racing in Promise.all.
+    async function offersAfterOneTick(events: Event[]) {
+      const offered: (string | null)[] = [];
+      const consumer = new EventsConsumer(events, {
+        onUnconsumedEvent: vi.fn(),
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      });
+      consumer.subscribe((event) => {
+        offered.push(event === null ? null : event.id);
+        return event === null
+          ? EventConsumerResult.NotConsumed
+          : EventConsumerResult.Consumed;
+      });
+      // subscribe() schedules exactly one nextTick; the walk drains
+      // synchronously inside it. One tick must therefore finish either log.
+      await waitForNextTick();
+      return { offered, index: consumer.eventIndex, total: events.length };
+    }
+
+    const clean = await offersAfterOneTick([
+      logEvent('wait_created', 'w1'),
+      logEvent('wait_completed', 'w2'),
+    ]);
+    const sealed = await offersAfterOneTick([
+      logEvent('noop' as Event['eventType'], 'n0'),
+      logEvent('wait_created', 'w1'),
+      logEvent('noop' as Event['eventType'], 'n1'),
+      logEvent('noop' as Event['eventType'], 'n2'),
+      logEvent('wait_completed', 'w2'),
+      logEvent('noop' as Event['eventType'], 'n3'),
+    ]);
+
+    expect(clean.index).toBe(clean.total);
+    expect(sealed.index).toBe(sealed.total);
+    // Identical offer sequences — the noops were never offered at all, and
+    // both logs finished inside the same single tick.
+    expect(sealed.offered).toEqual(clean.offered);
+  });
+
+  it('consumes an all-noop log to the end without divergence', async () => {
+    const onUnconsumedEvent = vi.fn();
+    const consumer = new EventsConsumer(
+      [
+        logEvent('noop' as Event['eventType'], 'n1'),
+        logEvent('noop' as Event['eventType'], 'n2'),
+      ],
+      {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      }
+    );
+    consumer.subscribe(() => EventConsumerResult.NotConsumed);
+
+    await vi.waitFor(() => {
+      expect(consumer.eventIndex).toBe(2);
+    });
+    expect(onUnconsumedEvent).not.toHaveBeenCalled();
+  });
+
+  it('handles a log that ends on a noop', async () => {
+    const real = logEvent('wait_created', 'wait-1');
+    const noop = logEvent('noop' as Event['eventType'], 'noop-1');
+    const onUnconsumedEvent = vi.fn();
+    const consumer = new EventsConsumer([real, noop], {
+      onUnconsumedEvent,
+      getPromiseQueue: () => Promise.resolve(),
+      isDeliveryIdle: () => true,
+    });
+    const reals = consumerFor(['wait-1']);
+    consumer.subscribe(reals.callback);
+
+    await vi.waitFor(() => {
+      expect(reals.seen).toEqual(['wait-1']);
+    });
+    expect(consumer.eventIndex).toBe(2);
+    expect(onUnconsumedEvent).not.toHaveBeenCalled();
   });
 });

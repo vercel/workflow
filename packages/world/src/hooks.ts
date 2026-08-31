@@ -5,14 +5,14 @@ import { SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
 
 /**
- * Minimal, immutable slice of a hook's owning run needed to resume it —
+ * Minimal, immutable slice of a hook's owning run needed to resume it:
  * enough for encryption-key resolution, serialization/compression capability
  * selection, queue routing, and trace linking, without fetching the full run.
  *
  * Persisted on new hook records (workflow-server) and also returned inline by
  * `getByToken`, so a resume can skip the separate `runs.get`. Deliberately
  * excludes the run's mutable state (e.g. status), inputs/outputs, attributes,
- * and any secret — only fields that are fixed at hook-creation time.
+ * and any secret: only fields that are fixed at hook-creation time.
  */
 export const HookResumeContextSchema = z.object({
   deploymentId: z.string(),
@@ -30,9 +30,9 @@ export const HookResumeContextSchema = z.object({
   // Feature marker: the version of the lazy-hook-resume consumer protocol the
   // run's creating deployment supports. Present (>= 1) means that deployment's
   // `@workflow/core` re-ensures the `hook_received` event from the queue
-  // message's `hookInput` on replay, so `resumeHook()`'s parallel fast path is
-  // safe to use. Because a run is pinned to its creating deployment, this
-  // marker is a reliable per-run attestation — unlike inferring support from a
+  // message's `hookInput` on replay, so `resumeHook()`'s lazy path is safe to
+  // use. Because a run is pinned to its creating deployment, this
+  // marker is a reliable per-run attestation, unlike inferring support from a
   // version compare against a predicted release cutoff. Absent on runs created
   // before the marker existed (fall back to the sequential path).
   hookResumeInputVersion: z.number().optional(),
@@ -45,18 +45,18 @@ export type HookResumeContext = z.infer<typeof HookResumeContextSchema>;
  * deployment stamps this into its execution context (and the server mirrors it
  * onto `HookResumeContext.hookResumeInputVersion`) to attest that its
  * `@workflow/core` re-ensures the `hook_received` event from a queue message's
- * `hookInput`. `resumeHook()`'s parallel fast path requires the target run's
- * marker to be at least this value. Bump only on a breaking change to the
+ * `hookInput`. `resumeHook()`'s lazy path requires the target run's marker to
+ * be at least this value. Bump only on a breaking change to the
  * `hookInput` re-ensure contract.
  */
 export const HOOK_RESUME_INPUT_VERSION = 1;
 
 /**
  * Current version of the backend lazy-hook-resume dedup contract: the live
- * backend enforces a `(runId, resumeId)` constraint so the direct write and the
- * queue consumer's re-ensure converge on exactly one `hook_received`.
- * `resumeHook()`'s parallel fast path requires the backend to attest at least
- * this version. Bump only on a breaking change to the constraint semantics.
+ * backend enforces a `(runId, resumeId)` constraint so repeated deliveries of
+ * one resume's queue message converge on exactly one `hook_received`.
+ * `resumeHook()`'s lazy path requires the backend to attest at least this
+ * version. Bump only on a breaking change to the constraint semantics.
  */
 export const HOOK_RESUME_DEDUP_VERSION = 1;
 
@@ -66,8 +66,8 @@ export const HOOK_RESUME_DEDUP_VERSION = 1;
  *
  * Response-only and transient: NEVER persisted on the hook entity and NEVER
  * part of {@link HookResumeContextSchema}. Recomputing it per response is what
- * makes a server rollback or kill switch take effect immediately — a rolled-back
- * or kill-switched server simply stops emitting it, dropping new resumes to the
+ * makes a server rollback or kill switch take effect immediately: a rolled-back
+ * or kill-switched server stops emitting it, dropping new resumes to the
  * sequential path with no stranded hooks. (Contrast with the per-run, persisted
  * `hookResumeInputVersion`, which attests the *consumer* and is fixed at run
  * creation.)
@@ -101,7 +101,7 @@ export const HookSchema = z.object({
   environment: z.string(),
   metadata: SerializedDataSchema.optional(),
   createdAt: z.coerce.date(),
-  // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
+  // Optional in database for backward compatibility, defaults to 1 (legacy) when reading
   specVersion: z.number().optional(),
   isWebhook: z.boolean().optional(),
   isSystem: z.boolean().optional(),
@@ -113,10 +113,10 @@ export const HookSchema = z.object({
   // falls back to `runs.get`.
   resumeContext: HookResumeContextSchema.optional(),
   // Backend dedup capability, computed FRESH by the server on every by-token
-  // lookup — RESPONSE-ONLY and TRANSIENT. Never persisted on the hook entity
+  // lookup: RESPONSE-ONLY and TRANSIENT. Never persisted on the hook entity
   // and never part of `resumeContext`, so a server rollback or kill switch
-  // takes effect on the very next lookup (the field simply stops appearing).
-  // `resumeHook()` gates its parallel fast path on this being present and
+  // takes effect on the next lookup (the field stops appearing).
+  // `resumeHook()` gates its lazy path on this being present and
   // current. Absent against an older/rolled-back server or when the kill switch
   // is active.
   resumeCapabilities: HookResumeCapabilitiesSchema.optional(),

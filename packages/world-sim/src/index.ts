@@ -1,5 +1,5 @@
 /**
- * `@workflow/world-sim` — a deterministic, fully in-memory World for playing
+ * `@workflow/world-sim`: a deterministic, fully in-memory World for playing
  * out workflow scenarios and checking the world contract holds.
  *
  * See the package README for the model. The short version: nothing in this
@@ -9,8 +9,8 @@
  *
  * This entry is the *scenario* surface: write one, play it, render the result,
  * and name anything those three hand you. The pieces that build or inspect the
- * simulator itself — `createSimWorld`, `createSimStore`, `driveQueue`,
- * `verifyReplay`, `checkInvariants`, the clock — are deliberately not here.
+ * simulator itself (`createSimWorld`, `createSimStore`, `driveQueue`,
+ * `verifyReplay`, `checkInvariants`, the clock) are deliberately not here.
  * Nothing outside the package has wanted them, and re-exporting them makes
  * every one of their signatures a compatibility promise. Import them from their
  * module if you are extending the simulator; see `DESIGN.md`.

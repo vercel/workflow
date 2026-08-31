@@ -12,7 +12,7 @@ import {
 } from '@workflow/utils';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun, WorldCapabilities } from '@workflow/world';
-import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
+import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world/spec-version';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
@@ -84,7 +84,7 @@ async function drainPendingQueueItems(
   if (pendingQueue.size === 0) return;
   // Implicitly dispose any abort hooks (system hooks) that are still alive at
   // workflow completion so they don't leak rows in the hooks table for the
-  // run's lifetime. Skip hooks that already have an abort in flight — those
+  // run's lifetime. Skip hooks that already have an abort in flight; those
   // will emit hook_received via the abort processing path. User hooks
   // (isSystem !== true) are intentionally left alone: their lifetime is
   // managed by the user's code, not the runtime.
@@ -164,7 +164,7 @@ export type WorkflowResult =
     };
 
 /**
- * `resume` can additionally decline — `{ type: 'replay' }` means "this
+ * `resume` can additionally decline: `{ type: 'replay' }` means "this
  * session is unusable, cold-replay instead". A fresh replay never declines.
  */
 export type WorkflowResumeResult = WorkflowResult | { readonly type: 'replay' };
@@ -248,7 +248,7 @@ function recordResult(
     // a suspension: an out-of-band delivery that landed ahead of the code that
     // reads it waits for the pass that reaches that code, and failing here
     // would fail exactly the runs that tolerance exists for. The case that is
-    // not ordinary — the same event still held pass after pass — is a shape
+    // not ordinary (the same event still held pass after pass) is a shape
     // across these spans, which is why the eventId is on each one and no pass
     // tries to rule on it alone.
     if (result.parked) {
@@ -265,7 +265,7 @@ function recordResult(
 /**
  * Single-shot replay: execute the workflow over `events` and either return
  * its output or throw its suspension. Kept for the extensive existing test
- * suites — production code goes through `replayWorkflow`/`resumeWorkflow`.
+ * suites; production code goes through `replayWorkflow`/`resumeWorkflow`.
  */
 export async function runWorkflow(
   workflowCode: string,
@@ -367,18 +367,17 @@ async function createWorkflowSession({
         state = WorkflowSuspension.is(error)
           ? { type: 'suspended', suspension: error }
           : { type: 'replay' };
-        // Each parked step consumer schedules its own (identical) suspension
-        // signal; the first one lands here, and bumping the generation makes
-        // the step-consumer guard drop the rest at fire time.
+        // Step, hook, and attribute consumers can schedule the same suspension.
+        // The first signal advances the generation so the rest no-op.
         workflowContext.suspensionGeneration++;
         interruption.reject(error);
         return;
       }
       case 'suspended':
         // Same-boundary duplicates were staled by the generation bump above,
-        // so anything landing here is out-of-band — an unguarded sleep/hook/
-        // attribute signal or a divergence. Those boundaries are unretainable
-        // (the runtime demotes them too), so fall back to replay.
+        // so anything landing here is out-of-band — an unguarded sleep signal
+        // or a divergence. Those boundaries are unretainable (the runtime
+        // demotes them too), so fall back to replay.
         state = { type: 'replay' };
         return;
       case 'replay':
@@ -391,7 +390,18 @@ async function createWorkflowSession({
   const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
   // Correlation IDs must be replay-stable. `startedAt` differs between a turbo
   // delivery and a later server-backed replay, so use fixedTimestamp.
-  const generateUlid = () => ulid(fixedTimestamp);
+  // The draw counter is the progress metric for `quiesceEarlierCascades`
+  // (WORKFLOW_LOG_ORDER_DRAWS): a quiet turn is one that drew nothing. It
+  // counts EVERY draw from this sequence. This same function is installed as
+  // the `STABLE_ULID` global below, which serialization draws stream ids
+  // from during dehydration. This is deliberate because quiescence must also
+  // wait out serialization-driven draws, and counting extra draws only extends
+  // the wait (see the termination note on `quiesceEarlierCascades`).
+  let mintCount = 0;
+  const generateUlid = () => {
+    mintCount += 1;
+    return ulid(fixedTimestamp);
+  };
   const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
     new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
   );
@@ -480,6 +490,9 @@ async function createWorkflowSession({
     eventsConsumer,
     generateUlid,
     generateNanoid,
+    get mintCount() {
+      return mintCount;
+    },
     invocationsQueue: new Map(),
     // Use getter/setter so the EventsConsumer's getPromiseQueue() always
     // sees the latest queue state as it's mutated by step/hook/sleep callbacks.
@@ -1108,7 +1121,7 @@ async function createWorkflowSession({
     // Control-flow signals are handled by the runtime and do not mean the
     // workflow has terminally failed. `onWorkflowError` usually already moved
     // the state machine, but a divergence can also arrive via a step
-    // promise's direct rejection (bypassing `onWorkflowError`) — demote so
+    // promise's direct rejection (bypassing `onWorkflowError`); demote so
     // every control-flow path converges on `replay` and a later resume falls
     // back instead of throwing.
     if (WorkflowSuspension.is(error) || ReplayDivergenceError.is(error)) {

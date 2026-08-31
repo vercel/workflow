@@ -451,18 +451,23 @@ test('a local render omits the comment marker and the stored history', () => {
   assert.ok(output.includes('### Run History'));
 });
 
-test('the poke ceiling is rendered next to the cadence it bounds', () => {
-  // The cap binds on the local lanes — every step-storm run there reaches it —
-  // so a config line naming only `poke 750ms` would advertise a run-long
-  // stream of out-of-band writes that the run did not receive. A number that
-  // silently truncates coverage has to appear next to the numbers it truncates.
+test('the poke budget and its decay are rendered next to the cadence', () => {
+  // The budget is spent on the local lanes — every step-storm run there reaches
+  // it — so a config line naming only `poke 750ms` would advertise a run-long
+  // stream of out-of-band writes at that rate, which the later rounds did not
+  // receive. A bound that changes coverage has to appear next to what it bounds.
   const withCap = runRender(
     writeTempResults({
       ...resultsFor({ completed: 14 }),
-      config: { attempts: 14, pokeIntervalMs: 750, pokeMax: 64 },
+      config: {
+        attempts: 14,
+        pokeIntervalMs: 750,
+        pokeMax: 64,
+        pokeDecayFactor: 8,
+      },
     })
   );
-  assert.ok(withCap.includes('poke 750ms / poke max 64'));
+  assert.ok(withCap.includes('poke 750ms / poke budget 64 then /8'));
 
   // Absent from an older history row's config, it renders nothing rather than
   // an invented ceiling.
@@ -473,5 +478,5 @@ test('the poke ceiling is rendered next to the cadence it bounds', () => {
     })
   );
   assert.ok(withoutCap.includes('poke 750ms'));
-  assert.ok(!withoutCap.includes('poke max'));
+  assert.ok(!withoutCap.includes('poke budget'));
 });

@@ -2,7 +2,7 @@
 title: Local World
 description: Zero-config world bundled with Workflow for local development. No external services required.
 type: integration
-summary: Set up the Local World for zero-config workflow development on your machine.
+summary: Set up the Local World for zero-configuration workflow development on your machine.
 prerequisites:
   - /docs/deploying
 related:
@@ -10,9 +10,9 @@ related:
   - /worlds/vercel
 ---
 
-The Local World is bundled with `workflow` and used automatically during local development. No installation or configuration required.
+The Local World is bundled with `workflow` and used automatically during local development. It requires no installation or configuration.
 
-To explicitly use the local world in any environment, set the environment variable:
+To explicitly use the Local World in any environment, set this environment variable:
 
 ```bash
 WORKFLOW_TARGET_WORLD=local
@@ -20,7 +20,7 @@ WORKFLOW_TARGET_WORLD=local
 
 ## Observability
 
-The `workflow` CLI uses the local world by default. Running these commands inside your workflow project will show your local development workflows:
+The Workflow CLI uses the Local World by default. Run these commands inside your workflow project to view your local development workflows:
 
 ```bash
 # List recent workflow runs
@@ -32,13 +32,13 @@ npx workflow web
 
 Learn more in the [Observability](/docs/observability) documentation.
 
-## Testing & Compatibility
+## Testing & compatibility
 
 <WorldTestingPerformance worldId="local" />
 
 ## Configuration
 
-The local world works with zero configuration, but you can customize behavior through environment variables or programmatically via `createWorld()`.
+The Local World requires no configuration, but you can customize its behavior through environment variables or programmatically through `createWorld()`.
 
 ### `WORKFLOW_LOCAL_DATA_DIR`
 
@@ -62,6 +62,12 @@ Maximum number of concurrent queue message handlers. Default: `1000`
 
 Maximum number of seconds a local queue message can stay hidden before the handler rechecks the run. Default: unlimited.
 
+### `WORKFLOW_LOCAL_RUN_STATUS_POLL_INTERVAL_MS`
+
+How often a wait for a terminal run status re-reads the run file, in milliseconds. Default: `100`.
+
+`await run.returnValue` asks the World to wait for the run to finish. When the run and the caller share a process (the usual development server case), an in-process signal resolves the wait as soon as the run ends, and this interval never comes into play. The interval covers activity the signal cannot detect, primarily a second process awaiting a run over the same data directory, so it is set far below Workflow's own polling interval.
+
 ### `WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS`
 
 Maximum time in milliseconds to wait for a local queue handler to begin responding before redelivering the durable message. Default: `30000`. Set to `0` to disable.
@@ -76,7 +82,7 @@ Whether queue deliveries go out through Node's built-in `node:http` and `node:ht
 
 ### `WORKFLOW_LOCAL_RECOVER_ACTIVE_RUNS`
 
-Whether pending and running runs found in the data directory are re-enqueued when the world starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`
+Whether pending and running runs found in the data directory are re-enqueued when the World starts. Set to `0` or `false` to skip recovery and leave stale runs untouched. Default: `true`.
 
 ### `WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS`
 
@@ -84,7 +90,7 @@ Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#k
 
 ### `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`
 
-Group-commit window, in milliseconds, for the leading chunk of an idle stream. Default: `0` (dispatch immediately). A positive value holds the first chunk up to that long to collect a group — trading first-chunk latency for fewer requests. Chunks arriving while a request is in flight always coalesce into the next group regardless.
+Group-commit window, in milliseconds, for the leading chunk of an idle stream. Default: `0` (dispatch immediately). A positive value holds the first chunk up to that long to collect a group, trading first-chunk latency for fewer requests. Chunks arriving while a request is in flight always coalesce into the next group regardless.
 
 ### Programmatic configuration
 
@@ -111,11 +117,11 @@ WORKFLOW_TARGET_WORLD="./my-world.ts"
 
 ## Limitations
 
-The local world is designed for development, not production:
+The Local World is designed for development, not production:
 
-- **In-memory queue** - Workflow messages, including queued step invocations, do not persist across server restarts
-- **Filesystem storage** - Data is stored in local JSON files
-- **Single instance** - Cannot handle distributed deployments
-- **No authentication** - Suitable only for local development
+- **In-memory queue**: Workflow messages, including queued step invocations, do not persist across server restarts.
+- **Filesystem storage**: Data is stored in local JSON files.
+- **Single instance**: The Local World cannot handle distributed deployments.
+- **No authentication**: The Local World is suitable only for local development.
 
 For production deployments, use the [Vercel World](/worlds/vercel) or [Postgres World](/worlds/postgres).

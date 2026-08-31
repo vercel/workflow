@@ -35,7 +35,7 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
    * Returns the {@link Run} already using this token, or `null` when this Hook
    * registers successfully.
    *
-   * Calling `createHook()` alone does not register the hook — registration
+   * Calling `createHook()` alone does not register the hook: registration
    * only happens when the workflow suspends. Awaiting `getConflict()`
    * suspends the workflow to commit the hook registration without waiting for
    * payload data.
@@ -118,7 +118,7 @@ export interface HookOptions {
    *
    * Deterministic tokens are intended for use with `createHook()` and
    * server-side `resumeHook()` only. For webhooks (`createWebhook()`), an
-   * explicit token is not accepted — one is always generated for you.
+   * explicit token is not accepted, one is always generated for you.
    *
    * A generated token is not trivial to guess but is not a security
    * contract, so authenticate webhook requests themselves rather than

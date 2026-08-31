@@ -17,6 +17,7 @@ import {
   getWorkflowRun,
   getWorkflowRuns,
   listWorkflowRuns,
+  waitForWorkflowRunTerminalStatus,
 } from './runs.js';
 import { getStep, listWorkflowRunSteps } from './steps.js';
 import type { APIConfig } from './utils.js';
@@ -27,6 +28,10 @@ export function createStorage(config?: APIConfig): Storage {
     runs: {
       get: ((id: string, params?: any) =>
         getWorkflowRun(id, params, config)) as Storage['runs']['get'],
+      waitForTerminalStatus: ((id: string, params?: any) =>
+        waitForWorkflowRunTerminalStatus(id, params, config)) as NonNullable<
+        Storage['runs']['waitForTerminalStatus']
+      >,
       getMany: ((ids: readonly string[], params?: any) =>
         getWorkflowRuns(ids, params, config)) as NonNullable<
         Storage['runs']['getMany']

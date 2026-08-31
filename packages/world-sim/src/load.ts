@@ -1,8 +1,8 @@
 /**
  * Loading a built bundle, separated from building one.
  *
- * These two halves have very different dependency footprints. Building pulls
- * in `@workflow/builders`, and through it SWC and esbuild — tens of megabytes
+ * These two halves have different dependency footprints. Building pulls
+ * in `@workflow/builders`, and through it SWC and esbuild: tens of megabytes
  * of native binaries. Loading needs nothing but `import()`.
  *
  * Keeping them in one module meant anything that wanted to *run* a bundle also
@@ -24,8 +24,8 @@ import { pathToFileURL } from 'node:url';
  * runs, so that import-time work never lands in the middle of a measured
  * sequence.
  *
- * The path is only known at runtime — it is either a file this process wrote
- * seconds ago or one `next build` left on disk — so the ignore hints are
+ * The path is only known at runtime (it is either a file this process wrote
+ * seconds ago or one `next build` left on disk), so the ignore hints are
  * load-bearing wherever a bundler is in the graph. Without them a bundler
  * tries to resolve the specifier at build time and fails with "expression is
  * too dynamic". They are inert comments under plain Node.

@@ -1,5 +1,36 @@
 # @workflow/sveltekit
 
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- [#3688](https://github.com/vercel/workflow/pull/3688) [`0750fe8`](https://github.com/vercel/workflow/commit/0750fe8958f50ee354cd24fe3f02a37c801bc4dc) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stop rewriting generated files whose content is unchanged, so a no-op rebuild no longer invalidates them in the dev server.
+
+- Updated dependencies [[`f806f8c`](https://github.com/vercel/workflow/commit/f806f8c258fb9ba45fec8b0e4919f55b0bf81a3f)]:
+  - @workflow/builders@5.0.0-beta.46
+  - @workflow/rollup@5.0.0-beta.46
+  - @workflow/vite@5.0.0-beta.46
+
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- Updated dependencies [[`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c)]:
+  - @workflow/builders@5.0.0-beta.45
+  - @workflow/rollup@5.0.0-beta.45
+  - @workflow/vite@5.0.0-beta.45
+
+## 5.0.0-beta.44
+
+### Patch Changes
+
+- [#3509](https://github.com/vercel/workflow/pull/3509) [`37ed049`](https://github.com/vercel/workflow/commit/37ed0493e1a46da46333ddfb42428542c39c6537) Thanks [@dummdidumm](https://github.com/dummdidumm)! - Load SvelteKit route configuration through `@sveltejs/load-config`, including projects that configure SvelteKit exclusively in `vite.config`.
+
+- Updated dependencies [[`8a2648e`](https://github.com/vercel/workflow/commit/8a2648e35f3ccfdffd275bc37470dd3396981773)]:
+  - @workflow/builders@5.0.0-beta.44
+  - @workflow/rollup@5.0.0-beta.44
+  - @workflow/vite@5.0.0-beta.44
+
 ## 5.0.0-beta.43
 
 ### Patch Changes

@@ -464,7 +464,11 @@ describe('connection span', () => {
 
 describe('transport parity', () => {
   it('does not tag an HTTP event read as an event-write transport', async () => {
-    delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+    // Explicit opt-out rather than an absent variable: the default is ws now,
+    // and this test is about the HTTP path. A read would take HTTP either way
+    // (only the POST write is wired to the socket), so leaving this unset
+    // would still pass — while no longer testing what it says it does.
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
     const agent = new MockAgent();
     agent.disableNetConnect();
     agent
@@ -505,7 +509,11 @@ describe('transport parity', () => {
   });
 
   it('emits the same span name and url.full on HTTP as on ws', async () => {
-    delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+    // As above. This one is a write, so unset would now open the gate and the
+    // test would only still pass by falling through resolveWsTransport's null
+    // — passing for the wrong reason, which is the exact failure this file
+    // exists to catch.
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
     const agent = new MockAgent();
     agent.disableNetConnect();
     agent

@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { globalSingleton } from '@workflow/utils';
 import type {
   GetChunksOptions,
   StreamChunksResponse,
@@ -19,9 +20,16 @@ import {
   writeJSON,
 } from './fs.js';
 
-// Create a monotonic ULID factory that ensures ULIDs are always increasing
-// even when generated within the same millisecond
-const monotonicUlid = monotonicFactory(() => Math.random());
+// Monotonic ULID source for chunk IDs: always increasing even within one
+// millisecond. On `globalThis` rather than at module scope because a bundler
+// can put several copies of this file in one process (see `globalSingleton`),
+// and two copies advancing their own sequences can mint the same `chnk_` ID.
+const chunkIds = globalSingleton(
+  '@workflow/world-local//streamerMonotonicUlid',
+  1,
+  () => ({ next: monotonicFactory(() => Math.random()) })
+);
+const monotonicUlid = (seedTime?: number): string => chunkIds.next(seedTime);
 
 // Schema for the run-to-streams mapping file
 const RunStreamsSchema = z.object({
@@ -91,7 +99,7 @@ function addChunkFilesByExtension(
  * per stream (`streams/chunks/<streamName>/`) so that listing a stream's
  * chunks costs O(chunks in that stream) rather than O(chunks in the whole
  * world). A tail reader polling for new chunks would otherwise `readdir` the
- * entire global chunks directory every 100ms — see vercel/workflow#2797.
+ * entire global chunks directory every 100ms. See vercel/workflow#2797.
  */
 function chunkDirForStream(chunksBaseDir: string, name: string): string {
   // Name becomes a path segment below; validate it can't escape chunksBaseDir.
@@ -106,7 +114,8 @@ function chunkDirForStream(chunksBaseDir: string, name: string): string {
  * the files live in. Handles tagged and legacy (.json) formats.
  *
  * Files are stored per-stream (`<chunkDir>/<chunkId><tagSuffix>.bin`), so the
- * key returned here is already the chunk id — no stream-name prefix to strip.
+ * key returned here is already the chunk id, with no stream-name prefix to
+ * strip.
  */
 async function listChunkFilesForStream(
   chunksBaseDir: string,
@@ -378,7 +387,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             continue;
           }
 
-          // Collected enough data chunks — peek at the next file for EOF/hasMore
+          // Collected enough data chunks: peek at the next file for EOF/hasMore
           if (resultChunks.length >= limit) {
             if (isEofByte(await readFirstByte(filePath))) {
               streamDone = true;
@@ -450,8 +459,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         // Tears down everything the reader holds open: both emitter listeners
         // and the filesystem poll interval. Assigned once listeners are wired
         // up in start(); called on cancel() and on terminal (EOF/close) paths.
-        // Kept robust (unconditional) so a cancel() while still reading from
-        // disk can't leak a listener/poll — a signal-bearing step opens one of
+        // Kept unconditional so a cancel() while still reading from
+        // disk can't leak a listener/poll: a signal-bearing step opens one of
         // these readers per invocation, so any leak accumulates fast.
         let teardown = () => {};
         let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -641,7 +650,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
             // If the reader was already cancelled/closed while we were reading
             // from disk above (start() yields at every await), don't arm the
-            // poll — cancel()'s teardown ran before this point and would leave
+            // poll: cancel()'s teardown ran before this point and would leave
             // the freshly-created interval orphaned.
             if (streamClosed) {
               teardown();

@@ -1,6 +1,6 @@
 import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
-import { createWorkflowUrl } from '@workflow/utils';
+import { createWorkflowUrl, debugLog } from '@workflow/utils';
 import {
   isNodeHttpEnabled,
   MessageId,
@@ -85,7 +85,7 @@ function envTimeoutMs(name: string, fallback: number): number {
  * transport timeout is retried by the delivery loop with the same durable
  * message; `0` remains available for applications that need unbounded calls.
  *
- * Both transports honour every field. Over undici this is the `Agent`'s own
+ * Both transports honor every field. Over undici this is the `Agent`'s own
  * configuration; over `node:http` (`WORKFLOW_NODE_HTTP`) the two timeouts are
  * passed per request and `connections` / `keepAliveTimeout` size the socket
  * pool, so the two env vars tune a delivery identically either way.
@@ -201,7 +201,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     (async () => {
       // Honor the caller's requested delivery delay before acquiring a queue
       // slot. Sleeping outside the semaphore so a delayed message doesn't
-      // hold a worker hostage for its delay window — the worker should be
+      // hold a worker hostage for its delay window: the worker should be
       // free to process other (immediate) messages until this one is ready.
       // VQS-side queues honor delaySeconds at the broker, so this brings
       // world-local in line with production behavior.
@@ -212,18 +212,21 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
       const token = semaphore.tryAcquire();
       if (!token) {
-        console.warn(
+        // Debug-gated: this is the semaphore doing its job. A fan-out wider
+        // than the limit queues behind it and every message still runs, so a
+        // per-message warning turns a healthy wide run into a wall of output.
+        debugLog(
           `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
         );
         await semaphore.acquire();
       }
       // Safety limit to prevent infinite loops in the local queue.
       // The actual max delivery enforcement happens in the workflow handler
-      // (at MAX_QUEUE_DELIVERIES = 48), so this just needs to be comfortably higher.
+      // (at MAX_QUEUE_DELIVERIES = 48), so this only needs to be comfortably higher.
       const MAX_LOCAL_SAFETY_LIMIT = 256;
       // Number of times the message has actually reached a handler (returned
-      // ok, a timeoutSeconds re-delivery, or an HTTP error response). This —
-      // not the loop counter — is the attempt the handler sees via
+      // ok, a timeoutSeconds re-delivery, or an HTTP error response). This,
+      // not the loop counter, is the attempt the handler sees via
       // `x-vqs-message-attempt`, which it counts against MAX_QUEUE_DELIVERIES.
       // Failures before response headers do not advance this; body failures do,
       // because the handler has already accepted that delivery.
@@ -259,6 +262,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                     headers: new Headers(headers),
                     body,
                     agents: nodeHttpAgents,
+                    signal: closeSignal,
                     headersTimeoutMs: agentOptions.headersTimeout,
                     bodyTimeoutMs: agentOptions.bodyTimeout,
                   })
@@ -269,17 +273,18 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                     dispatcher: httpAgent,
                     headers,
                     body,
+                    signal: closeSignal,
                   } as any);
             }
             delivery++;
             text = await response.text();
           } catch (err) {
             // A transport can fail before response headers or while consuming
-            // the body. Both are transient — back off and retry the same
+            // the body. Both are transient: back off and retry the same
             // durable message rather than leaving its run stalled. Two
             // failures are not retryable:
             //  - shutdown: close() aborted the agent / the backoff sleep.
-            //  - a detached-ArrayBuffer proxy misconfig, which never succeeds —
+            //  - a detached-ArrayBuffer proxy misconfig, which never succeeds:
             //    rethrow so the outer catch surfaces the actionable guidance.
             const name = (err as { name?: string } | undefined)?.name;
             if (
@@ -340,7 +345,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
           // 5s linear backoff to approximate VQS retry timing in local dev.
           // VQS uses 5s linear for attempts 1–32, then exponential, but for
-          // local dev linear 5s is sufficient — the handler enforces the real
+          // local dev linear 5s is sufficient: the handler enforces the real
           // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
           await setTimeout(5000, undefined, { signal: closeSignal });
         }

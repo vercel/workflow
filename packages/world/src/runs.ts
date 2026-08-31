@@ -63,7 +63,7 @@ export const WorkflowRunBaseSchema = z.object({
    * ```
    */
   workflowName: z.string(),
-  // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
+  // Optional in database for backward compatibility, defaults to 1 (legacy) when reading
   specVersion: z.number().optional(),
   executionContext: z.record(z.string(), z.any()).optional(),
   input: SerializedDataSchema.optional(),
@@ -91,12 +91,12 @@ export const WorkflowRunBaseSchema = z.object({
    *
    * Defaults to `{}` after schema parsing so consumers always receive
    * a record regardless of world. World adapters need not initialize
-   * the field on disk — `world-local` JSON files written before this
+   * the field on disk: `world-local` JSON files written before this
    * field existed, and rows from any other adapter that omits the
    * column, both read as `{}` after Zod parses them.
    *
    * EXPERIMENTAL (MVP): the full Workflow Attributes feature replaces
-   * the direct-mutation MVP path with an event-sourced model — see
+   * the direct-mutation MVP path with an event-sourced model. See
    * the attributes-mvp changelog entry.
    */
   attributes: z.record(z.string(), z.string()).default({}),
@@ -104,12 +104,12 @@ export const WorkflowRunBaseSchema = z.object({
    * The run's X25519 public key, base64-encoded (~44 chars).
    *
    * Lets any party that can read this run seal a payload *to* it without
-   * being able to read the run's data — used for cross-run writes such as a
-   * hook resumption from another deployment, or a child workflow writing into
-   * a forwarded stream. The matching private scalar is never stored: it is
-   * re-derived on demand from the deployment's own key material, so this
-   * field is not secret and its presence does not weaken the run's
-   * confidentiality.
+   * being able to read the run's data. This is used for cross-run writes
+   * such as a hook resumption from another deployment, or a child workflow
+   * writing into a forwarded stream. The matching private scalar is never
+   * stored: it is re-derived on demand from the deployment's own key
+   * material, so this field is not secret and its presence does not weaken
+   * the run's confidentiality.
    *
    * Stamped at run creation by SDKs that support sealed (`encp`) envelopes.
    * **Presence is the writer-side gate**: a run only carries a public key if
@@ -186,6 +186,28 @@ export interface CreateWorkflowRunRequest {
 
 export interface GetWorkflowRunParams {
   resolveData?: ResolveData;
+}
+
+/**
+ * Params for the optional `runs.waitForTerminalStatus` long poll.
+ */
+export interface WaitForTerminalRunStatusParams extends GetWorkflowRunParams {
+  /**
+   * How long the caller is willing to wait, in milliseconds. Treat it as an
+   * upper bound on the wait, not a promise about the duration: the call
+   * resolves as soon as the run is terminal, and a World may also resolve
+   * early with a non-terminal snapshot (see
+   * {@link Storage.runs.waitForTerminalStatus}).
+   *
+   * Implementations clamp this to whatever their backend can hold open.
+   */
+  timeoutMs?: number;
+
+  /**
+   * Abandon the wait when this signal aborts. Implementations that cannot
+   * observe it may ignore it; callers must not rely on it to bound the call.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ListWorkflowRunsParams {

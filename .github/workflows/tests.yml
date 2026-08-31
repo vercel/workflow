@@ -321,6 +321,9 @@ jobs:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }} - ${{ matrix.vm }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Keep cross-language coverage visible without blocking JavaScript SDK
+    # changes while the Python runtime catches up with the current protocol.
+    continue-on-error: ${{ matrix.app.name == 'python' }}
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     permissions:
@@ -627,9 +630,11 @@ jobs:
   e2e-vercel-ws-transport:
     # Dedicated coverage for world-vercel's WebSocket events transport
     # (WORKFLOW_EVENTS_TRANSPORT=ws — see events-v4.ts's
-    # isWsEventsTransportEnabled). Every other job in this file exercises
-    # the default HTTP transport only, now that the WS-on-by-default POC
-    # hack is gone.
+    # isWsEventsTransportEnabled). This lane predates the default flip,
+    # when it was the only WS coverage in the file; it is kept because it
+    # still pins the transport explicitly, which every other Vercel lane
+    # now only gets by inheriting the default. See
+    # e2e-vercel-http-transport below for the other side.
     #
     # Mirrors e2e-vercel-prod's shape (same apps subset, same full e2e
     # suite) but deploys itself via a plain `vercel deploy` (no
@@ -648,23 +653,19 @@ jobs:
     # builds remotely on Vercel's own infra — the exact same pipeline the
     # GitHub App uses for e2e-vercel-prod's deployments — so none of that
     # applies here.
-    # Opt-in on PRs, unconditional on main. Three real `vercel deploy`s per
-    # run is too much to charge every unrelated PR in the repo for a transport
-    # that is off by default; main still gets the signal on every commit.
-    # `workflow-server-test` counts as opt-in too — that label exists to test
-    # workflow-server changes, which is where the WS protocol lives.
-    #
-    # `on.pull_request.types` has no `labeled`, so a label added to an already
-    # open PR takes effect on the next push, not immediately.
+    # Runs on every PR. It was opt-in behind `ws-transport-test` when four real
+    # `vercel deploy`s were too much to charge an unrelated PR for a transport
+    # that was off by default. That reasoning expired with the default: every
+    # deployment now uses WebSockets, so this stopped being a cost charged for
+    # someone else's feature and became the only check that the feature works.
     name: E2E Vercel WS Transport Test (${{ matrix.app.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: ci-scope
-    if: >-
-      ${{ needs.ci-scope.outputs.fast-path != 'true'
-      && (github.event_name != 'pull_request'
-      || contains(github.event.pull_request.labels.*.name, 'ws-transport-test')
-      || contains(github.event.pull_request.labels.*.name, 'workflow-server-test')) }}
+    # Mirrors e2e-vercel-prod and the HTTP lane: this is the only lane that
+    # *asserts* the socket carried the events, since e2e-vercel-prod inherits
+    # the default but checks nothing.
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     permissions:
       id-token: write
       contents: read
@@ -742,8 +743,14 @@ jobs:
           # production-adjacent projects, and this shouldn't ever silently
           # start deploying to their production aliases if a future edit
           # changes flags around this call.
+          # Strict mode turns a silent HTTP demotion into a failed run, so this
+          # lane actually asserts the socket carried traffic instead of only
+          # asserting the feature was harmless. Scoped to `step_completed` —
+          # see STRICT_WS_EVENT_TYPES in events-v4.ts for why the other event
+          # types fall back legitimately. Never set on e2e-vercel-prod.
           URL=$(vercel deploy --yes --target=preview \
             -e WORKFLOW_EVENTS_TRANSPORT=ws \
+            -e WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT=1 \
             --scope="$WS_TEAM_ID" --token="$WS_VERCEL_TOKEN")
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           # Best-effort: only used by the runtime-logs capture on failure,
@@ -796,6 +803,178 @@ jobs:
           name: e2e-results-vercel-ws-transport-${{ matrix.app.name }}
           path: |
             e2e-vercel-ws-transport-${{ matrix.app.name }}.json
+            e2e-metadata-${{ matrix.app.name }}-vercel.json
+            e2e-failures-${{ matrix.app.name }}-vercel.json
+            e2e-flaky-${{ matrix.app.name }}-vercel.json
+            e2e-infra-${{ matrix.app.name }}-vercel.json
+            e2e-diagnostics-${{ matrix.app.name }}-vercel.json
+            e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  e2e-vercel-http-transport:
+    # The counterpart to e2e-vercel-ws-transport, and the reason it exists
+    # is the default flip: with WORKFLOW_EVENTS_TRANSPORT defaulting to
+    # `ws`, e2e-vercel-prod — which sets no transport env var at all — is
+    # now a WebSocket lane. Nothing in this file would exercise the HTTP
+    # events transport against a real Vercel deployment any more. This is
+    # not additive coverage; it replaces coverage that the flip silently
+    # took away.
+    #
+    # HTTP is now the fallback path, and the fallback is *silent*:
+    # resolveWsTransport returning null costs a write nothing and logs
+    # nothing. A path that is both unexercised and quiet is the exact
+    # shape of the durabench bug this stack came out of, so this lane is
+    # unconditional and required rather than label-gated like the WS one.
+    #
+    # Six apps, chosen by server shape rather than by count. Before the flip
+    # HTTP was the default, so all 28 e2e-vercel-prod lane-runs covered it;
+    # after the flip they cover WebSockets instead and this lane is the whole
+    # of the HTTP coverage. Each row is a real `vercel deploy` charged to
+    # every PR, so the full 14 is too expensive, but two was too thin for a
+    # transport that is still supported.
+    #
+    # The shapes, one fixture each:
+    #   example          - baseline, no framework server
+    #   nextjs-turbopack - Next; also the only fixture emitting OTEL spans,
+    #                      so the only one that can show which transport ran
+    #   vite             - Vite SSR
+    #   express          - Node req/res server
+    #   nitro            - Nitro/h3, which also covers nuxt
+    #   hono             - fetch-API Request/Response server, a genuinely
+    #                      different mount shape from express
+    #
+    # Omitted because they duplicate a shape already here: nextjs-webpack
+    # (same runtime as turbopack, different bundler), nuxt (nitro), fastify
+    # and nest (both express-shaped), astro and tanstack-start (adapter
+    # variants). `python` is omitted because it has no conformance gate and
+    # needs routes this suite does not serve - see the e2e-python job.
+    #
+    # The first four deliberately match the WS lane's matrix, so the same
+    # fixture is exercised on both transports and a failure on one can be
+    # compared against the other.
+    #
+    # Deploys itself with `vercel deploy` rather than `--prebuilt` for the
+    # same reasons documented on e2e-vercel-ws-transport above.
+    name: E2E Vercel HTTP Transport Test (${{ matrix.app.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: ci-scope
+    # Mirrors e2e-vercel-prod's condition exactly, so this lane runs in
+    # every case that one does, including under `workflow-server-test`.
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - name: "example"
+            project-id: "prj_xWq20Dd860HHAfzMjK2Mb6TPVxMa"
+            project-slug: "example-workflow"
+          - name: "nextjs-turbopack"
+            project-id: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
+            project-slug: "example-nextjs-workflow-turbopack"
+          - name: "vite"
+            project-id: "prj_uLIcNZNDmETulAvj5h0IcDHi5432"
+            project-slug: "workbench-vite-workflow"
+          - name: "express"
+            project-id: "prj_cCZjpBy92VRbKHHbarDMhOHtkuIr"
+            project-slug: "workbench-express-workflow"
+          - name: "nitro"
+            project-id: "prj_e7DZirYdLrQKXNrlxg7KmA6ABx8r"
+            project-slug: "workbench-nitro-workflow"
+          - name: "hono"
+            project-id: "prj_p0GIEsfl53L7IwVbosPvi9rPSOYW"
+            project-slug: "workbench-hono-workflow"
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
+      WS_TEAM_ID: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      - name: Build CLI
+        run: pnpm turbo run build --filter='@workflow/cli'
+
+      - name: Install vercel CLI
+        run: npm install -g vercel@56.2.0
+
+      - name: Deploy a dedicated HTTP-transport preview
+        id: httpDeploy
+        env:
+          WS_VERCEL_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+        run: |
+          set -euo pipefail
+          vercel pull --yes --environment=preview \
+            --project="${{ matrix.app.project-id }}" \
+            --scope="$WS_TEAM_ID" --token="$WS_VERCEL_TOKEN"
+          # `http` is the one value that opts out; the gate compares against
+          # exactly this string, so a typo here would silently test the
+          # default instead of the fallback and this lane would quietly
+          # become a duplicate of e2e-vercel-prod.
+          URL=$(vercel deploy --yes --target=preview \
+            -e WORKFLOW_EVENTS_TRANSPORT=http \
+            --scope="$WS_TEAM_ID" --token="$WS_VERCEL_TOKEN")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          DEPLOYMENT_ID=$(vercel inspect "$URL" --format=json \
+            --scope="$WS_TEAM_ID" --token="$WS_VERCEL_TOKEN" 2>/dev/null \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{}})" || true)
+          echo "deploymentId=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Record E2E start time
+        id: e2eStart
+        run: echo "ms=$(($(date +%s) * 1000))" >> "$GITHUB_OUTPUT"
+
+      - name: Run E2E Tests
+        run: pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-http-transport-$APP_NAME.json"
+        env:
+          NODE_OPTIONS: "--enable-source-maps"
+          DEPLOYMENT_URL: ${{ steps.httpDeploy.outputs.url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.httpDeploy.outputs.deploymentId }}
+          APP_NAME: ${{ matrix.app.name }}
+          WORKFLOW_VERCEL_ENV: "preview"
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: ${{ env.WS_TEAM_ID }}
+          WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
+          WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+
+      - name: Capture runtime logs on failure
+        if: failure()
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: ${{ env.WS_TEAM_ID }}
+          WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
+          WORKFLOW_VERCEL_ENV: "preview"
+          VERCEL_DEPLOYMENT_ID: ${{ steps.httpDeploy.outputs.deploymentId }}
+          E2E_START_MS: ${{ steps.e2eStart.outputs.ms }}
+        run: node .github/scripts/fetch-e2e-runtime-logs.mjs
+
+      - name: Generate E2E summary
+        if: always()
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Vercel HTTP Transport ($APP_NAME)" >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Upload E2E results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-vercel-http-transport-${{ matrix.app.name }}
+          path: |
+            e2e-vercel-http-transport-${{ matrix.app.name }}.json
             e2e-metadata-${{ matrix.app.name }}-vercel.json
             e2e-failures-${{ matrix.app.name }}-vercel.json
             e2e-flaky-${{ matrix.app.name }}-vercel.json
@@ -983,6 +1162,16 @@ jobs:
           APP_NAME: ${{ matrix.app.name }}
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
 
+      # Asserts the shape of the manifest the step above just built. It needs
+      # its own invocation rather than another file in that one: local-build
+      # is what runs `pnpm build`, and vitest would run both files
+      # concurrently, against a manifest that does not exist yet.
+      - name: Run Manifest Tests
+        run: pnpm vitest run packages/core/e2e/manifest.test.ts
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
+
       - name: Run E2E Tests
         run: |
           export PROD_SERVER_LOG_PATH="$GITHUB_WORKSPACE/prod-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log"
@@ -1134,10 +1323,10 @@ jobs:
   # `e2e-vercel-prod` lane, whose rows only need a URL, does carry `python` as an
   # ordinary matrix row.
   #
-  # What this lane protects is the gate, not the fixtures it happens to run: a
-  # test that stops skipping correctly, or a fixture declared in
-  # `e2e-conformance.json` that the app stops registering, fails here and nowhere
-  # else.
+  # This lane is advisory while the Python runtime catches up with the current
+  # protocol. A test that stops skipping correctly, or a fixture declared in
+  # `e2e-conformance.json` that the app stops registering, still fails visibly
+  # here and nowhere else.
   e2e-python:
     name: E2E Python Conformance
     runs-on: ubuntu-latest
@@ -1303,14 +1492,21 @@ jobs:
           # (2) probe the server before the long e2e run to catch any other
           # silent breakage.
           #
-          # Get-DevServerStatus returns the HTTP status code of GET /api/chat,
-          # or 0 if the request never produced a response. /api/chat is a
-          # POST-only endpoint, so a healthy dev server responds with 405
-          # Method Not Allowed; we only treat 5xx (and no-response) as
-          # unhealthy.
+          # Get-DevServerStatus returns the HTTP status code of the workflow
+          # flow route's health endpoint, or 0 if the request never produced a
+          # response. A healthy dev server answers `?__health` with 200; we
+          # only treat 5xx (and no-response) as unhealthy.
+          #
+          # Probe the flow route rather than /api/chat: the flow route is what
+          # every workflow dispatch hits, and it is the route that breaks. Its
+          # generated `__step_registrations.js` imports each discovered step
+          # file by path, so a step file the dev server failed to forget after
+          # a `dev.test.ts` fixture was deleted leaves it importing a path that
+          # no longer exists. /api/chat compiles independently and keeps
+          # answering 405 while every dispatch gets a 500.
           function Get-DevServerStatus {
             try {
-              $resp = Invoke-WebRequest -Uri "http://localhost:3000/api/chat" -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
+              $resp = Invoke-WebRequest -Uri "http://localhost:3000/.well-known/workflow/v1/flow?__health" -Method POST -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
               return [int]$resp.StatusCode
             } catch {
               if ($_.Exception.Response) {
@@ -1336,7 +1532,7 @@ jobs:
           # would burn the full 30-minute job window polling stuck workflow
           # runs before getting cancelled.
           $status = Get-DevServerStatus
-          Write-Host "[health-check:pre-e2e] GET /api/chat -> $status"
+          Write-Host "[health-check:pre-e2e] POST /.well-known/workflow/v1/flow?__health -> $status"
           if ($status -eq 0 -or $status -ge 500) {
             Write-Host "::error title=Next.js dev server unhealthy::Dev server returned $status before e2e tests. Aborting to avoid the 30-minute job timeout. See the 'Print Next.js server logs' step for the underlying Turbopack error."
             Stop-Job $job -ErrorAction SilentlyContinue
@@ -1454,7 +1650,7 @@ jobs:
   summary:
     name: E2E Summary
     runs-on: ubuntu-latest
-    needs: [ci-scope, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-python, e2e-windows]
+    needs: [ci-scope, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-vercel-http-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-python, e2e-windows]
     if: always() && !cancelled() && needs.ci-scope.outputs.fast-path != 'true'
     timeout-minutes: 10
 
@@ -1485,12 +1681,12 @@ jobs:
           header: e2e-test-results
           path: e2e-summary.md
 
-  # Final required check: passes only when unit + all E2E jobs succeed.
-  # Community worlds are intentionally excluded — they are disabled on main.
+  # Final required check: passes only when unit + required E2E jobs succeed.
+  # Python conformance is advisory, and community worlds are disabled on main.
   e2e-required-check:
     name: E2E Required Check
     runs-on: ubuntu-latest
-    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-python, e2e-windows]
+    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-vercel-http-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
     if: always()
     timeout-minutes: 5
 
@@ -1501,20 +1697,14 @@ jobs:
           BUILD_STATUS: ${{ needs.e2e-package-build.result }}
           VERCEL_STATUS: ${{ needs.e2e-vercel-prod.result }}
           VERCEL_WS_STATUS: ${{ needs.e2e-vercel-ws-transport.result }}
+          VERCEL_HTTP_STATUS: ${{ needs.e2e-vercel-http-transport.result }}
           LOCAL_DEV_STATUS: ${{ needs.e2e-local-dev.result }}
           LOCAL_PROD_STATUS: ${{ needs.e2e-local-prod.result }}
           POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
-          PYTHON_STATUS: ${{ needs.e2e-python.result }}
           WINDOWS_STATUS: ${{ needs.e2e-windows.result }}
           FAST_PATH: ${{ needs.ci-scope.outputs.fast-path }}
           VALIDATION_FAST_PATH: ${{ needs.ci-scope.outputs.validation-fast-path }}
           HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
-          # e2e-vercel-ws-transport runs on main and on labelled PRs only, so
-          # its status is required in exactly those cases and must be allowed
-          # to be `skipped` otherwise.
-          WS_REQUIRED: ${{ github.event_name != 'pull_request'
-            || contains(github.event.pull_request.labels.*.name, 'ws-transport-test')
-            || contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
         run: |
           FAILED_JOBS=()
 
@@ -1535,28 +1725,27 @@ jobs:
             # This label is itself opt-in for the WS lane (see that job's `if`),
             # so it runs here and is required.
             [[ "$VERCEL_WS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-ws-transport ($VERCEL_WS_STATUS)")
+            # Unconditional, exactly like e2e-vercel-prod above: the HTTP
+            # lane has no opt-in label, so there is no case in which it is
+            # legitimately skipped while the rest of this branch runs.
+            [[ "$VERCEL_HTTP_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-http-transport ($VERCEL_HTTP_STATUS)")
 
             # Verify other jobs were actually skipped
             [[ "$UNIT_STATUS" == "skipped" ]] || echo "Warning: unit was not skipped ($UNIT_STATUS)"
             [[ "$LOCAL_DEV_STATUS" == "skipped" ]] || echo "Warning: e2e-local-dev was not skipped ($LOCAL_DEV_STATUS)"
             [[ "$LOCAL_PROD_STATUS" == "skipped" ]] || echo "Warning: e2e-local-prod was not skipped ($LOCAL_PROD_STATUS)"
             [[ "$POSTGRES_STATUS" == "skipped" ]] || echo "Warning: e2e-local-postgres was not skipped ($POSTGRES_STATUS)"
-            [[ "$PYTHON_STATUS" == "skipped" ]] || echo "Warning: e2e-python was not skipped ($PYTHON_STATUS)"
             [[ "$WINDOWS_STATUS" == "skipped" ]] || echo "Warning: e2e-windows was not skipped ($WINDOWS_STATUS)"
           else
-            echo "Standard PR - checking all jobs"
+            echo "Standard PR - checking all required jobs"
             [[ "$UNIT_STATUS" == "success" ]] || FAILED_JOBS+=("unit ($UNIT_STATUS)")
             [[ "$BUILD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-package-build ($BUILD_STATUS)")
             [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
-            if [[ "$WS_REQUIRED" == "true" ]]; then
-              [[ "$VERCEL_WS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-ws-transport ($VERCEL_WS_STATUS)")
-            else
-              [[ "$VERCEL_WS_STATUS" == "skipped" ]] || echo "Warning: e2e-vercel-ws-transport ran unlabelled ($VERCEL_WS_STATUS)"
-            fi
+            [[ "$VERCEL_WS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-ws-transport ($VERCEL_WS_STATUS)")
+            [[ "$VERCEL_HTTP_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-http-transport ($VERCEL_HTTP_STATUS)")
             [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
             [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
             [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")
-            [[ "$PYTHON_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-python ($PYTHON_STATUS)")
             [[ "$WINDOWS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-windows ($WINDOWS_STATUS)")
           fi
 

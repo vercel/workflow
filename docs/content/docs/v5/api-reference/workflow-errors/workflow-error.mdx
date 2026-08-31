@@ -17,7 +17,7 @@ const error = new WorkflowError("something went wrong", {
 });
 ```
 
-## API Signature
+## API signature
 
 ### Properties
 
@@ -32,14 +32,14 @@ interface WorkflowError {
 export default WorkflowError;`}
 />
 
-### Static Methods
+### Static methods
 
 #### `WorkflowError.is(value)`
 
-Type-safe check for `WorkflowError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+Type-safe check for `WorkflowError` instances. Preferred over `instanceof` because it works across module boundaries and virtual machine contexts.
 
 <Callout type="warn">
-  `WorkflowError.is()` matches only direct `WorkflowError` instances — not subclasses, which override the error name it checks. To handle a specific error type, use that subclass's own `.is()` method (e.g. `WorkflowRunFailedError.is(error)`).
+  `WorkflowError.is()` matches only direct `WorkflowError` instances, not subclasses, which override the error name it checks. To handle a specific error type, use that subclass's own `.is()` method (e.g. `WorkflowRunFailedError.is(error)`).
 </Callout>
 
 ```typescript

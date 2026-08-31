@@ -1,5 +1,61 @@
 # workflow
 
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- Updated dependencies [[`0750fe8`](https://github.com/vercel/workflow/commit/0750fe8958f50ee354cd24fe3f02a37c801bc4dc), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`82e2678`](https://github.com/vercel/workflow/commit/82e267893917e06f5d3ce316baefc27cd024a912), [`556f3f0`](https://github.com/vercel/workflow/commit/556f3f080a33f8673cf3c08805997dba4e4d865e)]:
+  - @workflow/astro@5.0.0-beta.46
+  - @workflow/sveltekit@5.0.0-beta.46
+  - @workflow/core@5.0.0-beta.46
+  - @workflow/cli@5.0.0-beta.46
+  - @workflow/nest@5.0.0-beta.46
+  - @workflow/next@5.0.0-beta.46
+  - @workflow/nitro@5.0.0-beta.46
+  - @workflow/rollup@5.0.0-beta.46
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.18
+  - @workflow/nuxt@5.0.0-beta.46
+
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- Updated dependencies [[`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c), [`27cab14`](https://github.com/vercel/workflow/commit/27cab14adcc6f748500fca19cf78feeb60a125e7), [`f7fb012`](https://github.com/vercel/workflow/commit/f7fb0126528fac2168492c3143fe0379b6f5ef1a), [`5841558`](https://github.com/vercel/workflow/commit/584155897f75e712a1c2bc199d6d12027cd18dab)]:
+  - @workflow/core@5.0.0-beta.45
+  - @workflow/astro@5.0.0-beta.45
+  - @workflow/cli@5.0.0-beta.45
+  - @workflow/nest@5.0.0-beta.45
+  - @workflow/next@5.0.0-beta.45
+  - @workflow/nitro@5.0.0-beta.45
+  - @workflow/rollup@5.0.0-beta.45
+  - @workflow/sveltekit@5.0.0-beta.45
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.18
+  - @workflow/nuxt@5.0.0-beta.45
+
+## 5.0.0-beta.44
+
+### Minor Changes
+
+- [#3700](https://github.com/vercel/workflow/pull/3700) [`9b1b8c7`](https://github.com/vercel/workflow/commit/9b1b8c711104fd507327aafc8cb965738f315e29) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Pin correlation-ID draw order to event-log order (Node.js VM engine), so two concurrent replays of the same run assign the same IDs even when one loaded a shorter event-log prefix. Set `WORKFLOW_LOG_ORDER_DRAWS=0` to opt back into arrival-order delivery resolution.
+
+### Patch Changes
+
+- Updated dependencies [[`5b5a926`](https://github.com/vercel/workflow/commit/5b5a926f8850ec5d967e090cc0500028fd53e2ef), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9b1b8c7`](https://github.com/vercel/workflow/commit/9b1b8c711104fd507327aafc8cb965738f315e29), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4), [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0), [`8a2648e`](https://github.com/vercel/workflow/commit/8a2648e35f3ccfdffd275bc37470dd3396981773), [`37ed049`](https://github.com/vercel/workflow/commit/37ed0493e1a46da46333ddfb42428542c39c6537), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`bf9de1c`](https://github.com/vercel/workflow/commit/bf9de1cd81eda1b1721b857364070c0ce70d1e58)]:
+  - @workflow/core@5.0.0-beta.44
+  - @workflow/utils@5.0.0-beta.9
+  - @workflow/nest@5.0.0-beta.44
+  - @workflow/next@5.0.0-beta.44
+  - @workflow/nitro@5.0.0-beta.44
+  - @workflow/sveltekit@5.0.0-beta.44
+  - @workflow/cli@5.0.0-beta.44
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/errors@5.0.0-beta.18
+  - @workflow/astro@5.0.0-beta.44
+  - @workflow/rollup@5.0.0-beta.44
+  - @workflow/nuxt@5.0.0-beta.44
+
 ## 5.0.0-beta.43
 
 ### Patch Changes

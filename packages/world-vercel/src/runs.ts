@@ -1,4 +1,5 @@
 import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import {
   type AttributeChange,
   type BulkCancelWorkflowRunsRequest,
@@ -13,16 +14,19 @@ import {
   type PaginatedResponse,
   PaginatedResponseSchema,
   SerializedDataSchema,
+  type WaitForTerminalRunStatusParams,
   type WorkflowRun,
   WorkflowRunBaseSchema,
   type WorkflowRunWithoutData,
 } from '@workflow/world';
 import { z } from 'zod';
+import { getRequestTimeoutMs } from './http-core.js';
 import { normalizeWorkflowRunData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
   deserializeError,
+  getHttpUrl,
   makeRequest,
 } from './utils.js';
 
@@ -198,31 +202,224 @@ export async function getWorkflowRun(
   config?: APIConfig
 ): Promise<WorkflowRun | WorkflowRunWithoutData> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-  const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
-
-  const searchParams = new URLSearchParams();
-  searchParams.set('remoteRefBehavior', remoteRefBehavior);
-
-  const queryString = searchParams.toString();
-  const endpoint = `/v2/runs/${encodeURIComponent(id)}${queryString ? `?${queryString}` : ''}`;
 
   try {
-    const run = await makeRequest({
-      endpoint,
-      options: { method: 'GET' },
-      config,
-      retryConnectTimeout: true,
-      schema: (remoteRefBehavior === 'lazy'
-        ? WorkflowRunWireWithRefsSchema
-        : WorkflowRunWireSchema) as any,
-    });
-
-    return filterRunData(run, resolveData);
+    return await readRun(id, { resolveData }, config);
   } catch (error) {
     if (error instanceof WorkflowWorldError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
     }
     throw error;
+  }
+}
+
+/**
+ * Issue one run read against workflow-server and normalize it into the World's
+ * `WorkflowRun` shape.
+ *
+ * `waitMs`, when set, targets the long-pollable `GET /v2/runs/:runId/status`
+ * route instead of the plain read: same entity, same errors, but the server
+ * holds the request open until the run reaches a terminal status or the budget
+ * expires. Shared by `getWorkflowRun` and `waitForWorkflowRunTerminalStatus` so
+ * the two can never drift in how they parse or filter a run.
+ */
+async function readRun(
+  id: string,
+  params: {
+    resolveData: 'none' | 'all';
+    waitMs?: number;
+    signal?: AbortSignal;
+  },
+  config?: APIConfig
+): Promise<WorkflowRun | WorkflowRunWithoutData> {
+  const { resolveData, waitMs, signal } = params;
+  const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
+
+  const searchParams = new URLSearchParams();
+  searchParams.set('remoteRefBehavior', remoteRefBehavior);
+  if (waitMs !== undefined) searchParams.set('waitMs', String(waitMs));
+
+  const path = waitMs === undefined ? '' : '/status';
+  const queryString = searchParams.toString();
+  const endpoint = `/v2/runs/${encodeURIComponent(id)}${path}${queryString ? `?${queryString}` : ''}`;
+
+  const run = await makeRequest({
+    endpoint,
+    options: { method: 'GET', ...(signal ? { signal } : {}) },
+    config,
+    retryConnectTimeout: true,
+    schema: (remoteRefBehavior === 'lazy'
+      ? WorkflowRunWireWithRefsSchema
+      : WorkflowRunWireSchema) as any,
+  });
+
+  return filterRunData(run, resolveData);
+}
+
+/**
+ * Headroom kept between the wait budget we ask the server to hold and the
+ * adapter's own per-request HTTP timeout. The budget must always expire as a
+ * *response* (a non-terminal run) rather than as a client-side timeout: a
+ * timeout is indistinguishable from a broken backend and would turn a healthy
+ * wait into retry noise.
+ */
+const WAIT_TIMEOUT_HEADROOM_MS = 10_000;
+
+/**
+ * How long a `404`/`405`/`501` on the long-poll route suppresses further
+ * attempts before the next one re-probes.
+ *
+ * A miss means the backend serving this base URL predates the route (or has it
+ * rolled back), which is a property of the *backend*, not of the run, so it is
+ * cached rather than re-learned per call. It expires so a client that outlives
+ * a server roll-forward picks the fast path back up on its own.
+ */
+const LONG_POLL_UNSUPPORTED_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Suppression deadline per base URL, because one process can hold worlds
+ * pointed at different backends: the api.vercel.com proxy (with
+ * `projectConfig`) and workflow-server directly resolve to different hosts,
+ * which can be on different versions. A miss against one must not disable the
+ * fast path for the other. Bounded by construction: the key is the resolved
+ * base URL, of which a process has a handful at most.
+ */
+const longPoll = globalSingleton(
+  '@workflow/world-vercel//runStatusLongPollSupport',
+  1,
+  () => ({ unsupportedUntilByBaseUrl: new Map<string, number>() })
+);
+
+/** Test-only: forget that the long-poll route was unavailable. @internal */
+export function _resetRunStatusLongPollSupportForTests(): void {
+  longPoll.unsupportedUntilByBaseUrl.clear();
+}
+
+/**
+ * Whether this failure means "the long poll is not usable against this
+ * backend", as opposed to something the caller needs to see.
+ *
+ * Two shapes, for the same reason: the answer we want is a plain read either
+ * way, and the fast path should stand down until it re-probes.
+ *
+ * - **The route is missing** (`404`/`405`/`501`). `404` is ambiguous (the run
+ *   may not exist), which the plain read below disambiguates.
+ * - **The hold did not survive**: the request timed out client-side
+ *   (`TIMEOUT`), the connection was severed mid-hold (`TRANSPORT`), or an
+ *   intermediary gave up on it (`504`). Holding a request open for ~25s is a
+ *   new shape for this client, and it crosses gateways and egress proxies that
+ *   are entitled to cut an apparently idle connection. None of that means the
+ *   run is in trouble, so it must not surface as a failed `run.returnValue`:
+ *   without this, a healthy still-running run hard-fails the caller's await,
+ *   and does so on every retry, since nothing would mark the route unusable.
+ *
+ * A plain `500`/`502`/`503` still propagates. Those say the backend itself is
+ * unwell rather than that this *route* cannot be held open, and masking them
+ * behind a second read would hide a real outage. `RetryAgent` has already
+ * retried them in-process by the time they reach here.
+ */
+function isLongPollUnusable(error: WorkflowWorldError): boolean {
+  if (error.status === 404 || error.status === 405 || error.status === 501) {
+    return true;
+  }
+  if (error.status === 504) return true;
+  // Set by makeRequest/instrumentedFetch; both carry no HTTP status, because
+  // no response ever arrived.
+  return (
+    error.status === undefined &&
+    (error.code === 'TIMEOUT' || error.code === 'TRANSPORT')
+  );
+}
+
+/**
+ * Wait for a run to reach a terminal status, using workflow-server's
+ * long-pollable `GET /v2/runs/:runId/status` route.
+ *
+ * Implements `Storage['runs'].waitForTerminalStatus`: resolves as soon as the
+ * run is terminal, and otherwise with the latest snapshot once the budget
+ * expires. Never throws on a timeout, since a still-running run is an answer.
+ *
+ * Degrades in two places, because the adapter can outlive the server version
+ * it was built against:
+ *
+ * - **Budget.** Clamped to leave {@link WAIT_TIMEOUT_HEADROOM_MS} under the
+ *   adapter's per-request timeout, and the server clamps again to its own
+ *   ceiling. A budget that clamps to zero is a plain read.
+ * - **Missing route.** A `404` is ambiguous (the run may not exist, or this
+ *   server may not have the route), so it is resolved by falling back to the
+ *   plain read, which is the answer we want either way: it raises
+ *   `WorkflowRunNotFoundError` for a missing run, and returns the run when the
+ *   *route* was what was missing. Only the latter (proof that the run exists
+ *   and the route does not) suppresses the fast path, and only for the base URL
+ *   that answered, so neither one bad run ID nor one lagging backend can
+ *   disable long polling everywhere.
+ */
+export async function waitForWorkflowRunTerminalStatus(
+  id: string,
+  params: WaitForTerminalRunStatusParams & { resolveData: 'none' },
+  config?: APIConfig
+): Promise<WorkflowRunWithoutData>;
+export async function waitForWorkflowRunTerminalStatus(
+  id: string,
+  params?: WaitForTerminalRunStatusParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<WorkflowRun>;
+export async function waitForWorkflowRunTerminalStatus(
+  id: string,
+  params?: WaitForTerminalRunStatusParams,
+  config?: APIConfig
+): Promise<WorkflowRun | WorkflowRunWithoutData>;
+export async function waitForWorkflowRunTerminalStatus(
+  id: string,
+  params?: WaitForTerminalRunStatusParams,
+  config?: APIConfig
+): Promise<WorkflowRun | WorkflowRunWithoutData> {
+  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+  const waitMs = Math.max(
+    0,
+    Math.min(
+      params?.timeoutMs ?? 0,
+      getRequestTimeoutMs() - WAIT_TIMEOUT_HEADROOM_MS
+    )
+  );
+
+  const { baseUrl } = getHttpUrl(config);
+  const unsupportedUntil = longPoll.unsupportedUntilByBaseUrl.get(baseUrl) ?? 0;
+
+  if (waitMs === 0 || Date.now() < unsupportedUntil) {
+    return getWorkflowRun(id, { resolveData }, config);
+  }
+
+  try {
+    return await readRun(
+      id,
+      {
+        resolveData,
+        waitMs,
+        ...(params?.signal ? { signal: params.signal } : {}),
+      },
+      config
+    );
+  } catch (error) {
+    // The caller cancelled on purpose. That is not a verdict on the route, so
+    // it propagates rather than degrading; otherwise an ordinary abort would
+    // both cost an extra read and switch the fast path off for every run in
+    // this process. Checked first because an abort surfaces with the same
+    // `TIMEOUT` code as a request that ran out of time on its own.
+    if (params?.signal?.aborted) {
+      throw error;
+    }
+    if (!(error instanceof WorkflowWorldError) || !isLongPollUnusable(error)) {
+      throw error;
+    }
+
+    // Throws WorkflowRunNotFoundError when the run is what was missing.
+    const run = await getWorkflowRun(id, { resolveData }, config);
+    longPoll.unsupportedUntilByBaseUrl.set(
+      baseUrl,
+      Date.now() + LONG_POLL_UNSUPPORTED_TTL_MS
+    );
+    return run;
   }
 }
 
@@ -376,11 +573,11 @@ const ExperimentalSetAttributesResponseSchema = z.object({
 /**
  * Apply attribute changes to a workflow run. The body shape mirrors the
  * future `attr_set` event's `eventData.changes`, so the wire contract is
- * forward-compatible with the full 5.0.0 attributes feature — only the
+ * forward-compatible with the full 5.0.0 attributes feature; only the
  * endpoint path changes.
  *
  * `options.allowReservedAttributes` opts the request into permitting
- * `$`-prefixed keys (framework-only — see the SDK helper for details).
+ * `$`-prefixed keys (framework-only; see the SDK helper for details).
  * The flag is forwarded to the server via the request body.
  *
  * EXPERIMENTAL: tied to the MVP write-only attributes API. See

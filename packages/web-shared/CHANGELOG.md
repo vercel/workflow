@@ -1,5 +1,38 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- Updated dependencies [[`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`82e2678`](https://github.com/vercel/workflow/commit/82e267893917e06f5d3ce316baefc27cd024a912), [`556f3f0`](https://github.com/vercel/workflow/commit/556f3f080a33f8673cf3c08805997dba4e4d865e)]:
+  - @workflow/core@5.0.0-beta.46
+  - @workflow/world@5.0.0-beta.31
+
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- Updated dependencies [[`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c), [`27cab14`](https://github.com/vercel/workflow/commit/27cab14adcc6f748500fca19cf78feeb60a125e7), [`f7fb012`](https://github.com/vercel/workflow/commit/f7fb0126528fac2168492c3143fe0379b6f5ef1a), [`5841558`](https://github.com/vercel/workflow/commit/584155897f75e712a1c2bc199d6d12027cd18dab)]:
+  - @workflow/core@5.0.0-beta.45
+  - @workflow/world@5.0.0-beta.30
+
+## 5.0.0-beta.44
+
+### Patch Changes
+
+- [#3715](https://github.com/vercel/workflow/pull/3715) [`5a59bb8`](https://github.com/vercel/workflow/commit/5a59bb82e8984a6818d62118aeaccc0efd13d4fb) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Allow consumers to disable decrypt controls and explain why decryption is unavailable.
+
+- [#3692](https://github.com/vercel/workflow/pull/3692) [`a06afee`](https://github.com/vercel/workflow/commit/a06afeefe6cd6489c18bbc10e77d429529112224) Thanks [@mitul-s](https://github.com/mitul-s)! - Prefix trace viewer marker context cards with "Hook received" or "Attribute set" before the relative time.
+
+- [#3634](https://github.com/vercel/workflow/pull/3634) [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0) Thanks [@pranaygp](https://github.com/pranaygp)! - Render sealed log positions (`noop` events) as the log rows they are: shown in event lists, excluded from span geometry and trace duration, since a seal's timestamp belongs to whichever reader wrote it rather than to the run.
+
+- [#3684](https://github.com/vercel/workflow/pull/3684) [`4bd533d`](https://github.com/vercel/workflow/commit/4bd533de172a7b56ab1ca40038311dff7d28d1ae) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Display short step names when observability events contain a workflow-prefixed name.
+
+- Updated dependencies [[`5b5a926`](https://github.com/vercel/workflow/commit/5b5a926f8850ec5d967e090cc0500028fd53e2ef), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9b1b8c7`](https://github.com/vercel/workflow/commit/9b1b8c711104fd507327aafc8cb965738f315e29), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4), [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`bf9de1c`](https://github.com/vercel/workflow/commit/bf9de1cd81eda1b1721b857364070c0ce70d1e58)]:
+  - @workflow/core@5.0.0-beta.44
+  - @workflow/utils@5.0.0-beta.9
+  - @workflow/world@5.0.0-beta.29
+
 ## 5.0.0-beta.43
 
 ### Patch Changes

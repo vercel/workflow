@@ -1,5 +1,31 @@
 # @workflow/world
 
+## 5.0.0-beta.31
+
+### Patch Changes
+
+- [#3794](https://github.com/vercel/workflow/pull/3794) [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Document that `hookInput` and the `(runId, resumeId)` dedup contract now cover repeated deliveries of one resume rather than a producer/consumer race, and accept `lazy` as a hook-resume strategy.
+
+## 5.0.0-beta.30
+
+### Major Changes
+
+- [#3550](https://github.com/vercel/workflow/pull/3550) [`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Keep schema-only World modules out of workflow VM bundles, prevent unknown attribute deletions from offsetting new keys, and safely ignore prototype-like event type names.
+
+## 5.0.0-beta.29
+
+### Minor Changes
+
+- [#3570](https://github.com/vercel/workflow/pull/3570) [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `world.runs.waitForTerminalStatus(runId, { timeoutMs, signal, resolveData })` method, which long-polls until the run reaches a terminal status. `await run.returnValue` now internally uses this, if the World supports it, instead of using a polling interval.
+
+- [#3634](https://github.com/vercel/workflow/pull/3634) [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0) Thanks [@pranaygp](https://github.com/pranaygp)! - New runs are created with the sealed-log event identity (specVersion 7). A sealed-log run's event positions are assigned by the backend before each write commits, so concurrent writers never contend for a position. A position whose writer dies is closed by the backend with a `noop` event; replay steps over those without delivering them or advancing the deterministic clock. Set `WORKFLOW_SEALED_LOG=0` to put a deployment back on the previous scheme. Every runtime reads sealed logs either way, and a run's version is fixed at creation, so the setting only affects new runs.
+
+### Patch Changes
+
+- [#3728](https://github.com/vercel/workflow/pull/3728) [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8) Thanks [@pranaygp](https://github.com/pranaygp)! - Hold process-wide state on `globalThis` rather than at module scope in the packages that get bundled into the host application's server build, where a bundler compiles one copy of each module per layer. Covers warn-once latches, lazy caches, the VM script and QuickJS asset caches, the dev-server port cache, and step single-flight, whose per-copy map was not actually single-flight. State that is deliberately per-copy is annotated with the reason.
+
+- [#3743](https://github.com/vercel/workflow/pull/3743) [`bf9de1c`](https://github.com/vercel/workflow/commit/bf9de1cd81eda1b1721b857364070c0ce70d1e58) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - A wait-continuation delivered before its wait elapses now re-arms under a fresh idempotency key instead of losing the wait's timer. Previously the re-enqueue reused a key the early delivery had already spent, so the world's dedupe window dropped it and the run slept indefinitely with nothing scheduled to wake it.
+
 ## 5.0.0-beta.28
 
 ### Minor Changes

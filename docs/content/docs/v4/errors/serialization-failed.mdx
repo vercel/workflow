@@ -15,9 +15,9 @@ related:
 
 This error occurs when you try to pass non-serializable data between execution boundaries in your workflow. All data passed between workflow functions, step functions, and the workflow runtime must be serializable to persist in the event log.
 
-## Error Message
+## Error message
 
-```
+```text
 Failed to serialize workflow arguments. Ensure you're passing serializable types
 (plain objects, arrays, primitives, Date, RegExp, Map, Set).
 ```
@@ -29,7 +29,7 @@ This error can appear when:
 - Serializing step arguments
 - Serializing step return values
 
-## Why This Happens
+## Why this happens
 
 Workflows persist their state using an event log. Every value that crosses execution boundaries must be:
 
@@ -38,9 +38,9 @@ Workflows persist their state using an event log. Every value that crosses execu
 
 Functions, class instances, symbols, and other non-serializable types cannot be properly reconstructed after serialization, which would break workflow replay.
 
-## Common Causes
+## Common causes
 
-### Passing Functions
+### Passing functions
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
@@ -72,7 +72,7 @@ async function processStep(config: { shouldLog: boolean }) {
 }
 ```
 
-### Class Instances
+### Class instances
 
 ```typescript lineNumbers
 class User {
@@ -111,11 +111,11 @@ async function greetStep(userData: { name: string }) {
 }
 ```
 
-## Supported Serializable Types
+## Supported serializable types
 
 Workflow SDK supports these types across execution boundaries:
 
-### Standard JSON Types
+### Standard JSON types
 
 - `string`, `number`, `boolean`, `null`
 - Arrays of serializable values
@@ -123,7 +123,7 @@ Workflow SDK supports these types across execution boundaries:
 
 To learn more about supported types, see the [Serialization](/docs/foundations/serialization) section.
 
-## Debugging Serialization Issues
+## Debugging serialization issues
 
 To identify what's causing serialization to fail:
 

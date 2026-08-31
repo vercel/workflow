@@ -10,7 +10,10 @@ import type {
 } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { findDuplicateEventIds } from '../lib/duplicate-events';
+import {
+  DUPLICATE_EVENT_MESSAGE,
+  findDuplicateEventIds,
+} from '../lib/duplicate-events';
 import {
   type ExactIdSearchResult,
   type ExactWorkflowSearchIdKind,
@@ -18,13 +21,14 @@ import {
   parseExactWorkflowSearchId,
 } from '../lib/exact-event-search-id';
 import { isEncryptedMarker } from '../lib/hydration';
+import { isSealedNoopEvent, SEALED_EVENT_MESSAGE } from '../lib/sealed-events';
 import { useToast } from '../lib/toast';
 import { formatDuration } from '../lib/utils';
 import { AttrSetEventBlock } from './sidebar/attributes-block';
 import { ContextCardProvider } from './ui/context-card';
 import { DataInspector, DecryptClickContext } from './ui/data-inspector';
 import { DecryptButton } from './ui/decrypt-button';
-import { DuplicateEventTooltip } from './ui/duplicate-event-tooltip';
+import { EventNoticeTooltip } from './ui/duplicate-event-tooltip';
 import {
   ErrorStackBlock,
   isStructuredError,
@@ -142,6 +146,11 @@ function getStatusDotColor(eventType: string): string {
   ) {
     return 'var(--ds-blue-700)';
   }
+  // Sealed positions → dim gray, one step quieter than pending: the row is
+  // log filler the run never observed.
+  if (eventType === 'noop') {
+    return 'var(--ds-gray-500)';
+  }
   // Created/pending → gray
   return 'var(--ds-gray-600)';
 }
@@ -237,7 +246,7 @@ export function buildDurationMap(
       type === 'workflow_started'
     ) {
       startedTimes.set(key, ts);
-      // The queued duration is anchored on the first start event only —
+      // The queued duration is anchored on the first start event only, since
       // subsequent step_started events come from retries.
       if (!firstStartedTimes.has(key)) {
         firstStartedTimes.set(key, ts);
@@ -297,14 +306,15 @@ function isRunLevel(eventType: string): boolean {
     eventType === 'workflow_started' ||
     eventType === 'workflow_completed' ||
     eventType === 'workflow_failed' ||
-    // attr_set carries a dedup correlationId rather than a child entity ID,
-    // so it groups and labels with the run itself.
-    eventType === 'attr_set'
+    // attr_set and noop carry a dedup/positional correlationId rather than a
+    // child entity ID, so they group and label with the run itself.
+    eventType === 'attr_set' ||
+    eventType === 'noop'
   );
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Tree gutter — fixed-width, shows branch lines only for the selected group
+// Tree gutter: fixed-width, shows branch lines only for the selected group
 // ──────────────────────────────────────────────────────────────────────────
 
 /** Fixed gutter width: 20px root area + 16px for one branch lane */
@@ -455,7 +465,7 @@ function TreeGutter({
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Copyable cell — shows a copy button on hover
+// Copyable cell: shows a copy button on hover
 // ──────────────────────────────────────────────────────────────────────────
 
 function CopyableCell({
@@ -547,7 +557,7 @@ function deepParseJson(value: unknown): unknown {
   }
   if (value !== null && typeof value === 'object') {
     // Preserve objects with custom constructors (e.g., encrypted markers,
-    // class instance refs) — don't destructure them into plain objects
+    // class instance refs); don't destructure them into plain objects
     if (value.constructor !== Object) {
       return value;
     }
@@ -635,13 +645,13 @@ function PayloadBlock({
     );
   }
 
-  // Attribute changes — render the changed keys and the writer instead of
+  // Attribute changes: render the changed keys and the writer instead of
   // the raw JSON payload.
   if (eventType === 'attr_set') {
     return <AttrSetEventBlock data={cleaned} />;
   }
 
-  // Cancellation reason — render the free-text reason as a readable line
+  // Cancellation reason: render the free-text reason as a readable line
   // instead of a raw JSON payload (the only field run_cancelled carries).
   if (eventType === 'run_cancelled') {
     const cancelReason =
@@ -811,6 +821,10 @@ interface EventsListProps {
   onDecrypt?: () => void;
   /** Whether the encryption key is currently being fetched. */
   isDecrypting?: boolean;
+  /** Whether decryption is unavailable. */
+  isDecryptDisabled?: boolean;
+  /** Explains why decryption is unavailable. */
+  decryptDisabledReason?: string;
   /** Run-level hint: the run contains encrypted data (from probe). */
   hasEncryptedData?: boolean;
   /** Fetch events for an exact correlation or event ID. */
@@ -898,6 +912,12 @@ export function EventRow({
     ? '__run__'
     : (event.correlationId ?? undefined);
 
+  const isSealed = isSealedNoopEvent(event);
+  const rowNotice = isDuplicate
+    ? DUPLICATE_EVENT_MESSAGE
+    : isSealed
+      ? SEALED_EVENT_MESSAGE
+      : undefined;
   const statusDotColor = getStatusDotColor(event.eventType);
   const createdAt = new Date(event.createdAt);
   const occurredAt = parseEventDate(event.occurredAt);
@@ -1063,7 +1083,7 @@ export function EventRow({
           isLaneEnd={isLaneEnd}
         />
 
-        {/* Content area — dims when unrelated */}
+        {/* Content area: dims when unrelated */}
         <div
           className="flex items-center flex-1 min-w-0"
           style={{ opacity: contentOpacity, transition: 'opacity 150ms' }}
@@ -1111,11 +1131,11 @@ export function EventRow({
 
           {/* Event Type */}
           <div className="font-medium min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            <DuplicateEventTooltip isDuplicate={isDuplicate}>
+            <EventNoticeTooltip notice={rowNotice}>
               <span
                 className="inline-flex items-center gap-1.5"
                 style={{
-                  color: isDuplicate
+                  color: rowNotice
                     ? 'var(--ds-gray-700)'
                     : 'var(--ds-gray-900)',
                 }}
@@ -1153,7 +1173,7 @@ export function EventRow({
                 </span>
                 {formatEventType(event.eventType)}
               </span>
-            </DuplicateEventTooltip>
+            </EventNoticeTooltip>
           </div>
 
           {/* Name */}
@@ -1181,10 +1201,10 @@ export function EventRow({
         </div>
       </div>
 
-      {/* Expanded details — tree lines continue through this area */}
+      {/* Expanded details: tree lines continue through this area */}
       {isExpanded && (
         <div className="flex">
-          {/* Continuation gutter — lane line continues if not at lane end */}
+          {/* Continuation gutter: lane line continues if not at lane end */}
           <TreeGutter
             isFirst={false}
             isLast={isLast}
@@ -1288,6 +1308,8 @@ function EventListViewInner({
   onSortOrderChange,
   onDecrypt,
   isDecrypting = false,
+  isDecryptDisabled = false,
+  decryptDisabledReason,
   hasEncryptedData: hasEncryptedDataProp = false,
   onExactIdSearch,
   showSeparateEventOccurrenceTimestamps = false,
@@ -1416,7 +1438,7 @@ function EventListViewInner({
     });
   }, []);
 
-  // Event data cache — ref avoids re-renders when cache updates
+  // Event data cache: ref avoids re-renders when cache updates
   const eventDataCacheRef = useRef<Map<string, unknown>>(new Map());
   const cacheEventData = useCallback((eventId: string, data: unknown) => {
     eventDataCacheRef.current.set(eventId, data);
@@ -1647,7 +1669,16 @@ function EventListViewInner({
 
   return (
     <DecryptClickContext.Provider
-      value={onDecrypt ? { onDecrypt, isDecrypting } : undefined}
+      value={
+        onDecrypt
+          ? {
+              onDecrypt,
+              isDecrypting,
+              isDecryptDisabled,
+              decryptDisabledReason,
+            }
+          : undefined
+      }
     >
       <div className="h-full flex flex-col overflow-hidden">
         <style>{`@keyframes workflow-dot-pulse{0%{transform:scale(1);opacity:.7}70%,100%{transform:scale(2.2);opacity:0}}`}</style>
@@ -1743,6 +1774,8 @@ function EventListViewInner({
             <DecryptButton
               decrypted={!!encryptionKey}
               loading={isDecrypting}
+              disabled={isDecryptDisabled}
+              disabledReason={decryptDisabledReason}
               onClick={onDecrypt}
             />
           )}
@@ -1854,7 +1887,7 @@ function EventListViewInner({
           />
         )}
 
-        {/* Fixed footer — count + load more */}
+        {/* Fixed footer: count + load more */}
         <div
           className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-label-12"
           style={{

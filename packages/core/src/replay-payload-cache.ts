@@ -70,8 +70,8 @@ export class ReplayPayloadCache {
     // This cache is scoped to one invocation. Incremental loads and write
     // response deltas only ever append, so the scanned length locates the
     // events added since the previous replay. A reload that can insert events
-    // BELOW that length — a stale-snapshot restart replacing the log with a
-    // corrected one — must call `resetScan()` first, or the inserted events are
+    // BELOW that length (a stale-snapshot restart replacing the log with a
+    // corrected one) must call `resetScan()` first, or the inserted events are
     // never scanned. Prepared entries stay valid across that: they are keyed by
     // event id, not by position.
     for (
@@ -115,7 +115,7 @@ export class ReplayPayloadCache {
    * Required before a replay whose event log was reloaded rather than extended:
    * a corrected log inserts the events the previous load was missing, which
    * shifts every later position, so a positional resume would skip exactly the
-   * events the reload was for. Already-prepared payloads are kept — they are
+   * events the reload was for. Already-prepared payloads are kept: they are
    * keyed by event id, so re-scanning re-observes them for free.
    */
   resetScan(): void {

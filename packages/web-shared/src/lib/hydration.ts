@@ -137,8 +137,8 @@ export function getWebRevivers(): Revivers {
     // entry for each built-in Error subclass plus the workflow-specific
     // `FatalError` / `RetryableError` / `HookConflictError` /
     // `RuntimeDecryptionError` and `AggregateError`. Without
-    // matching revivers here, `devalue.unflatten` throws "Unknown type X"
-    // — which surfaces in the web o11y UI as "Failed to load resource
+    // matching revivers here, `devalue.unflatten` throws "Unknown type X",
+    // which surfaces in the web o11y UI as "Failed to load resource
     // details: Unknown type FatalError".
     Error: (value) => {
       const opts = 'cause' in value ? { cause: value.cause } : undefined;
@@ -171,7 +171,7 @@ export function getWebRevivers(): Revivers {
     // `FatalError` and `RetryableError` are not built-in browser globals,
     // so we can't resolve a constructor from globalThis. The web o11y UI
     // doesn't need `instanceof FatalError` to pass (no user code runs
-    // here) — it just needs `name`, `message`, `stack`, and any extra
+    // here). The web o11y UI needs `name`, `message`, `stack`, and any extra
     // enumerable fields to render. Construct a plain `Error` with `name`
     // set; ObjectInspector reads `constructor.name` for the displayed
     // class label, but we don't have the real class, so we emit a tagged
@@ -209,7 +209,7 @@ export function getWebRevivers(): Revivers {
       // RetryableError reducer for the rationale around realm-safety).
       // Rehydrate as a Date so o11y consumers can render it directly.
       // Guard against payloads from older runtime versions that predate
-      // the field — without this check, `new Date(undefined)` would
+      // the field: without this check, `new Date(undefined)` would
       // produce an Invalid Date rather than omitting the property.
       if (value.retryAfter != null) {
         error.retryAfter = new Date(value.retryAfter);
@@ -492,17 +492,12 @@ export async function hydrateResourceIOAsync<T>(
   );
   // Payloads may be zstd-compressed (the Web DecompressionStream has no zstd);
   // register the WASM-backed browser decoder before hydrating. Idempotent and
-  // lazy — the WASM is only compiled when a zstd payload is actually decoded.
+  // lazy: the WASM is only compiled when a zstd payload is actually decoded.
   const { ensureZstdDecoderRegistered } = await import(
     './zstd-browser-decoder.js'
   );
   ensureZstdDecoderRegistered();
-  // Resolve the *full* key capability, not just the symmetric key: a run's
-  // event log can contain sealed ('encp') payloads that another run wrote to
-  // it (a cross-deployment hook resumption, say), and opening those needs the
-  // run's X25519 scalar in addition to its AES key. Both are derived from the
-  // same 32 bytes the key-retrieval endpoint returns.
-  // Resolve the *full* key capability, not just the symmetric key: a run's
+  // Resolve the *full* key capability: a run's
   // event log can contain sealed ('encp') payloads that another run wrote to
   // it (a cross-deployment hook resumption, say), and opening those needs the
   // run's X25519 scalar in addition to its AES key. Both derive from the same
@@ -520,7 +515,7 @@ export async function hydrateResourceIOAsync<T>(
     if (value instanceof Uint8Array) {
       return hydrateDataWithKey(value, revivers, cryptoKey);
     }
-    // Not serialized — return as-is.
+    // Not serialized, so return as-is.
     return value;
   }
 

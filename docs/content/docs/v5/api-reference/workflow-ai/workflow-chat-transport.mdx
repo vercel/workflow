@@ -10,10 +10,10 @@ related:
 ---
 
 <Callout type="warn">
-`WorkflowChatTransport` from `@workflow/ai` is deprecated. AI SDK ships a 1:1 port — use [`WorkflowChatTransport` from `@ai-sdk/workflow`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) instead. This reference is kept for existing applications that still import it from `@workflow/ai`.
+`WorkflowChatTransport` from `@workflow/ai` is deprecated. AI SDK ships a 1:1 port, so use [`WorkflowChatTransport` from `@ai-sdk/workflow`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) instead. This reference is kept for existing applications that still import it from `@workflow/ai`.
 </Callout>
 
-A chat transport implementation for the AI SDK that provides reliable message streaming with automatic reconnection to interrupted streams. This transport is a drop-in replacement for the default AI SDK transport, enabling seamless recovery from network issues, page refreshes, or Vercel Function timeouts.
+`WorkflowChatTransport` is an AI SDK chat transport that automatically reconnects to interrupted streams. It replaces the default AI SDK transport and recovers from network issues, page refreshes, or Vercel Functions timeouts.
 
 <Callout>
 `WorkflowChatTransport` implements the [`ChatTransport`](https://ai-sdk.dev/docs/ai-sdk-ui/transport) interface from the AI SDK and is designed to work with workflow-based chat applications. It requires endpoints that return the `x-workflow-run-id` header to enable stream resumption.
@@ -38,7 +38,7 @@ export default function Chat() {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Class
 
@@ -56,27 +56,27 @@ import type { WorkflowChatTransportOptions } from "@workflow/ai";
 export default WorkflowChatTransportOptions;`}
 />
 
-## Key Features
+## Key features
 
-- **Automatic Reconnection**: Automatically recovers from interrupted streams with configurable retry limits
-- **Workflow Integration**: Seamlessly works with workflow-based endpoints that provide the `x-workflow-run-id` header
-- **Customizable Requests**: Allows intercepting and modifying requests via `prepareSendMessagesRequest` and `prepareReconnectToStreamRequest`
-- **Stream Callbacks**: Provides hooks for tracking chat lifecycle via `onChatSendMessage` and `onChatEnd`
-- **Custom Fetch**: Supports custom fetch implementations for advanced use cases
+- **Automatic reconnection**: Recovers from interrupted streams with configurable retry limits.
+- **Workflow integration**: Works with workflow-based endpoints that provide the `x-workflow-run-id` header.
+- **Customizable requests**: Allows intercepting and modifying requests through `prepareSendMessagesRequest` and `prepareReconnectToStreamRequest`.
+- **Stream callbacks**: Provides hooks for tracking the chat lifecycle through `onChatSendMessage` and `onChatEnd`.
+- **Custom fetch**: Supports custom fetch implementations for advanced use cases.
 
-## Good to Know
+## Good to know
 
-- The transport expects chat endpoints to return the `x-workflow-run-id` header in the response to enable stream resumption
-- By default, the transport posts to `/api/chat` and reconnects via `/api/chat/{runId}/stream`
-- The `onChatSendMessage` callback receives the full response object, allowing you to extract and store the workflow run ID for session resumption
-- Stream interruptions are automatically detected when a "finish" chunk is not received in the initial response
-- The `maxConsecutiveErrors` option controls how many reconnection attempts are made before giving up (default: 3)
-- `initialStartIndex` (constructor option) sets the default chunk position for the **first** reconnection attempt (e.g. after a page refresh). Subsequent retries within the same reconnection loop always resume from the last received chunk. Negative values (e.g. `-20`) read from the end of the stream, which is useful for showing only recent output without replaying the full conversation. `startIndex` (per-call option on `reconnectToStream`) overrides `initialStartIndex` for a single reconnection
-- When using a negative `initialStartIndex`, the reconnection endpoint must return the `x-workflow-stream-tail-index` response header (via `readable.getTailIndex()`). The transport reads this header to compute absolute chunk positions for retries. Without it, startIndex is assumed to be 0, replaying the entire stream
+- The transport expects chat endpoints to return the `x-workflow-run-id` header in the response to enable stream resumption.
+- By default, the transport posts to `/api/chat` and reconnects through `/api/chat/{runId}/stream`.
+- The `onChatSendMessage` callback receives the full response object, allowing you to extract and store the workflow run ID for session resumption.
+- Stream interruptions are automatically detected when a `finish` chunk is not received in the initial response.
+- The `maxConsecutiveErrors` option controls how many reconnection attempts are made before giving up (default: 3).
+- `initialStartIndex` (constructor option) sets the default chunk position for the **first** reconnection attempt (for example, after a page refresh). Subsequent retries within the same reconnection loop always resume from the last received chunk. Negative values (for example, `-20`) read from the end of the stream, which is useful for showing only recent output without replaying the full conversation. `startIndex` (per-call option on `reconnectToStream`) overrides `initialStartIndex` for a single reconnection.
+- When using a negative `initialStartIndex`, the reconnection endpoint must return the `x-workflow-stream-tail-index` response header (through `readable.getTailIndex()`). The transport reads this header to compute absolute chunk positions for retries. Without it, `startIndex` is assumed to be `0`, replaying the entire stream.
 
 ## Examples
 
-### Basic Chat Setup
+### Basic chat setup
 
 ```typescript
 "use client";
@@ -119,7 +119,7 @@ export default function BasicChat() {
 }
 ```
 
-### With Session Persistence and Resumption
+### With session persistence and resumption
 
 ```typescript
 "use client";
@@ -187,7 +187,7 @@ export default function ChatWithResumption() {
 }
 ```
 
-### With Custom Request Configuration
+### With custom request configuration
 
 ```typescript
 "use client";
@@ -256,11 +256,11 @@ export default function ChatWithCustomConfig() {
 
 ## Mid-part resumes
 
-A workflow stream is a flat sequence of chunks, but the AI SDK's UI protocol groups chunks into logical parts: a `text-start` opens a text part that subsequent `text-delta`s extend and a `text-end` closes, and the same shape applies to `reasoning-*` and `tool-input-*`. The AI SDK client enforces that grammar — a `reasoning-delta` whose `reasoning-start` was never seen throws and breaks the chat.
+A workflow stream is a flat sequence of chunks, but the AI SDK's user interface (UI) protocol groups chunks into logical parts: a `text-start` opens a text part that subsequent `text-delta`s extend and a `text-end` closes, and the same shape applies to `reasoning-*` and `tool-input-*`. The AI SDK client enforces that grammar: a `reasoning-delta` whose `reasoning-start` was never seen throws and breaks the chat.
 
-A non-zero `startIndex` (in particular a negative `initialStartIndex`) resolves to a chunk offset with no awareness of those part boundaries, so it can land in the middle of an open part. When that happens, `WorkflowChatTransport` will **drop chunks that reference a part it didn't see a start for** and log a one-time warning. The chat keeps working, but any partial part overlapping the resume cursor is discarded. Tool calls are an exception: `tool-input-available` / `tool-input-error` chunks are self-contained (they carry the full input), so a tool call is recovered as soon as one of those chunks appears in the resumed window — only its streamed input deltas are lost.
+A non-zero `startIndex` (in particular a negative `initialStartIndex`) resolves to a chunk offset with no awareness of those part boundaries, so it can land in the middle of an open part. When that happens, `WorkflowChatTransport` will **drop chunks that reference a part it didn't see a start for** and log a one-time warning. The chat keeps working, but any partial part overlapping the resume cursor is discarded. Tool calls are an exception: `tool-input-available` / `tool-input-error` chunks are self-contained (they carry the full input), so a tool call is recovered as soon as one of those chunks appears in the resumed window. Only its streamed input deltas are lost.
 
-To preserve those partial parts, rewind to a step boundary on the server before returning the readable. `start-step` / `finish-step` chunks are the natural seams — no UI part is ever open across them. Sketch:
+To preserve those partial parts, rewind to a step boundary on the server before returning the readable. `start-step` / `finish-step` chunks are the natural seams: no UI part is ever open across them. Sketch:
 
 {/*@skip-typecheck: incomplete code sample*/}
 
@@ -293,9 +293,9 @@ return createUIMessageStreamResponse({
 });
 ```
 
-## See Also
+## See also
 
-- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) - Building durable, resumable AI agents (replaces `DurableAgent`)
-- [AI SDK `useChat` Documentation](https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat) - Using `useChat` with custom transports
-- [Workflows and Steps](/docs/foundations/workflows-and-steps) - Understanding workflow fundamentals
-- ["flight-booking-app" Example](https://github.com/vercel/workflow-examples/tree/main/flight-booking-app) - An example application which uses `WorkflowChatTransport`
+- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent): Build durable, resumable AI agents (replaces `DurableAgent`)
+- [AI SDK `useChat` documentation](https://ai-sdk.dev/docs/reference/ai-sdk-ui/use-chat): Use `useChat` with custom transports
+- [Workflows and Steps](/docs/foundations/workflows-and-steps): Understand workflow fundamentals
+- [`flight-booking-app` example](https://github.com/vercel/workflow-examples/tree/main/flight-booking-app): View an example application that uses `WorkflowChatTransport`

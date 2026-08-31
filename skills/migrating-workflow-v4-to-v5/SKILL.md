@@ -1,0 +1,286 @@
+---
+name: migrating-workflow-v4-to-v5
+description: >-
+  Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `experimental_setAttributes`, `createLocalWorld` / `createVercelWorld`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
+metadata:
+  author: Vercel Inc.
+  version: '0.2.9'
+---
+
+# Migrating Workflow SDK 4.x to 5.0
+
+Workflow SDK 5.0 keeps the programming model from 4.x. `"use workflow"` / `"use step"`, `start()`, `getRun()`, hooks, webhooks, streams, `sleep()`, retries, and the event log are unchanged, so most application code compiles as-is.
+
+The breaking changes are concentrated in three places:
+
+1. **Runtime entrypoints** (`workflow/api`, `workflow/runtime`) — two exports removed.
+2. **The `World` interface** — only relevant if the app implements a custom World or calls `getWorld()` directly.
+3. **Build integrations** — `@workflow/nest` subpaths, and private compiler subpaths that were never public.
+
+Do not rewrite workflow or step bodies. If you find yourself restructuring business logic, you have gone outside this migration.
+
+## Intake
+
+Before editing, establish:
+
+1. **Which packages are installed.** Read `package.json` for `workflow` and every `@workflow/*` dependency.
+2. **Whether the app touches the runtime.** Grep for `getWorld`, `createWorld`, `getWorldHandlers`, `writeToStream`, `readFromStream`, `closeStream`, `listStreamsByRunId`, `getStreamChunks`, `world.steps`, `listByCorrelationId`, `runStep`, `stepEntrypoint`, `internal/private`, `core/private`.
+3. **Whether the app implements a custom World.** Grep for `implements World`, `: World`, `createLocalWorld`, `createVercelWorld`, `startWorkflowWorld`.
+4. **Which framework integration is in use.** `@workflow/next`, `@workflow/nest`, `@workflow/nitro`, `@workflow/sveltekit`, `@workflow/vite`, `@workflow/nuxt`, `@workflow/astro`, or the CLI.
+5. **Whether `hook.getConflict()` is used.** Grep for `getConflict`.
+6. **Whether the app calls the compiler directly.** Grep for `mode: 'client'`, `transformSync`, `swc-plugin-workflow`. Only custom build integrations do this.
+7. **Whether `experimental_setAttributes` is used.** Grep for `experimental_setAttributes`.
+
+Report anything in 2–7 that the app does not use as "not applicable" rather than silently skipping it.
+
+## Step 1 — bump the dependencies
+
+Move every `workflow` and `@workflow/*` dependency to `^5.0.0`. They are released together and must not be mixed across majors — a 4.x `@workflow/next` against a 5.x `workflow` will fail at build time.
+
+```json
+{
+  "dependencies": {
+    "workflow": "^5.0.0",
+    "@workflow/next": "^5.0.0"
+  }
+}
+```
+
+Then reinstall and rebuild so the compiler regenerates the workflow/step bundles and the generated routes under `.well-known/workflow/v1/`. Never hand-edit generated output.
+
+Node requirements are unchanged: `^18 || ^20 || ^22 || ^24`.
+
+## Step 2 — apply the mechanical rewrites
+
+Apply each rule only where the pattern actually appears.
+
+### `getWorld()` and `createWorld()` are async
+
+```ts
+// v4
+const world = getWorld();
+
+// v5
+const world = await getWorld();
+```
+
+This also applies to `getWorldHandlers()`. Awaiting was already correct in 4.x, so this edit is safe to make before the dependency bump. Propagate `async` up the call chain rather than wrapping in `.then()` chains.
+
+### `createLocalWorld()` and `createVercelWorld()` removed
+
+First-party World packages now expose a single `createWorld()` factory. The arguments are unchanged — this is a rename only.
+
+```ts
+// v4
+import { createLocalWorld } from '@workflow/world-local';
+const world = createLocalWorld({ dataDir });
+
+// v5
+import { createWorld } from '@workflow/world-local';
+const world = createWorld({ dataDir });
+```
+
+The same applies to `createVercelWorld` from `@workflow/world-vercel`.
+
+### `runStep` removed from `workflow/api`
+
+Call the step function directly. The compiler routes the call through the step runtime.
+
+```ts
+// v4
+import { runStep } from 'workflow/api';
+const result = await runStep(chargeCard, [orderId]);
+
+// v5
+const result = await chargeCard(orderId);
+```
+
+### `stepEntrypoint` removed from `workflow/runtime`
+
+Framework integrations generate step routes themselves — delete hand-written step routes that existed only to call `stepEntrypoint`. For a custom host, serve the handlers from `getWorldHandlers()` instead.
+
+### `workflow/internal/private` and `@workflow/core/private` removed
+
+These subpaths were never public API. Remove the imports; if generated build output still references them, it is stale — reinstall and rebuild rather than restoring the imports.
+
+### Stream methods moved to `world.streams.*` with `runId` first
+
+| v4 | v5 |
+| --- | --- |
+| `world.writeToStream(name, runId, chunk)` | `world.streams.write(runId, name, chunk)` |
+| `world.writeToStreamMulti(name, runId, chunks)` | `world.streams.writeMulti(runId, name, chunks)` |
+| `world.closeStream(name, runId)` | `world.streams.close(runId, name)` |
+| `world.readFromStream(name, startIndex?)` | `world.streams.get(runId, name, startIndex?)` |
+| `world.getStreamChunks(name, runId, options?)` | `world.streams.getChunks(runId, name, options?)` |
+| `world.listStreamsByRunId(runId)` | `world.streams.list(runId)` |
+
+The argument order flipped, so a rename alone silently passes a stream name where a run ID is expected. Swap the arguments at every call site. `readFromStream` had no `runId` parameter at all — `streams.get` requires one, so thread the owning run ID through to the call.
+
+Application code that uses `getWritable()` inside a workflow or reads `run.readable` is unaffected; this rule is only for direct `World` access.
+
+### `world.steps.get()` requires a `runId`
+
+The first parameter was `string | undefined` and is now `string`. Pass the run ID that owns the step.
+
+```ts
+// v4
+const step = await world.steps.get(undefined, stepId);
+
+// v5
+const step = await world.steps.get(runId, stepId);
+```
+
+### `events.listByCorrelationId()` requires a `runId`
+
+A correlation ID identifies a step, hook or wait within its run, not across runs. The lookup is scoped to one run, so pass the run that owns the ID. The same applies to `analytics.events.listByCorrelationId()`.
+
+```ts
+// v4
+const events = await world.events.listByCorrelationId({ correlationId });
+
+// v5
+const events = await world.events.listByCorrelationId({ runId, correlationId });
+```
+
+### `hook.getConflict()` resolves with a `Run`
+
+The resolved value is now the conflicting run handle rather than `{ runId }`. `conflict.runId` still reads the same, so existing code keeps working — but the round trip through a step to fetch the run can be deleted.
+
+```ts
+// v4
+const conflict = await hook.getConflict();
+if (conflict) {
+  const run = await fetchRun(conflict.runId); // "use step" wrapper around getRun()
+  return { dedupedTo: await run.returnValue };
+}
+
+// v5
+const conflict = await hook.getConflict();
+if (conflict) {
+  return { dedupedTo: await conflict.returnValue };
+}
+```
+
+`await conflict.status` and `await conflict.cancel()` are available on the same handle. Do not remove the `if (conflict)` null check — `getConflict()` still resolves `null` when the token was claimed cleanly.
+
+### `experimental_setAttributes` renamed to `setAttributes`
+
+```ts
+// v4
+import { experimental_setAttributes } from 'workflow';
+
+// v5
+import { setAttributes } from 'workflow';
+```
+
+The old name was removed in v5, so this rewrite is required. `ExperimentalSetAttributesOptions` is likewise now `SetAttributesOptions`. The `attributes` option on `start()` is unchanged.
+
+### `mode: 'client'` removed from the SWC transform
+
+Only relevant to a custom build integration that calls the compiler itself. The `client` mode merged into `step`, which now absorbs hoisted variable references and dead-code elimination. Pass `mode: 'step'`.
+
+### `NestLocalBuilder` moved out of the `@workflow/nest` root
+
+```ts
+// v4
+import { NestLocalBuilder } from '@workflow/nest';
+
+// v5
+import { NestLocalBuilder } from 'workflow/nest/builder';
+```
+
+`NestVercelBuilder` lives at `workflow/nest/vercel-builder`. `WorkflowModule` still comes from `@workflow/nest`; the split keeps the build toolchain out of the runtime bundle, so do not re-export the builder from a module that runtime code imports.
+
+## Step 3 — flag the behavior changes that need a decision
+
+These are not code edits. Report each one that applies, and do not "fix" them silently.
+
+- **Tracing defaults to `linked`.** Each workflow and step invocation is its own trace root with span links to the enqueue site and the run origin, instead of one trace per run. If the app has dashboards, saved queries, or alerts keyed on a single trace ID per run, either move them to the `workflow.run.id` attribute or set `WORKFLOW_TRACE_MODE=continuous` to restore the 4.x shape.
+- **The event-creation precondition guard is gone.** `WORKFLOW_PRECONDITION_GUARD` no longer exists; remove it from the app's environment and deployment config if it is set. No World in the SDK rejects a write for a stale snapshot any more — a replay that is behind learns what it missed from the write it makes next.
+- **Turbo mode is on by default.** The first invocation of a run backgrounds `run_started` and skips the initial event-log load. `WORKFLOW_TURBO=0` disables it.
+- **Errors keep their type.** `WorkflowRunFailedError.cause` now preserves the original class identity and cause chain. Code that pattern-matched on `error.message` because the class was flattened in 4.x can use `instanceof` — but flag it rather than rewriting error handling unprompted.
+- **Event IDs are slot numbers, not ULIDs.** An event ID is now its 1-based position in the run's log (`evnt_00000000000000000000000042`), unique only within a run and carrying no timestamp. Report any app code that uses an event ID as a global key (pair it with the `runId`) or decodes a time out of one (read `createdAt` off the event). Other entity IDs are unchanged.
+- **A per-run event limit is enforced.** The World supplies the ceiling (25,000 events on the Local and Vercel Worlds) and a run that reaches it fails with `MAX_EVENTS_EXCEEDED`. Flag any workflow with an unbounded loop; the fix is a child run per batch, which is a design change, not a migration edit.
+- **Stream writes flush the leading chunk immediately.** The flush window default went from 10ms to 0. An app that relied on the window to coalesce a burst of tiny chunks can set `streamFlushIntervalMs` or `WORKFLOW_STREAM_FLUSH_INTERVAL_MS`.
+- **Generated step, workflow and webhook bundles are ESM** (the VM-executed workflow bundle stays CJS). Only matters for a host that post-processes build output.
+- **Duplicate step or workflow IDs now fail the build.** In 4.x, two identically named non-exported functions across workspace files collided last-write-wins. If the build fails on this, rename one of them — do not suppress the check.
+- **`world-postgres` rows written before the upgrade.** Failed runs stored by 4.x read back with `error: undefined`, because the payload lives in the legacy `error` text column rather than `errorJson`. There is no data migration; recent-history dashboards may show blank errors for pre-upgrade failures.
+- **`world-local` stream chunks moved** to `streams/chunks/<streamName>/`. Files in the old flat layout are not read back and stale files are left in place — local development state, so deleting the data directory is fine.
+- **The workflow sandbox is stricter about nondeterminism.** `WeakRef`, `FinalizationRegistry`, `Atomics.waitAsync`, and async `WebAssembly` compilation are no longer available inside workflow functions, and `crypto.subtle.digest` computes synchronously (same results, deterministic timing). Grep `"use workflow"` files for these APIs; the fix is moving that code into a step, which is a design change — flag it, do not restructure unprompted.
+- **In-flight runs do not migrate.** Runs created on a 4.x deployment keep executing on that deployment. Let them finish where they started; do not add code to "drain" or re-target them.
+
+## Step 4 — custom `World` implementations
+
+Only if the app implements `World` itself. **Use the `migrating-world-v4-to-v5` skill for this part** (`npx skills add https://github.com/vercel/workflow --skill migrating-world-v4-to-v5`); it carries the full World migration, including the event ID allocation work summarized below. What follows is enough to scope the job and to know when it has not been done.
+
+Beyond the stream and step signatures above, the interface gained:
+
+- `streams` as a namespace (see the table in step 2).
+- `analytics` — metadata-only listings for runs, steps, events, hooks, waits, and attributes.
+- attribute support on runs, including `experimentalSetAttributes`.
+- capability advertisement, so the runtime can gate optimizations. Unadvertised capabilities fail closed, which means an incomplete World stays correct but slower — advertise a capability only once it is genuinely implemented. Event ID allocation is not among them: it is a requirement, not a capability. A World that rejected stale writes behind the old `preconditionGuard` flag can delete that code, since the flag is gone and nothing replaced it.
+- an optional per-run event ceiling returned on run reads, which the runtime enforces.
+- optional `createRunId()` and a `region` on queue options, for worlds that place run state regionally.
+
+Four contract changes affect existing implementations. The first is required and is not visible from the type signatures:
+
+- **Event IDs are slots, and allocating them is mandatory.** An event ID is no longer a ULID the World mints freely: it is `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters (`slotToEventId()` from `@workflow/world` formats one). Positions must be unique and dense with no holes, so the race has to be settled in the store — a unique constraint on `(runId, eventId)` or a conditional write — rather than by reading the maximum in process and adding one. `events.create()` params carry `eventCount` to place the write; when that position is taken the World must not reject the create, it advances to the next free position, commits there, and returns the events occupying the skipped positions on the success response. Take the position *at the commit*, in the same operation that appends the event, since that is what stops an event landing behind a position a reader has already passed. There is no capability to declare and no fallback: the runtime reads a position out of every ID it loads and fails the run when it cannot, so a World whose IDs are not positions type-checks, starts runs, and fails on the first replay with `Event id is not slot-numbered`.
+
+  Warn the user that **runs already in their store cannot be replayed by the new code** — a ULID-numbered run is not readable as positions and the runtime refuses it, so those runs must be drained on 4.x first, unless the platform pins a run to its creating deployment (Vercel does, which resolves it). Point them at `@workflow/world-testing`'s `numbers events by position`, which catches a wrong ID scheme in the conformance suite instead of at replay time, and at the "Upgrading a World to v5" guide for the full rules.
+
+- **Suspension and dispatch.** The asymmetric `{ timeoutSeconds }` return contract for waits is gone. Waits are ordinary queue continuations carrying `delaySeconds`, and wait plus step dispatch is unified into one parallel batch per suspension. A World that special-cased the old wait return needs rewriting against the current interface.
+- **Step queue topics are retired.** The `'step'` queue kind no longer exists: queued steps travel on the workflow topic (carrying `stepId`/`stepName` in the payload) and execute in the combined flow handler. A World that provisioned or routed separate `__wkf_step_*` topics can drop them.
+- **World resolution happens at build time.** Worlds are statically injected into host bundles rather than selected dynamically at runtime, and first-party World packages expose a `createWorld()` factory. A custom or community World must be resolvable by the build; verify the app still boots against it rather than assuming a runtime lookup.
+
+Optional methods may be omitted; the runtime falls back. Point the user at the `migrating-world-v4-to-v5` skill and the "Upgrading a World to v5" guide, which carry the full interface delta and the contract changes above, rather than inventing method bodies.
+
+## Required output shape
+
+Return the migration in this structure:
+
+```md
+## Summary
+## Dependency Changes
+## Code Changes
+## Behavior Changes To Review
+## Verification
+## Open Questions
+```
+
+- `## Code Changes` lists one entry per rule applied, with the file paths touched. Rules that did not apply are listed once as not applicable — do not omit them silently.
+- `## Behavior Changes To Review` carries the step 3 items that apply to this app, each with the concrete follow-up (which dashboard, which env var).
+- `## Open Questions` carries anything that could not be decided from the code, especially a custom World that needs interface work.
+
+## Verification
+
+Run, in order, and report actual output:
+
+1. Install and build. The build must regenerate workflow/step bundles without errors.
+2. Typecheck. The async `getWorld()` change and the `steps.get` signature surface here.
+3. The app's test suite.
+4. Start the app and execute one real run end to end, confirming the first step runs and the run reaches a terminal state.
+
+Fail the migration if any of these are true:
+
+- [ ] `workflow` and `@workflow/*` versions span both 4.x and 5.x
+- [ ] `getWorld()` / `createWorld()` / `getWorldHandlers()` is called without `await`
+- [ ] `runStep` or `stepEntrypoint` is still imported
+- [ ] `createLocalWorld` or `createVercelWorld` is still imported
+- [ ] `workflow/internal/private` or `@workflow/core/private` is still imported
+- [ ] a `world.streams.*` call kept the v4 argument order (name before runId)
+- [ ] `streams.get` was called without a `runId`
+- [ ] `world.steps.get` was called with `undefined` as its first argument
+- [ ] `NestLocalBuilder` is imported from `@workflow/nest` instead of `workflow/nest/builder`
+- [ ] a compiler call still passes `mode: 'client'`
+- [ ] a behavior change from step 3 was silently "fixed" instead of reported
+- [ ] workflow or step bodies were restructured beyond the rules above
+- [ ] generated output under `.well-known/workflow/v1/` was hand-edited
+- [ ] the build, typecheck, or test results were not actually run and reported
+
+## Reference
+
+- What's new in v5: <https://workflow.dev/docs/whats-new>
+- Configuration and runtime tuning: <https://workflow.dev/docs/configuration>
+- Upgrading a World to v5: <https://workflow.dev/worlds/upgrading-to-v5>
+- Building a World: <https://workflow.dev/worlds/building-a-world>
+- v4 documentation: <https://workflow.dev/v4/docs>

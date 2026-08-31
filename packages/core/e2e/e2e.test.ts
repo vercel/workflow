@@ -2389,9 +2389,15 @@ describe.concurrent('e2e', () => {
 
       const hook = await getHookByToken(token);
       expect(hook.runId).toBe(owner.runId);
-      await expect(resumeHook(hook, { duplicate: true })).rejects.toSatisfy(
-        (error: unknown) => HookNotFoundError.is(error)
-      );
+      // Whether the call itself rejects depends on which dispatch path
+      // `resumeHook` takes, so this only asserts the invariant both share: the
+      // ended run is never resumed. The sequential path writes `hook_received`
+      // and surfaces the server's rejection as HookNotFoundError; the lazy
+      // path writes nothing, so it resolves and the same rejection lands on
+      // the queue consumer, which consumes the delivery.
+      await resumeHook(hook, { duplicate: true }).catch((error: unknown) => {
+        if (!HookNotFoundError.is(error)) throw error;
+      });
 
       const duplicate = await start(await e2e('hookMinRetentionWorkflow'), [
         token,
@@ -2402,6 +2408,18 @@ describe.concurrent('e2e', () => {
         conflictRunId: owner.runId,
         conflictStatus: 'completed',
       });
+
+      // Nothing was appended to the terminal run: no path may materialize a
+      // `hook_received` for it. Checked after the duplicate run so a lazy
+      // resume's consumer has had time to attempt (and be refused) its write.
+      const world = await getWorld();
+      const { data: ownerEvents } = await world.events.list({
+        runId: owner.runId,
+      });
+      expect(
+        ownerEvents.some((e) => e.eventType === 'hook_received'),
+        'a resume against an ended run must not append hook_received'
+      ).toBe(false);
     }
   );
 

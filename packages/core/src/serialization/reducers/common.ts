@@ -52,8 +52,8 @@ function arrayBufferToBase64(
 
 function viewToBase64(value: ArrayBufferView): string {
   // Read the view's range through internal-slot getters (see hardened.ts):
-  // own properties shadowing `buffer`/`byteOffset`/`byteLength` — or patched
-  // prototype getters in the sandbox realm — cannot change which bytes are
+  // own properties shadowing `buffer`/`byteOffset`/`byteLength` (or patched
+  // prototype getters in the sandbox realm) cannot change which bytes are
   // serialized.
   const info = viewInfo(value);
   return arrayBufferToBase64(info.buffer, info.byteOffset, info.byteLength);
@@ -95,7 +95,7 @@ type BaseErrorPayload = {
 /**
  * Subset of `SerializableSpecial` keys whose payload shape is exactly the
  * `BaseErrorPayload`. `makeErrorSubclassReducer` is constrained to only
- * these keys so its return type is sound — subclasses that need extra
+ * these keys so its return type is sound; subclasses that need extra
  * fields (like `AggregateError.errors` or `RetryableError.retryAfter`) use
  * `reduceErrorBase` directly and extend the result.
  */
@@ -113,8 +113,8 @@ type SimpleErrorSubclassKey = {
  * That read is not passive: it executes `Error.prepareStackTrace` when the
  * realm has one installed, and the format-and-cache itself is
  * workflow-visible (a formatter installed later never runs for an
- * already-materialized error). A cold replay repeats neither — it skips
- * dehydration entirely — so the read is recorded as guest code. A
+ * already-materialized error). A cold replay repeats neither (it skips
+ * dehydration entirely), so the read is recorded as guest code. A
  * data-property `stack` (rehydrated errors, workflow-assigned strings)
  * reads passively.
  */
@@ -161,8 +161,8 @@ function reduceErrorBase(value: unknown): BaseErrorPayload | false {
  *   - Inline reducers for subclasses that extend the shape with additional
  *     fields (e.g. `AggregateError.errors`, `RetryableError.retryAfter`).
  *
- * Matching by `value.name` (instead of `value.constructor?.name`) is robust
- * to bundlers that emit the class as an anonymous expression — e.g. Turbopack
+ * Matching by `value.name` (instead of `value.constructor?.name`) works with
+ * bundlers that emit the class as an anonymous expression. E.g. Turbopack
  * compiles `export class FatalError extends Error {…}` to a registration call
  * like `e.s(["FatalError", 0, class extends Error {…}])`, and the resulting
  * constructor has `name === ''`. Since every Error subclass we care about
@@ -231,7 +231,7 @@ export function getCommonReducers(
       types.isArrayBuffer(value) &&
       arrayBufferToBase64(value, 0, arrayBufferByteLength(value)),
     BigInt: (value) =>
-      // String(bigint) is a spec-internal numeric conversion — unlike
+      // String(bigint) is a spec-internal numeric conversion: unlike
       // `value.toString()`, it never consults BigInt.prototype.
       typeof value === 'bigint' && String(value),
     BigInt64Array: (value) =>
@@ -360,7 +360,7 @@ export function getCommonReducers(
         errors: readProperty(value, 'errors') as AggregateError['errors'],
       } satisfies SerializableSpecial['AggregateError'];
     },
-    // Base Error reducer — catch-all for any Error instance not matched by a
+    // Base Error reducer: catch-all for any Error instance not matched by a
     // specific subclass reducer above (including user Error subclasses without
     // WORKFLOW_SERIALIZE). Preserves `name` so the error's identity is retained
     // even though the exact class cannot be reconstructed.
@@ -379,7 +379,7 @@ export function getCommonReducers(
     Float32Array: (value) => types.isFloat32Array(value) && viewToBase64(value),
     Float64Array: (value) => types.isFloat64Array(value) && viewToBase64(value),
     // Headers is a host class injected into the sandbox, so its (shared)
-    // prototype is reachable from workflow code — iterate through the
+    // prototype is reachable from workflow code; iterate through the
     // boot-captured iterator instead of a live Symbol.iterator lookup.
     Headers: (value) =>
       isInstanceOfPrototype(value, Headers.prototype) &&
@@ -406,7 +406,7 @@ export function getCommonReducers(
     WorkflowFunction: (value) => {
       // Only match function references with a workflowId property (set by
       // the SWC compiler on workflow functions). Plain { workflowId } objects
-      // are NOT matched — this prevents infinite recursion since the reduced
+      // are NOT matched; this prevents infinite recursion since the reduced
       // form { workflowId } is a plain object, not a function.
       if (typeof value !== 'function') return false;
       const workflowId = readProperty(value, 'workflowId');
@@ -530,7 +530,7 @@ export function getCommonRevivers(
       if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
-    // Base Error reviver — used for plain Error instances and unrecognized
+    // Base Error reviver: used for plain Error instances and unrecognized
     // Error subclasses. Preserves `name` so the error's identity is retained.
     Error: (value) => {
       const opts = 'cause' in value ? { cause: value.cause } : undefined;

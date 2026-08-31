@@ -1060,8 +1060,8 @@ describe('workflowEntrypoint replay guards', () => {
     ).toEqual([]);
   });
 
-  it('replays attribute events before executing a step that loses the same race', async () => {
-    const debug = vi
+  it('retains when an attribute write beats a step that signals first', async () => {
+    using debug = vi
       .spyOn(runtimeLogger, 'debug')
       .mockImplementation(() => undefined);
     const ops: Promise<any>[] = [];
@@ -1080,14 +1080,17 @@ describe('workflowEntrypoint replay guards', () => {
       startedAt: new Date('2024-01-01T00:00:00.000Z'),
       deploymentId: 'test-deployment',
     };
+    // Register the step consumer first so it schedules the accepted
+    // suspension. The later attribute signal must be dropped by its new
+    // generation guard after the retained session resumes.
     const workflowCode = `
       const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
       const useStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")];
       const slowStep = useStep("slowStep");
       async function workflow() {
         await Promise.race([
-          setAttributes([{ key: "winner", value: "attribute" }]),
           slowStep(),
+          setAttributes([{ key: "winner", value: "attribute" }]),
         ]);
         return "attribute won";
       }${getWorkflowTransformCode('workflow')}`;
@@ -1103,19 +1106,17 @@ describe('workflowEntrypoint replay guards', () => {
     expect(createdEvents).toContainEqual(
       expect.objectContaining({ eventType: 'attr_set' })
     );
-    // The attr_set suspension skips step processing and resolves through an
-    // in-process replay, where the durable attribute event wins the race —
-    // so the run completes within this same delivery, with no queue
-    // interaction.
+    // The durable attribute event wins the retained resume. The later
+    // attribute suspension signal must not demote the session.
     expect(createdEvents).toContainEqual(
       expect.objectContaining({ eventType: 'run_completed' })
     );
     expect(queueCalls).toEqual([]);
     // Under lazy inline start the step that loses the attribute race is NOT
     // eagerly created: its step_created is deferred for a lazy step_started
-    // that never fires, because the attribute-resolving replay decides the
-    // race before any step executes. So the losing step leaves no events at
-    // all — strictly less event-log garbage than the eager model.
+    // that never fires, because the attribute-resolving retained execution
+    // decides the race before any step executes. So the losing step leaves no
+    // events at all — strictly less event-log garbage than the eager model.
     expect(createdEvents).not.toContainEqual(
       expect.objectContaining({ eventType: 'step_created' })
     );
@@ -1125,8 +1126,7 @@ describe('workflowEntrypoint replay guards', () => {
     const executionModes = debug.mock.calls
       .filter(([message]) => message === 'Starting workflow execution')
       .map(([, context]) => context?.executionMode);
-    expect(executionModes).toEqual(['replay', 'replay']);
-    debug.mockRestore();
+    expect(executionModes).toEqual(['replay', 'retained']);
   });
 
   it('fails the run when the World rejects an attr_set event as invalid', async () => {
@@ -3015,14 +3015,21 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(second.eventData.stso).toBeLessThanOrEqual(elapsed);
     expect(second.eventData.stepCount).toBe(1);
     expect(second.eventData.eventCount).toBeGreaterThan(0);
+    // `retained` is per-pass, not per-invocation: the first step's pass built
+    // the VM (a full replay, so no flag above), the second step's pass
+    // resumed the session this same invocation retained.
     expect(second.eventData.optimizations).toEqual([
       'turbo',
       'lazyStepStart',
       'optimisticStart',
+      'retained',
     ]);
-    // STSO-only steps never qualify for RSFS (it shares TTFS eligibility).
+    // STSO-only steps never qualify for RSFS (it shares TTFS eligibility),
+    // but finalSchedulingReplay is ungated — reported for any batch STSO is,
+    // not just the run's first step.
     expect(second.eventData.rsfs).toBeUndefined();
-    expect(second.eventData.finalSchedulingReplay).toBeUndefined();
+    expect(second.eventData.finalSchedulingReplay).toBeGreaterThanOrEqual(0);
+    expect(second.eventData.finalSchedulingReplay).toBeLessThanOrEqual(elapsed);
   });
 
   it('anchors ttfs correctly for a region-tagged run ID (tag bit cleared, not a future timestamp)', async () => {
@@ -3081,11 +3088,11 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     }${latXform('workflow')}`;
 
   it('reports ttfs across a pre-step setAttributes, resolved in-process without a re-invoke', async () => {
-    // A workflow-body setAttributes before the first step resolves through
-    // an in-process replay: the same delivery commits attr_set, replays, and
-    // runs the step — no queue interaction. TTFS ends at the attr write, so
-    // the setAttributes call's duration is subtracted; here that detour is
-    // milliseconds, keeping ttfs ≈ the run's ULID backdate.
+    // A workflow-body setAttributes before the first step resolves in-process:
+    // the same delivery commits attr_set, reloads it, and advances the workflow
+    // by resuming or replaying — no queue interaction. TTFS ends at the attr
+    // write, so the setAttributes call's duration is subtracted. That detour is
+    // only milliseconds here, keeping ttfs ≈ the run's ULID backdate.
     const backdateMs = 10_000;
     const before = Date.now();
     const first = await driveLatency({
@@ -3108,11 +3115,13 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(ttfs).toBeLessThanOrEqual(backdateMs + elapsed);
     expect(stso).toBeUndefined();
     // The attr detour does not end turbo: no resume invocation source
-    // exists, so the forced-optimistic fast path stays engaged.
+    // exists, so the forced-optimistic fast path stays engaged. The live VM
+    // also resumes after the attr write instead of replaying in a fresh VM.
     expect(optimizations).toEqual([
       'turbo',
       'lazyStepStart',
       'optimisticStart',
+      'retained',
     ]);
   });
 

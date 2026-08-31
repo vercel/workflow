@@ -17,7 +17,7 @@
  *
  * ## Adding a new non-format capability
  *
- * Some capabilities aren't serialization format prefixes — e.g.
+ * Some capabilities aren't serialization format prefixes: e.g.
  * byte-stream wire framing is an envelope around chunks rather than
  * a content format. For those, add a boolean field to `RunCapabilities`
  * and an entry in `CAPABILITY_VERSION_TABLE` below.
@@ -30,7 +30,7 @@
  * - `framedByteStreams` (wire-level chunk framing for byte streams): added in `5.0.0-beta.15`
  * - `gzip` (gzip payload compression): added in `5.0.0-beta.18`
  * - `zstd` (zstd payload compression, preferred codec): added in `5.0.0-beta.18`
- *   alongside gzip — they co-ship, so any run that can read one can read both.
+ *   alongside gzip; they co-ship, so any run that can read one can read both.
  * - `encp` (X25519 sealed-box encryption for cross-run writes): added in
  *   `5.0.0-beta.37`. Note that producers do **not** gate `encp` on this table:
  *   they gate on the presence of `encryptionPublicKey` on the target run,
@@ -40,8 +40,8 @@
  * - Lazy hook resume ("consumer re-ensures `hook_received` from `hookInput`"):
  *   deliberately NOT tracked here. Rather than predict a release cutoff, the
  *   run's creating deployment stamps an explicit `hookResumeInputVersion`
- *   execution-context marker; `resumeHook()` gates the parallel fast path on
- *   that marker (mirrored onto the hook's resumeContext by the server).
+ *   execution-context marker; `resumeHook()` gates the lazy path on that
+ *   marker (mirrored onto the hook's resumeContext by the server).
  */
 
 import semver from 'semver';
@@ -65,7 +65,7 @@ export interface RunCapabilities {
    * Whether the target run can decode wire-framed byte streams. When true,
    * byte streams (`type: 'bytes'` ReadableStreams passed across boundaries)
    * are wrapped in a length-prefixed frame envelope on the wire so the
-   * reader can identify chunk boundaries — which enables auto-reconnect
+   * reader can identify chunk boundaries, which enables auto-reconnect
    * on transient stream errors. When false, byte streams are written as
    * raw bytes (the legacy format) for compatibility with older runs.
    */
@@ -87,7 +87,7 @@ const FORMAT_VERSION_TABLE: ReadonlyArray<{
   // bump to the next beta. A too-low cutoff makes new producers write
   // compressed payloads to consumers that cannot decompress them; too-high
   // merely delays the optimization (safe). gzip and zstd ship together, so
-  // they share a min version — a run that can read one can read both.
+  // they share a min version: a run that can read one can read both.
   { format: SerializationFormat.GZIP, minVersion: '5.0.0-beta.18' },
   { format: SerializationFormat.ZSTD, minVersion: '5.0.0-beta.18' },
   // TODO(release): verify this matches the actual version that ships sealed-box
@@ -120,7 +120,7 @@ const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   // version-compare against a predicted release cutoff is a guess; instead the
   // run's creating deployment stamps an explicit `hookResumeInputVersion`
   // marker into its execution context, which the server mirrors onto the hook's
-  // resumeContext. `resumeHook()` gates the parallel fast path on that marker.
+  // resumeContext. `resumeHook()` gates the lazy path on that marker.
 ];
 
 /**
@@ -137,7 +137,7 @@ const BASELINE_FORMATS: ReadonlySet<SerializationFormatType> = new Set([
  * its `@workflow/core` version string (from `executionContext.workflowCoreVersion`).
  *
  * When the version is `undefined`, not a string, or not a valid semver string
- * (e.g. very old runs that predate the field, or corrupted metadata),
+ * (e.g. older runs that predate the field, or corrupted metadata),
  * we assume the most conservative capabilities (baseline formats only,
  * non-format capabilities all `false`).
  */

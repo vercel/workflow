@@ -1,41 +1,50 @@
 ---
 title: corrupted-event-log
-description: The workflow's event log contains an event that no consumer can process, indicating corruption or invalid state.
+description: The workflow's event log contains an event that cannot be processed or a stored payload that cannot be read.
 type: troubleshooting
-summary: Resolve corrupted event log errors caused by orphaned or unattributable events.
+summary: Resolve corrupted event log errors caused by invalid events or unreadable stored payloads.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
   - /docs/foundations/errors-and-retries
 ---
 
-This error occurs when the Workflow runtime repeatedly cannot replay events in the event log. This usually means the event log is in an invalid state, such as an orphaned event or one no consumer can attribute to anything the workflow did, or that a runtime determinism bug persists across retry attempts.
+This error occurs when the Workflow runtime cannot safely replay the event log. The log may be in an invalid state, such as an orphaned event or one no consumer can attribute to anything the workflow did, or it may reference a stored payload that the World can no longer read.
 
-This is a **workflow-level fatal error**. It cannot be caught or handled inside your workflow code. The runtime first retries transient replay divergence automatically; it marks the run as failed with this error only after replay still cannot recover.
+This is a **workflow-level fatal error**. It cannot be caught or handled inside your workflow code. The runtime retries transient replay divergence automatically, but an unreadable stored payload is terminal immediately because replaying cannot restore it.
 
-## Error Message
+## Error message
 
-```
+For replay divergence:
+
+```text
 Workflow replay diverged <divergenceCount> times after <maxRecoveryReplays> recovery replays; latest divergent event was <eventId>. Last divergence: <details>
 ```
 
-## Why This Happens
+For an unreadable stored payload:
 
-Workflows persist their progress as an ordered event log. During replay, the runtime processes each event in sequence — every event must be consumed by a matching callback (e.g., a step or sleep waiting for its result). An event no callback ever claims is one the runtime would have to drop to finish the run, so it fails the run instead of returning a result that silently ignored it.
+```text
+the event log references a payload that no longer exists in storage: <details>
+```
+
+## Why this happens
+
+Workflows persist their progress as an ordered event log. During replay, the runtime processes each event in sequence. Every event must be consumed by a matching callback, such as a step or sleep waiting for its result. An event no callback ever claims is one the runtime would have to drop to finish the run, so it fails the run instead of returning a result that silently ignored it.
 
 A delivery written from outside the replay, such as a hook firing or a step completing on another invocation, can land ahead of the events the replay is writing itself. That is ordinary concurrency rather than corruption, so the runtime holds such an event and offers it to each consumer the replay registers afterwards. The failure comes only when the workflow function returns while an event is still held, at which point no consumer can ever appear. A replay that suspends still holding one reports it on the span (`workflow.events.parked.count`, `.event_id`, `.event_type`) and leaves the decision to the replay that follows.
 
-Before failing, the runtime retries a divergent replay and surfaces this terminal error only if replay still cannot recover.
+Before failing on divergence, the runtime retries the replay and surfaces this terminal error only if replay still cannot recover. It does not retry a payload that the World reports as permanently missing.
 
 Common scenarios that produce this error:
 
-1. **An unclaimed event that repeats nothing** — A duplicate of a kind the log already records for that entity is read past rather than failing the run, so a second `step_completed` or `wait_completed` is not this error (see [Duplicate Events](/docs/how-it-works/event-sourcing#duplicate-events)). What fails is an unclaimed event with no earlier counterpart to defer to: a `step_started` behind a `step_completed` on a log that never recorded a `step_started`, for instance. No consumer remains for the step, and there is no earlier event of that kind the replay could be reading instead.
-2. **Orphaned events** — A `step_completed` or `wait_completed` event whose `correlationId` doesn't match any step or sleep in the workflow code, so the replay reaches its end still holding it.
-3. **A hole in the log** — Events are numbered by their position in the run's log, and those positions are dense, so a position below the log's highest that holds no event means the log the replay loaded is incomplete. The runtime cannot tell a position no write ever occupied from one whose event it failed to read, so it refuses to replay rather than produce a result that may be silently wrong. See [`WORKFLOW_SLOT_GAP_CHECK`](/docs/configuration/runtime-tuning#workflow_slot_gap_check).
+- **An unclaimed event that repeats nothing**: A duplicate of a kind the log already records for that entity is read past rather than failing the run, so a second `step_completed` or `wait_completed` is not this error (see [Duplicate Events](/docs/how-it-works/event-sourcing#duplicate-events)). What fails is an unclaimed event with no earlier counterpart to defer to: a `step_started` behind a `step_completed` on a log that never recorded a `step_started`, for instance. No consumer remains for the step, and there is no earlier event of that kind the replay could be reading instead.
+- **Orphaned events**: A `step_completed` or `wait_completed` event whose `correlationId` doesn't match any step or sleep in the workflow code, so the replay reaches its end still holding it.
+- **A hole in the log**: Events are numbered by their position in the run's log, and those positions are dense, so a position below the log's highest that holds no event means the log the replay loaded is incomplete. The runtime cannot tell a position no write ever occupied from one whose event it failed to read, so it refuses to replay rather than produce a result that may be silently wrong. See [`WORKFLOW_SLOT_GAP_CHECK`](/docs/configuration/runtime-tuning#workflow_slot_gap_check).
+- **An unreadable stored payload**: An event row still references a payload object, but the World reports that the object no longer exists in its storage. The same log would fail on every replay, so the run fails immediately instead of retrying forever.
 
-## What To Do
+## What to do
 
-This error indicates a bug in the Workflow SDK or Workflow server — not in your workflow code. Your workflow code does not need to change. Follow these steps to resolve the issue:
+This error indicates a bug in the Workflow SDK or Workflow server, not in your workflow code. Your workflow code does not need to change. Follow these steps to resolve the issue:
 
 ### 1. Upgrade to the latest `workflow` package
 
@@ -47,18 +56,18 @@ npm install workflow@latest
 
 ### 2. Retry the failed run
 
-If this error is displayed, automatic replay recovery has already been exhausted and the run has been marked as `failed`. You can re-run it using the **Re-run** button in the Workflow Dashboard.
+If this error reports replay divergence, automatic replay recovery has already been exhausted. If it reports an unreadable payload, recovery cannot recreate that payload. In either case, the run has been marked as `failed`. You can re-run the workflow using the **Re-run** button in the Workflow Dashboard; a re-run starts a new run with a new event log.
 
 ### 3. Report the issue
 
-If the error persists after upgrading, please [open an issue on GitHub](https://github.com/vercel/workflow/issues/new) so we can investigate and fix the underlying bug. Include the following details to help us diagnose the problem:
+If the error persists after upgrading, [open an issue on GitHub](https://github.com/vercel/workflow/issues/new) so we can investigate and fix the underlying bug. Include the following details to help us diagnose the problem:
 
 - The version of the `workflow` package you are using
 - The run ID(s) of the affected workflow run(s)
-- The error message (including `eventType`, `correlationId`, and `eventId`)
+- The complete error message, including any `eventType`, `correlationId`, `eventId`, or payload details
 - Any details about the event log or the workflow that triggered the error
 
-## This Error Cannot Be Caught
+## This error cannot be caught
 
 Unlike other workflow errors, a corrupted event log error is **not catchable** inside your workflow function. Because the event log itself is invalid, the runtime cannot safely continue executing any user code. The entire run fails immediately and is marked as `failed`.
 

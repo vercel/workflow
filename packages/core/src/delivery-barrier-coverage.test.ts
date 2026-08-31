@@ -80,6 +80,10 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   });
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
+  // Real-session parity: the log-order-draws quiescence fixpoint keys its
+  // progress metric on `mintCount`; without it the loop degrades to a single
+  // turn and this suite would only exercise a degraded variant.
+  let mintCount = 0;
   const promiseQueueHolder = { current: Promise.resolve() };
   const ctxRef: { current?: WorkflowOrchestratorContext } = {};
   const ctx: WorkflowOrchestratorContext = {
@@ -99,7 +103,13 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       getPromiseQueue: () => promiseQueueHolder.current,
     }),
     invocationsQueue: new Map(),
-    generateUlid: () => ulid(workflowStartedAt),
+    generateUlid: () => {
+      mintCount += 1;
+      return ulid(workflowStartedAt);
+    },
+    get mintCount() {
+      return mintCount;
+    },
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -710,7 +720,7 @@ function expectSuspensionSnapshotSteps(error: unknown, expected: string[]) {
     );
   }
   expect(
-    (error as WorkflowSuspension).steps.flatMap((item) =>
+    (error as WorkflowSuspension).items.flatMap((item) =>
       item.type === 'step' ? [item.stepName] : []
     )
   ).toEqual(expected);
@@ -829,5 +839,90 @@ describe('suspension timing against parked step deliveries', () => {
     });
 
     expectSuspensionSnapshotSteps(error, ['followUp']);
+  });
+});
+
+// ─── step result above a wait parked behind an unclaimed payload ────────────
+//
+// The log-order-draws turnstile (`quiesceEarlierCascades`) refuses to resolve
+// a delivery while a LOWER-index ARMED barrier is still registered. An armed
+// wait can itself be parked behind an unclaimed buffered hook payload — a
+// chain only the idle-gated safety net can move (lowest-first retirement).
+// This test pins the termination argument for that shape: the spinning step
+// delivery must not count as a parked committed delivery (`resolvesOnItsOwn`
+// excludes it — it gates on the parked wait), so `canRetireAbandonedBarriers`
+// stays reachable, the net retires the payload, the wait delivers, and the
+// turnstile opens. A regression that makes the turnstile wait on parked
+// chains directly, or counts the spinner as self-resolving, deadlocks this
+// replay instead of suspending it.
+describe('log-order draws turnstile above a parked chain', () => {
+  const scenario = async () => {
+    const resumeAt = new Date(FIXED_TIMESTAMP + 5_000);
+    const ops: Promise<unknown>[] = [];
+    const [payload, stepAResult] = await Promise.all([
+      dehydrateStepReturnValue({ poke: 1 }, 'wrun_test', undefined, ops),
+      dehydrateStepReturnValue('a', 'wrun_test', undefined, ops),
+    ]);
+
+    const events: Event[] = [
+      event('evnt_0', 'hook_created', `hook_${ULIDS[0]}`, {
+        token: 'parked-token',
+        isWebhook: false,
+      }),
+      event('evnt_1', 'wait_created', `wait_${ULIDS[1]}`, { resumeAt }),
+      event('evnt_2', 'step_created', `step_${ULIDS[2]}`, {
+        stepName: 'stepA',
+      }),
+      event('evnt_3', 'step_started', `step_${ULIDS[2]}`, {
+        stepName: 'stepA',
+      }),
+      event('evnt_4', 'hook_received', `hook_${ULIDS[0]}`, { payload }),
+      event('evnt_5', 'wait_completed', `wait_${ULIDS[1]}`, { resumeAt }),
+      event('evnt_6', 'step_completed', `step_${ULIDS[2]}`, {
+        stepName: 'stepA',
+        result: stepAResult,
+      }),
+      event('evnt_7', 'step_created', `step_${ULIDS[3]}`, {
+        stepName: 'afterBoth',
+      }),
+    ];
+
+    const ctx = setupWorkflowContext(events);
+    const useStep = createUseStep(ctx);
+    const sleep = createSleep(ctx);
+    const createHook = createCreateHook(ctx);
+
+    const error = await replay(ctx, async () => {
+      const stepA = useStep('stepA');
+      const afterBoth = useStep('afterBoth');
+      // Fire-and-forget hook: its payload (evnt_4) is consumed but never
+      // claimed, so its barrier stays unarmed and parks the wait behind it.
+      createHook({ token: 'parked-token' });
+      await Promise.all([sleep('5s'), stepA()]);
+      await afterBoth();
+    });
+
+    expectSuspendedWithPendingSteps(ctx, error, ['afterBoth']);
+  };
+
+  it('terminates and suspends with log-order draws on', async () => {
+    // Pin the flag rather than inherit the ambient environment: a suite-wide
+    // WORKFLOW_LOG_ORDER_DRAWS=0 sweep would otherwise silently run the off
+    // path twice and this test would prove nothing about the turnstile.
+    vi.stubEnv('WORKFLOW_LOG_ORDER_DRAWS', '1');
+    try {
+      await scenario();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('terminates and suspends with log-order draws off', async () => {
+    vi.stubEnv('WORKFLOW_LOG_ORDER_DRAWS', '0');
+    try {
+      await scenario();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

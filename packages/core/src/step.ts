@@ -1,12 +1,12 @@
 import { FatalError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { EventConsumerResult } from './events-consumer.js';
-import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
+import type { StepInvocationQueueItem } from './global.js';
 import { stepLogger } from './logger.js';
 import {
   awaitEarlierDeliveries,
   registerDeliveryBarrier,
-  scheduleWhenIdle,
+  scheduleWorkflowSuspension,
   type WorkflowOrchestratorContext,
 } from './private.js';
 import type { Serializable } from './schemas.js';
@@ -59,15 +59,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // Crucially, if we got here, then this step Promise does
           // not resolve so that the user workflow code does not proceed any further.
           // Notify the workflow handler that this step has not been run / has not completed yet.
-          const generation = ctx.suspensionGeneration;
-          scheduleWhenIdle(ctx, () => {
-            // A retained session may have resumed past this boundary while
-            // the timer was queued; a stale signal must not fire.
-            if (generation !== ctx.suspensionGeneration) return;
-            ctx.onWorkflowError(
-              new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
-            );
-          });
+          scheduleWorkflowSuspension(ctx);
           return EventConsumerResult.NotConsumed;
         }
 
@@ -128,7 +120,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         }
 
         if (event.eventType === 'step_started') {
-          // Step was started but is not terminal — it stays in the
+          // Step was started but is not terminal, so it stays in the
           // invocationQueue so the suspension handler can decide how to
           // dispatch it. Record the inline-ownership state from the event:
           // the LATEST start wins, so a stamped start (inline execution or
@@ -153,7 +145,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         }
 
         if (event.eventType === 'step_retrying') {
-          // Step is being retried — consume the event and wait for the next
+          // Step is being retried: consume the event and wait for the next
           // step_started. From here on the step is queue-owned (the delayed
           // retry handoff message, or the replay requeue), so inline
           // ownership is permanently lapsed for this correlation ID.
@@ -176,7 +168,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // The rejection is as branch-deciding as a success: it decides
           // whether a `try`/`catch` continuation runs, and therefore which
           // ULIDs the follow-up `useStep` calls draw. So it is ordered by
-          // event-log position exactly like `step_completed` below — see there
+          // event-log position exactly like `step_completed` below; see there
           // for why the deferral is captured here, at event-consumption time,
           // and awaited off the serial queue.
           const eventIndex = ctx.eventsConsumer.eventIndex;
@@ -254,7 +246,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // workflow awaiting this result on one branch and a `sleep()` or
           // hook payload on another would therefore allocate its follow-up
           // step ULIDs in a different order on a warm replay than the
-          // invocation that WROTE those `step_created` events did — a
+          // invocation that WROTE those `step_created` events did, which is a
           // permanent `ReplayDivergenceError`. So the result is ordered by
           // event-log position through the delivery-barrier registry (see
           // `ctx.pendingDeliveryBarriers`):
@@ -269,7 +261,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // inside the queue slot. Two reasons, both load-bearing:
           //  - Determinism: the set of earlier deliveries is then a function of
           //    log position alone. Captured later it would depend on how much
-          //    hydration the earlier deliveries had already finished — the very
+          //    hydration the earlier deliveries had already finished, the exact
           //    coupling this barrier exists to remove.
           //  - Coverage: an earlier delivery whose own hydration slot runs
           //    first on this serial queue has usually already resolved (and so
@@ -370,7 +362,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
 
     // Store the closure variables function for serialization. Mark it so the
     // step-function reducer can tell a function that came through `useStep`
-    // apart from one workflow code assigned over the property afterwards —
+    // apart from one workflow code assigned over the property afterwards:
     // the reducer has to invoke whatever is there, and only the latter is
     // worth reporting. See `markUseStepClosureFn` for the limits of what
     // this proves.
@@ -388,20 +380,20 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
     // metadata that `getStepFunctionReducer` relies on for serialization.
     // Without this override, `Function.prototype.bind` would return a new
     // function that doesn't inherit `stepId`, `__closureVarsFn`, or any
-    // other own properties of the original proxy — so the StepFunction
+    // other own properties of the original proxy, so the StepFunction
     // reducer would refuse to serialize it (it'd look like a plain
     // function), and a `useStep(...).bind(this)` proxy that flowed
     // through workflow serialization would silently break.
     //
     // The override stashes three pieces of state on the bound function so
     // the round trip is faithful:
-    //   - `stepId`             — already set on the original proxy.
-    //   - `__closureVarsFn`    — only when the original proxy had one.
-    //   - `__boundThis`        — the receiver passed to `.bind(thisArg, …)`.
+    //   - `stepId`: already set on the original proxy.
+    //   - `__closureVarsFn`: only when the original proxy had one.
+    //   - `__boundThis`: the receiver passed to `.bind(thisArg, …)`.
     //                            Always set (even when `thisArg` is
     //                            `null`/`undefined`) so the reducer can
     //                            distinguish "was bound" from "wasn't".
-    //   - `__boundArgs`        — only when the user supplied prefilled
+    //   - `__boundArgs`: only when the user supplied prefilled
     //                            arguments (`.bind(thisArg, x, y)`). The
     //                            SWC plugin only ever emits `.bind(this)`
     //                            today, so this is rare in practice; we
