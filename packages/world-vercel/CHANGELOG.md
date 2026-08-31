@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 4.7.2
+
+### Patch Changes
+
+- [#3844](https://github.com/vercel/workflow/pull/3844) [`7024b5b`](https://github.com/vercel/workflow/commit/7024b5b00eaa8ede82d27c44fbfeb3fa0014c7d8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Authenticate `deploymentId: "latest"` with the deployment's own OIDC identity instead of an ambient `VERCEL_TOKEN`, and scope the request to the configured team, fixing spurious 404s when resolving the latest deployment
+
 ## 4.7.1
 
 ### Patch Changes
