@@ -116,6 +116,7 @@ export {
 export type * from './shared.js';
 export type {
   GetChunksOptions,
+  GetStreamInfoOptions,
   StreamChunk,
   StreamChunksResponse,
   StreamInfoResponse,

@@ -187,7 +187,8 @@ describe('encodeMultiChunks', () => {
 // describe block. Keeping it here (next to the tests that need it)
 // makes the intent clear. The encodeMultiChunks tests above are pure
 // functions and are unaffected.
-vi.mock('./utils.js', () => ({
+vi.mock('./utils.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./utils.js')>()),
   getHttpConfig: vi.fn().mockResolvedValue({
     baseUrl: 'https://test.example.com',
     headers: new Headers(),
@@ -227,6 +228,20 @@ describe('session HTTP fallback', () => {
         (call) => (call[1]?.body as Uint8Array).byteLength
       )
     ).toEqual([10, 5]);
+  });
+});
+
+describe('streams.getChunks', () => {
+  it('rejects cursor/startIndex conflicts before issuing a request', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const { createStreamer } = await import('./streamer.js');
+    await expect(
+      createStreamer().streams.getChunks?.('run-123', 'stream', {
+        cursor: 'opaque',
+        startIndex: 42,
+      })
+    ).rejects.toThrow('mutually exclusive');
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 
