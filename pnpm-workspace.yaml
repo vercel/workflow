@@ -26,9 +26,6 @@ catalog:
   vitest: ^4.1.10
   zod: ~4.3.6
 
-onlyBuiltDependencies:
-  - esbuild
-
 overrides:
   # `@vercel/queue` accepts any `@vercel/oidc` in the 3.x line, and 3.3+ pulls in
   # `@vercel/cli-config`, whose `xdg-app-paths` dependency instantiates itself at
@@ -53,6 +50,10 @@ overrides:
 
 savePrefix: ""
 
+# Keep the lockfile single-document for tools such as Turborepo. CI installs
+# the exact packageManager pin through pnpm/setup.
+pmOnFail: ignore
+
 minimumReleaseAge: 2880
 
 minimumReleaseAgeExclude:
@@ -70,3 +71,20 @@ minimumReleaseAgeExclude:
   # packages (published in lockstep) are Vercel-published.
   - 'next'
   - '@next/*'
+packageConfigs:
+  '@workflow/example-sveltekit':
+    engineStrict: true
+  '@workflow/example-astro':
+    engineStrict: true
+allowBuilds:
+  '@parcel/watcher': false
+  '@swc/core': false
+  '@tailwindcss/oxide': false
+  better-sqlite3: false
+  bun: false
+  cbor-extract: false
+  cpu-features: false
+  esbuild: true
+  protobufjs: false
+  sharp: false
+  ssh2: false
