@@ -108,11 +108,11 @@ export interface HealthCheckResult {
    * version at which the *consumer* (queue-message target) materializes the
    * `hook_received` event from `hookInput` on replay. A cross-deployment
    * `start()` stamps the *target's* value (not the caller's) into the new
-   * run's `executionContext.hookResumeInputVersion` so that `resumeHook()`
-   * only takes the lazy path when the deployment that will actually consume
-   * the queue message is known to honor `hookInput`. Omitted when the
-   * responding deployment predates this field (an older consumer that ignores
-   * `hookInput`), which fails the gate closed.
+   * run's `executionContext.hookResumeInputVersion`. Current producers write
+   * the event durably before publishing the wake and do not read the marker;
+   * OLDER producers still gate their lazy path on it, so it keeps being
+   * stamped. Omitted when the responding deployment predates this field,
+   * which fails that gate closed.
    */
   hookResumeInputVersion?: number;
 }

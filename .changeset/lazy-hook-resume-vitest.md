@@ -2,4 +2,4 @@
 '@workflow/vitest': patch
 ---
 
-`waitForHook()` accepts `notHookId` to skip a hook the caller already resumed, whose `hook_received` may not be written yet.
+`waitForHook()` accepts `notHookId` to exclude a previously observed hook when a workflow creates several hooks with the same token.
