@@ -14,10 +14,6 @@ inputs:
     description: 'Whether to install dependencies'
     required: false
     default: 'true'
-  install-args:
-    description: 'Additional arguments for pnpm install (e.g., --ignore-scripts)'
-    required: false
-    default: ''
   build-packages:
     description: 'Whether to build packages (excludes workbenches)'
     required: false
@@ -39,14 +35,10 @@ runs:
     - name: Setup pnpm
       uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
       with:
-        install: false
+        install: ${{ inputs.install-dependencies }}
+        require-lockfile: ${{ inputs.install-dependencies }}
         runtime: node@${{ inputs.node-version }}
         cache: ${{ inputs.cache-pnpm }}
-
-    - name: Install Dependencies
-      if: ${{ inputs.install-dependencies == 'true' }}
-      shell: bash
-      run: pnpm install --frozen-lockfile ${{ inputs.install-args }}
 
     - name: Build all packages
       if: ${{ inputs.build-packages == 'true' }}

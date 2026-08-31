@@ -166,7 +166,6 @@ jobs:
         uses: ./.github/actions/setup-workflow-dev
         with:
           setup-rust: 'true'
-          install-args: '--ignore-scripts'
           build-packages: 'false'
 
       - name: Run Unit Tests
@@ -190,7 +189,6 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-args: '--ignore-scripts'
           build-packages: 'false'
 
       - name: Build reviver packages
@@ -264,7 +262,6 @@ jobs:
         uses: ./.github/actions/setup-workflow-dev
         with:
           setup-rust: 'true'
-          install-args: '--ignore-scripts'
           build-packages: 'false'
 
       - name: Build packages
@@ -1030,7 +1027,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-dependencies: 'false'
+          install-dependencies: ${{ !matrix.app.canary }}
           build-packages: 'false'
 
       - name: Setup canary
@@ -1041,9 +1038,6 @@ jobs:
           cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
           cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
@@ -1120,7 +1114,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-dependencies: 'false'
+          install-dependencies: ${{ !matrix.app.canary }}
           build-packages: 'false'
 
       - name: Setup canary
@@ -1131,9 +1125,6 @@ jobs:
           cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
           cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
@@ -1239,7 +1230,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-dependencies: 'false'
+          install-dependencies: ${{ !matrix.app.canary }}
           build-packages: 'false'
 
       - name: Setup canary
@@ -1250,9 +1241,6 @@ jobs:
           cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
           cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
@@ -1454,12 +1442,10 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
-          install: false
+          install: true
+          require-lockfile: true
           runtime: node@22
           cache: true
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*' --filter='!./docs'
