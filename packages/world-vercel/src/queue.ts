@@ -13,7 +13,7 @@ import {
   ValidQueueName,
 } from '@workflow/world';
 import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
-import { z } from 'zod/v4';
+import { z } from 'zod';
 import { missingDeploymentIdMessage } from './deployment-id.js';
 import { getQueueDispatcher } from './http-client.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
@@ -105,15 +105,17 @@ class DualTransport implements Transport<unknown> {
 // same module copy, so the context never has to cross a copy boundary.
 const requestIdStorage = new AsyncLocalStorage<string | undefined>();
 
-const MessageWrapper = z.object({
-  payload: QueuePayloadSchema,
-  queueName: ValidQueueName,
-  /**
-   * The deployment ID to use when re-enqueueing the message.
-   * This ensures the message is processed by the same deployment.
-   */
-  deploymentId: z.string().optional(),
-});
+const MessageWrapper = z.compile(
+  z.object({
+    payload: QueuePayloadSchema,
+    queueName: ValidQueueName,
+    /**
+     * The deployment ID to use when re-enqueueing the message.
+     * This ensures the message is processed by the same deployment.
+     */
+    deploymentId: z.string().optional(),
+  })
+);
 
 /**
  * Sleep Implementation via Message Delays

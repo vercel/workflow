@@ -569,28 +569,30 @@ const RunCancelledEventSchema = BaseEventSchema.extend({
 
 // Discriminated union for user-creatable events (requests to world.events.create)
 // Note: hook_conflict is NOT included here - it can only be created by World implementations
-export const CreateEventSchema = z.discriminatedUnion('eventType', [
-  // Run lifecycle events
-  RunCreatedEventSchema,
-  RunStartedEventSchema,
-  RunCompletedEventSchema,
-  RunFailedEventSchema,
-  RunCancelledEventSchema,
-  AttrSetEventSchema,
-  // Step lifecycle events
-  StepCreatedEventSchema,
-  StepCompletedEventSchema,
-  StepFailedEventSchema,
-  StepRetryingEventSchema,
-  StepStartedEventSchema,
-  // Hook lifecycle events
-  HookCreatedEventSchema,
-  HookReceivedEventSchema,
-  HookDisposedEventSchema,
-  // Wait lifecycle events
-  WaitCreatedEventSchema,
-  WaitCompletedEventSchema,
-]);
+export const CreateEventSchema = z.compile(
+  z.discriminatedUnion('eventType', [
+    // Run lifecycle events
+    RunCreatedEventSchema,
+    RunStartedEventSchema,
+    RunCompletedEventSchema,
+    RunFailedEventSchema,
+    RunCancelledEventSchema,
+    AttrSetEventSchema,
+    // Step lifecycle events
+    StepCreatedEventSchema,
+    StepCompletedEventSchema,
+    StepFailedEventSchema,
+    StepRetryingEventSchema,
+    StepStartedEventSchema,
+    // Hook lifecycle events
+    HookCreatedEventSchema,
+    HookReceivedEventSchema,
+    HookDisposedEventSchema,
+    // Wait lifecycle events
+    WaitCreatedEventSchema,
+    WaitCompletedEventSchema,
+  ])
+);
 
 // Discriminated union for ALL events (includes World-only events like hook_conflict)
 // This is used for reading events from the event log
@@ -621,22 +623,24 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
 
 // Server response includes runId, eventId, and createdAt
 // specVersion is optional in database for backward compatibility
-export const EventSchema = AllEventsSchema.and(
-  z.object({
-    runId: z.string(),
-    eventId: z.string(),
-    createdAt: z.coerce.date(),
-    occurredAt: z.coerce.date().optional(),
-    specVersion: z.number().optional(),
-    /**
-     * Lazy hook resume idempotency key, persisted on `hook_received` events so
-     * the queue consumer can detect that the producer's concurrent direct write
-     * already landed in the run_started preload and skip its own re-ensure.
-     * Mirrors {@link CreateEventParams.resumeId}; absent on all other events and
-     * on legacy (non-lazy) resumes.
-     */
-    resumeId: z.string().optional(),
-  })
+export const EventSchema = z.compile(
+  AllEventsSchema.and(
+    z.object({
+      runId: z.string(),
+      eventId: z.string(),
+      createdAt: z.coerce.date(),
+      occurredAt: z.coerce.date().optional(),
+      specVersion: z.number().optional(),
+      /**
+       * Lazy hook resume idempotency key, persisted on `hook_received` events so
+       * the queue consumer can detect that the producer's concurrent direct write
+       * already landed in the run_started preload and skip its own re-ensure.
+       * Mirrors {@link CreateEventParams.resumeId}; absent on all other events and
+       * on legacy (non-lazy) resumes.
+       */
+      resumeId: z.string().optional(),
+    })
+  )
 );
 
 // Inferred types

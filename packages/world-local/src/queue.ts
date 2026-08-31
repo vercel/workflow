@@ -17,7 +17,7 @@ import {
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
-import { z } from 'zod/v4';
+import { z } from 'zod';
 import type { Config } from './config.js';
 import { resolveBaseUrl, resolveDirectBaseUrl } from './config.js';
 import { jsonReplacer, jsonReviver } from './fs.js';
@@ -63,6 +63,14 @@ const MAX_SAFE_TIMEOUT_MS = 2147483647;
 // The local workers share the same Node.js process and event loop,
 // so we need to limit concurrency to avoid overwhelming the system.
 const DEFAULT_CONCURRENCY_LIMIT = 1000;
+
+const HeaderParser = z.compile(
+  z.object({
+    'x-vqs-queue-name': ValidQueueName,
+    'x-vqs-message-id': MessageId,
+    'x-vqs-message-attempt': z.coerce.number(),
+  })
+);
 const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
   DEFAULT_CONCURRENCY_LIMIT;
@@ -396,12 +404,6 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
     return { messageId };
   };
-
-  const HeaderParser = z.object({
-    'x-vqs-queue-name': ValidQueueName,
-    'x-vqs-message-id': MessageId,
-    'x-vqs-message-attempt': z.coerce.number(),
-  });
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     return async (req) => {

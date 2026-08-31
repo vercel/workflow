@@ -29,7 +29,7 @@ import {
 } from 'graphile-worker';
 import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
-import { z } from 'zod/v4';
+import { z } from 'zod';
 import type { PostgresWorldConfig } from './config.js';
 import { MessageData } from './message.js';
 
@@ -55,12 +55,14 @@ const graphileLogger = createGraphileLogger();
 const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
 // Core records MAX_DELIVERIES_EXCEEDED on delivery 49.
 const MAX_GRAPHILE_JOB_ATTEMPTS = 49;
-const GraphileHelpers = z.object({
-  abortSignal: z.instanceof(AbortSignal).optional(),
-  job: z.object({
-    attempts: z.number().int().positive(),
-  }),
-});
+const GraphileHelpers = z.compile(
+  z.object({
+    abortSignal: z.instanceof(AbortSignal).optional(),
+    job: z.object({
+      attempts: z.number().int().positive(),
+    }),
+  })
+);
 
 type HttpExecutionResult =
   | { type: 'completed' }

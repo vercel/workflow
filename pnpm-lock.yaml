@@ -58,8 +58,8 @@ catalogs:
       specifier: ^4.1.10
       version: 4.1.10
     zod:
-      specifier: ~4.3.6
-      version: 4.3.6
+      specifier: ~4.5.4
+      version: 4.5.4
 
 overrides:
   '@vercel/queue>@vercel/oidc': 3.2.0
@@ -261,7 +261,7 @@ importers:
         version: link:../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
     devDependencies:
       bun:
         specifier: ^1.3.0
@@ -298,14 +298,14 @@ importers:
         version: link:../utils
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
     devDependencies:
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -315,19 +315,19 @@ importers:
     optionalDependencies:
       '@ai-sdk/anthropic':
         specifier: ^3.0.0
-        version: 3.0.58(zod@4.3.6)
+        version: 3.0.58(zod@4.5.4)
       '@ai-sdk/gateway':
         specifier: ^3.0.0
-        version: 3.0.66(zod@4.3.6)
+        version: 3.0.66(zod@4.5.4)
       '@ai-sdk/google':
         specifier: ^3.0.0
-        version: 3.0.43(zod@4.3.6)
+        version: 3.0.43(zod@4.5.4)
       '@ai-sdk/openai':
         specifier: ^3.0.0
-        version: 3.0.41(zod@4.3.6)
+        version: 3.0.41(zod@4.5.4)
       '@ai-sdk/xai':
         specifier: ^3.0.0
-        version: 3.0.67(zod@4.3.6)
+        version: 3.0.67(zod@4.5.4)
 
   packages/astro:
     dependencies:
@@ -506,7 +506,7 @@ importers:
         version: 5.1.0
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -582,7 +582,7 @@ importers:
         version: 3.0.1
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
     devDependencies:
       '@opentelemetry/api':
         specifier: 1.9.1
@@ -637,13 +637,13 @@ importers:
         version: link:../next
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       workflow:
         specifier: workspace:*
         version: link:../workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1297,7 +1297,7 @@ importers:
         version: link:../tsconfig
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.4.3)
+        version: 6.0.116(zod@4.5.4)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1370,7 +1370,7 @@ importers:
         version: 3.0.1
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1413,7 +1413,7 @@ importers:
         version: 7.29.0
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
     devDependencies:
       '@opentelemetry/api':
         specifier: 1.9.1
@@ -1477,7 +1477,7 @@ importers:
         version: 3.0.1
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
     devDependencies:
       '@testcontainers/postgresql':
         specifier: 11.12.0
@@ -1563,7 +1563,7 @@ importers:
         version: link:../workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
     devDependencies:
       '@types/jsonlines':
         specifier: 0.1.5
@@ -1615,7 +1615,7 @@ importers:
         version: 8.20.0
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
     devDependencies:
       '@opentelemetry/api':
         specifier: 1.9.1
@@ -1761,7 +1761,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       astro:
         specifier: ^7.0.6
         version: 7.0.6(@emnapi/core@1.11.1)(@emnapi/runtime@1.11.1)(@netlify/blobs@9.1.2)(@types/node@24.6.2)(@vercel/blob@2.0.0)(@vercel/functions@3.8.0(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.20.0))(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8)))(ioredis@5.10.1)(jiti@2.7.0)(rollup@4.62.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0)
@@ -1770,13 +1770,13 @@ importers:
         version: 4.2.0
       openai:
         specifier: 6.9.0
-        version: 6.9.0(ws@8.20.0)(zod@4.3.6)
+        version: 6.9.0(ws@8.20.0)(zod@4.5.4)
       workflow:
         specifier: workspace:*
         version: link:../../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
 
   workbench/example:
     dependencies:
@@ -1794,7 +1794,7 @@ importers:
         version: link:../../packages/ai
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -1803,13 +1803,13 @@ importers:
         version: 0.0.4
       openai:
         specifier: ^6
-        version: 6.1.0(ws@8.20.0)(zod@4.3.6)
+        version: 6.1.0(ws@8.20.0)(zod@4.5.4)
       workflow:
         specifier: workspace:*
         version: link:../../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
     devDependencies:
       '@types/lodash.chunk':
         specifier: ^4.2.9
@@ -1847,19 +1847,19 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
       openai:
         specifier: ^6.1.0
-        version: 6.6.0(ws@8.20.0)(zod@4.3.6)
+        version: 6.6.0(ws@8.20.0)(zod@4.5.4)
       workflow:
         specifier: workspace:*
         version: link:../../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
 
   workbench/fastify:
     dependencies:
@@ -1881,13 +1881,13 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
       openai:
         specifier: ^6.6.0
-        version: 6.9.1(ws@8.20.0)(zod@4.3.6)
+        version: 6.9.1(ws@8.20.0)(zod@4.5.4)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1896,7 +1896,7 @@ importers:
         version: link:../../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
 
   workbench/hono:
     devDependencies:
@@ -1908,7 +1908,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       hono:
         specifier: ^4.12.27
         version: 4.12.28
@@ -1920,13 +1920,13 @@ importers:
         version: 3.0.260610-beta(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.8.0(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.20.0))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.3.1)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8))(giget@3.2.0)(ioredis@5.10.1)(jiti@2.7.0)(lru-cache@11.5.1)(rollup@4.62.2)(vite@8.1.3(@types/node@24.6.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))
       openai:
         specifier: ^6.6.0
-        version: 6.6.0(ws@8.20.0)(zod@4.3.6)
+        version: 6.6.0(ws@8.20.0)(zod@4.5.4)
       workflow:
         specifier: workspace:*
         version: link:../../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
 
   workbench/nest:
     dependencies:
@@ -1950,7 +1950,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       express:
         specifier: ^5.2.1
         version: 5.2.1
@@ -1959,7 +1959,7 @@ importers:
         version: 4.2.0
       openai:
         specifier: ^6.1.0
-        version: 6.9.1(ws@8.20.0)(zod@4.3.6)
+        version: 6.9.1(ws@8.20.0)(zod@4.5.4)
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
@@ -1990,13 +1990,13 @@ importers:
         version: 6.0.3
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
 
   workbench/nextjs-turbopack:
     dependencies:
       '@ai-sdk/react':
         specifier: 2.0.76
-        version: 2.0.76(react@19.2.7)(zod@4.3.6)
+        version: 2.0.76(react@19.2.7)(zod@4.5.4)
       '@node-rs/xxhash':
         specifier: 1.7.6
         version: 1.7.6
@@ -2029,7 +2029,7 @@ importers:
         version: link:../../packages/ai
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -2059,7 +2059,7 @@ importers:
         version: 16.2.11(@opentelemetry/api@1.9.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       openai:
         specifier: 6.9.1
-        version: 6.9.1(ws@8.20.0)(zod@4.3.6)
+        version: 6.9.1(ws@8.20.0)(zod@4.5.4)
       radix-ui:
         specifier: 1.4.3
         version: 1.4.3(@types/react-dom@19.1.9(@types/react@19.1.13))(@types/react@19.1.13)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -2086,7 +2086,7 @@ importers:
         version: link:../../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4
@@ -2120,7 +2120,7 @@ importers:
     dependencies:
       '@ai-sdk/react':
         specifier: 2.0.76
-        version: 2.0.76(react@19.2.7)(zod@4.3.6)
+        version: 2.0.76(react@19.2.7)(zod@4.5.4)
       '@node-rs/xxhash':
         specifier: 1.7.6
         version: 1.7.6
@@ -2153,7 +2153,7 @@ importers:
         version: link:../../packages/ai
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       class-variance-authority:
         specifier: 0.7.1
         version: 0.7.1
@@ -2183,7 +2183,7 @@ importers:
         version: 16.2.11(@opentelemetry/api@1.9.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       openai:
         specifier: 6.9.1
-        version: 6.9.1(ws@8.20.0)(zod@4.3.6)
+        version: 6.9.1(ws@8.20.0)(zod@4.5.4)
       radix-ui:
         specifier: 1.4.3
         version: 1.4.3(@types/react-dom@19.1.9(@types/react@19.1.13))(@types/react@19.1.13)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -2210,7 +2210,7 @@ importers:
         version: link:../../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4
@@ -2250,7 +2250,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       h3:
         specifier: ^1.15.5
         version: 1.15.11
@@ -2262,13 +2262,13 @@ importers:
         version: 2.13.4(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.8.0(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.20.0))(better-sqlite3@11.10.0)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8))(oxc-parser@0.133.0)(rolldown@1.1.4)(srvx@0.11.21)
       openai:
         specifier: ^6.6.0
-        version: 6.6.0(ws@8.20.0)(zod@4.3.6)
+        version: 6.6.0(ws@8.20.0)(zod@4.5.4)
       workflow:
         specifier: workspace:*
         version: link:../../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
 
   workbench/nitro-v3:
     dependencies:
@@ -2284,7 +2284,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -2293,7 +2293,7 @@ importers:
         version: 3.0.260610-beta(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.8.0(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.20.0))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.3.1)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8))(giget@3.2.0)(ioredis@5.10.1)(jiti@2.7.0)(lru-cache@11.5.1)(rollup@4.62.2)(vite@8.1.3(@types/node@24.6.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))
       openai:
         specifier: ^6.1.0
-        version: 6.6.0(ws@8.20.0)(zod@4.3.6)
+        version: 6.6.0(ws@8.20.0)(zod@4.5.4)
       rollup:
         specifier: ^4.62.2
         version: 4.62.2
@@ -2302,7 +2302,7 @@ importers:
         version: link:../../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
 
   workbench/nuxt:
     dependencies:
@@ -2321,7 +2321,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       h3:
         specifier: ^1.15.5
         version: 1.15.11
@@ -2333,7 +2333,7 @@ importers:
         version: 4.4.8(@babel/plugin-syntax-jsx@7.28.6(@babel/core@7.29.0))(@babel/plugin-syntax-typescript@7.28.6(@babel/core@7.29.0))(@biomejs/biome@2.4.4)(@netlify/blobs@9.1.2)(@parcel/watcher@2.5.6)(@types/node@22.19.0)(@vercel/blob@2.0.0)(@vercel/functions@3.8.0(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.20.0))(@vue/compiler-sfc@3.5.35)(better-sqlite3@11.10.0)(cac@6.7.14)(db0@0.3.4(better-sqlite3@11.10.0)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8)))(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8))(ioredis@5.10.1)(lightningcss@1.32.0)(magicast@0.5.2)(optionator@0.9.4)(rolldown@1.1.4)(rollup-plugin-visualizer@7.0.1(rolldown@1.1.4)(rollup@4.62.2))(rollup@4.62.2)(terser@5.44.0)(tsx@4.20.6)(typescript@6.0.3)(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))(yaml@2.9.0)
       openai:
         specifier: ^6.6.0
-        version: 6.6.0(ws@8.20.0)(zod@4.3.6)
+        version: 6.6.0(ws@8.20.0)(zod@4.5.4)
       vite:
         specifier: 7.3.6
         version: 7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0)
@@ -2342,7 +2342,7 @@ importers:
         version: link:../../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
 
   workbench/python:
     devDependencies:
@@ -2372,7 +2372,7 @@ importers:
     dependencies:
       '@ai-sdk/react':
         specifier: 2.0.76
-        version: 2.0.76(react@19.2.7)(zod@4.3.6)
+        version: 2.0.76(react@19.2.7)(zod@4.5.4)
       '@node-rs/xxhash':
         specifier: 1.7.6
         version: 1.7.6
@@ -2396,7 +2396,7 @@ importers:
         version: link:../../packages/ai
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       exsolve:
         specifier: ^1.0.7
         version: 1.0.7
@@ -2408,7 +2408,7 @@ importers:
         version: link:../../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
     devDependencies:
       '@sveltejs/kit':
         specifier: ^2.69.1
@@ -2558,7 +2558,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -2567,7 +2567,7 @@ importers:
         version: 3.0.260610-beta(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.8.0(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.20.0))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.3.1)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8))(giget@3.2.0)(ioredis@5.10.1)(jiti@2.7.0)(lru-cache@11.5.1)(rollup@4.62.2)(vite@7.3.6(@types/node@24.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))
       openai:
         specifier: ^6.1.0
-        version: 6.9.1(ws@8.20.0)(zod@4.3.6)
+        version: 6.9.1(ws@8.20.0)(zod@4.5.4)
       vite:
         specifier: ^7.3.6
         version: 7.3.6(@types/node@24.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0)
@@ -2576,7 +2576,7 @@ importers:
         version: link:../../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
 
   workbench/vite:
     dependencies:
@@ -2592,7 +2592,7 @@ importers:
         version: link:../../packages/world-postgres
       ai:
         specifier: 'catalog:'
-        version: 6.0.116(zod@4.3.6)
+        version: 6.0.116(zod@4.5.4)
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -2601,7 +2601,7 @@ importers:
         version: 3.0.260610-beta(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.8.0(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.20.0))(@vercel/queue@0.3.1)(better-sqlite3@11.10.0)(chokidar@5.0.0)(dotenv@17.3.1)(drizzle-orm@0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8))(giget@3.2.0)(ioredis@5.10.1)(jiti@2.7.0)(lru-cache@11.5.1)(rollup@4.62.2)(vite@7.3.6(@types/node@24.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))
       openai:
         specifier: ^6.6.0
-        version: 6.6.0(ws@8.20.0)(zod@4.3.6)
+        version: 6.6.0(ws@8.20.0)(zod@4.5.4)
       vite:
         specifier: ^7.3.6
         version: 7.3.6(@types/node@24.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0)
@@ -2610,7 +2610,7 @@ importers:
         version: link:../../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
 
   workbench/vitest:
     devDependencies:
@@ -2631,7 +2631,7 @@ importers:
         version: link:../../packages/workflow
       zod:
         specifier: 'catalog:'
-        version: 4.3.6
+        version: 4.5.4
 
 packages:
 
@@ -17832,11 +17832,11 @@ packages:
   zod@4.1.11:
     resolution: {integrity: sha512-WPsqwxITS2tzx1bzhIKsEs19ABD5vmCVa4xBo2tq/SrV4RNZtfws1EnCWQXM6yh8bD08a1idvkB5MZSBiZsjwg==}
 
-  zod@4.3.6:
-    resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
-
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+
+  zod@4.5.4:
+    resolution: {integrity: sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA==}
 
   zustand@4.5.7:
     resolution: {integrity: sha512-CHOUy7mu3lbD6o6LJLfllpjkzhHXSBlX8B9+qPddUsIfeF5S/UZ5q0kmCsnRqT1UHFQZchNFDDzMbQsuesHWlw==}
@@ -17858,89 +17858,75 @@ packages:
 
 snapshots:
 
-  '@ai-sdk/anthropic@3.0.58(zod@4.3.6)':
+  '@ai-sdk/anthropic@3.0.58(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.19(zod@4.3.6)
-      zod: 4.3.6
+      '@ai-sdk/provider-utils': 4.0.19(zod@4.5.4)
+      zod: 4.5.4
     optional: true
 
-  '@ai-sdk/gateway@2.0.0(zod@4.3.6)':
+  '@ai-sdk/gateway@2.0.0(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 2.0.0
-      '@ai-sdk/provider-utils': 3.0.12(zod@4.3.6)
+      '@ai-sdk/provider-utils': 3.0.12(zod@4.5.4)
       '@vercel/oidc': 3.0.3
-      zod: 4.3.6
+      zod: 4.5.4
 
-  '@ai-sdk/gateway@3.0.143(zod@4.4.3)':
+  '@ai-sdk/gateway@3.0.143(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 3.0.13
-      '@ai-sdk/provider-utils': 4.0.35(zod@4.4.3)
+      '@ai-sdk/provider-utils': 4.0.35(zod@4.5.4)
       '@vercel/oidc': 3.2.0
-      zod: 4.4.3
+      zod: 4.5.4
 
-  '@ai-sdk/gateway@3.0.66(zod@4.3.6)':
+  '@ai-sdk/gateway@3.0.66(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.19(zod@4.3.6)
+      '@ai-sdk/provider-utils': 4.0.19(zod@4.5.4)
       '@vercel/oidc': 3.1.0
-      zod: 4.3.6
+      zod: 4.5.4
 
-  '@ai-sdk/gateway@3.0.66(zod@4.4.3)':
+  '@ai-sdk/google@3.0.43(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.19(zod@4.4.3)
-      '@vercel/oidc': 3.1.0
-      zod: 4.4.3
-
-  '@ai-sdk/google@3.0.43(zod@4.3.6)':
-    dependencies:
-      '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.19(zod@4.3.6)
-      zod: 4.3.6
+      '@ai-sdk/provider-utils': 4.0.19(zod@4.5.4)
+      zod: 4.5.4
     optional: true
 
-  '@ai-sdk/openai-compatible@2.0.35(zod@4.3.6)':
+  '@ai-sdk/openai-compatible@2.0.35(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.19(zod@4.3.6)
-      zod: 4.3.6
+      '@ai-sdk/provider-utils': 4.0.19(zod@4.5.4)
+      zod: 4.5.4
     optional: true
 
-  '@ai-sdk/openai@3.0.41(zod@4.3.6)':
+  '@ai-sdk/openai@3.0.41(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.19(zod@4.3.6)
-      zod: 4.3.6
+      '@ai-sdk/provider-utils': 4.0.19(zod@4.5.4)
+      zod: 4.5.4
     optional: true
 
-  '@ai-sdk/provider-utils@3.0.12(zod@4.3.6)':
+  '@ai-sdk/provider-utils@3.0.12(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 2.0.0
       '@standard-schema/spec': 1.0.0
       eventsource-parser: 3.0.6
-      zod: 4.3.6
+      zod: 4.5.4
 
-  '@ai-sdk/provider-utils@4.0.19(zod@4.3.6)':
+  '@ai-sdk/provider-utils@4.0.19(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
       '@standard-schema/spec': 1.1.0
       eventsource-parser: 3.0.6
-      zod: 4.3.6
+      zod: 4.5.4
 
-  '@ai-sdk/provider-utils@4.0.19(zod@4.4.3)':
-    dependencies:
-      '@ai-sdk/provider': 3.0.8
-      '@standard-schema/spec': 1.1.0
-      eventsource-parser: 3.0.6
-      zod: 4.4.3
-
-  '@ai-sdk/provider-utils@4.0.35(zod@4.4.3)':
+  '@ai-sdk/provider-utils@4.0.35(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 3.0.13
       '@standard-schema/spec': 1.1.0
       eventsource-parser: 3.1.0
-      zod: 4.4.3
+      zod: 4.5.4
 
   '@ai-sdk/provider@2.0.0':
     dependencies:
@@ -17954,32 +17940,32 @@ snapshots:
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/react@2.0.76(react@19.2.7)(zod@4.3.6)':
+  '@ai-sdk/react@2.0.76(react@19.2.7)(zod@4.5.4)':
     dependencies:
-      '@ai-sdk/provider-utils': 3.0.12(zod@4.3.6)
-      ai: 5.0.76(zod@4.3.6)
+      '@ai-sdk/provider-utils': 3.0.12(zod@4.5.4)
+      ai: 5.0.76(zod@4.5.4)
       react: 19.2.7
       swr: 2.3.6(react@19.2.7)
       throttleit: 2.1.0
     optionalDependencies:
-      zod: 4.3.6
+      zod: 4.5.4
 
-  '@ai-sdk/react@3.0.221(react@19.2.4)(zod@4.4.3)':
+  '@ai-sdk/react@3.0.221(react@19.2.4)(zod@4.5.4)':
     dependencies:
-      '@ai-sdk/provider-utils': 4.0.35(zod@4.4.3)
-      ai: 6.0.219(zod@4.4.3)
+      '@ai-sdk/provider-utils': 4.0.35(zod@4.5.4)
+      ai: 6.0.219(zod@4.5.4)
       react: 19.2.4
       swr: 2.3.6(react@19.2.4)
       throttleit: 2.1.0
     transitivePeerDependencies:
       - zod
 
-  '@ai-sdk/xai@3.0.67(zod@4.3.6)':
+  '@ai-sdk/xai@3.0.67(zod@4.5.4)':
     dependencies:
-      '@ai-sdk/openai-compatible': 2.0.35(zod@4.3.6)
+      '@ai-sdk/openai-compatible': 2.0.35(zod@4.5.4)
       '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.19(zod@4.3.6)
-      zod: 4.3.6
+      '@ai-sdk/provider-utils': 4.0.19(zod@4.5.4)
+      zod: 4.5.4
     optional: true
 
   '@alloc/quick-lru@5.2.0': {}
@@ -20839,7 +20825,7 @@ snapshots:
       '@types/shimmer': 1.2.0
       import-in-the-middle: 1.15.0
       require-in-the-middle: 7.5.2
-      semver: 7.8.2
+      semver: 7.8.5
       shimmer: 1.2.1
     transitivePeerDependencies:
       - supports-color
@@ -25967,7 +25953,7 @@ snapshots:
       jiti: 2.7.0
       magic-string: 0.30.21
       prettier: 3.8.1
-      zod: 4.4.3
+      zod: 4.5.4
     transitivePeerDependencies:
       - supports-color
 
@@ -25981,7 +25967,7 @@ snapshots:
       '@tanstack/router-utils': 1.162.2
       chokidar: 5.0.0
       unplugin: 3.0.0
-      zod: 4.4.3
+      zod: 4.5.4
     optionalDependencies:
       '@tanstack/react-router': 1.170.17(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       vite: 7.3.6(@types/node@24.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0)
@@ -26032,7 +26018,7 @@ snapshots:
       ufo: 1.6.4
       vitefu: 1.1.3(vite@7.3.6(@types/node@24.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))
       xmlbuilder2: 4.0.3
-      zod: 4.4.3
+      zod: 4.5.4
     optionalDependencies:
       vite: 7.3.6(@types/node@24.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0)
     transitivePeerDependencies:
@@ -26596,7 +26582,7 @@ snapshots:
 
   '@vercel/geistdocs@1.23.1(67a87ea0ee5663b512e02db78181b04b)':
     dependencies:
-      '@ai-sdk/react': 3.0.221(react@19.2.4)(zod@4.4.3)
+      '@ai-sdk/react': 3.0.221(react@19.2.4)(zod@4.5.4)
       '@clack/prompts': 0.11.0
       '@icons-pack/react-simple-icons': 13.8.0(react@19.2.4)
       '@orama/tokenizers': 3.1.18
@@ -26604,7 +26590,7 @@ snapshots:
       '@streamdown/code': 1.0.2(react@19.2.4)
       '@vercel/agent-readability': 0.6.0(@sveltejs/kit@2.69.1(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@7.1.2(svelte@5.56.4(@typescript-eslint/types@8.46.4))(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0)))(svelte@5.56.4(@typescript-eslint/types@8.46.4))(typescript@6.0.3)(vite@7.3.6(@types/node@22.19.0)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0)))(@vercel/functions@3.8.0(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.20.0))(h3@1.15.11)(next@16.3.3(@opentelemetry/api@1.9.1)(@types/node@22.19.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))
       '@vercel/oidc': 3.8.2
-      ai: 6.0.219(zod@4.4.3)
+      ai: 6.0.219(zod@4.5.4)
       class-variance-authority: 0.7.1
       clsx: 2.1.1
       commander: 14.0.3
@@ -26637,7 +26623,7 @@ snapshots:
       unist-util-visit: 5.1.0
       use-stick-to-bottom: 1.1.1(react@19.2.4)
       vaul: 1.1.2(@types/react-dom@19.1.9(@types/react@19.1.13))(@types/react@19.1.13)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
-      zod: 4.4.3
+      zod: 4.5.4
     transitivePeerDependencies:
       - '@emotion/is-prop-valid'
       - '@fumadocs/mdx-remote'
@@ -27432,37 +27418,29 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  ai@5.0.76(zod@4.3.6):
+  ai@5.0.76(zod@4.5.4):
     dependencies:
-      '@ai-sdk/gateway': 2.0.0(zod@4.3.6)
+      '@ai-sdk/gateway': 2.0.0(zod@4.5.4)
       '@ai-sdk/provider': 2.0.0
-      '@ai-sdk/provider-utils': 3.0.12(zod@4.3.6)
+      '@ai-sdk/provider-utils': 3.0.12(zod@4.5.4)
       '@opentelemetry/api': 1.9.1
-      zod: 4.3.6
+      zod: 4.5.4
 
-  ai@6.0.116(zod@4.3.6):
+  ai@6.0.116(zod@4.5.4):
     dependencies:
-      '@ai-sdk/gateway': 3.0.66(zod@4.3.6)
+      '@ai-sdk/gateway': 3.0.66(zod@4.5.4)
       '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.19(zod@4.3.6)
+      '@ai-sdk/provider-utils': 4.0.19(zod@4.5.4)
       '@opentelemetry/api': 1.9.1
-      zod: 4.3.6
+      zod: 4.5.4
 
-  ai@6.0.116(zod@4.4.3):
+  ai@6.0.219(zod@4.5.4):
     dependencies:
-      '@ai-sdk/gateway': 3.0.66(zod@4.4.3)
-      '@ai-sdk/provider': 3.0.8
-      '@ai-sdk/provider-utils': 4.0.19(zod@4.4.3)
-      '@opentelemetry/api': 1.9.1
-      zod: 4.4.3
-
-  ai@6.0.219(zod@4.4.3):
-    dependencies:
-      '@ai-sdk/gateway': 3.0.143(zod@4.4.3)
+      '@ai-sdk/gateway': 3.0.143(zod@4.5.4)
       '@ai-sdk/provider': 3.0.13
-      '@ai-sdk/provider-utils': 4.0.35(zod@4.4.3)
+      '@ai-sdk/provider-utils': 4.0.35(zod@4.5.4)
       '@opentelemetry/api': 1.9.1
-      zod: 4.4.3
+      zod: 4.5.4
 
   ajv-formats@2.1.1(ajv@8.18.0):
     optionalDependencies:
@@ -27673,7 +27651,7 @@ snapshots:
       vitefu: 1.1.3(vite@8.1.3(@types/node@22.19.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))
       xxhash-wasm: 1.1.0
       yargs-parser: 22.0.0
-      zod: 4.3.6
+      zod: 4.4.3
     optionalDependencies:
       sharp: 0.34.5
     transitivePeerDependencies:
@@ -27765,7 +27743,7 @@ snapshots:
       vitefu: 1.1.3(vite@8.1.3(@types/node@24.6.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))
       xxhash-wasm: 1.1.0
       yargs-parser: 22.0.0
-      zod: 4.3.6
+      zod: 4.4.3
     optionalDependencies:
       sharp: 0.34.5
     transitivePeerDependencies:
@@ -29823,7 +29801,7 @@ snapshots:
       unist-util-remove-position: 5.0.0
       unist-util-visit: 5.0.0
       vfile: 6.0.3
-      zod: 4.3.6
+      zod: 4.5.4
     optionalDependencies:
       next: 16.3.3(@opentelemetry/api@1.9.1)(@types/node@22.19.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       react: 19.2.4
@@ -32505,7 +32483,7 @@ snapshots:
 
   node-abi@3.89.0:
     dependencies:
-      semver: 7.8.2
+      semver: 7.8.5
     optional: true
 
   node-abort-controller@3.1.1: {}
@@ -32920,25 +32898,25 @@ snapshots:
       is-docker: 2.2.1
       is-wsl: 2.2.0
 
-  openai@6.1.0(ws@8.20.0)(zod@4.3.6):
+  openai@6.1.0(ws@8.20.0)(zod@4.5.4):
     optionalDependencies:
       ws: 8.20.0
-      zod: 4.3.6
+      zod: 4.5.4
 
-  openai@6.6.0(ws@8.20.0)(zod@4.3.6):
+  openai@6.6.0(ws@8.20.0)(zod@4.5.4):
     optionalDependencies:
       ws: 8.20.0
-      zod: 4.3.6
+      zod: 4.5.4
 
-  openai@6.9.0(ws@8.20.0)(zod@4.3.6):
+  openai@6.9.0(ws@8.20.0)(zod@4.5.4):
     optionalDependencies:
       ws: 8.20.0
-      zod: 4.3.6
+      zod: 4.5.4
 
-  openai@6.9.1(ws@8.20.0)(zod@4.3.6):
+  openai@6.9.1(ws@8.20.0)(zod@4.5.4):
     optionalDependencies:
       ws: 8.20.0
-      zod: 4.3.6
+      zod: 4.5.4
 
   optionator@0.9.4:
     dependencies:
@@ -34778,8 +34756,7 @@ snapshots:
 
   semver@7.8.2: {}
 
-  semver@7.8.5:
-    optional: true
+  semver@7.8.5: {}
 
   send@1.2.0:
     dependencies:
@@ -37099,9 +37076,9 @@ snapshots:
 
   zod@4.1.11: {}
 
-  zod@4.3.6: {}
-
   zod@4.4.3: {}
+
+  zod@4.5.4: {}
 
   zustand@4.5.7(@types/react@19.1.13)(react@19.1.0):
     dependencies:

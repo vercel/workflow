@@ -128,36 +128,38 @@ export const WorkflowRunBaseSchema = z.object({
 });
 
 // Discriminated union based on status
-export const WorkflowRunSchema = z.discriminatedUnion('status', [
-  // Non-final states
-  WorkflowRunBaseSchema.extend({
-    status: z.enum(['pending', 'running']),
-    output: z.undefined().optional(),
-    error: z.undefined().optional(),
-    completedAt: z.undefined().optional(),
-  }),
-  // Cancelled state
-  WorkflowRunBaseSchema.extend({
-    status: z.literal('cancelled'),
-    output: z.undefined().optional(),
-    error: z.undefined().optional(),
-    completedAt: z.coerce.date(),
-  }),
-  // Completed state - output can be v1 or v2 format
-  WorkflowRunBaseSchema.extend({
-    status: z.literal('completed'),
-    output: SerializedDataSchema,
-    error: z.undefined().optional(),
-    completedAt: z.coerce.date(),
-  }),
-  // Failed state
-  WorkflowRunBaseSchema.extend({
-    status: z.literal('failed'),
-    output: z.undefined().optional(),
-    error: SerializedDataSchema,
-    completedAt: z.coerce.date(),
-  }),
-]);
+export const WorkflowRunSchema = z.compile(
+  z.discriminatedUnion('status', [
+    // Non-final states
+    WorkflowRunBaseSchema.extend({
+      status: z.enum(['pending', 'running']),
+      output: z.undefined().optional(),
+      error: z.undefined().optional(),
+      completedAt: z.undefined().optional(),
+    }),
+    // Cancelled state
+    WorkflowRunBaseSchema.extend({
+      status: z.literal('cancelled'),
+      output: z.undefined().optional(),
+      error: z.undefined().optional(),
+      completedAt: z.coerce.date(),
+    }),
+    // Completed state - output can be v1 or v2 format
+    WorkflowRunBaseSchema.extend({
+      status: z.literal('completed'),
+      output: SerializedDataSchema,
+      error: z.undefined().optional(),
+      completedAt: z.coerce.date(),
+    }),
+    // Failed state
+    WorkflowRunBaseSchema.extend({
+      status: z.literal('failed'),
+      output: z.undefined().optional(),
+      error: SerializedDataSchema,
+      completedAt: z.coerce.date(),
+    }),
+  ])
+);
 
 // Inferred types
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
@@ -235,16 +237,18 @@ export const BULK_CANCEL_MAX_RUN_IDS = 500;
  * `cancelReason` (max 512 chars) is recorded on each run_cancelled event,
  * mirroring the single-run {@link CancelRunOptions.cancelReason}.
  */
-export const BulkCancelWorkflowRunsRequestSchema = z.object({
-  runIds: z
-    .array(z.string())
-    .min(1)
-    .max(BULK_CANCEL_MAX_RUN_IDS)
-    .refine((ids) => new Set(ids).size === ids.length, {
-      message: 'runIds must not contain duplicates',
-    }),
-  cancelReason: z.string().max(512).optional(),
-});
+export const BulkCancelWorkflowRunsRequestSchema = z.compile(
+  z.object({
+    runIds: z
+      .array(z.string())
+      .min(1)
+      .max(BULK_CANCEL_MAX_RUN_IDS)
+      .refine((ids) => new Set(ids).size === ids.length, {
+        message: 'runIds must not contain duplicates',
+      }),
+    cancelReason: z.string().max(512).optional(),
+  })
+);
 export type BulkCancelWorkflowRunsRequest = z.infer<
   typeof BulkCancelWorkflowRunsRequestSchema
 >;
@@ -260,9 +264,8 @@ export type BulkCancelWorkflowRunsRequest = z.infer<
  * - `failed`: cancellation failed; `code` is a machine-readable error code
  *   and `retryable` indicates whether retrying may succeed.
  */
-export const BulkCancelWorkflowRunResultSchema = z.discriminatedUnion(
-  'outcome',
-  [
+export const BulkCancelWorkflowRunResultSchema = z.compile(
+  z.discriminatedUnion('outcome', [
     z.object({ runId: z.string(), outcome: z.literal('cancelled') }),
     z.object({ runId: z.string(), outcome: z.literal('already_cancelled') }),
     z.object({
@@ -277,7 +280,7 @@ export const BulkCancelWorkflowRunResultSchema = z.discriminatedUnion(
       code: z.string(),
       retryable: z.boolean(),
     }),
-  ]
+  ])
 );
 export type BulkCancelWorkflowRunResult = z.infer<
   typeof BulkCancelWorkflowRunResultSchema
@@ -287,17 +290,19 @@ export type BulkCancelWorkflowRunResult = z.infer<
  * Aggregate result of a bulk cancellation. `results` preserves the order of
  * the requested `runIds`; `summary` counts each outcome.
  */
-export const BulkCancelWorkflowRunsResultSchema = z.object({
-  summary: z.object({
-    requested: z.number(),
-    cancelled: z.number(),
-    alreadyCancelled: z.number(),
-    notCancellable: z.number(),
-    notFound: z.number(),
-    failed: z.number(),
-  }),
-  results: z.array(BulkCancelWorkflowRunResultSchema),
-});
+export const BulkCancelWorkflowRunsResultSchema = z.compile(
+  z.object({
+    summary: z.object({
+      requested: z.number(),
+      cancelled: z.number(),
+      alreadyCancelled: z.number(),
+      notCancellable: z.number(),
+      notFound: z.number(),
+      failed: z.number(),
+    }),
+    results: z.array(BulkCancelWorkflowRunResultSchema),
+  })
+);
 export type BulkCancelWorkflowRunsResult = z.infer<
   typeof BulkCancelWorkflowRunsResultSchema
 >;

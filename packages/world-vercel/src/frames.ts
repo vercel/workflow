@@ -20,7 +20,7 @@ export interface DecodedFrame {
 
 // The protocol consumer validates the event or control-frame shape after the
 // body is available. The byte codec only requires a CBOR object here.
-const CborObjectSchema = z.record(z.string(), z.unknown());
+const CborObjectSchema = z.compile(z.record(z.string(), z.unknown()));
 
 /** Test/utility: encode a complete frame. Production server uses prefix
  *  + streaming body. */

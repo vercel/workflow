@@ -53,21 +53,23 @@ export const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
 });
 
 // Wire schema for resolved data (full input/output)
-const WorkflowRunWireSchema = WorkflowRunWireBaseSchema;
+const WorkflowRunWireSchema = z.compile(WorkflowRunWireBaseSchema);
 
 // Wire schema for lazy mode with refs instead of data
 // input/output can be Uint8Array (v2) or any JSON (legacy v1)
-const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
-  input: true,
-  output: true,
-}).extend({
-  // We discard the results of the refs, so we don't care about the type here
-  inputRef: z.any().optional(),
-  outputRef: z.any().optional(),
-  // Accept both Uint8Array (v2 format) and any (legacy v1 JSON format)
-  input: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
-  output: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
-});
+const WorkflowRunWireWithRefsSchema = z.compile(
+  WorkflowRunWireBaseSchema.omit({
+    input: true,
+    output: true,
+  }).extend({
+    // We discard the results of the refs, so we don't care about the type here
+    inputRef: z.any().optional(),
+    outputRef: z.any().optional(),
+    // Accept both Uint8Array (v2 format) and any (legacy v1 JSON format)
+    input: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
+    output: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
+  })
+);
 
 // Overloaded function signatures for filterRunData
 function filterRunData(run: any, resolveData: 'none'): WorkflowRunWithoutData;
@@ -566,9 +568,11 @@ export async function cancelWorkflowRuns(
  * returns the post-merge attribute snapshot so callers don't need to
  * issue a follow-up read.
  */
-const ExperimentalSetAttributesResponseSchema = z.object({
-  attributes: z.record(z.string(), z.string()),
-});
+const ExperimentalSetAttributesResponseSchema = z.compile(
+  z.object({
+    attributes: z.record(z.string(), z.string()),
+  })
+);
 
 /**
  * Apply attribute changes to a workflow run. The body shape mirrors the

@@ -35,9 +35,8 @@ export const AttributeChangeSchema = z.object({
   value: AttributeValueSchema,
 }) satisfies z.ZodType<AttributeChange>;
 
-export const AttributeChangesSchema = z
-  .array(AttributeChangeSchema)
-  .superRefine((changes, context) => {
+export const AttributeChangesSchema = z.compile(
+  z.array(AttributeChangeSchema).superRefine((changes, context) => {
     try {
       // Reserved keys are contextual: attr_set events may carry them when the
       // sibling allowReservedAttributes flag is set. Callers that prohibit the
@@ -51,7 +50,8 @@ export const AttributeChangesSchema = z
         input: changes,
       });
     }
-  });
+  })
+);
 
 /** The post-merge attribute snapshot returned by a World. */
 export interface ExperimentalSetAttributesResult {

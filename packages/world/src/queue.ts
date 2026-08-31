@@ -1,4 +1,4 @@
-import { z } from 'zod/v4';
+import { z } from 'zod';
 
 export type QueueKind = 'workflow';
 
@@ -266,98 +266,100 @@ export const HookResumeTimingSchema = z.object({
 });
 export type HookResumeTiming = z.infer<typeof HookResumeTimingSchema>;
 
-export const WorkflowInvokePayloadSchema = z.object({
-  runId: z.string(),
-  traceCarrier: TraceCarrierSchema.optional(),
-  requestedAt: z.coerce.date().optional(),
-  /** Consecutive replay divergences in this recovery chain and latest position. */
-  replayDivergence: z
-    .object({
-      eventId: z.string(),
-      count: z.number().int().positive(),
-    })
-    .optional(),
-  /**
-   * Re-invocations so far in this chain of stale-snapshot (precondition)
-   * rejections. Counted on the message because the in-process restart budget
-   * lives in the invocation closure and the queue's delivery count resets on
-   * every fresh enqueue, so without this a permanently fenced run would cycle
-   * forever instead of failing.
-   */
-  preconditionReinvocations: z.number().int().positive().optional(),
-  /** Number of times this message has been re-enqueued due to server errors (5xx) */
-  serverErrorRetryCount: z.number().int().optional(),
-  /** Number of times this message has been re-routed after a deployment mismatch */
-  deploymentMismatchRetryCount: z.number().int().nonnegative().optional(),
-  /**
-   * The wait this message is the delayed continuation for, and which attempt
-   * in that wait's chain it is.
-   *
-   * Present only on wait-continuation messages. It exists so the invocation a
-   * continuation wakes can recognize itself as that continuation: if the wait
-   * is STILL pending when it replays — the continuation arrived before its
-   * deadline — then its own idempotency key is already spent, and re-enqueueing
-   * under the same key is silently dropped by the world's dedupe window. The
-   * attempt number is what makes the next key fresh, so an early delivery
-   * costs one extra hop instead of losing the wait's timer permanently.
-   *
-   * Counted on the message for the same reason as
-   * {@link WorkflowInvokePayloadSchema.shape.preconditionReinvocations}: the
-   * budget has to survive across invocations, and a fresh enqueue resets
-   * anything the queue tracks itself. Absent on the first continuation, so a
-   * producer that predates this field is indistinguishable from attempt 0 and
-   * a consumer that predates it simply ignores the field.
-   */
-  /**
-   * `.catch(undefined)` for the reason `hookResumeTiming` has it: this field
-   * must never be able to fail the parse of the invocation payload. A
-   * malformed value would otherwise throw on every delivery of the message
-   * and burn the run's delivery budget. Degrading to `undefined` reads as
-   * "not a continuation", which costs at worst the pre-attempt behavior for
-   * that one wait rather than killing the run.
-   */
-  waitContinuation: z
-    .object({
-      correlationId: z.string(),
-      attempt: z.number().int().nonnegative(),
-    })
-    .optional()
-    .catch(undefined),
-  /** Step ID for inline step execution in combined handler. If provided, the flow execution
-   * will jump directly to execute the step with the given ID before doing an event replay. */
-  stepId: z.string().optional(),
-  /** Step name, sent alongside stepId to avoid loading the event log to resolve the name. */
-  stepName: z.string().optional(),
-  /** Run creation data, only present on the first queue delivery from start() */
-  runInput: RunInputSchema.optional(),
-  /**
-   * Lazy hook resume data, only present when `resumeHook()` takes the parallel
-   * fast path. A consumer that understands this field idempotently ensures the
-   * `hook_received` event exists (keyed by `resumeId`) before replaying.
-   */
-  hookInput: HookResumeInputSchema.optional(),
-  /**
-   * Resilient step dispatch data, only present alongside `stepId` when the
-   * producer parallelized the `step_created` write with this queue publish. A
-   * consumer that understands this field idempotently ensures the
-   * `step_created` event exists (keyed by `stepId`) before executing the step.
-   */
-  stepInput: StepDispatchInputSchema.optional(),
-  /**
-   * Hook-resume TTR timing. Present on both `resumeHook()` dispatch paths
-   * (unlike `hookInput`, which only rides the lazy path), and
-   * forwarded onto a dispatched step message when the resuming invocation
-   * hands the next durable step to another invocation. Purely observational.
-   * See {@link HookResumeTimingSchema}.
-   *
-   * `.catch(undefined)` because this field must never be able to fail the
-   * parse of the invocation payload: a malformed value (a NaN boundary, a
-   * shape change from a future producer) would otherwise throw on every
-   * delivery of that message and burn the run's delivery budget over a
-   * telemetry field. Anything unparseable degrades to "no measurement".
-   */
-  hookResumeTiming: HookResumeTimingSchema.optional().catch(undefined),
-});
+export const WorkflowInvokePayloadSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    traceCarrier: TraceCarrierSchema.optional(),
+    requestedAt: z.coerce.date().optional(),
+    /** Consecutive replay divergences in this recovery chain and latest position. */
+    replayDivergence: z
+      .object({
+        eventId: z.string(),
+        count: z.number().int().positive(),
+      })
+      .optional(),
+    /**
+     * Re-invocations so far in this chain of stale-snapshot (precondition)
+     * rejections. Counted on the message because the in-process restart budget
+     * lives in the invocation closure and the queue's delivery count resets on
+     * every fresh enqueue, so without this a permanently fenced run would cycle
+     * forever instead of failing.
+     */
+    preconditionReinvocations: z.number().int().positive().optional(),
+    /** Number of times this message has been re-enqueued due to server errors (5xx) */
+    serverErrorRetryCount: z.number().int().optional(),
+    /** Number of times this message has been re-routed after a deployment mismatch */
+    deploymentMismatchRetryCount: z.number().int().nonnegative().optional(),
+    /**
+     * The wait this message is the delayed continuation for, and which attempt
+     * in that wait's chain it is.
+     *
+     * Present only on wait-continuation messages. It exists so the invocation a
+     * continuation wakes can recognize itself as that continuation: if the wait
+     * is STILL pending when it replays — the continuation arrived before its
+     * deadline — then its own idempotency key is already spent, and re-enqueueing
+     * under the same key is silently dropped by the world's dedupe window. The
+     * attempt number is what makes the next key fresh, so an early delivery
+     * costs one extra hop instead of losing the wait's timer permanently.
+     *
+     * Counted on the message for the same reason as
+     * {@link WorkflowInvokePayloadSchema.shape.preconditionReinvocations}: the
+     * budget has to survive across invocations, and a fresh enqueue resets
+     * anything the queue tracks itself. Absent on the first continuation, so a
+     * producer that predates this field is indistinguishable from attempt 0 and
+     * a consumer that predates it simply ignores the field.
+     */
+    /**
+     * `.catch(undefined)` for the reason `hookResumeTiming` has it: this field
+     * must never be able to fail the parse of the invocation payload. A
+     * malformed value would otherwise throw on every delivery of the message
+     * and burn the run's delivery budget. Degrading to `undefined` reads as
+     * "not a continuation", which costs at worst the pre-attempt behavior for
+     * that one wait rather than killing the run.
+     */
+    waitContinuation: z
+      .object({
+        correlationId: z.string(),
+        attempt: z.number().int().nonnegative(),
+      })
+      .optional()
+      .catch(undefined),
+    /** Step ID for inline step execution in combined handler. If provided, the flow execution
+     * will jump directly to execute the step with the given ID before doing an event replay. */
+    stepId: z.string().optional(),
+    /** Step name, sent alongside stepId to avoid loading the event log to resolve the name. */
+    stepName: z.string().optional(),
+    /** Run creation data, only present on the first queue delivery from start() */
+    runInput: RunInputSchema.optional(),
+    /**
+     * Lazy hook resume data, only present when `resumeHook()` takes the parallel
+     * fast path. A consumer that understands this field idempotently ensures the
+     * `hook_received` event exists (keyed by `resumeId`) before replaying.
+     */
+    hookInput: HookResumeInputSchema.optional(),
+    /**
+     * Resilient step dispatch data, only present alongside `stepId` when the
+     * producer parallelized the `step_created` write with this queue publish. A
+     * consumer that understands this field idempotently ensures the
+     * `step_created` event exists (keyed by `stepId`) before executing the step.
+     */
+    stepInput: StepDispatchInputSchema.optional(),
+    /**
+     * Hook-resume TTR timing. Present on both `resumeHook()` dispatch paths
+     * (unlike `hookInput`, which only rides the lazy path), and
+     * forwarded onto a dispatched step message when the resuming invocation
+     * hands the next durable step to another invocation. Purely observational.
+     * See {@link HookResumeTimingSchema}.
+     *
+     * `.catch(undefined)` because this field must never be able to fail the
+     * parse of the invocation payload: a malformed value (a NaN boundary, a
+     * shape change from a future producer) would otherwise throw on every
+     * delivery of that message and burn the run's delivery budget over a
+     * telemetry field. Anything unparseable degrades to "no measurement".
+     */
+    hookResumeTiming: HookResumeTimingSchema.optional().catch(undefined),
+  })
+);
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;
 export type HealthCheckPayload = z.infer<typeof HealthCheckPayloadSchema>;
@@ -366,21 +368,23 @@ export type HealthCheckPayload = z.infer<typeof HealthCheckPayloadSchema>;
  * Health check payload - used to verify that the queue pipeline
  * can deliver messages to the combined workflow endpoint.
  */
-export const HealthCheckPayloadSchema = z.object({
-  __healthCheck: z.literal(true),
-  correlationId: z.string(),
-  /**
-   * The run id the caller is about to create, when the probe is being used to
-   * prepare a cross-deployment `start()`.
-   *
-   * The responder runs inside the target deployment, so it can derive that
-   * run's public key locally from its own key material and return it in the
-   * probe response. That lets the caller seal the workflow arguments without
-   * a separate key lookup. Absent for probes issued for other reasons (CLI
-   * health command, dashboard), in which case no key is returned.
-   */
-  runId: z.string().optional(),
-});
+export const HealthCheckPayloadSchema = z.compile(
+  z.object({
+    __healthCheck: z.literal(true),
+    correlationId: z.string(),
+    /**
+     * The run id the caller is about to create, when the probe is being used to
+     * prepare a cross-deployment `start()`.
+     *
+     * The responder runs inside the target deployment, so it can derive that
+     * run's public key locally from its own key material and return it in the
+     * probe response. That lets the caller seal the workflow arguments without
+     * a separate key lookup. Absent for probes issued for other reasons (CLI
+     * health command, dashboard), in which case no key is returned.
+     */
+    runId: z.string().optional(),
+  })
+);
 
 /**
  * Health check MUST come first.
@@ -399,10 +403,9 @@ export const HealthCheckPayloadSchema = z.object({
  * Ordering health check first is safe in the other direction: it requires
  * `__healthCheck: true`, which an invoke payload never carries.
  */
-export const QueuePayloadSchema = z.union([
-  HealthCheckPayloadSchema,
-  WorkflowInvokePayloadSchema,
-]);
+export const QueuePayloadSchema = z.compile(
+  z.union([HealthCheckPayloadSchema, WorkflowInvokePayloadSchema])
+);
 export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
 
 export interface QueueOptions {

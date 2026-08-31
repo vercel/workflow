@@ -322,34 +322,42 @@ const CreateEventV4PageSchema = z.union([
     cursor: z.string().nullable(),
     hasMore: z.boolean(),
   }),
+  // A response without a page omits these keys outright. Since Zod 4.4,
+  // `z.undefined()` no longer makes an object key implicitly optional.
   z.object({
-    events: z.undefined(),
-    cursor: z.undefined(),
-    hasMore: z.undefined(),
+    events: z.undefined().optional(),
+    cursor: z.undefined().optional(),
+    hasMore: z.undefined().optional(),
   }),
 ]);
 
-const CreateEventV4BodySchema = CreateEventV4BodyBaseSchema.and(
-  CreateEventV4PageSchema
+const CreateEventV4BodySchema = z.compile(
+  CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema)
 );
 
 const CreateEventV4BodySchemas: {
   [T in EventType]: z.ZodType<EventResult<T> & { event: Event }>;
 } = {
-  run_created: CreateEventV4BodyBaseSchema.extend({
-    run: WorkflowRunSchema,
-  }).and(CreateEventV4PageSchema),
-  run_started: CreateEventV4BodyBaseSchema.extend({
-    run: WorkflowRunSchema.and(z.object({ startedAt: z.coerce.date() })),
-  }).and(CreateEventV4PageSchema),
-  step_started: CreateEventV4BodyBaseSchema.extend({
-    step: StepWireSchema.extend({
-      startedAt: z.coerce.date(),
-    }).transform((step) => ({
-      ...deserializeStep(step),
-      startedAt: step.startedAt,
-    })),
-  }).and(CreateEventV4PageSchema),
+  run_created: z.compile(
+    CreateEventV4BodyBaseSchema.extend({
+      run: WorkflowRunSchema,
+    }).and(CreateEventV4PageSchema)
+  ),
+  run_started: z.compile(
+    CreateEventV4BodyBaseSchema.extend({
+      run: WorkflowRunSchema.and(z.object({ startedAt: z.coerce.date() })),
+    }).and(CreateEventV4PageSchema)
+  ),
+  step_started: z.compile(
+    CreateEventV4BodyBaseSchema.extend({
+      step: StepWireSchema.extend({
+        startedAt: z.coerce.date(),
+      }).transform((step) => ({
+        ...deserializeStep(step),
+        startedAt: step.startedAt,
+      })),
+    }).and(CreateEventV4PageSchema)
+  ),
   run_completed: CreateEventV4BodySchema,
   run_failed: CreateEventV4BodySchema,
   run_cancelled: CreateEventV4BodySchema,
@@ -370,22 +378,26 @@ const CreateEventV4BodySchemas: {
 };
 
 const MaxEventsHeaderSchema = z.coerce.number().int().positive();
-const EventStreamEndSchema = z.object({
-  _end: z.literal(1),
-  next: z.string().optional(),
-  hasMore: z.boolean(),
-});
+const EventStreamEndSchema = z.compile(
+  z.object({
+    _end: z.literal(1),
+    next: z.string().optional(),
+    hasMore: z.boolean(),
+  })
+);
 
 /**
  * Terminal error frame. The backend sends this when it cannot finish a frame
  * stream and retrying will not help — the response already committed to `200`
  * with its first byte, so there is no status code left to carry the failure.
  */
-const EventStreamErrorSchema = z.object({
-  _error: z.literal(1),
-  code: z.string(),
-  message: z.string().optional(),
-});
+const EventStreamErrorSchema = z.compile(
+  z.object({
+    _error: z.literal(1),
+    code: z.string(),
+    message: z.string().optional(),
+  })
+);
 
 /**
  * An event's payload object is gone from the backend's blob storage. The
@@ -894,11 +906,13 @@ export interface CreateEventBatchV4Result {
   results: CreateEventBatchV4ItemResult[];
 }
 
-const BatchItemFailureSchema = z.object({
-  status: z.number().int(),
-  error: z.string(),
-  message: z.string(),
-});
+const BatchItemFailureSchema = z.compile(
+  z.object({
+    status: z.number().int(),
+    error: z.string(),
+    message: z.string(),
+  })
+);
 
 /**
  * POST /api/v4/runs/:runId/events/batch
