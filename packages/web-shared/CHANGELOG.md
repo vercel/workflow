@@ -1,5 +1,14 @@
 # @workflow/web-shared
 
+## 4.1.22
+
+### Patch Changes
+
+- [#3906](https://github.com/vercel/workflow/pull/3906) [`bf5cd3a`](https://github.com/vercel/workflow/commit/bf5cd3a033646bddfc64a060bf5a9737ecd570d1) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Prevent event payload flicker during decryption.
+
+- Updated dependencies []:
+  - @workflow/core@4.8.6
+
 ## 4.1.21
 
 ### Patch Changes

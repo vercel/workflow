@@ -1,5 +1,15 @@
 # @workflow/next
 
+## 4.1.10
+
+### Patch Changes
+
+- [#3801](https://github.com/vercel/workflow/pull/3801) [`680c263`](https://github.com/vercel/workflow/commit/680c2631edb26af4de70f599fce4796404c8e562) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Discover workflows imported by every Next.js file convention entrypoint.
+
+- Updated dependencies []:
+  - @workflow/core@4.8.6
+  - @workflow/builders@4.1.11
+
 ## 4.1.9
 
 ### Patch Changes
