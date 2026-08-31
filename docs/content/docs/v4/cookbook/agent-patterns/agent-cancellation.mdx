@@ -113,7 +113,7 @@ export async function stoppableAgent(messages: ModelMessage[]) {
   const hook = stopHook.create({ token: `stop:${workflowRunId}` }); // [!code highlight]
 
   const agent = new DurableAgent({
-    model: "xai/grok-4.6",
+    model: "spacexai/grok-4.6",
     instructions: "You are a research assistant. Search and analyze data as needed.",
     tools: {
       searchWeb: {

@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.14'
+  version: '1.15'
 ---
 
 ## *Critical*: Always use correct `workflow` documentation
@@ -92,7 +92,7 @@ async function processWithAI(data: any) {
   "use step";
   // AI SDK works in steps without workarounds
   return await generateText({
-    model: "xai/grok-4.6",
+    model: "spacexai/grok-4.6",
     prompt: `Process: ${JSON.stringify(data)}`,
   });
 }
@@ -152,7 +152,7 @@ export async function myAgentWorkflow(userMessage: string) {
   "use workflow";
 
   const agent = new WorkflowAgent({
-    model: "xai/grok-4.6",
+    model: "spacexai/grok-4.6",
     instructions: "You are a helpful assistant.",
     tools: {
       lookupData: tool({
@@ -174,7 +174,7 @@ export async function myAgentWorkflow(userMessage: string) {
 ```
 
 **Key points:**
-- A plain `"provider/model"` string routes through Vercel AI Gateway; `xai/grok-4.6` is the default model in Workflow examples
+- A plain `"provider/model"` string routes through Vercel AI Gateway; `spacexai/grok-4.6` is the default model in Workflow examples
 - `getWritable<ModelCallStreamPart>()` streams durable model-call output; convert it with `createModelCallToUIChunkTransform()` in an HTTP route
 - Tool `execute` functions that need Node.js/npm access should use `"use step"`
 - Tool `execute` functions that use workflow primitives (`sleep()`, `createHook()`) should **NOT** use `"use step"` because they run at the workflow level

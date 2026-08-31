@@ -125,7 +125,7 @@ import { convertToModelMessages, createUIMessageStreamResponse } from "ai";
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
   const agent = new ToolLoopAgent({ // [!code highlight]
-    model: "xai/grok-4.6",
+    model: "spacexai/grok-4.6",
     instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
@@ -264,7 +264,7 @@ export async function chatWorkflow(messages: UIMessage[]) {
 
   const agent = new WorkflowAgent({ // [!code highlight]
     // Plain model strings use Vercel AI Gateway.
-    model: "xai/grok-4.6", // [!code highlight]
+    model: "spacexai/grok-4.6", // [!code highlight]
     instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });

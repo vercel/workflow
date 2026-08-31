@@ -343,7 +343,7 @@ export interface DurableAgentOptions<TTools extends ToolSet = ToolSet>
   /**
    * The model provider to use for the agent.
    *
-   * This should be a string compatible with the Vercel AI Gateway (e.g., 'xai/grok-4.6'),
+   * This should be a string compatible with the Vercel AI Gateway (e.g., 'spacexai/grok-4.6'),
    * or a step function that returns a LanguageModelV3 instance.
    */
   model: string | (() => Promise<CompatibleLanguageModel>);
@@ -779,7 +779,7 @@ export interface DurableAgentStreamResult<
  * @example
  * ```typescript
  * const agent = new DurableAgent({
- *   model: 'xai/grok-4.6',
+ *   model: 'spacexai/grok-4.6',
  *   tools: {
  *     getWeather: {
  *       description: 'Get weather for a location',

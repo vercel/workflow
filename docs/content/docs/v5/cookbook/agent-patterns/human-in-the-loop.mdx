@@ -6,7 +6,7 @@ summary: Use WorkflowAgent's needsApproval option and AI SDK approval responses 
 ---
 
 <CopyPrompt
-  text="Add a human approval gate to this AI SDK WorkflowAgent. Define the consequential action with AI SDK's `tool()` helper, set `needsApproval: true` (or an input-dependent function), and keep the tool's `execute` function as a durable `&quot;use step&quot;` function. Stream `ModelCallStreamPart` values through `getWritable()` and convert them with `createModelCallToUIChunkTransform()` in the API route. In the client, render tool parts whose state is `approval-requested`, call `addToolApprovalResponse()` with the approval ID and decision, and use `lastAssistantMessageIsCompleteWithApprovalResponses` to continue automatically. Verify approve and reject paths, duplicate responses, and that the side effect never runs before approval."
+  text="Add a human approval gate to this AI SDK WorkflowAgent. Define the consequential action with AI SDK's `tool()` helper, set `needsApproval: true` (or an input-dependent function), and keep the tool's `execute` function as a durable `&quot;use step&quot;` function. Configure `experimental_toolApprovalSecret` with the name of a high-entropy secret environment variable so client-supplied approvals are signed and verified. Stream `ModelCallStreamPart` values through `getWritable()` and convert them with `createModelCallToUIChunkTransform()` in the API route. In the client, render tool parts whose state is `approval-requested`, call `addToolApprovalResponse()` with the approval ID and decision, and use `lastAssistantMessageIsCompleteWithApprovalResponses` to continue automatically. Verify approve and reject paths, invalid or missing signatures, duplicate responses, and that the side effect never runs before approval."
 />
 
 Use this pattern when an AI agent needs confirmation before performing an action such as booking, purchasing, publishing, or deleting data. `WorkflowAgent` makes approval a first-class part of the durable agent loop: it emits an approval request, pauses before the tool executes, and resumes after the user responds.
@@ -92,9 +92,12 @@ export async function bookingAgent(messages: ModelMessage[]) {
   "use workflow";
 
   const agent = new WorkflowAgent({
-    model: "xai/grok-4.6",
+    model: "spacexai/grok-4.6",
     instructions: "Help the user find and book flights.",
     tools: bookingTools,
+    experimental_toolApprovalSecret: { // [!code highlight]
+      environmentVariable: "WORKFLOW_TOOL_APPROVAL_SECRET", // [!code highlight]
+    }, // [!code highlight]
   });
 
   return agent.stream({
@@ -103,6 +106,14 @@ export async function bookingAgent(messages: ModelMessage[]) {
   });
 }
 ```
+
+## Sign approval requests
+
+When approval responses come from client-supplied message history, configure `experimental_toolApprovalSecret` as shown above. `WorkflowAgent` signs the approval ID, tool-call ID, tool name, and validated input when it emits the approval request, then verifies that signature before an approved tool can execute. Missing or invalid signatures prevent the action from running.
+
+Set `WORKFLOW_TOOL_APPROVAL_SECRET` to a high-entropy secret in every environment that can execute the workflow. For example, generate one with `openssl rand -base64 32`, then store it in your deployment's secret environment variables. Only the environment variable name crosses the workflow boundary; the secret is read inside signing and verification steps and is never serialized into workflow history.
+
+Signed approvals require `@ai-sdk/workflow` 2.0.16 or later.
 
 `needsApproval` can also decide from the parsed tool input. For example, require approval only when a booking costs more than a threshold:
 

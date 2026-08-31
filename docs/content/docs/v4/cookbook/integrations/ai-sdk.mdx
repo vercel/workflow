@@ -91,7 +91,7 @@ async function runTurn(messages: ModelMessage[]) {
   "use step";
 
   const result = streamText({
-    model: "xai/grok-4.6",
+    model: "spacexai/grok-4.6",
     system: "You are a customer support agent.",
     messages,
     tools: TOOLS,

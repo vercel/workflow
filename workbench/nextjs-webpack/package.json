@@ -14,7 +14,8 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@ai-sdk/react": "2.0.76",
+    "@ai-sdk/react": "4.0.90",
+    "@ai-sdk/workflow": "2.0.17",
     "@node-rs/xxhash": "1.7.6",
     "@opentelemetry/api": "^1.9.0",
     "@radix-ui/react-tooltip": "1.2.8",
@@ -24,8 +25,7 @@
     "@streamdown/math": "1.0.2",
     "@streamdown/mermaid": "1.0.2",
     "@vercel/otel": "^1.13.0",
-    "@workflow/ai": "workspace:*",
-    "ai": "catalog:",
+    "ai": "7.0.87",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "1.1.1",

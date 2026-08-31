@@ -2,7 +2,7 @@ import { generateText, stepCountIs } from 'ai';
 import { FatalError } from 'workflow';
 import z from 'zod/v4';
 
-const DEFAULT_AI_MODEL = 'xai/grok-4.6';
+const DEFAULT_AI_MODEL = 'spacexai/grok-4.6';
 
 async function getWeatherInformation({ city }: { city: string }) {
   'use step';

@@ -1,4 +1,4 @@
-export const DEFAULT_AI_MODEL = 'xai/grok-4.6';
+export const DEFAULT_AI_MODEL = 'spacexai/grok-4.6';
 
 export const AI_MODELS = [
   { id: DEFAULT_AI_MODEL, name: 'Grok 4.6' },
