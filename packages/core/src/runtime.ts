@@ -434,18 +434,25 @@ async function recordFatalRunError({
   }
 }
 
-function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
+function findRecordedTerminalRunEvent(
+  events: Event[],
+  runId: string
+): Event | undefined {
   // Terminal run events are always last by construction (no event creation
   // succeeds against a terminal run), but scan the full array for
   // defense-in-depth: a World/backend ordering bug shouldn't make us miss an
   // actual termination signal.
-  const terminalRunEvent = events.find(
+  return events.find(
     (e) =>
       e.runId === runId &&
       (e.eventType === 'run_completed' ||
         e.eventType === 'run_failed' ||
         e.eventType === 'run_cancelled')
   );
+}
+
+function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
+  const terminalRunEvent = findRecordedTerminalRunEvent(events, runId);
 
   if (!terminalRunEvent) {
     return false;
@@ -2587,13 +2594,10 @@ export function workflowEntrypoint(
                     return;
                   }
 
-                  // Lazy hook resume: the producer (resumeHook fast path)
-                  // parallelized the `hook_received` write with this queue
-                  // publish, so the event may not be persisted yet. Idempotently
-                  // ensure it before replay, keyed by `resumeId` so a
-                  // concurrent producer write converges on exactly one event
-                  // (the server resolves a matching claim as success, not an
-                  // error). `hookInput` never rides a turbo first-delivery
+                  // Legacy lazy hook resume: idempotently ensure the event from
+                  // the payload-bearing `hookInput` before replay, keyed by
+                  // `resumeId` so redeliveries converge on exactly one event.
+                  // `hookInput` never rides a turbo first-delivery
                   // (that path carries `runInput`, not `hookInput`), so this
                   // only runs on the normal load-and-replay path. Skipped
                   // entirely when the fast path above already ensured the
