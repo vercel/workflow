@@ -6,19 +6,24 @@ summary: Cancel a running WorkflowAgent cooperatively with AbortController so th
 ---
 
 <CopyPrompt
-  text="Add cancellation to this AI SDK WorkflowAgent. For hard cancellation, expose a server route that receives `runId` and calls `getRun(runId).cancel()` from `workflow/api`. For graceful cancellation, define `stopHook` with `defineHook()` from `workflow`, create it with a stable token such as the workflow run ID, and race `WorkflowAgent.stream()` against the stop hook using `Promise.race`. Pass an `AbortController` signal to the agent and return a stopped status after the hook calls `controller.abort()`. Wire the UI Stop button to the route that resumes the hook or falls back to `getRun(runId).cancel()`, and verify stale run IDs are handled."
+  text="Add cancellation to this AI SDK WorkflowAgent. For hard cancellation, expose a server route that receives `runId` and calls `getRun(runId).cancel()` from `workflow/api`. For graceful cancellation, define `stopHook` with `defineHook()` from `workflow`, create it with a stable token such as the workflow run ID, and race `WorkflowAgent.stream()` against the stop hook using `Promise.race`. Pass an `AbortController` signal to the agent, forward the tool execution signal to cancellable I/O, and wait for the agent branch to settle after aborting before returning a stopped status. Wire the UI Stop button to the route that resumes the hook or falls back to `getRun(runId).cancel()`, and verify stale run IDs are handled."
 />
 
 Cancel a running agent from the outside through a **Stop** button in a chat user interface (UI), an admin cancellation endpoint, or a timeout fallback.
 
 ## Pattern
 
-Create an `AbortController` in the workflow and race the agent (passing its signal) against a stop hook. When the hook fires, `controller.abort()` is called: the signal propagates into the agent and cancels the underlying model stream. The workflow return value records whether it completed or stopped; read that value through the run API or persist it in application state.
+Create an `AbortController` in the workflow and race the agent (passing its signal) against a stop hook. When the hook fires, call `controller.abort()`, then wait for the agent branch to observe the signal and settle before the workflow returns. The signal cancels the underlying model stream and is passed to tool execution; each tool must forward it to cancellable I/O. The workflow return value records whether it completed or stopped; read that value through the run API or persist it in application state.
 
 {/* @skip-typecheck: requires AI SDK 7 and @ai-sdk/workflow */}
 ```typescript lineNumbers
 import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
-import { isStepCount, tool, type ModelMessage } from "ai";
+import {
+  isStepCount,
+  tool,
+  type ModelMessage,
+  type ToolExecutionOptions,
+} from "ai";
 import { defineHook, getWritable, getWorkflowMetadata } from "workflow";
 import { z } from "zod";
 
@@ -26,16 +31,29 @@ export const stopHook = defineHook({
   schema: z.object({ reason: z.string().optional() }),
 });
 
-async function searchWeb({ query }: { query: string }) {
+async function searchWeb(
+  { query }: { query: string },
+  { abortSignal }: ToolExecutionOptions<unknown>,
+) {
   "use step";
-  await new Promise((r) => setTimeout(r, 1500));
-  return { results: [{ title: `${query} - Wikipedia`, snippet: `Overview of ${query}...` }] };
+  const response = await fetch(
+    `https://api.example.com/search?q=${encodeURIComponent(query)}`,
+    { signal: abortSignal }, // [!code highlight]
+  );
+  return response.json();
 }
 
-async function analyzeData({ topic }: { topic: string }) {
+async function analyzeData(
+  { topic }: { topic: string },
+  { abortSignal }: ToolExecutionOptions<unknown>,
+) {
   "use step";
-  await new Promise((r) => setTimeout(r, 1200));
-  return { summary: `Analysis of ${topic}: significant developments found.`, confidence: 0.85 };
+  const response = await fetch("https://api.example.com/analyze", {
+    method: "POST",
+    body: JSON.stringify({ topic }),
+    signal: abortSignal, // [!code highlight]
+  });
+  return response.json();
 }
 
 export async function stoppableAgent(messages: ModelMessage[]) {
@@ -62,22 +80,31 @@ export async function stoppableAgent(messages: ModelMessage[]) {
     },
   });
 
-  const result = await Promise.race([
-    agent
-      .stream({
-        messages,
-        writable: getWritable<ModelCallStreamPart>(),
-        abortSignal: controller.signal, // [!code highlight]
-        stopWhen: isStepCount(15),
-      })
-      .then((r) => ({ type: "complete" as const, messages: r.messages })),
-    hook.then(({ reason }) => {
-      controller.abort(reason); // [!code highlight]
-      return { type: "stopped" as const, reason };
-    }),
+  const agentPromise = agent.stream({
+    messages,
+    writable: getWritable<ModelCallStreamPart>(),
+    abortSignal: controller.signal, // [!code highlight]
+    stopWhen: isStepCount(15),
+  });
+
+  const outcome = await Promise.race([
+    agentPromise.then((result) => ({
+      type: "complete" as const,
+      messages: result.messages,
+    })),
+    hook.then(({ reason }) => ({
+      type: "stop-requested" as const,
+      reason,
+    })),
   ]);
 
-  return result;
+  if (outcome.type === "stop-requested") {
+    controller.abort(outcome.reason); // [!code highlight]
+    await agentPromise; // Wait until the losing branch has stopped. // [!code highlight]
+    return { type: "stopped" as const, reason: outcome.reason };
+  }
+
+  return outcome;
 }
 ```
 
@@ -128,9 +155,9 @@ export function StopButton({ runId }: { runId: string }) {
 1. The workflow creates an `AbortController` when it starts.
 2. The workflow creates a hook with the token `stop:${workflowRunId}`.
 3. `Promise.race` runs the agent stream and the stop hook concurrently.
-4. The agent receives `controller.signal`. When aborted, the signal cancels the active model stream and prevents another model step from starting.
-5. When the stop API resumes the hook, the workflow calls `controller.abort()`, resolves the race, and exits.
-6. The workflow returns a `stopped` result. That return value is not written to the model-call stream automatically; the application can read `run.returnValue` or persist the status separately.
+4. The agent receives `controller.signal`. When aborted, the signal cancels the active model stream, propagates to tool execution, and prevents another model step from starting. Tool implementations must forward it to operations such as `fetch` that support cancellation.
+5. When the stop API resumes the hook, the race reports a stop request. The workflow aborts the controller and awaits `agentPromise`, so it does not return while that branch is still running.
+6. After the agent branch settles, the workflow returns a `stopped` result. That return value is not written to the model-call stream automatically; the application can read `run.returnValue` or persist the status separately.
 
 ## Adapting this
 

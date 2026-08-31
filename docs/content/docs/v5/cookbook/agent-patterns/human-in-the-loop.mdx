@@ -24,7 +24,12 @@ Set `needsApproval` on the tool. Keep the action itself in a step so it receives
 
 ```typescript title="workflows/booking-agent.ts" lineNumbers
 import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
-import { tool, type ModelMessage } from "ai";
+import {
+  tool,
+  type InferUITools,
+  type ModelMessage,
+  type UIMessage,
+} from "ai";
 import { getWritable } from "workflow";
 import { z } from "zod";
 
@@ -41,18 +46,47 @@ async function searchFlights({ from, to, date }: {
   return response.json();
 }
 
-async function confirmBooking({ flightId, passenger }: {
+async function confirmBooking({ flightId, passenger, price }: {
   flightId: string;
   passenger: string;
+  price: number;
 }) {
   "use step";
 
   const response = await fetch("https://api.example.com/bookings", {
     method: "POST",
-    body: JSON.stringify({ flightId, passenger }),
+    body: JSON.stringify({ flightId, passenger, price }),
   });
   return response.json();
 }
+
+export const bookingTools = {
+  searchFlights: tool({
+    description: "Search for available flights",
+    inputSchema: z.object({
+      from: z.string().describe("Departure airport code"),
+      to: z.string().describe("Arrival airport code"),
+      date: z.string().describe("Travel date (YYYY-MM-DD)"),
+    }),
+    execute: searchFlights,
+  }),
+  confirmBooking: tool({
+    description: "Book a selected flight for a passenger",
+    inputSchema: z.object({
+      flightId: z.string(),
+      passenger: z.string(),
+      price: z.number(),
+    }),
+    needsApproval: true, // [!code highlight]
+    execute: confirmBooking,
+  }),
+};
+
+export type BookingAgentUIMessage = UIMessage<
+  unknown,
+  never,
+  InferUITools<typeof bookingTools>
+>;
 
 export async function bookingAgent(messages: ModelMessage[]) {
   "use workflow";
@@ -60,26 +94,7 @@ export async function bookingAgent(messages: ModelMessage[]) {
   const agent = new WorkflowAgent({
     model: "xai/grok-4.6",
     instructions: "Help the user find and book flights.",
-    tools: {
-      searchFlights: tool({
-        description: "Search for available flights",
-        inputSchema: z.object({
-          from: z.string().describe("Departure airport code"),
-          to: z.string().describe("Arrival airport code"),
-          date: z.string().describe("Travel date (YYYY-MM-DD)"),
-        }),
-        execute: searchFlights,
-      }),
-      confirmBooking: tool({
-        description: "Book a selected flight for a passenger",
-        inputSchema: z.object({
-          flightId: z.string(),
-          passenger: z.string(),
-        }),
-        needsApproval: true, // [!code highlight]
-        execute: confirmBooking,
-      }),
-    },
+    tools: bookingTools,
   });
 
   return agent.stream({
@@ -105,13 +120,16 @@ import { createModelCallToUIChunkTransform } from "@ai-sdk/workflow";
 import {
   convertToModelMessages,
   createUIMessageStreamResponse,
-  type UIMessage,
 } from "ai";
 import { start } from "workflow/api";
-import { bookingAgent } from "@/workflows/booking-agent";
+import {
+  bookingAgent,
+  type BookingAgentUIMessage,
+} from "@/workflows/booking-agent";
 
 export async function POST(request: Request) {
-  const { messages }: { messages: UIMessage[] } = await request.json();
+  const { messages }: { messages: BookingAgentUIMessage[] } =
+    await request.json();
   const modelMessages = await convertToModelMessages(messages);
   const run = await start(bookingAgent, [modelMessages]);
 
@@ -133,13 +151,14 @@ import { useChat } from "@ai-sdk/react";
 import { WorkflowChatTransport } from "@ai-sdk/workflow";
 import { lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
 import { useMemo } from "react";
+import type { BookingAgentUIMessage } from "@/workflows/booking-agent";
 
 export function Chat() {
   const transport = useMemo(
     () => new WorkflowChatTransport({ api: "/api/chat" }),
     []
   );
-  const { messages, addToolApprovalResponse } = useChat({
+  const { messages, addToolApprovalResponse } = useChat<BookingAgentUIMessage>({
     transport,
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
   });
@@ -156,7 +175,10 @@ export function Chat() {
 
       return (
         <div key={part.toolCallId}>
-          <p>Book flight {part.input.flightId} for {part.input.passenger}?</p>
+          <p>
+            Book flight {part.input.flightId} for {part.input.passenger} at
+            ${part.input.price}?
+          </p>
           <button
             onClick={() =>
               addToolApprovalResponse({
