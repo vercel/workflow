@@ -7,6 +7,11 @@
   },
   "buildCommand": "pnpm turbo build --filter=tarballs",
   "installCommand": "pnpm install --frozen-lockfile",
+  "build": {
+    "env": {
+      "ENABLE_EXPERIMENTAL_COREPACK": "1"
+    }
+  },
   "outputDirectory": "dist",
   "framework": null
 }
