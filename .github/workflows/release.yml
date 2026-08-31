@@ -46,6 +46,7 @@ jobs:
         with:
           install: false
 
+      # Keep setup-node here because registry-url configures npm publishing.
       - name: Setup Node.js 24.x
         uses: actions/setup-node@v4
         with:

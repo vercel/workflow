@@ -5,7 +5,7 @@ inputs:
   node-version:
     description: 'Node.js version to use'
     required: false
-    default: '22.x'
+    default: '22'
   setup-rust:
     description: 'Whether to setup Rust toolchain'
     required: false
@@ -40,12 +40,8 @@ runs:
       uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
       with:
         install: false
-
-    - name: Setup Node.js ${{ inputs.node-version }}
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ inputs.node-version }}
-        cache: ${{ inputs.cache-pnpm == 'true' && 'pnpm' || '' }}
+        runtime: node@${{ inputs.node-version }}
+        cache: ${{ inputs.cache-pnpm }}
 
     - name: Install Dependencies
       if: ${{ inputs.install-dependencies == 'true' }}

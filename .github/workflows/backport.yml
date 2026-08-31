@@ -287,12 +287,7 @@ jobs:
         uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
           install: false
-
-      - name: Setup Node.js
-        if: steps.existing-pr.outputs.exists != 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
+          runtime: node@22
 
       - name: Install opencode
         if: steps.existing-pr.outputs.exists != 'true'

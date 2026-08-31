@@ -40,12 +40,8 @@ jobs:
         uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
           install: false
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: "pnpm"
+          runtime: node@22
+          cache: true
 
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
