@@ -347,10 +347,12 @@ export async function start<TArgs extends unknown[], TResult>(
 
       let framedByteStreams: boolean;
       let targetSupportsCompression: boolean;
-      // The consumer's hook-resume protocol version, stamped onto the new run
-      // so a later `resumeHook()` gates its lazy path on the deployment that
-      // will actually consume the queue message. `undefined` means "could
-      // not attest" and fails the gate closed.
+      // The consumer's hook-resume protocol version, stamped onto the new
+      // run. Current producers write the hook_received event durably before
+      // publishing the wake and never read it; OLDER producers gate their
+      // lazy (hookInput-carrying) path on the deployment that will actually
+      // consume the queue message. `undefined` means "could not attest" and
+      // fails that gate closed.
       let targetHookResumeInputVersion: number | undefined;
       // Public key of the target run, when the capability probe was able to
       // supply one (cross-deployment only).
@@ -365,8 +367,8 @@ export async function start<TArgs extends unknown[], TResult>(
         framedByteStreams = false;
         targetSupportsCompression = false;
         // No probe channel to the target, so we cannot attest the consumer
-        // honors `hookInput`; leave the marker off (fail closed to
-        // sequential).
+        // honors `hookInput`; leave the marker off (older producers fail
+        // closed to their sequential path).
         targetHookResumeInputVersion = undefined;
       } else {
         // Ask for this run's public key while we're here. The probe already
@@ -563,9 +565,9 @@ export async function start<TArgs extends unknown[], TResult>(
         features: { encryption: !!encryptionKey },
         // Attest that the *consumer* deployment's runtime re-ensures a
         // `hook_received` event from a queue message's `hookInput` on replay.
-        // A resume of this run reads the marker (mirrored onto the hook's
-        // resumeContext by the server) to decide whether the parallel fast
-        // path is safe. For a cross-deployment start the consumer is the
+        // An OLDER producer resuming this run reads the marker (mirrored onto
+        // the hook's resumeContext by the server) to decide whether its lazy
+        // fast path is safe. For a cross-deployment start the consumer is the
         // target deployment, so we stamp the *target's* value carried back on
         // the health-check probe, never the caller's. Omitted when we could
         // not attest the target (older target, timeout, or no probe channel),

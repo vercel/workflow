@@ -2312,6 +2312,37 @@ describe('workflow arguments', () => {
     }
   });
 
+  it('separates producer uploads from workflow readback pipes', async () => {
+    const request = new Request('https://example.com/webhook', {
+      method: 'POST',
+      body: 'webhook payload',
+      duplex: 'half',
+    } as RequestInit);
+    request[Symbol.for('WEBHOOK_RESPONSE_WRITABLE')] = new WritableStream();
+    const uploadOps: Promise<void>[] = [];
+    const readbackOps: Promise<void>[] = [];
+
+    await dehydrateStepReturnValue(
+      request,
+      mockRunId,
+      noEncryptionKey,
+      uploadOps,
+      globalThis,
+      false,
+      false,
+      false,
+      undefined,
+      readbackOps
+    );
+
+    // The request body is producer -> workflow and must finish before the
+    // event commit. The manual response writable is workflow -> producer and
+    // cannot finish until after the workflow has been woken.
+    expect(uploadOps).toHaveLength(1);
+    expect(readbackOps).toHaveLength(1);
+    await Promise.allSettled([...uploadOps, ...readbackOps]);
+  });
+
   it('should throw error for an unsupported type', async () => {
     class Foo {}
     let err: WorkflowRuntimeError | undefined;

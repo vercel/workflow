@@ -1,4 +1,4 @@
-import { type Context, Script } from 'node:vm';
+import { Script } from 'node:vm';
 import { globalSingleton } from '@workflow/utils';
 
 /**
@@ -35,16 +35,17 @@ import { globalSingleton } from '@workflow/utils';
  *
  * We use a nested Map (filename -> code -> Script) so development builds can
  * retain the current bundle for every workflow source while independently
- * bounding the historical versions created by hot reloads.
+ * bounding the historical script sources created by hot reloads.
  *
  * Bounding
  * --------
- * In production, a deployment's immutable set of source bundles naturally
- * bounds this cache. In dev/watch mode, each source's `code` map is an
- * insertion-ordered LRU capped at `MAX_DEV_BUNDLE_VERSIONS_PER_SOURCE`: every
- * edit produces a new bundle string, but unrelated workflow sources must not
- * evict one another. This bounds hot-reload history without making an app with
- * more than eight workflow sources recompile on every replay.
+ * In production, a deployment's immutable source bundles and workflow lookup
+ * scripts naturally bound this cache. In dev/watch mode, each source's `code`
+ * map is an insertion-ordered LRU capped at
+ * `MAX_DEV_SCRIPT_SOURCES_PER_WORKFLOW_SOURCE`: every edit produces a new
+ * bundle string, but unrelated workflow sources must not evict one another.
+ * The bundle is touched immediately before its lookup on every compilation,
+ * so lookup churn cannot evict the expensive entry in normal use.
  */
 // On `globalThis` (see `globalSingleton`): compiling a bundle is the expensive
 // part this cache exists to skip, and per-copy caches would pay it once per
@@ -54,14 +55,14 @@ const scripts = globalSingleton('@workflow/core//vmScriptCache', 2, () => ({
 }));
 
 /**
- * Max number of distinct bundle versions retained per source outside
- * production. There is no value in pinning every stale dev build.
+ * Maximum number of distinct script sources retained per workflow source
+ * outside production. There is no value in pinning every stale dev build.
  */
-const MAX_DEV_BUNDLE_VERSIONS_PER_SOURCE = 8;
+const MAX_DEV_SCRIPT_SOURCES_PER_WORKFLOW_SOURCE = 8;
 
 /**
  * Looks up a compiled script for `(filename, code)`, marking that code version
- * most-recently-used within its source.
+ * most-recently-used within its workflow source.
  * Relies on `Map` preserving insertion order: deleting and re-inserting an
  * existing key moves it to the end (newest), so the first key is always the
  * least-recently-used eviction candidate.
@@ -82,9 +83,9 @@ function touchScript(filename: string, code: string): Script | undefined {
 }
 
 /**
- * Returns a compiled `vm.Script` for the given workflow bundle code and
- * filename, compiling and caching it on first use. Subsequent calls with the
- * same `(code, filename)` return the cached `Script`.
+ * Returns a compiled `vm.Script` for the given source code and filename,
+ * compiling and caching it on first use. Subsequent calls with the same
+ * `(code, filename)` return the cached `Script`.
  *
  * The returned `Script` is not yet bound to any context; the caller runs it
  * against a specific VM context via `script.runInContext(context)`. This is
@@ -94,10 +95,10 @@ function touchScript(filename: string, code: string): Script | undefined {
 export function getCachedWorkflowScript(
   code: string,
   filename: string
-): Script {
+): { script: Script; cacheHit: boolean } {
   let script = touchScript(filename, code);
   if (script !== undefined) {
-    return script;
+    return { script, cacheHit: true };
   }
 
   let byCode = scripts.byFilename.get(filename);
@@ -108,10 +109,10 @@ export function getCachedWorkflowScript(
   script = new Script(code, { filename });
   byCode.set(code, script);
 
-  // Evict least-recently-used hot-reload versions for this source. New code is
-  // appended at the end, so the oldest version lives at the front.
+  // Evict least-recently-used hot-reload sources for this workflow source.
+  // New code is appended at the end, so the oldest source lives at the front.
   if (process.env.NODE_ENV !== 'production') {
-    while (byCode.size > MAX_DEV_BUNDLE_VERSIONS_PER_SOURCE) {
+    while (byCode.size > MAX_DEV_SCRIPT_SOURCES_PER_WORKFLOW_SOURCE) {
       const oldest = byCode.keys().next().value;
       if (oldest === undefined) {
         break;
@@ -119,19 +120,7 @@ export function getCachedWorkflowScript(
       byCode.delete(oldest);
     }
   }
-  return script;
-}
-
-/**
- * Runs the cached workflow-bundle `Script` against `context`. Compiles and
- * caches the `Script` on first use for the given `(code, filename)`.
- */
-export function runCachedWorkflowScript(
-  code: string,
-  filename: string,
-  context: Context
-): unknown {
-  return getCachedWorkflowScript(code, filename).runInContext(context);
+  return { script, cacheHit: false };
 }
 
 /**

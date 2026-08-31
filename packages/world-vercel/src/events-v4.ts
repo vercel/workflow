@@ -38,10 +38,12 @@ import {
 } from '@workflow/world';
 import { decode } from 'cbor-x';
 import { z } from 'zod';
+import { ReplayEventObserverError } from './event-retry.js';
 import {
   type DecodedFrame,
   decodeFrames,
   encodeFrame,
+  IncompleteFrameError,
   V4_FRAME_CONTENT_TYPE,
 } from './frames.js';
 import {
@@ -809,7 +811,9 @@ export async function createWorkflowRunEventV4<T extends EventType>(
 
   const contentType = response.headers.get('content-type');
   if (contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
-    throw new Error('v4 createEvent: unexpected event page');
+    throw new WorkflowWorldError('v4 createEvent: unexpected event page', {
+      code: 'SCHEMA_VALIDATION',
+    });
   }
 
   return decodeCreateEventResponse(response, input.eventType);
@@ -822,9 +826,19 @@ async function decodeCreateEventResponse<T extends EventType>(
   response: FrameResponseLike,
   eventType: T
 ): Promise<EventResult<T> & { event: Event }> {
-  const bodyBytes = new Uint8Array(await response.arrayBuffer());
+  let bodyBytes: Uint8Array;
+  try {
+    bodyBytes = new Uint8Array(await response.arrayBuffer());
+  } catch (cause) {
+    throw new WorkflowWorldError(
+      'v4 createEvent: failed to read response body',
+      { code: 'TRANSPORT', cause }
+    );
+  }
   if (bodyBytes.byteLength === 0) {
-    throw new Error('v4 createEvent: empty response body');
+    throw new WorkflowWorldError('v4 createEvent: empty response body', {
+      code: 'PARSE_ERROR',
+    });
   }
   const schema: z.ZodType<EventResult<T> & { event: Event }> =
     CreateEventV4BodySchemas[eventType].refine(
@@ -833,7 +847,16 @@ async function decodeCreateEventResponse<T extends EventType>(
         (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
       { path: ['event', 'eventType'] }
     );
-  const parsedBody = schema.safeParse(decode(bodyBytes));
+  let decoded: unknown;
+  try {
+    decoded = decode(bodyBytes);
+  } catch (cause) {
+    throw new WorkflowWorldError('v4 createEvent: invalid CBOR response body', {
+      code: 'PARSE_ERROR',
+      cause,
+    });
+  }
+  const parsedBody = schema.safeParse(decoded);
   if (!parsedBody.success) {
     throw new WorkflowWorldError('v4 createEvent: invalid response body', {
       code: 'SCHEMA_VALIDATION',
@@ -845,16 +868,26 @@ async function decodeCreateEventResponse<T extends EventType>(
 
 export async function createWorkflowRunStartedEventV4(
   input: CreateEventV4InputBase,
-  config?: APIConfig
+  config?: APIConfig,
+  replayEventObserver?: (event: Event) => void
 ) {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'run_started' },
     'event-stream',
     config
   );
-  const events: Event[] = [];
-  const page = await consumeEventFrameStream(response, 'createEvent', events);
-  assert(page.cursor, 'v4 createEvent: event stream missing cursor');
+  const page = await consumeReplayLogResponse(
+    response,
+    input.runId,
+    config,
+    replayEventObserver
+  );
+  if (!page.cursor) {
+    throw new WorkflowWorldError(
+      'v4 createEvent: event stream missing cursor',
+      { code: 'SCHEMA_VALIDATION' }
+    );
+  }
   const maxEvents = MaxEventsHeaderSchema.safeParse(
     response.headers.get(MAX_EVENTS_HEADER)
   );
@@ -865,7 +898,7 @@ export async function createWorkflowRunStartedEventV4(
     });
   }
 
-  return { events, ...page, maxEvents: maxEvents.data };
+  return { ...page, maxEvents: maxEvents.data };
 }
 
 /** One event of a v4 batch POST, index-aligned with the response results. */
@@ -1286,13 +1319,15 @@ export type HookReceivedPreloadV4Result =
  * A server that supports the lazy-hook replay stream answers the consumer's
  * idempotent re-ensure with the run's complete replay log as v4 frames:
  * the same event-frame sequence LIST uses, ending with the `_end` sentinel.
- * A truncated stream (EOF without the sentinel) throws; the write is
- * deduplicated by the server's `(runId, resumeId)` constraint, so retrying
- * the whole request is safe and converges on the same canonical event.
+ * A truncated stream resumes after its last validated event. If it ends before
+ * any event is available to form a cursor, the write is deduplicated by the
+ * server's `(runId, resumeId)` constraint, so retrying the whole request is
+ * still safe and converges on the same canonical event.
  */
 export async function createHookReceivedPreloadEventV4(
   input: CreateEventV4InputBase,
-  config?: APIConfig
+  config?: APIConfig,
+  replayEventObserver?: (event: Event) => void
 ): Promise<HookReceivedPreloadV4Result> {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'hook_received' },
@@ -1308,14 +1343,17 @@ export async function createHookReceivedPreloadEventV4(
     };
   }
 
-  const events: Event[] = [];
-  const page = await consumeEventFrameStream(response, 'createEvent', events);
+  const page = await consumeReplayLogResponse(
+    response,
+    input.runId,
+    config,
+    replayEventObserver
+  );
   const maxEvents = MaxEventsHeaderSchema.safeParse(
     response.headers.get(MAX_EVENTS_HEADER)
   );
   return {
     kind: 'stream',
-    events,
     ...page,
     canonicalEventId: response.headers.get(EVENT_ID_HEADER) ?? undefined,
     maxEvents: maxEvents.success ? maxEvents.data : undefined,
@@ -1445,38 +1483,151 @@ function streamErrorFrameToError(
   );
 }
 
+type EventFrameStreamResult =
+  | (ListEventsV4Result & { kind: 'complete' })
+  | {
+      kind: 'partial';
+      events: Event[];
+      cursor: string;
+      hasMore: true;
+      error: WorkflowWorldError;
+    };
+
+const MAX_PARTIAL_STREAM_RETRIES = 2;
+
+function partialEventFrameStream(
+  events: Event[],
+  error: WorkflowWorldError
+): EventFrameStreamResult {
+  const eventId = events.at(-1)?.eventId;
+  if (!eventId) throw error;
+  return {
+    kind: 'partial',
+    events,
+    cursor: `eid:${eventId}`,
+    hasMore: true,
+    error,
+  };
+}
+
 async function consumeEventFrameStream(
   response: Response,
   opName: string,
-  events: Event[]
-): Promise<Pick<ListEventsV4Result, 'cursor' | 'hasMore'>> {
+  replayEventObserver?: (event: Event) => void
+): Promise<EventFrameStreamResult> {
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
-    throw new Error(
-      `v4 ${opName}: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`
+    throw new WorkflowWorldError(
+      `v4 ${opName}: expected ${V4_FRAME_CONTENT_TYPE}, got ${contentType ?? '(none)'}`,
+      { code: 'SCHEMA_VALIDATION' }
+    );
+  }
+  if (!response.body) {
+    throw new WorkflowWorldError(`v4 ${opName}: response body is missing`, {
+      code: 'TRANSPORT',
+    });
+  }
+
+  const events: Event[] = [];
+  try {
+    for await (const frame of decodeFrames(response.body)) {
+      if (frame.meta._end === 1) {
+        const end = EventStreamEndSchema.parse(frame.meta);
+        return {
+          kind: 'complete',
+          events,
+          cursor: end.next ?? null,
+          hasMore: end.hasMore,
+        };
+      }
+      if (frame.meta._error === 1) {
+        throw streamErrorFrameToError(frame.meta, opName);
+      }
+      if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
+        throw new Error(`v4 ${opName}: unexpected control frame`);
+      }
+      const event = decodeEventFrame(frame);
+      events.push(event);
+      try {
+        replayEventObserver?.(event);
+      } catch (error) {
+        throw new ReplayEventObserverError(error);
+      }
+    }
+  } catch (cause) {
+    if (
+      cause instanceof ReplayEventObserverError ||
+      CorruptedEventLogError.is(cause) ||
+      WorkflowWorldError.is(cause)
+    ) {
+      throw cause;
+    }
+    if (!(cause instanceof IncompleteFrameError)) {
+      throw new WorkflowWorldError(`v4 ${opName}: invalid event frame stream`, {
+        code: 'SCHEMA_VALIDATION',
+        cause,
+      });
+    }
+    return partialEventFrameStream(
+      events,
+      new WorkflowWorldError(`v4 ${opName}: incomplete event frame stream`, {
+        code: 'TRANSPORT',
+        cause,
+      })
     );
   }
 
-  const chunks = response.body as unknown as AsyncIterable<Uint8Array>;
+  return partialEventFrameStream(
+    events,
+    new WorkflowWorldError(
+      `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
+        `(${events.length} events read)`,
+      { code: 'TRANSPORT' }
+    )
+  );
+}
 
-  for await (const frame of decodeFrames(chunks)) {
-    if (frame.meta._end === 1) {
-      const end = EventStreamEndSchema.parse(frame.meta);
-      return { cursor: end.next ?? null, hasMore: end.hasMore };
-    }
-    if (frame.meta._error === 1) {
-      throw streamErrorFrameToError(frame.meta, opName);
-    }
-    if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
-      throw new Error(`v4 ${opName}: unexpected control frame`);
-    }
-    events.push(decodeEventFrame(frame));
+/**
+ * Finish a replay-log POST without throwing away frames that were already
+ * validated. A graceful partial page and a transport-truncated body both
+ * continue with the ordinary GET endpoint from the response's last cursor.
+ */
+async function consumeReplayLogResponse(
+  response: Response,
+  runId: string,
+  config?: APIConfig,
+  replayEventObserver?: (event: Event) => void
+): Promise<ListEventsV4Result> {
+  const page = await consumeEventFrameStream(
+    response,
+    'createEvent',
+    replayEventObserver
+  );
+  if (!page.hasMore) {
+    return {
+      events: page.events,
+      cursor: page.cursor,
+      hasMore: false,
+    };
+  }
+  if (!page.cursor) {
+    throw new WorkflowWorldError(
+      'v4 createEvent: partial event stream missing cursor',
+      { code: 'SCHEMA_VALIDATION' }
+    );
   }
 
-  throw new Error(
-    `v4 ${opName}: frame stream ended without the end-of-stream sentinel ` +
-      `(${events.length} events read) — truncated response?`
+  const suffix = await getWorkflowRunEventsV4(
+    runId,
+    { cursor: page.cursor, remoteRefBehavior: 'resolve' },
+    config,
+    replayEventObserver
   );
+  return {
+    events: [...page.events, ...suffix.events],
+    cursor: suffix.cursor ?? page.cursor,
+    hasMore: suffix.hasMore,
+  };
 }
 
 /**
@@ -1493,15 +1644,15 @@ async function consumeListFrameStream(
   headers: Headers,
   config: APIConfig | undefined,
   opName: string,
-  events: Event[]
-): Promise<Pick<ListEventsV4Result, 'cursor' | 'hasMore'>> {
+  replayEventObserver?: (event: Event) => void
+): Promise<EventFrameStreamResult> {
   const response = await fetchV4(
     url,
     { method: 'GET', headers },
     config,
     opName
   );
-  return consumeEventFrameStream(response, opName, events);
+  return consumeEventFrameStream(response, opName, replayEventObserver);
 }
 
 /**
@@ -1533,46 +1684,64 @@ function paginationToQuery(params: ListEventsV4Params): string {
  * cursor from the sentinel frame.
  *
  * Eagerly drains the stream into memory to match the existing
- * `getWorkflowRunEvents` contract. A truncated full response resumes
- * after its last validated event instead of downloading accepted frames again.
+ * `getWorkflowRunEvents` contract. A truncated full response resumes after its
+ * last validated event until the sentinel arrives, for up to two retries. A
+ * forward-progress guard prevents retry loops. Explicitly paginated requests
+ * retain their one-page contract and surface truncation to the caller.
  */
 export async function getWorkflowRunEventsV4(
   runId: string,
   params: ListEventsV4Params = {},
-  config?: APIConfig
+  config?: APIConfig,
+  replayEventObserver?: (event: Event) => void
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const events: Event[] = [];
-  let cursor = params.cursor;
+  let cursor = params.cursor ?? null;
+  let partialStreamRetries = 0;
+  let consumed: EventFrameStreamResult;
 
-  while (true) {
+  do {
     const url =
       `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
-      paginationToQuery({ ...params, cursor });
-    try {
-      const page = await consumeListFrameStream(
-        url,
-        headers,
-        config,
-        'listEvents',
-        events
-      );
-      return { events, ...page };
-    } catch (error) {
-      if (CorruptedEventLogError.is(error) || WorkflowWorldError.is(error)) {
-        throw error;
-      }
-      const lastEvent = events.at(-1);
+      paginationToQuery({ ...params, cursor: cursor ?? undefined });
+    consumed = await consumeListFrameStream(
+      url,
+      headers,
+      config,
+      'listEvents',
+      replayEventObserver
+    );
+    const cursorAdvanced = !!consumed.cursor && consumed.cursor !== cursor;
+    if (consumed.kind === 'partial') {
       if (
         params.limit !== undefined ||
-        !lastEvent ||
-        `eid:${lastEvent.eventId}` === cursor
+        !cursorAdvanced ||
+        partialStreamRetries === MAX_PARTIAL_STREAM_RETRIES
       ) {
-        throw error;
+        throw consumed.error;
       }
-      cursor = `eid:${lastEvent.eventId}`;
+      partialStreamRetries++;
+      cursor = consumed.cursor;
+    } else if (
+      !cursorAdvanced &&
+      (consumed.events.length > 0 || consumed.hasMore)
+    ) {
+      throw new WorkflowWorldError(
+        'v4 listEvents: response did not advance cursor',
+        { code: 'SCHEMA_VALIDATION' }
+      );
     }
-  }
+    for (const event of consumed.events) {
+      events.push(event);
+    }
+  } while (consumed.kind === 'partial');
+
+  return {
+    events,
+    cursor: consumed.cursor || (partialStreamRetries > 0 ? cursor : null),
+    hasMore: consumed.hasMore,
+  };
 }
 
 /**
@@ -1601,13 +1770,16 @@ export async function getEventsByCorrelationIdV4(
   sp.set('runId', runId);
   appendListParams(sp, params);
   const url = `${baseUrl}/v4/events?${sp.toString()}`;
-  const events: Event[] = [];
-  const page = await consumeListFrameStream(
+  const consumed = await consumeListFrameStream(
     url,
     headers,
     config,
-    'listEventsByCorrelationId',
-    events
+    'listEventsByCorrelationId'
   );
-  return { events, ...page };
+  if (consumed.kind === 'partial') throw consumed.error;
+  return {
+    events: consumed.events,
+    cursor: consumed.cursor,
+    hasMore: consumed.hasMore,
+  };
 }
