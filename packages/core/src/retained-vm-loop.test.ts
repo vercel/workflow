@@ -28,6 +28,38 @@ vi.mock('./vm/index.js', async (importActual) => {
   return { ...actual, createContext: vi.fn(actual.createContext) };
 });
 
+const barrierArmObservations = vi.hoisted(
+  (): Array<{ before: number; after: number }> => []
+);
+
+// Preserve the production implementation while recording the registry
+// transition made by each arm(). This lets the retained-session regression
+// assert the short-lived protection window directly instead of depending on a
+// timer winning the same race reliably on every test runner.
+vi.mock('./private.js', async (importActual) => {
+  const actual = await importActual<typeof import('./private.js')>();
+  return {
+    ...actual,
+    registerDeliveryBarrier: (
+      ...args: Parameters<typeof actual.registerDeliveryBarrier>
+    ) => {
+      const [ctx] = args;
+      const barrier = actual.registerDeliveryBarrier(...args);
+      return {
+        markDelivered: barrier.markDelivered,
+        arm: () => {
+          const before = ctx.pendingDeliveryBarriers?.size ?? 0;
+          barrier.arm();
+          barrierArmObservations.push({
+            before,
+            after: ctx.pendingDeliveryBarriers?.size ?? 0,
+          });
+        },
+      };
+    },
+  };
+});
+
 const { createContext } = await import('./vm/index.js');
 const { registerSerializationClass } = await import('./class-serialization.js');
 const { registerStepFunction } = await import('./private.js');
@@ -127,6 +159,29 @@ const openHookRaceWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW
     const a = await Promise.race([hook.then(() => 999), s1()]);
     const b = await s2();
     return a + b;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+// The payload arrives while the workflow is waiting on s1, before any hook
+// consumer exists. The next pass buffers it, advances through s1, and suspends
+// on s2; delivery idle retires the payload's unarmed barrier at that boundary.
+// A retained resume arms an empty hook before it claims the buffered one. The
+// empty read schedules suspension while the buffered read resolves a separate
+// workflow promise from its continuation, matching Eve's multiplexed inbox.
+// The late claim must re-arm delivery until that continuation can wake the body.
+const bufferedHookAcrossStepWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const s2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s2");
+  async function workflow() {
+    const buffered = createHook({ token: "retained-buffered-hook" });
+    const empty = createHook({ token: "retained-empty-hook" });
+    await s1();
+    const stepValue = await s2();
+    const payload = await new Promise((resolve, reject) => {
+      void empty.then(resolve, reject);
+      void buffered.then(resolve, reject);
+    });
+    return stepValue + (payload.source === "external-hook" ? 1000 : 0);
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
@@ -677,6 +732,7 @@ async function driveConcurrentHookWakeRace(runId: string) {
 describe('retained VM through the inline replay loop', () => {
   beforeEach(() => {
     createContextSpy.mockClear();
+    barrierArmObservations.length = 0;
   });
   afterEach(() => {
     delete process.env.WORKFLOW_RETAINED_VM;
@@ -754,6 +810,29 @@ describe('retained VM through the inline replay loop', () => {
     // the race on resume while the already-started step still completes.
     expect(on.result).toBe(1019);
     expect(on.vmBuilds).toBe(1);
+    expect(on.durableLog).toEqual(off.durableLog);
+  });
+
+  it('claims a buffered hook after its barrier retires across a retained step boundary', async () => {
+    process.env.WORKFLOW_RETAINED_VM = '0';
+    const off = await drive(
+      'wrun_retained_buffered_hook_after_step',
+      bufferedHookAcrossStepWorkflow,
+      { type: 'inject-hook' }
+    );
+    createContextSpy.mockClear();
+    barrierArmObservations.length = 0;
+    delete process.env.WORKFLOW_RETAINED_VM;
+
+    const on = await drive(
+      'wrun_retained_buffered_hook_after_step',
+      bufferedHookAcrossStepWorkflow,
+      { type: 'inject-hook' }
+    );
+    expect(off.result).toBe(1020);
+    expect(on.result).toBe(1020);
+    expect(on.vmBuilds).toBe(1);
+    expect(barrierArmObservations).toContainEqual({ before: 0, after: 1 });
     expect(on.durableLog).toEqual(off.durableLog);
   });
 
