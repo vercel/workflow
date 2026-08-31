@@ -313,38 +313,20 @@ export async function POST(request: Request) {
 
 <Tab value="Multiple users">
 
-Multiple authenticated users can participate in the same workflow-owned session. Persist the attributed `UIMessage` in the application chat record as well as resuming the Hook:
+Multiple authenticated users can participate in the same workflow-owned session. Include attribution when resuming the Hook:
 
 ```typescript title="app/api/chat/[runId]/message/route.ts" lineNumbers
 import { chatMessageHook } from "@/workflows/chat-session";
 import { getUser } from "@/lib/auth";
-import { saveChatMessage } from "@/lib/chat-store";
-import type { UIMessage } from "ai";
-
-type AttributedChatMessage = UIMessage<{
-  userId: string;
-  userName: string;
-}>;
 
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ runId: string }> }
 ) {
   const { runId } = await params;
-  const { message, messageId } = await request.json();
+  const { message } = await request.json();
   const user = await getUser(request);
 
-  const attributedMessage: AttributedChatMessage = {
-    id: messageId,
-    role: "user",
-    metadata: {
-      userId: user.id,
-      userName: user.name,
-    },
-    parts: [{ type: "text", text: message }],
-  };
-
-  await saveChatMessage(runId, attributedMessage); // [!code highlight]
   await chatMessageHook.resume(runId, {
     message: `[${user.name}] ${message}`,
   });
@@ -353,7 +335,7 @@ export async function POST(
 }
 ```
 
-Make `saveChatMessage` idempotent by `messageId`. If the database write and Hook resume must be delivered together despite process failure, use an application-level transactional outbox; resuming a Hook does not persist an attributed `UIMessage` in your chat database automatically.
+To preserve structured attribution across refreshes, persist the corresponding `UIMessage` using the application-history approach described above.
 
 </Tab>
 
