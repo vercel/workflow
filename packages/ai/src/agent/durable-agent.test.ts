@@ -13,7 +13,7 @@ import type {
 } from '@ai-sdk/provider';
 import type { StepResult, ToolSet } from 'ai';
 import { describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
+import * as z from 'zod/v4';
 
 class FatalError extends Error {
   constructor(message: string) {

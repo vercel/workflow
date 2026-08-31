@@ -22,7 +22,7 @@
 import { EntityConflictError } from '@workflow/errors';
 import { decode, encode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
+import * as z from 'zod/v4';
 import { createWorkflowRunEventV4 } from './events-v4.js';
 import { type DecodedFrame, decodeFrames, encodeFrame } from './frames.js';
 

@@ -9,7 +9,7 @@ import type {
   StreamInfoResponse,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { z } from 'zod';
+import * as z from 'zod/v4';
 import {
   assertSafeEntityId,
   readBuffer,

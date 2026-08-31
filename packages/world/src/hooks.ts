@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/v4';
 import { TraceCarrierSchema } from './queue.js';
 import type { SerializedData } from './serialization.js';
 import { SerializedDataSchema } from './serialization.js';

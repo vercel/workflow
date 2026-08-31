@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/v4';
 
 export const zodJsonSchema: z.ZodType<unknown> = z.lazy(() => {
   return z.union([

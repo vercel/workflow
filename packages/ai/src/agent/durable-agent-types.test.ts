@@ -1,6 +1,6 @@
 import { type InferUITools, tool, type UIMessage } from 'ai';
 import { describe, expectTypeOf, it } from 'vitest';
-import { z } from 'zod';
+import * as z from 'zod/v4';
 import {
   DurableAgent,
   type InferDurableAgentTools,

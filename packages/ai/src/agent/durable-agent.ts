@@ -554,7 +554,7 @@ export interface DurableAgentStreamOptions<
    * @example
    * ```typescript
    * import { Output } from '@workflow/ai';
-   * import { z } from 'zod';
+   * import * as z from 'zod/v4';
    *
    * const result = await agent.stream({
    *   messages: [...],

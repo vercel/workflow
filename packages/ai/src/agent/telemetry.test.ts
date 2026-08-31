@@ -7,7 +7,7 @@ import type {
   LanguageModelV3StreamPart,
 } from '@ai-sdk/provider';
 import { beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
-import { z } from 'zod';
+import * as z from 'zod/v4';
 
 // ── Mock span that captures all setAttributes calls ──────────────────────
 function createMockSpan() {

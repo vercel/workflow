@@ -10,4 +10,4 @@
 'workflow': patch
 ---
 
-Upgrade runtime validation to Zod 4.5 and precompile hot-path World schemas.
+Upgrade runtime validation to Zod 4.5, use the stable Zod 4 subpath, and precompile hot-path World schemas.

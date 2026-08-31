@@ -10,7 +10,7 @@ import {
   type StepWithoutData,
   type UpdateStepRequest,
 } from '@workflow/world';
-import { z } from 'zod';
+import * as z from 'zod/v4';
 import { normalizeStepData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import {

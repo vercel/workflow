@@ -7,7 +7,7 @@ import type {
   PaginatedResponse,
 } from '@workflow/world';
 import { HookSchema, PaginatedResponseSchema } from '@workflow/world';
-import z from 'zod';
+import * as z from 'zod/v4';
 import { normalizeHookData } from './serialized-data.js';
 import type { APIConfig } from './utils.js';
 import { DEFAULT_RESOLVE_DATA_OPTION, makeRequest } from './utils.js';

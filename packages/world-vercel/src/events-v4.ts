@@ -37,7 +37,7 @@ import {
   WorkflowRunSchema,
 } from '@workflow/world';
 import { decode } from 'cbor-x';
-import { z } from 'zod';
+import * as z from 'zod/v4';
 import {
   type DecodedFrame,
   decodeFrames,

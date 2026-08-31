@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { z } from 'zod';
+import * as z from 'zod/v4';
 import { PaginatedResponseSchema } from './shared.js';
 
 describe('PaginatedResponseSchema', () => {

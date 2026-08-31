@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import * as z from 'zod/v4';
 import { AttributeChangesSchema } from './attributes.js';
 import { getEventDataRefFields } from './event-metadata.js';
 import type { Hook } from './hooks.js';

@@ -1,6 +1,6 @@
 import { tool } from 'ai';
 import { describe, expect, it } from 'vitest';
-import { z } from 'zod';
+import * as z from 'zod/v4';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 
 describe('toolsToModelTools', () => {

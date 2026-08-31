@@ -4,7 +4,7 @@ import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import type { PaginatedResponse } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { z } from 'zod';
+import * as z from 'zod/v4';
 import {
   isUnwritableDirCode,
   UnwritableDataDirError,

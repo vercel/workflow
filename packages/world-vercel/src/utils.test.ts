@@ -4,7 +4,7 @@ import { PreconditionFailedError, StreamExpiredError } from '@workflow/errors';
 import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
+import * as z from 'zod/v4';
 import {
   getHeaders,
   getHttpConfig,

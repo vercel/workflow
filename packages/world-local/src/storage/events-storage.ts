@@ -53,7 +53,7 @@ import {
   WaitSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
-import { z } from 'zod';
+import * as z from 'zod/v4';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
   assertSafeEntityId,
