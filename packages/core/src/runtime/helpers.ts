@@ -597,108 +597,107 @@ export async function loadWorkflowRunEvents(
   afterCursor?: string
 ): Promise<LoadedEventLog> {
   const incremental = afterCursor !== undefined;
-  return trace(
-    incremental ? 'workflow.loadNewEvents' : 'workflow.loadEvents',
-    async (span) => {
-      span?.setAttributes({
-        ...Attribute.WorkflowRunId(runId),
-      });
+  return trace('workflow.replay.load', async (span) => {
+    span?.setAttributes({
+      ...Attribute.WorkflowRunId(runId),
+      ...Attribute.WorkflowReplayLoadSource(
+        incremental ? 'events_list_incremental' : 'events_list'
+      ),
+    });
 
-      const loadedEvents: Event[] = [];
-      const loadedEventIds = new Set<string>();
-      const requestedCursors = new Set<string>();
-      let cursor: string | null = afterCursor ?? null;
-      let hasMore = true;
-      let pagesLoaded = 0;
-      let retriedWithoutCursor = false;
+    const loadedEvents: Event[] = [];
+    const loadedEventIds = new Set<string>();
+    const requestedCursors = new Set<string>();
+    let cursor: string | null = afterCursor ?? null;
+    let hasMore = true;
+    let pagesLoaded = 0;
+    let retriedWithoutCursor = false;
+    const world = await getWorldLazy();
+    const loadStart = Date.now();
+    while (hasMore) {
+      // TODO: we're currently loading all the data with resolveRef behavior. We need to update this
+      // to lazyload the data from the world instead so that we can optimize and make the event log loading
+      // much faster and memory efficient
+      const pageStart = Date.now();
+      const requestedCursor = cursor;
+      recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
 
-      const world = await getWorldLazy();
-      const loadStart = Date.now();
-      while (hasMore) {
-        // TODO: we're currently loading all the data with resolveRef behavior. We need to update this
-        // to lazyload the data from the world instead so that we can optimize and make the event log loading
-        // much faster and memory efficient
-        const pageStart = Date.now();
-        const requestedCursor = cursor;
-        recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
-
-        let response: Awaited<ReturnType<typeof world.events.list>>;
-        try {
-          response = await world.events.list({
-            runId,
-            pagination: {
-              sortOrder: 'asc',
-              cursor: requestedCursor ?? undefined,
-            },
-          });
-        } catch (error) {
-          if (
-            shouldRetryWithoutEventCursor(
-              error,
-              requestedCursor,
-              retriedWithoutCursor
-            )
-          ) {
-            runtimeLogger.warn(
-              'Event cursor was rejected; retrying with a full event reload.',
-              { workflowRunId: runId }
-            );
-            loadedEvents.length = 0;
-            loadedEventIds.clear();
-            requestedCursors.clear();
-            cursor = null;
-            retriedWithoutCursor = true;
-            continue;
-          }
-          throw error;
-        }
-
-        appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
-        hasMore = response.hasMore;
-        assertEventPaginationProgress(
+      let response: Awaited<ReturnType<typeof world.events.list>>;
+      try {
+        response = await world.events.list({
           runId,
-          hasMore,
-          response.cursor,
-          requestedCursors
-        );
-        // Preserve the last non-null cursor across pages. A World may
-        // legitimately return `{ data: [], cursor: null, hasMore: false }`
-        // on a trailing empty page, for example when the previous page's
-        // underlying DB query hit the limit exactly and returned a
-        // precautionary `LastEvaluatedKey`. Overwriting with that null
-        // would lose the position past the last real event we loaded and
-        // force the runtime into the "no cursor after initial load" full-
-        // reload fallback on every subsequent replay iteration.
-        cursor = response.cursor ?? cursor;
-        pagesLoaded++;
-
-        runtimeLogger.debug('Loaded event page', {
-          workflowRunId: runId,
-          incremental,
-          page: pagesLoaded,
-          pageEvents: response.data.length,
-          totalEvents: loadedEvents.length,
-          hasMore,
-          pageMs: Date.now() - pageStart,
+          pagination: {
+            sortOrder: 'asc',
+            cursor: requestedCursor ?? undefined,
+          },
         });
+      } catch (error) {
+        if (
+          shouldRetryWithoutEventCursor(
+            error,
+            requestedCursor,
+            retriedWithoutCursor
+          )
+        ) {
+          runtimeLogger.warn(
+            'Event cursor was rejected; retrying with a full event reload.',
+            { workflowRunId: runId }
+          );
+          loadedEvents.length = 0;
+          loadedEventIds.clear();
+          requestedCursors.clear();
+          cursor = null;
+          retriedWithoutCursor = true;
+          continue;
+        }
+        throw error;
       }
 
-      runtimeLogger.debug('Event load complete', {
+      appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
+      hasMore = response.hasMore;
+      assertEventPaginationProgress(
+        runId,
+        hasMore,
+        response.cursor,
+        requestedCursors
+      );
+      // Preserve the last non-null cursor across pages. A World may
+      // legitimately return `{ data: [], cursor: null, hasMore: false }`
+      // on a trailing empty page, for example when the previous page's
+      // underlying DB query hit the limit exactly and returned a
+      // precautionary `LastEvaluatedKey`. Overwriting with that null
+      // would lose the position past the last real event we loaded and
+      // force the runtime into the "no cursor after initial load" full-
+      // reload fallback on every subsequent replay iteration.
+      cursor = response.cursor ?? cursor;
+      pagesLoaded++;
+
+      runtimeLogger.debug('Loaded event page', {
         workflowRunId: runId,
         incremental,
+        page: pagesLoaded,
+        pageEvents: response.data.length,
         totalEvents: loadedEvents.length,
-        pagesLoaded,
-        totalMs: Date.now() - loadStart,
+        hasMore,
+        pageMs: Date.now() - pageStart,
       });
-
-      span?.setAttributes({
-        ...Attribute.WorkflowEventsCount(loadedEvents.length),
-        ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
-      });
-
-      return { events: loadedEvents, cursor };
     }
-  );
+
+    runtimeLogger.debug('Event load complete', {
+      workflowRunId: runId,
+      incremental,
+      totalEvents: loadedEvents.length,
+      pagesLoaded,
+      totalMs: Date.now() - loadStart,
+    });
+
+    span?.setAttributes({
+      ...Attribute.WorkflowEventsCount(loadedEvents.length),
+      ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
+    });
+
+    return { events: loadedEvents, cursor };
+  });
 }
 
 /**
@@ -1215,34 +1214,26 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
 }
 
 /**
- * Returns a memoized accessor for a run's full encryption capability.
- *
- * The first call resolves the run's key material via
- * `world.getEncryptionKeyForRun` (which may do HKDF derivation locally on
- * Vercel, or a network fetch from external contexts) and derives a
- * {@link PayloadKey} from it; subsequent calls await the same cached promise.
- * If the world doesn't support encryption or the run has no key configured,
- * the cached value is `undefined`.
- *
- * The resolved value is deliberately the *full* capability (the symmetric AES
- * key plus the run's X25519 keypair), not just a `CryptoKey`. A run reading
- * its own event log can encounter sealed (`encp`) payloads that another run
- * wrote to it (a cross-deployment hook resumption, say), and opening those
- * needs the keypair. Resolving only the symmetric key would leave those
- * payloads unopenable and wedge the run.
- *
- * Used by step / workflow handlers to defer the (potentially expensive)
- * key fetch until the first code path that actually needs it: typically
- * input hydration on the success path, or error dehydration on a failure
- * path. Both paths can race-call the accessor without triggering duplicate
- * fetches.
- *
- * Errors thrown by `getEncryptionKeyForRun` propagate to every caller
- * (the cached promise rejects). This is intentional: when encryption is
- * configured, we never want to silently fall back to plaintext
- * serialization. A propagated error in an event-emission path leaves the
- * outer try/catch to log and surface the issue; the queue's redelivery
- * semantics will retry the key fetch on the next attempt.
+ * Resolve the run's full payload-encryption capability. This includes the
+ * symmetric key and X25519 keypair needed to open cross-run sealed payloads.
+ * Missing world support or key material resolves to `undefined`; lookup and
+ * derivation failures propagate rather than silently falling back to plaintext.
+ */
+export async function resolveRunEncryptionKey(
+  world: World,
+  runOrId: WorkflowRun | string,
+  context?: Record<string, unknown>
+): Promise<PayloadKey | undefined> {
+  const rawKey =
+    typeof runOrId === 'string'
+      ? await world.getEncryptionKeyForRun?.(runOrId, context)
+      : await world.getEncryptionKeyForRun?.(runOrId);
+  return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
+}
+
+/**
+ * Return a lazy, memoized accessor around {@link resolveRunEncryptionKey}.
+ * Concurrent callers share the same promise, including its rejection.
  */
 export function memoizeEncryptionKey(
   world: World,
@@ -1251,20 +1242,7 @@ export function memoizeEncryptionKey(
   let cached: Promise<PayloadKey | undefined> | undefined;
   return () => {
     if (!cached) {
-      cached = (async () => {
-        // The `getEncryptionKeyForRun` overload set takes either a
-        // `WorkflowRun` or a `runId: string` (with optional context). Branch
-        // here so TypeScript picks the right overload for each shape.
-        const rawKey =
-          typeof runOrId === 'string'
-            ? await world.getEncryptionKeyForRun?.(runOrId)
-            : await world.getEncryptionKeyForRun?.(runOrId);
-        // Resolve the *full* capability, not just the symmetric key: a run
-        // reading its own event log may encounter sealed (`encp`) payloads
-        // that another run wrote to it, and opening those needs the run's
-        // X25519 scalar as well.
-        return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
-      })();
+      cached = resolveRunEncryptionKey(world, runOrId);
     }
     return cached;
   };
