@@ -26,7 +26,6 @@ import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
-  isConsumerSettledOp,
   type PayloadKey,
   SerializationFormat,
   sealTo,
@@ -71,6 +70,9 @@ function isRetryableWakeError(error: unknown): boolean {
   return code >= 500 || code === 408 || code === 429;
 }
 
+// A publish may succeed even when its response is lost, so a retry can
+// enqueue a duplicate wake. That is harmless: the event is already durable,
+// and deterministic replay makes a second delivery of the same run a no-op.
 async function publishHookWakeWithRetry(
   publish: () => Promise<unknown>
 ): Promise<void> {
@@ -427,6 +429,7 @@ async function resumeHookImpl<T = any>(
 
         // Dehydrate the payload for storage
         const ops: Promise<any>[] = [];
+        const readbackOps: Promise<any>[] = [];
         const v1Compat = isLegacySpecVersion(hook.specVersion);
         const dehydratedPayload = await dehydrateStepReturnValue(
           payload,
@@ -436,52 +439,39 @@ async function resumeHookImpl<T = any>(
           globalThis,
           v1Compat,
           capabilities.framedByteStreams,
-          compression
+          compression,
+          undefined,
+          readbackOps
         );
         // A hook_received event is not durable while its payload still points
         // at stream uploads in flight. Finish those before committing the
-        // event — but ONLY the producer-push ops. A dehydrated WritableStream
-        // pushes a consumer-settled reader op (see CONSUMER_SETTLED_OP) that
-        // resolves once the woken workflow writes into it; awaiting one here
-        // would deadlock the resume against its own wake (a manual webhook's
-        // `responseWritable` hangs exactly this way). Those stay backgrounded
-        // like they were before the flush moved inline.
-        //
-        // Drained as a loop because object-mode stream serialization pushes
-        // nested ops into the same array while an outer pipe is in flight.
+        // event — but ONLY the producer-push ops in `ops`. A dehydrated
+        // WritableStream lands in `readbackOps` instead: it is a server-stream
+        // READER that resolves only once the woken workflow writes into it (a
+        // manual webhook's `responseWritable` is the canonical case), so
+        // awaiting it here would deadlock the resume against its own wake.
         //
         // A rejection with `undefined` is an expected artifact of the webhook
         // bundle and was historically ignored by the background flush. Keep
         // that tolerance now that the flush is awaited inline.
-        const flushedOps = new Set<Promise<any>>();
-        for (;;) {
-          const pendingOps = ops.filter(
-            (op) => !flushedOps.has(op) && !isConsumerSettledOp(op)
-          );
-          if (pendingOps.length === 0) break;
-          for (const op of pendingOps) flushedOps.add(op);
-          await Promise.all(
-            pendingOps.map((op) =>
-              op.catch((error) => {
-                if (error !== undefined) throw error;
-              })
-            )
-          );
-        }
-        const backgroundOps = ops.filter((op) => isConsumerSettledOp(op));
-        if (backgroundOps.length > 0) {
-          // The promise handed to waitUntil must never reject (an unconsumed
-          // waitUntil rejection crashes the process as unhandledRejection),
-          // so unexpected failures are logged instead.
-          safeWaitUntil(Promise.all(backgroundOps), (err) => {
-            if (err === undefined) return;
-            runtimeLogger.warn('Background flush of hook payload ops failed', {
-              workflowRunId: hook.runId,
-              hookId: hook.hookId,
-              error: err instanceof Error ? err.message : String(err),
-            });
+        await Promise.all(
+          ops.map((op) =>
+            op.catch((error) => {
+              if (error !== undefined) throw error;
+            })
+          )
+        );
+        // Readback pipes (notably a manual webhook response writable) can only
+        // finish after the workflow wakes and writes to them. Keep them alive,
+        // but never place them in the durability barrier above.
+        safeWaitUntil(Promise.all(readbackOps), (err) => {
+          if (err === undefined) return;
+          runtimeLogger.warn('Background readback of hook payload failed', {
+            workflowRunId: hook.runId,
+            hookId: hook.hookId,
+            error: err instanceof Error ? err.message : String(err),
           });
-        }
+        });
 
         span?.setAttributes({
           ...Attribute.WorkflowName(resumeContext.workflowName),

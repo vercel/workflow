@@ -276,11 +276,13 @@ async function runResumeConsumerScenario(options: {
   const createdParams: Array<CreateEventParams | undefined> = [];
   let reEnsureRejection = options.reEnsureRejection;
 
-  const listEvents = vi.fn(async () => ({
-    data: [...durableEvents],
-    hasMore: false,
-    cursor: durableEvents.at(-1)?.eventId ?? null,
-  }));
+  const listEvents = vi.fn(async () => {
+    return {
+      data: [...durableEvents],
+      hasMore: false,
+      cursor: durableEvents.at(-1)?.eventId ?? null,
+    };
+  });
 
   const createEvent = vi.fn(
     async (

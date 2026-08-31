@@ -431,18 +431,25 @@ async function recordFatalRunError({
   }
 }
 
-function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
+function findRecordedTerminalRunEvent(
+  events: Event[],
+  runId: string
+): Event | undefined {
   // Terminal run events are always last by construction (no event creation
   // succeeds against a terminal run), but scan the full array for
   // defense-in-depth: a World/backend ordering bug shouldn't make us miss an
   // actual termination signal.
-  const terminalRunEvent = events.find(
+  return events.find(
     (e) =>
       e.runId === runId &&
       (e.eventType === 'run_completed' ||
         e.eventType === 'run_failed' ||
         e.eventType === 'run_cancelled')
   );
+}
+
+function hasRecordedTerminalRunEvent(events: Event[], runId: string): boolean {
+  const terminalRunEvent = findRecordedTerminalRunEvent(events, runId);
 
   if (!terminalRunEvent) {
     return false;

@@ -1,4 +1,5 @@
 import {
+  EntityConflictError,
   HookNotFoundError,
   RunExpiredError,
   WorkflowRuntimeError,
@@ -10,14 +11,17 @@ import {
   type World,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CONSUMER_SETTLED_OP } from '../symbols.js';
 import { resumeHook, resumeWebhook } from './resume-hook.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
+const telemetrySpan = vi.hoisted(() => ({
+  setAttributes: vi.fn(),
+  addLink: vi.fn(),
+}));
 vi.mock('../telemetry.js', () => ({
   linkToTraceCarrier: vi.fn(),
-  trace: vi.fn((_name, fn) => fn(undefined)),
+  trace: vi.fn((_name, fn) => fn(telemetrySpan)),
 }));
 
 const PAYLOAD_BYTES = new Uint8Array([1, 2, 3, 4]);
@@ -30,30 +34,45 @@ vi.mock('../serialization.js', async (importActual) => {
         value: unknown,
         _runId: string,
         _key: unknown,
-        ops: Promise<unknown>[] = []
+        ops: Promise<unknown>[] = [],
+        _global?: unknown,
+        _v1Compat?: boolean,
+        _framedByteStreams?: boolean,
+        _compression?: boolean,
+        _runReadyBarrier?: Promise<unknown>,
+        readbackOps: Promise<unknown>[] = ops
       ) => {
-        if (typeof value === 'object' && value !== null) {
-          if ('payloadOpRejection' in value) {
-            ops.push(
-              Promise.reject(
-                (value as { payloadOpRejection: unknown }).payloadOpRejection
-              )
-            );
-          }
-          // A producer-push upload op the flush must await before the write.
-          if ('flushOp' in value) {
-            ops.push((value as { flushOp: Promise<unknown> }).flushOp);
-          }
-          // A consumer-settled reader op (see CONSUMER_SETTLED_OP): the real
-          // WritableStream reducer tags these because they only resolve once
-          // the woken workflow writes into the stream. The flush must
-          // background it, never await it.
-          if ('consumerSettledOp' in value) {
-            const op = (value as { consumerSettledOp: Promise<unknown> })
-              .consumerSettledOp;
-            (op as any)[CONSUMER_SETTLED_OP] = true;
-            ops.push(op);
-          }
+        if (
+          typeof value === 'object' &&
+          value !== null &&
+          'payloadOpRejection' in value
+        ) {
+          ops.push(
+            Promise.reject(
+              (value as { payloadOpRejection: unknown }).payloadOpRejection
+            )
+          );
+        }
+        // A producer-push upload op: the durability flush must await it
+        // before the hook_received write commits.
+        if (
+          typeof value === 'object' &&
+          value !== null &&
+          'payloadOp' in value
+        ) {
+          ops.push((value as { payloadOp: Promise<unknown> }).payloadOp);
+        }
+        // A workflow readback pipe (e.g. a manual webhook's response
+        // writable): it only settles once the woken workflow writes into it,
+        // so the flush must background it, never await it.
+        if (
+          typeof value === 'object' &&
+          value !== null &&
+          'payloadReadbackOp' in value
+        ) {
+          readbackOps.push(
+            (value as { payloadReadbackOp: Promise<unknown> }).payloadReadbackOp
+          );
         }
         return PAYLOAD_BYTES;
       }
@@ -65,6 +84,7 @@ vi.mock('../serialization.js', async (importActual) => {
 describe('resumeHook durable resume', () => {
   afterEach(() => {
     setWorld(undefined);
+    vi.clearAllMocks();
   });
 
   const baseHook = {
@@ -139,6 +159,28 @@ describe('resumeHook durable resume', () => {
     expect(wake.hookInput).toBeUndefined();
     expect(wake.hookResume).toBeUndefined();
     expect(wake.hookResumeTiming.strategy).toBe('sequential');
+
+    const attributes = Object.assign(
+      {},
+      ...telemetrySpan.setAttributes.mock.calls.map(([value]) => value)
+    );
+    expect(attributes['workflow.hook.resume_strategy']).toBe('sequential');
+  });
+
+  it('opens the resumeHook timing window at public entry', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const { queue } = makeWorld(hook);
+    const before = Date.now();
+
+    await resumeHook(hook.token, { foo: 'bar' });
+
+    const after = Date.now();
+    const timing = queue.mock.calls[0][1].hookResumeTiming;
+    expect(timing.resumeRequestedAtMs).toBeGreaterThanOrEqual(before);
+    expect(timing.queuePublishRequestedAtMs).toBeGreaterThanOrEqual(
+      timing.resumeRequestedAtMs
+    );
+    expect(timing.queuePublishRequestedAtMs).toBeLessThanOrEqual(after);
   });
 
   it('publishes the wake only after the durable write has resolved', async () => {
@@ -179,37 +221,35 @@ describe('resumeHook durable resume', () => {
     );
   });
 
-  it('awaits producer-push payload ops before the durable write', async () => {
+  it('awaits producer uploads before writing or waking', async () => {
     const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
-    let finishUpload!: () => void;
-    const flushOp = new Promise<void>((resolve) => (finishUpload = resolve));
+    const upload = Promise.withResolvers<void>();
     const { createEvent, queue } = makeWorld(hook);
 
-    const resume = resumeHook(hook.token, { flushOp });
-    // Upload in flight: the event must not commit with the payload still
-    // pointing at bytes that are not on the server yet.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    const resume = resumeHook(hook.token, { payloadOp: upload.promise });
+    await Promise.resolve();
+    await Promise.resolve();
     expect(createEvent).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
 
-    finishUpload();
+    upload.resolve();
     await resume;
     expect(createEvent).toHaveBeenCalledTimes(1);
     expect(queue).toHaveBeenCalledTimes(1);
   });
 
-  it('backgrounds consumer-settled ops instead of deadlocking on them', async () => {
+  it('does not await workflow readback pipes before writing and waking', async () => {
     // The regression this pins: a manual webhook's `responseWritable`
-    // dehydrates into a server-stream READER op that only settles once the
-    // woken workflow writes the response. Awaiting it before the write/wake
-    // deadlocks the resume against its own wake.
+    // dehydrates into a server-stream reader that only settles once the woken
+    // workflow writes the response. Awaiting it ahead of the wake deadlocks
+    // the resume against its own wake.
     const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
-    const neverSettles = new Promise(() => {});
+    const readback = new Promise<void>(() => {});
     const { createEvent, queue } = makeWorld(hook);
 
     await expect(
-      resumeHook(hook.token, { consumerSettledOp: neverSettles })
+      resumeHook(hook.token, { payloadReadbackOp: readback })
     ).resolves.toBeDefined();
-
     expect(createEvent).toHaveBeenCalledTimes(1);
     expect(queue).toHaveBeenCalledTimes(1);
   });
@@ -252,6 +292,22 @@ describe('resumeHook durable resume', () => {
         (error as HookNotFoundError).token === hook.token
     );
     // Nothing was committed, so nothing may be dispatched.
+    expect(queue).not.toHaveBeenCalled();
+  });
+
+  it('maps EntityConflictError on the durable write to HookNotFoundError', async () => {
+    // The wake is only published after the write succeeds, so at write time
+    // no queue message is in flight and a conflict has no consumer to
+    // converge on: it means the hook is no longer writable.
+    const hook = { ...baseHook, resumeContext: currentContext } satisfies Hook;
+    const createEvent = vi
+      .fn()
+      .mockRejectedValue(new EntityConflictError('hook is no longer writable'));
+    const { queue } = makeWorld(hook, { createEvent });
+
+    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toSatisfy(
+      (error: unknown) => HookNotFoundError.is(error)
+    );
     expect(queue).not.toHaveBeenCalled();
   });
 
@@ -384,5 +440,40 @@ describe('resumeHook durable resume', () => {
     const [, wake] = queue.mock.calls[0];
     expect(wake.hookResume).toBeUndefined();
     expect(wake.hookResumeTiming.strategy).toBe('sequential');
+  });
+
+  it('opens the resumeWebhook timing window before its hook lookup', async () => {
+    let clock = 1_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    try {
+      const hook = {
+        ...baseHook,
+        isWebhook: true,
+        resumeContext: currentContext,
+        resumeCapabilities: {
+          hookResumeDedupVersion: HOOK_RESUME_DEDUP_VERSION,
+        },
+      } satisfies Hook;
+      const { queue } = makeWorld(
+        hook,
+        {
+          getByToken: vi.fn(async () => {
+            clock += 500;
+            return hook;
+          }),
+        },
+        {}
+      );
+
+      await resumeWebhook(hook.token, new Request('http://x'));
+
+      const timing = queue.mock.calls[0][1].hookResumeTiming;
+      expect(timing.resumeRequestedAtMs).toBe(1_000);
+      expect(
+        timing.queuePublishRequestedAtMs - timing.resumeRequestedAtMs
+      ).toBeGreaterThanOrEqual(500);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 });

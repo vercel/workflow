@@ -37,7 +37,6 @@ import {
   hydrateStepReturnValue,
   hydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
-  isConsumerSettledOp,
   isEncrypted,
   maybeDecrypt,
   maybeEncrypt,
@@ -2313,30 +2312,35 @@ describe('workflow arguments', () => {
     }
   });
 
-  it('tags WritableStream reader ops as consumer-settled, and upload ops not', async () => {
-    // A dehydrated WritableStream pushes a server-stream READER op that only
-    // settles once the counterpart workflow writes into it. resumeHook's
-    // pre-write flush partitions on this tag: awaiting a reader op ahead of
-    // the wake that starts that workflow deadlocks (the manual-webhook
-    // `responseWritable` regression). A dehydrated ReadableStream pushes a
-    // producer-push upload, which must stay untagged so the flush awaits it.
-    const ops: Promise<any>[] = [];
+  it('separates producer uploads from workflow readback pipes', async () => {
     const request = new Request('https://example.com/webhook', {
       method: 'POST',
       body: 'webhook payload',
       duplex: 'half',
     } as RequestInit);
-    (request as any)[Symbol.for('WEBHOOK_RESPONSE_WRITABLE')] =
-      new WritableStream();
+    request[Symbol.for('WEBHOOK_RESPONSE_WRITABLE')] = new WritableStream();
+    const uploadOps: Promise<void>[] = [];
+    const readbackOps: Promise<void>[] = [];
 
-    await dehydrateStepReturnValue(request, mockRunId, noEncryptionKey, ops);
+    await dehydrateStepReturnValue(
+      request,
+      mockRunId,
+      noEncryptionKey,
+      uploadOps,
+      globalThis,
+      false,
+      false,
+      false,
+      undefined,
+      readbackOps
+    );
 
-    // One op per stream: the body upload and the responseWritable reader.
-    expect(ops).toHaveLength(2);
-    expect(ops.filter((op) => isConsumerSettledOp(op))).toHaveLength(1);
-    expect(ops.filter((op) => !isConsumerSettledOp(op))).toHaveLength(1);
-    // Swallow both: the reader op rejects/hangs once the mocked world is gone.
-    for (const op of ops) op.catch(() => {});
+    // The request body is producer -> workflow and must finish before the
+    // event commit. The manual response writable is workflow -> producer and
+    // cannot finish until after the workflow has been woken.
+    expect(uploadOps).toHaveLength(1);
+    expect(readbackOps).toHaveLength(1);
+    await Promise.allSettled([...uploadOps, ...readbackOps]);
   });
 
   it('should throw error for an unsupported type', async () => {

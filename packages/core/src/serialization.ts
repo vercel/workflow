@@ -96,7 +96,6 @@ import {
   ABORT_READER_CANCEL,
   ABORT_STREAM_NAME,
   BODY_INIT_SYMBOL,
-  CONSUMER_SETTLED_OP,
   STABLE_ULID,
   STREAM_DRAIN_SYMBOL,
   STREAM_FRAMING_SYMBOL,
@@ -1635,21 +1634,6 @@ import type {
 // mode-specific Request/Response/Stream reducers below.
 
 /**
- * Tag an `ops` promise as consumer-settled: it resolves only once the
- * counterpart workflow acts (see {@link CONSUMER_SETTLED_OP}). Callers that
- * flush ops before dispatching that workflow's wake must background these.
- */
-function markConsumerSettledOp<T extends Promise<unknown>>(op: T): T {
-  (op as any)[CONSUMER_SETTLED_OP] = true;
-  return op;
-}
-
-/** Whether an `ops` promise was tagged by {@link markConsumerSettledOp}. */
-export function isConsumerSettledOp(op: Promise<unknown>): boolean {
-  return (op as any)?.[CONSUMER_SETTLED_OP] === true;
-}
-
-/**
  * Base reducers shared across all serialization boundaries.
  * Composes: class + step-function + common reducers from the modular modules.
  */
@@ -1898,7 +1882,13 @@ export function getExternalReducers(
   // first chunk can race `run_started`. Thread the run-ready barrier into that
   // sink so the write orders after the run exists. Undefined outside turbo /
   // on the await path.
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  // Operations that read data back from the workflow into caller-owned
+  // writables. These must stay separate from producer uploads: a readback can
+  // only finish after the workflow runs, so awaiting it before dispatch would
+  // deadlock. Defaults to `ops` for existing callers that flush everything in
+  // the background.
+  readbackOps: Promise<void>[] = ops
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -1942,7 +1932,8 @@ export function getExternalReducers(
                   runId,
                   cryptoKey,
                   framedByteStreams,
-                  runReadyBarrier
+                  runReadyBarrier,
+                  readbackOps
                 ),
                 cryptoKey
               )
@@ -1997,10 +1988,7 @@ export function getExternalReducers(
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
       const readable = new WorkflowServerReadableStream(runId, name);
-      // A dehydrated WritableStream pushes a server-stream READER: it settles
-      // only when the counterpart workflow writes into `name`, so it must
-      // never be awaited ahead of the dispatch that wakes that workflow.
-      ops.push(markConsumerSettledOp(readable.pipeTo(value)));
+      readbackOps.push(readable.pipeTo(value));
 
       return { name };
     },
@@ -2231,7 +2219,8 @@ function getStepReducers(
   // after the body but within the same op flush, so its first chunk can race
   // `run_started`. Thread the run-ready barrier into the sink so that write
   // orders after the run exists. Undefined outside turbo / on the await path.
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  readbackOps: Promise<void>[] = ops
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -2291,7 +2280,8 @@ function getStepReducers(
                     runId,
                     cryptoKey,
                     framedByteStreams,
-                    runReadyBarrier
+                    runReadyBarrier,
+                    readbackOps
                   ),
                   cryptoKey
                 )
@@ -2315,22 +2305,15 @@ function getStepReducers(
       if (!name) {
         const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
-        // A dehydrated WritableStream pushes a server-stream READER: it
-        // settles only when the counterpart workflow writes into `name` (a
-        // manual webhook's `responseWritable` is the canonical case), so it
-        // must never be awaited ahead of the dispatch that wakes that
-        // workflow — resumeHook's pre-write ops flush would deadlock on it.
-        ops.push(
-          markConsumerSettledOp(
-            new WorkflowServerReadableStream(runId, name)
-              .pipeThrough(
-                getDeserializeStream(
-                  getStepRevivers(global, ops, runId, cryptoKey),
-                  cryptoKey
-                )
+        readbackOps.push(
+          new WorkflowServerReadableStream(runId, name)
+            .pipeThrough(
+              getDeserializeStream(
+                getStepRevivers(global, readbackOps, runId, cryptoKey),
+                cryptoKey
               )
-              .pipeTo(value)
-          )
+            )
+            .pipeTo(value)
         );
       }
 
@@ -3558,12 +3541,21 @@ export async function dehydrateWorkflowArguments(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false
+  compression = false,
+  readbackOps: Promise<void>[] = ops
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
       value,
-      getExternalReducers(global, ops, runId, key, framedByteStreams)
+      getExternalReducers(
+        global,
+        ops,
+        runId,
+        key,
+        framedByteStreams,
+        undefined,
+        readbackOps
+      )
     );
     return revive(str);
   }
@@ -3572,7 +3564,15 @@ export async function dehydrateWorkflowArguments(
     const result = await clientModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(
-        getExternalReducers(global, ops, runId, key, framedByteStreams)
+        getExternalReducers(
+          global,
+          ops,
+          runId,
+          key,
+          framedByteStreams,
+          undefined,
+          readbackOps
+        )
       ),
       compression,
       compressionStats,
@@ -3781,7 +3781,8 @@ export async function dehydrateStepReturnValue(
   // Turbo optimistic start: order the first chunk of a returned stream after
   // the backgrounded `run_started`. Threaded into the step reducers' stream
   // sink. Undefined outside turbo / on the await path.
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  readbackOps: Promise<void>[] = ops
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -3792,7 +3793,8 @@ export async function dehydrateStepReturnValue(
         runId,
         key,
         framedByteStreams,
-        runReadyBarrier
+        runReadyBarrier,
+        readbackOps
       )
     );
     return revive(str);
@@ -3808,7 +3810,8 @@ export async function dehydrateStepReturnValue(
           runId,
           key,
           framedByteStreams,
-          runReadyBarrier
+          runReadyBarrier,
+          readbackOps
         )
       ),
       compression,
