@@ -10,53 +10,43 @@ An embedded worker/workflow system backed by PostgreSQL for multi-host self-host
 > with a more robust queuing system, and **must** put its own authentication in
 > front of the workflow HTTP routes. Read [Security](#security) before you
 > deploy it.
+>
+> While some customers have been successful in deploying the Postgres World as
+> is, for production use-cases, we highly recommend cloning this reference
+> implementation and adapting it to your persistence, network stack, scale and
+> security requirements.
 
 ## Security
 
-The Postgres World does **not** authenticate the requests that drive workflow
-execution. Adding that is your responsibility, and it needs to be in place
-before an app using this World is reachable by untrusted clients.
+The Postgres World does **not** automatically authenticate the requests that
+drive workflow execution. Adding that is your responsibility, and it should be
+in place before an app using this World is reachable by untrusted clients.
 
-### What is unauthenticated
+### Protect the queue route
 
-Postgres World reuses the queue HTTP handler from
-[`@workflow/world-local`](https://github.com/vercel/workflow/tree/main/packages/world-local).
-When Graphile Worker claims a job, the worker delivers it to your application as
-an HTTP request:
+`POST /.well-known/workflow/v1/flow` is where the worker delivers workflow
+orchestration and queued step invocations. It is mounted in your application
+like any other route, so it is publicly reachable by default, and the queue
+handler — inherited from
+[`@workflow/world-local`](https://github.com/vercel/workflow/tree/main/packages/world-local)
+— accepts any request whose `x-vqs-*` headers, queue-name prefix, and body
+schema are well-formed. There is no signature, shared secret, or caller check,
+so anyone who can reach the route can forge or replay a workflow or step
+invocation, including steps your application would only reach after its own
+gating. Restrict it before you expose the app.
 
-```
-POST /.well-known/workflow/v1/flow
-```
+The other routes under `/.well-known/workflow/v1/` differ:
 
-That single route runs both workflow orchestration and queued step invocations.
-The handler validates only:
-
-- the presence and shape of the `x-vqs-queue-name`, `x-vqs-message-id`, and
-  `x-vqs-message-attempt` headers
-- that the queue name carries the expected `__wkf_workflow_` prefix (or
-  `__{namespace}_wkf_workflow_` when `WORKFLOW_QUEUE_NAMESPACE` is set)
-- that the body matches the queue payload schema
-
-There is no request signature, no shared secret, and no caller-identity check.
-Any client that can reach the route can submit a well-formed message of its own,
-or re-send a body it captured earlier, and the runtime will execute it — starting
-or advancing runs and invoking steps directly, including steps your application
-would normally only reach after its own gating (an approval, a payment check, a
-permission test). Because nothing in a message is bound to a caller, a replayed
-delivery is indistinguishable from a genuine one.
-
-Two related routes have their own limits worth knowing:
-
-- `POST /.well-known/workflow/v1/webhook/:token`, created by
+- `webhook/:token`, created by
   [`createWebhook()`](https://workflow-sdk.dev/docs/api-reference/workflow/create-webhook),
-  is authorized by the token in the URL and nothing else. When you need more,
-  use [`createHook()`](https://workflow-sdk.dev/docs/api-reference/workflow/create-hook)
-  behind your own authenticated route and call
+  is authorized by the token in the URL and nothing else. Use
+  [`createHook()`](https://workflow-sdk.dev/docs/api-reference/workflow/create-hook)
+  behind your own authenticated route and
   [`resumeHook()`](https://workflow-sdk.dev/docs/api-reference/workflow-api/resume-hook)
-  once you have authorized the request.
-- `GET /.well-known/workflow/v1/manifest.json` responds with `404` unless
-  `WORKFLOW_PUBLIC_MANIFEST=1` is set. Leave it unset outside of testing — the
-  manifest lists your workflow and step names.
+  when you need more than that.
+- `manifest.json` responds with `404` unless `WORKFLOW_PUBLIC_MANIFEST=1` is
+  set. Leave it unset outside of testing — the manifest lists your workflow and
+  step names.
 
 ### Bringing your own auth
 
@@ -66,34 +56,32 @@ at the network edge rather than inside the application:
 - **Keep the routes unreachable from outside.** By default the worker delivers to
   a loopback address (`http://localhost:{PORT}`, or `WORKFLOW_LOCAL_BASE_URL`
   when set), so in the common single-process topology nothing outside the
-  container or host needs to reach them at all. Blocking external requests to
-  `/.well-known/workflow/` at your ingress, reverse proxy, service mesh, or
-  firewall costs you nothing, because loopback delivery never traverses that
-  layer.
+  container needs to reach them. Blocking external requests to
+  `/.well-known/workflow/` at your ingress, reverse proxy, or firewall costs you
+  nothing, because loopback delivery never traverses that layer.
 - **Authenticate at the proxy when the routes must cross hosts.** If your web
   tier and workers are separate deployments, require mTLS or a shared-secret
   header at the proxy in front of the application, and strip any client-supplied
-  copy of that header at the edge so it cannot be forged.
-- **Do not authenticate these paths in framework middleware.** The setup guides
-  tell you to exclude `/.well-known/workflow/*` from your Next.js proxy or
-  middleware matcher, because a handler that consumes the internal request body
-  breaks execution with `Cannot perform ArrayBuffer.prototype.slice on a detached
-  ArrayBuffer`. Putting the paths back into the matcher in order to gate them
-  reintroduces that failure mode.
+  copy of that header at the edge.
+- **Do not gate these paths in framework middleware.** The setup guides tell you
+  to exclude `/.well-known/workflow/*` from your Next.js proxy matcher, because a
+  handler that consumes the internal request body breaks execution. Adding the
+  paths back in order to gate them reintroduces that failure mode.
 - **Do not expect the World to present a credential.** It does not sign its
-  delivery requests or attach a secret to them, and there is no configuration
-  hook to make it do so. A check inside the application that requires a
-  credential will reject the World's own deliveries.
+  delivery requests or attach a secret to them, so an in-application check that
+  requires one will reject the World's own deliveries.
 
 ### Data at rest
 
-Postgres World does not implement `getEncryptionKeyForRun()`, so it does not
-participate in Workflow's
-[end-to-end encryption](https://workflow-sdk.dev/docs/how-it-works/encryption).
-Workflow inputs and return values, step inputs and return values, hook payloads
-and metadata, and stream chunks are all stored in your database in readable
-form. Treat the workflow tables as holding whatever your workflows pass around,
-and protect the database, its credentials, and its backups accordingly.
+This World does not currently implement `getEncryptionKeyForRun()`, so it does
+not participate in Workflow's
+[end-to-end encryption](https://workflow-sdk.dev/docs/how-it-works/encryption):
+workflow and step inputs and return values, hook payloads and metadata, and
+stream chunks are all stored in your database in readable form. A World derived
+from this one can opt in by implementing that single method — see
+[Custom World implementations](https://workflow-sdk.dev/docs/how-it-works/encryption#custom-world-implementations)
+— which is the recommended route if your workflows carry sensitive data. Until
+then, protect the database, its credentials, and its backups accordingly.
 
 ## Installation
 
@@ -281,7 +269,6 @@ and its token can be reused. If the token is never reused, the expired
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - Workflow orchestration and queued step execution are both sent through `/.well-known/workflow/v1/flow`
-- That route is not authenticated by this World — see [Security](#security)
 
 ## Development
 
