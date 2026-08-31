@@ -1483,19 +1483,31 @@ function streamErrorFrameToError(
   );
 }
 
-type EventFrameStreamResult = ListEventsV4Result & {
-  partialError?: WorkflowWorldError;
-};
+type EventFrameStreamResult =
+  | (ListEventsV4Result & { kind: 'complete' })
+  | {
+      kind: 'partial';
+      events: Event[];
+      cursor: string;
+      hasMore: true;
+      error: WorkflowWorldError;
+    };
 
 const MAX_PARTIAL_STREAM_RETRIES = 2;
 
 function partialEventFrameStream(
   events: Event[],
-  partialError: WorkflowWorldError
+  error: WorkflowWorldError
 ): EventFrameStreamResult {
   const eventId = events.at(-1)?.eventId;
-  if (!eventId) throw partialError;
-  return { events, cursor: `eid:${eventId}`, hasMore: true, partialError };
+  if (!eventId) throw error;
+  return {
+    kind: 'partial',
+    events,
+    cursor: `eid:${eventId}`,
+    hasMore: true,
+    error,
+  };
 }
 
 async function consumeEventFrameStream(
@@ -1522,6 +1534,7 @@ async function consumeEventFrameStream(
       if (frame.meta._end === 1) {
         const end = EventStreamEndSchema.parse(frame.meta);
         return {
+          kind: 'complete',
           events,
           cursor: end.next ?? null,
           hasMore: end.hasMore,
@@ -1590,9 +1603,14 @@ async function consumeReplayLogResponse(
     'createEvent',
     replayEventObserver
   );
-  if (!page.hasMore) return page;
+  if (!page.hasMore) {
+    return {
+      events: page.events,
+      cursor: page.cursor,
+      hasMore: false,
+    };
+  }
   if (!page.cursor) {
-    if (page.partialError) throw page.partialError;
     throw new WorkflowWorldError(
       'v4 createEvent: partial event stream missing cursor',
       { code: 'SCHEMA_VALIDATION' }
@@ -1695,15 +1713,14 @@ export async function getWorkflowRunEventsV4(
       replayEventObserver
     );
     const cursorAdvanced = !!consumed.cursor && consumed.cursor !== cursor;
-    if (consumed.partialError) {
+    if (consumed.kind === 'partial') {
       if (
         params.limit !== undefined ||
         !cursorAdvanced ||
         partialStreamRetries === MAX_PARTIAL_STREAM_RETRIES
       ) {
-        throw consumed.partialError;
+        throw consumed.error;
       }
-      assert(consumed.cursor);
       partialStreamRetries++;
       cursor = consumed.cursor;
     } else if (
@@ -1718,7 +1735,7 @@ export async function getWorkflowRunEventsV4(
     for (const event of consumed.events) {
       events.push(event);
     }
-  } while (consumed.partialError);
+  } while (consumed.kind === 'partial');
 
   return {
     events,
@@ -1759,6 +1776,10 @@ export async function getEventsByCorrelationIdV4(
     config,
     'listEventsByCorrelationId'
   );
-  if (consumed.partialError) throw consumed.partialError;
-  return consumed;
+  if (consumed.kind === 'partial') throw consumed.error;
+  return {
+    events: consumed.events,
+    cursor: consumed.cursor,
+    hasMore: consumed.hasMore,
+  };
 }
