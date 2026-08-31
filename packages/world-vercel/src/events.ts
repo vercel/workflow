@@ -104,6 +104,8 @@ type EventDataField<E = AnyEventRequest> = E extends { eventData?: infer D }
 const eventsNeedingResolve = new Set<string>([
   'run_created', // runtime reads result.run.runId
   'run_started', // runtime reads result.run (checks startedAt, status)
+  'run_completed', // response schema requires run.output
+  'run_failed', // response schema requires run.error
   'step_started', // runtime reads result.step (checks attempt, state)
 ]);
 

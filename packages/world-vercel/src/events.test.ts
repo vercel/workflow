@@ -436,6 +436,49 @@ async function postStepStartedMeta(
   return capturedMeta ?? {};
 }
 
+describe('createWorkflowRunEvent terminal run response resolution', () => {
+  it.each([
+    [
+      'run_completed',
+      { eventType: 'run_completed', eventData: { output: new Uint8Array() } },
+      { status: 'completed', output: new Uint8Array() },
+    ],
+    [
+      'run_failed',
+      { eventType: 'run_failed', eventData: { error: new Uint8Array() } },
+      { status: 'failed', error: new Uint8Array() },
+    ],
+  ] as const)('requests a resolved run for %s', async (eventType, data, run) => {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: `/api/v4/runs/wrun_1/events/${eventType}`,
+        method: 'POST',
+      })
+      .reply(200, (opts: { body?: unknown }) => {
+        capturedMeta = decodePostedMeta(opts.body);
+        return createEventBody(data as AnyEventRequest, {
+          run: {
+            ...runningRun,
+            ...run,
+            completedAt: STARTED_AT,
+          },
+        });
+      });
+
+    await createWorkflowRunEvent('wrun_1', data as AnyEventRequest, undefined, {
+      token: 'test-token',
+      dispatcher: agent,
+    });
+
+    expect(capturedMeta?.remoteRefBehavior).toBe('resolve');
+    agent.assertNoPendingInterceptors();
+  });
+});
+
 describe('createWorkflowRunEvent computeInstanceId wire field', () => {
   const INSTANCE = 'cinst_01JZZZTESTINSTANCE00000001';
 
