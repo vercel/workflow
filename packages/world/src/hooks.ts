@@ -14,29 +14,31 @@ import type { PaginationOptions, ResolveData } from './shared.js';
  * excludes the run's mutable state (e.g. status), inputs/outputs, attributes,
  * and any secret: only fields that are fixed at hook-creation time.
  */
-export const HookResumeContextSchema = z.object({
-  deploymentId: z.string(),
-  workflowName: z.string(),
-  // Named `runSpecVersion` to distinguish it from the hook's own `specVersion`.
-  runSpecVersion: z.number().optional(),
-  workflowCoreVersion: z.string().optional(),
-  traceCarrier: TraceCarrierSchema.optional(),
-  // The run's published X25519 public key (base64), mirrored from the run
-  // entity. Lets a resume seal (`encp`) its payload to the run without reading
-  // the run or fetching its symmetric key. Absent on runs created before
-  // sealed envelopes and on projects with encryption disabled, where the
-  // resume falls back to the symmetric per-run key.
-  encryptionPublicKey: z.string().optional(),
-  // Feature marker: the version of the lazy-hook-resume consumer protocol the
-  // run's creating deployment supports. Present (>= 1) means that deployment's
-  // `@workflow/core` re-ensures the `hook_received` event from the queue
-  // message's `hookInput` on replay, so `resumeHook()`'s lazy path is safe to
-  // use. Because a run is pinned to its creating deployment, this
-  // marker is a reliable per-run attestation, unlike inferring support from a
-  // version compare against a predicted release cutoff. Absent on runs created
-  // before the marker existed (fall back to the sequential path).
-  hookResumeInputVersion: z.number().optional(),
-});
+export const HookResumeContextSchema = z.compile(
+  z.object({
+    deploymentId: z.string(),
+    workflowName: z.string(),
+    // Named `runSpecVersion` to distinguish it from the hook's own `specVersion`.
+    runSpecVersion: z.number().optional(),
+    workflowCoreVersion: z.string().optional(),
+    traceCarrier: TraceCarrierSchema.optional(),
+    // The run's published X25519 public key (base64), mirrored from the run
+    // entity. Lets a resume seal (`encp`) its payload to the run without reading
+    // the run or fetching its symmetric key. Absent on runs created before
+    // sealed envelopes and on projects with encryption disabled, where the
+    // resume falls back to the symmetric per-run key.
+    encryptionPublicKey: z.string().optional(),
+    // Feature marker: the version of the lazy-hook-resume consumer protocol the
+    // run's creating deployment supports. Present (>= 1) means that deployment's
+    // `@workflow/core` re-ensures the `hook_received` event from the queue
+    // message's `hookInput` on replay, so `resumeHook()`'s lazy path is safe to
+    // use. Because a run is pinned to its creating deployment, this
+    // marker is a reliable per-run attestation, unlike inferring support from a
+    // version compare against a predicted release cutoff. Absent on runs created
+    // before the marker existed (fall back to the sequential path).
+    hookResumeInputVersion: z.number().optional(),
+  })
+);
 
 export type HookResumeContext = z.infer<typeof HookResumeContextSchema>;
 
@@ -72,13 +74,15 @@ export const HOOK_RESUME_DEDUP_VERSION = 1;
  * `hookResumeInputVersion`, which attests the *consumer* and is fixed at run
  * creation.)
  */
-export const HookResumeCapabilitiesSchema = z.object({
-  // Present (>= HOOK_RESUME_DEDUP_VERSION) when the live backend enforces the
-  // `(runId, resumeId)` dedup constraint AND no server-side kill switch is
-  // active. Absent against an older/rolled-back server or when the kill switch
-  // is engaged.
-  hookResumeDedupVersion: z.number(),
-});
+export const HookResumeCapabilitiesSchema = z.compile(
+  z.object({
+    // Present (>= HOOK_RESUME_DEDUP_VERSION) when the live backend enforces the
+    // `(runId, resumeId)` dedup constraint AND no server-side kill switch is
+    // active. Absent against an older/rolled-back server or when the kill switch
+    // is engaged.
+    hookResumeDedupVersion: z.number(),
+  })
+);
 
 export type HookResumeCapabilities = z.infer<
   typeof HookResumeCapabilitiesSchema

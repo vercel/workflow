@@ -41,16 +41,18 @@ import {
  * `errorCode` is a separate plaintext metadata field used for routing
  * and classification.
  */
-export const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
-  error: true,
-  errorCode: true,
-}).extend({
-  error: z.union([SerializedDataSchema, z.any()]).optional(),
-  errorCode: z.string().optional(),
-  // Not part of the World interface, but passed through for direct consumers and debugging
-  blobStorageBytes: z.number().optional(),
-  streamStorageBytes: z.number().optional(),
-});
+export const WorkflowRunWireBaseSchema = z.compile(
+  WorkflowRunBaseSchema.omit({
+    error: true,
+    errorCode: true,
+  }).extend({
+    error: z.union([SerializedDataSchema, z.any()]).optional(),
+    errorCode: z.string().optional(),
+    // Not part of the World interface, but passed through for direct consumers and debugging
+    blobStorageBytes: z.number().optional(),
+    streamStorageBytes: z.number().optional(),
+  })
+);
 
 // Wire schema for resolved data (full input/output)
 const WorkflowRunWireSchema = z.compile(WorkflowRunWireBaseSchema);

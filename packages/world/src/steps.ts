@@ -3,13 +3,9 @@ import { type SerializedData, SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
 
 // Step schemas
-export const StepStatusSchema = z.enum([
-  'pending',
-  'running',
-  'completed',
-  'failed',
-  'cancelled',
-]);
+export const StepStatusSchema = z.compile(
+  z.enum(['pending', 'running', 'completed', 'failed', 'cancelled'])
+);
 
 /**
  * Schema for workflow steps.
@@ -75,11 +71,9 @@ export const StepSchema = z.compile(
 
 // Inferred types
 export type StepStatus = z.infer<typeof StepStatusSchema>;
-export const TerminalStepStatusSchema = StepStatusSchema.extract([
-  'completed',
-  'failed',
-  'cancelled',
-] as const);
+export const TerminalStepStatusSchema = z.compile(
+  StepStatusSchema.extract(['completed', 'failed', 'cancelled'] as const)
+);
 export type TerminalStepStatus = z.infer<typeof TerminalStepStatusSchema>;
 export const TERMINAL_STEP_STATUSES = TerminalStepStatusSchema.options;
 

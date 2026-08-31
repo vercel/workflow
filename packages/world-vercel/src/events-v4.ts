@@ -306,30 +306,34 @@ export interface PreconditionFailureDetails {
   cursor?: string;
 }
 
-const CreateEventV4BodyBaseSchema = z.object({
-  event: EventSchema,
-  run: WorkflowRunSchema.optional(),
-  step: StepWireSchema.transform(deserializeStep).optional(),
-  hook: HookSchema.optional(),
-  wait: WaitSchema.optional(),
-  stepCreated: z.literal(true).optional(),
-  maxEvents: z.number().int().positive().optional(),
-});
+const CreateEventV4BodyBaseSchema = z.compile(
+  z.object({
+    event: EventSchema,
+    run: WorkflowRunSchema.optional(),
+    step: StepWireSchema.transform(deserializeStep).optional(),
+    hook: HookSchema.optional(),
+    wait: WaitSchema.optional(),
+    stepCreated: z.literal(true).optional(),
+    maxEvents: z.number().int().positive().optional(),
+  })
+);
 
-const CreateEventV4PageSchema = z.union([
-  z.object({
-    events: z.array(EventSchema),
-    cursor: z.string().nullable(),
-    hasMore: z.boolean(),
-  }),
-  // A response without a page omits these keys outright. Since Zod 4.4,
-  // `z.undefined()` no longer makes an object key implicitly optional.
-  z.object({
-    events: z.undefined().optional(),
-    cursor: z.undefined().optional(),
-    hasMore: z.undefined().optional(),
-  }),
-]);
+const CreateEventV4PageSchema = z.compile(
+  z.union([
+    z.object({
+      events: z.array(EventSchema),
+      cursor: z.string().nullable(),
+      hasMore: z.boolean(),
+    }),
+    // A response without a page omits these keys outright. Since Zod 4.4,
+    // `z.undefined()` no longer makes an object key implicitly optional.
+    z.object({
+      events: z.undefined().optional(),
+      cursor: z.undefined().optional(),
+      hasMore: z.undefined().optional(),
+    }),
+  ])
+);
 
 const CreateEventV4BodySchema = z.compile(
   CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema)
@@ -377,7 +381,7 @@ const CreateEventV4BodySchemas: {
   noop: CreateEventV4BodySchema,
 };
 
-const MaxEventsHeaderSchema = z.coerce.number().int().positive();
+const MaxEventsHeaderSchema = z.compile(z.coerce.number().int().positive());
 const EventStreamEndSchema = z.compile(
   z.object({
     _end: z.literal(1),

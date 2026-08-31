@@ -1,6 +1,6 @@
 import * as z from 'zod/v4';
 
-export const WaitStatusSchema = z.enum(['waiting', 'completed']);
+export const WaitStatusSchema = z.compile(z.enum(['waiting', 'completed']));
 
 export const WaitSchema = z.compile(
   z.object({

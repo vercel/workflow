@@ -25,16 +25,18 @@ const NAIVE_DATETIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
  * offset), and non-string inputs (Date, epoch number), are forwarded
  * without modification before coercion.
  */
-const UTCDateSchema = z.preprocess((value) => {
-  if (typeof value === 'string' && NAIVE_DATETIME.test(value)) {
-    return `${value.replace(' ', 'T')}Z`;
-  }
-  return value;
-}, z.coerce.date());
+const UTCDateSchema = z.compile(
+  z.preprocess((value) => {
+    if (typeof value === 'string' && NAIVE_DATETIME.test(value)) {
+      return `${value.replace(' ', 'T')}Z`;
+    }
+    return value;
+  }, z.coerce.date())
+);
 
-const NullableDateSchema = UTCDateSchema.nullable().optional();
-const NullableStringSchema = z.string().nullable().optional();
-const NullableBooleanSchema = z.boolean().nullable().optional();
+const NullableDateSchema = z.compile(UTCDateSchema.nullable().optional());
+const NullableStringSchema = z.compile(z.string().nullable().optional());
+const NullableBooleanSchema = z.compile(z.boolean().nullable().optional());
 
 // Keep analytics object schemas standalone even when they mirror storage
 // metadata fields. This namespace is an explicit metadata-only read contract;

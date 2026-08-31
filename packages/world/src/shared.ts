@@ -1,5 +1,7 @@
 import * as z from 'zod/v4';
 
+// Zod 4.5 cannot compile recursive schemas. Keep this on the standard parser;
+// wrapping it in z.compile() would silently return this same schema unchanged.
 export const zodJsonSchema: z.ZodType<unknown> = z.lazy(() => {
   return z.union([
     z.string(),
@@ -25,13 +27,15 @@ export interface PaginationOptions {
   sortOrder?: 'asc' | 'desc';
 }
 
-export const PageInfoSchema = z.object({
-  currentLookbackDays: z.number(),
-  maxLookbackDays: z.number(),
-  currentWindowStart: z.coerce.date(),
-  maxWindowStart: z.coerce.date(),
-  upgradeAvailable: z.boolean(),
-});
+export const PageInfoSchema = z.compile(
+  z.object({
+    currentLookbackDays: z.number(),
+    maxLookbackDays: z.number(),
+    currentWindowStart: z.coerce.date(),
+    maxWindowStart: z.coerce.date(),
+    upgradeAvailable: z.boolean(),
+  })
+);
 
 export type PageInfo = z.infer<typeof PageInfoSchema>;
 

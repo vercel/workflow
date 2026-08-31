@@ -13,14 +13,17 @@ export type SerializedData = Uint8Array | unknown;
  * Zod schema for validating SerializedData (Uint8Array).
  * Used for specVersion >= 2.
  */
-export const BinarySerializedDataSchema: z.ZodType<SerializedData> =
-  z.instanceof(Uint8Array) as z.ZodType<SerializedData>;
+export const BinarySerializedDataSchema: z.ZodType<SerializedData> = z.compile(
+  z.instanceof(Uint8Array)
+) as z.ZodType<SerializedData>;
 
 /**
  * Legacy schema for serialized data (specVersion 1).
  * Legacy data was stored as JSON, so it can be any value.
  */
-export const LegacySerializedDataSchemaV1: z.ZodType<unknown> = z.any();
+export const LegacySerializedDataSchemaV1: z.ZodType<unknown> = z.compile(
+  z.any()
+);
 
 /**
  * Union schema that accepts both v2+ (Uint8Array) and legacy (any) serialized data.
@@ -35,6 +38,6 @@ export const LegacySerializedDataSchemaV1: z.ZodType<unknown> = z.any();
  * still see these keys as present, and only the parse-time tolerance is
  * restored.
  */
-export const SerializedDataSchema = z
-  .union([BinarySerializedDataSchema, LegacySerializedDataSchemaV1])
-  .optional() as unknown as z.ZodType<SerializedData>;
+export const SerializedDataSchema = z.compile(
+  z.union([BinarySerializedDataSchema, LegacySerializedDataSchemaV1]).optional()
+) as unknown as z.ZodType<SerializedData>;

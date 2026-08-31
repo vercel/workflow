@@ -14,12 +14,14 @@ import type { TypedHook } from 'workflow';
 import * as z from 'zod/v4';
 import type manifest from '../.well-known/workflow/v1/manifest.json';
 
-export const Control = z.object({
-  state: z.literal('listening'),
-  info: z.object({
-    port: z.number(),
-  }),
-});
+export const Control = z.compile(
+  z.object({
+    state: z.literal('listening'),
+    info: z.object({
+      port: z.number(),
+    }),
+  })
+);
 type Control = z.infer<typeof Control>;
 
 type Files = keyof typeof manifest.workflows;
@@ -121,7 +123,7 @@ export async function startServer(opts: {
   throw new Error('Server did not start correctly');
 }
 
-const Invoke = z.object({ runId: z.coerce.string() });
+const Invoke = z.compile(z.object({ runId: z.coerce.string() }));
 
 export function createFetcher(control: Control) {
   return {

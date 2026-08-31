@@ -2,11 +2,13 @@ import { defineHook, getWritable } from '@workflow/core';
 import * as z from 'zod/v4';
 
 export const Hook = defineHook({
-  schema: z.object({
-    data: z.string(),
-    done: z.boolean().optional(),
-    metadata: z.unknown(),
-  }),
+  schema: z.compile(
+    z.object({
+      data: z.string(),
+      done: z.boolean().optional(),
+      metadata: z.unknown(),
+    })
+  ),
 });
 
 export async function collectWithHook(token: string, customData: string) {
