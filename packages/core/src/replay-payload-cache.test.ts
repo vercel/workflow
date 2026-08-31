@@ -173,7 +173,7 @@ describe('ReplayPayloadCache', () => {
     expect(second.count).toBe(0);
   });
 
-  it('prewarms events inserted by a later log load', async () => {
+  it('rescans events inserted by an authoritative log replacement', async () => {
     const payloads = [0, 1, 2].map((value) => new Uint8Array([value]));
     const preparer = vi.fn<ReplayPayloadPreparer>((value) => ({ data: value }));
     const cache = new ReplayPayloadCache(undefined, preparer);
@@ -183,6 +183,10 @@ describe('ReplayPayloadCache', () => {
     await cache.prewarm(run, [first, second]);
     expect(preparer).toHaveBeenCalledTimes(2);
 
+    await cache.prewarm(run, [first, missing, second]);
+    expect(preparer).toHaveBeenCalledTimes(2);
+
+    cache.resetScan();
     await cache.prewarm(run, [first, missing, second]);
     expect(preparer).toHaveBeenCalledTimes(3);
     expect(preparer).toHaveBeenLastCalledWith(payloads[1], undefined);

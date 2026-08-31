@@ -1498,6 +1498,7 @@ export function workflowEntrypoint(
                       // incremental load starts above the hole and never
                       // returns it.
                       eventLog = { type: 'loadAll' };
+                      replayPayloadCache?.resetScan();
                     }
                     runtimeLogger.warn(
                       'Event creation rejected as stale; restarting replay in-process',

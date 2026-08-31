@@ -34,6 +34,7 @@ export class ReplayPayloadCache {
   >();
   private readonly primitiveStepResults = new Map<string, unknown>();
   private readonly encryptionKey: Promise<PayloadKey | undefined>;
+  private nextUnscannedEventIndex = 0;
 
   constructor(
     encryptionKey: PayloadKey | undefined | Promise<PayloadKey | undefined>,
@@ -62,14 +63,25 @@ export class ReplayPayloadCache {
       workflowRun.input
     );
     if (workflowInput) preparations.push(workflowInput);
-    for (const event of events) {
+    for (
+      let index = this.nextUnscannedEventIndex;
+      index < events.length;
+      index++
+    ) {
+      const event = events[index];
       const preparation = this.prepareEventIfMissing(event);
       if (preparation) preparations.push(preparation);
     }
+    this.nextUnscannedEventIndex = events.length;
 
     // Prewarming is speculative and must not fail replay before the matching
     // event is consumed. allSettled also attaches rejection handlers eagerly.
     await Promise.allSettled(preparations);
+  }
+
+  /** Rescan the next event log after an authoritative replacement. */
+  resetScan(): void {
+    this.nextUnscannedEventIndex = 0;
   }
 
   /** Return the workflow input after shared host-side preparation. */
