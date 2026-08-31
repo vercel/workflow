@@ -1,4 +1,4 @@
-import { type Context, Script } from 'node:vm';
+import { Script } from 'node:vm';
 import { globalSingleton } from '@workflow/utils';
 
 /**
@@ -107,7 +107,7 @@ function touchBundle(code: string): Map<string, Script> | undefined {
 export function getCachedWorkflowScript(
   code: string,
   filename: string
-): Script {
+): { script: Script; cacheHit: boolean } {
   let byFilename = touchBundle(code);
   if (byFilename === undefined) {
     byFilename = new Map<string, Script>();
@@ -123,23 +123,12 @@ export function getCachedWorkflowScript(
     }
   }
   let script = byFilename.get(filename);
+  const cacheHit = script !== undefined;
   if (script === undefined) {
     script = new Script(code, { filename });
     byFilename.set(filename, script);
   }
-  return script;
-}
-
-/**
- * Runs the cached workflow-bundle `Script` against `context`. Compiles and
- * caches the `Script` on first use for the given `(code, filename)`.
- */
-export function runCachedWorkflowScript(
-  code: string,
-  filename: string,
-  context: Context
-): unknown {
-  return getCachedWorkflowScript(code, filename).runInContext(context);
+  return { script, cacheHit };
 }
 
 /**

@@ -214,6 +214,23 @@ const StepExecutionDurationHistogram = once(async () => {
 // OTel registration, which is the whole point of the log. With several copies
 // in a process, each one's view is what is worth seeing.
 let otelDiagLogged = false;
+
+function describeThrownValue(value: unknown): string {
+  try {
+    if (
+      typeof value === 'object' &&
+      value !== null &&
+      'message' in value &&
+      typeof value.message === 'string'
+    ) {
+      return value.message;
+    }
+    return String(value);
+  } catch {
+    return 'Unknown error';
+  }
+}
+
 function logOtelDiagnosticOnce(otel: typeof api, tracer: api.Tracer): void {
   const debugEnabled =
     typeof process !== 'undefined' &&
@@ -278,7 +295,7 @@ export async function trace<T>(
       } else {
         span.setStatus({
           code: otel.SpanStatusCode.ERROR,
-          message: (e as Error).message,
+          message: describeThrownValue(e),
         });
       }
       throw e;
@@ -286,6 +303,52 @@ export async function trace<T>(
       span.end();
     }
   });
+}
+
+/** Starts a child span without installing it as the active context. */
+export async function startTraceSpan(spanName: string) {
+  const [tracer, otel] = await Promise.all([Tracer.value, OtelApi.value]);
+  if (!tracer || !otel) return { end() {}, fail() {} };
+
+  const span = tracer.startSpan(spanName);
+  let ended = false;
+  const finish = (status: api.SpanStatus) => {
+    if (ended) return;
+    ended = true;
+    span.setStatus(status);
+    span.end();
+  };
+
+  return {
+    end: () => finish({ code: otel.SpanStatusCode.OK }),
+    fail: (error: unknown) =>
+      finish({
+        code: otel.SpanStatusCode.ERROR,
+        message: describeThrownValue(error),
+      }),
+  };
+}
+
+/** Keeps a parked workflow's ambient trace context aligned with each resume. */
+export async function createRefreshableTraceContext() {
+  const otel = await OtelApi.value;
+  if (!otel) {
+    return { refresh() {}, run: <T>(fn: () => T): T => fn() };
+  }
+
+  let current = otel.context.active();
+  const context: api.Context = {
+    getValue: (key) => current.getValue(key),
+    setValue: (key, value) => current.setValue(key, value),
+    deleteValue: (key) => current.deleteValue(key),
+  };
+
+  return {
+    refresh: () => {
+      current = otel.context.active();
+    },
+    run: <T>(fn: () => T): T => otel.context.with(context, fn),
+  };
 }
 
 /**

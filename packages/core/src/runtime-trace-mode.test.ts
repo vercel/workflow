@@ -201,7 +201,6 @@ async function driveHandler(opts: {
   const getWorldSpan = exporter
     .getFinishedSpans()
     .find((s) => s.name === 'workflow.route.get_world');
-
   return {
     workflowSpan,
     routeSpan,
@@ -287,7 +286,6 @@ describe('workflowEntrypoint trace modes', () => {
     );
     expect(getWorldSpan).toBeDefined();
     expect(getWorldSpan?.parentSpanId).toBe(routeSpan?.spanContext().spanId);
-
     expect(workflowSpan).toBeDefined();
     // Child of the local /flow route span — same trace, so one
     // invocation is a single bounded trace rather than a new root.
@@ -315,6 +313,17 @@ describe('workflowEntrypoint trace modes', () => {
     expect(
       runStartedCreateEvent?.attributes['workflow.run_started.skip_preload']
     ).toBe(false);
+
+    const replayLoadSpan = exporter
+      .getFinishedSpans()
+      .find((finished) => finished.name === 'workflow.replay.load');
+    expect(replayLoadSpan?.parentSpanId).toBe(
+      workflowSpan?.spanContext().spanId
+    );
+    expect(replayLoadSpan?.attributes).toMatchObject({
+      'workflow.replay.load.source': 'run_started',
+      'workflow.events.count': 0,
+    });
 
     // Queue-delivered invocation spans use the CONSUMER kind, matching
     // queue-delivered step.execute spans.

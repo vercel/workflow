@@ -969,6 +969,24 @@ export function workflowEntrypoint(
                     return result;
                   };
 
+                  const traceReplayLoad = <T extends { events?: Event[] }>(
+                    source: Attribute.WorkflowReplayLoadSource,
+                    load: () => Promise<T>
+                  ): Promise<T> =>
+                    trace('workflow.replay.load', async (loadSpan) => {
+                      loadSpan?.setAttributes({
+                        ...Attribute.WorkflowRunId(runId),
+                        ...Attribute.WorkflowReplayLoadSource(source),
+                      });
+                      const result = await load();
+                      loadSpan?.setAttributes(
+                        Attribute.WorkflowEventsCount(
+                          result.events?.length ?? 0
+                        )
+                      );
+                      return result;
+                    });
+
                   /**
                    * The slot snapshot for a write issued from this loop: how
                    * much of the run's log the decision behind it was made
@@ -2034,23 +2052,25 @@ export function workflowEntrypoint(
                       span?.addEvent('workflow.hook_received.create.start', {
                         'workflow.hook_received.preload_events': true,
                       });
-                      const result = await createEvent(
-                        {
-                          eventType: 'hook_received',
-                          specVersion: SPEC_VERSION_CURRENT,
-                          correlationId: hookResumeInput.hookId,
-                          eventData: {
-                            token: hookResumeInput.token,
-                            payload: hookResumeInput.payload,
+                      const result = await traceReplayLoad('hook_preload', () =>
+                        createEvent(
+                          {
+                            eventType: 'hook_received',
+                            specVersion: SPEC_VERSION_CURRENT,
+                            correlationId: hookResumeInput.hookId,
+                            eventData: {
+                              token: hookResumeInput.token,
+                              payload: hookResumeInput.payload,
+                            },
                           },
-                        },
-                        {
-                          requestId,
-                          occurredAt,
-                          resumeId: hookResumeInput.resumeId,
-                          resumePayloadDigest: hookResumeInput.payloadDigest,
-                          preloadEvents: true,
-                        }
+                          {
+                            requestId,
+                            occurredAt,
+                            resumeId: hookResumeInput.resumeId,
+                            resumePayloadDigest: hookResumeInput.payloadDigest,
+                            preloadEvents: true,
+                          }
+                        )
                       );
                       hookEnsured = true;
                       // Note: unlike the re-ensure below, this hoisted write
@@ -2324,9 +2344,10 @@ export function workflowEntrypoint(
                         span?.addEvent('workflow.run_started.create.start', {
                           'workflow.run_started.skip_preload': false,
                         });
-                        const result = await createEvent(runStartedEvent, {
-                          requestId,
-                        });
+                        const result = await traceReplayLoad(
+                          'run_started',
+                          () => createEvent(runStartedEvent, { requestId })
+                        );
                         workflowRun = result.run;
                         maxEventsLimit = clampMaxEvents(result.maxEvents);
                         // Anchors RSFS, see the declaration above.
