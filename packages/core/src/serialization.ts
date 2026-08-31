@@ -763,7 +763,10 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
           if (readStart === undefined) readStart = Date.now();
           const world = await getWorldLazy();
           const connectStart = Date.now();
-          const stream = await world.streams.get(runId, name, startIndex);
+          const getStream =
+            world.streams.getResumable?.bind(world.streams) ??
+            world.streams.get.bind(world.streams);
+          const stream = await getStream(runId, name, startIndex);
           connectMs = Date.now() - connectStart;
           reader = this.#reader = stream.getReader();
         }
@@ -900,6 +903,7 @@ export function createReconnectingFramedStream(
   let reconnectCount = 0;
   let totalReconnectCount = 0;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let worldOwnsRecovery = false;
   let buffer = new Uint8Array(0);
   // Read telemetry (same semantics as WorkflowServerReadableStream):
   // dispatch time, first-connect duration, first-frame latch, and totals.
@@ -915,7 +919,11 @@ export function createReconnectingFramedStream(
       ? currentStartIndex + consumedFrames
       : startIndex;
     const connectStart = Date.now();
-    const stream = await world.streams.get(runId, name, effectiveStartIndex);
+    const getStream =
+      world.streams.getResumable?.bind(world.streams) ??
+      world.streams.get.bind(world.streams);
+    worldOwnsRecovery = world.streams.getResumable !== undefined;
+    const stream = await getStream(runId, name, effectiveStartIndex);
     if (connectMs === undefined) connectMs = Date.now() - connectStart;
     reader = stream.getReader();
   }
@@ -1006,7 +1014,7 @@ export function createReconnectingFramedStream(
           // biome-ignore lint/style/noNonNullAssertion: connect() guarantees reader
           result = await reader!.read();
         } catch (err) {
-          if (!reconnectSupported) {
+          if (worldOwnsRecovery || !reconnectSupported) {
             controller.error(err);
             return;
           }
@@ -1028,7 +1036,11 @@ export function createReconnectingFramedStream(
           // errored body, but on some paths it reaches the client as a clean
           // EOF), and a completed stream can still be cut mid-body; both
           // would otherwise be silently read as a shorter, complete stream.
-          if (reconnectSupported && !(await isVerifiedComplete())) {
+          if (
+            !worldOwnsRecovery &&
+            reconnectSupported &&
+            !(await isVerifiedComplete())
+          ) {
             try {
               await reconnect();
             } catch (reconnectErr) {

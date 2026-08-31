@@ -103,6 +103,26 @@ describe('createReconnectingFramedStream', () => {
     setWorld(undefined as unknown as World);
   });
 
+  it('delegates interruption recovery to a resumable World reader', async () => {
+    const get = vi.fn();
+    const getResumable = vi.fn(async () =>
+      scriptedStream([
+        { kind: 'value', value: payloadFrame(1) },
+        { kind: 'error', err: new Error('resumable reader exhausted') },
+      ])
+    );
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      streams: { get, getResumable },
+    } as unknown as World);
+
+    await expect(
+      readAll(createReconnectingFramedStream(RUN_ID, 's', 0))
+    ).rejects.toThrow('resumable reader exhausted');
+    expect(getResumable).toHaveBeenCalledTimes(1);
+    expect(get).not.toHaveBeenCalled();
+  });
+
   it('passes through complete frames and closes cleanly on EOF', async () => {
     const { world, calls } = makeWorldWithScriptedStreams({
       0: () =>

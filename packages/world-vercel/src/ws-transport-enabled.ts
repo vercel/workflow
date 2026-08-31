@@ -68,3 +68,8 @@ export function isWsEventsTransportStrict(): boolean {
 export function isWsStreamsTransportEnabled(): boolean {
   return process.env.WORKFLOW_STREAMS_TRANSPORT === 'ws';
 }
+
+/** Read transport capability is independently default-off. */
+export function isWsStreamReadsTransportEnabled(): boolean {
+  return process.env.WORKFLOW_STREAM_READS_TRANSPORT === 'ws';
+}
