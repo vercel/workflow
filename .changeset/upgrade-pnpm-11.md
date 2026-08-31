@@ -4,4 +4,4 @@
 "@workflow/world-testing": patch
 ---
 
-Upgrade repository tooling and CI from pnpm 10 to pnpm 12.
+Upgrade repository tooling and CI from pnpm 10 to pnpm 11.

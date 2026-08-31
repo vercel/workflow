@@ -1,10 +1,4 @@
 {
-  "installCommand": "pnpm install --frozen-lockfile",
-  "build": {
-    "env": {
-      "ENABLE_EXPERIMENTAL_COREPACK": "1"
-    }
-  },
   "git": {
     "deploymentEnabled": {
       "changeset-release/main": false

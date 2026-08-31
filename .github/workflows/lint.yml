@@ -24,12 +24,10 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
-          install: false
+          install: true
+          require-lockfile: true
           runtime: node@22
           cache: true
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Biome check
         run: pnpm exec biome ci --max-diagnostics=200
@@ -102,15 +100,13 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
-          install: false
+          install: true
+          require-lockfile: true
           runtime: node@22
           cache: true
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Validate docs links
         run: bun ./scripts/lint.ts

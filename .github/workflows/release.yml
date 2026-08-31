@@ -41,24 +41,23 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Setup pnpm
-        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
-        with:
-          install: false
-
-      # Keep setup-node here because registry-url configures npm publishing.
+      # Keep setup-node because registry-url configures npm publishing. pnpm/setup
+      # handles the pnpm store cache after Node.js is available.
       - name: Setup Node.js 24.x
         uses: actions/setup-node@v4
         with:
           node-version: 24.x
-          cache: "pnpm"
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Setup pnpm
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        with:
+          install: true
+          require-lockfile: true
+          cache: true
 
       - name: Check package release major
         run: node .github/scripts/check-release-major.js "$RELEASE_VERSION"
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Create Release Pull Request or Publish to npm
         id: changesets

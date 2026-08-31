@@ -54,6 +54,10 @@ savePrefix: ""
 # the exact packageManager pin through pnpm/setup.
 pmOnFail: ignore
 
+# pnpm 11 requires Node.js 22 or newer. This replaces the two project-local
+# engine-strict .npmrc files, which pnpm 11 no longer reads from repositories.
+engineStrict: true
+
 minimumReleaseAge: 2880
 
 minimumReleaseAgeExclude:
@@ -71,11 +75,6 @@ minimumReleaseAgeExclude:
   # packages (published in lockstep) are Vercel-published.
   - 'next'
   - '@next/*'
-packageConfigs:
-  '@workflow/example-sveltekit':
-    engineStrict: true
-  '@workflow/example-astro':
-    engineStrict: true
 allowBuilds:
   '@parcel/watcher': false
   '@swc/core': false

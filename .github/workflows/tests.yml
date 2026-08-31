@@ -217,12 +217,10 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
-          install: false
+          install: true
+          require-lockfile: true
           runtime: node@22
           cache: true
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*'
