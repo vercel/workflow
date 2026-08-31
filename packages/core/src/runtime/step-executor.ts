@@ -30,7 +30,7 @@ import {
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
 import { runtimeLogger, stepLogger } from '../logger.js';
-import { loadStepFunction } from '../private.js';
+import { getStepFunction, loadStepFunction } from '../private.js';
 import type { PayloadKey } from '../serialization/encryption.js';
 import { formatSerializationError } from '../serialization/errors.js';
 import {
@@ -458,6 +458,56 @@ export async function executeStep(
     // dehydrateStepError paths if step_started fails) triggers the actual
     // fetch / HKDF derivation; subsequent callers await the cached promise.
     const getEncryptionKey = memoizeEncryptionKey(world, workflowRunId);
+
+    // A registered step exposes maxRetries without invoking a lazy module
+    // loader. Preserve the pre-claim retry ceiling for this common path;
+    // lazy loaders themselves must wait until after the claim so their load
+    // errors can be durably recorded on the step.
+    const registeredStepFn = getStepFunction(stepName);
+    if (
+      typeof registeredStepFn === 'function' &&
+      params.authoritativeAttempt !== undefined &&
+      params.authoritativeAttempt >
+        (registeredStepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES) + 1
+    ) {
+      const maxRetries =
+        registeredStepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
+      const errorMessage = `Step "${stepName}" exceeded max retries (${maxRetries} ${pluralize('retry', 'retries', maxRetries)})`;
+      stepLogger.error('Step exceeded max retries', {
+        workflowRunId,
+        stepName,
+        stepId,
+        attempt: params.authoritativeAttempt,
+        maxRetries,
+      });
+      try {
+        await createEvent({
+          eventType: 'step_failed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: stepId,
+          eventData: {
+            stepName,
+            error: await dehydrateStepError(
+              new FatalError(errorMessage),
+              workflowRunId,
+              await getEncryptionKey(),
+              [],
+              globalThis,
+              compression
+            ),
+          },
+        });
+      } catch (err) {
+        if (EntityConflictError.is(err)) return { type: 'skipped' };
+        if (RunExpiredError.is(err)) return { type: 'gone' };
+        throw err;
+      }
+      span?.setAttributes({
+        ...Attribute.StepStatus('failed'),
+        ...Attribute.StepRetryExhausted(true),
+      });
+      return { type: 'failed' };
+    }
 
     // Maps a `step_started` rejection to a terminal StepExecutionResult,
     // shared by the await path (below) and the optimistic-start reconciliation.

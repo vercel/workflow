@@ -32,6 +32,21 @@ class TestBuilder extends BaseBuilder {
       discoveredEntries,
     });
   }
+
+  public createCombinedRoute(
+    inputFiles: string[],
+    stepsOutfile: string,
+    flowOutfile: string
+  ) {
+    return this.createCombinedBundle({
+      inputFiles,
+      stepsOutfile,
+      flowOutfile,
+      bundleFinalOutput: false,
+      externalizeNonSteps: true,
+      sourceStepRegistrationImports: true,
+    });
+  }
 }
 
 const realTmpdir = realpathSync(tmpdir());

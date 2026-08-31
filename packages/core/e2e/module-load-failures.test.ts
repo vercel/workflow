@@ -8,7 +8,7 @@ import { afterEach, assert, describe, expect, test } from 'vitest';
 import type { WorkflowManifest } from '../../builders/src/apply-swc-transform';
 import { BaseBuilder } from '../../builders/src/base-builder';
 import type { StandaloneConfig } from '../../builders/src/types';
-import { createLocalWorld, type LocalWorld } from '../../world-local/src';
+import { createWorld, type LocalWorld } from '../../world-local/src';
 import {
   registerStepFunctionLoader,
   setWorld,
@@ -146,7 +146,7 @@ async function setupGeneratedRoute({
     `${pathToFileURL(flowOutfile).href}?t=${Date.now()}`
   )) as { POST: (request: Request) => Promise<Response> };
 
-  const world = createLocalWorld({
+  const world = createWorld({
     dataDir: join(testRoot, '.workflow-data'),
     recoverActiveRuns: false,
   });
@@ -155,6 +155,34 @@ async function setupGeneratedRoute({
   setWorld(world);
 
   return { testRoot, world, manifest };
+}
+
+async function waitForEvents(
+  world: LocalWorld,
+  runId: string,
+  expectedEventTypes: readonly string[]
+) {
+  const deadline = Date.now() + 10_000;
+  let eventTypes: string[] = [];
+
+  while (Date.now() < deadline) {
+    const events = await world.events.list({
+      runId,
+      resolveData: 'none',
+      pagination: { limit: 100, sortOrder: 'asc' },
+    });
+    eventTypes = events.data.map((event) => event.eventType);
+    if (
+      expectedEventTypes.every((eventType) => eventTypes.includes(eventType))
+    ) {
+      return events;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  throw new Error(
+    `Timed out waiting for ${expectedEventTypes.join(', ')}; saw ${eventTypes.join(', ')}`
+  );
 }
 
 describe('module load failures e2e', () => {
@@ -241,11 +269,11 @@ export async function brokenStep() {
     expect(result.message).toContain(sharpLoadError);
     expect(result.causeMessage).toContain(sharpLoadError);
 
-    const events = await fixture.world.events.list({
-      runId: run.runId,
-      resolveData: 'none',
-      pagination: { limit: 100, sortOrder: 'asc' },
-    });
+    const events = await waitForEvents(fixture.world, run.runId, [
+      'step_started',
+      'step_failed',
+      'run_completed',
+    ]);
     expect(events.data.map((event) => event.eventType)).toEqual(
       expect.arrayContaining(['step_started', 'step_failed', 'run_completed'])
     );
@@ -291,11 +319,10 @@ export async function workflowModuleLoadFailureWorkflow() {
     assert(error.cause instanceof Error);
     expect(error.cause.message).toContain(sharpLoadError);
 
-    const events = await fixture.world.events.list({
-      runId: run.runId,
-      resolveData: 'none',
-      pagination: { limit: 100, sortOrder: 'asc' },
-    });
+    const events = await waitForEvents(fixture.world, run.runId, [
+      'run_started',
+      'run_failed',
+    ]);
     expect(events.data.map((event) => event.eventType)).toEqual(
       expect.arrayContaining(['run_started', 'run_failed'])
     );
