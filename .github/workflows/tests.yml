@@ -170,7 +170,7 @@ jobs:
           build-packages: 'false'
 
       - name: Run Unit Tests
-        run: pnpm test --filter='!./docs' --filter='!./workbench/vitest'
+        run: pnpm turbo test --filter='!./docs' --filter='!./workbench/vitest'
 
   serializable-revivers:
     name: Serializable Reviver Compatibility
