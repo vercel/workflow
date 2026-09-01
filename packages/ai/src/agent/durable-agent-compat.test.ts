@@ -16,7 +16,7 @@ import type { UIMessageChunk } from 'ai';
 import { tool } from 'ai';
 import { convertArrayToReadableStream, MockLanguageModelV3 } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import * as z from 'zod';
+import { z } from 'zod';
 import { DurableAgent } from './durable-agent.js';
 
 // ============================================================================

@@ -1,5 +1,5 @@
 import { MessageId } from '@workflow/world';
-import * as z from 'zod';
+import { z } from 'zod/v4';
 import { Base64Buffer } from './zod.js';
 
 /**

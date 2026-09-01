@@ -70,7 +70,7 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type { EventTypeSchema } from '@workflow/world';
-import type * as z from 'zod';
+import type { z } from 'zod';
 
 /** Keeps caller-owned replay observer failures out of retry/classification. */
 export class ReplayEventObserverError extends Error {

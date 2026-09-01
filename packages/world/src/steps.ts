@@ -1,4 +1,4 @@
-import * as z from 'zod';
+import { z } from 'zod';
 import { type SerializedData, SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
 

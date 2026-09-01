@@ -1,6 +1,6 @@
 import { defineHook } from 'workflow';
 import { start } from 'workflow/api';
-import * as z from 'zod';
+import { z } from 'zod';
 
 async function processItem(item: string): Promise<string> {
   'use step';

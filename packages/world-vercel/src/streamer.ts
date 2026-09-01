@@ -5,7 +5,7 @@ import {
   type Streamer,
   type StreamInfoResponse,
 } from '@workflow/world';
-import * as z from 'zod';
+import { z } from 'zod';
 import {
   getStreamCloseDispatcher,
   getStreamDispatcher,

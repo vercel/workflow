@@ -21,7 +21,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import * as z from 'zod';
+import { z } from 'zod';
 import {
   createHookReceivedPreloadEventV4,
   getWorkflowRunEventsV4,

@@ -4,7 +4,7 @@ import { setWorkflowBasePath } from '@workflow/utils';
 import type { WorkflowInvokePayload } from '@workflow/world';
 import { MessageId, NODE_HTTP_ENV_VAR, ValidQueueName } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import * as z from 'zod';
+import { z } from 'zod/v4';
 import {
   createQueue,
   DEFAULT_BODY_TIMEOUT_MS,

@@ -6,7 +6,7 @@ import { globalSingleton } from '@workflow/utils';
 import { eventIdToSlot } from '@workflow/world';
 import { lock } from 'proper-lockfile';
 import { decodeTime, monotonicFactory } from 'ulid';
-import * as z from 'zod';
+import { z } from 'zod';
 import {
   deleteJSON,
   hasTag,

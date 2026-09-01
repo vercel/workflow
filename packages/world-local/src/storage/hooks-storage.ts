@@ -14,7 +14,7 @@ import {
   isTerminalWorkflowRunStatus,
   WorkflowRunSchema,
 } from '@workflow/world';
-import * as z from 'zod';
+import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
   assertSafeEntityId,

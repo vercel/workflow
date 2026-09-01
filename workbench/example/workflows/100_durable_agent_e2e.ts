@@ -4,7 +4,7 @@
 import { DurableAgent } from '@workflow/ai/agent';
 import { mockSequenceModel, mockTextModel } from '@workflow/ai/test';
 import { FatalError, getWritable } from 'workflow';
-import * as z from 'zod';
+import z from 'zod/v4';
 
 // ============================================================================
 // Tool step functions

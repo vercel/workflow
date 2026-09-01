@@ -1,7 +1,5 @@
-import * as z from 'zod';
+import { z } from 'zod';
 
-// Zod 4.5 cannot compile recursive schemas. Keep this on the standard parser;
-// wrapping it in z.compile() would silently return this same schema unchanged.
 export const zodJsonSchema: z.ZodType<unknown> = z.lazy(() => {
   return z.union([
     z.string(),

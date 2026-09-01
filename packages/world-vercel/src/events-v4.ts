@@ -37,7 +37,7 @@ import {
   WorkflowRunSchema,
 } from '@workflow/world';
 import { decode } from 'cbor-x';
-import * as z from 'zod';
+import { z } from 'zod';
 import { ReplayEventObserverError } from './event-retry.js';
 import {
   type DecodedFrame,
@@ -327,12 +327,10 @@ const CreateEventV4PageSchema = z.compile(
       cursor: z.string().nullable(),
       hasMore: z.boolean(),
     }),
-    // A response without a page omits these keys outright. Since Zod 4.4,
-    // `z.undefined()` no longer makes an object key implicitly optional.
     z.object({
-      events: z.undefined().optional(),
-      cursor: z.undefined().optional(),
-      hasMore: z.undefined().optional(),
+      events: z.undefined(),
+      cursor: z.undefined(),
+      hasMore: z.undefined(),
     }),
   ])
 );
@@ -856,13 +854,14 @@ async function decodeCreateEventResponse<T extends EventType>(
       code: 'PARSE_ERROR',
     });
   }
-  const schema: z.ZodType<EventResult<T> & { event: Event }> =
+  const schema: z.ZodType<EventResult<T> & { event: Event }> = z.compile(
     CreateEventV4BodySchemas[eventType].refine(
       ({ event }) =>
         event.eventType === eventType ||
         (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
       { path: ['event', 'eventType'] }
-    );
+    )
+  );
   let decoded: unknown;
   try {
     decoded = decode(bodyBytes);

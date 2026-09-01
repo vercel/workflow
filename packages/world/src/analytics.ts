@@ -1,4 +1,4 @@
-import * as z from 'zod';
+import { z } from 'zod';
 import { EventTypeSchema } from './events.js';
 import { WorkflowRunStatusSchema } from './runs.js';
 import type { PaginatedResponse, PaginationOptions } from './shared.js';

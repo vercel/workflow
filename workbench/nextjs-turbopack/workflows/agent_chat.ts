@@ -5,7 +5,7 @@ import {
   type UIMessageChunk,
 } from 'ai';
 import { getWritable } from 'workflow';
-import * as z from 'zod';
+import z from 'zod/v4';
 
 // ============================================================================
 // Tool step functions
