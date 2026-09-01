@@ -18,13 +18,13 @@
     "nitro": "catalog:"
   },
   "devDependencies": {
+    "@ai-sdk/workflow": "2.0.17",
     "@types/express": "^5.0.6",
     "@workflow/world-postgres": "workspace:*",
-    "ai": "catalog:",
+    "ai": "7.0.87",
     "lodash.chunk": "^4.2.0",
     "openai": "^6.1.0",
     "workflow": "workspace:*",
-    "@workflow/ai": "workspace:*",
     "zod": "catalog:"
   }
 }

@@ -14,15 +14,15 @@
     "start": "node scripts/start-with-pg.mjs"
   },
   "dependencies": {
+    "@ai-sdk/workflow": "2.0.17",
     "@astrojs/node": "11.0.2",
     "@astrojs/vercel": "^11.0.2",
-    "ai": "catalog:",
+    "@workflow/world-postgres": "workspace:*",
+    "ai": "7.0.87",
     "astro": "^7.0.6",
     "lodash.chunk": "^4.2.0",
     "openai": "6.9.0",
     "workflow": "workspace:*",
-    "@workflow/ai": "workspace:*",
-    "@workflow/world-postgres": "workspace:*",
     "zod": "catalog:"
   }
 }
