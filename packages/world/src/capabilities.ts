@@ -12,6 +12,12 @@ export const WorldCapabilitiesSchema = z.object({
   hookRetention: z.object({ active: z.boolean() }).optional(),
 
   /**
+   * Atomically admits a workflow run and reserves its start Hook token.
+   * Missing or inactive means `start({ hook })` must fail before enqueueing.
+   */
+  atomicStartHook: z.object({ active: z.boolean() }).optional(),
+
+  /**
    * The World's queue supports `maxConcurrency`-limited consumption. This
    * declares queue support, not deployed configuration, so the runtime cannot
    * enable a fast path from this capability alone.

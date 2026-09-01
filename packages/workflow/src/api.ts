@@ -27,6 +27,7 @@ export {
   type WorkflowReadableStreamOptions,
 } from '@workflow/core/runtime/run';
 export {
+  type StartHookOptions,
   type StartOptions,
   start,
 } from '@workflow/core/runtime/start';

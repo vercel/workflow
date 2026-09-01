@@ -15,5 +15,6 @@ export {
   WorkflowRunNotCompletedError,
   WorkflowRunNotFoundError,
   WorkflowRuntimeError,
+  WorkflowStartError,
   WorkflowWorldError,
 } from '@workflow/errors';

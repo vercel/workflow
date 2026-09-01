@@ -356,6 +356,15 @@ export interface Storage {
    */
   events: {
     /**
+     * A World advertising `atomicStartHook` must atomically reserve
+     * `eventData.startHook.token` while creating `run_created` or resilient
+     * `run_started`. Each candidate `runId` has one immutable decision:
+     * repeated accepted attempts return that run, while repeated rejected
+     * attempts throw `HookConflictError` with the same `conflictingRunId`.
+     * A permanent request validation failure must throw `WorkflowWorldError`
+     * with code `START_HOOK_ADMISSION_REJECTED` so a queued copy can stop
+     * retrying without hiding unrelated World errors.
+     *
      * Create a run_created event to start a new workflow run.
      * The runId may be provided by the client or left as null for the server to generate.
      *

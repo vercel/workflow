@@ -149,6 +149,20 @@ export function getCommonReducers(): Partial<Reducers> {
       if ('cause' in value) reduced.cause = (value as any).cause;
       return reduced;
     },
+    WorkflowStartError: (value) => {
+      if (!(value instanceof Error) || value.name !== 'WorkflowStartError') {
+        return false;
+      }
+      const error = value as any;
+      const reduced: SerializableSpecial['WorkflowStartError'] = {
+        message: value.message,
+        stack: value.stack,
+        runId: error.runId,
+        stage: error.stage,
+      };
+      if ('cause' in value) reduced.cause = error.cause;
+      return reduced;
+    },
     RangeError: makeNamedErrorSubclassReducer('RangeError'),
     ReferenceError: makeNamedErrorSubclassReducer('ReferenceError'),
     // RetryableError carries an extra retryAfter; serialize as numeric
@@ -415,6 +429,24 @@ export function getCommonRevivers(): Partial<Revivers> {
       }
       if (value.stack !== undefined) error.stack = value.stack;
       if ('cause' in value) (error as any).cause = (value as any).cause;
+      return error;
+    },
+    WorkflowStartError: (value) => {
+      const Cls = (globalThis as any)[
+        Symbol.for('@workflow/errors//WorkflowStartError')
+      ];
+      let error: Error;
+      if (typeof Cls === 'function') {
+        error = new Cls(value.runId, value.stage, value.cause);
+      } else {
+        error = new Error(value.message);
+        error.name = 'WorkflowStartError';
+        (error as any).runId = value.runId;
+        (error as any).stage = value.stage;
+      }
+      error.message = value.message;
+      if (value.stack !== undefined) error.stack = value.stack;
+      if ('cause' in value) (error as any).cause = value.cause;
       return error;
     },
     RangeError: makeNamedErrorSubclassReviver('RangeError'),

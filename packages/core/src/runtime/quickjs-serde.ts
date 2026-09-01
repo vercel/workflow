@@ -254,6 +254,7 @@ const SYMBOL_NAMES = [
   'workflow-class-registry',
   '@workflow/errors//FatalError',
   '@workflow/errors//HookConflictError',
+  '@workflow/errors//WorkflowStartError',
   '@workflow/errors//RetryableError',
   '@workflow/errors//RuntimeDecryptionError',
 ] as const;
@@ -1116,6 +1117,19 @@ export function createQuickJSSerde(
       if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
       return reduced;
     },
+    WorkflowStartError: (value) => {
+      if (!isHandle(value) || !value.isError) return false;
+      if (chainedString(value, 'name') !== 'WorkflowStartError') return false;
+      const shape = reduceErrorShape(value) as Record<string, unknown>;
+      const reduced: Record<string, unknown> = {
+        message: shape.message,
+        stack: shape.stack,
+        runId: own(value, 'runId'),
+        stage: own(value, 'stage'),
+      };
+      if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
+      return reduced;
+    },
     RangeError: namedErrorSubclassReducer('RangeError'),
     ReferenceError: namedErrorSubclassReducer('ReferenceError'),
     RetryableError: (value) => {
@@ -1775,6 +1789,32 @@ export function createQuickJSSerde(
         }
         conflictingRunId?.dispose();
       }
+      return error;
+    },
+    WorkflowStartError: (value: JSValueHandle) => {
+      const cls = registeredErrorClass('@workflow/errors//WorkflowStartError');
+      const runId = own(value, 'runId') ?? vm.undefined;
+      const stage = own(value, 'stage') ?? vm.undefined;
+      const cause = own(value, 'cause') ?? vm.undefined;
+      const error = cls
+        ? vm.construct(cls, runId, stage, cause)
+        : buildError(i.Error, value, { name: 'WorkflowStartError' });
+      if (!cls) {
+        define(error, 'runId', runId);
+        define(error, 'stage', stage);
+      }
+      const message = own(value, 'message');
+      if (message) {
+        define(error, 'message', message);
+        message.dispose();
+      }
+      const stack = own(value, 'stack');
+      if (stack && !stack.isUndefined) define(error, 'stack', stack);
+      stack?.dispose();
+      runId !== vm.undefined && runId.dispose();
+      stage !== vm.undefined && stage.dispose();
+      cause !== vm.undefined && cause.dispose();
+      cls?.dispose();
       return error;
     },
     RangeError: namedErrorSubclassReviver('RangeError'),
