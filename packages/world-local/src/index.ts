@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
-import type { QueuePrefix, World } from '@workflow/world';
+import type { Journals, QueuePrefix, World } from '@workflow/world';
 import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
@@ -17,6 +17,7 @@ import {
 } from './fs.js';
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
+import { clearJournals, createJournals, withJournalsLock } from './journals.js';
 import { createQueue, type DirectHandler } from './queue.js';
 import { hashToken, hookRecoveryMarkerPath } from './storage/helpers.js';
 import { resetHookIndexEnsureCache } from './storage/hook-index.js';
@@ -36,10 +37,12 @@ export {
 
 export type { DirectHandler } from './queue.js';
 
-export type LocalWorld = World & {
+export type LocalWorld = Omit<World, 'journals'> & {
+  /** Durable opaque state independent of workflow run lifetimes. */
+  journals: Journals;
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
   registerHandler(prefix: QueuePrefix, handler: DirectHandler): void;
-  /** Clear all workflow data (runs, steps, events, hooks, streams). */
+  /** Clear all workflow data (runs, steps, events, hooks, streams, journals). */
   clear(): Promise<void>;
 };
 
@@ -83,6 +86,10 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
     },
     ...queue,
     ...storage,
+    journals: instrumentObject(
+      'world.journals',
+      createJournals(mergedConfig.dataDir, tag)
+    ),
     ...instrumentObject('world.streams', {
       ...createStreamer(mergedConfig.dataDir, tag),
       ...(mergedConfig.streamFlushIntervalMs !== undefined && {
@@ -123,6 +130,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       if (tag) {
         // Selectively delete only files matching this tag
         const basedir = mergedConfig.dataDir;
+        await clearJournals(basedir, tag);
 
         // Delete hook token constraint files (and recovery markers,
         // for disk hygiene) BEFORE deleting the hooks, since we need
@@ -235,11 +243,13 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         // Clear the in-memory write cache so deleted paths are forgotten
         clearCreatedFilesCache();
       } else {
-        // `rm()` removes directories that the write path may have cached.
-        clearCreatedFilesCache();
-        resetHookIndexEnsureCache();
-        await rm(mergedConfig.dataDir, { recursive: true, force: true });
-        await initDataDir(mergedConfig.dataDir);
+        await withJournalsLock(mergedConfig.dataDir, async () => {
+          // `rm()` removes directories that the write path may have cached.
+          clearCreatedFilesCache();
+          resetHookIndexEnsureCache();
+          await rm(mergedConfig.dataDir, { recursive: true, force: true });
+          await initDataDir(mergedConfig.dataDir);
+        });
       }
     },
   };

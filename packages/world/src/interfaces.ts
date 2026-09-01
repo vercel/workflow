@@ -14,6 +14,7 @@ import type {
   RunCreatedEventRequest,
 } from './events.js';
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
+import type { Journals } from './journals.js';
 import type { Queue } from './queue.js';
 import type {
   BulkCancelWorkflowRunsRequest,
@@ -430,6 +431,13 @@ export interface World extends Queue, Streamer, Storage {
    * resolution path.
    */
   analytics?: Analytics;
+
+  /**
+   * Optional durable opaque state independent of workflow run lifetimes.
+   * Namespace presence is the capability declaration; unsupported Worlds
+   * leave it undefined rather than providing a non-durable fallback.
+   */
+  journals?: Journals;
 
   /**
    * The Workflow protocol spec version this World implements.

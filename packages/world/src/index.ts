@@ -68,6 +68,17 @@ export {
   HookSchema,
 } from './hooks.js';
 export type * from './interfaces.js';
+export type * from './journals.js';
+export {
+  JOURNAL_ID_MAX_LENGTH,
+  JOURNAL_IDEMPOTENCY_KEY_MAX_LENGTH,
+  JOURNAL_REVISION_MAX_LENGTH,
+  JournalCommitOptionsSchema,
+  JournalIdempotencyKeySchema,
+  JournalIdSchema,
+  JournalRevisionSchema,
+  JournalStateSchema,
+} from './journals.js';
 export type * from './queue.js';
 export {
   getQueueTopicPrefix,
