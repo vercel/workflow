@@ -150,6 +150,26 @@ describe('getWorkflowQueueName', () => {
     );
   });
 
+  it('should allow square brackets for Next.js dynamic route segments', () => {
+    expect(
+      getWorkflowQueueName(
+        'workflow//./src/app/api/[[...rest]]/workflow//agentWorkflow'
+      )
+    ).toBe(
+      '__wkf_workflow_workflow//./src/app/api/[[...rest]]/workflow//agentWorkflow'
+    );
+  });
+
+  it('should allow parentheses for Next.js route groups', () => {
+    expect(
+      getWorkflowQueueName(
+        'workflow//./src/app/(dashboard)/api/workflow//myWorkflow'
+      )
+    ).toBe(
+      '__wkf_workflow_workflow//./src/app/(dashboard)/api/workflow//myWorkflow'
+    );
+  });
+
   it('should throw for names containing spaces', () => {
     expect(() => getWorkflowQueueName('my workflow')).toThrow(
       'Invalid workflow name'

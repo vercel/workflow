@@ -41,9 +41,11 @@ const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
 /**
  * Pattern for safe workflow names. Only allows alphanumeric characters,
  * underscores, hyphens, dots, forward slashes (for namespaced workflows),
- * and at signs (for scoped packages).
+ * at signs (for scoped packages), square brackets (for Next.js dynamic
+ * route segments like `[id]` and `[[...rest]]`), and parentheses
+ * (for Next.js route groups like `(dashboard)`).
  */
-const SAFE_WORKFLOW_NAME_PATTERN = /^[a-zA-Z0-9_\-./@]+$/;
+const SAFE_WORKFLOW_NAME_PATTERN = /^[a-zA-Z0-9_\-./@[\]()]+$/;
 
 /**
  * Validates a workflow name and returns the corresponding queue name.
@@ -56,7 +58,7 @@ export function getWorkflowQueueName(
 ): ValidQueueName {
   if (!SAFE_WORKFLOW_NAME_PATTERN.test(workflowName)) {
     throw new Error(
-      `Invalid workflow name "${workflowName}": must only contain alphanumeric characters, underscores, hyphens, dots, forward slashes, or at signs`
+      `Invalid workflow name "${workflowName}": must only contain alphanumeric characters, underscores, hyphens, dots, forward slashes, at signs, square brackets, or parentheses`
     );
   }
   const prefix = getQueueTopicPrefix(
