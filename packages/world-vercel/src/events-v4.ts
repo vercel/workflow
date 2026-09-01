@@ -1159,17 +1159,11 @@ function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
  * One thing the HTTP envelope has that this one deliberately does not: the
  * cache-bust header (a frame is memoized by nothing).
  *
- * Trace context, by contrast, IS carried per frame. Frames have no headers,
- * so `traceparent`/`tracestate` ride on the frame envelope (next to `reqId`,
- * not inside the `event` meta — propagation is a property of the message, not
- * of the event, and the `event` object is forwarded verbatim into the HTTP
- * wire format, which must not grow WS-only fields). They are captured inside
- * this write's own CLIENT span, so the server's per-message route span
- * parents to the write that produced the frame rather than to the
- * connection's upgrade — without this, every WS write's server half is
- * time-aligned with its client half in the flamegraph but not connected to
- * it. A server that predates the field strips it at the envelope schema and
- * behaves as before.
+ * Trace context rides the frame envelope (`traceparent`/`tracestate` next to
+ * `reqId` — not inside `event`, which is the HTTP wire format forwarded
+ * verbatim), captured inside this write's own CLIENT span so the server's
+ * per-message span parents to the write rather than to the connection's
+ * upgrade. A server that predates the field strips it and behaves as before.
  *
  * One gap this cannot close: Vercel's observability *outgoing requests* view is
  * built by instrumenting the global `fetch`, not by reading OpenTelemetry spans,
@@ -1223,11 +1217,8 @@ async function postEventFrameOverWs(
     },
     async (span) => {
       const start = Date.now();
-      // Captured here — inside this write's active CLIENT span — so the
-      // carrier names this span, not the caller's. A `Headers` because that
-      // is the injector's contract; read back out immediately since the
-      // frame envelope is a plain CBOR map. No-op (both stay undefined)
-      // when no OTEL SDK is registered.
+      // Captured inside this write's active CLIENT span so the carrier names
+      // this span. No-op (both stay undefined) without an OTEL SDK.
       const traceCarrier = new Headers();
       await injectTraceContextIntoHeaders(traceCarrier);
       const traceparent = traceCarrier.get('traceparent') ?? undefined;

@@ -527,15 +527,9 @@ describe('withEventPostRetry over ws', () => {
   });
 });
 
-/**
- * Per-frame trace context. Frames carry no headers, so the write's
- * `traceparent`/`tracestate` ride the frame envelope — next to `reqId`, not
- * inside `event`, because `event` is forwarded verbatim into the HTTP wire
- * format and must not grow WS-only fields. Without this the server's
- * per-message route span parents to the connection's upgrade, and every WS
- * write shows up in the flamegraph time-aligned with its client span but not
- * connected to it.
- */
+// The write's traceparent/tracestate ride the frame envelope (not `event`,
+// which is the HTTP wire format) so server spans parent to the write rather
+// than to the connection's upgrade.
 describe('per-frame trace context', () => {
   afterEach(() => {
     otel.propagation.disable();
