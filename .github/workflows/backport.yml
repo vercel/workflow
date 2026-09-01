@@ -284,17 +284,15 @@ jobs:
 
       - name: Setup pnpm
         if: steps.existing-pr.outputs.exists != 'true'
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
-
-      - name: Setup Node.js
-        if: steps.existing-pr.outputs.exists != 'true'
-        uses: actions/setup-node@v4
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
-          node-version: 22.x
+          install: false
+          runtime: node@22
 
       - name: Install opencode
         if: steps.existing-pr.outputs.exists != 'true'
-        run: npm install -g opencode-ai@1.18.4
+        # opencode-ai's postinstall downloads its platform-specific binary.
+        run: pnpm add --global --allow-build=opencode-ai opencode-ai@1.18.4
 
       - name: Configure opencode
         if: steps.existing-pr.outputs.exists != 'true'

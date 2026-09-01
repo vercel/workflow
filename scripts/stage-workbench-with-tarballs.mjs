@@ -248,29 +248,40 @@ function rewriteDependencySpecs(
   return { replacedWithTarballs, replacedCatalogEntries };
 }
 
-function applyTarballOverrides(packageJsonPath, tarballPathByPackageName) {
-  const packageJson = readJson(packageJsonPath);
-  const pnpmConfig =
-    packageJson.pnpm && typeof packageJson.pnpm === 'object'
-      ? packageJson.pnpm
-      : {};
-  const overrides =
-    pnpmConfig.overrides && typeof pnpmConfig.overrides === 'object'
-      ? pnpmConfig.overrides
-      : {};
+function writeStagedWorkspaceConfig(
+  destinationDir,
+  yamlPath,
+  tarballPathByPackageName
+) {
+  let workspaceYaml = fs.readFileSync(yamlPath, 'utf8');
+  const packagesBlock = /^packages:\r?\n(?:(?: {2}- .*?)(?:\r?\n|$))+/u;
+  if (!packagesBlock.test(workspaceYaml)) {
+    throw new Error(`Could not find packages block in ${yamlPath}`);
+  }
+  workspaceYaml = workspaceYaml.replace(packagesBlock, 'packages:\n  - .\n');
 
   let overridesApplied = 0;
+  const overrideLines = [];
   for (const [packageName, tarballPath] of tarballPathByPackageName.entries()) {
-    overrides[packageName] = `file:${tarballPath}`;
+    overrideLines.push(
+      `  ${JSON.stringify(packageName)}: ${JSON.stringify(`file:${tarballPath}`)}`
+    );
     overridesApplied += 1;
   }
 
-  packageJson.pnpm = {
-    ...pnpmConfig,
-    overrides,
-  };
+  const overridesHeader = /^overrides:\s*$/mu;
+  if (!overridesHeader.test(workspaceYaml)) {
+    throw new Error(`Could not find overrides block in ${yamlPath}`);
+  }
+  workspaceYaml = workspaceYaml.replace(
+    overridesHeader,
+    (header) => `${header}\n${overrideLines.join('\n')}`
+  );
 
-  writeJson(packageJsonPath, packageJson);
+  fs.writeFileSync(
+    path.join(destinationDir, 'pnpm-workspace.yaml'),
+    workspaceYaml
+  );
   return overridesApplied;
 }
 
@@ -351,8 +362,9 @@ function main() {
       tarballPathByPackageName,
       catalog
     );
-  const overridesApplied = applyTarballOverrides(
-    stagedPackageJsonPath,
+  const overridesApplied = writeStagedWorkspaceConfig(
+    stagedWorkbenchDir,
+    workspaceYamlPath,
     tarballPathByPackageName
   );
 
@@ -360,7 +372,7 @@ function main() {
     `Rewrote ${replacedWithTarballs.length} monorepo dependencies to tarballs and ${replacedCatalogEntries.length} catalog dependencies to versions`
   );
   console.log(
-    `Applied ${overridesApplied} pnpm tarball overrides for transitive monorepo packages`
+    `Wrote staged pnpm workspace config with ${overridesApplied} tarball overrides for transitive monorepo packages`
   );
 
   console.log(`Installing dependencies in ${stagedWorkbenchDir}`);

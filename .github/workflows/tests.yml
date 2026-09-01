@@ -166,11 +166,10 @@ jobs:
         uses: ./.github/actions/setup-workflow-dev
         with:
           setup-rust: 'true'
-          install-args: '--ignore-scripts'
           build-packages: 'false'
 
       - name: Run Unit Tests
-        run: pnpm test --filter='!./docs' --filter='!./workbench/vitest'
+        run: pnpm turbo test --filter='!./docs' --filter='!./workbench/vitest'
 
   serializable-revivers:
     name: Serializable Reviver Compatibility
@@ -190,7 +189,6 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-args: '--ignore-scripts'
           build-packages: 'false'
 
       - name: Build reviver packages
@@ -215,16 +213,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
-          node-version: 22.x
-          cache: "pnpm"
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
+          install: true
+          require-lockfile: true
+          runtime: node@22
+          cache: true
 
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*'
@@ -268,7 +262,6 @@ jobs:
         uses: ./.github/actions/setup-workflow-dev
         with:
           setup-rust: 'true'
-          install-args: '--ignore-scripts'
           build-packages: 'false'
 
       - name: Build packages
@@ -714,7 +707,7 @@ jobs:
       # (different Node version in the CLI's own banner, a doubled project
       # path) across otherwise-identical earlier CI attempts.
       - name: Install vercel CLI
-        run: npm install -g vercel@56.2.0
+        run: pnpm add --global vercel@56.2.0
 
       - name: Deploy a dedicated WS-transport preview
         id: wsDeploy
@@ -908,7 +901,7 @@ jobs:
         run: pnpm turbo run build --filter='@workflow/cli'
 
       - name: Install vercel CLI
-        run: npm install -g vercel@56.2.0
+        run: pnpm add --global vercel@56.2.0
 
       - name: Deploy a dedicated HTTP-transport preview
         id: httpDeploy
@@ -1034,7 +1027,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-dependencies: 'false'
+          install-dependencies: ${{ !matrix.app.canary }}
           build-packages: 'false'
 
       - name: Setup canary
@@ -1045,9 +1038,6 @@ jobs:
           cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
           cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
@@ -1124,7 +1114,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-dependencies: 'false'
+          install-dependencies: ${{ !matrix.app.canary }}
           build-packages: 'false'
 
       - name: Setup canary
@@ -1135,9 +1125,6 @@ jobs:
           cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
           cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
@@ -1243,7 +1230,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-dependencies: 'false'
+          install-dependencies: ${{ !matrix.app.canary }}
           build-packages: 'false'
 
       - name: Setup canary
@@ -1254,9 +1241,6 @@ jobs:
           cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
           cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
@@ -1456,16 +1440,12 @@ jobs:
           target: wasm32-unknown-unknown
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
-          node-version: 22.x
-          cache: "pnpm"
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
+          install: true
+          require-lockfile: true
+          runtime: node@22
+          cache: true
 
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*' --filter='!./docs'
