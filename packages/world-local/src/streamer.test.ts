@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -955,35 +956,34 @@ describe('streamer', () => {
         await new Promise((resolve) => setTimeout(resolve, 2));
         await streamer.streams.write(TEST_RUN_ID, streamName, 'b');
         await new Promise((resolve) => setTimeout(resolve, 2));
-        await streamer.streams.write(TEST_RUN_ID, streamName, 'c');
         await streamer.streams.close(TEST_RUN_ID, streamName);
 
-        // Page 1: limit=2
+        // Page 1: limit=1
         const page1 = await streamer.streams.getChunks(
           TEST_RUN_ID,
           streamName,
           {
-            limit: 2,
+            limit: 1,
           }
         );
-        expect(page1.data).toHaveLength(2);
+        expect(page1.data).toHaveLength(1);
         expect(page1.data[0].index).toBe(0);
-        expect(page1.data[1].index).toBe(1);
         expect(page1.hasMore).toBe(true);
-        expect(page1.cursor).not.toBeNull();
+        assert(page1.cursor);
 
-        // Page 2: remaining chunks
+        // Page 2: a full final page
         const page2 = await streamer.streams.getChunks(
           TEST_RUN_ID,
           streamName,
           {
-            limit: 2,
-            cursor: page1.cursor!,
+            limit: 1,
+            cursor: page1.cursor,
           }
         );
         expect(page2.data).toHaveLength(1);
-        expect(page2.data[0].index).toBe(2);
+        expect(page2.data[0].index).toBe(1);
         expect(page2.hasMore).toBe(false);
+        expect(page2.cursor).toBeNull();
         expect(page2.done).toBe(true);
       });
 
@@ -1035,6 +1035,18 @@ describe('streamer', () => {
         );
         expect(result.data).toHaveLength(1);
         expect(result.done).toBe(false);
+        expect(result.hasMore).toBe(false);
+        assert(result.cursor);
+
+        await streamer.streams.write(TEST_RUN_ID, streamName, 'more');
+        const resumed = await streamer.streams.getChunks(
+          TEST_RUN_ID,
+          streamName,
+          { cursor: result.cursor }
+        );
+        expect(
+          resumed.data.map((chunk) => Buffer.from(chunk.data).toString())
+        ).toEqual(['more']);
       });
 
       it('should return empty data for nonexistent stream', async () => {
@@ -1045,6 +1057,7 @@ describe('streamer', () => {
           'nonexistent'
         );
         expect(result.data).toEqual([]);
+        expect(result.cursor).toBeNull();
         expect(result.hasMore).toBe(false);
       });
 
@@ -1065,6 +1078,40 @@ describe('streamer', () => {
         );
         expect(result.data).toHaveLength(1);
         expect(result.data[0].index).toBe(0);
+
+        const invalidShape = Buffer.from(
+          JSON.stringify({ i: 'not-a-number' })
+        ).toString('base64');
+        const shapeResult = await streamer.streams.getChunks(
+          TEST_RUN_ID,
+          streamName,
+          { cursor: invalidShape }
+        );
+        expect(shapeResult.data[0].index).toBe(0);
+      });
+
+      it('reports a closed stream after a cursor past its final chunk', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'cursor-past-end';
+
+        await streamer.streams.write(TEST_RUN_ID, streamName, 'data');
+        await streamer.streams.close(TEST_RUN_ID, streamName);
+
+        const cursor = Buffer.from(JSON.stringify({ i: 50 })).toString(
+          'base64'
+        );
+        const result = await streamer.streams.getChunks(
+          TEST_RUN_ID,
+          streamName,
+          { cursor }
+        );
+
+        expect(result).toMatchObject({
+          data: [],
+          cursor: null,
+          hasMore: false,
+          done: true,
+        });
       });
     });
 

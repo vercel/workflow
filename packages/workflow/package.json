@@ -88,10 +88,18 @@
     "typescript": "catalog:"
   },
   "peerDependencies": {
-    "@opentelemetry/api": "1"
+    "@opentelemetry/api": "1",
+    "@workflow/world-local": "workspace:^",
+    "@workflow/world-vercel": "workspace:^"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/api": {
+      "optional": true
+    },
+    "@workflow/world-local": {
+      "optional": true
+    },
+    "@workflow/world-vercel": {
       "optional": true
     }
   }

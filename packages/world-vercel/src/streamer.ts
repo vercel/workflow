@@ -76,8 +76,8 @@ function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
 // (`createReconnectingFramedStream`) resume from the next chunk rather than
 // treating the timeout as end-of-stream. Reading from v2 would silently
 // truncate long-lived streams at the server's 2-minute limit. Only the live
-// read is affected by the timeout. Writes, completion, and snapshot reads
-// (chunks/info/list) stay on v2.
+// read is affected by the timeout. Chunk snapshots also use v3 for resumable
+// open-tail cursors; writes, completion, stream info, and list stay on v2.
 function getStreamReadUrl(name: string, runId: string, httpConfig: HttpConfig) {
   return new URL(
     `${httpConfig.baseUrl}/v3/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
@@ -373,7 +373,7 @@ export function createStreamer(config?: APIConfig): Streamer {
           params.set('cursor', options.cursor);
         }
         const qs = params.toString();
-        const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/chunks${qs ? `?${qs}` : ''}`;
+        const endpoint = `/v3/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/chunks${qs ? `?${qs}` : ''}`;
         return makeRequest({
           endpoint,
           config,

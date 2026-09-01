@@ -691,7 +691,13 @@ await world.streams.writeMulti?.(runId, name, chunks);
 const readable = await world.streams.get(runId, name, startIndex);
 await world.streams.close(runId, name);
 const streamNames = await world.streams.list(runId);
-const chunks = await world.streams.getChunks(runId, name, { limit, cursor });
+let cursor: string | undefined;
+let hasMore: boolean;
+do {
+  const page = await world.streams.getChunks(runId, name, { limit, cursor });
+  cursor = page.cursor ?? cursor;
+  hasMore = page.hasMore;
+} while (hasMore);
 const info = await world.streams.getInfo(runId, name);
 
 // Queue (methods live directly on world as internal SDK infrastructure)

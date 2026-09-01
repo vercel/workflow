@@ -70,6 +70,9 @@
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
+  "peerDependencies": {
+    "workflow": "workspace:^"
+  },
   "keywords": [],
   "author": "",
   "packageManager": "pnpm@11.24.0"

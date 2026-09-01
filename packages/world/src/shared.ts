@@ -85,9 +85,13 @@ export interface StreamChunk {
 export interface GetChunksOptions {
   /** Maximum number of chunks to return per page (default: 100, max: 1000) */
   limit?: number;
-  /** Opaque cursor from a previous response to fetch the next page */
+  /** Opaque cursor from a previous response at which to resume */
   cursor?: string;
 }
+
+export const StreamCursorPositionSchema = z.object({
+  i: z.number().int().nonnegative(),
+});
 
 /**
  * Metadata about a stream, returned by {@link Streamer.getStreamInfo}.
@@ -113,7 +117,7 @@ export interface StreamInfoResponse {
 export interface StreamChunksResponse {
   /** Array of stream chunks in index order */
   data: StreamChunk[];
-  /** Cursor for the next page, or `null` when no more pages are available */
+  /** Position after the returned chunks, or `null` when none were returned or the stream ended */
   cursor: string | null;
   /** Whether additional pages of already-written chunks exist */
   hasMore: boolean;

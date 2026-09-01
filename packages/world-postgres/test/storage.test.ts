@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import type {
@@ -30,6 +31,7 @@ import {
   createRunsStorage,
   createStepsStorage,
 } from '../src/storage.js';
+import { createStreamer } from '../src/streamer.js';
 
 // Helper types for events storage
 type EventsStorage = ReturnType<typeof createEventsStorage>;
@@ -142,7 +144,7 @@ describe('Storage (Postgres integration)', () => {
 
   async function truncateTables() {
     await pool.query(
-      'TRUNCATE TABLE workflow.workflow_events, workflow.workflow_event_slots, workflow.workflow_steps, workflow.workflow_hooks, workflow.workflow_runs RESTART IDENTITY CASCADE'
+      'TRUNCATE TABLE workflow.workflow_events, workflow.workflow_event_slots, workflow.workflow_steps, workflow.workflow_hooks, workflow.workflow_runs, workflow.workflow_stream_chunks RESTART IDENTITY CASCADE'
     );
   }
 
@@ -178,6 +180,37 @@ describe('Storage (Postgres integration)', () => {
   afterAll(async () => {
     await pool.end();
     await container.stop();
+  });
+
+  describe('streams', () => {
+    it('resumes an open stream from its current tail', async () => {
+      const streamer = createStreamer(pool, drizzle);
+      const runId = `wrun_${ulid()}`;
+      const streamId = `strm_${ulid()}`;
+
+      try {
+        await streamer.streams.write(runId, streamId, 'first');
+        const first = await streamer.streams.getChunks(runId, streamId);
+
+        expect(first.hasMore).toBe(false);
+        assert(first.cursor);
+
+        await streamer.streams.write(runId, streamId, 'second');
+        await streamer.streams.close(runId, streamId);
+        const resumed = await streamer.streams.getChunks(runId, streamId, {
+          cursor: first.cursor,
+          limit: 1,
+        });
+
+        expect(
+          resumed.data.map((chunk) => Buffer.from(chunk.data).toString())
+        ).toEqual(['second']);
+        expect(resumed.cursor).toBeNull();
+        expect(resumed.done).toBe(true);
+      } finally {
+        await streamer.close();
+      }
+    });
   });
 
   describe('runs', () => {
