@@ -543,10 +543,10 @@ describe('per-frame trace context', () => {
 
   /** Decode the CBOR meta block of a single encoded frame. */
   const frameMeta = (frame: Uint8Array): Record<string, unknown> => {
-    const metaLen = new DataView(
-      frame.buffer,
-      frame.byteOffset
-    ).getUint32(0, false);
+    const metaLen = new DataView(frame.buffer, frame.byteOffset).getUint32(
+      0,
+      false
+    );
     return decode(frame.subarray(4, 4 + metaLen));
   };
 
