@@ -169,6 +169,7 @@ export function workflowTransformPlugin(
           },
         },
         minify: false,
+        inputSourceMap: false,
         sourceMaps: true,
         inlineSourcesContent: true,
       });
