@@ -1,0 +1,86 @@
+---
+title: run-expired
+description: A run's data passed its retention boundary, so its result can no longer be read.
+type: troubleshooting
+summary: Read a run's result before it expires, or return it through a channel you control.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/observability/retention
+  - /docs/api-reference/workflow-api/start
+  - /docs/foundations/hooks
+---
+
+## Error
+
+```text
+Run "wrun_..." completed, but its data expired at 2026-08-28T05:02:35.009Z
+and is no longer readable.
+```
+
+Thrown as a `RunExpiredError` from `await run.returnValue`.
+
+## Why this happens
+
+A run's payloads — its input, output and error, and those of its steps — are
+kept only for as long as the World's retention policy says. Its *metadata* —
+id, status, timestamps — usually outlives them. So a run can be readable as a
+record while its result is already gone.
+
+Rather than hand back a placeholder that is indistinguishable from a value the
+workflow genuinely returned, `returnValue` throws.
+
+Two ways to reach it:
+
+- **The run was started with `experimental_retention: 0`.** Its data is
+  deleted the moment it reaches a terminal state, and that deletion races your
+  own read of the result — and generally wins. On these runs, expect this
+  error rather than treating it as an edge case. See
+  [Data retention](/docs/observability/retention).
+- **The run simply aged out.** It finished long enough ago that the World's
+  default retention window has passed.
+
+## How to respond
+
+`RunExpiredError` is terminal. Retrying will not bring the data back, so catch
+it and take a different path rather than looping.
+
+```typescript lineNumbers
+import { getRun } from "workflow/api"
+import { RunExpiredError } from "workflow/errors"
+
+export async function readResult(runId: string) {
+  try {
+    return await getRun(runId).returnValue
+  } catch (error) {
+    if (RunExpiredError.is(error)) { // [!code highlight]
+      // `runStatus` is the run's terminal status when the World still has
+      // it, so you can tell a successful run whose result is gone from a
+      // failed one whose error is gone.
+      if (error.runStatus === "completed") {
+        // The run succeeded; its result is simply no longer stored.
+      }
+      return null
+    }
+    throw error
+  }
+}
+```
+
+The error carries `runId`, `runStatus` and `expiredAt` when the World reports
+them.
+
+### If you need the result of a zero-retention run
+
+Do not read it back off the run. Send it somewhere you control while the run
+is still executing — a step that writes it to your own store, or a
+[hook](/docs/foundations/hooks) that delivers it. That is the intended pattern
+for `experimental_retention: 0`: the point of the option is that the platform
+does not keep your data, so the platform cannot also be where you fetch it
+from afterwards.
+
+## Related
+
+If the run is gone entirely — metadata included — the World reports it as
+missing and you get a `WorkflowRunNotFoundError` instead. That means the
+record itself has been cleaned up, not just its payloads.

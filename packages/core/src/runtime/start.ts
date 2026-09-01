@@ -1,11 +1,16 @@
 import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
-import type { WorkflowInvokePayload, World } from '@workflow/world';
+import type {
+  RunRetention,
+  WorkflowInvokePayload,
+  World,
+} from '@workflow/world';
 import {
   HOOK_RESUME_INPUT_VERSION,
   isLegacySpecVersion,
   PARENT_RUN_ID_ATTRIBUTE,
+  RETENTION_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
@@ -51,6 +56,13 @@ import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
  * deployments don't recognize the health check at all.
  */
 const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
+
+/**
+ * Wire encoding of `retention: 0`. Attribute values are strings, and the
+ * `$retention` value is a duration written as a decimal integer — so zero
+ * travels as `'0'`, not as the name of a mode.
+ */
+const RETENTION_ZERO_ATTRIBUTE_VALUE = '0';
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
@@ -144,6 +156,44 @@ export interface StartOptionsBase {
    * the `setAttributes` option of the same name.
    */
   allowReservedAttributes?: boolean;
+
+  /**
+   * Set a preference for data retention after run completion.
+   *
+   * **Experimental.** Prefixed rather than named `retention` because both the
+   * unit and the set of accepted values are expected to change; treat the
+   * name as unstable and expect a rename when it settles.
+   *
+   * Worlds control the retention of user data (event payloads and stream
+   * chunks), the event log, and any analytics data. Options are:
+   * - `'default'`: same as omission, the World will decide. On Vercel, this
+   *   is based on your team's plan.
+   * - `0`: data is deleted as soon as your run completes or fails. On
+   *   Vercel, user data is deleted, but metadata may persist for your plan's
+   *   default retention period.
+   *
+   * The value is a duration, and zero is the only one implemented. The unit
+   * durations will be measured in has not been decided yet, and zero is the
+   * one value that means the same thing whichever unit wins — so it can ship
+   * ahead of that decision. Other durations are rejected rather than
+   * accepted and quietly ignored, which is why the type is the literal `0`
+   * and not `number`.
+   *
+   * **Known limitation at `0`.** The purge races your own read of the run's
+   * result and generally wins, so `await run.returnValue` on a
+   * `experimental_retention: 0` run usually throws `RunExpiredError` rather
+   * than resolving. If you need the result, return it through a channel you
+   * control — a step that writes it somewhere, or a hook — rather than
+   * reading it back off the run.
+   *
+   * Recorded on the run as the reserved `$retention` attribute, so it
+   * requires a World implementing spec version 4 or later. `'default'` is
+   * not written at all, keeping it exactly equivalent to omitting the
+   * option. Retention is enforced by the World: the first-party Worlds
+   * (Vercel, Local, Postgres) implement it, and a World that does not
+   * recognize the value keeps the data.
+   */
+  experimental_retention?: RunRetention;
 
   /**
    * The ID of an existing run this run is being replayed from, if any.
@@ -432,23 +482,59 @@ export async function start<TArgs extends unknown[], TResult>(
         );
       }
 
+      // `retention` is the typed spelling of the reserved `$retention`
+      // attribute, whose value is a duration written as a decimal integer.
+      // `'default'` means "let the World decide", which is already what an
+      // absent attribute means, so it is not written: that keeps
+      // `'default'` exactly equivalent to omitting the option and spends
+      // none of the per-run attribute budget.
+      let retentionAttribute: Record<string, string> | undefined;
+      if (
+        opts.experimental_retention !== undefined &&
+        opts.experimental_retention !== 'default'
+      ) {
+        // The types allow only `0`, but an untyped JS caller can still get
+        // here with some other duration — and there is no unit to interpret
+        // it in yet, so no World can honor it. Reject it rather than seed a
+        // value that would silently resolve to the World's default.
+        if (opts.experimental_retention !== 0) {
+          throw new WorkflowRuntimeError(
+            `start({ experimental_retention }) must be 0 or 'default'; received ${JSON.stringify(
+              opts.experimental_retention
+            )}.`
+          );
+        }
+        if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
+          throw new WorkflowRuntimeError(
+            'start({ experimental_retention }) requires a World that supports spec version 4 or later.'
+          );
+        }
+        retentionAttribute = {
+          [RETENTION_ATTRIBUTE]: RETENTION_ZERO_ATTRIBUTE_VALUE,
+        };
+      }
+
       // Cross-run lineage: the reserved keys ride on the run's existing
       // attributes, so they add no extra write. Caller attributes are spread
       // last, so a caller with allowReservedAttributes can deliberately
-      // re-parent.
+      // re-parent. `retention` is spread after those: it is the supported
+      // spelling, so it wins over a hand-written `$retention` attribute.
       const lineage =
         specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
           ? resolveLineageAttributes()
           : undefined;
-      const runAttributes = lineage
-        ? { ...lineage, ...attributes }
-        : attributes;
+      const runAttributes =
+        lineage || retentionAttribute
+          ? { ...lineage, ...attributes, ...retentionAttribute }
+          : attributes;
 
       // Shared by the run_created event and the resilient-start queue input.
       const attributeSeed = runAttributes
         ? {
             attributes: runAttributes,
-            ...(allowReservedAttributes || lineage != null
+            ...(allowReservedAttributes ||
+            lineage != null ||
+            retentionAttribute != null
               ? { allowReservedAttributes: true as const }
               : {}),
           }

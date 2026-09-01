@@ -1,4 +1,5 @@
 import {
+  RunExpiredError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
@@ -393,6 +394,35 @@ export class Run<TResult> {
 
   /** @internal */
   async #resolveTerminalReturnValue(run: WorkflowRun): Promise<TResult> {
+    // Expiry is checked before the status branches, and deliberately so.
+    //
+    // Past its retention boundary a run's payloads are gone but its metadata
+    // usually is not, so `run.output` and `run.error` hydrate to an
+    // expired-data placeholder rather than to anything the caller asked for.
+    // Handing that back as if it were the return value — or wrapping it as
+    // the `cause` of a WorkflowRunFailedError — is worse than failing: it is
+    // indistinguishable from the workflow having genuinely returned it.
+    //
+    // A run started with `experimental_retention: 0` reaches this almost
+    // immediately (its purge races, and usually beats, the caller's own read
+    // of the result). An ordinary run reaches it whenever it is read after
+    // the World's default window. Both are the same condition and get the
+    // same terminal, non-retryable error, carrying whatever metadata
+    // survived so the caller can still tell success from failure.
+    //
+    // When even the metadata is gone the World reports the run as missing and
+    // the caller gets WorkflowRunNotFoundError from the read above instead —
+    // there is nothing left here to describe.
+    const expiredAt = run.expiredAt;
+    if (expiredAt != null && expiredAt <= new Date()) {
+      throw new RunExpiredError(
+        `Run "${this.runId}" ${run.status === 'completed' ? 'completed' : `is ${run.status}`}, but its data expired at ${expiredAt.toISOString()} and is no longer readable.`,
+        this.runId,
+        run.status,
+        expiredAt
+      );
+    }
+
     if (run.status === 'completed') {
       const encryptionKey = await this.#getEncryptionKey(run);
       return await hydrateWorkflowReturnValue(
