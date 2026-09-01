@@ -2409,7 +2409,10 @@ export const OPTIONS = handler;`;
     workflows: WorkflowManifest['workflows'],
     graphs: Record<
       string,
-      Record<string, { graph: { nodes: any[]; edges: any[] } }>
+      Record<
+        string,
+        { workflowId?: string; graph: { nodes: any[]; edges: any[] } }
+      >
     >
   ): Record<
     string,
@@ -2433,13 +2436,35 @@ export const OPTIONS = handler;`;
     // Normalize by stripping leading "./" and file extensions.
     const normalizedGraphs = new Map<
       string,
-      Record<string, { graph: { nodes: any[]; edges: any[] } }>
+      Record<
+        string,
+        { workflowId?: string; graph: { nodes: any[]; edges: any[] } }
+      >
     >();
     for (const [graphPath, graphEntries] of Object.entries(graphs)) {
       const normalized = graphPath
         .replace(/^\.\//, '')
         .replace(/\.[^/.]+$/, '');
       normalizedGraphs.set(normalized, graphEntries);
+    }
+
+    // Build a workflowId-based lookup as a fallback for cases where the graph
+    // extractor path segment (e.g. "pkg@version") doesn't match the manifest
+    // file path (e.g. "dist/src/workflow.js"). This happens when workflowIds
+    // use package-scoped identifiers instead of file paths.
+    const graphByWorkflowId = new Map<
+      string,
+      { graph: { nodes: any[]; edges: any[] } }
+    >();
+    for (const graphEntries of Object.values(graphs)) {
+      for (const [, entry] of Object.entries(graphEntries)) {
+        if (entry.workflowId) {
+          graphByWorkflowId.set(
+            entry.workflowId,
+            entry as { graph: { nodes: any[]; edges: any[] } }
+          );
+        }
+      }
     }
 
     for (const [filePath, entries] of Object.entries(workflows)) {
@@ -2453,9 +2478,11 @@ export const OPTIONS = handler;`;
         graphs[filePath] || normalizedGraphs.get(normalizedFilePath);
 
       for (const [name, data] of Object.entries(entries)) {
+        const graphFromPath = graphEntries?.[name]?.graph;
+        const graphFromId = graphByWorkflowId.get(data.workflowId)?.graph;
         result[filePath][name] = {
           workflowId: data.workflowId,
-          graph: graphEntries?.[name]?.graph || { nodes: [], edges: [] },
+          graph: graphFromPath || graphFromId || { nodes: [], edges: [] },
         };
       }
     }
