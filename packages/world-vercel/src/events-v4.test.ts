@@ -963,6 +963,70 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('names the failing response field when schema validation rejects a 200 body', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_completed',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        // A run_completed event row with no eventData object: valid CBOR,
+        // invalid against RunCompletedEventSchema (eventData is required).
+        encode({
+          event: {
+            eventType: 'run_completed',
+            specVersion: 7,
+            eventId: 'evnt_1',
+            runId: 'wrun_1',
+            createdAt: CREATED_AT,
+          },
+          maxEvents: 100000,
+        }),
+        {
+          headers: {
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': CREATED_AT,
+          },
+        }
+      );
+
+    // The message must carry the Zod issue paths: it is the only part of
+    // this error visible in production logs (the cause is never logged, and
+    // the run_failed cleanup payload is rejected or encrypted at rest).
+    const error = await createWorkflowRunEventV4(
+      {
+        runId: 'wrun_1',
+        eventType: 'run_completed',
+        specVersion: 7,
+        payload: new TextEncoder().encode('"output"'),
+      },
+      { token: 'test-token', dispatcher: agent }
+    ).then(
+      () => {
+        throw new Error('expected createWorkflowRunEventV4 to reject');
+      },
+      (err: unknown) => err
+    );
+
+    expect(WorkflowWorldError.is(error)).toBe(true);
+    expect((error as WorkflowWorldError).code).toBe('SCHEMA_VALIDATION');
+    expect((error as Error).message).toContain(
+      'invalid response body (run_completed)'
+    );
+    expect((error as Error).message).toContain('event.eventData');
+    // Issue paths only — the response payload itself must not leak.
+    expect((error as Error).message).not.toContain('evnt_1');
+    agent.assertNoPendingInterceptors();
+  });
+
   it('requests and decodes the event stream for run_started', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';

@@ -4654,6 +4654,22 @@ export function workflowEntrypoint(
                           workflowRunId: runId,
                           errorCode,
                           errorName,
+                          // The classified errorCode is a coarse bucket
+                          // (WORLD_CONTRACT_ERROR covers both a malformed
+                          // world response and an exhausted transport
+                          // failure), so also print the message and, for
+                          // world errors, the underlying code — otherwise a
+                          // production log shows only the bucket and the
+                          // actual failure is undiagnosable (this is how
+                          // terminal-write schema rejections went unexplained
+                          // while the runs themselves succeeded).
+                          errorMessage,
+                          ...(WorkflowWorldError.is(terminalError)
+                            ? {
+                                worldErrorCode: terminalError.code,
+                                worldErrorStatus: terminalError.status,
+                              }
+                            : {}),
                           errorStack,
                         });
 

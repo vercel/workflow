@@ -815,6 +815,29 @@ export async function createWorkflowRunEventV4<T extends EventType>(
   return decodeCreateEventResponse(response, input.eventType);
 }
 
+/**
+ * Render the first few issues of a response-validation ZodError into one
+ * log-safe line, so the failing field is identifiable from the error MESSAGE
+ * alone. The message is the only part of this error that reliably survives
+ * to where anyone can see it: the runtime's terminal-failure log prints only
+ * name/code/message, and the `run_failed` cleanup write serializes (and on
+ * encrypted projects encrypts) the thrown error, so a `cause`-only ZodError
+ * is invisible in production — which is exactly how the terminal-write
+ * WORLD_CONTRACT_ERROR reports stayed undiagnosable. Issue paths and codes
+ * only; no received values, so response payloads cannot leak into logs.
+ */
+function formatResponseIssues(error: z.ZodError, max = 5): string {
+  const issues = error.issues
+    .slice(0, max)
+    .map(
+      (issue) =>
+        `${issue.path.length > 0 ? issue.path.join('.') : '<root>'}: ${issue.code} (${issue.message})`
+    );
+  const extra =
+    error.issues.length > max ? `; +${error.issues.length - max} more` : '';
+  return issues.join('; ') + extra;
+}
+
 /** Takes `FrameResponseLike` rather than `Response` because the WS branch has
  *  none to hand over; it synthesizes one. A real `Response` satisfies the
  *  interface, so the HTTP callers are unaffected. */
@@ -835,10 +858,14 @@ async function decodeCreateEventResponse<T extends EventType>(
     );
   const parsedBody = schema.safeParse(decode(bodyBytes));
   if (!parsedBody.success) {
-    throw new WorkflowWorldError('v4 createEvent: invalid response body', {
-      code: 'SCHEMA_VALIDATION',
-      cause: parsedBody.error,
-    });
+    throw new WorkflowWorldError(
+      `v4 createEvent: invalid response body (${eventType}): ` +
+        formatResponseIssues(parsedBody.error),
+      {
+        code: 'SCHEMA_VALIDATION',
+        cause: parsedBody.error,
+      }
+    );
   }
   return parsedBody.data;
 }
@@ -859,10 +886,14 @@ export async function createWorkflowRunStartedEventV4(
     response.headers.get(MAX_EVENTS_HEADER)
   );
   if (!maxEvents.success) {
-    throw new WorkflowWorldError('v4 createEvent: invalid max-events header', {
-      code: 'SCHEMA_VALIDATION',
-      cause: maxEvents.error,
-    });
+    throw new WorkflowWorldError(
+      `v4 createEvent: invalid max-events header: ` +
+        formatResponseIssues(maxEvents.error),
+      {
+        code: 'SCHEMA_VALIDATION',
+        cause: maxEvents.error,
+      }
+    );
   }
 
   return { events, ...page, maxEvents: maxEvents.data };
@@ -1010,7 +1041,8 @@ export async function createWorkflowRunEventsBatchV4(
       const parsed = CreateEventV4BodySchemas[eventType].safeParse(raw);
       if (!parsed.success) {
         throw new WorkflowWorldError(
-          `v4 createEventBatch: invalid result body at index ${index} (${eventType})`,
+          `v4 createEventBatch: invalid result body at index ${index} ` +
+            `(${eventType}): ${formatResponseIssues(parsed.error)}`,
           { code: 'SCHEMA_VALIDATION', cause: parsed.error }
         );
       }
@@ -1428,7 +1460,8 @@ function streamErrorFrameToError(
   const parsed = EventStreamErrorSchema.safeParse(meta);
   if (!parsed.success) {
     return new WorkflowWorldError(
-      `v4 ${opName}: malformed terminal error frame`,
+      `v4 ${opName}: malformed terminal error frame: ` +
+        formatResponseIssues(parsed.error),
       { code: 'SCHEMA_VALIDATION', cause: parsed.error }
     );
   }
