@@ -495,8 +495,10 @@ function rootRunIdFrom(
  * `wait_completed`, which the wait timer can resolve with
  * `wait_completed`).
  *
- * Open waits block VM retention and inline deltas. Open hooks and waits block
- * turbo's optimistic start; hooks also require a `step_started` claim.
+ * Open waits block inline deltas. Open hooks and waits disable turbo's forced
+ * optimistic start. Open hooks additionally suppress operator-enabled
+ * optimistic start until the `step_started` claim succeeds; open waits leave
+ * that explicit, idempotency-only opt-in alone.
  *
  * Step-body `attr_set` writes are NOT a concern: they land before the
  * step's terminal write and are therefore already inside the returned
@@ -534,47 +536,41 @@ type RetentionDecision =
       reason:
         | 'disabled'
         | 'serialization_executed_workflow_code'
-        | 'no_replay_driver'
-        | 'unsupported_suspension_item'
-        | 'open_wait';
+        | 'no_replay_driver';
     };
 
 /**
  * The complete retained-VM policy for a suspension boundary.
  *
- * Every item type accepted here must use the suspension-generation guard when
+ * Every suspension producer uses the suspension-generation guard when
  * signaling. Otherwise a signal scheduled at boundary N could suspend the VM
- * after it has already resumed into boundary N+1. Waits are not guarded, so
- * they remain unretainable. A step or attribute write is required to drive the
- * next inline iteration; hook-only suspensions park normally.
+ * after it has already resumed into boundary N+1. The strictly ordered event
+ * log determines which branch resolution wins. A step or attribute write is
+ * required to drive the next inline iteration; hook- or wait-only suspensions
+ * park normally.
  *
- * Retaining across an open hook also permits a hook-woken cold replay to race
- * this invocation. That is safe only because each loaded log is a monotone,
- * hole-free prefix; replaying a longer prefix preserves all earlier
- * correlation-ID draws; `step_started` atomically chooses one owner; and an
- * open hook suppresses optimistic step-body execution until that claim wins.
- * The generation guard keeps losing same-boundary suspension signals stale,
- * while a stale-snapshot/412 restart discards the retained session and replays
- * from the authoritative log. A World that exposes a non-prefix view would
- * violate this policy's precondition and could bind one ordinal to two logical
- * branches before the step-ownership claim has a chance to arbitrate them.
+ * Retaining across an open hook or wait also permits an out-of-band cold replay
+ * to race this invocation. That is safe only because each loaded log is a
+ * monotone, hole-free prefix; replaying a longer prefix preserves all earlier
+ * correlation-ID draws; and `step_started` atomically chooses one owner. The
+ * generation guard keeps losing same-boundary suspension signals stale, while
+ * a stale-snapshot/412 restart discards the retained session and replays from
+ * the authoritative log. A World that exposes a non-prefix view would violate
+ * this policy's precondition and could bind one ordinal to two logical branches
+ * before the step-ownership claim has a chance to arbitrate them.
  *
  * Quiescence assumes workflow code stays inside the sandbox's determinism
  * contract. Escaping to the host realm (for example, recovering a host
  * `Function` constructor to schedule real timers) already makes ordinary cold
  * replay nondeterministic and is not defended here.
  *
- * `hasOpenWait` is lazy because checking it scans the loaded event log. Keep it
- * last so cheap rejection reasons avoid that work.
  */
 function getRetentionDecision({
   suspension,
   serializationBlockerCount,
-  hasOpenWait,
 }: {
   suspension: WorkflowSuspension;
   serializationBlockerCount: number;
-  hasOpenWait: () => boolean;
 }): RetentionDecision {
   if (!isVmRetentionEnabled()) {
     return { retain: false, reason: 'disabled' };
@@ -587,26 +583,6 @@ function getRetentionDecision({
   }
   if (suspension.stepCount === 0 && suspension.attributeCount === 0) {
     return { retain: false, reason: 'no_replay_driver' };
-  }
-  if (
-    !suspension.items.every((item) => {
-      switch (item.type) {
-        case 'step':
-        case 'hook':
-        case 'attribute':
-          return true;
-        case 'wait':
-          return false;
-        default:
-          item satisfies never;
-          throw new Error('Unknown workflow suspension item');
-      }
-    })
-  ) {
-    return { retain: false, reason: 'unsupported_suspension_item' };
-  }
-  if (hasOpenWait()) {
-    return { retain: false, reason: 'open_wait' };
   }
   return { retain: true };
 }
@@ -3479,11 +3455,10 @@ export function workflowEntrypoint(
                           return;
                         }
                         // Open hooks/waits in the log as loaded for this
-                        // replay. Computed lazily, at most once, and shared
-                        // between the retention decision here and the
+                        // replay. Computed lazily, at most once, for the
                         // delta/turbo gates below — the attr-detour and
-                        // hook-conflict paths return/continue before the
-                        // gates and usually short-circuit before scanning.
+                        // hook-conflict paths return/continue before the gates
+                        // and usually avoid the scan entirely.
                         const openHookWait = once(() => {
                           assert(eventLog.type === 'ready');
                           return openHookAndWaitState(eventLog.events);
@@ -3494,7 +3469,6 @@ export function workflowEntrypoint(
                               suspension: err,
                               serializationBlockerCount:
                                 suspensionResult.serializationBlockerCount,
-                              hasOpenWait: () => openHookWait.value.openWait,
                             })
                           : undefined;
                         if (retentionDecision?.retain === false) {

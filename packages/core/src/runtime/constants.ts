@@ -400,15 +400,17 @@ export function isQuickJSBaselineSnapshotEnabled(): boolean {
 }
 
 /**
- * Whether the inline loop retains a suspended workflow VM across inline steps
- * within one invocation (default ON). When on, a step-only suspension keeps
- * the live VM, event consumer, and hydrated state alive, and the next loop
- * iteration appends only the newly durable events instead of rebuilding the
- * `vm.Context` and replaying the whole event log. Non-step suspensions and
- * replay divergence always fall back to the ordinary durable replay path.
+ * Whether the Node.js inline loop retains a suspended workflow VM within one
+ * invocation (default ON). When on, a step- or attribute-driven suspension can
+ * keep the live VM, event consumer, and hydrated state even with open hooks or
+ * waits. The next loop iteration appends newly durable events instead of
+ * rebuilding the `vm.Context` and replaying the whole event log. Hook- or
+ * wait-only suspensions park the invocation, while replay divergence falls back
+ * to the ordinary durable replay path. QuickJS manages its own retained loop.
  *
  * `WORKFLOW_RETAINED_VM=0` (or `false`) is the kill switch: every iteration
- * replays from scratch in a fresh VM, matching the pre-retention behavior.
+ * replays the Node.js engine from scratch in a fresh VM, matching the
+ * pre-retention behavior.
  */
 export function isVmRetentionEnabled(): boolean {
   const raw = process.env.WORKFLOW_RETAINED_VM;
