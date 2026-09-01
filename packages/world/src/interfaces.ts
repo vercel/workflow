@@ -3,6 +3,7 @@ import type {
   AttributeChange,
   ExperimentalSetAttributesResult,
 } from './attributes.js';
+import type { WorldCapabilities } from './capabilities.js';
 import type {
   BatchEventRequest,
   CreateEventBatchParams,
@@ -455,90 +456,6 @@ export interface Storage {
      */
     list(params: ListHooksParams): Promise<PaginatedResponse<Hook>>;
   };
-}
-
-/**
- * Optional feature capabilities a World implementation declares so the core
- * runtime can enable optimizations that depend on backend behavior, instead
- * of inferring support from environment variables alone. Every capability
- * defaults to "unsupported" when absent: runtime fast paths that rely on
- * one must fail closed (keep their conservative behavior) unless the World
- * explicitly declares it.
- */
-export interface WorldCapabilities {
-  /**
-   * Supports `experimental_minRetention` for Hooks. Missing or inactive means
-   * the runtime rejects retained Hooks before registration.
-   */
-  hookRetention?: {
-    active: boolean;
-  };
-
-  /**
-   * The World's queue supports `maxConcurrency`-limited consumption, in
-   * particular the per-run flow topics consumed with `maxConcurrency: 1`
-   * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's
-   * orchestrator invocations. Worlds whose queue has no concurrency-limit
-   * concept must leave this unset.
-   *
-   * Note this declares queue *support*, not deployed configuration: the
-   * serialization also requires the build-time half (a flow trigger emitted
-   * with `maxConcurrency: 1`), which a runtime process cannot verify today.
-   * The core runtime therefore does not yet take any fast path from this
-   * capability alone: it exists so a future build-verified signal can be
-   * combined with it (and so Worlds document the contract explicitly).
-   */
-  maxConcurrency?: boolean;
-
-  /**
-   * The World's `events.create` deduplicates concurrent `hook_received` writes
-   * that carry the same `(runId, resumeId)`, collapsing them onto a single
-   * committed event and returning the canonical one to every caller. Two
-   * writers rely on it: `resumeHook()`'s durable write attaches a `resumeId` +
-   * payload digest so transport-level retries of one write converge on exactly
-   * one event, and legacy `hookInput` queue redeliveries (from older
-   * producers) converge through the same constraint.
-   *
-   * The core runtime fails closed on this: a `resumeId` is attached ONLY when
-   * the World declares `hookResumeDedup === true` (or the live backend attests
-   * it per-lookup, below). A World that accepts a `resumeId` but does not
-   * enforce the `(runId, resumeId)` constraint must leave this unset so the
-   * runtime keeps the plain single-shot write.
-   *
-   * Declaring this also commits the World to ROUND-TRIPPING the key:
-   * `events.list` must return `resumeId` on `hook_received` events it
-   * persisted with one, because the legacy `hookInput` consumer path detects
-   * an already-materialized resume by matching `resumeId` in the loaded log.
-   *
-   * Enabled statically for `world-local` (filesystem sidecar claim keyed on
-   * `(runId, resumeId)`; the adapter and its backend ship together, so a static
-   * capability can never drift from the backend). `world-vercel` deliberately
-   * leaves this UNSET and instead attests support per-lookup via the
-   * server-computed, response-only `Hook.resumeCapabilities.hookResumeDedupVersion`
-   * (see `HookResumeCapabilitiesSchema`), so a server rollback or kill switch
-   * degrades new resumes to plain writes immediately without redeploying
-   * the adapter. `world-postgres` leaves it unset for now.
-   *
-   * The resume gate treats EITHER signal as backend support (see
-   * `resume-hook.ts`): this static capability OR a current
-   * `resumeCapabilities.hookResumeDedupVersion` on the by-token hook.
-   */
-  hookResumeDedup?: boolean;
-
-  /**
-   * Deployments are atomic and immutable: a deployment id names one fixed
-   * build for its whole lifetime, so a run pinned to one may only execute
-   * there. Worlds that declare this get the runtime's deployment-affinity
-   * guard, which re-routes a misrouted delivery to the run's own deployment
-   * and ultimately fails the run with `DEPLOYMENT_MISMATCH`.
-   *
-   * Worlds whose deployment id is synthetic or version-tagged (e.g.
-   * `dpl_local@<sdk-version>`, which legitimately differs across SDK versions
-   * within one logical environment) must leave this unset: there a
-   * "mismatch" is not a real cross-deployment delivery, and guarding would
-   * fail ordinary runs after a version bump.
-   */
-  deploymentAffinity?: boolean;
 }
 
 /**

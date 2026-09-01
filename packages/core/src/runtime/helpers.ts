@@ -22,8 +22,10 @@ import {
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  WorldCapabilitiesSchema,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+import { z } from 'zod';
 import { runtimeLogger } from '../logger.js';
 import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
 import {
@@ -75,47 +77,39 @@ function getHealthCheckStreamName(correlationId: string): string {
   return `__health_check__${correlationId}`;
 }
 
-/**
- * Result of a health check operation.
- */
-export interface HealthCheckResult {
-  healthy: boolean;
-  /** Error message if health check failed */
-  error?: string;
-  /** Latency if the health check was successful */
-  latencyMs?: number;
-  /** Spec version of the responding deployment */
-  specVersion?: number;
-  /**
-   * `@workflow/core` version of the responding deployment, used for
-   * capability detection (see `getRunCapabilities`). Omitted when the
-   * responding deployment did not provide the field as a string:
-   * for example, an older `@workflow/core` that predates this field,
-   * or a non-JSON plain-text health response.
-   */
-  workflowCoreVersion?: string;
-  /**
-   * The target run's X25519 public key (base64), returned only when the probe
-   * carried a `runId` and the responding deployment has encryption enabled.
-   *
-   * Lets a cross-deployment `start()` seal the workflow arguments using a
-   * response it was already waiting on, instead of making a separate
-   * key-lookup request.
-   */
-  encryptionPublicKey?: string;
-  /**
-   * The responding deployment's `HOOK_RESUME_INPUT_VERSION`: the protocol
-   * version at which the *consumer* (queue-message target) materializes the
-   * `hook_received` event from `hookInput` on replay. A cross-deployment
-   * `start()` stamps the *target's* value (not the caller's) into the new
-   * run's `executionContext.hookResumeInputVersion`. Current producers write
-   * the event durably before publishing the wake and do not read the marker;
-   * OLDER producers still gate their lazy path on it, so it keeps being
-   * stamped. Omitted when the responding deployment predates this field,
-   * which fails that gate closed.
-   */
-  hookResumeInputVersion?: number;
-}
+const HealthyHealthCheckResponseSchema = z.object({
+  healthy: z.literal(true),
+  /** Spec version of the responding deployment. */
+  specVersion: z.number().optional(),
+  /** `@workflow/core` version of the responding deployment. */
+  workflowCoreVersion: z.string().optional(),
+  /** The target run's X25519 public key, encoded as base64. */
+  encryptionPublicKey: z.string().optional(),
+  /** The responding deployment's hook-resume input protocol version. */
+  hookResumeInputVersion: z.number().optional(),
+  /** Optional features supported by the responding deployment's World. */
+  capabilities: WorldCapabilitiesSchema.optional(),
+});
+
+const UnhealthyHealthCheckResponseSchema = z.object({
+  healthy: z.literal(false),
+  error: z.string(),
+});
+
+export const HealthCheckResponseSchema = z.discriminatedUnion('healthy', [
+  HealthyHealthCheckResponseSchema,
+  UnhealthyHealthCheckResponseSchema,
+]);
+
+type HealthyHealthCheckResponse = z.infer<
+  typeof HealthyHealthCheckResponseSchema
+>;
+type HealthCheckResponse = z.infer<typeof HealthCheckResponseSchema>;
+
+/** Result of a health check operation. */
+export type HealthCheckResult =
+  | (HealthyHealthCheckResponse & { latencyMs: number })
+  | z.infer<typeof UnhealthyHealthCheckResponseSchema>;
 
 /**
  * Checks if the given message is a health check payload.
@@ -186,15 +180,14 @@ export async function handleHealthCheckMessage(
 
   const response = JSON.stringify({
     healthy: true,
-    correlationId: healthCheck.correlationId,
     specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
     workflowCoreVersion,
     // We are executing inside the target deployment, so this constant reflects
     // the *consumer's* hook-resume protocol version, exactly what a
     // cross-deployment caller needs to gate its parallel resume path on.
     hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
+    capabilities: world.capabilities,
     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
-    timestamp: Date.now(),
   });
   // Use a deterministic fake runId derived from the correlationId so that
   // the reader side produces the same value.
@@ -245,10 +238,6 @@ const HEALTH_CHECK_POLL_INTERVAL = 100;
 const HEALTH_CHECK_READ_TIMEOUT = 500;
 
 /**
- * Read chunks from a stream with a timeout per read operation.
- * Returns { chunks, timedOut } where timedOut indicates if a read timed out.
- */
-/**
  * Race a promise against a deadline. Rejects with a timeout error when the
  * deadline elapses first. Used to bound `world.streams.get()` inside the
  * health-check poll loop: some worlds hold that request open until the
@@ -280,15 +269,17 @@ async function readStreamWithTimeout(
 
   while (!done && !timedOut) {
     const readPromise = reader.read();
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<{ done: true; value: undefined }>(
       (resolve) =>
-        setTimeout(() => {
+        (timer = setTimeout(() => {
           timedOut = true;
           resolve({ done: true, value: undefined });
-        }, readTimeout)
+        }, readTimeout))
     );
 
     const result = await Promise.race([readPromise, timeoutPromise]);
+    clearTimeout(timer);
     done = result.done;
     if (result.value) chunks.push(result.value);
   }
@@ -298,15 +289,17 @@ async function readStreamWithTimeout(
 
 /**
  * Parse and validate a health check response from stream chunks.
- * Returns the parsed response or null if invalid.
+ * Returns the parsed response or an immediate validation failure.
  */
-function parseHealthCheckResponse(chunks: Uint8Array[]): {
-  healthy: boolean;
-  specVersion?: number;
-  workflowCoreVersion?: string;
-  encryptionPublicKey?: string;
-} | null {
-  if (chunks.length === 0) return null;
+type ParsedHealthCheckResponse =
+  | { status: 'empty' }
+  | { status: 'valid'; response: HealthCheckResponse }
+  | { status: 'invalid'; error: string };
+
+function parseHealthCheckResponse(
+  chunks: Uint8Array[]
+): ParsedHealthCheckResponse {
+  if (chunks.length === 0) return { status: 'empty' };
 
   const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
   const combined = new Uint8Array(totalLength);
@@ -324,44 +317,57 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
     // Old deployments (specVersion < 3) return plain text like
     // 'Workflow SDK "..." endpoint is healthy'. Treat any non-empty
     // text response as a healthy deployment with unknown specVersion.
-    if (responseText.length > 0) {
-      return { healthy: true };
-    }
-    return null;
+    return { status: 'valid', response: { healthy: true } };
   }
 
-  if (
-    typeof response !== 'object' ||
-    response === null ||
-    !('healthy' in response) ||
-    typeof (response as { healthy: unknown }).healthy !== 'boolean'
-  ) {
-    return null;
-  }
+  const result = HealthCheckResponseSchema.safeParse(response);
+  if (result.success) return { status: 'valid', response: result.data };
 
-  const r = response as Record<string, unknown>;
-  const parsed: {
-    healthy: boolean;
-    specVersion?: number;
-    workflowCoreVersion?: string;
-    encryptionPublicKey?: string;
-    hookResumeInputVersion?: number;
-  } = {
-    healthy: r.healthy as boolean,
+  return {
+    status: 'invalid',
+    error: `Invalid health check response: ${result.error.issues.map((issue) => issue.message).join(', ')}`,
   };
-  if (typeof r.specVersion === 'number') {
-    parsed.specVersion = r.specVersion;
+}
+
+async function readHealthCheckResponse(
+  world: World,
+  runId: string,
+  streamName: string,
+  deadline: number
+): Promise<ParsedHealthCheckResponse> {
+  const stream = await withDeadline(
+    world.streams.get(runId, streamName),
+    deadline - Date.now()
+  );
+  const reader = stream.getReader();
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) return { status: 'empty' };
+
+  const result = await readStreamWithTimeout(
+    reader,
+    Math.min(HEALTH_CHECK_READ_TIMEOUT, remainingMs)
+  );
+  if (result.timedOut) {
+    void reader.cancel().catch(() => {});
+    return { status: 'empty' };
   }
-  if (typeof r.workflowCoreVersion === 'string') {
-    parsed.workflowCoreVersion = r.workflowCoreVersion;
+  return parseHealthCheckResponse(result.chunks);
+}
+
+function finishHealthCheck(
+  response: ParsedHealthCheckResponse,
+  startTime: number
+): HealthCheckResult | undefined {
+  switch (response.status) {
+    case 'empty':
+      return undefined;
+    case 'invalid':
+      return { healthy: false, error: response.error };
+    case 'valid':
+      return response.response.healthy
+        ? { ...response.response, latencyMs: Date.now() - startTime }
+        : response.response;
   }
-  if (typeof r.encryptionPublicKey === 'string') {
-    parsed.encryptionPublicKey = r.encryptionPublicKey;
-  }
-  if (typeof r.hookResumeInputVersion === 'number') {
-    parsed.hookResumeInputVersion = r.hookResumeInputVersion;
-  }
-  return parsed;
 }
 
 export async function healthCheck(
@@ -379,11 +385,13 @@ export async function healthCheck(
   // region on both sides.
   const correlationId = world.createRunId?.() ?? generateId();
   const streamName = getHealthCheckStreamName(correlationId);
+  const healthCheckRunId = generateHealthCheckRunId(correlationId);
 
   const queueName =
     `${getQueueTopicPrefix('workflow', resolveQueueNamespace(options?.namespace))}health_check` as ValidQueueName;
 
   const startTime = Date.now();
+  const deadline = startTime + timeout;
 
   try {
     await world.queue(
@@ -401,50 +409,26 @@ export async function healthCheck(
       }
     );
 
-    while (Date.now() - startTime < timeout) {
+    while (Date.now() < deadline) {
+      let response: ParsedHealthCheckResponse = { status: 'empty' };
       try {
-        const remainingMs = timeout - (Date.now() - startTime);
-        const stream = await withDeadline(
-          world.streams.get(
-            generateHealthCheckRunId(correlationId),
-            streamName
-          ),
-          remainingMs
-        );
-        const reader = stream.getReader();
-        const { chunks, timedOut } = await readStreamWithTimeout(
-          reader,
-          HEALTH_CHECK_READ_TIMEOUT
-        );
-
-        if (timedOut) {
-          try {
-            reader.cancel();
-          } catch {
-            // Ignore cancel errors
-          }
-          await new Promise((resolve) =>
-            setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
-          );
-          continue;
-        }
-
-        const response = parseHealthCheckResponse(chunks);
-        if (response) {
-          return {
-            ...response,
-            latencyMs: Date.now() - startTime,
-          };
-        }
-
-        await new Promise((resolve) =>
-          setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
+        response = await readHealthCheckResponse(
+          world,
+          healthCheckRunId,
+          streamName,
+          deadline
         );
       } catch {
-        await new Promise((resolve) =>
-          setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
-        );
+        // Retry transient stream errors until the overall deadline.
       }
+      const result = finishHealthCheck(response, startTime);
+      if (result) return result;
+
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(HEALTH_CHECK_POLL_INTERVAL, remainingMs))
+      );
     }
     return {
       healthy: false,

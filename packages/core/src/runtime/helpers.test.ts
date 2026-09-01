@@ -236,6 +236,38 @@ describe('healthCheck response parsing', () => {
     expect(result.workflowCoreVersion).toBe('5.0.0-beta.7');
   });
 
+  it('surfaces valid World capabilities', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        capabilities: {
+          hookRetention: { active: true },
+          futureCapability: true,
+        },
+      })
+    );
+
+    await expect(healthCheck(world, { timeout: 1000 })).resolves.toMatchObject({
+      healthy: true,
+      capabilities: { hookRetention: { active: true } },
+    });
+  });
+
+  it('rejects invalid World capabilities', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        capabilities: { hookRetention: { active: 'yes' } },
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(false);
+    expect(result.error).toMatch(/Invalid health check response/);
+    expect(world.streams.get).toHaveBeenCalledOnce();
+  });
+
   it('omits workflowCoreVersion when the response does not include the field', async () => {
     // Independent of specVersion — the field is omitted by any responder
     // running an older `@workflow/core` that predates the addition of
@@ -257,9 +289,7 @@ describe('healthCheck response parsing', () => {
     expect(result.workflowCoreVersion).toBeUndefined();
   });
 
-  it('omits workflowCoreVersion when the field is the wrong type', async () => {
-    // Defensive: the parser only accepts strings. Anything else is dropped
-    // rather than surfaced as garbage.
+  it('rejects workflowCoreVersion with the wrong type', async () => {
     const world = makeWorldWithResponse(
       JSON.stringify({
         healthy: true,
@@ -272,8 +302,8 @@ describe('healthCheck response parsing', () => {
 
     const result = await healthCheck(world, { timeout: 1000 });
 
-    expect(result.healthy).toBe(true);
-    expect(result.workflowCoreVersion).toBeUndefined();
+    expect(result.healthy).toBe(false);
+    expect(result.error).toMatch(/Invalid health check response/);
   });
 
   it('surfaces hookResumeInputVersion from the target so the caller stamps the consumer value', async () => {
@@ -317,9 +347,7 @@ describe('healthCheck response parsing', () => {
     expect(result.hookResumeInputVersion).toBeUndefined();
   });
 
-  it('omits hookResumeInputVersion when the field is the wrong type', async () => {
-    // Defensive: only a number is accepted; anything else is dropped rather
-    // than surfaced as a bogus capability.
+  it('rejects hookResumeInputVersion with the wrong type', async () => {
     const world = makeWorldWithResponse(
       JSON.stringify({
         healthy: true,
@@ -332,8 +360,8 @@ describe('healthCheck response parsing', () => {
 
     const result = await healthCheck(world, { timeout: 1000 });
 
-    expect(result.healthy).toBe(true);
-    expect(result.hookResumeInputVersion).toBeUndefined();
+    expect(result.healthy).toBe(false);
+    expect(result.error).toMatch(/Invalid health check response/);
   });
 
   it('returns healthy with no fields for non-JSON plain-text responses', async () => {
@@ -349,6 +377,38 @@ describe('healthCheck response parsing', () => {
     expect(result.healthy).toBe(true);
     expect(result.specVersion).toBeUndefined();
     expect(result.workflowCoreVersion).toBeUndefined();
+  });
+
+  it('returns an unhealthy response error', async () => {
+    const world = makeWorldWithResponse(
+      JSON.stringify({ healthy: false, error: 'maintenance' })
+    );
+
+    await expect(healthCheck(world, { timeout: 1000 })).resolves.toEqual({
+      healthy: false,
+      error: 'maintenance',
+    });
+  });
+
+  it('polls again after an empty completed stream', async () => {
+    const world = makeWorldWithResponse(JSON.stringify({ healthy: true }));
+    vi.mocked(world.streams.get)
+      .mockResolvedValueOnce(new ReadableStream<Uint8Array>())
+      .mockResolvedValueOnce(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(JSON.stringify({ healthy: true }))
+            );
+            controller.close();
+          },
+        })
+      );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(world.streams.get).toHaveBeenCalledTimes(2);
   });
 
   it('publishes to the default health-check topic when no namespace is given', async () => {
@@ -398,6 +458,20 @@ describe('healthCheck response parsing', () => {
 
     expect(result.healthy).toBe(false);
     expect(result.error).toMatch(/timed out/);
+  });
+
+  it('bounds reads from an open stream by the overall timeout', async () => {
+    const world = {
+      queue: vi.fn().mockResolvedValue(undefined),
+      streams: {
+        get: vi.fn(async () => new ReadableStream<Uint8Array>()),
+      },
+    } as unknown as World;
+
+    const result = await healthCheck(world, { timeout: 20 });
+
+    expect(result.healthy).toBe(false);
+    expect(result.error).toMatch(/timed out after 20ms/);
   });
 });
 
@@ -1031,6 +1105,20 @@ describe('health check run public key', () => {
     expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
     expect(writtenResponse(write).encryptionPublicKey).toBeUndefined();
     expect(writtenResponse(write).healthy).toBe(true);
+  });
+
+  it('returns the target World capabilities', async () => {
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(undefined);
+    world.capabilities = { hookRetention: { active: true } };
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage({
+      __healthCheck: true,
+      correlationId: 'corr_capabilities',
+    });
+
+    expect(writtenResponse(write).capabilities).toEqual(world.capabilities);
   });
 
   it('omits the key when encryption is not configured', async () => {
