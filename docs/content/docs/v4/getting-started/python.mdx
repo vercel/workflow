@@ -11,11 +11,11 @@ related:
 ---
 
 <CopyPrompt
-  text="In this Python project, add `requires-python = &quot;&gt;=3.12&quot;` and `dependencies = [&quot;vercel&quot;]` under `[project]` in `pyproject.toml`. Add `[[tool.vercel.workflows]]` with `entrypoint = &quot;app.workflows:wf&quot;`. Create `app/workflow.py` with `from vercel import workflow` and `wf = workflow.Workflows()`. Create `app/workflows/ai_content_workflow.py` importing `wf`, define `@wf.workflow async def ai_content_workflow(*, topic: str)`, and call step functions such as `generate_draft` and `summarize_draft`. Export `wf` from `app/workflows/__init__.py` and import the workflow module so its definitions are registered. Mark step functions with `@wf.step`, use `await workflow.sleep(&quot;7 days&quot;)` for durable delays where needed, and use a `workflow.BaseHook` Pydantic model plus `.wait(token=...)` and `.resume(token)` for external approval events. Verify the workflow entrypoint uses the `module:object` format and points to the exported `Workflows` registry."
+  text="In this Python project, add `requires-python = &quot;&gt;=3.12&quot;` and `dependencies = [&quot;vercel&quot;]` under `[project]` in `pyproject.toml`. Add `[[tool.vercel.workflows]]` with `entrypoint = &quot;app.workflows:wf&quot;`. Create `app/workflow.py` with `from vercel import workflow` and `wf = workflow.Workflows()`. Create `app/workflows/ai_content_workflow.py` importing `wf`, define `@wf.workflow async def ai_content_workflow(*, topic: str)`, and call step functions such as `generate_draft` and `summarize_draft`. Export `wf` from `app/workflows/__init__.py` and import the workflow module so its definitions are registered. Mark step functions with `@wf.step`, use `await workflow.sleep(timedelta(days=7))` after importing `timedelta` from `datetime` for durable delays where needed, and use a `workflow.BaseHook` Pydantic model plus `.wait(token=...)` and `.resume(token)` for external approval events. Verify the workflow entrypoint uses the `module:object` format and points to the exported `Workflows` registry."
 />
 
 <Callout type="warn">
-The Python SDK is currently in **beta**. APIs and behavior may change. For the latest documentation and updates, see the [official Vercel Workflow Python documentation](https://vercel.com/docs/workflows/python).
+The Python SDK is currently in **beta**. APIs and behavior may change.
 </Callout>
 
 You can build durable workflows in Python using the [`vercel` Python SDK](https://pypi.org/project/vercel/). Your workflow code can pause, resume, and maintain state, just like the JavaScript and TypeScript Workflow SDK.
@@ -99,14 +99,17 @@ Each step compiles into an isolated route. While the step executes, the workflow
 
 Sleep pauses a workflow for a specified duration without consuming compute resources:
 
-```python filename="app/workflows/ai_refine.py" {7}
+```python filename="app/workflows/ai_refine.py" {10}
+from datetime import timedelta
+
+from app.workflow import wf
 from vercel import workflow
 
 @wf.workflow
 async def ai_refine_workflow(*, draft_id: str):
     draft = await fetch_draft(draft_id)
 
-    await workflow.sleep("7 days")  # Wait 7 days to gather more signals.
+    await workflow.sleep(timedelta(days=7))  # Wait 7 days to gather more signals.
 
     refined = await refine_draft(draft)
 
@@ -116,7 +119,31 @@ async def ai_refine_workflow(*, draft_id: str):
     }
 ```
 
-The sleep call pauses the workflow and consumes no resources. The workflow resumes automatically when the time expires.
+The parameter accepts four forms:
+
+| Form | Description | Example |
+| --- | --- | --- |
+| `str` | Human-readable duration string | `"2 days"`, `"1w"`, `"1h 30m"` |
+| `int` or `float` | Seconds from now | `5` (5 seconds) |
+| `datetime.timedelta` | Duration from now | `timedelta(days=7)` |
+| `datetime.datetime` | Absolute wake-up time (must be timezone-aware) | `datetime(2025, 1, 1, tzinfo=UTC)` |
+
+The string form accepts one or more `<value><unit>` pairs. Supported units:
+
+| Duration | Unit |
+| --- | --- |
+| Milliseconds | `ms` |
+| Seconds | `s`, `second`, `seconds` |
+| Minutes | `m`, `minute`, `minutes` |
+| Hours | `h`, `hour`, `hours` |
+| Days | `d`, `day`, `days` |
+| Weeks | `w`, `week`, `weeks` |
+
+<Callout>
+`sleep()` must be called from the workflow body, not from inside a step. Calling it from a step raises a `RuntimeError`.
+</Callout>
+
+The sleep consumes no resources. The workflow resumes automatically when the time expires.
 
 ## Hooks
 
@@ -124,13 +151,17 @@ A hook lets a workflow wait for external events such as user actions, webhooks, 
 
 Define a hook model with Pydantic and `workflow.BaseHook`:
 
-```python filename="app/workflows/approval.py" {3,14}
+```python filename="app/workflows/approval.py" {7,18}
+import typing
+
+import pydantic
+from app.workflow import wf
 from vercel import workflow
 
-class Approval(BaseModel, workflow.BaseHook):
+class Approval(pydantic.BaseModel, workflow.BaseHook):
     """Human approval for AI-generated drafts"""
 
-    decision: Literal["approved", "changes"]
+    decision: typing.Literal["approved", "changes"]
     notes: str | None = None
 
 @wf.workflow
@@ -149,7 +180,9 @@ async def ai_approval_workflow(*, topic: str):
 
 Resume the workflow when data arrives:
 
-```python filename="app/api/resume.py" {5}
+```python filename="app/api/resume.py" {4,7}
+from app.workflows.approval import Approval
+
 @app.post("/api/resume")
 async def resume(approval: Approval):
     """Resume the workflow when an approval is received"""
@@ -159,10 +192,6 @@ async def resume(approval: Approval):
 ```
 
 When a hook receives data, the workflow resumes automatically. You don&apos;t need polling, message queues, or manual state management.
-
-## Learn more
-
-For comprehensive documentation, examples, and the latest updates, visit the [official Vercel Workflow Python documentation](https://vercel.com/docs/workflows/python).
 
 ## Next steps
 
