@@ -79,6 +79,15 @@ export interface BenchStepTiming {
 // or redispatch via the queue after the prior invocation's ~duration limit)
 // resets this to false, so the first step body it runs is tagged
 // 'queue-hop'; every step after that in the same warm process is 'inline'.
+//
+// KNOWN BLIND SPOT: this detects *process* identity, not *invocation*
+// identity. When Vercel serves the follow-up invocation on the same warm
+// instance, this global is already true and a genuine queue-hop is tagged
+// 'inline' — leaving a multi-second sample in the inline population. Observed
+// on a real subset of CI runs (some report 0 hops while carrying three ~2-3s
+// inline samples); see BENCHMARK_VARIANCE.md finding 3 in packages/core/e2e.
+// Fixing it needs an invocation-scoped id exposed to step bodies;
+// COMPUTE_INSTANCE_ID has the same blind spot by construction.
 let hasExecutedStepInProcess = false;
 
 function stepKind(): 'inline' | 'queue-hop' {
