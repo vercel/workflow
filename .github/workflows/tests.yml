@@ -17,6 +17,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+env:
+  NEXT_CANARY_VERSION: 16.4.0-canary.10
+
 jobs:
   ci-scope:
     name: Detect CI Scope
@@ -1039,14 +1042,13 @@ jobs:
 
       - name: Setup canary
         if: ${{ matrix.app.canary }}
-        env:
-          APP_NAME: ${{ matrix.app.name }}
-        run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
-          pnpm install --no-frozen-lockfile
+        uses: ./.github/actions/setup-next-canary
+        with:
+          app-name: ${{ matrix.app.name }}
+          next-version: ${{ env.NEXT_CANARY_VERSION }}
 
       - name: Install Dependencies
+        if: ${{ !matrix.app.canary }}
         run: pnpm install --frozen-lockfile
 
       - name: Download shared package builds
@@ -1055,10 +1057,6 @@ jobs:
         with:
           name: e2e-package-build-artifacts
           path: packages
-
-      - name: Run Initial Build for Next.js canary
-        if: ${{ matrix.app.canary }}
-        run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Prepare workbench path
         id: prepare-workbench
@@ -1129,14 +1127,13 @@ jobs:
 
       - name: Setup canary
         if: ${{ matrix.app.canary }}
-        env:
-          APP_NAME: ${{ matrix.app.name }}
-        run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
-          pnpm install --no-frozen-lockfile
+        uses: ./.github/actions/setup-next-canary
+        with:
+          app-name: ${{ matrix.app.name }}
+          next-version: ${{ env.NEXT_CANARY_VERSION }}
 
       - name: Install Dependencies
+        if: ${{ !matrix.app.canary }}
         run: pnpm install --frozen-lockfile
 
       - name: Download shared package builds
@@ -1145,10 +1142,6 @@ jobs:
         with:
           name: e2e-package-build-artifacts
           path: packages
-
-      - name: Run Initial Build for Next.js canary
-        if: ${{ matrix.app.canary }}
-        run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Prepare workbench path
         id: prepare-workbench
@@ -1248,14 +1241,13 @@ jobs:
 
       - name: Setup canary
         if: ${{ matrix.app.canary }}
-        env:
-          APP_NAME: ${{ matrix.app.name }}
-        run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
-          pnpm install --no-frozen-lockfile
+        uses: ./.github/actions/setup-next-canary
+        with:
+          app-name: ${{ matrix.app.name }}
+          next-version: ${{ env.NEXT_CANARY_VERSION }}
 
       - name: Install Dependencies
+        if: ${{ !matrix.app.canary }}
         run: pnpm install --frozen-lockfile
 
       - name: Download shared package builds
@@ -1264,10 +1256,6 @@ jobs:
         with:
           name: e2e-package-build-artifacts
           path: packages
-
-      - name: Run Initial Build for Next.js canary
-        if: ${{ matrix.app.canary }}
-        run: pnpm turbo run build --filter='!./workbench/*'
 
       - name: Setup PostgreSQL Database
         run: ./packages/world-postgres/bin/setup.js

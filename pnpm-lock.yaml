@@ -775,8 +775,8 @@ importers:
         specifier: workspace:*
         version: link:../tsconfig
       next:
-        specifier: 16.2.11
-        version: 16.2.11(@opentelemetry/api@1.9.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+        specifier: 16.3.3
+        version: 16.3.3(@opentelemetry/api@1.9.1)(@types/node@22.19.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -2055,8 +2055,8 @@ importers:
         specifier: 5.1.6
         version: 5.1.6
       next:
-        specifier: 16.2.11
-        version: 16.2.11(@opentelemetry/api@1.9.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+        specifier: 16.3.3
+        version: 16.3.3(@opentelemetry/api@1.9.1)(@types/node@22.19.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       openai:
         specifier: 6.9.1
         version: 6.9.1(ws@8.20.0)(zod@4.3.6)
@@ -2179,8 +2179,8 @@ importers:
         specifier: 5.1.6
         version: 5.1.6
       next:
-        specifier: 16.2.11
-        version: 16.2.11(@opentelemetry/api@1.9.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
+        specifier: 16.3.3
+        version: 16.3.3(@opentelemetry/api@1.9.1)(@types/node@22.19.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       openai:
         specifier: 6.9.1
         version: 6.9.1(ws@8.20.0)(zod@4.3.6)
@@ -20839,7 +20839,7 @@ snapshots:
       '@types/shimmer': 1.2.0
       import-in-the-middle: 1.15.0
       require-in-the-middle: 7.5.2
-      semver: 7.8.2
+      semver: 7.8.5
       shimmer: 1.2.1
     transitivePeerDependencies:
       - supports-color
@@ -31965,31 +31965,6 @@ snapshots:
       - '@babel/core'
       - babel-plugin-macros
 
-  next@16.2.11(@opentelemetry/api@1.9.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7):
-    dependencies:
-      '@next/env': 16.2.11
-      '@swc/helpers': 0.5.15
-      baseline-browser-mapping: 2.10.34
-      caniuse-lite: 1.0.30001797
-      postcss: 8.5.22
-      react: 19.2.7
-      react-dom: 19.2.7(react@19.2.7)
-      styled-jsx: 5.1.6(react@19.2.7)
-    optionalDependencies:
-      '@next/swc-darwin-arm64': 16.2.11
-      '@next/swc-darwin-x64': 16.2.11
-      '@next/swc-linux-arm64-gnu': 16.2.11
-      '@next/swc-linux-arm64-musl': 16.2.11
-      '@next/swc-linux-x64-gnu': 16.2.11
-      '@next/swc-linux-x64-musl': 16.2.11
-      '@next/swc-win32-arm64-msvc': 16.2.11
-      '@next/swc-win32-x64-msvc': 16.2.11
-      '@opentelemetry/api': 1.9.1
-      sharp: 0.34.5
-    transitivePeerDependencies:
-      - '@babel/core'
-      - babel-plugin-macros
-
   next@16.3.3(@babel/core@7.28.4)(@opentelemetry/api@1.9.1)(@types/node@22.19.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0):
     dependencies:
       '@next/env': 16.3.3
@@ -32026,6 +32001,32 @@ snapshots:
       react: 19.2.4
       react-dom: 19.2.4(react@19.2.4)
       styled-jsx: 5.1.6(@babel/core@7.29.0)(react@19.2.4)
+    optionalDependencies:
+      '@next/swc-darwin-arm64': 16.3.3
+      '@next/swc-darwin-x64': 16.3.3
+      '@next/swc-linux-arm64-gnu': 16.3.3
+      '@next/swc-linux-arm64-musl': 16.3.3
+      '@next/swc-linux-x64-gnu': 16.3.3
+      '@next/swc-linux-x64-musl': 16.3.3
+      '@next/swc-win32-arm64-msvc': 16.3.3
+      '@next/swc-win32-x64-msvc': 16.3.3
+      '@opentelemetry/api': 1.9.1
+      sharp: 0.35.3(@types/node@22.19.0)
+    transitivePeerDependencies:
+      - '@babel/core'
+      - '@types/node'
+      - babel-plugin-macros
+
+  next@16.3.3(@opentelemetry/api@1.9.1)(@types/node@22.19.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7):
+    dependencies:
+      '@next/env': 16.3.3
+      '@swc/helpers': 0.5.23
+      baseline-browser-mapping: 2.10.34
+      caniuse-lite: 1.0.30001797
+      postcss: 8.5.23
+      react: 19.2.7
+      react-dom: 19.2.7(react@19.2.7)
+      styled-jsx: 5.1.6(react@19.2.7)
     optionalDependencies:
       '@next/swc-darwin-arm64': 16.3.3
       '@next/swc-darwin-x64': 16.3.3
@@ -32505,7 +32506,7 @@ snapshots:
 
   node-abi@3.89.0:
     dependencies:
-      semver: 7.8.2
+      semver: 7.8.5
     optional: true
 
   node-abort-controller@3.1.1: {}
@@ -34778,8 +34779,7 @@ snapshots:
 
   semver@7.8.2: {}
 
-  semver@7.8.5:
-    optional: true
+  semver@7.8.5: {}
 
   send@1.2.0:
     dependencies:
