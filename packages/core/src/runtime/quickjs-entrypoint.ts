@@ -61,6 +61,10 @@ import {
   stepDispatchIdempotencyKey,
 } from './helpers.js';
 import {
+  dispatchRunCompletedHooks,
+  dispatchRunFailedHooks,
+} from './lifecycle-hooks.js';
+import {
   BASELINE_BUNDLE_FILENAME,
   type PendingAttribute,
   type PendingHook,
@@ -1769,6 +1773,7 @@ export async function runWorkflowWithQuickJS(params: {
         },
       });
       wfdiag('exit_completed', { result: 'run_completed_written' });
+      dispatchRunCompletedHooks(runId);
     } catch (err) {
       if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
         runtimeLogger.warn(
@@ -2014,6 +2019,11 @@ export async function runWorkflowWithQuickJS(params: {
     //     `dehydrateRunError`. Used when valueBytes is absent (e.g.
     //     extractError pseudo-failures from VM bootstrap).
     let dehydratedError: Uint8Array;
+    // The most faithful host-side error value available, handed to the
+    // lifecycle onRunFailed hooks after the terminal write lands: the
+    // hydrated VM value when the modern path succeeds, otherwise the
+    // reconstructed host Error.
+    let lifecycleError: unknown = reconstructed;
     if (result.failed.valueBytes) {
       // Hydrate the VM-side bytes, remap the error stack with the
       // host-side source map (the VM can't do this: it lacks both the
@@ -2068,6 +2078,7 @@ export async function runWorkflowWithQuickJS(params: {
           runId,
           encryptionKey
         );
+        lifecycleError = hydrated;
       } catch (rehydrateErr) {
         // If hydration / re-dehydration fails for any reason, fall
         // back to passing through the original VM bytes (applying
@@ -2134,6 +2145,7 @@ export async function runWorkflowWithQuickJS(params: {
       });
       throw err;
     }
+    dispatchRunFailedHooks(runId, lifecycleError, errorCode);
     wfdiag('exit_failed', { result: 'run_failed_written' });
   }
 }

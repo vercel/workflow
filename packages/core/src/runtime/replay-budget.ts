@@ -5,6 +5,7 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import { getReplayTimeoutMaxRetries, getReplayTimeoutMs } from './constants.js';
 import { memoizeEncryptionKey, type SlotSnapshotParams } from './helpers.js';
+import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 import { getWorld } from './world.js';
 
 /**
@@ -180,4 +181,5 @@ export async function handleReplayBudgetExhausted(args: {
     },
     { requestId, ...slotSnapshot }
   );
+  dispatchRunFailedHooks(runId, timeoutErr, RUN_ERROR_CODES.REPLAY_TIMEOUT);
 }
