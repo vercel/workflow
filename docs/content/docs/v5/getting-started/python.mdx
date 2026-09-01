@@ -11,7 +11,7 @@ related:
 ---
 
 <CopyPrompt
-  text="In this Python project, add `requires-python = &quot;&gt;=3.12&quot;` and `dependencies = [&quot;vercel&quot;]` under `[project]` in `pyproject.toml`. Add `[[tool.vercel.workflows]]` with `entrypoint = &quot;app.workflows:wf&quot;`. Create `app/workflow.py` with `from vercel import workflow` and `wf = workflow.Workflows()`. Create `app/workflows/ai_content_workflow.py` importing `wf`, define `@wf.workflow async def ai_content_workflow(*, topic: str)`, and call step functions such as `generate_draft` and `summarize_draft`. Export `wf` from `app/workflows/__init__.py` and import the workflow module so its definitions are registered. Mark step functions with `@wf.step`, use `await workflow.sleep(&quot;7 days&quot;)` for durable delays where needed, and use a `workflow.BaseHook` Pydantic model plus `.wait(token=...)` and `.resume(token)` for external approval events. Verify the workflow entrypoint uses the `module:object` format and points to the exported `Workflows` registry."
+  text="In this Python project, add `requires-python = &quot;&gt;=3.12&quot;` and `dependencies = [&quot;vercel&quot;]` under `[project]` in `pyproject.toml`. Add `[[tool.vercel.workflows]]` with `entrypoint = &quot;app.workflows:wf&quot;`. Create `app/workflow.py` with `from vercel import workflow` and `wf = workflow.Workflows()`. Create `app/workflows/ai_content_workflow.py` importing `wf`, define `@wf.workflow async def ai_content_workflow(*, topic: str)`, and call step functions such as `generate_draft` and `summarize_draft`. Export `wf` from `app/workflows/__init__.py` and import the workflow module so its definitions are registered. Mark step functions with `@wf.step`, use `await workflow.sleep(timedelta(days=7))` after importing `timedelta` from `datetime` for durable delays where needed, and use a `workflow.BaseHook` Pydantic model plus `.wait(token=...)` and `.resume(token)` for external approval events. Verify the workflow entrypoint uses the `module:object` format and points to the exported `Workflows` registry."
 />
 
 <Callout type="warn">
@@ -99,7 +99,9 @@ Each step executes separately from the workflow orchestrator. While the step exe
 
 Sleep pauses a workflow for a specified duration without consuming compute resources:
 
-```python filename="app/workflows/ai_refine.py" {8}
+```python filename="app/workflows/ai_refine.py" {10}
+from datetime import timedelta
+
 from app.workflow import wf
 from vercel import workflow
 
@@ -107,7 +109,7 @@ from vercel import workflow
 async def ai_refine_workflow(*, draft_id: str):
     draft = await fetch_draft(draft_id)
 
-    await workflow.sleep("7 days")  # Wait 7 days to gather more signals.
+    await workflow.sleep(timedelta(days=7))  # Wait 7 days to gather more signals.
 
     refined = await refine_draft(draft)
 
@@ -117,12 +119,13 @@ async def ai_refine_workflow(*, draft_id: str):
     }
 ```
 
-The parameter accepts three forms:
+The parameter accepts four forms:
 
 | Form | Description | Example |
 | --- | --- | --- |
 | `str` | Human-readable duration string | `"2 days"`, `"1w"`, `"1h 30m"` |
-| `int` or `float` | Milliseconds from now | `5000` (5 seconds) |
+| `int` or `float` | Seconds from now | `5` (5 seconds) |
+| `datetime.timedelta` | Duration from now | `timedelta(days=7)` |
 | `datetime.datetime` | Absolute wake-up time (must be timezone-aware) | `datetime(2025, 1, 1, tzinfo=UTC)` |
 
 The string form accepts one or more `<value><unit>` pairs. Supported units:
