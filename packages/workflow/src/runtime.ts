@@ -10,5 +10,6 @@ export {
   type HealthCheckResult,
   healthCheck,
   setWorld,
+  type WorkflowEntrypoint,
   workflowEntrypoint,
 } from '@workflow/core/runtime';

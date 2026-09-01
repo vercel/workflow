@@ -2930,7 +2930,7 @@ describe.concurrent('e2e', () => {
   // queue-based `healthCheck(world, options)` function instead, which
   // bypasses protection by sending messages through the Queue infrastructure.
   test.skipIf(!isLocalDeployment())(
-    'health check endpoint (HTTP) - workflow endpoint responds to __health query parameter',
+    'health check endpoint (HTTP) - follows the World delivery capability',
     { timeout: 30_000 },
     async () => {
       // NOTE: This tests the HTTP-based health check using the `?__health` query parameter.
@@ -2940,7 +2940,7 @@ describe.concurrent('e2e', () => {
       // queue-based `healthCheck(world, options)` function instead, which
       // bypasses protection by sending messages through the Queue infrastructure.
 
-      // Test the flow endpoint health check (V2: combined handler for both workflow + step)
+      const world = await getWorld();
       const flowRes = await fetch(
         createWorkflowUrl(deploymentUrl, { type: 'health' }),
         {
@@ -2948,6 +2948,11 @@ describe.concurrent('e2e', () => {
           headers: await getTrustedSourcesHeaders(),
         }
       );
+      if (world.capabilities?.directQueueDelivery === true) {
+        expect(flowRes.status).toBe(404);
+        return;
+      }
+
       expect(flowRes.status).toBe(200);
       expect(flowRes.headers.get('Content-Type')).toBe('application/json');
       const { workflowCoreVersion, ...flowBody } = await flowRes.json();

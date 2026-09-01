@@ -467,6 +467,12 @@ export interface Storage {
  */
 export interface WorldCapabilities {
   /**
+   * Queue messages are delivered to an in-process handler. Core must not add
+   * its unauthenticated HTTP health response to the generated flow route.
+   */
+  directQueueDelivery?: boolean;
+
+  /**
    * Supports `experimental_minRetention` for Hooks. Missing or inactive means
    * the runtime rejects retained Hooks before registration.
    */
