@@ -1,22 +1,17 @@
-import { createServer, type Server } from 'node:http';
-import { JsonTransport } from '@vercel/queue';
-import { setWorkflowBasePath } from '@workflow/utils';
-import { getWorkflowPort } from '@workflow/utils/get-port';
 import { MessageId, parseQueueName, type QueuePayload } from '@workflow/world';
-import { createWorld } from '@workflow/world-local';
 import {
+  type JobHelpers,
   makeWorkerUtils,
   type Runner,
   run,
+  type Task,
   type WorkerUtils,
 } from 'graphile-worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MessageData } from './message.js';
-import { createQueue } from './queue.js';
+import { createQueue, encodeQueueMessage } from './queue.js';
 
-const transport = new JsonTransport();
-const createdQueues: Array<ReturnType<typeof createQueue>> = [];
-const createdServers: Server[] = [];
+const queues: Array<ReturnType<typeof createQueue>> = [];
 
 vi.mock('graphile-worker', () => ({
   Logger: class Logger {
@@ -26,146 +21,154 @@ vi.mock('graphile-worker', () => ({
   run: vi.fn(),
 }));
 
-vi.mock('@workflow/utils/get-port', () => ({
-  getWorkflowPort: vi.fn(),
-}));
-
-vi.mock('@workflow/world-local', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@workflow/world-local')>();
-
-  return {
-    ...actual,
-    createWorld: vi.fn(actual.createWorld),
-  };
-});
-
-describe('postgres queue http execution', () => {
-  const workerUtilsMock = {
+describe('postgres queue', () => {
+  const workerUtils = {
     addJob: vi.fn(),
-    migrate: vi.fn(),
     release: vi.fn(),
   } as unknown as WorkerUtils;
-  const runnerMock = {
+  const runner = {
     stop: vi.fn(),
     promise: Promise.resolve(),
-  };
-  const wrappedHandler = vi.fn(async () => Response.json({ ok: true }));
-  const localWorldClose = vi.fn();
-  const createQueueHandler = vi.fn(() => wrappedHandler);
+  } as unknown as Runner;
   const pool = {
     query: vi.fn(async () => ({ rows: [{ exists: false }] })),
-  } as any;
+  } as never;
 
   beforeEach(() => {
     vi.clearAllMocks();
-
-    vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
-    vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
-    vi.mocked(run).mockResolvedValue(runnerMock as unknown as Runner);
-    vi.mocked(createWorld).mockReturnValue({
-      createQueueHandler,
-      close: localWorldClose,
-    } as any);
+    vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtils);
+    vi.mocked(run).mockResolvedValue(runner);
   });
 
   afterEach(async () => {
-    await Promise.all(createdQueues.splice(0).map((queue) => queue.close()));
-    await Promise.all(
-      createdServers.splice(0).map(
-        (server) =>
-          new Promise<void>((resolve, reject) => {
-            server.close((err) => (err ? reject(err) : resolve()));
-            server.closeAllConnections();
-          })
-      )
-    );
-    vi.useRealTimers();
-    delete process.env.WORKFLOW_LOCAL_BASE_URL;
-    delete process.env.PORT;
-    setWorkflowBasePath(undefined);
+    await Promise.all(queues.splice(0).map((queue) => queue.close()));
   });
 
-  it('uses a late-detected local port when the queue starts before PORT is available', async () => {
-    const requests: Array<{
-      method: string | undefined;
-      url: string | undefined;
-      headers: Record<string, string | string[] | undefined>;
-      body: string;
-    }> = [];
-    const port = await getUnusedLoopbackPort();
-    vi.mocked(getWorkflowPort).mockResolvedValue(port);
+  it('requires handler registration before starting', async () => {
+    const queue = buildQueue(pool);
 
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    await queue.start();
-
+    await expect(queue.start()).rejects.toThrow(
+      'Import the generated flow route'
+    );
     expect(run).not.toHaveBeenCalled();
+  });
 
-    await startWorkflowHttpServer(requests, port);
-    await vi.waitFor(() => {
-      expect(run).toHaveBeenCalledTimes(1);
+  it('registers one direct handler and leaves the HTTP route inert', async () => {
+    const queue = buildQueue(pool);
+    const handler = vi.fn(async () => undefined);
+
+    const httpHandler = queue.createQueueHandler('__wkf_workflow_', handler);
+    await queue.start();
+
+    await expect(
+      httpHandler(new Request('https://example.test/?__health'))
+    ).resolves.toMatchObject({ status: 404 });
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('passes messages and logical attempts directly to the handler', async () => {
+    const queue = buildQueue(pool);
+    const handler = vi.fn(async () => undefined);
+    queue.createQueueHandler('__wkf_workflow_', handler);
+    await queue.start();
+    const message = stepMessage();
+
+    await task()(
+      messageData('__wkf_workflow_test-step', message, { attempt: 4 }),
+      jobHelpers(3)
+    );
+
+    expect(handler).toHaveBeenCalledWith(message, {
+      attempt: 6,
+      messageId: 'msg_01ABC',
+      queueName: '__wkf_workflow_test-step',
     });
+  });
 
-    const task = getTaskHandler('workflow_flows');
-    const message = {
-      runId: 'run_01ABC',
-      stepId: 'step_01ABC',
-      stepName: 'test-step',
-    } satisfies QueuePayload;
-    const payload = buildMessageData('__wkf_workflow_test-step', message, {
-      headers: { traceparent: 'trace-parent' },
-      idempotencyKey: 'step_01ABC',
-    });
+  it('writes a timeout successor before completing the delivery', async () => {
+    const queue = buildQueue(pool);
+    queue.createQueueHandler('__wkf_workflow_', async () => ({
+      timeoutSeconds: 5,
+    }));
+    await queue.start();
 
-    await expect(task(payload, {} as any)).resolves.toBeUndefined();
-
-    expect(getWorkflowPort).toHaveBeenCalled();
-    expect(requests).toEqual([
-      expect.objectContaining({
-        method: 'POST',
-        url: '/.well-known/workflow/v1/flow',
+    await task()(
+      messageData('__wkf_workflow_test-step', stepMessage(), {
+        attempt: 2,
+        idempotencyKey: 'step_01ABC',
       }),
-    ]);
+      jobHelpers(2)
+    );
+
+    expect(workerUtils.addJob).toHaveBeenCalledWith(
+      'workflow_flows',
+      expect.objectContaining({ attempt: 4 }),
+      expect.objectContaining({ jobKey: 'step_01ABC' })
+    );
   });
 
-  it('keeps the base-url error when env vars and local port detection cannot resolve a target', async () => {
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+  it('propagates handler failures for Graphile to retry', async () => {
+    const queue = buildQueue(pool);
+    const failure = new Error('handler failed');
+    queue.createQueueHandler('__wkf_workflow_', async () => {
+      throw failure;
+    });
     await queue.start();
 
-    const task = getTaskHandler('workflow_flows');
-    const message = {
-      runId: 'run_01ABC',
-      stepId: 'step_01ABC',
-      stepName: 'test-step',
-    } satisfies QueuePayload;
-    const payload = buildMessageData('__wkf_workflow_test-step', message, {
-      idempotencyKey: 'step_01ABC',
+    await expect(
+      task()(
+        messageData('__wkf_workflow_test-step', stepMessage()),
+        jobHelpers()
+      )
+    ).rejects.toBe(failure);
+    expect(workerUtils.addJob).not.toHaveBeenCalled();
+  });
+
+  it('does not start a worker in enqueue-only processes', async () => {
+    const queue = buildQueue(pool);
+
+    await queue.queue('__wkf_workflow_test-step', stepMessage());
+
+    expect(workerUtils.addJob).toHaveBeenCalledOnce();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('preserves same-run replay serialization', async () => {
+    const queue = buildQueue(pool);
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const handler = vi
+      .fn<() => Promise<void>>()
+      .mockImplementationOnce(() => blocked)
+      .mockResolvedValue(undefined);
+    queue.createQueueHandler('__wkf_workflow_', handler);
+    await queue.start();
+    const payload = messageData('__wkf_workflow_test-workflow', {
+      runId: 'wrun_01ABC',
     });
 
-    await expect(task(payload, {} as any)).rejects.toThrow(
-      'Unable to resolve base URL for workflow queue.'
-    );
+    const first = task()(payload, jobHelpers());
+    const second = task()(payload, jobHelpers());
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    release();
+    await Promise.all([first, second]);
 
-    expect(getWorkflowPort).toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps Graphile Worker automatic shutdown by default', async () => {
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+  it('rejects a handler for another namespace', () => {
+    const queue = buildQueue(pool, { namespace: 'custom' });
 
-    await queue.start();
-
-    expect(run).toHaveBeenCalledWith(
-      expect.not.objectContaining({ noHandleSignals: true })
-    );
+    expect(() =>
+      queue.createQueueHandler('__wkf_workflow_', async () => undefined)
+    ).toThrow();
   });
 
-  it('allows the application to manage shutdown', async () => {
-    const queue = buildQueue(
-      {
-        connectionString: 'postgres://test',
-        applicationManagedShutdown: true,
-      },
-      pool
-    );
+  it('passes application-managed shutdown to Graphile', async () => {
+    const queue = buildQueue(pool, { applicationManagedShutdown: true });
+    queue.createQueueHandler('__wkf_workflow_', async () => undefined);
 
     await queue.start();
 
@@ -174,519 +177,82 @@ describe('postgres queue http execution', () => {
     );
   });
 
-  it('aborts while waiting for an HTTP response without scheduling a replacement', async () => {
-    const server = await startHangingWorkflowHttpServer('headers');
-    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
-
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+  it('stops waiting for a handler when Graphile aborts delivery', async () => {
+    const queue = buildQueue(pool);
+    const handler = vi.fn(() => new Promise<void>(() => {}));
+    queue.createQueueHandler('__wkf_workflow_', handler);
     await queue.start();
-
     const controller = new AbortController();
-    const execution = getTaskHandler('workflow_flows')(
-      buildMessageData('__wkf_workflow_test-step', {
-        runId: 'run_01ABC',
-        stepId: 'step_01ABC',
-        stepName: 'test-step',
-      }),
-      {
-        abortSignal: controller.signal,
-        job: { attempts: 1 },
-      }
+
+    const delivery = task()(
+      messageData('__wkf_workflow_test-step', stepMessage()),
+      jobHelpers(1, controller.signal)
     );
-    const outcome = execution.then(
-      () => ({ status: 'fulfilled' as const }),
-      (error: unknown) => ({ status: 'rejected' as const, error })
-    );
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce());
+    controller.abort(new Error('worker shutdown'));
 
-    await server.requestReceived;
-    controller.abort();
-
-    await expect(settleWithin(outcome)).resolves.toMatchObject({
-      status: 'rejected',
-      error: expect.objectContaining({ name: 'AbortError' }),
-    });
-    expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
+    await expect(delivery).rejects.toThrow('worker shutdown');
   });
 
-  it('aborts while reading an HTTP response body without scheduling a replacement', async () => {
-    const server = await startHangingWorkflowHttpServer('body');
-    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
-    const nativeFetch = globalThis.fetch;
-    let resolveResponseReceived!: () => void;
-    const responseReceived = new Promise<void>((resolve) => {
-      resolveResponseReceived = resolve;
-    });
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (...args: Parameters<typeof fetch>) => {
-        const response = await nativeFetch(...args);
-        resolveResponseReceived();
-        return response;
-      })
-    );
-
-    try {
-      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-      await queue.start();
-
-      const controller = new AbortController();
-      const execution = getTaskHandler('workflow_flows')(
-        buildMessageData('__wkf_workflow_test-step', {
-          runId: 'run_01ABC',
-          stepId: 'step_01ABC',
-          stepName: 'test-step',
-        }),
-        {
-          abortSignal: controller.signal,
-          job: { attempts: 1 },
-        }
-      );
-      const outcome = execution.then(
-        () => ({ status: 'fulfilled' as const }),
-        (error: unknown) => ({ status: 'rejected' as const, error })
-      );
-
-      await responseReceived;
-      // Let executeMessageOverHttp enter response.text() before aborting.
-      await Promise.resolve();
-      controller.abort();
-
-      await expect(settleWithin(outcome)).resolves.toMatchObject({
-        status: 'rejected',
-        error: expect.objectContaining({ name: 'AbortError' }),
-      });
-      expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('serializes workflow queue execution for the same runId', async () => {
-    let resolveFirstRequestStarted!: () => void;
-    const firstRequestStarted = new Promise<void>((resolve) => {
-      resolveFirstRequestStarted = resolve;
-    });
-    let resolveReleaseFirstRequest!: () => void;
-    const releaseFirstRequest = new Promise<void>((resolve) => {
-      resolveReleaseFirstRequest = resolve;
-    });
-    let requestCount = 0;
-    let activeRequests = 0;
-    let maxActiveRequests = 0;
-    const fetchMock = vi.fn(async () => {
-      requestCount += 1;
-      activeRequests += 1;
-      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
-
-      if (requestCount === 1) {
-        resolveFirstRequestStarted();
-        await releaseFirstRequest;
-      }
-
-      activeRequests -= 1;
-      return Response.json({ ok: true });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    process.env.WORKFLOW_LOCAL_BASE_URL = 'https://workflow.example.test';
-
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    try {
-      await queue.start();
-
-      const task = getTaskHandler('workflow_flows');
-      const payload = {
-        runId: 'wrun_01ABC',
-      };
-      const firstExecution = task(
-        buildMessageData('__wkf_workflow_test-workflow', payload, {
-          messageId: MessageId.parse('msg_01ABC'),
-        }),
-        {} as any
-      );
-      const secondExecution = task(
-        buildMessageData('__wkf_workflow_test-workflow', payload, {
-          messageId: MessageId.parse('msg_01ABD'),
-        }),
-        {} as any
-      );
-
-      await firstRequestStarted;
-      await Promise.resolve();
-      expect(requestCount).toBe(1);
-      expect(maxActiveRequests).toBe(1);
-
-      resolveReleaseFirstRequest();
-      await Promise.all([firstExecution, secondExecution]);
-
-      expect(requestCount).toBe(2);
-      expect(maxActiveRequests).toBe(1);
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('serializes namespaced workflow queue execution for the same runId', async () => {
-    let resolveFirstRequestStarted!: () => void;
-    const firstRequestStarted = new Promise<void>((resolve) => {
-      resolveFirstRequestStarted = resolve;
-    });
-    let resolveReleaseFirstRequest!: () => void;
-    const releaseFirstRequest = new Promise<void>((resolve) => {
-      resolveReleaseFirstRequest = resolve;
-    });
-    let requestCount = 0;
-    let activeRequests = 0;
-    let maxActiveRequests = 0;
-    const fetchMock = vi.fn(async () => {
-      requestCount += 1;
-      activeRequests += 1;
-      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
-
-      if (requestCount === 1) {
-        resolveFirstRequestStarted();
-        await releaseFirstRequest;
-      }
-
-      activeRequests -= 1;
-      return Response.json({ ok: true });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    process.env.WORKFLOW_LOCAL_BASE_URL = 'https://workflow.example.test';
-
-    const queue = buildQueue(
-      { connectionString: 'postgres://test', namespace: 'custom' },
-      pool
-    );
-    try {
-      await queue.start();
-
-      const task = getTaskHandler('workflow_flows');
-      const payload = {
-        runId: 'wrun_01ABC',
-      };
-      const firstExecution = task(
-        buildMessageData('__custom_wkf_workflow_test-workflow', payload, {
-          messageId: MessageId.parse('msg_01ABC'),
-        }),
-        {} as any
-      );
-      const secondExecution = task(
-        buildMessageData('__custom_wkf_workflow_test-workflow', payload, {
-          messageId: MessageId.parse('msg_01ABD'),
-        }),
-        {} as any
-      );
-
-      await firstRequestStarted;
-      await Promise.resolve();
-      expect(requestCount).toBe(1);
-      expect(maxActiveRequests).toBe(1);
-
-      resolveReleaseFirstRequest();
-      await Promise.all([firstExecution, secondExecution]);
-
-      expect(requestCount).toBe(2);
-      expect(maxActiveRequests).toBe(1);
-      expect(fetchMock).toHaveBeenCalledTimes(2);
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('does not require a runId for workflow health-check payloads', async () => {
-    const fetchMock = vi.fn(async () => Response.json({ ok: true }));
-    vi.stubGlobal('fetch', fetchMock);
-    process.env.WORKFLOW_LOCAL_BASE_URL = 'https://workflow.example.test';
-
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    try {
-      await queue.start();
-
-      const task = getTaskHandler('workflow_flows');
-      const payload = buildMessageData('__wkf_workflow_health_check', {
-        __healthCheck: true,
-        correlationId: 'hc_01ABC',
-      });
-
-      await expect(task(payload, {} as any)).resolves.toBeUndefined();
-
-      expect(fetchMock).toHaveBeenCalledWith(
-        'https://workflow.example.test/.well-known/workflow/v1/flow',
-        expect.objectContaining({
-          method: 'POST',
-          headers: expect.objectContaining({
-            'x-vqs-queue-name': '__wkf_workflow_health_check',
-          }),
-        })
-      );
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('uses basePath for local postgres queue HTTP delivery', async () => {
-    const fetchMock = vi.fn(async () => Response.json({ ok: true }));
-    vi.stubGlobal('fetch', fetchMock);
-    const port = await getUnusedLoopbackPort();
-    await startWorkflowHttpServer([], port);
-    process.env.PORT = String(port);
-    setWorkflowBasePath('/v2');
-
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    try {
-      await queue.start();
-
-      const task = getTaskHandler('workflow_flows');
-      const payload = buildMessageData('__wkf_workflow_test-step', {
-        runId: 'run_01ABC',
-        stepId: 'step_01ABC',
-        stepName: 'test-step',
-      });
-
-      await expect(task(payload, {} as any)).resolves.toBeUndefined();
-
-      expect(fetchMock).toHaveBeenCalledWith(
-        `http://localhost:${port}/v2/.well-known/workflow/v1/flow`,
-        expect.objectContaining({ method: 'POST' })
-      );
-      expect(getWorkflowPort).not.toHaveBeenCalled();
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it('queues producer delays and headers in graphile job metadata', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
-
-    try {
-      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-      await queue.start();
-
-      await queue.queue(
-        '__wkf_workflow_test-step',
-        {
-          runId: 'run_01ABC',
-          stepId: 'step_01ABC',
-          stepName: 'test-step',
-        },
-        {
-          delaySeconds: 5,
-          headers: { traceparent: 'trace-parent' },
-          idempotencyKey: 'step_01ABC',
-        }
-      );
-
-      expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
-        'workflow_flows',
-        expect.objectContaining({
-          attempt: 1,
-          headers: { traceparent: 'trace-parent' },
-          id: 'test-step',
-          idempotencyKey: 'step_01ABC',
-        }),
-        expect.objectContaining({
-          jobKey: 'step_01ABC',
-          maxAttempts: 49,
-          runAt: new Date('2024-01-01T00:00:05.000Z'),
-        })
-      );
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('queues namespaced producer messages in graphile job metadata', async () => {
-    const queue = buildQueue(
-      { connectionString: 'postgres://test', namespace: 'custom' },
-      pool
-    );
+  it('closes once when called concurrently', async () => {
+    const queue = buildQueue(pool);
+    queue.createQueueHandler('__wkf_workflow_', async () => undefined);
     await queue.start();
 
-    await queue.queue(
-      '__custom_wkf_workflow_test-step',
-      {
-        runId: 'run_01ABC',
-        stepId: 'step_01ABC',
-        stepName: 'test-step',
-      },
-      {
-        idempotencyKey: 'step_01ABC',
-      }
-    );
+    await Promise.all([queue.close(), queue.close()]);
 
-    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
-      'workflow_flows',
-      expect.objectContaining({
-        attempt: 1,
-        id: 'test-step',
-        idempotencyKey: 'step_01ABC',
-      }),
-      expect.objectContaining({
-        jobKey: 'step_01ABC',
-        maxAttempts: 49,
-      })
-    );
+    expect(runner.stop).toHaveBeenCalledOnce();
+    expect(workerUtils.release).toHaveBeenCalledOnce();
   });
 });
 
 function buildQueue(
-  config: Parameters<typeof createQueue>[0],
-  pgPool: Parameters<typeof createQueue>[1]
+  pool: Parameters<typeof createQueue>[1],
+  config: Partial<Parameters<typeof createQueue>[0]> = {}
 ) {
-  const queue = createQueue(config, pgPool);
-  createdQueues.push(queue);
+  const queue = createQueue(
+    { connectionString: 'postgres://test', ...config },
+    pool
+  );
+  queues.push(queue);
   return queue;
 }
 
-function buildMessageData(
+function stepMessage(): QueuePayload {
+  return {
+    runId: 'run_01ABC',
+    stepId: 'step_01ABC',
+    stepName: 'test-step',
+  };
+}
+
+function messageData(
   queueName: string,
   payload: QueuePayload,
-  opts?: {
+  options: {
     attempt?: number;
-    headers?: Record<string, string>;
     idempotencyKey?: string;
-    messageId?: MessageId;
-  }
+  } = {}
 ) {
   const { id } = parseQueueName(queueName);
-
   return MessageData.encode({
     id,
-    data: transport.serialize(payload),
-    attempt: opts?.attempt ?? 1,
-    headers: opts?.headers,
-    idempotencyKey: opts?.idempotencyKey,
-    messageId: opts?.messageId ?? MessageId.parse('msg_01ABC'),
+    data: encodeQueueMessage(payload),
+    attempt: options.attempt ?? 1,
+    idempotencyKey: options.idempotencyKey,
+    messageId: MessageId.parse('msg_01ABC'),
   });
 }
 
-function getTaskHandler(name: 'workflow_flows') {
-  const taskList = vi.mocked(run).mock.calls[0]?.[0]?.taskList;
-  const task = taskList?.[name];
-  expect(task).toBeTypeOf('function');
-  return task as (payload: unknown, helpers: unknown) => Promise<void>;
+function jobHelpers(
+  attempts = 1,
+  abortSignal = new AbortController().signal
+): JobHelpers {
+  return { abortSignal, job: { attempts } } as JobHelpers;
 }
 
-async function startWorkflowHttpServer(
-  requests: Array<{
-    method: string | undefined;
-    url: string | undefined;
-    headers: Record<string, string | string[] | undefined>;
-    body: string;
-  }>,
-  port = 0
-) {
-  const server = createServer(async (req, res) => {
-    const body = await new Promise<string>((resolve, reject) => {
-      let chunks = '';
-      req.setEncoding('utf8');
-      req.on('data', (chunk) => {
-        chunks += chunk;
-      });
-      req.on('end', () => resolve(chunks));
-      req.on('error', reject);
-    });
-
-    const request = {
-      method: req.method,
-      url: req.url,
-      headers: req.headers,
-      body,
-    };
-    requests.push(request);
-
-    if (req.method === 'POST' && req.url === '/.well-known/workflow/v1/flow') {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
-      return;
-    }
-
-    res.writeHead(404, { 'content-type': 'text/plain' });
-    res.end('not found');
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    server.listen(port, '127.0.0.1', () => resolve());
-    server.on('error', reject);
-  });
-
-  createdServers.push(server);
-  const address = server.address();
-  if (!address || typeof address === 'string') {
-    throw new Error('Failed to determine test server address');
-  }
-
-  return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
-  };
-}
-
-async function startHangingWorkflowHttpServer(stage: 'headers' | 'body') {
-  let resolveRequestReceived!: () => void;
-  const requestReceived = new Promise<void>((resolve) => {
-    resolveRequestReceived = resolve;
-  });
-  const server = createServer((req, res) => {
-    req.resume();
-    resolveRequestReceived();
-
-    if (stage === 'body') {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.write('{"ok":');
-    }
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    server.listen(0, '127.0.0.1', () => resolve());
-    server.on('error', reject);
-  });
-
-  createdServers.push(server);
-  const address = server.address();
-  if (!address || typeof address === 'string') {
-    throw new Error('Failed to determine test server address');
-  }
-
-  return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
-    requestReceived,
-  };
-}
-
-async function settleWithin<T>(
-  promise: Promise<T>,
-  timeoutMs = 250
-): Promise<T | { status: 'pending' }> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<{ status: 'pending' }>((resolve) => {
-        timeout = setTimeout(() => resolve({ status: 'pending' }), timeoutMs);
-        timeout.unref();
-      }),
-    ]);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function getUnusedLoopbackPort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.listen(0, '127.0.0.1', () => resolve());
-    server.on('error', reject);
-  });
-  const address = server.address();
-  await new Promise<void>((resolve, reject) => {
-    server.close((err) => (err ? reject(err) : resolve()));
-  });
-
-  if (!address || typeof address === 'string') {
-    throw new Error('Failed to reserve a loopback port');
-  }
-
-  return address.port;
+function task(): Task {
+  const handler = vi.mocked(run).mock.calls[0]?.[0]?.taskList?.workflow_flows;
+  expect(handler).toBeTypeOf('function');
+  return handler as Task;
 }
