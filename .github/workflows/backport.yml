@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: 'Commit SHA on `main` to back-port. Defaults to the current HEAD of `main`.'
+        description: 'Commit SHA on `main` to back-port. This field, NOT the "Use workflow from" branch selector above — that one only picks which version of this workflow file runs, and rejects a raw SHA. Defaults to the current HEAD of `main`.'
         required: false
         type: string
       model:
@@ -448,7 +448,7 @@ jobs:
           opencode run --model "vercel/${AI_MODEL}" < .backport-decision-prompt.txt
 
           if [ ! -f "$DECISION_FILE" ]; then
-            echo "::error::AI did not produce a decision file at ${DECISION_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, gateway down, or rejected tool call) — check the step output above. To force a backport regardless of the AI decision, re-run this workflow via \`workflow_dispatch\` with the relevant commit SHA."
+            echo "::error::AI did not produce a decision file at ${DECISION_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, key out of budget, gateway down, or rejected tool call) — check the step output above. To force a backport regardless of the AI decision, re-run this workflow via \`workflow_dispatch\` with the relevant commit SHA in the 'Commit SHA on \`main\` to back-port' input. That skips this decision step only: a cherry-pick that conflicts still needs the AI to resolve it, so if the gateway itself is the problem, back-port by hand."
             exit 1
           fi
 
@@ -511,7 +511,14 @@ jobs:
                 // inputs via URL query params (community/community#51159), so
                 // we paste the full SHA here for easy copy-paste into the
                 // "Commit SHA" input on the workflow run page.
-                `To override, re-run the [Backport to stable](${workflowUrl}) workflow manually via \`workflow_dispatch\` and paste this commit SHA into the \`ref\` input:`,
+                //
+                // Name that input by the label the dialog actually shows. The
+                // input's YAML name (`ref`) appears nowhere in the UI, and the
+                // one visibly ref-named control there is "Use workflow from",
+                // which selects the workflow file's branch and rejects a raw
+                // SHA — so pointing at "the \`ref\` input" sends people to the
+                // wrong field.
+                `To override, re-run the [Backport to stable](${workflowUrl}) workflow via **Run workflow** and paste this commit SHA into the **"Commit SHA on \`main\` to back-port"** input (not the "Use workflow from" branch selector, which stays on \`main\`):`,
                 '',
                 '```',
                 fullSha,
@@ -1102,15 +1109,39 @@ jobs:
             const lines = [
               `**Backport to \`stable\` failed** for ${shortSha} due to a workflow error ([backport job run](${runUrl})).`,
               '',
-              'This is usually an infrastructure problem (e.g. the configured AI model could not be found, an AI Gateway error, or an opencode crash) rather than a merge conflict. Check the job logs linked above for details.',
+              'This is usually an infrastructure problem rather than a merge conflict: the configured AI model could not be found, the AI Gateway key is out of budget or rejected the request, the gateway is down, or opencode crashed. Check the job logs linked above for which.',
             ];
             if (sha) {
               lines.push(
                 '',
-                `Once the underlying issue is fixed, re-run the [Backport to stable](${workflowUrl}) workflow manually via \`workflow_dispatch\` and paste this commit SHA into the \`ref\` input:`,
+                // Re-dispatching is the fix for a TRANSIENT failure only, and
+                // only up to the cherry-pick. A manual run forces the AI
+                // DECISION to `yes`; it does not bypass the AI anywhere else,
+                // and `Resolve conflicts with opencode` runs unconditionally
+                // whenever the cherry-pick conflicts. So when the AI side
+                // itself is what failed (budget, auth, gateway) and this
+                // commit does not apply cleanly, re-dispatching lands on the
+                // same error — which is why the manual recipe is repeated
+                // here rather than only in the conflict comment, which an
+                // infra failure never reaches.
+                `If the failure was transient, re-run the [Backport to stable](${workflowUrl}) workflow via **Run workflow** and paste this commit SHA into the **"Commit SHA on \`main\` to back-port"** input (not the "Use workflow from" branch selector, which stays on \`main\`):`,
                 '',
                 '```',
                 sha,
+                '```',
+                '',
+                'A manual run forces the backport past the AI *decision*, but it does not skip AI *conflict resolution*: if this commit does not cherry-pick cleanly onto `stable`, the run needs the AI Gateway either way. When the gateway is what failed, back-port by hand instead (the workflow never pushes directly to `stable`, so a PR is still required). This repository requires verified signatures on every branch, so the commits must be signed (`git config commit.gpgsign true` with a configured GPG/SSH signing key, or `git cherry-pick -S`).',
+                '```bash',
+                'git fetch origin stable',
+                `git checkout -b backport/pr-${prNumber}-to-stable origin/stable`,
+                `git cherry-pick -x -S ${sha}    # -x records the source commit, -S signs`,
+                '# Fix conflicts, then:',
+                'git add -A',
+                'git cherry-pick --continue',
+                `git push -u origin backport/pr-${prNumber}-to-stable`,
+                `gh pr create --base stable --head backport/pr-${prNumber}-to-stable \\`,
+                `  --title "Backport #${prNumber}: <original PR title>" \\`,
+                `  --body "Manual backport of #${prNumber} (cherry-pick ${shortSha}) to \\\`stable\\\`."`,
                 '```'
               );
             }
