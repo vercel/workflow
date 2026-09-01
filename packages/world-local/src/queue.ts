@@ -1,5 +1,4 @@
 import { setTimeout } from 'node:timers/promises';
-import type { Transport } from '@vercel/queue';
 import { createWorkflowUrl, debugLog } from '@workflow/utils';
 import {
   isNodeHttpEnabled,
@@ -7,46 +6,20 @@ import {
   parseQueueName,
   type Queue,
   type QueuePrefix,
-  ValidQueueName,
 } from '@workflow/world';
 import {
   createNodeHttpAgents,
   destroyNodeHttpAgents,
   nodeHttpFetch,
 } from '@workflow/world/node-http.js';
+import { createFetchQueueHandler } from '@workflow/world/queue-http.js';
+import { serializeQueueMessage } from '@workflow/world/queue-json.js';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
-import { z } from 'zod/v4';
 import type { Config } from './config.js';
 import { resolveBaseUrl, resolveDirectBaseUrl } from './config.js';
-import { jsonReplacer, jsonReviver } from './fs.js';
 import { getPackageInfo } from './init.js';
-
-/**
- * JSON transport that preserves Uint8Array values using the same
- * replacer/reviver that world-local uses for filesystem storage.
- * Uint8Array → { __type: 'Uint8Array', data: '<base64>' } in JSON.
- */
-class TypedJsonTransport implements Transport<unknown> {
-  readonly contentType = 'application/json';
-
-  serialize(value: unknown): Buffer {
-    return Buffer.from(JSON.stringify(value, jsonReplacer));
-  }
-
-  async deserialize(stream: ReadableStream<Uint8Array>): Promise<unknown> {
-    const chunks: Uint8Array[] = [];
-    const reader = stream.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) chunks.push(value);
-    }
-    const text = Buffer.concat(chunks).toString();
-    return JSON.parse(text, jsonReviver);
-  }
-}
 
 // For local queue, there is no technical limit on the message visibility lifespan,
 // but the environment variable can be used for testing purposes to set a max visibility limit.
@@ -150,7 +123,6 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       })
     : undefined;
   const httpAgent = nodeHttpAgents ? undefined : new Agent(agentOptions);
-  const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
 
@@ -180,7 +152,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       }
     }
 
-    const body = transport.serialize(message);
+    const body = serializeQueueMessage(message);
     const { prefix } = parseQueueName(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
 
@@ -397,56 +369,10 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     return { messageId };
   };
 
-  const HeaderParser = z.object({
-    'x-vqs-queue-name': ValidQueueName,
-    'x-vqs-message-id': MessageId,
-    'x-vqs-message-attempt': z.coerce.number(),
-  });
-
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
-    return async (req) => {
-      const headers = HeaderParser.safeParse(Object.fromEntries(req.headers));
-
-      if (!headers.success || !req.body) {
-        return Response.json(
-          {
-            error: !req.body
-              ? 'Missing request body'
-              : 'Missing required headers',
-          },
-          { status: 400 }
-        );
-      }
-
-      const queueName = headers.data['x-vqs-queue-name'];
-      const messageId = headers.data['x-vqs-message-id'];
-      const attempt = headers.data['x-vqs-message-attempt'];
-
-      if (!queueName.startsWith(prefix)) {
-        return Response.json({ error: 'Unhandled queue' }, { status: 400 });
-      }
-
-      const body = await new TypedJsonTransport().deserialize(req.body);
-      try {
-        const result = await handler(body, { attempt, queueName, messageId });
-
-        let timeoutSeconds: number | null = null;
-        if (typeof result?.timeoutSeconds === 'number') {
-          timeoutSeconds = Math.min(
-            result.timeoutSeconds,
-            LOCAL_QUEUE_MAX_VISIBILITY
-          );
-        }
-
-        if (timeoutSeconds != null) {
-          return Response.json({ timeoutSeconds });
-        }
-
-        return Response.json({ ok: true });
-      } catch (error) {
-        return Response.json(String(error), { status: 500 });
-      }
-    };
+    return createFetchQueueHandler(prefix, handler, {
+      maxTimeoutSeconds: LOCAL_QUEUE_MAX_VISIBILITY,
+    });
   };
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {

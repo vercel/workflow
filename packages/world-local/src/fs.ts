@@ -3,6 +3,10 @@ import path from 'node:path';
 import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import type { PaginatedResponse } from '@workflow/world';
+import {
+  queueJsonReplacer,
+  queueJsonReviver,
+} from '@workflow/world/queue-json.js';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
 import {
@@ -341,34 +345,8 @@ interface WriteOptions {
   overwrite?: boolean;
 }
 
-/**
- * Custom JSON replacer that encodes Uint8Array as base64 strings.
- * Format: { __type: 'Uint8Array', data: '<base64>' }
- */
-export function jsonReplacer(_key: string, value: unknown): unknown {
-  if (value instanceof Uint8Array) {
-    return {
-      __type: 'Uint8Array',
-      data: Buffer.from(value).toString('base64'),
-    };
-  }
-  return value;
-}
-
-/**
- * Custom JSON reviver that decodes base64 strings back to Uint8Array.
- */
-export function jsonReviver(_key: string, value: unknown): unknown {
-  if (
-    value !== null &&
-    typeof value === 'object' &&
-    (value as any).__type === 'Uint8Array' &&
-    typeof (value as any).data === 'string'
-  ) {
-    return new Uint8Array(Buffer.from((value as any).data, 'base64'));
-  }
-  return value;
-}
+export const jsonReplacer = queueJsonReplacer;
+export const jsonReviver = queueJsonReviver;
 
 export async function writeJSON(
   filePath: string,

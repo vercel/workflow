@@ -451,8 +451,10 @@ export interface Queue {
   ): Promise<{ messageId: MessageId | null }>;
 
   /**
-   * Creates an HTTP queue handler for processing messages from a specific queue.
-   * A rejected handler must retry the same message with an incremented attempt.
+   * Registers a queue handler and returns the framework-facing HTTP handler.
+   * Worlds may invoke the registered handler directly and return 404 from the
+   * HTTP handler when they have no authenticated remote queue producer.
+   * A rejected delivery must retry the same message with an incremented attempt.
    *
    * `meta.messageId` SHOULD be stable across redeliveries of the same message
    * (one ID per enqueued message, reused on every delivery attempt). The
@@ -466,15 +468,21 @@ export interface Queue {
    */
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
-    handler: (
-      message: unknown,
-      meta: {
-        attempt: number;
-        queueName: ValidQueueName;
-        messageId: MessageId;
-        requestId?: string;
-      }
-      // biome-ignore lint/suspicious/noConfusingVoidType: it is what it is
-    ) => Promise<void | { timeoutSeconds: number }>
+    handler: QueueHandler
   ): (req: Request) => Promise<Response>;
 }
+
+export type QueueHandler = (
+  message: unknown,
+  meta: {
+    attempt: number;
+    /** Cancels the current delivery when the queue worker shuts down. */
+    abortSignal?: AbortSignal;
+    /** Producer-supplied delivery headers, when the World preserves them. */
+    headers?: Readonly<Record<string, string>>;
+    queueName: ValidQueueName;
+    messageId: MessageId;
+    requestId?: string;
+  }
+  // biome-ignore lint/suspicious/noConfusingVoidType: it is what it is
+) => Promise<void | { timeoutSeconds: number }>;

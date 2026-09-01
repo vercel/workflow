@@ -23,6 +23,11 @@ import {
   type QueuePrefix,
   ValidQueueName,
 } from '@workflow/world';
+import { createFetchQueueHandler } from '@workflow/world/queue-http.js';
+import {
+  deserializeQueueMessage,
+  serializeQueueMessage,
+} from '@workflow/world/queue-json.js';
 import type { IdFactory } from './ids.js';
 import type { PendingMessageView } from './types.js';
 
@@ -56,36 +61,12 @@ export interface SimQueue extends Queue {
   view(): PendingMessageView[];
 }
 
-function replacer(_key: string, value: unknown): unknown {
-  if (value instanceof Uint8Array) {
-    return {
-      __type: 'Uint8Array',
-      data: Buffer.from(value).toString('base64'),
-    };
-  }
-  return value;
-}
-
-function reviver(_key: string, value: unknown): unknown {
-  if (
-    value !== null &&
-    typeof value === 'object' &&
-    (value as { __type?: string }).__type === 'Uint8Array' &&
-    typeof (value as { data?: unknown }).data === 'string'
-  ) {
-    return new Uint8Array(
-      Buffer.from((value as { data: string }).data, 'base64')
-    );
-  }
-  return value;
-}
-
 export function encodeMessage(payload: QueuePayload): string {
-  return JSON.stringify(payload, replacer);
+  return serializeQueueMessage(payload).toString();
 }
 
 export function decodeMessage(body: string): unknown {
-  return JSON.parse(body, reviver);
+  return deserializeQueueMessage(Buffer.from(body));
 }
 
 export function createSimQueue(opts: {
@@ -138,36 +119,8 @@ export function createSimQueue(opts: {
     return { messageId: MessageId.parse(messageId) };
   };
 
-  const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
-    return async (req: Request) => {
-      const queueName = req.headers.get('x-vqs-queue-name');
-      const messageId = req.headers.get('x-vqs-message-id');
-      const attempt = Number(req.headers.get('x-vqs-message-attempt'));
-      if (!queueName || !messageId || !Number.isFinite(attempt)) {
-        return Response.json(
-          { error: 'Missing required headers' },
-          { status: 400 }
-        );
-      }
-      if (!queueName.startsWith(prefix)) {
-        return Response.json({ error: 'Unhandled queue' }, { status: 400 });
-      }
-      const body = decodeMessage(await req.text());
-      try {
-        const result = await handler(body, {
-          attempt,
-          queueName: ValidQueueName.parse(queueName),
-          messageId: MessageId.parse(messageId),
-        });
-        if (typeof result?.timeoutSeconds === 'number') {
-          return Response.json({ timeoutSeconds: result.timeoutSeconds });
-        }
-        return Response.json({ ok: true });
-      } catch (error) {
-        return Response.json(String(error), { status: 500 });
-      }
-    };
-  };
+  const createQueueHandler: Queue['createQueueHandler'] =
+    createFetchQueueHandler;
 
   const orderPending = () =>
     [...messages].sort((a, b) =>
