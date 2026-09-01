@@ -476,6 +476,18 @@ function addVirtualHandler(
     'workflow/webhook.mjs': '',
     'workflow/workflows.mjs': `await import(/* @vite-ignore */ pathToFileURL(${stepsImportPath}).href + "?t=" + version);`,
   };
+  const initializeWorkflow: Record<VirtualHandlerPath, string> = {
+    'workflow/webhook.mjs': '',
+    'workflow/workflows.mjs': `
+      export async function initializeWorkflow() {
+        await (await loadHandler()).POST.initialize();
+      }`,
+  };
+  const handlerImports: Record<VirtualHandlerPath, string> = {
+    'workflow/webhook.mjs': `import { POST } from ${handlerImportPath};`,
+    'workflow/workflows.mjs': `import { POST } from ${handlerImportPath};
+    export const initializeWorkflow = POST.initialize;`,
+  };
 
   if (nitro.options.dev) {
     // Dev mode: load generated workflow bundles from disk at request time.
@@ -492,19 +504,21 @@ function addVirtualHandler(
       let currentVersion = "";
       let currentImportPath = "";
 
-      async function loadPOST() {
+      async function loadHandler() {
         const version = String(statSync(handlerPath).mtimeMs);
         if (version !== currentVersion) {
           currentVersion = version;
           currentImportPath = pathToFileURL(handlerPath).href + "?t=" + version;
           ${preloadSteps[buildPath]}
         }
-        return (await import(currentImportPath)).POST;
+        return import(currentImportPath);
       }
 
+      ${initializeWorkflow[buildPath]}
+
       export default fromWebHandler(async (request, context) => {
-        const POST = await loadPOST();
-        return POST(request, context);
+        const handler = await loadHandler();
+        return handler.POST(request, context);
       });
     `;
     } else {
@@ -516,20 +530,22 @@ function addVirtualHandler(
       let currentVersion = "";
       let currentImportPath = "";
 
-      async function loadPOST() {
+      async function loadHandler() {
         const version = String(statSync(handlerPath).mtimeMs);
         if (version !== currentVersion) {
           currentVersion = version;
           currentImportPath = pathToFileURL(handlerPath).href + "?t=" + version;
           ${preloadSteps[buildPath]}
         }
-        return (await import(currentImportPath)).POST;
+        return import(currentImportPath);
       }
+
+      ${initializeWorkflow[buildPath]}
 
       export default async ({ req }) => {
         try {
-          const POST = await loadPOST();
-          return await POST(req);
+          const handler = await loadHandler();
+          return await handler.POST(req);
         } catch (error) {
           console.error('Handler error:', error);
           return new Response('Internal Server Error', { status: 500 });
@@ -550,14 +566,14 @@ function addVirtualHandler(
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
     import ${handlerImportPath};
     import { fromWebHandler } from "h3";
-    import { POST } from ${handlerImportPath};
+    ${handlerImports[buildPath]}
     export default fromWebHandler(POST);
   `;
   } else {
     // Nitro v3+ (native web handlers)
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
     import ${handlerImportPath};
-    import { POST } from ${handlerImportPath};
+    ${handlerImports[buildPath]}
     export default async ({ req }) => {
       try {
         return await POST(req);

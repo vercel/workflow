@@ -144,6 +144,30 @@ describe('withWorkflow builder config', () => {
     expect(prewarmWorkflowSwcPluginCacheMock).not.toHaveBeenCalled();
   });
 
+  it('inlines the selected World during development', async () => {
+    process.env.WORKFLOW_TARGET_WORLD = '@workflow/world-postgres';
+    const config = withWorkflow({ env: { EXISTING: 'value' } });
+
+    const nextConfig = await config('phase-development-server', {
+      defaultConfig: {},
+    });
+
+    expect(nextConfig.env).toEqual({
+      EXISTING: 'value',
+      WORKFLOW_TARGET_WORLD: '@workflow/world-postgres',
+    });
+  });
+
+  it('keeps World selection dynamic in production', async () => {
+    const config = withWorkflow({ env: { EXISTING: 'value' } });
+
+    const nextConfig = await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(nextConfig.env).toEqual({ EXISTING: 'value' });
+  });
+
   it('configures diagnostics inside the default Next.js dist dir', async () => {
     const config = withWorkflow({});
 

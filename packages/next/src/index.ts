@@ -488,6 +488,12 @@ export function withWorkflow(
     }
     // shallow clone to avoid read-only on top-level
     nextConfig = Object.assign({}, nextConfig);
+    if (phase === 'phase-development-server') {
+      nextConfig.env = {
+        ...nextConfig.env,
+        WORKFLOW_TARGET_WORLD: process.env.WORKFLOW_TARGET_WORLD,
+      };
+    }
     const workflowBasePath = nextConfig.basePath;
     setWorkflowBasePath(workflowBasePath);
     nextConfig.serverExternalPackages = [
