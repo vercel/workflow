@@ -39,17 +39,17 @@ The workflow `entrypoint` uses the `module:object` format and points to the expo
 
 A workflow is a stateful function that coordinates multi-step logic over time. Create a `Workflows` instance and use the `@wf.workflow` decorator to mark a function as durable:
 
-```python filename="app/workflow.py" {3}
+```python filename="app/workflow.py"
 from vercel import workflow
 
-wf = workflow.Workflows()
+wf = workflow.Workflows()  # [!code highlight]
 ```
 
-```python filename="app/workflows/ai_content_workflow.py" {4}
+```python filename="app/workflows/ai_content_workflow.py"
 from app.workflow import wf
 from app.steps.generate_draft import generate_draft, summarize_draft
 
-@wf.workflow
+@wf.workflow  # [!code highlight]
 async def ai_content_workflow(*, topic: str):
     draft = await generate_draft(topic=topic)
     summary = await summarize_draft(draft=draft)
@@ -75,15 +75,15 @@ Under the hood, the workflow compiles into a route that orchestrates execution. 
 
 A step is a stateless function that runs a unit of durable work inside a workflow. Use `@wf.step` to mark a function as a step:
 
-```python filename="app/steps/generate_draft.py" {4,8}
+```python filename="app/steps/generate_draft.py"
 import random
 from app.workflow import wf
 
-@wf.step
+@wf.step  # [!code highlight]
 async def generate_draft(*, topic: str):
     return await ai_generate(prompt=f"Write a blog post about {topic}")
 
-@wf.step
+@wf.step  # [!code highlight]
 async def summarize_draft(*, draft: str):
     summary = await ai_summarize(text=draft)
 
@@ -100,19 +100,19 @@ Each step executes separately from the workflow orchestrator. While the step exe
 
 Call `workflow.start()` from server-side code to start a workflow. It returns a `Run` that you can use to identify the run, check its status, and wait for its result:
 
-```python filename="app/api/generate.py" {6,9,12}
+```python filename="app/api/generate.py"
 from app.workflows.ai_content_workflow import ai_content_workflow
 from vercel import workflow
 
 @app.post("/api/generate")
 async def generate_content(*, topic: str):
-    run = await workflow.start(ai_content_workflow, topic=topic)
+    run = await workflow.start(ai_content_workflow, topic=topic)  # [!code highlight]
 
     print(run.run_id)
-    print(await run.status())
+    print(await run.status())  # [!code highlight]
 
     # Wait until the workflow completes and return its result.
-    return await run.return_value()
+    return await run.return_value()  # [!code highlight]
 ```
 
 Starting a workflow only waits until the run has been created and queued. Await `return_value()` to wait for the workflow to finish, or save its `run_id` and recreate the handle later with `workflow.Run(run_id)`.
@@ -121,7 +121,7 @@ Starting a workflow only waits until the run has been created and queued. Await 
 
 Sleep pauses a workflow for a specified duration without consuming compute resources:
 
-```python filename="app/workflows/ai_refine.py" {10}
+```python filename="app/workflows/ai_refine.py"
 from datetime import timedelta
 
 from app.workflow import wf
@@ -131,7 +131,7 @@ from vercel import workflow
 async def ai_refine_workflow(*, draft_id: str):
     draft = await fetch_draft(draft_id)
 
-    await workflow.sleep(timedelta(days=7))  # Wait 7 days to gather more signals.
+    await workflow.sleep(timedelta(days=7))  # Wait 7 days to gather more signals.  # [!code highlight]
 
     refined = await refine_draft(draft)
 
@@ -173,14 +173,14 @@ A hook lets a workflow wait for external events such as user actions, webhooks, 
 
 Define a hook model with Pydantic and `workflow.BaseHook`:
 
-```python filename="app/workflows/approval.py" {7,18}
+```python filename="app/workflows/approval.py"
 import typing
 
 import pydantic
 from app.workflow import wf
 from vercel import workflow
 
-class Approval(pydantic.BaseModel, workflow.BaseHook):
+class Approval(pydantic.BaseModel, workflow.BaseHook):  # [!code highlight]
     """Human approval for AI-generated drafts"""
 
     decision: typing.Literal["approved", "changes"]
@@ -191,7 +191,7 @@ async def ai_approval_workflow(*, topic: str):
     draft = await generate_draft(topic=topic)
 
     # Wait for human approval events
-    async for event in Approval.wait(token="draft-123"):
+    async for event in Approval.wait(token="draft-123"):  # [!code highlight]
         if event.decision == "approved":
             await publish_draft(draft)
             break
@@ -202,14 +202,14 @@ async def ai_approval_workflow(*, topic: str):
 
 Resume the workflow when data arrives:
 
-```python filename="app/api/resume.py" {4,7}
+```python filename="app/api/resume.py"
 from app.workflows.approval import Approval
 
 @app.post("/api/resume")
-async def resume(approval: Approval):
+async def resume(approval: Approval):  # [!code highlight]
     """Resume the workflow when an approval is received"""
 
-    await approval.resume("draft-123")
+    await approval.resume("draft-123")  # [!code highlight]
     return {"ok": True}
 ```
 
@@ -219,16 +219,16 @@ When a hook receives data, the workflow resumes automatically. You don&apos;t ne
 
 Steps can stream progress while a workflow is running. Get the run&apos;s writable stream inside a step, write values to it, and close it when no more values will be sent:
 
-```python filename="app/workflows/streaming.py" {6,9}
+```python filename="app/workflows/streaming.py"
 from app.workflow import wf
 from vercel import workflow
 
 @wf.step
 async def write_progress():
-    writable = workflow.get_writable()
+    writable = workflow.get_writable()  # [!code highlight]
 
     for message in ["Drafting", "Reviewing", "Complete"]:
-        await writable.write(message)
+        await writable.write(message)  # [!code highlight]
 
     await writable.close()
 
@@ -239,7 +239,7 @@ async def streaming_workflow():
 
 Read the values from the returned `Run` as they arrive:
 
-```python filename="app/api/stream.py" {8}
+```python filename="app/api/stream.py"
 from app.workflows.streaming import streaming_workflow
 from vercel import workflow
 
@@ -247,7 +247,7 @@ from vercel import workflow
 async def stream_progress():
     run = await workflow.start(streaming_workflow)
 
-    async for message in run.readable():
+    async for message in run.readable():  # [!code highlight]
         print(message)
 ```
 
