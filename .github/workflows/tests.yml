@@ -707,7 +707,7 @@ jobs:
       # (different Node version in the CLI's own banner, a doubled project
       # path) across otherwise-identical earlier CI attempts.
       - name: Install vercel CLI
-        run: npm install -g vercel@56.2.0
+        run: pnpm add --global vercel@56.2.0
 
       - name: Deploy a dedicated WS-transport preview
         id: wsDeploy
@@ -901,7 +901,7 @@ jobs:
         run: pnpm turbo run build --filter='@workflow/cli'
 
       - name: Install vercel CLI
-        run: npm install -g vercel@56.2.0
+        run: pnpm add --global vercel@56.2.0
 
       - name: Deploy a dedicated HTTP-transport preview
         id: httpDeploy

@@ -291,7 +291,8 @@ jobs:
 
       - name: Install opencode
         if: steps.existing-pr.outputs.exists != 'true'
-        run: npm install -g opencode-ai@1.18.4
+        # opencode-ai's postinstall downloads its platform-specific binary.
+        run: pnpm add --global --allow-build=opencode-ai opencode-ai@1.18.4
 
       - name: Configure opencode
         if: steps.existing-pr.outputs.exists != 'true'
