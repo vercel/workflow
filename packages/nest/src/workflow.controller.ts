@@ -91,6 +91,12 @@ function getOutDir(): string {
   return controllerConfig.outDir;
 }
 
+export async function loadWorkflowHandler() {
+  const outDir = getOutDir();
+  await import(pathToFileURL(join(outDir, 'steps.mjs')).href);
+  return import(pathToFileURL(join(outDir, 'workflows.mjs')).href);
+}
+
 /**
  * Controller that handles the well-known workflow endpoints.
  * Dynamically imports the generated bundles and handles request/response conversion.
@@ -99,12 +105,7 @@ function getOutDir(): string {
 export class WorkflowController {
   @Post('flow')
   async handleFlow(@Req() req: any, @Res() res: any) {
-    const outDir = getOutDir();
-    // Import step registrations (side effects) before the combined handler
-    await import(pathToFileURL(join(outDir, 'steps.mjs')).href);
-    const { POST } = await import(
-      pathToFileURL(join(outDir, 'workflows.mjs')).href
-    );
+    const { POST } = await loadWorkflowHandler();
     const webRequest = toWebRequest(req);
     const webResponse = await POST(webRequest);
     await sendWebResponse(res, webResponse);

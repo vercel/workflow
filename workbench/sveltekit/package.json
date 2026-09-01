@@ -36,6 +36,7 @@
     "ai": "catalog:",
     "exsolve": "^1.0.7",
     "lodash.chunk": "^4.2.0",
+    "undici": "catalog:",
     "workflow": "workspace:*",
     "zod": "catalog:"
   }

@@ -47,6 +47,22 @@ const Invoke = z
 // host bundler to compile it into several layers.
 const flowInvocationCounts = new Map<string, number>();
 
+function countFlowInvocation(message: unknown): void {
+  if (!message || typeof message !== 'object') return;
+  const runId =
+    'runId' in message && typeof message.runId === 'string'
+      ? message.runId
+      : 'payload' in message &&
+          message.payload &&
+          typeof message.payload === 'object' &&
+          'runId' in message.payload &&
+          typeof message.payload.runId === 'string'
+        ? message.payload.runId
+        : undefined;
+  if (!runId) return;
+  flowInvocationCounts.set(runId, (flowInvocationCounts.get(runId) ?? 0) + 1);
+}
+
 const app = new Hono()
   .post('/.well-known/workflow/v1/flow', async (ctx) => {
     // Clone the request to read the body for tracking without consuming it.
@@ -57,20 +73,7 @@ const app = new Hono()
     // /_flow-invocations after seeing the run as completed.
     const cloned = ctx.req.raw.clone();
     try {
-      const body = (await cloned.json()) as Record<string, unknown>;
-      const runId =
-        typeof body?.runId === 'string'
-          ? body.runId
-          : typeof (body.payload as Record<string, unknown> | undefined)
-                ?.runId === 'string'
-            ? ((body.payload as Record<string, unknown>).runId as string)
-            : undefined;
-      if (runId) {
-        flowInvocationCounts.set(
-          runId,
-          (flowInvocationCounts.get(runId) ?? 0) + 1
-        );
-      }
+      countFlowInvocation(await cloned.json());
     } catch {
       // Health check or non-JSON messages — ignore
     }
@@ -172,6 +175,15 @@ serve(
     }
 
     const world = await getWorld();
+    if (world.capabilities?.directQueueDelivery === true) {
+      const createQueueHandler = world.createQueueHandler.bind(world);
+      world.createQueueHandler = (prefix, handler) =>
+        createQueueHandler(prefix, async (message, metadata) => {
+          countFlowInvocation(message);
+          return handler(message, metadata);
+        });
+    }
+    await flowPOST.initialize();
     if (world.start) {
       console.log(`starting background tasks...`);
       await world.start().then(
