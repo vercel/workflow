@@ -118,7 +118,12 @@ import {
 } from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
-import { getWorld, type WorldHandlers } from './runtime/world.js';
+import {
+  getWorld,
+  getWorldGeneration,
+  registerDirectWorldListener,
+  type WorldHandlers,
+} from './runtime/world.js';
 import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
@@ -4857,6 +4862,15 @@ export function workflowEntrypoint(
     );
 
   let cachedHandler: ((req: Request) => Promise<Response>) | undefined;
+  let handlerInitialization:
+    | Promise<(req: Request) => Promise<Response>>
+    | undefined;
+  let initializationRetry: ReturnType<typeof setTimeout> | undefined;
+  let initializationFailures = 0;
+  let initializationGeneration: number | undefined;
+  let handlerGeneration: number | undefined;
+  let initializationToken = 0;
+  let publicHealthCheckEnabled: boolean | undefined;
   let invocationCount = 0;
   const entrypointCreatedAt = Date.now();
   const routeModuleBodyInitMs =
@@ -4864,7 +4878,112 @@ export function workflowEntrypoint(
       ? entrypointCreatedAt - options.routeModuleBodyStartedAt
       : undefined;
 
-  return withHealthCheck(async (req) => {
+  const invalidateHandler = (): void => {
+    initializationToken += 1;
+    cachedHandler = undefined;
+    handlerInitialization = undefined;
+    initializationGeneration = undefined;
+    handlerGeneration = undefined;
+    publicHealthCheckEnabled = undefined;
+    initializationFailures = 0;
+    if (initializationRetry) {
+      clearTimeout(initializationRetry);
+      initializationRetry = undefined;
+    }
+  };
+
+  const initializeHandler = (): Promise<
+    (req: Request) => Promise<Response>
+  > => {
+    const worldGeneration = getWorldGeneration();
+    if (cachedHandler && handlerGeneration === worldGeneration) {
+      return Promise.resolve(cachedHandler);
+    }
+    if (!handlerInitialization) {
+      const token = initializationToken;
+      initializationGeneration = worldGeneration;
+      let initialization!: Promise<(req: Request) => Promise<Response>>;
+      initialization = trace('workflow.route.init', async () => {
+        // The full runtime World, not `getWorldHandlers()`. That accessor
+        // owns a second, build-time-safe cache, so calling it here built a
+        // second World in the same process: duplicate connection pools and
+        // queue workers for a stateful World, plus a second copy of that
+        // world package's modules once it is bundled, which is what silently
+        // demoted the events WebSocket transport to HTTP. #3665.
+        //
+        // Loading the generated flow module starts this initialization. A
+        // direct-delivery World can therefore register its consumer before
+        // its worker starts, without an HTTP request to warm the route.
+        const worldHandlers = await trace(
+          'workflow.route.get_world_handlers',
+          async () => getWorld()
+        );
+        return {
+          queueHandler: handler(worldHandlers),
+          publicHealthCheckEnabled:
+            worldHandlers.capabilities?.directQueueDelivery !== true,
+        };
+      })
+        .then((initialized) => {
+          if (
+            token !== initializationToken ||
+            worldGeneration !== getWorldGeneration()
+          ) {
+            if (handlerInitialization === initialization) {
+              handlerInitialization = undefined;
+              initializationGeneration = undefined;
+            }
+            return initializeHandler();
+          }
+          cachedHandler = initialized.queueHandler;
+          handlerGeneration = worldGeneration;
+          publicHealthCheckEnabled = initialized.publicHealthCheckEnabled;
+          initializationFailures = 0;
+          if (initializationRetry) {
+            clearTimeout(initializationRetry);
+            initializationRetry = undefined;
+          }
+          return initialized.queueHandler;
+        })
+        .catch((error) => {
+          if (handlerInitialization === initialization) {
+            handlerInitialization = undefined;
+            initializationGeneration = undefined;
+          }
+          throw error;
+        });
+      handlerInitialization = initialization;
+    }
+    return handlerInitialization;
+  };
+
+  const retryHandlerInitialization = (): void => {
+    void initializeHandler().catch((error) => {
+      initializationFailures += 1;
+      const delayMs = Math.min(
+        250 * 2 ** Math.min(initializationFailures - 1, 7),
+        30_000
+      );
+      console.error(
+        `[workflow] Failed to initialize the flow queue handler; retrying in ${delayMs}ms:`,
+        error
+      );
+      initializationRetry = setTimeout(retryHandlerInitialization, delayMs);
+      initializationRetry.unref?.();
+    });
+  };
+
+  registerDirectWorldListener(workflowPrefix, () => {
+    invalidateHandler();
+    retryHandlerInitialization();
+  });
+
+  // Registration is a module-load side effect by design. Postgres consumes
+  // queue jobs in-process and has no authenticated HTTP producer that could
+  // safely warm this route later.
+  retryHandlerInitialization();
+
+  const invokeQueueHandler = async (req: Request): Promise<Response> => {
     invocationCount += 1;
     const handlerCached = cachedHandler !== undefined;
     const spanKind = await getSpanKind('SERVER');
@@ -4889,27 +5008,8 @@ export function workflowEntrypoint(
         },
       },
       async (span) => {
-        if (!cachedHandler) {
-          cachedHandler = await trace('workflow.route.init', async () => {
-            // The full runtime World, not `getWorldHandlers()`. That accessor
-            // owns a second, build-time-safe cache, so calling it here built a
-            // second World in the same process: duplicate connection pools and
-            // queue workers for a stateful World, plus a second copy of that
-            // world package's modules once it is bundled, which is what
-            // silently demoted the events WebSocket transport to HTTP. #3665.
-            //
-            // The span keeps its original name. It is a distinct span from the
-            // per-request `workflow.route.get_world` at the top of the flow
-            // route, and renaming it would collide with that one.
-            const worldHandlers = await trace(
-              'workflow.route.get_world_handlers',
-              async () => getWorld()
-            );
-            return handler(worldHandlers);
-          });
-        }
-
-        const response = await cachedHandler(req);
+        const queueHandler = cachedHandler ?? (await initializeHandler());
+        const response = await queueHandler(req);
         if (response instanceof Response) {
           span?.setAttributes(
             Attribute.HttpResponseStatusCode(response.status)
@@ -4918,5 +5018,32 @@ export function workflowEntrypoint(
         return response;
       }
     );
-  });
+  };
+  const invokeWithPublicHealthCheck = withHealthCheck(invokeQueueHandler);
+
+  return async (req) => {
+    const currentGeneration = getWorldGeneration();
+    if (
+      (handlerGeneration !== undefined &&
+        handlerGeneration !== currentGeneration) ||
+      (initializationGeneration !== undefined &&
+        initializationGeneration !== currentGeneration)
+    ) {
+      invalidateHandler();
+    }
+
+    // The capability is known once the eager initialization above resolves.
+    // A health request arriving in that small window must wait rather than
+    // accidentally exposing the public response for a direct-delivery World.
+    if (
+      publicHealthCheckEnabled === undefined &&
+      new URL(req.url).searchParams.has('__health')
+    ) {
+      await initializeHandler();
+    }
+
+    return publicHealthCheckEnabled === false
+      ? invokeQueueHandler(req)
+      : invokeWithPublicHealthCheck(req);
+  };
 }

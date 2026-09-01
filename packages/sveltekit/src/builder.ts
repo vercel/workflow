@@ -94,9 +94,11 @@ export class SvelteKitBuilder extends BaseBuilder {
     workflowsRouteContent = workflowsRouteContent.replace(
       /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
       (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
+const workflowHandler = workflowEntrypoint(workflowCode${options});
+
 export const POST = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
-  return workflowEntrypoint(workflowCode${options})(normalRequest);
+  return workflowHandler(normalRequest);
 }`
     );
     // These files are generated into the SvelteKit routes directory, which

@@ -478,7 +478,9 @@ describe('workflowEntrypoint trace modes', () => {
     expect(routeSpan?.attributes['http.response.status_code']).toBe(204);
 
     expect(routeInitSpan).toBeDefined();
-    expect(routeInitSpan?.parentSpanId).toBe(routeSpan?.spanContext().spanId);
+    // Handler registration starts at module load, before a delivery request
+    // supplies context, so initialization is its own bounded root trace.
+    expect(routeInitSpan?.parentSpanId).toBeUndefined();
     expect(getWorldHandlersSpan).toBeDefined();
     expect(getWorldHandlersSpan?.parentSpanId).toBe(
       routeInitSpan?.spanContext().spanId

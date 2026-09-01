@@ -45,13 +45,39 @@ const WorldCachePromise = Symbol.for('@workflow/world//cachePromise');
 const StubbedWorldCachePromise = Symbol.for(
   '@workflow/world//stubbedCachePromise'
 );
+const WorldCacheGeneration = Symbol.for('@workflow/world//cacheGeneration');
+const DirectWorldListeners = Symbol.for(
+  '@workflow/world//directWorldListeners'
+);
 
 const globalSymbols: typeof globalThis & {
   [WorldCache]?: World;
   [StubbedWorldCache]?: World;
   [WorldCachePromise]?: Promise<World>;
   [StubbedWorldCachePromise]?: Promise<World>;
+  [WorldCacheGeneration]?: number;
+  [DirectWorldListeners]?: Map<string, () => void>;
 } = globalThis;
+
+function getDirectWorldListeners(): Map<string, () => void> {
+  const listeners = globalSymbols[DirectWorldListeners];
+  if (listeners) return listeners;
+
+  const created = new Map<string, () => void>();
+  globalSymbols[DirectWorldListeners] = created;
+  return created;
+}
+
+export function getWorldGeneration(): number {
+  return globalSymbols[WorldCacheGeneration] ?? 0;
+}
+
+export function registerDirectWorldListener(
+  key: string,
+  listener: () => void
+): void {
+  getDirectWorldListeners().set(key, listener);
+}
 
 export type WorldFactoryModule = {
   createWorld?: () => World | Promise<World>;
@@ -221,12 +247,20 @@ export const getWorldHandlers = async (): Promise<WorldHandlers> => {
   // Store the promise immediately to prevent race conditions with concurrent calls.
   // Clear on rejection so subsequent calls can retry instead of caching the failure.
   if (!globalSymbols[StubbedWorldCachePromise]) {
-    globalSymbols[StubbedWorldCachePromise] = createWorld().catch((err) => {
-      globalSymbols[StubbedWorldCachePromise] = undefined;
+    let pendingWorld!: Promise<World>;
+    pendingWorld = createWorld().catch((err) => {
+      if (globalSymbols[StubbedWorldCachePromise] === pendingWorld) {
+        globalSymbols[StubbedWorldCachePromise] = undefined;
+      }
       throw err;
     });
+    globalSymbols[StubbedWorldCachePromise] = pendingWorld;
   }
-  const _world = await globalSymbols[StubbedWorldCachePromise];
+  const worldPromise = globalSymbols[StubbedWorldCachePromise];
+  const _world = await worldPromise;
+  if (globalSymbols[StubbedWorldCachePromise] !== worldPromise) {
+    return getWorldHandlers();
+  }
   assertWorldSupportsRuntimeProtocol(_world);
   globalSymbols[StubbedWorldCache] = _world;
   return {
@@ -243,12 +277,23 @@ export const getWorld = async (): Promise<World> => {
   // Store the promise immediately to prevent race conditions with concurrent calls.
   // Clear on rejection so subsequent calls can retry instead of caching the failure.
   if (!globalSymbols[WorldCachePromise]) {
-    globalSymbols[WorldCachePromise] = createWorld().catch((err) => {
-      globalSymbols[WorldCachePromise] = undefined;
+    let pendingWorld!: Promise<World>;
+    pendingWorld = createWorld().catch((err) => {
+      if (globalSymbols[WorldCachePromise] === pendingWorld) {
+        globalSymbols[WorldCachePromise] = undefined;
+      }
       throw err;
     });
+    globalSymbols[WorldCachePromise] = pendingWorld;
   }
-  globalSymbols[WorldCache] = await globalSymbols[WorldCachePromise];
+  const worldPromise = globalSymbols[WorldCachePromise];
+  const world = await worldPromise;
+  // setWorld() may replace the cache while factory initialization is in
+  // flight. Never let that older promise overwrite the explicit replacement.
+  if (globalSymbols[WorldCachePromise] !== worldPromise) {
+    return getWorld();
+  }
+  globalSymbols[WorldCache] = world;
   assertWorldSupportsRuntimeProtocol(globalSymbols[WorldCache]);
   return globalSymbols[WorldCache];
 };
@@ -258,10 +303,14 @@ export const getWorld = async (): Promise<World> => {
  * variables change and you need to reinitialize the world with new config.
  */
 export const setWorld = (world: World | undefined): void => {
+  globalSymbols[WorldCacheGeneration] = getWorldGeneration() + 1;
   globalSymbols[WorldCache] = world;
   globalSymbols[StubbedWorldCache] = world;
   globalSymbols[WorldCachePromise] = undefined;
   globalSymbols[StubbedWorldCachePromise] = undefined;
+  if (world?.capabilities?.directQueueDelivery === true) {
+    for (const listener of getDirectWorldListeners().values()) listener();
+  }
 };
 
 // Register getWorld on globalThis so getWorldLazy can call it directly when

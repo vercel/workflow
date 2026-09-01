@@ -467,6 +467,14 @@ export interface Storage {
  */
 export interface WorldCapabilities {
   /**
+   * Queue messages are delivered inside the World process rather than over
+   * the generated flow HTTP route. Core uses this declaration to disable the
+   * route's public health-check mode as well as relying on the World to reject
+   * ordinary HTTP requests. Missing means the World may use HTTP delivery.
+   */
+  directQueueDelivery?: boolean;
+
+  /**
    * Supports `experimental_minRetention` for Hooks. Missing or inactive means
    * the runtime rejects retained Hooks before registration.
    */
