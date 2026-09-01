@@ -122,6 +122,16 @@ describe('withWorkflow builder config', () => {
     });
   });
 
+  it('passes the global-not-found setting to entry discovery', async () => {
+    const config = withWorkflow({
+      experimental: { globalNotFound: true },
+    });
+
+    await config('phase-production-build', { defaultConfig: {} });
+
+    expect(builderConfigs[0]).toMatchObject({ globalNotFound: true });
+  });
+
   it.each([
     'phase-production-build',
     'phase-development-server',
