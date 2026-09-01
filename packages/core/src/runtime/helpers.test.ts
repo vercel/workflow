@@ -1,7 +1,7 @@
 import { PreconditionFailedError, WorkflowWorldError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { slotToEventId } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bytesToBase64, deriveRunKeyPair, seal } from '../sealed-box.js';
 import {
   decrypt,

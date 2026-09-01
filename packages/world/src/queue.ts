@@ -142,12 +142,11 @@ export const RunInputSchema = z.compile(
 export type RunInput = z.infer<typeof RunInputSchema>;
 
 /**
- * Lazy hook resume data carried through the queue alongside a workflow
- * invocation. Present only when `resumeHook()` takes the lazy path, where the
- * producer publishes this invocation and writes no event of its own. On
- * receipt, a consumer that understands `hookInput` idempotently ensures the
- * `hook_received` event exists (keyed by `resumeId`) before replaying, so
- * repeated deliveries of the same message converge on exactly one event.
+ * Legacy lazy hook resume data carried through the queue alongside a workflow
+ * invocation. Older producers publish this invocation and write no event of
+ * their own. On receipt, a consumer that understands `hookInput` idempotently
+ * ensures the `hook_received` event exists (keyed by `resumeId`) before
+ * replaying, so repeated deliveries converge on exactly one event.
  *
  * The `payload` is the already-serialized (and possibly encrypted) resume
  * payload, and on this path the queue message is its only carrier. Every write
@@ -263,8 +262,9 @@ export const HookResumeTimingSchema = z.compile(
     /** Epoch ms immediately before the queue publish was requested. */
     queuePublishRequestedAtMs: z.number(),
     /**
-     * Which `resumeHook()` dispatch path ran: `lazy` or `sequential` (`parallel`
-     * from producers predating lazy-only resume).
+     * Which `resumeHook()` dispatch path ran. Current producers always report
+     * `sequential` (durable write, then wake); older producers may report
+     * `lazy` or `parallel`.
      */
     strategy: z.string().optional(),
     /** Epoch ms the final consumer's queue handler was entered. */
@@ -345,9 +345,9 @@ export const WorkflowInvokePayloadSchema = z.compile(
     /** Run creation data, only present on the first queue delivery from start() */
     runInput: RunInputSchema.optional(),
     /**
-     * Lazy hook resume data, only present when `resumeHook()` takes the parallel
-     * fast path. A consumer that understands this field idempotently ensures the
-     * `hook_received` event exists (keyed by `resumeId`) before replaying.
+     * Legacy lazy hook resume data. A consumer that understands this field
+     * idempotently ensures the `hook_received` event exists (keyed by `resumeId`)
+     * before replaying.
      */
     hookInput: HookResumeInputSchema.optional(),
     /**
@@ -359,7 +359,7 @@ export const WorkflowInvokePayloadSchema = z.compile(
     stepInput: StepDispatchInputSchema.optional(),
     /**
      * Hook-resume TTR timing. Present on both `resumeHook()` dispatch paths
-     * (unlike `hookInput`, which only rides the lazy path), and
+     * (unlike legacy `hookInput`), and
      * forwarded onto a dispatched step message when the resuming invocation
      * hands the next durable step to another invocation. Purely observational.
      * See {@link HookResumeTimingSchema}.
