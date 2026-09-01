@@ -46,11 +46,9 @@
     "db:push": "node dist/cli.js"
   },
   "dependencies": {
-    "@vercel/queue": "catalog:",
     "@workflow/errors": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
-    "@workflow/world-local": "workspace:*",
     "cbor-x": "1.6.0",
     "dotenv": "17.3.1",
     "drizzle-orm": "0.45.2",
