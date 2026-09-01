@@ -8,8 +8,6 @@ vi.mock('~/lib/workflow-api-client', () => ({
   readStream: vi.fn(),
 }));
 
-const env = {};
-
 function emptyStreamResponse(done: boolean): StreamResponse {
   return {
     body: new ReadableStream({
@@ -36,7 +34,7 @@ describe('useStreamReader status', () => {
     );
 
     const { result, unmount } = renderHook(() =>
-      useStreamReader(env, 'stream-1', 'run-1', null, 'running')
+      useStreamReader('stream-1', 'run-1', null, 'running')
     );
 
     expect(result.current.isInitialLoading).toBe(true);
@@ -56,7 +54,7 @@ describe('useStreamReader status', () => {
     vi.mocked(readStream).mockResolvedValue(emptyStreamResponse(true));
 
     const { result } = renderHook(() =>
-      useStreamReader(env, 'stream-1', 'run-1', null, 'running')
+      useStreamReader('stream-1', 'run-1', null, 'running')
     );
 
     await waitFor(() => {
@@ -69,7 +67,7 @@ describe('useStreamReader status', () => {
     vi.mocked(readStream).mockResolvedValue(emptyStreamResponse(false));
 
     const { result } = renderHook(() =>
-      useStreamReader(env, 'stream-1', 'run-1', null, 'completed')
+      useStreamReader('stream-1', 'run-1', null, 'completed')
     );
 
     await waitFor(() => {

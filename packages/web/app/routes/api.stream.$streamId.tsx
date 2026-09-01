@@ -38,12 +38,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   const cursor = url.searchParams.get('cursor') ?? undefined;
 
   try {
-    const result = await readStreamChunksServerAction(
-      {},
-      streamId,
-      runId,
-      cursor
-    );
+    const result = await readStreamChunksServerAction(streamId, runId, cursor);
 
     if (!('buffer' in result)) {
       return Response.json(result, { status: 500 });

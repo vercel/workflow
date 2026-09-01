@@ -1267,26 +1267,21 @@ export interface StreamChunksResult {
  * the next request.
  */
 export async function readStreamChunksServerAction(
-  env: EnvMap,
   streamId: string,
   runId: string,
-  startCursor?: string
+  startCursor: string | undefined
 ): Promise<StreamChunksResult | ServerActionError> {
   try {
-    const world = await getWorldFromEnv(env);
+    const world = await getWorldFromEnv({});
     const allChunks: Uint8Array[] = [];
-    let pageCursor: string | undefined = startCursor;
+    let cursor: string | undefined = startCursor;
     let streamDone = false;
-    // Track the last non-null cursor so we can resume from the start of
-    // the final page on the next poll. When getChunks returns
-    // cursor=null we've exhausted all pages, but this saved cursor lets
-    // the client re-fetch only the last page + any new chunks.
-    let resumeCursor: string | null = startCursor ?? null;
+    let hasMore: boolean;
 
     do {
       const result = await world.streams.getChunks(runId, streamId, {
         limit: CHUNKS_PAGE_SIZE,
-        cursor: pageCursor,
+        cursor,
       });
 
       for (const chunk of result.data) {
@@ -1294,25 +1289,18 @@ export async function readStreamChunksServerAction(
       }
 
       streamDone = result.done;
-      if (result.cursor) {
-        resumeCursor = result.cursor;
+      hasMore = result.hasMore;
+      if (hasMore && !result.cursor) {
+        throw new Error('Stream chunk page with more data is missing a cursor');
       }
-      pageCursor = result.cursor ?? undefined;
-    } while (pageCursor);
+      cursor = result.cursor ?? cursor;
+    } while (hasMore);
 
-    let totalSize = 0;
-    for (const chunk of allChunks) {
-      totalSize += chunk.length;
-    }
-
-    const body = new Uint8Array(totalSize);
-    let offset = 0;
-    for (const chunk of allChunks) {
-      body.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    return { buffer: body, cursor: resumeCursor, done: streamDone };
+    return {
+      buffer: Buffer.concat(allChunks),
+      cursor: streamDone ? null : (cursor ?? null),
+      done: streamDone,
+    };
   } catch (error) {
     const actionError = createServerActionError(
       error,
