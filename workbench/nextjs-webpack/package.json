@@ -15,7 +15,7 @@
   },
   "dependencies": {
     "@ai-sdk/react": "4.0.90",
-    "@ai-sdk/workflow": "2.0.17",
+    "@ai-sdk/workflow": "catalog:ai-sdk-v7",
     "@node-rs/xxhash": "1.7.6",
     "@opentelemetry/api": "^1.9.0",
     "@radix-ui/react-tooltip": "1.2.8",
@@ -25,7 +25,7 @@
     "@streamdown/math": "1.0.2",
     "@streamdown/mermaid": "1.0.2",
     "@vercel/otel": "^1.13.0",
-    "ai": "7.0.87",
+    "ai": "catalog:ai-sdk-v7",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "1.1.1",

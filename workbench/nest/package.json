@@ -18,13 +18,13 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@ai-sdk/workflow": "2.0.17",
+    "@ai-sdk/workflow": "catalog:ai-sdk-v7",
     "@nestjs/common": "^11.1.27",
     "@nestjs/core": "^11.1.27",
     "@nestjs/platform-express": "^11.1.27",
     "@workflow/nest": "workspace:*",
     "@workflow/world-postgres": "workspace:*",
-    "ai": "7.0.87",
+    "ai": "catalog:ai-sdk-v7",
     "express": "^5.2.1",
     "lodash.chunk": "^4.2.0",
     "openai": "^6.1.0",

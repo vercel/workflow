@@ -26,6 +26,11 @@ catalog:
   vitest: ^4.1.10
   zod: ~4.3.6
 
+catalogs:
+  ai-sdk-v7:
+    "@ai-sdk/workflow": 2.0.17
+    ai: 7.0.87
+
 onlyBuiltDependencies:
   - esbuild
 
