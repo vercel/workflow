@@ -33,7 +33,7 @@
     "lucide-react": "0.555.0",
     "mixpart": "0.0.4",
     "motion": "^12.29.0",
-    "nanoid": "5.1.6",
+    "nanoid": "^5.1.16",
     "next": "16.2.11",
     "openai": "6.9.1",
     "radix-ui": "1.4.3",
