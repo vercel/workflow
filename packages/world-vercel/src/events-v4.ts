@@ -63,6 +63,7 @@ import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import {
   ErrorType,
+  injectTraceContextIntoHeaders,
   NetworkProtocolName,
   StepLatencyOptimizations,
   StepStsoMs,
@@ -1155,10 +1156,20 @@ function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
  * key to the server's log line for the same frame. A synthetic span that hid
  * which transport produced it would be a trap, not a convenience.
  *
- * Two things the HTTP envelope has that this one deliberately does not: the
- * cache-bust header (a frame is memoized by nothing) and a per-frame
- * `traceparent` (frames carry no headers; trace context rides the upgrade
- * instead, so the server parents to the connection's span, not to this one).
+ * One thing the HTTP envelope has that this one deliberately does not: the
+ * cache-bust header (a frame is memoized by nothing).
+ *
+ * Trace context, by contrast, IS carried per frame. Frames have no headers,
+ * so `traceparent`/`tracestate` ride on the frame envelope (next to `reqId`,
+ * not inside the `event` meta — propagation is a property of the message, not
+ * of the event, and the `event` object is forwarded verbatim into the HTTP
+ * wire format, which must not grow WS-only fields). They are captured inside
+ * this write's own CLIENT span, so the server's per-message route span
+ * parents to the write that produced the frame rather than to the
+ * connection's upgrade — without this, every WS write's server half is
+ * time-aligned with its client half in the flamegraph but not connected to
+ * it. A server that predates the field strips it at the envelope schema and
+ * behaves as before.
  *
  * One gap this cannot close: Vercel's observability *outgoing requests* view is
  * built by instrumenting the global `fetch`, not by reading OpenTelemetry spans,
@@ -1212,6 +1223,15 @@ async function postEventFrameOverWs(
     },
     async (span) => {
       const start = Date.now();
+      // Captured here — inside this write's active CLIENT span — so the
+      // carrier names this span, not the caller's. A `Headers` because that
+      // is the injector's contract; read back out immediately since the
+      // frame envelope is a plain CBOR map. No-op (both stay undefined)
+      // when no OTEL SDK is registered.
+      const traceCarrier = new Headers();
+      await injectTraceContextIntoHeaders(traceCarrier);
+      const traceparent = traceCarrier.get('traceparent') ?? undefined;
+      const tracestate = traceCarrier.get('tracestate') ?? undefined;
       let reply: WsFrameReply;
       try {
         // `runId` isn't repeated here, since it's already in `wsUrl`, one
@@ -1226,7 +1246,13 @@ async function postEventFrameOverWs(
           // reconnect legitimately re-uses low numbers.
           span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
           return encodeFrame(
-            { reqId, type: 'event', event: buildPostFrameMeta(input) },
+            {
+              reqId,
+              type: 'event',
+              ...(traceparent !== undefined ? { traceparent } : {}),
+              ...(tracestate !== undefined ? { tracestate } : {}),
+              event: buildPostFrameMeta(input),
+            },
             input.payload ?? new Uint8Array(0)
           );
         });
