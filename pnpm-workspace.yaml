@@ -28,11 +28,9 @@ catalog:
 
 catalogs:
   ai-sdk-v7:
-    "@ai-sdk/workflow": 2.0.17
-    ai: 7.0.87
-
-onlyBuiltDependencies:
-  - esbuild
+    "@ai-sdk/react": 4.0.88
+    "@ai-sdk/workflow": 2.0.15
+    ai: 7.0.85
 
 overrides:
   # `@vercel/queue` accepts any `@vercel/oidc` in the 3.x line, and 3.3+ pulls in
@@ -58,6 +56,14 @@ overrides:
 
 savePrefix: ""
 
+# Keep the lockfile single-document for tools such as Turborepo. CI installs
+# the exact packageManager pin through pnpm/setup.
+pmOnFail: ignore
+
+# pnpm 11 requires Node.js 22 or newer. This replaces the two project-local
+# engine-strict .npmrc files, which pnpm 11 no longer reads from repositories.
+engineStrict: true
+
 minimumReleaseAge: 2880
 
 minimumReleaseAgeExclude:
@@ -75,3 +81,15 @@ minimumReleaseAgeExclude:
   # packages (published in lockstep) are Vercel-published.
   - 'next'
   - '@next/*'
+allowBuilds:
+  '@parcel/watcher': false
+  '@swc/core': false
+  '@tailwindcss/oxide': false
+  better-sqlite3: false
+  bun: false
+  cbor-extract: false
+  cpu-features: false
+  esbuild: true
+  protobufjs: false
+  sharp: false
+  ssh2: false
