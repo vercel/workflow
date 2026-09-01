@@ -1136,6 +1136,7 @@ export const __steps_registered = true;
       bundle: true,
       format,
       platform: 'node',
+      loader: { '.md': 'text' },
       conditions: ['node'],
       target: 'es2022',
       write: true,
@@ -1369,6 +1370,7 @@ export const __steps_registered = true;
       absWorkingDir: this.config.workingDir,
       format: 'cjs', // Runs inside the VM which expects cjs
       platform: 'neutral', // The platform is neither node nor browser
+      loader: { '.md': 'text' },
       mainFields: ['module', 'main'], // To support npm style imports
       conditions: ['workflow'], // Allow packages to export 'workflow' compliant versions
       target: 'es2022',
