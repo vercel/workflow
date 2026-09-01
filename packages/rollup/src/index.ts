@@ -169,6 +169,8 @@ export function workflowTransformPlugin(
           },
         },
         minify: false,
+        // Rollup composes transform maps itself. Do not let SWC separately
+        // resolve sourceMappingURL comments against this normalized module id.
         inputSourceMap: false,
         sourceMaps: true,
         inlineSourcesContent: true,
