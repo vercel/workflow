@@ -3,6 +3,7 @@
 import '@workflow/core/runtime/world-init';
 
 export {
+  createWorkflowBundleLoader,
   createWorld,
   getWorld,
   getWorldHandlers,

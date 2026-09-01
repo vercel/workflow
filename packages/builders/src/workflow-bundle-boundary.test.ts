@@ -6,6 +6,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -43,7 +44,7 @@ class TestBuilder extends BaseBuilder {
     inputFiles: string[],
     stepsOutfile: string,
     flowOutfile: string,
-    discoveredEntries: DiscoveredEntries
+    discoveredEntries?: DiscoveredEntries
   ) {
     return this.createCombinedBundle({
       inputFiles,
@@ -110,7 +111,11 @@ function writeWorkflowBuiltinsFixture(root: string): void {
   writeFileSync(join(packageDir, 'internal/builtins.js'), 'export {};\n');
   writeFileSync(
     join(packageDir, 'runtime.js'),
-    'export const workflowEntrypoint = () => async () => {};\n'
+    `export const workflowEntrypoint = () => async () => {};
+export const createWorkflowBundleLoader = (loadModule) => {
+  let promise;
+  return () => (promise ??= loadModule().then(({ default: encoded }) => Buffer.from(encoded, 'base64').toString('utf8')));
+};\n`
   );
   writeFileSync(
     join(serdePackageDir, 'package.json'),
@@ -339,6 +344,50 @@ export async function alsoFirst() { "use workflow"; return 2; }`
     expect(generatedManifest.classes).toEqual({});
   });
 
+  it('builds one workflow bundle for realpath and symlink aliases', async () => {
+    const workingDir = join(repoRoot, 'workbench/nextjs-turbopack');
+    const outputDir = mkdtempSync(join(workingDir, '.workflow-alias-'));
+    outputDirs.push(outputDir);
+    const realDir = join(outputDir, 'real');
+    const workflowFile = join(realDir, 'workflow.ts');
+    const aliasDir = join(outputDir, 'alias');
+    const entryFile = join(outputDir, 'entry.ts');
+    mkdirSync(realDir);
+    writeFileSync(
+      workflowFile,
+      `export async function aliasedWorkflow() {
+  "use workflow";
+  return "aliased";
+}`
+    );
+    symlinkSync(realDir, aliasDir, 'junction');
+    writeFileSync(
+      entryFile,
+      `import './real/workflow.ts';
+import './alias/workflow.ts';`
+    );
+    writeWorkflowBuiltinsFixture(outputDir);
+    const config = createConfig(repoRoot, outputDir, outputDir, false);
+
+    const { manifest } = await new TestBuilder(
+      config
+    ).createCombinedWorkflowBundle(
+      [entryFile],
+      config.stepsBundlePath,
+      config.workflowsBundlePath
+    );
+
+    const route = readFileSync(config.workflowsBundlePath, 'utf8');
+    expect(referencedWorkflowBundleFileNames(route)).toHaveLength(1);
+    expect(
+      new Set(
+        Object.values(manifest.workflows ?? {}).flatMap((workflows) =>
+          Object.keys(workflows)
+        )
+      )
+    ).toEqual(new Set(['aliasedWorkflow']));
+  });
+
   it('keeps unchanged sidecar names with inline maps after insertion', async () => {
     const workingDir = join(repoRoot, 'workbench/nextjs-turbopack');
     const outputDir = mkdtempSync(join(workingDir, '.workflow-stable-names-'));
@@ -485,6 +534,86 @@ export async function renamedAfterWatch() { "use workflow"; return "rename-me"; 
         result.interimBundleCtx.dispose(),
         result.stepsContext.dispose(),
       ]);
+    }
+  });
+
+  it('prunes workflow sidecars once per watch session', async () => {
+    const workingDir = join(repoRoot, 'workbench/nextjs-turbopack');
+    const outputDir = mkdtempSync(join(workingDir, '.workflow-watch-prune-'));
+    outputDirs.push(outputDir);
+    const workflowFile = join(outputDir, 'watched.ts');
+    writeFileSync(
+      workflowFile,
+      `export async function watched() { "use workflow"; return "first"; }`
+    );
+    const config = createConfig(repoRoot, outputDir, outputDir, true);
+    writeWorkflowBuiltinsFixture(outputDir);
+    const workflowBundleDir = join(outputDir, 'workflow-bundles');
+    mkdirSync(workflowBundleDir);
+    const previousSessionFile = `${'f'.repeat(64)}.mjs`;
+    writeFileSync(join(workflowBundleDir, previousSessionFile), 'stale');
+    const discoveredEntries: DiscoveredEntries = {
+      discoveredSteps: new Set(),
+      discoveredWorkflows: new Set([workflowFile]),
+      discoveredSerdeFiles: new Set(),
+    };
+    const builder = new TestBuilder(config);
+    const first = await builder.createCombinedWorkflowBundle(
+      [workflowFile],
+      config.stepsBundlePath,
+      config.workflowsBundlePath,
+      discoveredEntries
+    );
+    assert(first.interimBundleCtx);
+    assert(first.stepsContext);
+    const [firstSessionFile] = referencedWorkflowBundleFileNames(
+      readFileSync(config.workflowsBundlePath, 'utf8')
+    );
+    assert(firstSessionFile);
+
+    let firstDisposed = false;
+    try {
+      expect(readdirSync(workflowBundleDir)).not.toContain(previousSessionFile);
+      await Promise.all([
+        first.interimBundleCtx.dispose(),
+        first.stepsContext.dispose(),
+      ]);
+      firstDisposed = true;
+
+      writeFileSync(
+        workflowFile,
+        `export async function watched() { "use workflow"; return "second"; }`
+      );
+      const second = await builder.createCombinedWorkflowBundle(
+        [workflowFile],
+        config.stepsBundlePath,
+        config.workflowsBundlePath,
+        discoveredEntries
+      );
+      assert(second.interimBundleCtx);
+      assert(second.stepsContext);
+      try {
+        const [secondSessionFile] = referencedWorkflowBundleFileNames(
+          readFileSync(config.workflowsBundlePath, 'utf8')
+        );
+        assert(secondSessionFile);
+        expect(secondSessionFile).not.toBe(firstSessionFile);
+        expect(readdirSync(workflowBundleDir)).toEqual(
+          expect.arrayContaining([firstSessionFile, secondSessionFile])
+        );
+      } finally {
+        await Promise.all([
+          second.interimBundleCtx.dispose(),
+          second.stepsContext.dispose(),
+        ]);
+      }
+    } finally {
+      if (!firstDisposed) {
+        await Promise.allSettled([
+          first.interimBundleCtx.dispose(),
+          first.stepsContext.dispose(),
+        ]);
+      }
     }
   });
 });

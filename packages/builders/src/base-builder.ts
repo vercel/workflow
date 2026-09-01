@@ -207,6 +207,65 @@ function moduleIdentityKey(file: string, moduleSpecifierRoot: string): string {
   return file.replace(/\\/g, '/');
 }
 
+type CanonicalModuleEntry = {
+  file: string;
+  paths: readonly string[];
+  identities: readonly string[];
+};
+
+/**
+ * Plan one build entry per physical module while retaining every identity that
+ * the transformer may report for it. esbuild resolves symlinks before running
+ * transforms, so deduplicating only the discovered path can create an output
+ * slot whose manifest is owned by another alias of the same module.
+ */
+async function planCanonicalModuleEntries(
+  files: Iterable<string>,
+  moduleSpecifierRoot: string
+): Promise<CanonicalModuleEntry[]> {
+  const candidates = await Promise.all(
+    [...files].sort().map(async (file) => {
+      const paths = await withRealpaths([file]);
+      const identities = [
+        ...new Set(
+          paths.map((path) => moduleIdentityKey(path, moduleSpecifierRoot))
+        ),
+      ];
+      return {
+        file,
+        paths,
+        identities,
+        // withRealpaths() appends the physical path when it differs.
+        canonicalIdentity:
+          identities.at(-1) ?? moduleIdentityKey(file, moduleSpecifierRoot),
+      };
+    })
+  );
+  const entriesByIdentity = new Map<
+    string,
+    { file: string; paths: readonly string[]; identities: Set<string> }
+  >();
+  for (const candidate of candidates) {
+    const entry = entriesByIdentity.get(candidate.canonicalIdentity);
+    if (entry) {
+      for (const identity of candidate.identities) {
+        entry.identities.add(identity);
+      }
+      continue;
+    }
+    entriesByIdentity.set(candidate.canonicalIdentity, {
+      file: candidate.file,
+      paths: candidate.paths,
+      identities: new Set(candidate.identities),
+    });
+  }
+  return [...entriesByIdentity.values()].map(({ file, paths, identities }) => ({
+    file,
+    paths,
+    identities: [...identities],
+  }));
+}
+
 type CachedManifestTransform = {
   size: number;
   mtimeMs: number;
@@ -262,11 +321,7 @@ function createWorkflowBundleLoaders(bundles: WorkflowBundle[]): string {
     )
     .join('\n');
 
-  return `const createWorkflowBundleLoader = (loadModule) => {
-  let promise;
-  return () => (promise ??= loadModule().then((module) => Buffer.from(module.default, 'base64').toString('utf8')));
-};
-${loaders}\nconst workflowCode = {\n${entries}\n};`;
+  return `${loaders}\nconst workflowCode = {\n${entries}\n};`;
 }
 
 /**
@@ -286,6 +341,7 @@ export abstract class BaseBuilder {
   private workflowBuildStartTime: number | undefined;
   private manifestTransformCache = new Map<string, CachedManifestTransform>();
   private readonly workflowGraphCache: WorkflowGraphCache = new Map();
+  private readonly cleanedWatchWorkflowBundleDirs = new Set<string>();
 
   constructor(config: WorkflowConfig) {
     this.config = config;
@@ -1389,9 +1445,13 @@ export const __steps_registered = true;
     outfile: string,
     bundles: WorkflowBundle[]
   ): Promise<void> {
-    if (this.config.watch) return;
-
     const workflowBundleDir = join(dirname(outfile), WORKFLOW_BUNDLE_DIRECTORY);
+    if (
+      this.config.watch &&
+      this.cleanedWatchWorkflowBundleDirs.has(workflowBundleDir)
+    ) {
+      return;
+    }
     const desiredFiles = new Set(bundles.map(({ fileName }) => fileName));
     const generatedFiles = (await readdir(workflowBundleDir)).filter(
       isWorkflowBundleFileName
@@ -1401,6 +1461,9 @@ export const __steps_registered = true;
         .filter((file) => !desiredFiles.has(file))
         .map((file) => rm(join(workflowBundleDir, file), { force: true }))
     );
+    if (this.config.watch) {
+      this.cleanedWatchWorkflowBundleDirs.add(workflowBundleDir);
+    }
   }
 
   private async prepareWorkflowBundleBuild({
@@ -1414,32 +1477,22 @@ export const __steps_registered = true;
     includeMetafile: boolean;
     tsconfigPath?: string;
   }): Promise<WorkflowBundleBuild> {
-    // Discovery can report the same module through a symlink, package export,
-    // or direct path. Build each canonical module only once.
-    const uniqueFiles = (files: string[]) => {
-      const identities = new Set<string>();
-      return files.filter((file) => {
-        const identity = moduleIdentityKey(file, this.moduleSpecifierRoot);
-        if (identities.has(identity)) return false;
-        identities.add(identity);
-        return true;
-      });
-    };
-    const workflowFiles = uniqueFiles(
-      [...discovered.discoveredWorkflows].sort()
+    const workflowEntries = await planCanonicalModuleEntries(
+      discovered.discoveredWorkflows,
+      this.moduleSpecifierRoot
     );
+    const workflowFiles = workflowEntries.map(({ file }) => file);
     const workflowIndexByIdentity = new Map<string, number>();
-    await Promise.all(
-      workflowFiles.map(async (file, index) => {
-        for (const path of await withRealpaths([file])) {
-          workflowIndexByIdentity.set(
-            moduleIdentityKey(path, this.moduleSpecifierRoot),
-            index
-          );
-        }
-      })
+    workflowEntries.forEach(({ identities }, index) => {
+      for (const identity of identities) {
+        workflowIndexByIdentity.set(identity, index);
+      }
+    });
+    const serdeEntries = await planCanonicalModuleEntries(
+      discovered.discoveredSerdeFiles,
+      this.moduleSpecifierRoot
     );
-    const serdeFiles = uniqueFiles([...discovered.discoveredSerdeFiles].sort());
+    const serdeFiles = serdeEntries.map(({ file }) => file);
 
     await this.writeDebugFile(outfile, { workflowFiles, serdeFiles });
 
@@ -1448,19 +1501,19 @@ export const __steps_registered = true;
 
     // esbuild needs at least one entry point. The placeholder entry also runs
     // serde-only imports through SWC so their class metadata is still emitted.
-    const bundleFiles = workflowFiles.length > 0 ? workflowFiles : [undefined];
-    const bundleEntries = bundleFiles.map((workflowFile) => {
-      const workflowImport = workflowFile ? createImport(workflowFile) : '';
-      const workflowIdentity = workflowFile
-        ? moduleIdentityKey(workflowFile, this.moduleSpecifierRoot)
-        : undefined;
-      const serdeImports = serdeFiles
+    const bundleFiles =
+      workflowEntries.length > 0 ? workflowEntries : [undefined];
+    const bundleEntries = bundleFiles.map((workflowEntry) => {
+      const workflowImport = workflowEntry
+        ? createImport(workflowEntry.file)
+        : '';
+      const workflowIdentities = new Set(workflowEntry?.identities);
+      const serdeImports = serdeEntries
         .filter(
-          (file) =>
-            moduleIdentityKey(file, this.moduleSpecifierRoot) !==
-            workflowIdentity
+          ({ identities }) =>
+            !identities.some((identity) => workflowIdentities.has(identity))
         )
-        .map(createImport)
+        .map(({ file }) => createImport(file))
         .join('\n');
       return serdeImports
         ? `${workflowImport}\n// Serde files for cross-context class registration\n${serdeImports}`
@@ -1471,10 +1524,11 @@ export const __steps_registered = true;
     const workflowIdsByBundleIndex = new Map<number, string[]>();
     const esbuildTsconfigOptions =
       await getEsbuildTsconfigOptions(tsconfigPath);
-    const normalizedWorkflowSideEffectEntries = await withRealpaths([
-      ...workflowFiles,
-      ...serdeFiles,
-    ]);
+    const normalizedWorkflowSideEffectEntries = [
+      ...new Set(
+        [...workflowEntries, ...serdeEntries].flatMap(({ paths }) => paths)
+      ),
+    ];
 
     // Give esbuild one virtual entry per workflow source. The entry imports its
     // workflow plus every serializer registration required inside a fresh VM.
@@ -1587,8 +1641,8 @@ export const __steps_registered = true;
               `No output generated for workflow bundle ${index}`
             );
           }
-          const workflowFile = workflowFiles[index];
-          const workflowIds = workflowFile
+          const workflowEntry = workflowEntries[index];
+          const workflowIds = workflowEntry
             ? workflowIdsByBundleIndex.get(index)
             : [];
           if (!workflowIds) {
@@ -1808,7 +1862,7 @@ export const __steps_registered = true;
     ) => `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { __steps_registered } from '${stepsRelativePath}';
-import { workflowEntrypoint } from 'workflow/runtime';
+import { createWorkflowBundleLoader, workflowEntrypoint } from 'workflow/runtime';
 
 const workflowRouteModuleBodyStartedAt = Date.now();
 
@@ -1865,9 +1919,9 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       );
     }
 
-    // Cold builds have no prior route generation to preserve. Watch builds
-    // retain immutable old hashes because framework module retirement is not
-    // observable here and an old handler may start its lazy import later.
+    // Prune hashes from earlier processes. A watch session does this only on
+    // its first generation, then retains its immutable hashes because an old
+    // handler may start a lazy import after a later rebuild publishes its route.
     await this.removeObsoleteWorkflowBundles(
       flowOutfile,
       workflowsResult.workflowBundles

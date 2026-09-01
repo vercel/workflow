@@ -710,6 +710,19 @@ export type WorkflowCode =
   | string
   | Readonly<Record<string, () => Promise<string>>>;
 
+type WorkflowBundleModule = Readonly<{ default: string }>;
+
+/** Decode and memoize one content-addressed workflow VM sidecar. */
+export function createWorkflowBundleLoader(
+  loadModule: () => Promise<WorkflowBundleModule>
+): () => Promise<string> {
+  let workflowCode: Promise<string> | undefined;
+  return () =>
+    (workflowCode ??= loadModule().then(({ default: encoded }) =>
+      Buffer.from(encoded, 'base64').toString('utf8')
+    ));
+}
+
 async function loadWorkflowCode(
   workflowCode: WorkflowCode,
   workflowName: string

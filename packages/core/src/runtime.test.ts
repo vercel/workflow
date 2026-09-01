@@ -20,7 +20,11 @@ import {
   REPLAY_DIVERGENCE_MAX_RETRIES,
 } from './runtime/constants.js';
 import { setWorld } from './runtime/world.js';
-import { type WorkflowCode, workflowEntrypoint } from './runtime.js';
+import {
+  createWorkflowBundleLoader,
+  type WorkflowCode,
+  workflowEntrypoint,
+} from './runtime.js';
 import {
   dehydrateStepArguments,
   dehydrateStepReturnValue,
@@ -184,6 +188,18 @@ async function runWorkflowHandlerWithEvents(
 
   return createdEvents;
 }
+
+describe('createWorkflowBundleLoader', () => {
+  it('loads and decodes a workflow sidecar once', async () => {
+    const encoded = Buffer.from('workflow-vm-code').toString('base64');
+    const loadModule = vi.fn(async () => ({ default: encoded }));
+    const loadWorkflowBundle = createWorkflowBundleLoader(loadModule);
+
+    await expect(loadWorkflowBundle()).resolves.toBe('workflow-vm-code');
+    await expect(loadWorkflowBundle()).resolves.toBe('workflow-vm-code');
+    expect(loadModule).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('workflowEntrypoint replay guards', () => {
   afterEach(() => {
