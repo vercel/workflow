@@ -229,12 +229,35 @@ interface Queue {
     opts?: QueueOptions
   ): Promise<{ messageId: MessageId | null }>;
 
+  // Optional. Omit it and the runtime publishes one message at a time.
+  queueBatch?(
+    queueName: ValidQueueName,
+    messages: readonly { message: QueuePayload; opts?: QueueOptions }[]
+  ): Promise<QueueBatchResult[]>;
+
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
     handler: (message: unknown, meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }) => Promise<void | { timeoutSeconds: number }>
   ): (req: Request) => Promise<Response>;
 }
 ```
+
+### Batched publishing
+
+`queueBatch` is optional. Implement it when your transport can accept several messages in one round trip, and the runtime will use it to dispatch a wide `Promise.all` fan-out. A fan-out otherwise costs one round trip per branch, paid before the first branch's step body runs, so it lands directly on time-to-first-step.
+
+Its contract differs from `queue` in one important way: **a message that fails is reported, not thrown.** Return one result per input message, in input order, where `error` is set on the entries that were rejected and `retryable` says whether republishing might succeed. Reject the promise only for a request-level failure, where you cannot say what happened to any individual message.
+
+{/* @skip-typecheck - interface definition, not runnable code */}
+```typescript
+type QueueBatchResult =
+  | { messageId: MessageId | null; error?: undefined }
+  | { messageId: null; error: string; retryable: boolean };
+```
+
+`messageId: null` with no `error` means accepted without an ID yet, exactly as for `queue`, so callers test `error === undefined` for success rather than a non-null `messageId`.
+
+Every message targets one logical `queueName`, but you may split the batch internally — by a transport cap, or by any per-message routing dimension you derive from the payload — as long as the returned order still matches the input. The runtime passes a distinct `idempotencyKey` per message, because its recovery for both a request-level failure and a retryable entry is to republish the whole batch.
 
 ### Queue names
 
