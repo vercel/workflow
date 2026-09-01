@@ -41,12 +41,14 @@ export type PageInfo = z.infer<typeof PageInfoSchema>;
 export const PaginatedResponseSchema = <T extends z.ZodTypeAny>(
   dataSchema: T
 ) =>
-  z.object({
-    data: z.array(dataSchema),
-    cursor: z.string().nullable(),
-    hasMore: z.boolean(),
-    pageInfo: PageInfoSchema.optional(),
-  });
+  z.compile(
+    z.object({
+      data: z.array(dataSchema),
+      cursor: z.string().nullable(),
+      hasMore: z.boolean(),
+      pageInfo: PageInfoSchema.optional(),
+    })
+  );
 
 // Inferred type from schema
 export type PaginatedResponse<T> = z.infer<
