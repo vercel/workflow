@@ -1928,6 +1928,34 @@ importers:
         specifier: 'catalog:'
         version: 4.3.6
 
+  workbench/inline-step-bench:
+    dependencies:
+      '@hono/node-server':
+        specifier: 1.19.13
+        version: 1.19.13(hono@4.12.25)
+      '@workflow/cli':
+        specifier: workspace:*
+        version: link:../../packages/cli
+      '@workflow/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@workflow/world':
+        specifier: workspace:*
+        version: link:../../packages/world
+      '@workflow/world-local':
+        specifier: workspace:*
+        version: link:../../packages/world-local
+      hono:
+        specifier: 4.12.25
+        version: 4.12.25
+      workflow:
+        specifier: workspace:*
+        version: link:../../packages/workflow
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.19.0
+
   workbench/nest:
     dependencies:
       '@nestjs/common':
