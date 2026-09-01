@@ -63,6 +63,7 @@ import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import {
   ErrorType,
+  injectTraceContextIntoHeaders,
   NetworkProtocolName,
   StepLatencyOptimizations,
   StepStsoMs,
@@ -1155,10 +1156,14 @@ function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
  * key to the server's log line for the same frame. A synthetic span that hid
  * which transport produced it would be a trap, not a convenience.
  *
- * Two things the HTTP envelope has that this one deliberately does not: the
- * cache-bust header (a frame is memoized by nothing) and a per-frame
- * `traceparent` (frames carry no headers; trace context rides the upgrade
- * instead, so the server parents to the connection's span, not to this one).
+ * One thing the HTTP envelope has that this one deliberately does not: the
+ * cache-bust header (a frame is memoized by nothing).
+ *
+ * Trace context rides the frame envelope (`traceparent`/`tracestate` next to
+ * `reqId` — not inside `event`, which is the HTTP wire format forwarded
+ * verbatim), captured inside this write's own CLIENT span so the server's
+ * per-message span parents to the write rather than to the connection's
+ * upgrade. A server that predates the field strips it and behaves as before.
  *
  * One gap this cannot close: Vercel's observability *outgoing requests* view is
  * built by instrumenting the global `fetch`, not by reading OpenTelemetry spans,
@@ -1212,6 +1217,12 @@ async function postEventFrameOverWs(
     },
     async (span) => {
       const start = Date.now();
+      // Captured inside this write's active CLIENT span so the carrier names
+      // this span. No-op (both stay undefined) without an OTEL SDK.
+      const traceCarrier = new Headers();
+      await injectTraceContextIntoHeaders(traceCarrier);
+      const traceparent = traceCarrier.get('traceparent') ?? undefined;
+      const tracestate = traceCarrier.get('tracestate') ?? undefined;
       let reply: WsFrameReply;
       try {
         // `runId` isn't repeated here, since it's already in `wsUrl`, one
@@ -1226,7 +1237,13 @@ async function postEventFrameOverWs(
           // reconnect legitimately re-uses low numbers.
           span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
           return encodeFrame(
-            { reqId, type: 'event', event: buildPostFrameMeta(input) },
+            {
+              reqId,
+              type: 'event',
+              ...(traceparent !== undefined ? { traceparent } : {}),
+              ...(tracestate !== undefined ? { tracestate } : {}),
+              event: buildPostFrameMeta(input),
+            },
             input.payload ?? new Uint8Array(0)
           );
         });
