@@ -119,6 +119,28 @@ const getLockPollIntervalMs = (): number =>
 export interface FlushableStreamState extends PromiseWithResolvers<void> {
   /** Number of write operations currently in flight to the server */
   pendingOps: number;
+  /** Frames emitted by this pipe's producer. */
+  producedFrames: number;
+  /** Produced frames accepted by this pipe's sink. */
+  acceptedFrames: number;
+  /** Terminal pipe error, retained for snapshots registered after failure. */
+  pipeError?: unknown;
+  /**
+   * If the user-facing writable is unlocked, enqueue an ordered checkpoint and
+   * durably drain every write ahead of it. Returns false while a writer remains
+   * locked, so lock-held streams never block step completion.
+   */
+  settleReleasedWrites?: () => Promise<boolean>;
+  /** Whether release settlement waits for explicit step-end arming. */
+  deferReleaseSettlement?: boolean;
+  /** Whether step-end processing has armed released-writer settlement. */
+  releaseSettlementArmed?: boolean;
+  /** Step-end snapshot waiters blocked until their target reaches the sink. */
+  frameWaiters: Array<{
+    target: number;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  }>;
   /** Whether the `done` promise has been resolved */
   doneResolved: boolean;
   /** Whether the underlying stream has actually closed/errored */
@@ -140,6 +162,9 @@ export function createFlushableState(): FlushableStreamState {
   const state: FlushableStreamState = {
     ...withResolvers<void>(),
     pendingOps: 0,
+    producedFrames: 0,
+    acceptedFrames: 0,
+    frameWaiters: [],
     doneResolved: false,
     streamEnded: false,
   };
@@ -229,6 +254,109 @@ function resolveAfterDrain(state: FlushableStreamState): void {
   );
 }
 
+/** Record a frame synchronously when its producer emits it into this pipe. */
+function markFlushableFrameProduced(state: FlushableStreamState): void {
+  state.producedFrames++;
+}
+
+/**
+ * Capture a step-end producer watermark, wait until the pipe has handed every
+ * frame through that watermark to its sink, then await the sink's durability
+ * barrier. Unlike {@link FlushableStreamState.promise}, this never waits for a
+ * user writer lock to be released.
+ */
+export async function drainFlushableSnapshot(
+  state: FlushableStreamState
+): Promise<void> {
+  const target = state.producedFrames;
+  if (state.acceptedFrames < target) {
+    if (state.pipeError !== undefined) throw state.pipeError;
+    await new Promise<void>((resolve, reject) => {
+      state.frameWaiters.push({ target, resolve, reject });
+    });
+  }
+  await state.drainBarrier?.();
+}
+
+/**
+ * Mark byte-stream chunks at the producer side of a flushable pipe. Serialized
+ * streams should instead use `getSerializeStream`'s synchronous output hook.
+ */
+/**
+ * Wrap the user-facing producer boundary of a flushable writable. A completed
+ * write through this handle has a sequence number before step-end snapshots,
+ * while the original writable remains the input to the serialization pipe.
+ */
+export function trackFlushableWritable<T>(
+  writable: WritableStream<T>,
+  state: FlushableStreamState,
+  WritableStreamConstructor: typeof WritableStream = WritableStream
+): WritableStream<T> {
+  const targetWriter = writable.getWriter();
+  const checkpoint = Symbol('workflow-stream-release-checkpoint');
+  const tracked = new WritableStreamConstructor({
+    async write(chunk) {
+      if (chunk === checkpoint) return;
+      markFlushableFrameProduced(state);
+      await targetWriter.write(chunk);
+    },
+    async close() {
+      try {
+        await targetWriter.close();
+      } finally {
+        targetWriter.releaseLock();
+      }
+    },
+    async abort(reason) {
+      try {
+        await targetWriter.abort(reason);
+      } finally {
+        targetWriter.releaseLock();
+      }
+    },
+  }) as WritableStream<T>;
+
+  let settlement: Promise<boolean> | undefined;
+  state.settleReleasedWrites = (): Promise<boolean> => {
+    state.releaseSettlementArmed = true;
+    if (settlement) return settlement;
+    if (tracked.locked) return Promise.resolve(false);
+
+    let checkpointWriter: WritableStreamDefaultWriter<T>;
+    try {
+      checkpointWriter = tracked.getWriter();
+    } catch {
+      // Closed/errored streams settle through the pipe's normal completion.
+      return Promise.resolve(false);
+    }
+
+    settlement = (async () => {
+      try {
+        // Native writable ordering puts this behind writes queued by the
+        // released writer, including write promises it did not await.
+        await checkpointWriter.write(checkpoint as T);
+        await drainFlushableSnapshot(state);
+        if (!state.doneResolved) {
+          state.doneResolved = true;
+          state.resolve();
+        }
+        return true;
+      } catch (error) {
+        if (!state.doneResolved) {
+          state.doneResolved = true;
+          state.reject(error);
+        }
+        throw error;
+      } finally {
+        checkpointWriter.releaseLock();
+      }
+    })();
+    return settlement;
+  };
+
+  return tracked;
+}
+
 /**
  * Polls a WritableStream to check if the user has released their lock.
  * Resolves the done promise when lock is released and no pending ops remain.
@@ -253,6 +381,20 @@ export function pollWritableLock(
     if (state.doneResolved || state.streamEnded) {
       clearInterval(intervalId);
       state.writablePollingInterval = undefined;
+      return;
+    }
+
+    if (state.settleReleasedWrites) {
+      if (
+        (!state.deferReleaseSettlement || state.releaseSettlementArmed) &&
+        !writable.locked
+      ) {
+        clearInterval(intervalId);
+        state.writablePollingInterval = undefined;
+        void state.settleReleasedWrites().catch(() => {
+          // Failure is surfaced through state.promise.
+        });
+      }
       return;
     }
 
@@ -393,13 +535,25 @@ async function flushablePipePerChunk(
       state.pendingOps++;
       try {
         await writer.write(readResult.value);
+        state.acceptedFrames++;
+        const ready = state.frameWaiters.filter(
+          (waiter) => waiter.target <= state.acceptedFrames
+        );
+        state.frameWaiters = state.frameWaiters.filter(
+          (waiter) => waiter.target > state.acceptedFrames
+        );
+        for (const waiter of ready) waiter.resolve();
       } finally {
         state.pendingOps--;
       }
     }
   } catch (err) {
     state.streamEnded = true;
+    state.pipeError = err;
     cancelReason = err;
+    const frameWaiters = state.frameWaiters;
+    state.frameWaiters = [];
+    for (const waiter of frameWaiters) waiter.reject(err);
     // Against an early-ack sink, chunks can still be buffered or in flight
     // when the pipe fails (pendingOps only counts un-acked writes). Deliver
     // that accepted prefix before settling the failure: once the state
