@@ -164,9 +164,11 @@ function getHookRetentionLimitMs(): number {
  * lifetimes can never share one marker (see
  * `hookRecoveryMarkerPath`).
  */
-const HookRecoveryMarkerSchema = z.object({
-  eventId: z.string(),
-});
+const HookRecoveryMarkerSchema = z.compile(
+  z.object({
+    eventId: z.string(),
+  })
+);
 
 /**
  * Durable `(runId, resumeId)` claim for a lazy hook resume. Written via
@@ -177,13 +179,15 @@ const HookRecoveryMarkerSchema = z.object({
  * records the content hash so a reused `resumeId` carrying a different payload
  * can be rejected as a conflict, matching the server's constraint.
  */
-const HookResumeClaimSchema = z.object({
-  runId: z.string(),
-  resumeId: z.string(),
-  hookId: z.string(),
-  eventId: z.string(),
-  payloadDigest: z.string().optional(),
-});
+const HookResumeClaimSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    resumeId: z.string(),
+    hookId: z.string(),
+    eventId: z.string(),
+    payloadDigest: z.string().optional(),
+  })
+);
 
 /**
  * Whether `event` is the `hook_received` a resume claim stands for.

@@ -32,9 +32,11 @@ const chunkIds = globalSingleton(
 const monotonicUlid = (seedTime?: number): string => chunkIds.next(seedTime);
 
 // Schema for the run-to-streams mapping file
-const RunStreamsSchema = z.object({
-  streams: z.array(z.string()),
-});
+const RunStreamsSchema = z.compile(
+  z.object({
+    streams: z.array(z.string()),
+  })
+);
 
 /**
  * A chunk consists of a boolean `eof` indicating if it's the last chunk,

@@ -308,50 +308,125 @@ export interface PreconditionFailureDetails {
   cursor?: string;
 }
 
-const CreateEventV4BodyBaseSchema = z.object({
-  event: EventSchema,
-  run: WorkflowRunSchema.optional(),
-  step: StepWireSchema.transform(deserializeStep).optional(),
-  hook: HookSchema.optional(),
-  wait: WaitSchema.optional(),
-  stepCreated: z.literal(true).optional(),
-  maxEvents: z.number().int().positive().optional(),
-});
+/**
+ * Event responses may omit an unresolved payload field entirely. Zod <=4.3
+ * treated an object property backed by `z.any()` as optional, so EventSchema
+ * historically accepted that wire shape even though the property was not
+ * explicitly optional. Zod 4.5 correctly distinguishes a missing property
+ * from a present `undefined` value.
+ *
+ * Keep CreateEventSchema strict while preserving the Vercel response contract:
+ * temporarily materialize an omitted payload with a private sentinel for
+ * EventSchema, then remove only that synthesized value from the parsed response.
+ */
+const OMITTED_EVENT_PAYLOAD = Symbol('omitted event payload');
+const VercelEventWireSchema = z.compile(
+  z
+    .preprocess((value) => {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return value;
+      }
 
-const CreateEventV4PageSchema = z.union([
-  z.object({
-    events: z.array(EventSchema),
-    cursor: z.string().nullable(),
-    hasMore: z.boolean(),
-  }),
-  z.object({
-    events: z.undefined(),
-    cursor: z.undefined(),
-    hasMore: z.undefined(),
-  }),
-]);
+      const event = value as Record<string, unknown>;
+      const payloadField =
+        typeof event.eventType === 'string'
+          ? getEventDataPayloadField(event.eventType)
+          : undefined;
+      const eventData = event.eventData as Record<string, unknown> | undefined;
+      if (
+        !payloadField ||
+        typeof eventData !== 'object' ||
+        eventData === null ||
+        Array.isArray(eventData) ||
+        Object.hasOwn(eventData, payloadField)
+      ) {
+        return value;
+      }
 
-const CreateEventV4BodySchema = CreateEventV4BodyBaseSchema.and(
-  CreateEventV4PageSchema
+      return {
+        ...event,
+        eventData: {
+          ...eventData,
+          [payloadField]: OMITTED_EVENT_PAYLOAD,
+        },
+      };
+    }, EventSchema)
+    .transform((event) => {
+      const payloadField = getEventDataPayloadField(event.eventType);
+      if (!payloadField || !('eventData' in event)) return event;
+
+      const eventData = event.eventData as Record<string, unknown> | undefined;
+      if (
+        typeof eventData !== 'object' ||
+        eventData === null ||
+        Array.isArray(eventData) ||
+        eventData[payloadField] !== OMITTED_EVENT_PAYLOAD
+      ) {
+        return event;
+      }
+
+      const parsedEventData = { ...eventData };
+      delete parsedEventData[payloadField];
+      return { ...event, eventData: parsedEventData } as Event;
+    })
+);
+
+const CreateEventV4BodyBaseSchema = z.compile(
+  z.object({
+    event: VercelEventWireSchema,
+    run: WorkflowRunSchema.optional(),
+    step: StepWireSchema.transform(deserializeStep).optional(),
+    hook: HookSchema.optional(),
+    wait: WaitSchema.optional(),
+    stepCreated: z.literal(true).optional(),
+    maxEvents: z.number().int().positive().optional(),
+  })
+);
+
+const CreateEventV4PageSchema = z.compile(
+  z.union([
+    z.object({
+      events: z.array(VercelEventWireSchema),
+      cursor: z.string().nullable(),
+      hasMore: z.boolean(),
+    }),
+    // This schema is always intersected with CreateEventV4BodyBaseSchema.
+    // Keep it non-strict so the base response fields remain valid here.
+    z.object({
+      events: z.undefined().optional(),
+      cursor: z.undefined().optional(),
+      hasMore: z.undefined().optional(),
+    }),
+  ])
+);
+
+const CreateEventV4BodySchema = z.compile(
+  CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema)
 );
 
 const CreateEventV4BodySchemas: {
   [T in EventType]: z.ZodType<EventResult<T> & { event: Event }>;
 } = {
-  run_created: CreateEventV4BodyBaseSchema.extend({
-    run: WorkflowRunSchema,
-  }).and(CreateEventV4PageSchema),
-  run_started: CreateEventV4BodyBaseSchema.extend({
-    run: WorkflowRunSchema.and(z.object({ startedAt: z.coerce.date() })),
-  }).and(CreateEventV4PageSchema),
-  step_started: CreateEventV4BodyBaseSchema.extend({
-    step: StepWireSchema.extend({
-      startedAt: z.coerce.date(),
-    }).transform((step) => ({
-      ...deserializeStep(step),
-      startedAt: step.startedAt,
-    })),
-  }).and(CreateEventV4PageSchema),
+  run_created: z.compile(
+    CreateEventV4BodyBaseSchema.extend({
+      run: WorkflowRunSchema,
+    }).and(CreateEventV4PageSchema)
+  ),
+  run_started: z.compile(
+    CreateEventV4BodyBaseSchema.extend({
+      run: WorkflowRunSchema.and(z.object({ startedAt: z.coerce.date() })),
+    }).and(CreateEventV4PageSchema)
+  ),
+  step_started: z.compile(
+    CreateEventV4BodyBaseSchema.extend({
+      step: StepWireSchema.extend({
+        startedAt: z.coerce.date(),
+      }).transform((step) => ({
+        ...deserializeStep(step),
+        startedAt: step.startedAt,
+      })),
+    }).and(CreateEventV4PageSchema)
+  ),
   run_completed: CreateEventV4BodySchema,
   run_failed: CreateEventV4BodySchema,
   run_cancelled: CreateEventV4BodySchema,
@@ -371,23 +446,27 @@ const CreateEventV4BodySchemas: {
   noop: CreateEventV4BodySchema,
 };
 
-const MaxEventsHeaderSchema = z.coerce.number().int().positive();
-const EventStreamEndSchema = z.object({
-  _end: z.literal(1),
-  next: z.string().optional(),
-  hasMore: z.boolean(),
-});
+const MaxEventsHeaderSchema = z.compile(z.coerce.number().int().positive());
+const EventStreamEndSchema = z.compile(
+  z.object({
+    _end: z.literal(1),
+    next: z.string().optional(),
+    hasMore: z.boolean(),
+  })
+);
 
 /**
  * Terminal error frame. The backend sends this when it cannot finish a frame
  * stream and retrying will not help — the response already committed to `200`
  * with its first byte, so there is no status code left to carry the failure.
  */
-const EventStreamErrorSchema = z.object({
-  _error: z.literal(1),
-  code: z.string(),
-  message: z.string().optional(),
-});
+const EventStreamErrorSchema = z.compile(
+  z.object({
+    _error: z.literal(1),
+    code: z.string(),
+    message: z.string().optional(),
+  })
+);
 
 /**
  * An event's payload object is gone from the backend's blob storage. The
@@ -417,13 +496,13 @@ function decodeLegacyStructuredError(payload: Uint8Array): unknown {
 
 function decodeEventFrame({ meta, body }: DecodedFrame): Event {
   const eventType = EventTypeSchema.parse(meta.eventType);
-  if (body.byteLength === 0) return EventSchema.parse(meta);
+  if (body.byteLength === 0) return VercelEventWireSchema.parse(meta);
 
   const payloadField = getEventDataPayloadField(eventType);
   assert(payloadField, `Event type ${eventType} cannot carry a payload body`);
   assert(meta.eventData && typeof meta.eventData === 'object');
 
-  return EventSchema.parse({
+  return VercelEventWireSchema.parse({
     ...meta,
     eventData: {
       ...meta.eventData,
@@ -633,7 +712,7 @@ function decodePreconditionDetails(
     const candidate = raw as Record<string, unknown>;
     if (typeof candidate.eventId !== 'string') return undefined;
     if (hasUnusablePayload(candidate)) return undefined;
-    const event = EventSchema.safeParse(candidate);
+    const event = VercelEventWireSchema.safeParse(candidate);
     if (!event.success) return undefined;
     events.push(event.data);
   }
@@ -840,13 +919,14 @@ async function decodeCreateEventResponse<T extends EventType>(
       code: 'PARSE_ERROR',
     });
   }
-  const schema: z.ZodType<EventResult<T> & { event: Event }> =
+  const schema: z.ZodType<EventResult<T> & { event: Event }> = z.compile(
     CreateEventV4BodySchemas[eventType].refine(
       ({ event }) =>
         event.eventType === eventType ||
         (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
       { path: ['event', 'eventType'] }
-    );
+    )
+  );
   let decoded: unknown;
   try {
     decoded = decode(bodyBytes);
@@ -927,11 +1007,13 @@ export interface CreateEventBatchV4Result {
   results: CreateEventBatchV4ItemResult[];
 }
 
-const BatchItemFailureSchema = z.object({
-  status: z.number().int(),
-  error: z.string(),
-  message: z.string(),
-});
+const BatchItemFailureSchema = z.compile(
+  z.object({
+    status: z.number().int(),
+    error: z.string(),
+    message: z.string(),
+  })
+);
 
 /**
  * POST /api/v4/runs/:runId/events/batch

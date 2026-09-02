@@ -25,112 +25,126 @@ const NAIVE_DATETIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
  * offset), and non-string inputs (Date, epoch number), are forwarded
  * without modification before coercion.
  */
-const UTCDateSchema = z.preprocess((value) => {
-  if (typeof value === 'string' && NAIVE_DATETIME.test(value)) {
-    return `${value.replace(' ', 'T')}Z`;
-  }
-  return value;
-}, z.coerce.date());
+const UTCDateSchema = z.compile(
+  z.preprocess((value) => {
+    if (typeof value === 'string' && NAIVE_DATETIME.test(value)) {
+      return `${value.replace(' ', 'T')}Z`;
+    }
+    return value;
+  }, z.coerce.date())
+);
 
-const NullableDateSchema = UTCDateSchema.nullable().optional();
-const NullableStringSchema = z.string().nullable().optional();
-const NullableBooleanSchema = z.boolean().nullable().optional();
+const NullableDateSchema = z.compile(UTCDateSchema.nullable().optional());
+const NullableStringSchema = z.compile(z.string().nullable().optional());
+const NullableBooleanSchema = z.compile(z.boolean().nullable().optional());
 
 // Keep analytics object schemas standalone even when they mirror storage
 // metadata fields. This namespace is an explicit metadata-only read contract;
 // payload and secret fields should only appear here through deliberate opt-in.
-export const AnalyticsRunSchema = z.object({
-  runId: z.string(),
-  status: WorkflowRunStatusSchema,
-  deploymentId: z.string(),
-  workflowName: z.string(),
-  specVersion: z.coerce.number().optional(),
-  attributes: z.record(z.string(), z.string()).default({}),
-  createdAt: UTCDateSchema,
-  updatedAt: UTCDateSchema,
-  startedAt: NullableDateSchema,
-  completedAt: NullableDateSchema,
-  errorCode: NullableStringSchema,
-  workflowCoreVersion: NullableStringSchema,
-  workflowEncryptionEnabled: NullableBooleanSchema,
-});
+export const AnalyticsRunSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    status: WorkflowRunStatusSchema,
+    deploymentId: z.string(),
+    workflowName: z.string(),
+    specVersion: z.coerce.number().optional(),
+    attributes: z.record(z.string(), z.string()).default({}),
+    createdAt: UTCDateSchema,
+    updatedAt: UTCDateSchema,
+    startedAt: NullableDateSchema,
+    completedAt: NullableDateSchema,
+    errorCode: NullableStringSchema,
+    workflowCoreVersion: NullableStringSchema,
+    workflowEncryptionEnabled: NullableBooleanSchema,
+  })
+);
 
-export const AnalyticsStepSchema = z.object({
-  runId: z.string(),
-  stepId: z.string(),
-  stepName: NullableStringSchema,
-  status: StepStatusSchema,
-  attempt: z.number().optional(),
-  createdAt: UTCDateSchema,
-  updatedAt: UTCDateSchema,
-  startedAt: NullableDateSchema,
-  completedAt: NullableDateSchema,
-  retryAfter: NullableDateSchema,
-  errorCode: NullableStringSchema,
-  workflowCoreVersion: NullableStringSchema,
-  workflowEncryptionEnabled: NullableBooleanSchema,
-  /** Compute instance of the latest attempt's `step_started`. */
-  computeInstanceId: NullableStringSchema,
-});
+export const AnalyticsStepSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    stepId: z.string(),
+    stepName: NullableStringSchema,
+    status: StepStatusSchema,
+    attempt: z.number().optional(),
+    createdAt: UTCDateSchema,
+    updatedAt: UTCDateSchema,
+    startedAt: NullableDateSchema,
+    completedAt: NullableDateSchema,
+    retryAfter: NullableDateSchema,
+    errorCode: NullableStringSchema,
+    workflowCoreVersion: NullableStringSchema,
+    workflowEncryptionEnabled: NullableBooleanSchema,
+    /** Compute instance of the latest attempt's `step_started`. */
+    computeInstanceId: NullableStringSchema,
+  })
+);
 
-export const AnalyticsEventSchema = z.object({
-  runId: z.string(),
-  eventId: z.string(),
-  eventType: EventTypeSchema,
-  correlationId: NullableStringSchema,
-  entityId: NullableStringSchema,
-  stepName: NullableStringSchema,
-  workflowName: z.string(),
-  deploymentId: z.string(),
-  specVersion: z.coerce.number().optional(),
-  runCreatedAt: UTCDateSchema,
-  createdAt: UTCDateSchema,
-  region: NullableStringSchema,
-  vercelId: NullableStringSchema,
-  requestId: NullableStringSchema,
-  /** Compute instance that wrote the event. See CreateEventParams. */
-  computeInstanceId: NullableStringSchema,
-  resumeAt: NullableDateSchema,
-  retryAfter: NullableDateSchema,
-  errorCode: NullableStringSchema,
-  workflowCoreVersion: NullableStringSchema,
-  isWebhook: NullableBooleanSchema,
-  isSystem: NullableBooleanSchema,
-  workflowEncryptionEnabled: NullableBooleanSchema,
-});
+export const AnalyticsEventSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    eventId: z.string(),
+    eventType: EventTypeSchema,
+    correlationId: NullableStringSchema,
+    entityId: NullableStringSchema,
+    stepName: NullableStringSchema,
+    workflowName: z.string(),
+    deploymentId: z.string(),
+    specVersion: z.coerce.number().optional(),
+    runCreatedAt: UTCDateSchema,
+    createdAt: UTCDateSchema,
+    region: NullableStringSchema,
+    vercelId: NullableStringSchema,
+    requestId: NullableStringSchema,
+    /** Compute instance that wrote the event. See CreateEventParams. */
+    computeInstanceId: NullableStringSchema,
+    resumeAt: NullableDateSchema,
+    retryAfter: NullableDateSchema,
+    errorCode: NullableStringSchema,
+    workflowCoreVersion: NullableStringSchema,
+    isWebhook: NullableBooleanSchema,
+    isSystem: NullableBooleanSchema,
+    workflowEncryptionEnabled: NullableBooleanSchema,
+  })
+);
 
-export const AnalyticsHookSchema = z.object({
-  runId: z.string(),
-  hookId: z.string(),
-  status: z.enum(['created', 'received', 'disposed', 'conflict']),
-  createdAt: UTCDateSchema,
-  updatedAt: UTCDateSchema,
-  receivedAt: NullableDateSchema,
-  disposedAt: NullableDateSchema,
-  isWebhook: NullableBooleanSchema,
-  isSystem: NullableBooleanSchema,
-  workflowCoreVersion: NullableStringSchema,
-  workflowEncryptionEnabled: NullableBooleanSchema,
-});
+export const AnalyticsHookSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    hookId: z.string(),
+    status: z.enum(['created', 'received', 'disposed', 'conflict']),
+    createdAt: UTCDateSchema,
+    updatedAt: UTCDateSchema,
+    receivedAt: NullableDateSchema,
+    disposedAt: NullableDateSchema,
+    isWebhook: NullableBooleanSchema,
+    isSystem: NullableBooleanSchema,
+    workflowCoreVersion: NullableStringSchema,
+    workflowEncryptionEnabled: NullableBooleanSchema,
+  })
+);
 
-export const AnalyticsWaitSchema = z.object({
-  runId: z.string(),
-  waitId: z.string(),
-  status: WaitStatusSchema,
-  resumeAt: NullableDateSchema,
-  createdAt: UTCDateSchema,
-  updatedAt: UTCDateSchema,
-  completedAt: NullableDateSchema,
-  workflowCoreVersion: NullableStringSchema,
-  workflowEncryptionEnabled: NullableBooleanSchema,
-});
+export const AnalyticsWaitSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    waitId: z.string(),
+    status: WaitStatusSchema,
+    resumeAt: NullableDateSchema,
+    createdAt: UTCDateSchema,
+    updatedAt: UTCDateSchema,
+    completedAt: NullableDateSchema,
+    workflowCoreVersion: NullableStringSchema,
+    workflowEncryptionEnabled: NullableBooleanSchema,
+  })
+);
 
-export const AnalyticsAttributeKeySchema = z.object({
-  key: z.string(),
-  runCount: z.coerce.number(),
-  firstSeenAt: z.coerce.date(),
-  lastSeenAt: z.coerce.date(),
-});
+export const AnalyticsAttributeKeySchema = z.compile(
+  z.object({
+    key: z.string(),
+    runCount: z.coerce.number(),
+    firstSeenAt: z.coerce.date(),
+    lastSeenAt: z.coerce.date(),
+  })
+);
 
 export type AnalyticsRun = z.infer<typeof AnalyticsRunSchema>;
 export type AnalyticsStep = z.infer<typeof AnalyticsStepSchema>;
