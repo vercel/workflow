@@ -390,6 +390,8 @@ const CreateEventV4PageSchema = z.compile(
       cursor: z.string().nullable(),
       hasMore: z.boolean(),
     }),
+    // This schema is always intersected with CreateEventV4BodyBaseSchema.
+    // Keep it non-strict so the base response fields remain valid here.
     z.object({
       events: z.undefined().optional(),
       cursor: z.undefined().optional(),

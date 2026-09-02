@@ -195,12 +195,12 @@ describe('createWorkflowRunEventBatch', () => {
     );
 
     expect(result.results).toHaveLength(3);
-    expect(result.results[0]?.event).toEqual({
+    expect(result.results[0]?.event).toStrictEqual({
       ...completedEvent,
       createdAt: new Date(CREATED_AT),
       eventData: { ...completedEvent.eventData, result: undefined },
     });
-    expect(result.results[1]?.event).toEqual({
+    expect(result.results[1]?.event).toStrictEqual({
       ...createdEvent,
       createdAt: new Date(CREATED_AT),
     });
