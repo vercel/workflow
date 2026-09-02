@@ -3834,7 +3834,7 @@ describe.concurrent('e2e', () => {
   // AbortController / AbortSignal
   // ==========================================================================
 
-  describeJsOnly('AbortController', () => {
+  describe('AbortController', () => {
     test(
       'abortTimeoutWorkflow: timeout cancels long-running step',
       { timeout: 60_000 },

@@ -50,13 +50,19 @@ node ./node_modules/workflow/bin/run.js inspect --json runs
 
 ## Update the Python SDK
 
-Update the locked `vercel-py/main` revision, then rerun the suite:
+Regenerate the lockfile to update the pinned `vercel-py/main` revision, then
+rerun the suite:
 
 ```bash
 cd workbench/python
-uv lock --upgrade-package vercel-workflow
+rm uv.lock
+uv lock
 uv sync --locked
 ```
+
+Remove `uv.lock` instead of using `--upgrade-package` due to a uv bug that can
+switch transitive `vercel-*` dependencies from the `vercel-py` Git repository
+to their PyPI releases during an incremental lock update.
 
 ## Vercel deployment
 
