@@ -8,4 +8,4 @@ Add `wf inspect attributes`, which lists the attribute keys recorded on your run
 
 `wf inspect sleeps` now falls back to the event log when the analytics read fails, matching how the run, step, and event listings already degrade.
 
-`--limit` and `--runId` are checked before any backend work, so a mistyped value names the flag instead of surfacing as a rejected argument, and an argument the read path rejects is now reported rather than raised as an unhandled error.
+`--limit`, `--runId` and `--attribute` are checked before any backend work, so a mistyped value or a flag given to a listing that cannot use it names the flag instead of being ignored, and an argument the read path rejects is now reported rather than raised as an unhandled error.

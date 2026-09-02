@@ -10,6 +10,7 @@ import {
   isObservabilityUpgradeRequiredError,
 } from '../lib/inspect/errors.js';
 import {
+  validateAttributeScope,
   validateInspectLimit,
   validateInspectRunId,
 } from '../lib/inspect/flag-bounds.js';
@@ -209,7 +210,12 @@ export default class Inspect extends BaseCommand {
           : undefined) ??
         (flags.runId !== undefined
           ? validateInspectRunId(flags.runId)
-          : undefined);
+          : undefined) ??
+        validateAttributeScope(
+          resource,
+          id !== undefined,
+          Boolean(flags.attribute?.length)
+        );
       if (flagError) {
         this.logError(flagError);
         process.exitCode = 1;

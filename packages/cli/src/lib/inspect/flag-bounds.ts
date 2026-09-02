@@ -37,3 +37,29 @@ export function validateInspectRunId(runId: string): string | undefined {
   }
   return undefined;
 }
+
+/**
+ * Validate that `--attribute` was given to a listing that consumes it.
+ *
+ * Only the runs listing filters by attributes. Every other resource parses
+ * the flag and ignores it, which is the silent drop these bounds exist to
+ * prevent — the flag is cheap to type onto the wrong subcommand and the
+ * result looks like a successful, unfiltered answer.
+ *
+ * `resource` is the normalized resource and `hasId` marks a single-item
+ * lookup, which reads one run directly and has nothing to filter.
+ */
+export function validateAttributeScope(
+  resource: string,
+  hasId: boolean,
+  hasAttribute: boolean
+): string | undefined {
+  if (!hasAttribute) return undefined;
+  if (resource === 'run' && hasId) {
+    return '--attribute filters run listings; `inspect run <id>` already names one run. Drop the flag or the ID.';
+  }
+  if (resource !== 'run') {
+    return `--attribute filters run listings only, not ${resource}. Use \`workflow inspect runs --attribute key=value\`.`;
+  }
+  return undefined;
+}
