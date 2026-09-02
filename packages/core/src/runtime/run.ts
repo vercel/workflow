@@ -13,7 +13,7 @@ import {
   type PayloadKey,
 } from '../serialization/encryption.js';
 import {
-  getExternalRevivers,
+  getRunReadableStream,
   hydrateRunError,
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
@@ -224,9 +224,9 @@ export class Run<TResult> {
   }
 
   /**
-   * Defer fetching the run and its encryption key until serialized stream data
-   * is actually read. An empty or metadata-only stream must not start an
-   * unobserved run lookup.
+   * Defers fetching the run and its encryption key until a readable is first
+   * consumed. The first pull prefetches it so an encrypted first frame can join
+   * the lookup; this also applies to an empty consumed stream.
    * @internal
    */
   #getEncryptionKeyLazily(): () => Promise<PayloadKey | undefined> {
@@ -370,15 +370,18 @@ export class Run<TResult> {
     'use step';
     const { ops = [], global = globalThis, startIndex, namespace } = options;
     const name = getWorkflowRunStreamId(this.runId, namespace);
-    // The resolver starts only when the deserialize stream sees its first
-    // chunk, so creating or probing an empty stream cannot reject in the
-    // background.
+    // The resolver starts only on the readable's first pull, so construction
+    // is inert. A consumed empty stream still performs the speculative lookup
+    // to keep the first encrypted-frame path concurrent.
     const encryptionKey = this.#getEncryptionKeyLazily();
-    const stream = getExternalRevivers(global, ops, this.runId, encryptionKey)
-      .ReadableStream!({
+    const stream = getRunReadableStream<R>(
+      global,
+      ops,
+      this.runId,
       name,
       startIndex,
-    }) as ReadableStream<R>;
+      encryptionKey
+    );
 
     const worldPromise = this.#lazyWorldPromise;
     const runId = this.runId;
