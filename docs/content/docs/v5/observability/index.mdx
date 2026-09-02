@@ -6,11 +6,11 @@ summary: Inspect and debug workflow runs using the CLI and web UI.
 prerequisites:
   - /docs/foundations
 related:
-  - /docs/how-it-works/event-sourcing
-  - /docs/how-it-works/encryption
+  - /docs/advanced/event-sourcing
+  - /docs/advanced/encryption
 ---
 
-Workflow SDK provides a Workflow CLI and web UI to inspect, monitor, and debug workflows. You can inspect workflow runs, steps, webhooks, [events](/docs/how-it-works/event-sourcing), and stream output.
+Workflow SDK provides a Workflow CLI and web UI to inspect, monitor, and debug workflows. You can inspect workflow runs, steps, webhooks, [events](/docs/advanced/event-sourcing), and stream output.
 
 ## Quick start
 
@@ -81,7 +81,7 @@ To inspect workflows running on Vercel, ensure you're logged in to the Vercel CL
 npx workflow inspect runs --backend vercel
 ```
 
-When deployed to Vercel, workflow data is [encrypted end-to-end](/docs/how-it-works/encryption). Encrypted fields display as locked placeholders until you choose to decrypt them using the **Decrypt** button in the web UI or the `--decrypt` flag in the CLI.
+When deployed to Vercel, workflow data is [encrypted end-to-end](/docs/advanced/encryption). Encrypted fields display as locked placeholders until you choose to decrypt them using the **Decrypt** button in the web UI or the `--decrypt` flag in the CLI.
 
 ## More observability features
 

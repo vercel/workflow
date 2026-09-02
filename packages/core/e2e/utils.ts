@@ -797,6 +797,51 @@ export async function getWorkflowMetadata(
 }
 
 /**
+ * Look up a registered step's `stepId` in the deployed manifest.
+ *
+ * The workflow counterpart (`getWorkflowMetadata`) exists because `start()`
+ * needs a workflow ID it cannot compute; this exists for the same reason on
+ * the other axis. A dynamic workflow's `dynamic.steps` map takes
+ * `{ stepId }` references, and the e2e runner is a separate process from the
+ * deployment — it cannot import the step functions to read `.stepId` off
+ * them, so it reads the deployed manifest instead.
+ *
+ * Fails rather than synthesizing an ID: an unregistered step would surface
+ * ~60s later as a run that never completes, with nothing pointing at the
+ * cause.
+ */
+export async function getStepMetadata(
+  deploymentUrl: string,
+  workflowFile: string,
+  stepFn: string
+): Promise<{ stepId: string }> {
+  const manifest = await fetchManifest(deploymentUrl, { forceRefresh: true });
+  const fileWithoutExt = workflowFile.replace(SOURCE_EXTENSION_RE, '');
+
+  for (const [manifestFile, steps] of Object.entries(manifest.steps ?? {})) {
+    const manifestFileWithoutExt = manifestFile.replace(
+      SOURCE_EXTENSION_RE,
+      ''
+    );
+    if (
+      !(
+        manifestFileWithoutExt.endsWith(fileWithoutExt) ||
+        fileWithoutExt.endsWith(manifestFileWithoutExt)
+      )
+    ) {
+      continue;
+    }
+    const entry = steps[stepFn];
+    if (entry) return entry;
+  }
+
+  throw new Error(
+    `Step "${stepFn}" is not in the deployed manifest for "${workflowFile}". ` +
+      `Available files: ${Object.keys(manifest.steps ?? {}).join(', ')}`
+  );
+}
+
+/**
  * Configures the world based on the current environment:
  * - Local: sets env vars for local filesystem backend
  * - Vercel: creates and sets a Vercel world

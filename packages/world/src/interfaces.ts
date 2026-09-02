@@ -662,6 +662,41 @@ export interface World extends Queue, Streamer, Storage {
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
 
   /**
+   * Upload a dynamic run's serialized workflow VM code to the World's blob
+   * storage ahead of `run_created`, returning the ref key to attach to the
+   * run.
+   *
+   * The inline path — sending the bytes on `run_created` itself — is the
+   * common case and needs nothing from this method: a generated orchestration
+   * function is usually a couple of KB, and keeping it on the creating write
+   * costs no extra round-trip. This exists for the tail: a definition too
+   * large to ride the event wire, which has to be streamed separately and
+   * referenced.
+   *
+   * Worlds that store run records whole (local, Postgres) have no size
+   * pressure and leave this unset; `start()` then always sends inline, and a
+   * definition over its own source limit is rejected client-side rather than
+   * silently truncated.
+   *
+   * The upload necessarily precedes the run it belongs to, so implementations
+   * must accept a `runId` that does not exist yet, and must scope the stored
+   * object to the caller's tenant and that run so it is reclaimed with the
+   * run's other storage.
+   *
+   * @param runId - The client-minted ID of the run being started.
+   * @param params.workflowName - The run's generated dynamic workflow name.
+   *   Worlds that embed it in the storage key need it passed in, because the
+   *   run record does not exist yet to read it from.
+   * @param params.code - Serialized (compressed + encrypted) workflow code.
+   * @returns The ref key to send as `run_created`'s
+   *   `eventData.dynamicWorkflowCodeRef`.
+   */
+  uploadDynamicWorkflowCode?(
+    runId: string,
+    params: { workflowName: string; code: Uint8Array }
+  ): Promise<string>;
+
+  /**
    * The environment this World's writes are attributed to by the backend
    * (`@workflow/world-vercel`: `'production' | 'preview' | 'development'`).
    *

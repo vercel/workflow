@@ -2,6 +2,7 @@ import type { World } from '@workflow/world';
 import { mintedSpecVersion } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
 import { createRunId, describeRun } from './create-run-id.js';
+import { uploadDynamicWorkflowCode } from './dynamic-code.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { getDeadline } from './get-deadline.js';
 import { instrumentObject } from './instrumentObject.js';
@@ -13,6 +14,7 @@ import { type APIConfig, resolveClientEnvironment } from './utils.js';
 
 export { createAnalytics } from './analytics.js';
 export { createRunId, describeRun, regionForRunId } from './create-run-id.js';
+export { uploadDynamicWorkflowCode } from './dynamic-code.js';
 export {
   createGetEncryptionKeyForRun,
   deriveRunKey,
@@ -75,6 +77,10 @@ export function createWorld(config?: APIConfig): World {
     // stamp it into the queue message and the consuming deployment can detect
     // that it was handed a run created against a different environment.
     getEnvironment: () => resolveClientEnvironment(config),
+    // Deferred storage for a dynamic run's workflow code, used only when the
+    // definition is too large to ride the `run_created` frame inline.
+    uploadDynamicWorkflowCode: (runId, params) =>
+      uploadDynamicWorkflowCode(runId, params, config),
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(
       projectId,
       config?.projectConfig?.teamId,

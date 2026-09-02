@@ -6,7 +6,7 @@ summary: Deploy workflows to Vercel with fully managed storage, queuing, and aut
 prerequisites:
   - /docs/deploying
 related:
-  - /docs/how-it-works/encryption
+  - /docs/advanced/encryption
   - /worlds/local
   - /worlds/postgres
 ---
@@ -281,14 +281,14 @@ Practically, this means:
 - Handlers receive only a message ID that must be retrieved from Vercel's backend, making it impossible to craft custom payloads
 
 <Callout>
-  The Workflow SDK build step manages this configuration. If you are writing a custom integration, see [Framework integrations: Security](/docs/how-it-works/framework-integrations#security) for more details.
+  The Workflow SDK build step manages this configuration. If you are writing a custom integration, see [Framework integrations: Security](/docs/advanced/framework-integrations#security) for more details.
 </Callout>
 
 ## How it works
 
 The Vercel World uses Vercel's infrastructure for workflow execution:
 
-- **Storage**: Workflow data is stored in Vercel's cloud with automatic replication and [end-to-end encryption](/docs/how-it-works/encryption)
+- **Storage**: Workflow data is stored in Vercel's cloud with automatic replication and [end-to-end encryption](/docs/advanced/encryption)
 - **Queuing**: Steps are distributed across Vercel Functions through [Vercel Queues](https://vercel.com/docs/queues) with automatic retries and [consumer function security](#consumer-function-security)
 - **Authentication**: OIDC tokens provide secure, automatic authentication
 

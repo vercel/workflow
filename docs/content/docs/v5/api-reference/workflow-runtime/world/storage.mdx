@@ -7,7 +7,7 @@ prerequisites:
   - /docs/api-reference/workflow-runtime/get-world
 related:
   - /docs/api-reference/workflow-api/get-run
-  - /docs/how-it-works/event-sourcing
+  - /docs/advanced/event-sourcing
   - /docs/api-reference/workflow-observability
 keywords:
   - world.events
@@ -31,7 +31,7 @@ keywords:
 
 The World storage interface exposes four sub-interfaces for querying workflow data:
 
-- **`world.events`**: The append-only event log. This is the source of truth for all workflow state. See [Event Sourcing](/docs/how-it-works/event-sourcing) for background.
+- **`world.events`**: The append-only event log. This is the source of truth for all workflow state. See [Event Sourcing](/docs/advanced/event-sourcing) for background.
 - **`world.runs`**, **`world.steps`**, **`world.hooks`**: Materialized views derived from the event log, provided as convenience accessors for the most common query patterns.
 
 ```typescript lineNumbers
@@ -462,7 +462,7 @@ for (const event of events.data) {
 
 ## Related
 
-- [Event sourcing](/docs/how-it-works/event-sourcing): How the event log powers workflow replay and state
+- [Event sourcing](/docs/advanced/event-sourcing): How the event log powers workflow replay and state
 - [`getRun()`](/docs/api-reference/workflow-api/get-run): Higher-level API for working with individual runs
 - [`workflow/observability`](/docs/api-reference/workflow-observability): Hydrate step I/O and parse display names
 - [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook): Resume a workflow by sending a payload to a hook

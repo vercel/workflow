@@ -5,7 +5,7 @@ type: conceptual
 summary: Understand the hook and stream backing that makes AbortSignal work across workflow boundaries.
 prerequisites:
   - /docs/foundations/cancellation
-  - /docs/how-it-works/event-sourcing
+  - /docs/advanced/event-sourcing
 related:
   - /docs/foundations/hooks
   - /docs/foundations/streaming
@@ -33,7 +33,7 @@ Every `AbortController` in the workflow context is backed by:
 
 ### Hook (durable state)
 
-When `new AbortController()` is called in a workflow, an internal hook is created, similar to calling `createHook()`. This hook is registered in the workflow's invocations queue and produces events in the [event log](/docs/how-it-works/event-sourcing):
+When `new AbortController()` is called in a workflow, an internal hook is created, similar to calling `createHook()`. This hook is registered in the workflow's invocations queue and produces events in the [event log](/docs/advanced/event-sourcing):
 
 - **On creation**: A `hook_created` event records that the controller exists
 - **On abort**: The hook is resumed (producing a `hook_received` event), recording the abort permanently
@@ -281,7 +281,7 @@ controller.abort();   // step-side fetch sees the abort
 ## Related documentation
 
 - [Cancellation](/docs/foundations/cancellation): Usage patterns and API
-- [Event Sourcing](/docs/how-it-works/event-sourcing): How the event log works
+- [Event Sourcing](/docs/advanced/event-sourcing): How the event log works
 - [Hooks](/docs/foundations/hooks): The hook primitive
 - [Streaming](/docs/foundations/streaming): The stream primitive
 - [Serialization](/docs/foundations/serialization): Serializable types

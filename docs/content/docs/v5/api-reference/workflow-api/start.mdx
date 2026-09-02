@@ -7,6 +7,7 @@ prerequisites:
   - /docs/foundations/starting-workflows
 related:
   - /docs/foundations/idempotency
+  - /docs/advanced/dynamic-workflows
 ---
 
 Start/enqueue a new workflow run.
@@ -151,3 +152,46 @@ The returned `Run` object is fully functional inside a workflow. Each property a
 <Callout type="warn">
 `returnValue` polls the child run every second and holds the polling step's worker slot open for as long as the child takes to finish. For long-running children, spawn without awaiting `returnValue` and have the child resume a [hook](/docs/foundations/hooks) when it completes. See the [`startAndWait()` pattern](/cookbook/advanced/child-workflows).
 </Callout>
+
+### Dynamic Workflow Source
+
+<Callout type="warning">
+Experimental. The API may change without a major version bump.
+</Callout>
+
+`start()` also accepts a string of workflow **source** instead of an imported function, for orchestration whose shape is only known after you deploy — a workflow builder UI, a customer-defined automation, an AI-generated plan. The source is compiled and stored with the run, encrypted like any other run payload.
+
+`dynamic.steps` maps the aliases the source may call to steps that are already registered in your deployment. Nothing outside that map is reachable, and there is no way to define a new step from source.
+
+```typescript
+import { start } from "workflow/api";
+import { fetchUser, sendEmail } from "./steps";
+
+const run = await start(
+  `
+async function workflow(input) {
+  "use workflow";
+
+  const user = await steps.fetchUser(input.userId);
+  await steps.sendEmail(user.email);
+
+  return { ok: true };
+}
+`,
+  [{ userId: "user_123" }],
+  {
+    dynamic: { // [!code highlight]
+      steps: { fetchUser, sendEmail }, // [!code highlight]
+    }, // [!code highlight]
+  }
+);
+```
+
+| Option | Type | Description |
+| --- | --- | --- |
+| `dynamic.steps` | `Record<string, StepFunction \| { stepId: string }>` | Required. Registered steps the source may call, keyed by the alias it calls them under. |
+| `dynamic.exportName` | `string` | Name of the async workflow function in the source. Defaults to `"workflow"`. |
+
+The return type is `Run<unknown>`: the source's shape is only known to whatever generated it, so there is nothing to infer. The workflow ID is derived from the source and its step bindings — it cannot be supplied.
+
+See [Dynamic Workflows](/docs/advanced/dynamic-workflows) for the source rules, the predefined runtime bindings (`steps`, `sleep`, `createHook`), how the code is stored, and the security model.
