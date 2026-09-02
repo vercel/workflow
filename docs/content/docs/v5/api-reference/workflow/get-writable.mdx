@@ -67,17 +67,42 @@ export default getWritable;`}
   showSections={["returns"]}
 />
 
-Returns a `WritableStream<W>` where `W` is the type of data you plan to write to the stream.
+Returns a `WorkflowWritableStream<W>`, a standard `WritableStream<W>` extended with a `flush()` method.
 
 ## Good to know
 
 - **Workflow functions can only obtain the stream** - Call `getWritable()` in a workflow to get the stream reference, but you cannot call methods like `getWriter()`, `write()`, or `close()` directly in the workflow context.
-- **Step functions can interact with streams** - Steps can receive the stream as an argument or call `getWritable()` directly, and they can freely interact with it (write, close, etc.).
+- **Step functions can interact with streams** - Steps can receive the stream as an argument or call `getWritable()` directly, and they can freely interact with it (write, flush, close, etc.).
 - When called from a workflow, the stream must be passed as an argument to steps for interaction.
 - When called from a step, it retrieves the same workflow-scoped stream directly.
 - Always release the writer lock after writing to prevent resource leaks.
 - The stream can write binary data (using `TextEncoder`) or structured objects.
 - Remember to close the stream when finished to signal completion.
+
+## Waiting for durable writes
+
+`writer.write()` resolves after the chunk enters the stream's bounded client-side buffer. The Workflow server PUT may still be in flight. If later work must read the chunk immediately, call `flush()` explicitly:
+
+```typescript lineNumbers
+import type { WorkflowWritableStream } from "workflow";
+
+async function writeSnapshot(
+  writable: WorkflowWritableStream<Uint8Array>,
+  snapshot: Uint8Array,
+) {
+  "use step";
+
+  const writer = writable.getWriter();
+  await writer.write(snapshot);
+  writer.releaseLock();
+
+  await writable.flush(); // [!code highlight]
+}
+```
+
+`flush()` waits until chunks from completed `writer.write()` calls are durable on the Workflow server. It does not close the stream, so later steps can continue writing. Concurrent writes may join the same drain. It can only be called inside a step function.
+
+Most streaming code should not call `flush()`: allowing the next step to start while stream writes remain in flight preserves producer/consumer concurrency. Use it only for an explicit read-after-write boundary.
 
 ## Examples
 

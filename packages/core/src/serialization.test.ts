@@ -600,8 +600,12 @@ describe('workflow arguments', () => {
         'dpl_child'
       )) as WritableStream<string>;
 
+      expect(typeof (hydrated as { flush?: unknown }).flush).toBe('function');
       const writer = hydrated.getWriter();
       await writer.write('cross-deployment');
+      await (
+        hydrated as WritableStream<string> & { flush(): Promise<void> }
+      ).flush();
       await writer.close();
       await Promise.all(ops);
 
