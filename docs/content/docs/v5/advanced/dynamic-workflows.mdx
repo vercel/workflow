@@ -76,6 +76,9 @@ The source also runs inside the normal deterministic workflow VM, so the usual [
 Here is a longer example using a timer and a hook to wait for an approval:
 
 ```ts
+import { start } from 'workflow/api';
+import { sendEmail } from './steps';
+
 const run = await start(
   `
 async function workflow(input) {
