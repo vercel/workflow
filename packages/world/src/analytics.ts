@@ -128,8 +128,8 @@ export const AnalyticsWaitSchema = z.object({
 export const AnalyticsAttributeKeySchema = z.object({
   key: z.string(),
   runCount: z.coerce.number(),
-  firstSeenAt: z.coerce.date(),
-  lastSeenAt: z.coerce.date(),
+  firstSeenAt: UTCDateSchema,
+  lastSeenAt: UTCDateSchema,
 });
 
 export type AnalyticsRun = z.infer<typeof AnalyticsRunSchema>;
