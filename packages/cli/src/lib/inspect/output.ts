@@ -665,6 +665,11 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
   // filter. Without the flags the backend applies its default window
   // (trailing 24h on the Vercel backend).
   const timeWindow = resolveTimeWindow(opts);
+  if (opts.attributes && !useAnalytics) {
+    logger.warn(
+      '--attribute requires the analytics read path and is ignored by this backend.'
+    );
+  }
   if (timeWindow && !useAnalytics) {
     logger.warn(
       '--since/--until require the analytics read path and are ignored by this backend.'
@@ -720,6 +725,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       const runs = await world.analytics.runs.list({
         workflowName: opts.workflowName,
         status,
+        ...(opts.attributes ? { attributes: opts.attributes } : {}),
         ...(timeWindow ?? {}),
         pagination,
       });
@@ -1531,4 +1537,86 @@ export const listSleeps = async (
     }
     throw error;
   }
+};
+
+const ATTRIBUTE_LISTED_PROPS = [
+  'key',
+  'runCount',
+  'firstSeenAt',
+  'lastSeenAt',
+] as const;
+
+/**
+ * List the distinct attribute keys recorded on this project's runs, with how
+ * many runs carry each and when it was first and last seen.
+ *
+ * Analytics-only: the storage APIs have no cross-run attribute index, so
+ * there is nothing to fall back to. Pair it with
+ * `inspect runs --attribute key=value` to go from discovering a key to
+ * filtering by it.
+ */
+export const listAttributes = async (
+  world: World,
+  opts: InspectCLIOptions = {}
+) => {
+  if (!world.analytics) {
+    logger.error(
+      'Listing attributes requires a backend with the analytics read path; this backend does not provide one.'
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const analytics = world.analytics;
+  const timeWindow = resolveTimeWindow(opts);
+
+  const fetchPage = async (
+    cursor: string | undefined
+  ): Promise<PageData<Record<string, unknown>>> => {
+    const page = await analytics.attributes.list({
+      workflowName: opts.workflowName,
+      ...(timeWindow ?? {}),
+      pagination: {
+        // Keys read best alphabetically, which is the backend's own default
+        // for this listing, so `--sort` is not forwarded here.
+        cursor,
+        limit: opts.limit || DEFAULT_PAGE_SIZE,
+      },
+    });
+    return {
+      data: page.data as unknown as Record<string, unknown>[],
+      cursor: page.cursor,
+      hasMore: page.hasMore,
+      pageInfo: getPageInfo(page),
+    };
+  };
+
+  if (opts.json) {
+    try {
+      showJsonPage(await fetchPage(opts.cursor));
+      return;
+    } catch (error) {
+      if (handleApiError(error, opts.backend)) {
+        process.exit(1);
+      }
+      throw error;
+    }
+  }
+
+  await setupListPagination<Record<string, unknown>>({
+    initialCursor: opts.cursor,
+    interactive: opts.interactive,
+    fetchPage: async (cursor) => {
+      try {
+        return await fetchPage(cursor);
+      } catch (error) {
+        if (handleApiError(error, opts.backend)) {
+          process.exit(1);
+        }
+        throw error;
+      }
+    },
+    displayPage: async (attributes) => {
+      logger.log(showTable(attributes, [...ATTRIBUTE_LISTED_PROPS], opts));
+    },
+  });
 };

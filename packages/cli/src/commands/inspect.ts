@@ -4,12 +4,14 @@ import { WorkflowRunStatusSchema } from '@workflow/world';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import type { InspectCLIOptions } from '../lib/config/types.js';
+import { parseAttributeFilters } from '../lib/inspect/attribute-filter.js';
 import {
   getObservabilityUpgradeRequiredMessage,
   isObservabilityUpgradeRequiredError,
 } from '../lib/inspect/errors.js';
 import { cliFlags, urlFlag } from '../lib/inspect/flags.js';
 import {
+  listAttributes,
   listEvents,
   listHooks,
   listRuns,
@@ -57,7 +59,7 @@ export default class Inspect extends BaseCommand {
   static args = {
     resource: Args.string({
       description:
-        'what to inspect: run(s) | step(s) | stream(s) | event(s) | hook(s) | sleep(s)',
+        'what to inspect: run(s) | step(s) | stream(s) | event(s) | hook(s) | sleep(s) | attribute(s)',
       required: true,
       options: [
         'r',
@@ -79,6 +81,10 @@ export default class Inspect extends BaseCommand {
         'web',
         'sleep',
         'sleeps',
+        'a',
+        'attr',
+        'attribute',
+        'attributes',
       ],
     }),
     id: Args.string({
@@ -277,6 +283,20 @@ export default class Inspect extends BaseCommand {
         return;
       }
 
+      if (resource === 'attribute') {
+        if (id) {
+          // No per-key listing exists: the analytics namespace exposes the
+          // distinct keys, not the values recorded under one.
+          this.logError(
+            'inspect attribute does not take an ID. Usage: `workflow inspect attributes`'
+          );
+          process.exitCode = 1;
+          return;
+        }
+        await listAttributes(world, options);
+        return;
+      }
+
       this.logError(
         `Unknown resource: ${resource}. Usage: ${Inspect.examples.join('\n')}`
       );
@@ -298,6 +318,7 @@ function toInspectOptions(flags: any): InspectCLIOptions {
     sort: flags.sort as 'asc' | 'desc' | undefined,
     limit: flags.limit,
     workflowName: flags.workflowName,
+    attributes: parseAttributeFilters(flags.attribute),
     status: flags.status
       ? WorkflowRunStatusSchema.parse(flags.status)
       : undefined,
@@ -312,9 +333,19 @@ function toInspectOptions(flags: any): InspectCLIOptions {
 
 function normalizeResource(
   value?: string
-): 'run' | 'step' | 'stream' | 'event' | 'hook' | 'web' | 'sleep' | undefined {
+):
+  | 'run'
+  | 'step'
+  | 'stream'
+  | 'event'
+  | 'hook'
+  | 'web'
+  | 'sleep'
+  | 'attribute'
+  | undefined {
   if (!value) return undefined;
   const v = value.toLowerCase();
+  if (v.startsWith('a')) return 'attribute';
   if (v.startsWith('r')) return 'run';
   if (v.startsWith('e')) return 'event';
   if (v.startsWith('str')) return 'stream';

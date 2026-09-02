@@ -127,6 +127,30 @@ export interface BulkCancelOutcome {
 }
 
 /**
+ * Resolve the plan's observability window from a one-row probe listing.
+ *
+ * Returns the `startTime`/`endTime` pair to bound subsequent listings with,
+ * or `undefined` when the backend reports no window (nothing to widen to).
+ * The probe needs a status because the list API takes one, but the window it
+ * reads back is plan-wide, so any status will do.
+ */
+async function resolvePlanWindow(
+  analytics: NonNullable<World['analytics']>,
+  probeStatus: WorkflowRunStatus,
+  workflowName: string | undefined
+): Promise<{ startTime: string; endTime: string } | undefined> {
+  const probe = await analytics.runs.list({
+    status: probeStatus,
+    workflowName,
+    pagination: { limit: 1 },
+  });
+  const startTime = planWindowStartFromResponse(probe);
+  return startTime
+    ? { startTime, endTime: new Date().toISOString() }
+    : undefined;
+}
+
+/**
  * Fetch matching runs (up to `limit`), confirm, and cancel them in a single
  * bulk operation. Prints a table of what will be cancelled, rerun guidance
  * when more runs match than were fetched, a compact summary, and per-run
@@ -153,6 +177,19 @@ export async function performBulkCancel(
     ? [status]
     : [...CANCELLABLE_STATUSES];
 
+  // The analytics backend defaults its listing to a recent window (trailing
+  // 24h on the Vercel backend), but bulk cancel must match across the plan's
+  // whole observability window: a run can sleep or wait on a hook for days
+  // without emitting recent events. Probe once for the window bounds, then
+  // match across them.
+  //
+  // The window is a property of the plan, not of a run's status, so the probe
+  // is hoisted above the per-status fan-out. Running it inside meant a
+  // four-status cancel issued four identical probes.
+  const listingWindow = analytics
+    ? await resolvePlanWindow(analytics, targetStatuses[0], workflowName)
+    : undefined;
+
   const fetchPage = async (pageStatus: WorkflowRunStatus) => {
     if (!analytics) {
       return world.runs.list({
@@ -162,23 +199,10 @@ export async function performBulkCancel(
         resolveData: 'none',
       });
     }
-    // The analytics backend defaults its listing to a recent window
-    // (trailing 24h on the Vercel backend), but bulk cancel must match
-    // across the plan's whole observability window: a run can sleep or
-    // wait on a hook for days without emitting recent events. Probe for
-    // the plan window bounds first, then match across them.
-    const probe = await analytics.runs.list({
-      status: pageStatus,
-      workflowName,
-      pagination: { limit: 1 },
-    });
-    const windowStart = planWindowStartFromResponse(probe);
     return analytics.runs.list({
       status: pageStatus,
       workflowName,
-      ...(windowStart
-        ? { startTime: windowStart, endTime: new Date().toISOString() }
-        : {}),
+      ...(listingWindow ?? {}),
       pagination: { limit },
     });
   };
