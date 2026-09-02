@@ -17,8 +17,16 @@ import type { EnvMap } from '~/lib/types';
 
 const INITIAL_PAGE_SIZE = 100;
 const LOAD_MORE_PAGE_SIZE = 100;
-/** Max pages when fetching correlation ID search results (100 events/page). */
-const MAX_CORRELATION_SEARCH_PAGES = 30;
+/**
+ * Max pages when fetching correlation ID search results (100 events/page).
+ *
+ * Sized for the storage read path, where the backend filters a run partition
+ * and DynamoDB's `Limit` counts rows *evaluated*, not rows matched — so each
+ * page can evaluate up to 1000 rows of a partition the SDK may be replaying
+ * at the same time. 30 pages was chosen when this search read analytics,
+ * where the scan was columnar and effectively free.
+ */
+const MAX_CORRELATION_SEARCH_PAGES = 5;
 
 /**
  * Independent event fetching for the Events tab.

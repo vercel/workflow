@@ -19,7 +19,6 @@ import { resumeHook as resumeHookRuntime } from '@workflow/core/runtime/resume-h
 import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import type {
-  AnalyticsEvent,
   BulkCancelWorkflowRunsResult,
   Event,
   Hook,
@@ -713,52 +712,6 @@ export async function fetchRun(
 }
 
 /**
- * Fetch paginated list of steps for a run
- */
-export async function fetchSteps(
-  worldEnv: EnvMap,
-  runId: string,
-  params: {
-    cursor?: string;
-    sortOrder?: 'asc' | 'desc';
-    limit?: number;
-  }
-): Promise<ServerActionResult<PaginatedResult<Step>>> {
-  const { cursor, sortOrder = 'asc', limit = 100 } = params;
-  try {
-    const world = await getWorldFromEnv(worldEnv);
-    // Prefer the metadata-only analytics read path when the backend provides
-    // one; fall back to the runtime storage API otherwise.
-    const result = world.analytics
-      ? await world.analytics.steps.list({
-          runId,
-          pagination: { cursor, limit, sortOrder },
-        })
-      : await world.steps.list({
-          runId,
-          pagination: { cursor, limit, sortOrder },
-          resolveData: 'none',
-        });
-    return createResponse({
-      // StepWithoutData has undefined input/output, but after hydration the structure is compatible
-      data: result.data as unknown as Step[],
-      cursor: result.cursor ?? undefined,
-      hasMore: result.hasMore,
-      pageInfo: getPageInfo(result),
-    });
-  } catch (error) {
-    return createServerActionError<PaginatedResult<Step>>(
-      error,
-      'world.steps.list',
-      {
-        runId,
-        ...params,
-      }
-    );
-  }
-}
-
-/**
  * Fetch a single step with full data
  */
 export async function fetchStep(
@@ -781,35 +734,6 @@ export async function fetchStep(
 }
 
 /**
- * Adapt a metadata-only analytics event row to the runtime `Event` shape the
- * observability UI consumes. The analytics row carries event metadata as flat
- * top-level fields, whereas the runtime `Event` nests step metadata under
- * `eventData`. We reconstruct that nested shape (matching what the runtime list
- * returns with `resolveData: 'none'`), carrying `stepName` when present. Payload
- * fields (input/output/result/error/payload) are intentionally omitted — they
- * are loaded lazily per event via `fetchEvent(..., 'all')` on the runtime path.
- */
-export function analyticsEventToEvent(event: AnalyticsEvent): Event {
-  const eventData = {
-    ...(event.stepName ? { stepName: event.stepName } : {}),
-    ...(event.resumeAt ? { resumeAt: event.resumeAt } : {}),
-    ...(event.retryAfter ? { retryAfter: event.retryAfter } : {}),
-  };
-  const base = {
-    runId: event.runId,
-    eventId: event.eventId,
-    eventType: event.eventType,
-    createdAt: event.createdAt,
-    ...(event.correlationId ? { correlationId: event.correlationId } : {}),
-    ...(event.specVersion !== undefined
-      ? { specVersion: event.specVersion }
-      : {}),
-    ...(Object.keys(eventData).length > 0 ? { eventData } : {}),
-  };
-  return base as unknown as Event;
-}
-
-/**
  * Fetch paginated list of events for a run
  */
 export async function fetchEvents(
@@ -825,22 +749,14 @@ export async function fetchEvents(
   const { cursor, sortOrder = 'asc', limit = 1000, withData = false } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    // Prefer the metadata-only analytics read path when the backend provides one
-    // and no payloads are requested. Event payloads are loaded lazily per event
-    // via `fetchEvent(..., 'all')`, so the list never needs them; the analytics
-    // rows are mapped to the runtime `Event` shape the UI consumes.
-    if (world.analytics && !withData) {
-      const result = await world.analytics.events.list({
-        runId,
-        pagination: { cursor, limit, sortOrder },
-      });
-      return createResponse({
-        data: result.data.map(analyticsEventToEvent),
-        cursor: result.cursor ?? undefined,
-        hasMore: result.hasMore,
-        pageInfo: getPageInfo(result),
-      });
-    }
+    // Run-scoped, so it reads canonical storage rather than analytics.
+    // Analytics is gated to the tenant's `observabilityBillDays` window
+    // (1/2/3 days off Observability Plus) while storage rows live to their
+    // TTL and carry no read-time window check, so the analytics path
+    // returned an empty list for any run older than that window even though
+    // the rows were still there. It also trails storage on ingestion, which
+    // showed as gaps on a live run. This listing feeds the trace, graph and
+    // events tabs, so all three were affected.
     const result = await world.events.list({
       runId,
       pagination: { cursor, limit, sortOrder },
@@ -914,23 +830,10 @@ export async function fetchEventsByCorrelationId(
   } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    // Prefer the metadata-only analytics read path when the backend provides one
-    // and no payloads are requested (payloads are loaded lazily per event via
-    // `fetchEvent(..., 'all')`); analytics rows are mapped to the runtime `Event`
-    // shape the UI consumes.
-    if (world.analytics && !withData) {
-      const result = await world.analytics.events.listByCorrelationId({
-        correlationId,
-        runId,
-        pagination: { cursor, limit, sortOrder },
-      });
-      return createResponse({
-        data: result.data.map(analyticsEventToEvent),
-        cursor: result.cursor ?? undefined,
-        hasMore: result.hasMore,
-        pageInfo: getPageInfo(result),
-      });
-    }
+    // Run-scoped, so it reads canonical storage — see `fetchEvents` for why
+    // the analytics path was withdrawn. `runId` is required here, so the
+    // backend answers from the run's own partition rather than the cross-run
+    // correlation index.
     const result = await world.events.listByCorrelationId({
       correlationId,
       runId,
