@@ -316,9 +316,10 @@ export interface PreconditionFailureDetails {
  * from a present `undefined` value.
  *
  * Keep CreateEventSchema strict while preserving the Vercel response contract:
- * temporarily materialize an omitted payload as `undefined` for EventSchema,
- * then remove it from the parsed response again.
+ * temporarily materialize an omitted payload with a private sentinel for
+ * EventSchema, then remove only that synthesized value from the parsed response.
  */
+const OMITTED_EVENT_PAYLOAD = Symbol('omitted event payload');
 const VercelEventWireSchema = z.compile(
   z
     .preprocess((value) => {
@@ -346,7 +347,7 @@ const VercelEventWireSchema = z.compile(
         ...event,
         eventData: {
           ...eventData,
-          [payloadField]: undefined,
+          [payloadField]: OMITTED_EVENT_PAYLOAD,
         },
       };
     }, EventSchema)
@@ -359,7 +360,7 @@ const VercelEventWireSchema = z.compile(
         typeof eventData !== 'object' ||
         eventData === null ||
         Array.isArray(eventData) ||
-        eventData[payloadField] !== undefined
+        eventData[payloadField] !== OMITTED_EVENT_PAYLOAD
       ) {
         return event;
       }
