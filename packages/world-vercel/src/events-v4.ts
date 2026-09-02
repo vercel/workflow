@@ -1610,6 +1610,9 @@ async function consumeEventFrameStream(
     ) {
       throw cause;
     }
+    if (cause instanceof IncompleteFrameError && StreamError.is(cause.cause)) {
+      throw cause.cause;
+    }
     if (!(cause instanceof IncompleteFrameError)) {
       throw new WorkflowWorldError(`v4 ${opName}: invalid event frame stream`, {
         code: 'SCHEMA_VALIDATION',
