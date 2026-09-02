@@ -528,3 +528,71 @@ describe('createAnalytics argument errors', () => {
     ).toThrow('(received 101)');
   });
 });
+
+describe('createAnalytics argument error shape', () => {
+  beforeEach(() => {
+    state.makeRequest.mockReset();
+  });
+
+  const reject = (call: () => unknown): WorkflowWorldError => {
+    try {
+      call();
+    } catch (error) {
+      if (WorkflowWorldError.is(error)) return error;
+      throw error;
+    }
+    throw new Error('expected the call to be rejected');
+  };
+
+  // The same guard runs behind several methods, so the message names the one
+  // that was called: an error read from a log has no stack to identify it by.
+  it.each([
+    ['analytics.runs.get', () => createAnalytics().runs.get('nope'), 'runId'],
+    [
+      'analytics.steps.list',
+      () => createAnalytics().steps.list({ runId: 'nope' }),
+      'runId',
+    ],
+    [
+      'analytics.events.getMany',
+      () => createAnalytics().events.getMany(RUN_ID, []),
+      'eventIds',
+    ],
+    [
+      'analytics.runs.list',
+      () => createAnalytics().runs.list({ pagination: { limit: 9999 } }),
+      'pagination.limit',
+    ],
+    [
+      'analytics.attributes.list',
+      () => createAnalytics().attributes.list({ startTime: '2026-01-01' }),
+      'endTime',
+    ],
+    [
+      'analytics.waits.get',
+      () => createAnalytics().waits.get(RUN_ID, 'nope'),
+      'waitId',
+    ],
+  ])('%s names itself and its offending field', (method, call, field) => {
+    const error = reject(call);
+    expect(error.message.startsWith(`${method}: ${field} `)).toBe(true);
+    expect(error.field).toBe(field);
+    expect(error.code).toBe('INVALID_ARGUMENT');
+  });
+
+  // `field` exists so a caller can correct one parameter without matching on
+  // prose, which is the part of the message most likely to be reworded.
+  it('reports the offending field separately from the message', () => {
+    expect(
+      reject(() =>
+        createAnalytics().runs.list({ attributes: { k: 'v'.repeat(300) } })
+      ).field
+    ).toBe('attributes');
+    expect(
+      reject(() => createAnalytics().events.get(RUN_ID, 'nope')).field
+    ).toBe('eventId');
+    expect(reject(() => createAnalytics().hooks.get('nope')).field).toBe(
+      'hookId'
+    );
+  });
+});
