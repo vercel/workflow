@@ -7,12 +7,15 @@ import { createWorld } from '@workflow/world-local';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../private.js';
 import { dehydrateStepArguments, hydrateStepError } from '../serialization.js';
+import { getWritable } from '../step/writable-stream.js';
+import { STREAM_NAME_SYMBOL, STREAM_SERVER_RUN_ID_SYMBOL } from '../symbols.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { executeStep } from './step-executor.js';
 import {
   UNSERIALIZABLE_STEP_INPUT_MARKER,
   unserializableStepInputPlaceholder,
 } from './unserializable-step.js';
+import { setWorld } from './world.js';
 
 // The retry ceiling (`authoritativeAttempt`) is what bounds a step that keeps
 // timing out: a timeout hard-kills the body without writing any error, so the
@@ -34,8 +37,16 @@ async function setupRunningStep(opts: {
   onBody: () => void;
   register?: boolean;
   createStep?: boolean;
+  stepArgs?: unknown[];
 }): Promise<{ runId: string; stepId: string }> {
-  const { world, stepName, onBody, register = true, createStep = true } = opts;
+  const {
+    world,
+    stepName,
+    onBody,
+    register = true,
+    createStep = true,
+    stepArgs = [],
+  } = opts;
   const runInput = await dehydrateStepArguments([], 'run', undefined);
   const created = await world.events.create(null, {
     eventType: 'run_created',
@@ -55,7 +66,11 @@ async function setupRunningStep(opts: {
 
   const stepId = 'step_timeout_1';
   if (createStep) {
-    const stepInput = await dehydrateStepArguments([], runId, undefined);
+    const stepInput = await dehydrateStepArguments(
+      { args: stepArgs, closureVars: undefined, thisVal: undefined },
+      runId,
+      undefined
+    );
     await world.events.create(runId, {
       eventType: 'step_created',
       specVersion: SPEC_VERSION_CURRENT,
@@ -83,6 +98,53 @@ function makeWorld(): World {
   return createWorld({ dataDir, tag: `t${counter}` });
 }
 
+async function runWritableStep(options: {
+  releaseLock: boolean;
+  writeImpl?: () => Promise<void>;
+}): Promise<{
+  execution: Promise<Awaited<ReturnType<typeof executeStep>>>;
+  world: World;
+  runId: string;
+  stepId: string;
+}> {
+  const world = makeWorld();
+  setWorld(world);
+  if (options.writeImpl) {
+    world.streams.write = vi.fn(
+      options.writeImpl
+    ) as typeof world.streams.write;
+  }
+
+  const stepName = uniqueStepName();
+  const { runId, stepId } = await setupRunningStep({
+    world,
+    stepName,
+    onBody: () => {},
+    register: false,
+  });
+  registerStepFunction(stepName, async () => {
+    const writer = getWritable<string>().getWriter();
+    await writer.write('snapshot');
+    if (options.releaseLock) writer.releaseLock();
+    return 'ok';
+  });
+
+  return {
+    execution: executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    }),
+    world,
+    runId,
+    stepId,
+  };
+}
+
 async function eventsFor(
   world: World,
   runId: string,
@@ -94,6 +156,205 @@ async function eventsFor(
     (e) => e.eventType === eventType && e.correlationId === stepId
   );
 }
+
+describe('executeStep — stream durability barrier', () => {
+  afterEach(() => {
+    setWorld(undefined);
+    delete process.env.WORKFLOW_STEP_STREAM_DRAIN_TIMEOUT_MS;
+    counter += 1;
+  });
+
+  it('writes step_completed only after a released writer drains', async () => {
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const { execution, world, runId, stepId } = await runWritableStep({
+      releaseLock: true,
+      writeImpl: () => writeGate,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(0);
+
+    releaseWrite();
+    await expect(execution).resolves.toMatchObject({
+      type: 'completed',
+      hasPendingOps: false,
+    });
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(1);
+  });
+
+  it('drains a lock-held writer but preserves hasPendingOps', async () => {
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const { execution, world, runId, stepId } = await runWritableStep({
+      releaseLock: false,
+      writeImpl: () => writeGate,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(0);
+    releaseWrite();
+
+    await expect(execution).resolves.toMatchObject({
+      type: 'completed',
+      hasPendingOps: true,
+    });
+  });
+
+  it('drains a revived forwarded writable argument before completion', async () => {
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const world = makeWorld();
+    setWorld(world);
+    world.streams.write = vi.fn(() => writeGate) as typeof world.streams.write;
+
+    const forwarded = new WritableStream<string>();
+    Object.defineProperty(forwarded, STREAM_NAME_SYMBOL, {
+      value: 'strm_forwarded',
+    });
+    Object.defineProperty(forwarded, STREAM_SERVER_RUN_ID_SYMBOL, {
+      value: 'wrun_forwarded_owner',
+    });
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+      stepArgs: [forwarded],
+    });
+    registerStepFunction(stepName, async (writable: WritableStream<string>) => {
+      const writer = writable.getWriter();
+      await writer.write('forwarded snapshot');
+      writer.releaseLock();
+      return 'ok';
+    });
+
+    const execution = executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(0);
+
+    releaseWrite();
+    await expect(execution).resolves.toMatchObject({
+      type: 'completed',
+      hasPendingOps: false,
+    });
+  });
+
+  it('does not complete successfully when the drain times out', async () => {
+    process.env.WORKFLOW_STEP_STREAM_DRAIN_TIMEOUT_MS = '10';
+    const { execution, world, runId, stepId } = await runWritableStep({
+      releaseLock: true,
+      writeImpl: () => new Promise<void>(() => {}),
+    });
+
+    await expect(execution).resolves.toMatchObject({ type: 'retry' });
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(0);
+  });
+
+  it('does not complete successfully when the drain fails', async () => {
+    const { execution, world, runId, stepId } = await runWritableStep({
+      releaseLock: true,
+      writeImpl: async () => {
+        throw new Error('stream write failed');
+      },
+    });
+
+    await expect(execution).resolves.toMatchObject({ type: 'retry' });
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(0);
+  });
+
+  it('an aborted stream does not bypass another stream drain', async () => {
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    const world = makeWorld();
+    setWorld(world);
+    world.streams.write = vi.fn(async (_runId, name) => {
+      if (name.endsWith('_aborted')) {
+        throw Object.assign(new Error('client disconnected'), {
+          name: 'AbortError',
+        });
+      }
+      await writeGate;
+    }) as typeof world.streams.write;
+
+    const stepName = uniqueStepName();
+    const { runId, stepId } = await setupRunningStep({
+      world,
+      stepName,
+      onBody: () => {},
+      register: false,
+    });
+    registerStepFunction(stepName, async () => {
+      const aborted = getWritable<string>({ namespace: 'aborted' }).getWriter();
+      const durable = getWritable<string>({ namespace: 'durable' }).getWriter();
+      await aborted.write('a');
+      await durable.write('b');
+      aborted.releaseLock();
+      durable.releaseLock();
+      return 'ok';
+    });
+
+    const execution = executeStep({
+      world,
+      workflowRunId: runId,
+      workflowName: 'wf',
+      workflowStartedAt: Date.now(),
+      stepId,
+      stepName,
+      authoritativeAttempt: 1,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(
+      await eventsFor(world, runId, stepId, 'step_completed')
+    ).toHaveLength(0);
+
+    releaseWrite();
+    await expect(execution).resolves.toMatchObject({ type: 'completed' });
+  });
+
+  it.each([
+    'AbortError',
+    'ResponseAborted',
+  ])('tolerates a client disconnect named %s during drain', async (name) => {
+    const { execution } = await runWritableStep({
+      releaseLock: true,
+      writeImpl: async () => {
+        throw Object.assign(new Error('client disconnected'), { name });
+      },
+    });
+
+    await expect(execution).resolves.toMatchObject({ type: 'completed' });
+  });
+});
 
 describe('executeStep — retry ceiling (authoritativeAttempt)', () => {
   afterEach(() => {

@@ -10,6 +10,10 @@ import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { decrypt, encrypt, importKey } from './encryption.js';
+import {
+  drainFlushableSnapshot,
+  type FlushableStreamState,
+} from './flushable-stream.js';
 import { getStepFunction, registerStepFunction } from './private.js';
 import { bytesToBase64, deriveRunKeyPair } from './sealed-box.js';
 import {
@@ -590,6 +594,7 @@ describe('workflow arguments', () => {
         noEncryptionKey
       );
       const ops: Promise<void>[] = [];
+      const streamStates: FlushableStreamState[] = [];
       const hydrated = (await hydrateStepArguments(
         serialized,
         'wrun_child',
@@ -597,11 +602,14 @@ describe('workflow arguments', () => {
         ops,
         globalThis,
         {},
-        'dpl_child'
+        'dpl_child',
+        streamStates
       )) as WritableStream<string>;
 
       const writer = hydrated.getWriter();
       await writer.write('cross-deployment');
+      expect(streamStates).toHaveLength(1);
+      await Promise.all(streamStates.map(drainFlushableSnapshot));
       await writer.close();
       await Promise.all(ops);
 

@@ -3,6 +3,7 @@ import {
   createFlushableState,
   flushablePipe,
   pollWritableLock,
+  trackFlushableWritable,
 } from '../flushable-stream.js';
 import { bytesToBase64 } from '../sealed-box.js';
 import {
@@ -81,6 +82,7 @@ export function getWritable<W = any>(
   // The target run is the workflow run that owns this step, which (per
   // version skew protection) is on this same SDK version, so byte-stream
   // framing is always safe here.
+  const state = createFlushableState();
   const serialize = getSerializeStream(
     // In turbo optimistic start the body runs before `run_started` is durable.
     // Thread the run-ready barrier so that a nested ReadableStream written into
@@ -109,14 +111,16 @@ export function getWritable<W = any>(
     name,
     ctx.runReadyBarrier
   );
-  const state = createFlushableState();
+  ctx.streamStates ??= [];
+  ctx.streamStates.push(state);
   ctx.ops.push(state.promise);
 
   flushablePipe(serialize.readable, serverWritable, state).catch(() => {
     // Errors are handled via state.reject
   });
 
-  pollWritableLock(serialize.writable, state);
+  const writable = trackFlushableWritable(serialize.writable, state);
+  pollWritableLock(writable, state);
 
   // Tag the writable with its underlying `(runId, name)` so downstream
   // reducers can recognize that it's already backed by a workflow
@@ -125,36 +129,32 @@ export function getWritable<W = any>(
   // dehydrated descriptor, so the child's reviver can open the
   // writable against the original `(runId, name)` directly, with no
   // in-process bridge tied to this step's lifetime.
-  Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+  Object.defineProperty(writable, STREAM_NAME_SYMBOL, {
     value: name,
     writable: false,
   });
-  Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+  Object.defineProperty(writable, STREAM_SERVER_RUN_ID_SYMBOL, {
     value: runId,
     writable: false,
   });
   if (ctx.workflowDeploymentId) {
-    Object.defineProperty(
-      serialize.writable,
-      STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
-      {
-        value: ctx.workflowDeploymentId,
-        writable: false,
-      }
-    );
+    Object.defineProperty(writable, STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, {
+      value: ctx.workflowDeploymentId,
+      writable: false,
+    });
   }
   // Publish this run's X25519 public key on the handle so that a run this
   // writable is forwarded to can seal frames without looking anything up.
   // The key is already resolved on the step context, so this costs nothing
   // here and saves the receiver a round trip.
   if (isRunPayloadKeys(ctx.encryptionKey)) {
-    Object.defineProperty(serialize.writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
+    Object.defineProperty(writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
       value: bytesToBase64(ctx.encryptionKey.keyPair.publicKey),
       writable: false,
     });
   }
 
-  cache.set(name, { writable: serialize.writable, state });
+  cache.set(name, { writable, state });
 
-  return serialize.writable as WritableStream<W>;
+  return writable as WritableStream<W>;
 }

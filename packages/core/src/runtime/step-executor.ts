@@ -29,6 +29,11 @@ import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
+import { envNumber } from '@workflow/world/env-config';
+import {
+  drainFlushableSnapshot,
+  type FlushableStreamState,
+} from '../flushable-stream.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import type { PayloadKey } from '../serialization/encryption.js';
@@ -74,6 +79,56 @@ import { isUnserializableStepInputPlaceholder } from './unserializable-step.js';
 import { safeWaitUntil } from './wait-until.js';
 
 export const DEFAULT_STEP_MAX_RETRIES = 3;
+export const STEP_STREAM_DRAIN_TIMEOUT_MS = 30_000;
+
+export function getStepStreamDrainTimeoutMs(): number {
+  return envNumber(
+    'WORKFLOW_STEP_STREAM_DRAIN_TIMEOUT_MS',
+    STEP_STREAM_DRAIN_TIMEOUT_MS,
+    { integer: true, min: 1 }
+  );
+}
+
+function isClientDisconnectError(error: unknown): boolean {
+  const name = (error as { name?: unknown })?.name;
+  return name === 'AbortError' || name === 'ResponseAborted';
+}
+
+async function drainStepStreams(states: FlushableStreamState[]): Promise<void> {
+  if (states.length === 0) return;
+
+  const timeoutMs = getStepStreamDrainTimeoutMs();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.all(
+        states.map((state) =>
+          drainFlushableSnapshot(state).catch((error) => {
+            // A disconnected client may abandon one response stream, but it
+            // must not let that rejection bypass durability waits for other
+            // streams written by the same step.
+            if (!isClientDisconnectError(error)) throw error;
+          })
+        )
+      ),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () =>
+            reject(
+              new WorkflowRuntimeError(
+                `Timed out draining step stream writes after ${timeoutMs}ms`
+              )
+            ),
+          timeoutMs
+        );
+      }),
+    ]);
+  } catch (error) {
+    if (!isClientDisconnectError(error)) throw error;
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
+}
 
 /**
  * Extract the inline delta from a step-terminal `events.create` result,
@@ -937,6 +992,7 @@ export async function executeStep(
     // outside the try so the failure path below can also drain them.
     const preCompletionOps: Promise<void>[] = [];
     const ops: Promise<void>[] = [];
+    const streamStates: FlushableStreamState[] = [];
     let opsSettled = true;
 
     // Latency telemetry to attach to this step's terminal event. Computed
@@ -992,7 +1048,8 @@ export async function executeStep(
             ops,
             globalThis,
             {},
-            params.workflowDeploymentId
+            params.workflowDeploymentId,
+            streamStates
           );
           const durationMs = Date.now() - startTime;
           hydrateSpan?.setAttributes({
@@ -1129,6 +1186,7 @@ export async function executeStep(
               rootRunId: params.rootRunId,
               ops,
               preCompletionOps,
+              streamStates,
               closureVars: hydratedInput.closureVars,
               encryptionKey,
               // Turbo optimistic start runs this body before `run_started` is
@@ -1202,21 +1260,12 @@ export async function executeStep(
         return dehydrated;
       });
 
-      // Flush pending ops (stream writes, etc.) with a short inline wait.
-      // WorkflowServerWritableStream acks writes on buffer entry
-      // (group-commit batching); durability is enforced by its drain
-      // barrier, which the flushable state's completion awaits after
-      // lock release. Most ops settle within ~200ms (lock-release
-      // polling + one batched HTTP flush).
-      // If ops don't settle in 500ms (e.g., WritableStream kept open
-      // across steps), waitUntil handles the rest.
+      // Arm the background flush before the durability wait so lock-held
+      // streams and late close/writes keep their existing lifecycle even if a
+      // drain fails. The drain snapshots only frames produced by this step and
+      // does not depend on writer-lock release.
       if (ops.length > 0) {
         const opsPromise = Promise.all(ops);
-        // The race below surfaces failures inline when ops settle quickly;
-        // if the 500ms timeout wins, the failure is only observed here. The
-        // promise handed to waitUntil must never reject (an unconsumed
-        // waitUntil rejection crashes the process as unhandledRejection),
-        // so unexpected failures are logged instead.
         safeWaitUntil(opsPromise, (err) => {
           runtimeLogger.warn('Background flush of step stream ops failed', {
             workflowRunId,
@@ -1224,20 +1273,28 @@ export async function executeStep(
             error: err instanceof Error ? err.message : String(err),
           });
         });
-        opsSettled = await Promise.race([
+
+        // Start the V2 inline-loop heuristic concurrently with durability so
+        // a held lock costs max(500ms, PUT RTT), not 500ms plus the PUT RTT.
+        const opsSettledPromise = Promise.race([
           opsPromise.then(
             () => true as const,
             (err) => {
-              // Ignore expected client disconnect errors (e.g., browser
-              // refresh during streaming)
-              const isAbortError =
-                err?.name === 'AbortError' || err?.name === 'ResponseAborted';
-              if (isAbortError) return true as const;
+              if (isClientDisconnectError(err)) return true as const;
               throw err;
             }
           ),
           new Promise<false>((r) => setTimeout(() => r(false), 500)),
         ]);
+        // The durability wait can outlive an immediate op rejection. Observe
+        // this branch now; the awaited copy below still surfaces the error.
+        opsSettledPromise.catch(() => {});
+
+        await drainStepStreams(streamStates);
+
+        // This outcome is only the inline-loop heuristic. Durability was
+        // established independently above.
+        opsSettled = await opsSettledPromise;
       }
 
       // Optimistic start: the body ran before `step_started` was confirmed.
