@@ -461,6 +461,164 @@ describe('createReconnectingFramedStream', () => {
     expect(chunks).toEqual([payloadFrame(1), payloadFrame(2), payloadFrame(3)]);
   });
 
+  it('starts key resolution concurrently with the first stream GET', async () => {
+    let resolveStream: (stream: ReadableStream<Uint8Array>) => void;
+    const streamPromise = new Promise<ReadableStream<Uint8Array>>((resolve) => {
+      resolveStream = resolve;
+    });
+    let resolveKey: () => void;
+    const keyPromise = new Promise<void>((resolve) => {
+      resolveKey = resolve;
+    });
+    const get = vi.fn().mockReturnValue(streamPromise);
+    const prefetchKey = vi.fn().mockReturnValue(keyPromise);
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      streams: { get },
+    } as unknown as World);
+
+    const read = readAll(
+      createReconnectingFramedStream(RUN_ID, 's', 0, prefetchKey)
+    );
+    await vi.waitFor(() => {
+      expect(get).toHaveBeenCalledOnce();
+      expect(prefetchKey).toHaveBeenCalledOnce();
+    });
+
+    resolveKey?.();
+    resolveStream?.(
+      scriptedStream([
+        { kind: 'value', value: payloadFrame(7) },
+        { kind: 'close' },
+      ])
+    );
+    await expect(read).resolves.toEqual([payloadFrame(7)]);
+  });
+
+  it('finishes key resolution before the first raw frame', async () => {
+    let releaseFrame: () => void;
+    const frameReady = new Promise<void>((resolve) => {
+      releaseFrame = resolve;
+    });
+    const prefetchKey = vi.fn().mockResolvedValue(undefined);
+    const { world } = makeWorldWithScriptedStreams({
+      0: () =>
+        new ReadableStream({
+          async pull(controller) {
+            await frameReady;
+            controller.enqueue(payloadFrame(7));
+            controller.close();
+          },
+        }),
+    });
+    setWorld(world);
+
+    const read = readAll(
+      createReconnectingFramedStream(RUN_ID, 's', 0, prefetchKey)
+    );
+    await vi.waitFor(() => expect(prefetchKey).toHaveBeenCalledOnce());
+    // The resolver has already settled by the time the raw frame is released.
+    await Promise.resolve();
+    releaseFrame?.();
+    await expect(read).resolves.toEqual([payloadFrame(7)]);
+    expect(prefetchKey).toHaveBeenCalledOnce();
+  });
+
+  it('prefetches one key promise across reconnects', async () => {
+    const prefetchKey = vi.fn().mockResolvedValue(undefined);
+    const { world, calls } = makeWorldWithScriptedStreams({
+      0: () =>
+        scriptedStream([
+          { kind: 'value', value: payloadFrame(1) },
+          { kind: 'error', err: new Error('connection reset') },
+        ]),
+      1: () =>
+        scriptedStream([
+          { kind: 'value', value: payloadFrame(2) },
+          { kind: 'close' },
+        ]),
+    });
+    setWorld(world);
+
+    await expect(
+      readAll(createReconnectingFramedStream(RUN_ID, 's', 0, prefetchKey))
+    ).resolves.toEqual([payloadFrame(1), payloadFrame(2)]);
+    expect(calls).toEqual([0, 1]);
+    expect(prefetchKey).toHaveBeenCalledOnce();
+  });
+
+  it('keeps a stream GET failure primary when its speculative key lookup also fails', async () => {
+    const streamError = new Error('stream connection failed');
+    const keyError = new Error('key lookup failed');
+    const unhandled = vi.fn();
+    process.once('unhandledRejection', unhandled);
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      streams: { get: vi.fn().mockRejectedValue(streamError) },
+    } as unknown as World);
+
+    await expect(
+      readAll(
+        createReconnectingFramedStream(RUN_ID, 's', -1, () =>
+          Promise.reject(keyError)
+        )
+      )
+    ).rejects.toThrow('stream connection failed');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it('observes a rejected speculative key lookup after cancellation', async () => {
+    const keyError = new Error('key lookup failed');
+    const unhandled = vi.fn();
+    process.once('unhandledRejection', unhandled);
+    const stream = createReconnectingFramedStream(RUN_ID, 's', 0, () =>
+      Promise.reject(keyError)
+    );
+    const reader = stream.getReader();
+    const pending = reader.read();
+    await reader.cancel();
+    await expect(pending).resolves.toMatchObject({ done: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it('cancels an acquired underlying reader while a prefetched key is pending', async () => {
+    let cancelCount = 0;
+    let resolveKey: () => void;
+    const prefetchKey = vi.fn().mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveKey = resolve;
+      })
+    );
+    const source = new ReadableStream<Uint8Array>({
+      pull() {
+        // Keep the first raw read pending until the consumer cancels.
+      },
+      cancel() {
+        cancelCount++;
+      },
+    });
+    const get = vi.fn().mockResolvedValue(source);
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      streams: { get },
+    } as unknown as World);
+
+    const reader = createReconnectingFramedStream(
+      RUN_ID,
+      's',
+      0,
+      prefetchKey
+    ).getReader();
+    const pendingRead = reader.read();
+    await vi.waitFor(() => expect(get).toHaveBeenCalledOnce());
+    await reader.cancel();
+    await expect(pendingRead).resolves.toMatchObject({ done: true });
+    expect(cancelCount).toBe(1);
+    resolveKey?.();
+  });
+
   it('threads runId through to streams.get', async () => {
     const getSpy = vi.fn(
       async (_runId: string, _name: string, _startIndex?: number) =>
