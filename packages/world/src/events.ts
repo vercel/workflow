@@ -568,6 +568,17 @@ const RunCreatedEventSchema = z.compile(
       attributes: z.record(z.string(), z.string()).optional(),
       allowReservedAttributes: z.literal(true).optional(),
       /**
+       * A dynamic run's serialized workflow VM code. The World materializes it
+       * onto the run record and does not keep a second copy on the event.
+       * Mutually exclusive with `dynamicWorkflowCodeRef`.
+       */
+      dynamicWorkflowCode: SerializedDataSchema.optional(),
+      /**
+       * Ref for dynamic workflow code uploaded before this write. Worlds must
+       * validate it against the caller and run before attaching it.
+       */
+      dynamicWorkflowCodeRef: z.string().optional(),
+      /**
        * The run's X25519 public key (base64), stamped by SDKs that support
        * sealed (`encp`) envelopes. Persisted onto the run entity so that
        * cross-run writers can seal payloads to this run without holding its
@@ -605,6 +616,9 @@ const RunStartedEventSchema = z.compile(
          * the run would silently lose its ability to receive sealed writes.
          */
         encryptionPublicKey: z.string().optional(),
+        /** Dynamic code carried for resilient run creation. */
+        dynamicWorkflowCode: SerializedDataSchema.optional(),
+        dynamicWorkflowCodeRef: z.string().optional(),
       })
       .optional(),
   })

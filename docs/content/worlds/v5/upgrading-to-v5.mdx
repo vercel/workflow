@@ -101,7 +101,7 @@ The scheme exists for what a reader can conclude from a log it just fetched: pos
 - **Bump and report.** `events.create()` params carry `eventCount`, so the expected position is `eventCount + 1`. When it is taken, do not reject the write: commit at the next free position and return the events you skipped on the success response. A stale count is the normal case for a parallel fan-out, and rejecting it would serialize writes the runtime deliberately issues concurrently.
 - **Allocate at the commit.** Take the position in the same operation that appends the event, not earlier. This is what makes a reader's log a prefix of the run's log rather than a prefix with a hole in it: nothing can land behind a position a reader has already passed. A World that mints a position in a request handler and commits later breaks the property every replay depends on, and is the only kind that still has a use for a stale-write rejection.
 
-[Event ID Allocation](/worlds/building-a-world#event-id-allocation) carries the full rules, and [Event IDs](/docs/how-it-works/event-sourcing#event-ids) covers what the format means for anything that reads an ID back.
+[Event ID Allocation](/worlds/building-a-world#event-id-allocation) carries the full rules, and [Event IDs](/docs/advanced/event-sourcing#event-ids) covers what the format means for anything that reads an ID back.
 
 One consequence is specific to an upgrade, and it is the thing to plan around.
 

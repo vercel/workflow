@@ -109,6 +109,10 @@ export const RunInputSchema = z.compile(
     workflowName: z.string(),
     specVersion: z.number(),
     executionContext: z.record(z.string(), z.any()).optional(),
+    /** Dynamic workflow code carried for resilient run creation. */
+    dynamicWorkflowCode: SerializedDataSchema.optional(),
+    /** Ref for deferred dynamic workflow code; mutually exclusive with bytes. */
+    dynamicWorkflowCodeRef: z.string().optional(),
     /** Initial plaintext run attributes, for resilient run creation. */
     attributes: z.record(z.string(), z.string()).optional(),
     /**
