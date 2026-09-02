@@ -749,14 +749,11 @@ export async function fetchEvents(
   const { cursor, sortOrder = 'asc', limit = 1000, withData = false } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    // Run-scoped, so it reads canonical storage rather than analytics.
-    // Analytics is gated to the tenant's `observabilityBillDays` window
-    // (1/2/3 days off Observability Plus) while storage rows live to their
-    // TTL and carry no read-time window check, so the analytics path
-    // returned an empty list for any run older than that window even though
-    // the rows were still there. It also trails storage on ingestion, which
-    // showed as gaps on a live run. This listing feeds the trace, graph and
-    // events tabs, so all three were affected.
+    // Run-scoped, so it reads storage rather than analytics. The analytics
+    // namespace is a metadata mirror with a shorter retention window and
+    // asynchronous ingestion, so it returned an empty list for a run older
+    // than that window and could trail a run still executing. This listing
+    // backs both the trace viewer and the events tab.
     const result = await world.events.list({
       runId,
       pagination: { cursor, limit, sortOrder },
@@ -830,10 +827,10 @@ export async function fetchEventsByCorrelationId(
   } = params;
   try {
     const world = await getWorldFromEnv(worldEnv);
-    // Run-scoped, so it reads canonical storage — see `fetchEvents` for why
-    // the analytics path was withdrawn. `runId` is required here, so the
-    // backend answers from the run's own partition rather than the cross-run
-    // correlation index.
+    // Run-scoped, so it reads storage — see `fetchEvents` for why the
+    // analytics path was withdrawn. `runId` is required, which keeps the
+    // answer scoped to one run: a correlation id is unique within its run,
+    // not across runs.
     const result = await world.events.listByCorrelationId({
       correlationId,
       runId,

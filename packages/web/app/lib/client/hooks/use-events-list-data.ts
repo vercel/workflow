@@ -20,11 +20,10 @@ const LOAD_MORE_PAGE_SIZE = 100;
 /**
  * Max pages when fetching correlation ID search results (100 events/page).
  *
- * Sized for the storage read path, where the backend filters a run partition
- * and DynamoDB's `Limit` counts rows *evaluated*, not rows matched — so each
- * page can evaluate up to 1000 rows of a partition the SDK may be replaying
- * at the same time. 30 pages was chosen when this search read analytics,
- * where the scan was columnar and effectively free.
+ * Kept low for the storage read path, which filters server-side and so can
+ * cost considerably more to produce a page than the page returns. The
+ * previous 30 was sized for the analytics path, where the same scan was
+ * much cheaper.
  */
 const MAX_CORRELATION_SEARCH_PAGES = 5;
 
