@@ -101,7 +101,7 @@ Vercel project and auth settings can often be inferred from `.vercel/project.jso
 
 - Environment variable: none
 - Default: `20`
-- Number of items returned per page for list commands. Must be an integer between 1 and 1000. Individual listings cap lower than that — a cross-run listing allows fewer rows than one scoped to a single run — and report the limit they accept when you exceed it.
+- Number of items returned per page for list commands. `workflow cancel` bounds it separately; see [`--limit` (cancel)](#--limit-cancel).
 
 ### `--cursor`
 
@@ -125,6 +125,12 @@ per flag.
 - Command: `workflow inspect`
 - Default: unset
 - Scopes the listing to one run. Required for `steps`, `events`, and `sleeps`; optional for `hooks`. Must be a run ID: `wrun_` followed by a 26-character ULID.
+
+### `--limit` (inspect)
+
+- Command: `workflow inspect`
+- Default: `20`
+- Must be an integer between 1 and 1000. Individual listings cap lower than that — a cross-run listing allows fewer rows than one scoped to a single run — and report the limit they accept when you exceed it.
 
 ### `--stepId` / `-s`
 

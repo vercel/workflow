@@ -48,9 +48,18 @@ describe('parseAttributeFilters', () => {
     );
   });
 
-  it('keeps the last value when a key repeats', () => {
-    expect(parseAttributeFilters(['tenant=a', 'tenant=b'])).toEqual({
-      tenant: 'b',
+  // Matching is per-key, so resolving this would mean discarding one of two
+  // filters the caller typed.
+  it('rejects a repeated key rather than picking one value', () => {
+    expect(() => parseAttributeFilters(['tenant=a', 'tenant=b'])).toThrow(
+      '--attribute "tenant" was given more than once'
+    );
+  });
+
+  it('allows the same value under different keys', () => {
+    expect(parseAttributeFilters(['tenant=a', 'region=a'])).toEqual({
+      tenant: 'a',
+      region: 'a',
     });
   });
 });

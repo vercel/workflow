@@ -17,7 +17,10 @@ const MAX_ATTRIBUTE_FLAGS = 8;
  * flag the user typed rather than the parameter it becomes. Only the first
  * `=` splits, since an attribute value may contain one. An empty value is
  * meaningful — it matches runs whose attribute was set to the empty string —
- * so only an empty key is rejected.
+ * so only an empty key is rejected. A key given twice is rejected rather
+ * than resolved: matching is per-key, so one of the two values would have to
+ * be discarded, and silently picking either would answer a question the
+ * caller did not ask.
  */
 export function parseAttributeFilters(
   values: string[] | undefined
@@ -36,7 +39,13 @@ export function parseAttributeFilters(
         `--attribute must be key=value, received ${JSON.stringify(value)}`
       );
     }
-    attributes[value.slice(0, separator)] = value.slice(separator + 1);
+    const key = value.slice(0, separator);
+    if (key in attributes) {
+      throw new Error(
+        `--attribute ${JSON.stringify(key)} was given more than once; a run matches one value per key`
+      );
+    }
+    attributes[key] = value.slice(separator + 1);
   }
   return attributes;
 }

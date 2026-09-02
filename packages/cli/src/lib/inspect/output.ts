@@ -689,15 +689,18 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
   // filter. Without the flags the backend applies its default window
   // (trailing 24h on the Vercel backend).
   const timeWindow = resolveTimeWindow(opts);
+  // `useAnalytics` is false either because the backend has no analytics
+  // namespace or because --withData asked for payloads, which only storage
+  // carries. Blaming the backend for the caller's own flag sends them
+  // looking in the wrong place.
+  const ignoredBecause = opts.withData
+    ? 'ignored with --withData, which reads payloads from storage'
+    : 'ignored by this backend, which has no analytics read path';
   if (opts.attributes && !useAnalytics) {
-    logger.warn(
-      '--attribute requires the analytics read path and is ignored by this backend.'
-    );
+    logger.warn(`--attribute is ${ignoredBecause}.`);
   }
   if (timeWindow && !useAnalytics) {
-    logger.warn(
-      '--since/--until require the analytics read path and are ignored by this backend.'
-    );
+    logger.warn(`--since/--until are ${ignoredBecause}.`);
   }
 
   // Determine which props to show based on withData flag
@@ -1611,10 +1614,13 @@ export const listAttributes = async (
       workflowName: opts.workflowName,
       ...(timeWindow ?? {}),
       pagination: {
-        // Keys read best alphabetically, which is the backend's own default
-        // for this listing, so `--sort` is not forwarded here.
         cursor,
         limit: opts.limit || DEFAULT_PAGE_SIZE,
+        // Forwarded only when asked for, unlike the time-ordered listings
+        // which default to `desc`: attribute keys are ordered
+        // alphabetically by the backend, and that reads better than either
+        // direction imposed here.
+        ...(opts.sort ? { sortOrder: opts.sort } : {}),
       },
     });
     return {
