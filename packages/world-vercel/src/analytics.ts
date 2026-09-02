@@ -17,18 +17,23 @@ import {
   AttributeValueSchema,
   PaginatedResponseSchema,
   type PaginationOptions,
-  workflowRunIdSchema,
 } from '@workflow/world';
 import type { APIConfig } from './utils.js';
 import { makeRequest } from './utils.js';
 
 /**
  * Body of a prefixed workflow ULID: the tag-shifted first character followed
- * by 25 Crockford-Base32 digits. `workflowRunIdSchema` covers run ids; the
- * remaining entity ids have no published schema in `@workflow/world`, so the
- * shape is matched here rather than reimplemented per id type.
+ * by 25 Crockford-Base32 digits.
+ *
+ * Every id below is matched against this rather than against
+ * `workflowRunIdSchema`, whose `z.ulid()` accepts a lowercase body and a
+ * first character outside the tagged `0-7` range. The backend accepts
+ * neither, so validating run ids that way let exactly the arguments this
+ * guard exists to catch through to a 400.
  */
 const ULID_BODY = '[01234567][0123456789ABCDEFGHJKMNPQRSTVWXYZ]{25}';
+
+const RUN_ID_PATTERN = new RegExp(`^wrun_${ULID_BODY}$`);
 
 /**
  * Correlation-id prefixes the analytics event listings accept, mirroring the
@@ -64,7 +69,7 @@ function assertPageLimit(limit: number, maxLimit: number): void {
 }
 
 function assertRunId(runId: string): void {
-  if (!workflowRunIdSchema.safeParse(runId).success) {
+  if (!RUN_ID_PATTERN.test(runId)) {
     throw new RangeError(
       `runId must be a workflow run id ('wrun_' followed by a ULID), received ${JSON.stringify(runId)}`
     );
@@ -217,7 +222,7 @@ function appendAttributeListParams(
   params: AnalyticsListAttributesParams
 ): void {
   assertDateWindow(params.startTime, params.endTime);
-  if (params.workflowName) {
+  if (params.workflowName !== undefined) {
     searchParams.set('workflowName', params.workflowName);
   }
   if (params.startTime !== undefined && params.endTime !== undefined) {
@@ -243,7 +248,7 @@ export function createAnalytics(config?: APIConfig): Analytics {
         assertDateWindow(params.startTime, params.endTime);
 
         const searchParams = new URLSearchParams();
-        if (params.workflowName) {
+        if (params.workflowName !== undefined) {
           searchParams.set('workflowName', params.workflowName);
         }
         if (params.status) {
@@ -338,7 +343,7 @@ export function createAnalytics(config?: APIConfig): Analytics {
         if (params.eventType) {
           searchParams.set('eventType', params.eventType);
         }
-        if (params.correlationId) {
+        if (params.correlationId !== undefined) {
           assertCorrelationId(params.correlationId);
           searchParams.set('correlationId', params.correlationId);
         }
@@ -389,7 +394,7 @@ export function createAnalytics(config?: APIConfig): Analytics {
         assertHookId(hookId);
 
         const searchParams = new URLSearchParams();
-        if (params?.runId) {
+        if (params?.runId !== undefined) {
           assertRunId(params.runId);
           searchParams.set('runId', params.runId);
         }

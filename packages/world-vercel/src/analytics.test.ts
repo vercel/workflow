@@ -405,3 +405,55 @@ describe('createAnalytics hooks and waits input guards', () => {
     expect(state.makeRequest).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('createAnalytics guard strictness', () => {
+  beforeEach(() => {
+    state.makeRequest.mockReset();
+    state.makeRequest.mockResolvedValue({
+      data: [],
+      cursor: null,
+      hasMore: false,
+    });
+  });
+
+  // `z.ulid()` accepts both of these; the backend accepts neither, so
+  // validating run ids through it let a 400 through the guard.
+  it.each([
+    ['a lowercase body', 'wrun_01k4bzq5t2j8hxfm6wd3pnavce'],
+    ['a first character above 7', 'wrun_81K4BZQ5T2J8HXFM6WD3PNAVCE'],
+  ])('rejects a run id with %s', (_label, id) => {
+    const analytics = createAnalytics();
+    expect(() => analytics.runs.get(id)).toThrow(
+      'runId must be a workflow run id'
+    );
+    expect(state.makeRequest).not.toHaveBeenCalled();
+  });
+
+  // A supplied-but-empty filter used to be dropped, which widened the result
+  // set instead of narrowing it — the same failure the limit and time-window
+  // guards exist to prevent.
+  it('rejects an empty correlationId rather than listing the whole run', () => {
+    const analytics = createAnalytics();
+    expect(() =>
+      analytics.events.list({ runId: RUN_ID, correlationId: '' })
+    ).toThrow('correlationId must be a step, hook, wait, or attribute id');
+    expect(state.makeRequest).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty runId scope on hooks.get rather than unscoping it', () => {
+    const analytics = createAnalytics();
+    expect(() => analytics.hooks.get(HOOK_ID, { runId: '' })).toThrow(
+      'runId must be a workflow run id'
+    );
+    expect(state.makeRequest).not.toHaveBeenCalled();
+  });
+
+  it('forwards an empty workflowName rather than dropping the filter', async () => {
+    const analytics = createAnalytics();
+    await analytics.runs.list({ workflowName: '' });
+
+    const { endpoint } = state.makeRequest.mock.calls[0][0];
+    const url = new URL(endpoint, 'https://example.test');
+    expect(url.searchParams.get('workflowName')).toBe('');
+  });
+});
