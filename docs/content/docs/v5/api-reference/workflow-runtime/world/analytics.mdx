@@ -181,23 +181,6 @@ const events = await world.analytics.events.getMany(runId, eventIds); // [!code 
 
 **Returns:** `AnalyticsEvent[]` — not paginated, and no `pageInfo`. Duplicate ids are looked up once, and ids with no analytics row yet are **omitted rather than erroring**, since ingestion can trail canonical storage. Compare the returned length against your input to detect that.
 
-### events.listByCorrelationId()
-
-<Callout type="warn">
-  Deprecated. Use [`events.list()`](#eventslist) with a `correlationId` filter,
-  which issues the same request and also accepts `eventType`. Scheduled for
-  removal in the next major version.
-</Callout>
-
-```typescript lineNumbers
-const related = await world.analytics.events.listByCorrelationId({
-  runId,
-  correlationId,
-});
-```
-
-A correlation id is unique within its run, not across runs, so `runId` is required.
-
 ---
 
 ## analytics.hooks
@@ -274,7 +257,7 @@ the listing scans within one run or across runs:
 
 | Method | Max `limit` |
 |--------|-------------|
-| `steps.list()`, `events.list()`, `events.listByCorrelationId()`, `waits.list()` | 1000 |
+| `steps.list()`, `events.list()`, `waits.list()` | 1000 |
 | `runs.list()`, `attributes.list()`, `hooks.list()` | 100 |
 
 `events.getMany()` is not paginated; it accepts 1 to 100 event ids per call.
