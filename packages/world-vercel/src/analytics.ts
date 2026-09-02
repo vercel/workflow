@@ -1,3 +1,4 @@
+import { WorkflowWorldError } from '@workflow/errors';
 import {
   ANALYTICS_EVENTS_GET_MANY_LIMIT,
   ANALYTICS_MAX_ATTRIBUTE_FILTERS,
@@ -20,6 +21,21 @@ import {
 } from '@workflow/world';
 import type { APIConfig } from './utils.js';
 import { makeRequest } from './utils.js';
+
+/**
+ * Error code carried by every argument rejection below.
+ *
+ * A caller — or an agent driving this API — needs one bit above all others:
+ * whether to fix the call or retry it. `INVALID_ARGUMENT` is never
+ * retryable, which distinguishes it from the transport and rate-limit codes
+ * the same client can raise. The message always opens with the offending
+ * parameter and closes with what was received.
+ */
+const INVALID_ARGUMENT = 'INVALID_ARGUMENT';
+
+function invalidArgument(message: string): WorkflowWorldError {
+  return new WorkflowWorldError(message, { code: INVALID_ARGUMENT });
+}
 
 /**
  * Body of a prefixed workflow ULID: the tag-shifted first character followed
@@ -62,7 +78,7 @@ const WAIT_ID_PATTERN = new RegExp(`^wait_${ULID_BODY}$`);
  */
 function assertPageLimit(limit: number, maxLimit: number): void {
   if (!Number.isInteger(limit) || limit < 1 || limit > maxLimit) {
-    throw new RangeError(
+    throw invalidArgument(
       `pagination.limit must be an integer between 1 and ${maxLimit} (received ${limit})`
     );
   }
@@ -70,7 +86,7 @@ function assertPageLimit(limit: number, maxLimit: number): void {
 
 function assertRunId(runId: string): void {
   if (!RUN_ID_PATTERN.test(runId)) {
-    throw new RangeError(
+    throw invalidArgument(
       `runId must be a workflow run id ('wrun_' followed by a ULID), received ${JSON.stringify(runId)}`
     );
   }
@@ -78,7 +94,7 @@ function assertRunId(runId: string): void {
 
 function assertCorrelationId(correlationId: string): void {
   if (!CORRELATION_ID_PATTERN.test(correlationId)) {
-    throw new RangeError(
+    throw invalidArgument(
       `correlationId must be a step, hook, wait, or attribute id, received ${JSON.stringify(correlationId)}`
     );
   }
@@ -86,7 +102,7 @@ function assertCorrelationId(correlationId: string): void {
 
 function assertEventId(eventId: string): void {
   if (!EVENT_ID_PATTERN.test(eventId)) {
-    throw new RangeError(
+    throw invalidArgument(
       `eventId must be an event id ('evnt_' followed by a ULID), received ${JSON.stringify(eventId)}`
     );
   }
@@ -94,7 +110,7 @@ function assertEventId(eventId: string): void {
 
 function assertStepId(stepId: string): void {
   if (!STEP_ID_PATTERN.test(stepId)) {
-    throw new RangeError(
+    throw invalidArgument(
       `stepId must be a step id ('step_' followed by a ULID), received ${JSON.stringify(stepId)}`
     );
   }
@@ -102,7 +118,7 @@ function assertStepId(stepId: string): void {
 
 function assertHookId(hookId: string): void {
   if (!HOOK_ID_PATTERN.test(hookId)) {
-    throw new RangeError(
+    throw invalidArgument(
       `hookId must be a hook id ('hook_' followed by a ULID), received ${JSON.stringify(hookId)}`
     );
   }
@@ -110,7 +126,7 @@ function assertHookId(hookId: string): void {
 
 function assertWaitId(waitId: string): void {
   if (!WAIT_ID_PATTERN.test(waitId)) {
-    throw new RangeError(
+    throw invalidArgument(
       `waitId must be a wait id ('wait_' followed by a ULID), received ${JSON.stringify(waitId)}`
     );
   }
@@ -129,19 +145,19 @@ function assertWaitId(waitId: string): void {
 function assertAttributeFilters(attributes: Record<string, string>): void {
   const entries = Object.entries(attributes);
   if (entries.length > ANALYTICS_MAX_ATTRIBUTE_FILTERS) {
-    throw new RangeError(
+    throw invalidArgument(
       `attributes may filter by at most ${ANALYTICS_MAX_ATTRIBUTE_FILTERS} pairs (received ${entries.length})`
     );
   }
   for (const [key, value] of entries) {
     if (!AttributeKeySchema.safeParse(key).success) {
-      throw new RangeError(
-        `attributes key must be 1 to ${ATTRIBUTE_KEY_MAX_LENGTH} characters, received ${JSON.stringify(key)}`
+      throw invalidArgument(
+        `attributes key must be 1 to ${ATTRIBUTE_KEY_MAX_LENGTH} characters, received ${key.length} in ${JSON.stringify(key)}`
       );
     }
     if (!AttributeValueSchema.safeParse(value).success) {
-      throw new RangeError(
-        `attributes value for ${JSON.stringify(key)} must be at most ${ATTRIBUTE_VALUE_MAX_BYTES} UTF-8 bytes`
+      throw invalidArgument(
+        `attributes value for ${JSON.stringify(key)} must be at most ${ATTRIBUTE_VALUE_MAX_BYTES} UTF-8 bytes (received ${new TextEncoder().encode(value).length})`
       );
     }
   }
@@ -159,24 +175,28 @@ function assertAttributeFilters(attributes: Record<string, string>): void {
 function assertDateWindow(startTime?: string, endTime?: string): void {
   if (startTime === undefined && endTime === undefined) return;
   if (startTime === undefined || endTime === undefined) {
-    throw new RangeError(
-      'startTime and endTime must be provided together, or both omitted'
+    const given = startTime === undefined ? 'endTime' : 'startTime';
+    const missing = startTime === undefined ? 'startTime' : 'endTime';
+    throw invalidArgument(
+      `${missing} is required when ${given} is provided; supply both or neither`
     );
   }
   const start = new Date(startTime).getTime();
   const end = new Date(endTime).getTime();
   if (!Number.isFinite(start)) {
-    throw new RangeError(
+    throw invalidArgument(
       `startTime must be a parseable datetime, received ${JSON.stringify(startTime)}`
     );
   }
   if (!Number.isFinite(end)) {
-    throw new RangeError(
+    throw invalidArgument(
       `endTime must be a parseable datetime, received ${JSON.stringify(endTime)}`
     );
   }
   if (start > end) {
-    throw new RangeError('startTime must be before or equal to endTime');
+    throw invalidArgument(
+      `startTime must be before or equal to endTime (received startTime=${JSON.stringify(startTime)}, endTime=${JSON.stringify(endTime)})`
+    );
   }
 }
 
@@ -204,11 +224,11 @@ function createQueryString(params: URLSearchParams): string {
 function normalizeEventIds(eventIds: readonly string[]): string[] {
   const uniqueEventIds = [...new Set(eventIds)];
   if (uniqueEventIds.length === 0) {
-    throw new RangeError('eventIds must contain at least one event ID');
+    throw invalidArgument('eventIds must contain at least one event ID');
   }
   if (uniqueEventIds.length > ANALYTICS_EVENTS_GET_MANY_LIMIT) {
-    throw new RangeError(
-      `eventIds must contain at most ${ANALYTICS_EVENTS_GET_MANY_LIMIT} unique event IDs`
+    throw invalidArgument(
+      `eventIds must contain at most ${ANALYTICS_EVENTS_GET_MANY_LIMIT} unique event IDs (received ${uniqueEventIds.length})`
     );
   }
   // Checked after the cardinality bounds: a caller that passed the wrong

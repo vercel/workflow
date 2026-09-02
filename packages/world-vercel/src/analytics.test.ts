@@ -1,3 +1,4 @@
+import { WorkflowWorldError } from '@workflow/errors';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
@@ -275,10 +276,10 @@ describe('createAnalytics runs and steps input guards', () => {
       { endTime: '2026-06-21T00:00:00.000Z' },
     ]) {
       expect(() => analytics.runs.list(window)).toThrow(
-        'startTime and endTime must be provided together'
+        'supply both or neither'
       );
       expect(() => analytics.attributes.list(window)).toThrow(
-        'startTime and endTime must be provided together'
+        'supply both or neither'
       );
     }
     expect(state.makeRequest).not.toHaveBeenCalled();
@@ -455,5 +456,75 @@ describe('createAnalytics guard strictness', () => {
     const { endpoint } = state.makeRequest.mock.calls[0][0];
     const url = new URL(endpoint, 'https://example.test');
     expect(url.searchParams.get('workflowName')).toBe('');
+  });
+});
+
+describe('createAnalytics argument errors', () => {
+  beforeEach(() => {
+    state.makeRequest.mockReset();
+    state.makeRequest.mockResolvedValue({
+      data: [],
+      cursor: null,
+      hasMore: false,
+    });
+  });
+
+  // The code is the branch point: an argument rejection is never worth
+  // retrying, unlike the transport and throttle codes this client also
+  // raises.
+  it('tags every rejection with a non-retryable code', () => {
+    const analytics = createAnalytics();
+    const calls = [
+      () => analytics.runs.get('nope'),
+      () => analytics.runs.list({ pagination: { limit: 0 } }),
+      () => analytics.runs.list({ attributes: { k: 'v'.repeat(300) } }),
+      () => analytics.runs.list({ startTime: '2026-06-20T00:00:00.000Z' }),
+      () => analytics.steps.get(RUN_ID, 'bad'),
+      () => analytics.events.getMany(RUN_ID, []),
+      () => analytics.waits.get(RUN_ID, 'bad'),
+    ];
+    for (const call of calls) {
+      let caught: unknown;
+      try {
+        call();
+      } catch (error) {
+        caught = error;
+      }
+      expect(WorkflowWorldError.is(caught)).toBe(true);
+      expect((caught as WorkflowWorldError).code).toBe('INVALID_ARGUMENT');
+    }
+    expect(state.makeRequest).not.toHaveBeenCalled();
+  });
+
+  it('names the missing bound of a half-open window', () => {
+    const analytics = createAnalytics();
+    expect(() =>
+      analytics.runs.list({ startTime: '2026-06-20T00:00:00.000Z' })
+    ).toThrow('endTime is required when startTime is provided');
+    expect(() =>
+      analytics.runs.list({ endTime: '2026-06-20T00:00:00.000Z' })
+    ).toThrow('startTime is required when endTime is provided');
+  });
+
+  it('reports both ends of an inverted window and the measured sizes', () => {
+    const analytics = createAnalytics();
+    expect(() =>
+      analytics.runs.list({
+        startTime: '2026-06-21T00:00:00.000Z',
+        endTime: '2026-06-20T00:00:00.000Z',
+      })
+    ).toThrow('received startTime="2026-06-21T00:00:00.000Z"');
+    expect(() =>
+      analytics.runs.list({ attributes: { team: 'v'.repeat(300) } })
+    ).toThrow('(received 300)');
+    expect(() =>
+      analytics.events.getMany(
+        RUN_ID,
+        Array.from(
+          { length: 101 },
+          (_, i) => `${EVENT_ID_A.slice(0, -3)}${String(i).padStart(3, '0')}`
+        )
+      )
+    ).toThrow('(received 101)');
   });
 });
