@@ -797,3 +797,82 @@ describe('listSleeps', () => {
     );
   });
 });
+
+describe('listSleeps analytics degradation', () => {
+  const eventBase = {
+    runId: 'run-1',
+    workflowName: 'wf',
+    deploymentId: 'dpl_1',
+  };
+
+  // The other three list paths fall back to storage; this one used to end the
+  // command, leaving its storage branch unreachable wherever analytics exists.
+  it('falls back to the event log when the analytics read fails', async () => {
+    const world = {
+      analytics: {
+        waits: {
+          list: vi
+            .fn()
+            .mockRejectedValue(
+              Object.assign(new Error('upstream unavailable'), { status: 503 })
+            ),
+        },
+      },
+      events: {
+        list: vi.fn().mockResolvedValue({
+          data: [
+            {
+              ...eventBase,
+              eventId: 'evnt-1',
+              eventType: 'wait_created',
+              correlationId: 'wait-1',
+              createdAt: new Date('2026-06-30T00:00:00.000Z'),
+              eventData: { resumeAt: new Date('2026-06-30T00:01:00.000Z') },
+            },
+          ],
+          cursor: null,
+          hasMore: false,
+        }),
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listSleeps(world, { json: true, runId: 'run-1' });
+
+    expect(world.analytics?.waits.list).toHaveBeenCalled();
+    expect(world.events.list).toHaveBeenCalled();
+    expect(write.mock.calls.join('')).toContain('wait-1');
+    write.mockRestore();
+  });
+
+  // Retrying an argument the World already rejected would only replace a
+  // precise message with a slower failure.
+  it('does not fall back when the argument was rejected', async () => {
+    const world = {
+      analytics: {
+        waits: {
+          list: vi
+            .fn()
+            .mockRejectedValue(
+              Object.assign(
+                new Error(
+                  'analytics.waits.list: runId must be a workflow run id'
+                ),
+                { code: 'INVALID_ARGUMENT', field: 'runId' }
+              )
+            ),
+        },
+      },
+      events: { list: vi.fn() },
+    } as unknown as World;
+
+    await listSleeps(world, { runId: 'nope' });
+
+    expect(world.analytics?.waits.list).toHaveBeenCalled();
+    expect(world.events.list).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+});

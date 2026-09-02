@@ -9,6 +9,10 @@ import {
   getObservabilityUpgradeRequiredMessage,
   isObservabilityUpgradeRequiredError,
 } from '../lib/inspect/errors.js';
+import {
+  validateInspectLimit,
+  validateInspectRunId,
+} from '../lib/inspect/flag-bounds.js';
 import { cliFlags, urlFlag } from '../lib/inspect/flags.js';
 import {
   listAttributes,
@@ -180,13 +184,28 @@ export default class Inspect extends BaseCommand {
       const resource = normalizeResource(args.resource);
       if (!resource) {
         this.logError(
-          `Unknown resource "${args.resource}": must be one of: run(s), step(s), stream(s), event(s), hook(s), sleep(s)`
+          `Unknown resource "${args.resource}": must be one of: run(s), step(s), stream(s), event(s), hook(s), sleep(s), attribute(s)`
         );
         process.exitCode = 1;
         return;
       }
 
       const id = args.id;
+
+      // Bounded before any backend setup: a mistyped flag should name itself
+      // rather than surface as a rejected argument from the read path.
+      const flagError =
+        (flags.limit !== undefined
+          ? validateInspectLimit(flags.limit)
+          : undefined) ??
+        (flags.runId !== undefined
+          ? validateInspectRunId(flags.runId)
+          : undefined);
+      if (flagError) {
+        this.logError(flagError);
+        process.exitCode = 1;
+        return;
+      }
 
       // Print-only deep link: resolve config and emit the URL, no browser/server.
       if (flags.url) {

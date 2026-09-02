@@ -215,6 +215,22 @@ const getPageInfo = (result: unknown): AnalyticsPageInfo | undefined => {
   return (result as { pageInfo?: AnalyticsPageInfo }).pageInfo;
 };
 
+/**
+ * True for a client-side argument rejection from the World
+ * (`code: 'INVALID_ARGUMENT'`).
+ *
+ * These carry no HTTP status because no request was made, which is exactly
+ * why they need naming: the status-based branches below would let them fall
+ * through to be rethrown as an unhandled exception.
+ */
+const isInvalidArgumentError = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  (error as { code?: unknown }).code === 'INVALID_ARGUMENT';
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
 const handleApiError = (error: unknown, backend?: string): boolean => {
   // First check for Vercel access errors
   if (checkAndHandleVercelAccessError(error, backend)) {
@@ -223,6 +239,14 @@ const handleApiError = (error: unknown, backend?: string): boolean => {
 
   if (isObservabilityUpgradeRequiredError(error)) {
     logger.error(getObservabilityUpgradeRequiredMessage());
+    return true;
+  }
+
+  // An argument the World rejected before sending anything. Report it as
+  // given: the message already names the method, the parameter, and what it
+  // received.
+  if (isInvalidArgumentError(error)) {
+    logger.error(errorMessage(error));
     return true;
   }
 
@@ -1429,16 +1453,27 @@ export const listSleeps = async (
     logger.warn('`withData` flag is ignored when listing sleeps');
   }
 
-  // Prefer the analytics read path for wait/sleep listing when available.
+  // Prefer the analytics read path for wait/sleep listing when available,
+  // and degrade to the event log the way the runs, steps, and events listings
+  // do. Before this, an analytics failure ended the command and the storage
+  // path below was unreachable on any backend that provides analytics.
+  //
+  // An invalid argument is not degraded: the same argument would be rejected
+  // by either path, so retrying against storage would only replace a precise
+  // message with a slower failure.
   if (world.analytics) {
     try {
       await listSleepsViaAnalytics(world.analytics, opts);
       return;
     } catch (error) {
-      if (handleApiError(error, opts.backend)) {
-        process.exit(1);
+      if (isInvalidArgumentError(error)) {
+        logger.error(errorMessage(error));
+        process.exitCode = 1;
+        return;
       }
-      throw error;
+      logger.warn(
+        `Analytics read failed, falling back to the event log: ${errorMessage(error)}`
+      );
     }
   }
 
