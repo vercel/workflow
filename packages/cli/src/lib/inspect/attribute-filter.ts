@@ -1,4 +1,13 @@
-import { ANALYTICS_MAX_ATTRIBUTE_FILTERS } from '@workflow/world';
+/**
+ * Cap on `--attribute` flags, mirroring the bound the backend applies to an
+ * attribute prefilter.
+ *
+ * Declared here rather than imported so this command does not depend on
+ * `@workflow/world` exporting it. The World and the backend enforce the same
+ * bound independently; this copy exists only so the error can name the flag
+ * the user typed instead of the parameter it becomes.
+ */
+const MAX_ATTRIBUTE_FLAGS = 8;
 
 /**
  * Parse repeated `--attribute key=value` flags into the filter the analytics
@@ -14,9 +23,9 @@ export function parseAttributeFilters(
   values: string[] | undefined
 ): Record<string, string> | undefined {
   if (!values?.length) return undefined;
-  if (values.length > ANALYTICS_MAX_ATTRIBUTE_FILTERS) {
+  if (values.length > MAX_ATTRIBUTE_FLAGS) {
     throw new Error(
-      `--attribute may be given at most ${ANALYTICS_MAX_ATTRIBUTE_FILTERS} times (received ${values.length})`
+      `--attribute may be given at most ${MAX_ATTRIBUTE_FLAGS} times (received ${values.length})`
     );
   }
   const attributes: Record<string, string> = {};
