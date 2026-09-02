@@ -59,6 +59,8 @@ export type StepContext = {
   closureVars?: Record<string, any>;
   encryptionKey?: PayloadKey;
   writables?: Map<string, CachedWritable>;
+  /** Server-bound stream pipes whose current frames must drain at step end. */
+  streamStates?: FlushableStreamState[];
   /**
    * Turbo mode only: a promise that resolves once the backgrounded
    * `run_started` has landed (the run exists). Set when the step body runs
