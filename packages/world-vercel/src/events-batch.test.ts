@@ -188,6 +188,10 @@ describe('createWorkflowRunEventBatch', () => {
     );
 
     expect(result.results).toHaveLength(3);
+    expect(result.results[0]?.event).toEqual({
+      ...completedEvent,
+      createdAt: new Date(CREATED_AT),
+    });
     expect(requestBody).toBeDefined();
     // biome-ignore lint/style/noNonNullAssertion: asserted above
     const frames = decodeBatchFrames(requestBody!);

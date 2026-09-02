@@ -308,9 +308,71 @@ export interface PreconditionFailureDetails {
   cursor?: string;
 }
 
+/**
+ * Event responses may omit an unresolved payload field entirely. Zod <=4.3
+ * treated an object property backed by `z.any()` as optional, so EventSchema
+ * historically accepted that wire shape even though the property was not
+ * explicitly optional. Zod 4.5 correctly distinguishes a missing property
+ * from a present `undefined` value.
+ *
+ * Keep CreateEventSchema strict while preserving the Vercel response contract:
+ * temporarily materialize an omitted payload as `undefined` for EventSchema,
+ * then remove it from the parsed response again.
+ */
+const VercelEventWireSchema = z.compile(
+  z
+    .preprocess((value) => {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return value;
+      }
+
+      const event = value as Record<string, unknown>;
+      const payloadField =
+        typeof event.eventType === 'string'
+          ? getEventDataPayloadField(event.eventType)
+          : undefined;
+      const eventData = event.eventData as Record<string, unknown> | undefined;
+      if (
+        !payloadField ||
+        typeof eventData !== 'object' ||
+        eventData === null ||
+        Array.isArray(eventData) ||
+        Object.hasOwn(eventData, payloadField)
+      ) {
+        return value;
+      }
+
+      return {
+        ...event,
+        eventData: {
+          ...eventData,
+          [payloadField]: undefined,
+        },
+      };
+    }, EventSchema)
+    .transform((event) => {
+      const payloadField = getEventDataPayloadField(event.eventType);
+      if (!payloadField || !('eventData' in event)) return event;
+
+      const eventData = event.eventData as Record<string, unknown> | undefined;
+      if (
+        typeof eventData !== 'object' ||
+        eventData === null ||
+        Array.isArray(eventData) ||
+        eventData[payloadField] !== undefined
+      ) {
+        return event;
+      }
+
+      const parsedEventData = { ...eventData };
+      delete parsedEventData[payloadField];
+      return { ...event, eventData: parsedEventData } as Event;
+    })
+);
+
 const CreateEventV4BodyBaseSchema = z.compile(
   z.object({
-    event: EventSchema,
+    event: VercelEventWireSchema,
     run: WorkflowRunSchema.optional(),
     step: StepWireSchema.transform(deserializeStep).optional(),
     hook: HookSchema.optional(),
@@ -323,14 +385,14 @@ const CreateEventV4BodyBaseSchema = z.compile(
 const CreateEventV4PageSchema = z.compile(
   z.union([
     z.object({
-      events: z.array(EventSchema),
+      events: z.array(VercelEventWireSchema),
       cursor: z.string().nullable(),
       hasMore: z.boolean(),
     }),
     z.object({
-      events: z.undefined(),
-      cursor: z.undefined(),
-      hasMore: z.undefined(),
+      events: z.undefined().optional(),
+      cursor: z.undefined().optional(),
+      hasMore: z.undefined().optional(),
     }),
   ])
 );
@@ -431,13 +493,13 @@ function decodeLegacyStructuredError(payload: Uint8Array): unknown {
 
 function decodeEventFrame({ meta, body }: DecodedFrame): Event {
   const eventType = EventTypeSchema.parse(meta.eventType);
-  if (body.byteLength === 0) return EventSchema.parse(meta);
+  if (body.byteLength === 0) return VercelEventWireSchema.parse(meta);
 
   const payloadField = getEventDataPayloadField(eventType);
   assert(payloadField, `Event type ${eventType} cannot carry a payload body`);
   assert(meta.eventData && typeof meta.eventData === 'object');
 
-  return EventSchema.parse({
+  return VercelEventWireSchema.parse({
     ...meta,
     eventData: {
       ...meta.eventData,
@@ -647,7 +709,7 @@ function decodePreconditionDetails(
     const candidate = raw as Record<string, unknown>;
     if (typeof candidate.eventId !== 'string') return undefined;
     if (hasUnusablePayload(candidate)) return undefined;
-    const event = EventSchema.safeParse(candidate);
+    const event = VercelEventWireSchema.safeParse(candidate);
     if (!event.success) return undefined;
     events.push(event.data);
   }
