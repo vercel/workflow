@@ -187,6 +187,10 @@ export interface AnalyticsListEventsParams
   correlationId?: string;
 }
 
+/**
+ * @deprecated Parameters of the deprecated `analytics.events.listByCorrelationId`.
+ * Use `AnalyticsListEventsParams` with `list({ runId, correlationId })`.
+ */
 export interface AnalyticsListEventsByCorrelationIdParams {
   correlationId: string;
   /** The run the correlation id belongs to; see `ListEventsByCorrelationIdParams`. */
@@ -196,6 +200,36 @@ export interface AnalyticsListEventsByCorrelationIdParams {
 
 /** Maximum number of event IDs accepted by one analytics batch lookup. */
 export const ANALYTICS_EVENTS_GET_MANY_LIMIT = 100;
+
+/**
+ * Maximum `pagination.limit` the run-scoped analytics listings accept:
+ * `events.list`, `events.listByCorrelationId`, `steps.list`, `waits.list`.
+ *
+ * Exported so a World implementation can reject an over-large page before a
+ * request goes out. The backend validates the same bound and answers 400, and
+ * a caller that wraps the listing in a `catch` — the common shape, since
+ * analytics is an optional capability — sees only a swallowed failure and an
+ * empty result. Failing in-process with the bound named is diagnosable.
+ */
+export const ANALYTICS_RUN_SCOPED_PAGE_LIMIT = 1000;
+
+/**
+ * Maximum `pagination.limit` the remaining analytics listings accept:
+ * `runs.list`, `attributes.list`, `hooks.list`.
+ *
+ * Deliberately separate from {@link ANALYTICS_RUN_SCOPED_PAGE_LIMIT}: these
+ * listings scan across runs rather than within one, and the backend caps them
+ * an order of magnitude lower. Two names beat one constant that is right for
+ * half its call sites.
+ */
+export const ANALYTICS_PAGE_LIMIT = 100;
+
+/**
+ * Maximum key=value pairs one runs listing may filter by. Each pair adds an
+ * aggregate condition to the backend's attribute prefilter, so the bound is
+ * about query complexity rather than result size.
+ */
+export const ANALYTICS_MAX_ATTRIBUTE_FILTERS = 8;
 
 export interface AnalyticsListHooksParams {
   runId: string;
@@ -244,6 +278,19 @@ export interface Analytics {
     list(
       params: AnalyticsListEventsParams
     ): Promise<PaginatedResponse<AnalyticsEvent>>;
+    /**
+     * @deprecated Use `list({ runId, correlationId })`, which issues the same
+     * request and additionally accepts an `eventType` filter.
+     *
+     * This method was the analytics counterpart of the cross-run correlation
+     * lookup, which took the correlation id alone. Requiring a `runId` (a
+     * correlation id is unique per run, not globally) left it a special case
+     * of `list` with no behaviour of its own. Scheduled for removal in the
+     * next major.
+     *
+     * Note this is unrelated to the storage `events.listByCorrelationId`,
+     * which is not deprecated and keeps a distinct endpoint.
+     */
     listByCorrelationId(
       params: AnalyticsListEventsByCorrelationIdParams
     ): Promise<PaginatedResponse<AnalyticsEvent>>;

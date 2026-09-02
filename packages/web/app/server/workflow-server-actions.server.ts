@@ -919,7 +919,11 @@ export async function fetchEventsByCorrelationId(
     // `fetchEvent(..., 'all')`); analytics rows are mapped to the runtime `Event`
     // shape the UI consumes.
     if (world.analytics && !withData) {
-      const result = await world.analytics.events.listByCorrelationId({
+      // `list` with a correlationId filter, not the deprecated
+      // `analytics.events.listByCorrelationId`: same request, and the
+      // storage fallback below is the unrelated `world.events` method of
+      // the same name, which is not deprecated.
+      const result = await world.analytics.events.list({
         correlationId,
         runId,
         pagination: { cursor, limit, sortOrder },
