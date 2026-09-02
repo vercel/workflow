@@ -88,6 +88,14 @@ Contributions are welcome. Use
 with the team and wider community. By participating, you agree to our
 [Code of Conduct](https://github.com/vercel/workflow/blob/main/CODE_OF_CONDUCT.md).
 
+Two things are required before a pull request can merge:
+
+- A changeset. Run `pnpm changeset` and pick the semver bump that matches your
+  change, or `pnpm changeset --empty` for documentation and workbench-only
+  changes.
+- A [Developer Certificate of Origin](https://github.com/vercel/workflow/blob/main/DCO.txt)
+  sign-off on every commit. Commit with `git commit --signoff`.
+
 ## Security
 
 If you find a security vulnerability in Workflow SDK, **_disclose it responsibly instead of opening a public issue_**.
