@@ -1,12 +1,13 @@
 {
-  "title": "How it works",
+  "title": "Advanced",
   "pages": [
     "understanding-directives",
     "code-transform",
     "framework-integrations",
     "event-sourcing",
     "encryption",
-    "cancellation"
+    "cancellation",
+    "dynamic-workflows"
   ],
   "defaultOpen": false
 }

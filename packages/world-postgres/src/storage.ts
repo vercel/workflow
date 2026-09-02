@@ -1152,7 +1152,14 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             attributes?: Record<string, string>;
             allowReservedAttributes?: true;
             encryptionPublicKey?: string;
+            dynamicWorkflowCode?: SerializedData;
+            dynamicWorkflowCodeRef?: string;
           };
+          if (runInputData.dynamicWorkflowCodeRef !== undefined) {
+            throw new Error(
+              'Postgres World does not support deferred dynamic workflow code refs'
+            );
+          }
           if (
             runInputData.deploymentId &&
             runInputData.workflowName &&
@@ -1188,6 +1195,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   // run from the queued message, which is exactly when the key
                   // would otherwise be lost for the rest of the run's life.
                   encryptionPublicKey: runInputData.encryptionPublicKey,
+                  dynamicWorkflowCode: runInputData.dynamicWorkflowCode,
                   status: 'pending',
                 })
                 .onConflictDoNothing()
@@ -1489,7 +1497,14 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           attributes?: Record<string, string>;
           allowReservedAttributes?: true;
           encryptionPublicKey?: string;
+          dynamicWorkflowCode?: SerializedData;
+          dynamicWorkflowCodeRef?: string;
         };
+        if (eventData.dynamicWorkflowCodeRef !== undefined) {
+          throw new Error(
+            'Postgres World does not support deferred dynamic workflow code refs'
+          );
+        }
         validateAttributeChanges(
           Object.entries(eventData.attributes ?? {}).map(([key, value]) => ({
             key,
@@ -1516,6 +1531,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                 | undefined,
               attributes: eventData.attributes,
               encryptionPublicKey: eventData.encryptionPublicKey,
+              dynamicWorkflowCode: eventData.dynamicWorkflowCode,
               status: 'pending',
             })
             .onConflictDoNothing()
@@ -1534,12 +1550,17 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           // first allocation, is what makes "no row" mean "created before slots
           // existed" for the rest of the run's life.
           const firstEventId = await openEventSlots(tx, effectiveRunId);
+          const {
+            dynamicWorkflowCode: _dynamicWorkflowCode,
+            dynamicWorkflowCodeRef: _dynamicWorkflowCodeRef,
+            ...storedEventData
+          } = eventData;
           const eventValue = await insertEventRow(tx, {
             runId: effectiveRunId,
             eventId: firstEventId,
             correlationId: data.correlationId,
             eventType: 'run_created',
-            eventData,
+            eventData: storedEventData,
             specVersion: effectiveSpecVersion,
           });
           if (!eventValue) {

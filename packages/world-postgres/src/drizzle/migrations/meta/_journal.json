@@ -169,6 +169,13 @@
       "when": 1789689600000,
       "tag": "0023_add_hook_claimed_from",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1789776000000,
+      "tag": "0024_add_dynamic_workflow_code",
+      "breakpoints": true
     }
   ]
 }

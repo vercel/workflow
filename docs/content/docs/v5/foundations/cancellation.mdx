@@ -7,7 +7,7 @@ prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
   - /docs/foundations/hooks
-  - /docs/how-it-works/cancellation
+  - /docs/advanced/cancellation
 ---
 
 Workflow DevKit supports two cancellation mechanisms: **AbortSignal** for fine-grained, cooperative cancellation of individual operations, and **run cancellation** for stopping an entire workflow. This guide covers both.
@@ -55,7 +55,7 @@ Cancellation is **cooperative**. Aborting a signal doesn't forcefully kill a ste
 </Callout>
 
 <Callout type="info">
-To learn how `AbortController` works durably across workflow suspensions, replays, and step boundaries, see [How Cancellation Works](/docs/how-it-works/cancellation).
+To learn how `AbortController` works durably across workflow suspensions, replays, and step boundaries, see [How Cancellation Works](/docs/advanced/cancellation).
 </Callout>
 
 ### Timeout with cancellation
@@ -358,7 +358,7 @@ Calling `run.cancel()` is the same action as clicking the **Cancel** button on a
 
 When a run is canceled:
 - The workflow stops at its next suspension point (step call, hook await, or sleep)
-- A `run_cancelled` event is recorded in the [event log](/docs/how-it-works/event-sourcing)
+- A `run_cancelled` event is recorded in the [event log](/docs/advanced/event-sourcing)
 - All associated hooks are disposed and their tokens released
 - Streams are closed
 
@@ -452,7 +452,7 @@ This is safe even if both steps have already completed because aborting a finish
 
 ## Related documentation
 
-- [How Cancellation Works](/docs/how-it-works/cancellation): Hook and stream backing, serialization internals
+- [How Cancellation Works](/docs/advanced/cancellation): Hook and stream backing, serialization internals
 - [Serialization](/docs/foundations/serialization): Understanding serializable types
 - [Cookbook](/cookbook): Timeout, race, and other reliability patterns
 - [Hooks](/docs/foundations/hooks): Pausing workflows for external events
