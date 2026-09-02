@@ -101,7 +101,7 @@ Vercel project and auth settings can often be inferred from `.vercel/project.jso
 
 - Environment variable: none
 - Default: `20`
-- Number of items returned per page for list commands.
+- Number of items returned per page for list commands. Must be an integer between 1 and 1000. Individual listings cap lower than that — a cross-run listing allows fewer rows than one scoped to a single run — and report the limit they accept when you exceed it.
 
 ### `--cursor`
 
@@ -115,6 +115,56 @@ Vercel project and auth settings can often be inferred from `.vercel/project.jso
 - Default: disabled
 - Enables keyboard-controlled pagination for supported list commands.
 
+## Inspect filtering
+
+Flags for `workflow inspect`. Each list view accepts a different subset, noted
+per flag.
+
+### `--runId` / `-r`
+
+- Command: `workflow inspect`
+- Default: unset
+- Scopes the listing to one run. Required for `steps`, `events`, and `sleeps`; optional for `hooks`. Must be a run ID: `wrun_` followed by a 26-character ULID.
+
+### `--stepId` / `-s`
+
+- Command: `workflow inspect events`
+- Default: unset
+- Filters events to one step.
+
+### `--hookId`
+
+- Command: `workflow inspect events`
+- Default: unset
+- Filters events to one hook.
+
+### `--attribute`
+
+- Command: `workflow inspect runs`
+- Default: unset
+- Filters runs to those whose [attributes](/docs/observability/attributes) match every `key=value` pair given. Repeatable up to 8 times, and splits on the first `=` so a value may contain one.
+- Requires a backend with the analytics read path; ignored with a warning otherwise.
+- Use `workflow inspect attributes` to discover which keys exist.
+
+### `--since` / `--until`
+
+- Command: `workflow inspect runs`, `workflow inspect attributes`
+- Default: the backend's own window
+- Bounds the listing to a window. Each accepts a relative duration (`30m`, `12h`, `7d`, `2w`) or a timestamp; `--until` defaults to now. Supply both or neither.
+- Requires a backend with the analytics read path; ignored with a warning otherwise.
+
+### `--withData` / `-d`
+
+- Command: `workflow inspect`
+- Default: disabled
+- Includes full input and output payloads in list views. Deprecated for list views — use `workflow inspect <resource> <id>` to read one item's payloads. Setting it also moves the read off the analytics path, which carries metadata only.
+
+### `--decrypt`
+
+- Command: `workflow inspect`
+- Default: disabled
+- Decrypts encrypted values. Triggers an audit-logged key retrieval.
+
 ## Bulk cancel
 
 `workflow cancel <run-id>` cancels one run. Given a filter instead, it bulk-cancels a batch; bulk mode requires `--status` or `--workflowName`.
@@ -124,12 +174,14 @@ Vercel project and auth settings can often be inferred from `.vercel/project.jso
 - Command: `workflow cancel`
 - Default: unset
 - Restricts the batch to this status. Only `pending` and `running` are accepted; terminal runs cannot be canceled.
+- Also filters `workflow inspect runs`, which accepts any run status.
 
 ### `--workflowName` / `-n`
 
 - Command: `workflow cancel`
 - Default: unset
 - Restricts the batch to one workflow. Expects the generated workflow ID from `workflow inspect runs`, not the short function name.
+- Also filters `workflow inspect runs` and `workflow inspect attributes`.
 
 ### `--limit` (cancel)
 

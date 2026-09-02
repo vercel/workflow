@@ -137,15 +137,6 @@ export const cliFlags = {
     helpValue: ['asc', 'desc'],
     defaultHelp: 'desc',
   }),
-  attribute: Flags.string({
-    description:
-      'filter runs by attribute, as key=value; repeatable up to 8 times',
-    required: false,
-    multiple: true,
-    helpGroup: 'Filtering',
-    helpLabel: '--attribute',
-    helpValue: 'KEY=VALUE',
-  }),
   limit: Flags.integer({
     description: 'number of items to return per page',
     required: false,

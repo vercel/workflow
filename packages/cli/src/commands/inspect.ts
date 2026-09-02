@@ -125,6 +125,15 @@ export default class Inspect extends BaseCommand {
       helpLabel: '--hookId',
       helpValue: 'HOOK_ID',
     }),
+    attribute: Flags.string({
+      description:
+        'filter runs by attribute, as key=value; repeatable up to 8 times',
+      required: false,
+      multiple: true,
+      helpGroup: 'Filtering',
+      helpLabel: '--attribute',
+      helpValue: 'KEY=VALUE',
+    }),
     workflowName: Flags.string({
       description: 'workflow name to filter by (only for runs)',
       required: false,
