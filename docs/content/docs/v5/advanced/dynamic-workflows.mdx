@@ -43,7 +43,7 @@ async function workflow(input) {
   }
 );
 
-console.log(await run.readStatus()); // 'running'
+console.log(await run.status); // 'running'
 ```
 
 Only the *orchestration* is dynamic. Every step the source can call was deployed with your app — you choose which ones by passing them in `dynamic.steps`. There is no way to define a new step from source.
