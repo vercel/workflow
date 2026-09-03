@@ -33,6 +33,7 @@ const VM_ONLY_TYPES = [
   'ReadableStream',
   'Request',
   'Response',
+  'StandaloneWritableStream',
   'WritableStream',
 ];
 

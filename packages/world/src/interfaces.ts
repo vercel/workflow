@@ -40,6 +40,51 @@ import type {
   StepWithoutData,
 } from './steps.js';
 
+export interface DeploymentStandaloneStreamEncryption {
+  v: 1;
+  s: 'dpl';
+  d: string;
+  k: string;
+}
+
+/** Versioned, open-set metadata describing how a standalone stream is encrypted. */
+export type StandaloneStreamEncryption =
+  | DeploymentStandaloneStreamEncryption
+  | ({ v: number; s: string } & Record<string, unknown>);
+
+export interface StandaloneStreamWriteOptions {
+  encryption: StandaloneStreamEncryption;
+}
+
+export interface StandaloneStreamInfoResponse extends StreamInfoResponse {
+  earliestIndex: number;
+  encryption: StandaloneStreamEncryption | null;
+  retentionDays: number | null;
+}
+
+export interface StandaloneStreamer {
+  standaloneStreams: {
+    write(
+      id: string,
+      chunk: string | Uint8Array,
+      options: StandaloneStreamWriteOptions
+    ): Promise<void>;
+    writeMulti(
+      id: string,
+      chunks: (string | Uint8Array)[],
+      options: StandaloneStreamWriteOptions
+    ): Promise<void>;
+    close(id: string): Promise<void>;
+    get(id: string, startIndex?: number): Promise<ReadableStream<Uint8Array>>;
+    getChunks(
+      id: string,
+      options?: GetChunksOptions
+    ): Promise<StreamChunksResponse>;
+    getInfo(id: string): Promise<StandaloneStreamInfoResponse>;
+    delete(id: string): Promise<void>;
+  };
+}
+
 export interface Streamer {
   /**
    * Number of milliseconds a stream waits for additional chunks to arrive
@@ -544,7 +589,11 @@ export interface WorldCapabilities {
 /**
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
-export interface World extends Queue, Streamer, Storage {
+export interface World
+  extends Queue,
+    Streamer,
+    Storage,
+    Partial<StandaloneStreamer> {
   /**
    * Optional analytics read namespace for observability surfaces.
    *
@@ -660,6 +709,15 @@ export interface World extends Queue, Streamer, Storage {
    *   tolerate `undefined` for direct callers.
    */
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
+
+  /** Mint a random standalone stream ID routed to this World's current region. */
+  createStandaloneStreamId?(): string;
+
+  /** Derive a stable standalone stream ID from this World's tenant and a name. */
+  standaloneStreamIdFor?(options: {
+    name: string;
+    region?: string;
+  }): Promise<string>;
 
   /**
    * The environment this World's writes are attributed to by the backend

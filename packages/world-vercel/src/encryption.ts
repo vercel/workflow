@@ -210,7 +210,7 @@ export function createGetEncryptionKeyForRun(
 
     // Inside the Vercel serverless runtime with a local deployment key:
     // use local HKDF derivation for same-deployment or unknown-deployment runs.
-    if (isServerlessRuntime) {
+    if (isServerlessRuntime && context?.forceRemote !== true) {
       if (!deploymentId || deploymentId === process.env.VERCEL_DEPLOYMENT_ID) {
         const localKey = getLocalDeploymentKey();
         if (!localKey) return undefined;

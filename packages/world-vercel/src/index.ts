@@ -1,7 +1,12 @@
 import type { World } from '@workflow/world';
 import { mintedSpecVersion } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
-import { createRunId, describeRun } from './create-run-id.js';
+import {
+  createRunId,
+  createStandaloneStreamId,
+  describeRun,
+  standaloneStreamIdFor,
+} from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { getDeadline } from './get-deadline.js';
 import { instrumentObject } from './instrumentObject.js';
@@ -12,7 +17,13 @@ import { createStreamer } from './streamer.js';
 import { type APIConfig, resolveClientEnvironment } from './utils.js';
 
 export { createAnalytics } from './analytics.js';
-export { createRunId, describeRun, regionForRunId } from './create-run-id.js';
+export {
+  createRunId,
+  createStandaloneStreamId,
+  describeRun,
+  regionForRunId,
+  standaloneStreamIdFor,
+} from './create-run-id.js';
 export {
   createGetEncryptionKeyForRun,
   deriveRunKey,
@@ -28,6 +39,8 @@ export function createWorld(config?: APIConfig): World {
   // Use config value first (set correctly by CLI/web), fall back to env var (runtime).
   const projectId =
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
+
+  const streamer = createStreamer(config);
 
   return {
     // The version is what tells the backend which id scheme a run uses: it is
@@ -68,8 +81,24 @@ export function createWorld(config?: APIConfig): World {
       process.env.WORKFLOW_DISABLE_ANALYTICS_READS === '1'
         ? undefined
         : createAnalytics(config),
-    ...instrumentObject('world.streams', createStreamer(config)),
+    ...instrumentObject('world.streams', streamer),
+    standaloneStreams: streamer.standaloneStreams,
     createRunId,
+    createStandaloneStreamId,
+    standaloneStreamIdFor: async ({ name, region }) => {
+      if (!projectId) {
+        throw new Error(
+          'standaloneStreamIdFor requires VERCEL_PROJECT_ID or projectConfig.projectId'
+        );
+      }
+      const environment = resolveClientEnvironment(config);
+      if (!environment) {
+        throw new Error(
+          'standaloneStreamIdFor requires VERCEL_TARGET_ENV/VERCEL_ENV or projectConfig.environment'
+        );
+      }
+      return standaloneStreamIdFor({ projectId, environment, name, region });
+    },
     describeRun,
     // Reports the environment this client's writes land in, so `start()` can
     // stamp it into the queue message and the consuming deployment can detect

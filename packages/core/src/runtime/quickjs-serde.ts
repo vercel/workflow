@@ -247,6 +247,8 @@ const SYMBOL_NAMES = [
   'WORKFLOW_STREAM_FRAMING',
   'WORKFLOW_STREAM_SERVER_RUN_ID',
   'WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID',
+  'WORKFLOW_STREAM_SERVER_PUBLIC_KEY',
+  'WORKFLOW_STREAM_STANDALONE_ID',
   'WEBHOOK_RESPONSE_WRITABLE',
   'WORKFLOW_USE_STEP',
   'workflow-serialize', // @workflow/serde WORKFLOW_SERIALIZE
@@ -1313,6 +1315,42 @@ export function createQuickJSSerde(
       }
       return { name: '__empty' };
     },
+    StandaloneWritableStream: (value) => {
+      if (
+        !isHandle(value) ||
+        value.typeof !== 'object' ||
+        value.isNull ||
+        !i.writableStreamPrototype ||
+        !hasPrototype(value, i.writableStreamPrototype)
+      ) {
+        return false;
+      }
+      const standaloneId = ownSymbolString(
+        value,
+        'WORKFLOW_STREAM_STANDALONE_ID'
+      );
+      if (standaloneId) {
+        const deploymentId = ownSymbolString(
+          value,
+          'WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID'
+        );
+        const publicKey = ownSymbolString(
+          value,
+          'WORKFLOW_STREAM_SERVER_PUBLIC_KEY'
+        );
+        if (!deploymentId || !publicKey) {
+          throw new Error(
+            'Standalone stream writable is missing encryption metadata'
+          );
+        }
+        return {
+          kind: 'standalone',
+          id: standaloneId,
+          encryption: { v: 1, s: 'dpl', d: deploymentId, k: publicKey },
+        };
+      }
+      return false;
+    },
     WritableStream: (value) => {
       if (
         !isHandle(value) ||
@@ -1333,6 +1371,11 @@ export function createQuickJSSerde(
         'WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID'
       );
       if (deploymentId) s.deploymentId = deploymentId;
+      const encryptionPublicKey = ownSymbolString(
+        value,
+        'WORKFLOW_STREAM_SERVER_PUBLIC_KEY'
+      );
+      if (encryptionPublicKey) s.encryptionPublicKey = encryptionPublicKey;
       return s;
     },
     Set: (value) =>
@@ -2019,6 +2062,42 @@ export function createQuickJSSerde(
       name?.dispose();
       return stream;
     },
+    StandaloneWritableStream: (value: JSValueHandle) => {
+      const prototype = i.writableStreamPrototype ?? vm.null;
+      const stream = call(i.objectCreate, vm.undefined, prototype);
+      const id = own(value, 'id');
+      const encryption = own(value, 'encryption');
+      const version = encryption ? own(encryption, 'v') : undefined;
+      const scheme = encryption ? own(encryption, 's') : undefined;
+      const deployment = encryption ? own(encryption, 'd') : undefined;
+      const publicKey = encryption ? own(encryption, 'k') : undefined;
+      if (
+        !id?.isString ||
+        version?.toNumber() !== 1 ||
+        scheme?.toString() !== 'dpl' ||
+        !deployment?.isString ||
+        !publicKey?.isString
+      ) {
+        id?.dispose();
+        encryption?.dispose();
+        version?.dispose();
+        scheme?.dispose();
+        deployment?.dispose();
+        publicKey?.dispose();
+        stream.dispose();
+        throw new Error('Invalid standalone stream writable descriptor');
+      }
+      define(stream, sym('WORKFLOW_STREAM_STANDALONE_ID'), id);
+      define(stream, sym('WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID'), deployment);
+      define(stream, sym('WORKFLOW_STREAM_SERVER_PUBLIC_KEY'), publicKey);
+      id.dispose();
+      encryption?.dispose();
+      version.dispose();
+      scheme.dispose();
+      deployment.dispose();
+      publicKey.dispose();
+      return stream;
+    },
     WritableStream: (value: JSValueHandle) => {
       const prototype = i.writableStreamPrototype ?? vm.null;
       const stream = call(i.objectCreate, vm.undefined, prototype);
@@ -2041,6 +2120,11 @@ export function createQuickJSSerde(
         );
       }
       deploymentId?.dispose();
+      const publicKey = own(value, 'encryptionPublicKey');
+      if (publicKey?.isString) {
+        define(stream, sym('WORKFLOW_STREAM_SERVER_PUBLIC_KEY'), publicKey);
+      }
+      publicKey?.dispose();
       return stream;
     },
   };

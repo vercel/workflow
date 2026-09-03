@@ -36,6 +36,10 @@
       "types": "./dist/runtime/run.d.ts",
       "default": "./dist/runtime/run.js"
     },
+    "./runtime/standalone-stream": {
+      "types": "./dist/runtime/standalone-stream.d.ts",
+      "default": "./dist/runtime/standalone-stream.js"
+    },
     "./runtime/start": {
       "types": "./dist/runtime/start.d.ts",
       "default": "./dist/runtime/start.js"

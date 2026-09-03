@@ -178,6 +178,12 @@ export {
   wakeUpRun,
 } from './runtime/runs.js';
 export {
+  createStandaloneStreamId,
+  getStandaloneStream,
+  StandaloneStream,
+  standaloneStreamIdFor,
+} from './runtime/standalone-stream.js';
+export {
   type StartOptions,
   type StartOptionsBase,
   type StartOptionsWithDeploymentId,

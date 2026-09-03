@@ -15,6 +15,12 @@ export type {
   WorkflowRun,
 } from '@workflow/core/runtime';
 export {
+  createStandaloneStreamId,
+  getStandaloneStream,
+  StandaloneStream,
+  standaloneStreamIdFor,
+} from '@workflow/core/runtime';
+export {
   getHookByToken,
   type ResumedHook,
   resumeHook,
