@@ -29,11 +29,14 @@ function makeEvent(
 const BASE = {
   invocationStartedClean: true,
   runCreatedAtMs: 1_000,
+  runStartedReceivedAtMs: undefined as number | undefined,
+  replayMs: 0,
   preStepBlockingMs: 0,
   preStepBlockingBeforeAttrMs: undefined,
   suspensionHasWaits: false,
   suspensionCreatedHooks: false,
   turbo: false,
+  retained: false,
 };
 
 describe('computeStepLatencyTracking', () => {
@@ -45,6 +48,8 @@ describe('computeStepLatencyTracking', () => {
     expect(tracking).toEqual({
       ttfsAnchorMs: 1_000,
       preStepBlockingMs: 0,
+      replayMs: 0,
+      retained: false,
       turbo: false,
     });
   });
@@ -58,6 +63,8 @@ describe('computeStepLatencyTracking', () => {
     expect(tracking).toEqual({
       ttfsAnchorMs: 1_000,
       preStepBlockingMs: 0,
+      replayMs: 0,
+      retained: false,
       turbo: true,
     });
   });
@@ -86,6 +93,8 @@ describe('computeStepLatencyTracking', () => {
     expect(tracking).toEqual({
       ttfsAnchorMs: 1_000,
       preStepBlockingMs: 42,
+      replayMs: 0,
+      retained: false,
       turbo: false,
     });
   });
@@ -110,6 +119,8 @@ describe('computeStepLatencyTracking', () => {
       preStepBlockingMs: 0,
       // Earliest attr write wins; occurredAt preferred over createdAt.
       preStepAttrStartMs: 3_000,
+      replayMs: 0,
+      retained: false,
       turbo: false,
     });
   });
@@ -131,6 +142,8 @@ describe('computeStepLatencyTracking', () => {
       ttfsAnchorMs: 1_000,
       preStepBlockingMs: 40,
       preStepAttrStartMs: 3_000,
+      replayMs: 0,
+      retained: false,
       turbo: false,
     });
   });
@@ -149,6 +162,8 @@ describe('computeStepLatencyTracking', () => {
       ttfsAnchorMs: 1_000,
       preStepBlockingMs: 0,
       preStepAttrStartMs: 3_000,
+      replayMs: 0,
+      retained: false,
       turbo: false,
     });
   });
@@ -180,6 +195,70 @@ describe('computeStepLatencyTracking', () => {
     expect(tracking).toBeUndefined();
   });
 
+  it('marks RSFS-eligible alongside TTFS when runStartedReceivedAtMs is recoverable', () => {
+    const tracking = computeStepLatencyTracking({
+      ...BASE,
+      events: [makeEvent('run_created'), makeEvent('run_started')],
+      runStartedReceivedAtMs: 1_100,
+      replayMs: 25,
+    });
+    expect(tracking).toEqual({
+      ttfsAnchorMs: 1_000,
+      preStepBlockingMs: 0,
+      rsfsAnchorMs: 1_100,
+      replayMs: 25,
+      retained: false,
+      turbo: false,
+    });
+  });
+
+  it('does not mark RSFS when runStartedReceivedAtMs is unrecoverable, even though TTFS qualifies', () => {
+    const tracking = computeStepLatencyTracking({
+      ...BASE,
+      events: [makeEvent('run_created'), makeEvent('run_started')],
+      runStartedReceivedAtMs: undefined,
+      replayMs: 25,
+    });
+    // replayMs is ungated: it is reported for any batch this function tracks,
+    // even one with no RSFS window of its own.
+    expect(tracking).toEqual({
+      ttfsAnchorMs: 1_000,
+      preStepBlockingMs: 0,
+      replayMs: 25,
+      retained: false,
+      turbo: false,
+    });
+  });
+
+  it('reports replayMs and retained for an STSO-only (non-first-step) batch', () => {
+    const tracking = computeStepLatencyTracking({
+      ...BASE,
+      events: [
+        makeEvent('run_created'),
+        makeEvent('run_started'),
+        makeEvent('step_completed', { createdAt: new Date(4_500) }),
+      ],
+      invocationStartedClean: false,
+      replayMs: 33,
+      retained: true,
+    });
+    expect(tracking?.ttfsAnchorMs).toBeUndefined();
+    expect(tracking?.rsfsAnchorMs).toBeUndefined();
+    expect(tracking?.replayMs).toBe(33);
+    expect(tracking?.retained).toBe(true);
+  });
+
+  it('does not mark RSFS when TTFS is disqualified, even though runStartedReceivedAtMs is recoverable', () => {
+    const tracking = computeStepLatencyTracking({
+      ...BASE,
+      events: [makeEvent('run_started'), makeEvent('hook_received')],
+      runStartedReceivedAtMs: 1_100,
+      replayMs: 25,
+    });
+    expect(tracking?.rsfsAnchorMs).toBeUndefined();
+    expect(tracking?.replayMs).toBeUndefined();
+  });
+
   it('marks STSO-eligible when the last event is a step terminal, preferring occurredAt', () => {
     const tracking = computeStepLatencyTracking({
       ...BASE,
@@ -197,6 +276,8 @@ describe('computeStepLatencyTracking', () => {
       prevStepEndMs: 4_500,
       stepCount: 1,
       eventCount: 3,
+      replayMs: 0,
+      retained: false,
       turbo: false,
     });
   });
@@ -210,6 +291,8 @@ describe('computeStepLatencyTracking', () => {
       prevStepEndMs: 5_000,
       stepCount: 1,
       eventCount: 1,
+      replayMs: 0,
+      retained: false,
       turbo: false,
     });
   });
@@ -228,6 +311,8 @@ describe('computeStepLatencyTracking', () => {
       prevStepEndMs: new Date('2024-01-01T00:00:00.000Z').getTime(),
       stepCount: 2,
       eventCount: 3,
+      replayMs: 0,
+      retained: false,
       turbo: false,
     });
   });
@@ -260,6 +345,7 @@ describe('computeStepLatencyEventData', () => {
     const data = computeStepLatencyEventData({
       tracking: { ttfsAnchorMs: 1_000, preStepBlockingMs: 200, turbo: true },
       stepCodeStartedAtMs: 2_000,
+      stepStartPostSentAtMs: undefined,
       attempt: 1,
       lazyStepStart: true,
       optimisticStart: true,
@@ -280,9 +366,11 @@ describe('computeStepLatencyEventData', () => {
         preStepBlockingMs: 40,
         preStepAttrStartMs: 3_000,
         turbo: false,
+        retained: false,
       },
       // Includes the setAttributes detour — must be excluded.
       stepCodeStartedAtMs: 60_000,
+      stepStartPostSentAtMs: undefined,
       attempt: 1,
       lazyStepStart: true,
       optimisticStart: false,
@@ -300,8 +388,10 @@ describe('computeStepLatencyEventData', () => {
         stepCount: 7,
         eventCount: 42,
         turbo: false,
+        retained: false,
       },
       stepCodeStartedAtMs: 2_000,
+      stepStartPostSentAtMs: undefined,
       attempt: 1,
       lazyStepStart: true,
       optimisticStart: false,
@@ -314,6 +404,49 @@ describe('computeStepLatencyEventData', () => {
     });
   });
 
+  it('reports finalSchedulingReplay for an STSO (non-first-step) batch, not just RSFS', () => {
+    const data = computeStepLatencyEventData({
+      tracking: {
+        prevStepEndMs: 1_500,
+        stepCount: 7,
+        eventCount: 42,
+        replayMs: 33,
+        turbo: false,
+        retained: true,
+      },
+      stepCodeStartedAtMs: 2_000,
+      stepStartPostSentAtMs: undefined,
+      attempt: 1,
+      lazyStepStart: true,
+      optimisticStart: false,
+    });
+    expect(data).toEqual({
+      stso: 500,
+      stepCount: 7,
+      eventCount: 42,
+      finalSchedulingReplay: 33,
+      optimizations: ['lazyStepStart', 'retained'],
+    });
+  });
+
+  it('omits the retained optimization when a full replay served the batch', () => {
+    const data = computeStepLatencyEventData({
+      tracking: {
+        prevStepEndMs: 1_500,
+        replayMs: 900,
+        turbo: true,
+        retained: false,
+      },
+      stepCodeStartedAtMs: 2_000,
+      stepStartPostSentAtMs: undefined,
+      attempt: 1,
+      lazyStepStart: false,
+      optimisticStart: false,
+    });
+    expect(data?.finalSchedulingReplay).toBe(900);
+    expect(data?.optimizations).toEqual(['turbo']);
+  });
+
   it('clamps negative durations (cross-machine clock skew) to zero', () => {
     const data = computeStepLatencyEventData({
       tracking: {
@@ -323,8 +456,10 @@ describe('computeStepLatencyEventData', () => {
         stepCount: 3,
         eventCount: 9,
         turbo: false,
+        retained: false,
       },
       stepCodeStartedAtMs: 4_000,
+      stepStartPostSentAtMs: undefined,
       attempt: 1,
       lazyStepStart: false,
       optimisticStart: false,
@@ -347,6 +482,7 @@ describe('computeStepLatencyEventData', () => {
         ttfsAnchorMs: 2_000 + 2 ** 47,
         preStepBlockingMs: 0,
         turbo: true,
+        retained: false,
       },
       stepCodeStartedAtMs: 2_000,
       attempt: 1,
@@ -367,6 +503,7 @@ describe('computeStepLatencyEventData', () => {
         stepCount: 2,
         eventCount: 5,
         turbo: false,
+        retained: false,
       },
       stepCodeStartedAtMs: 2_000,
       attempt: 1,
@@ -385,6 +522,7 @@ describe('computeStepLatencyEventData', () => {
     const data = computeStepLatencyEventData({
       tracking: { ttfsAnchorMs: 1_000, preStepBlockingMs: 0, turbo: false },
       stepCodeStartedAtMs: 2_000,
+      stepStartPostSentAtMs: undefined,
       attempt: 2,
       lazyStepStart: false,
       optimisticStart: false,
@@ -396,10 +534,82 @@ describe('computeStepLatencyEventData', () => {
     const data = computeStepLatencyEventData({
       tracking: undefined,
       stepCodeStartedAtMs: 2_000,
+      stepStartPostSentAtMs: undefined,
       attempt: 1,
       lazyStepStart: true,
       optimisticStart: true,
     });
     expect(data).toBeUndefined();
+  });
+
+  it('computes rsfs and finalSchedulingReplay alongside ttfs when the tracking and post-sent anchor are both present', () => {
+    const data = computeStepLatencyEventData({
+      tracking: {
+        ttfsAnchorMs: 1_000,
+        preStepBlockingMs: 0,
+        rsfsAnchorMs: 1_200,
+        replayMs: 15,
+        turbo: false,
+        retained: false,
+      },
+      stepCodeStartedAtMs: 2_000,
+      stepStartPostSentAtMs: 1_950,
+      attempt: 1,
+      lazyStepStart: true,
+      optimisticStart: false,
+    });
+    expect(data).toEqual({
+      ttfs: 1_000,
+      rsfs: 750,
+      finalSchedulingReplay: 15,
+      optimizations: ['lazyStepStart'],
+    });
+  });
+
+  it('omits rsfs but still reports finalSchedulingReplay when the post-sent anchor is missing', () => {
+    const data = computeStepLatencyEventData({
+      tracking: {
+        ttfsAnchorMs: 1_000,
+        preStepBlockingMs: 0,
+        rsfsAnchorMs: 1_200,
+        replayMs: 15,
+        turbo: false,
+        retained: false,
+      },
+      stepCodeStartedAtMs: 2_000,
+      stepStartPostSentAtMs: undefined,
+      attempt: 1,
+      lazyStepStart: true,
+      optimisticStart: false,
+    });
+    expect(data).toEqual({
+      ttfs: 1_000,
+      finalSchedulingReplay: 15,
+      optimizations: ['lazyStepStart'],
+    });
+  });
+
+  it('clamps a negative rsfs (cross-machine clock skew) to zero', () => {
+    const data = computeStepLatencyEventData({
+      tracking: {
+        ttfsAnchorMs: 1_000,
+        preStepBlockingMs: 0,
+        rsfsAnchorMs: 5_000,
+        replayMs: 10,
+        turbo: false,
+        retained: false,
+      },
+      stepCodeStartedAtMs: 2_000,
+      stepStartPostSentAtMs: 4_000,
+      attempt: 1,
+      lazyStepStart: true,
+      optimisticStart: false,
+    });
+    expect(data).toEqual({
+      ttfs: 1_000,
+      rsfs: 0,
+      finalSchedulingReplay: 10,
+      optimizations: ['lazyStepStart'],
+    });
   });
 });

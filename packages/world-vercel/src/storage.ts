@@ -1,15 +1,23 @@
-import type { Storage } from '@workflow/world';
+import type {
+  AnyEventRequest,
+  CreateEventParams,
+  Storage,
+} from '@workflow/world';
 import {
   createWorkflowRunEvent,
+  createWorkflowRunEventBatch,
   getEvent,
   getWorkflowRunEvents,
 } from './events.js';
 import { getHook, getHookByToken, listHooks } from './hooks.js';
 import { instrumentObject } from './instrumentObject.js';
 import {
+  cancelWorkflowRuns,
   experimentalSetAttributes,
   getWorkflowRun,
+  getWorkflowRuns,
   listWorkflowRuns,
+  waitForWorkflowRunTerminalStatus,
 } from './runs.js';
 import { getStep, listWorkflowRunSteps } from './steps.js';
 import type { APIConfig } from './utils.js';
@@ -20,10 +28,19 @@ export function createStorage(config?: APIConfig): Storage {
     runs: {
       get: ((id: string, params?: any) =>
         getWorkflowRun(id, params, config)) as Storage['runs']['get'],
+      waitForTerminalStatus: ((id: string, params?: any) =>
+        waitForWorkflowRunTerminalStatus(id, params, config)) as NonNullable<
+        Storage['runs']['waitForTerminalStatus']
+      >,
+      getMany: ((ids: readonly string[], params?: any) =>
+        getWorkflowRuns(ids, params, config)) as NonNullable<
+        Storage['runs']['getMany']
+      >,
       list: ((params?: any) =>
         listWorkflowRuns(params, config)) as Storage['runs']['list'],
       experimentalSetAttributes: (runId, changes, options) =>
         experimentalSetAttributes(runId, changes, options, config),
+      cancelMany: (request) => cancelWorkflowRuns(request, config),
     },
     steps: {
       get: ((runId: string, stepId: string, params?: any) =>
@@ -32,8 +49,13 @@ export function createStorage(config?: APIConfig): Storage {
         listWorkflowRunSteps(params, config)) as Storage['steps']['list'],
     },
     events: {
-      create: (runId, data, params) =>
-        createWorkflowRunEvent(runId, data, params, config),
+      create: (
+        runId: string | null,
+        data: AnyEventRequest,
+        params?: CreateEventParams
+      ) => createWorkflowRunEvent(runId, data, params, config),
+      createBatch: (runId, events, params) =>
+        createWorkflowRunEventBatch(runId, events, params, config),
       get: (runId, eventId, params) => getEvent(runId, eventId, params, config),
       list: (params) => getWorkflowRunEvents(params, config),
       listByCorrelationId: (params) => getWorkflowRunEvents(params, config),

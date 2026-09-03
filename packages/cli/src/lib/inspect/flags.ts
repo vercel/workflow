@@ -118,6 +118,15 @@ export const cliFlags = {
     helpGroup: 'Output',
     helpLabel: '--localUi',
   }),
+  standalone: Flags.boolean({
+    description:
+      'Always start the standalone web UI, even if an embedded dashboard (e.g. /_workflow) is already running',
+    required: false,
+    default: false,
+    env: 'WORKFLOW_STANDALONE_UI',
+    helpGroup: 'Output',
+    helpLabel: '--standalone',
+  }),
   sort: Flags.string({
     description: 'sort order for list commands',
     required: false,

@@ -1,4 +1,7 @@
-import { PreconditionFailedError } from '@workflow/errors';
+import { createServer, type RequestListener, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { PreconditionFailedError, StreamExpiredError } from '@workflow/errors';
+import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -8,6 +11,7 @@ import {
   getHttpUrl,
   MAX_BODY_PARSE_RETRIES,
   makeRequest,
+  resolveClientEnvironment,
   WORKFLOW_SERVER_URL_OVERRIDE,
 } from './utils.js';
 
@@ -90,6 +94,17 @@ describe('getHeaders', () => {
     expect(headers.get('x-workflow-test-limit-overrides')).toBeNull();
   });
 
+  it('appends a caller user-agent token to the world-vercel user-agent', () => {
+    const headers = getHeaders(
+      { headers: { 'User-Agent': 'eve/0.18.1' } },
+      { usingProxy: false }
+    );
+
+    expect(headers.get('User-Agent')).toMatch(
+      /^@workflow\/world-vercel\/\S+ node-\S+ \S+ \([^)]*\)(?: \S+)? eve\/0\.18\.1$/
+    );
+  });
+
   it('forwards WORKFLOW_TEST_LIMIT_OVERRIDES verbatim as x-workflow-test-limit-overrides', () => {
     const overrides = '{"STREAM_MAX_DURATION_MS":5000}';
     process.env.WORKFLOW_TEST_LIMIT_OVERRIDES = overrides;
@@ -142,6 +157,107 @@ describe('getHeaders', () => {
   });
 });
 
+describe('resolveClientEnvironment', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL_TARGET_ENV;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('uses the projectConfig environment on the proxied path', () => {
+    expect(
+      resolveClientEnvironment({
+        projectConfig: {
+          projectId: 'prj_1',
+          teamId: 'team_1',
+          environment: 'preview',
+        },
+      })
+    ).toBe('preview');
+  });
+
+  it("defaults a projectConfig without an environment to 'production'", () => {
+    expect(
+      resolveClientEnvironment({
+        projectConfig: { projectId: 'prj_1', teamId: 'team_1' },
+      })
+    ).toBe('production');
+  });
+
+  it('reads VERCEL_ENV when there is no projectConfig (in-deployment OIDC path)', () => {
+    process.env.VERCEL_ENV = 'preview';
+    expect(resolveClientEnvironment(undefined)).toBe('preview');
+  });
+
+  it('prefers VERCEL_TARGET_ENV over VERCEL_ENV (custom environments)', () => {
+    // In a Vercel custom environment the OIDC token's `environment` claim is
+    // the custom environment's slug (the platform mints
+    // `customEnvironment?.slug ?? envTarget`), while VERCEL_ENV reports
+    // 'preview'. VERCEL_TARGET_ENV is populated from the same
+    // slug-or-target pair as the claim, so it is the value the backend keys
+    // the tenant on — returning 'preview' here would false-refuse a
+    // legitimate delivery to a custom-environment deployment.
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_TARGET_ENV = 'staging';
+    expect(resolveClientEnvironment(undefined)).toBe('staging');
+  });
+
+  it('agrees with VERCEL_TARGET_ENV in the standard environments too', () => {
+    // For production/preview, VERCEL_TARGET_ENV equals VERCEL_ENV, so
+    // preferring it changes nothing outside custom environments.
+    process.env.VERCEL_ENV = 'production';
+    process.env.VERCEL_TARGET_ENV = 'production';
+    expect(resolveClientEnvironment(undefined)).toBe('production');
+  });
+
+  it('returns undefined when neither source is available', () => {
+    // Guessing 'production' here would fabricate a mismatch against a real
+    // preview deployment, so callers need the honest "unknown".
+    expect(resolveClientEnvironment(undefined)).toBeUndefined();
+    expect(resolveClientEnvironment({})).toBeUndefined();
+  });
+
+  it('ignores VERCEL_ENV when a projectConfig is present', () => {
+    // The proxy attributes the write to the header, not to the local env var —
+    // a CLI run from a preview checkout must not claim the deployment's env.
+    process.env.VERCEL_ENV = 'production';
+    expect(
+      resolveClientEnvironment({
+        projectConfig: {
+          projectId: 'prj_1',
+          teamId: 'team_1',
+          environment: 'preview',
+        },
+      })
+    ).toBe('preview');
+  });
+
+  // The whole point of the shared helper: the value stamped into runInput must
+  // be byte-identical to what the backend attributes this client's writes to.
+  // A drift makes the cross-environment guard either miss a real fork or reject
+  // a legitimate start.
+  it.each([
+    ['explicit preview', 'preview'],
+    ['explicit production', 'production'],
+    ['explicit development', 'development'],
+    ['absent (defaulted)', undefined],
+  ])('agrees with the x-vercel-environment header: %s', (_label, environment) => {
+    const config = {
+      projectConfig: { projectId: 'prj_1', teamId: 'team_1', environment },
+    };
+    const headers = getHeaders(config, { usingProxy: true });
+    expect(resolveClientEnvironment(config)).toBe(
+      headers.get('x-vercel-environment')
+    );
+  });
+});
+
 describe('getHttpConfig (proxied path)', () => {
   const originalEnv = process.env;
 
@@ -176,6 +292,50 @@ describe('getHttpConfig (proxied path)', () => {
   });
 });
 
+describe('makeRequest stream expiry errors', () => {
+  // These drive the response from a stubbed `fetch`, which the node:http
+  // client never calls, so the flag is pinned off for them.
+  beforeEach(() => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([
+    ['/v2/runs/wrun_test/streams/stream-test/chunks'],
+    ['/v2/runs/wrun_test/streams/stream-test/info'],
+  ])('preserves stream-expired details from %s', async (endpoint) => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      Response.json(
+        {
+          error: 'stream-expired',
+          message: 'The stream reached its storage retention limit',
+          details: {
+            runId: 'wrun_test',
+            streamId: 'stream-test',
+            expiredAt: '2026-08-10T14:40:00.000Z',
+          },
+        },
+        { status: 410 }
+      )
+    );
+
+    const error = await makeRequest({
+      endpoint,
+      schema: z.never(),
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(StreamExpiredError);
+    expect(error).toMatchObject({
+      runId: 'wrun_test',
+      streamId: 'stream-test',
+      expiredAt: new Date('2026-08-10T14:40:00.000Z'),
+    });
+  });
+});
+
 describe('makeRequest body-parse retry', () => {
   const schema = z.object({ value: z.string() });
   const originalEnv = process.env;
@@ -184,6 +344,9 @@ describe('makeRequest body-parse retry', () => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_WORKFLOW_SERVER_URL;
     delete process.env.VERCEL_OIDC_TOKEN;
+    // These tests drive the retry loop from a stubbed `fetch`, so they only
+    // reach the code under test while requests go through `fetch`.
+    process.env[NODE_HTTP_ENV_VAR] = '0';
   });
 
   afterEach(() => {
@@ -459,6 +622,10 @@ describe('makeRequest transport errors', () => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_WORKFLOW_SERVER_URL;
     delete process.env.VERCEL_OIDC_TOKEN;
+    // The `UND_ERR_*` codes below only ever come out of undici, so these
+    // cases are specific to the `fetch` path. The node:http path raises
+    // Node's own socket codes and is covered separately.
+    process.env[NODE_HTTP_ENV_VAR] = '0';
   });
 
   afterEach(() => {
@@ -549,3 +716,116 @@ describe('makeRequest transport errors', () => {
     ).rejects.toMatchObject({ name: 'WorkflowWorldError', code: 'TIMEOUT' });
   });
 });
+
+// The suites above pin the flag off and simulate the transport with a `fetch`
+// stub, which the node:http client never calls. These run against a loopback
+// origin instead, covering the two contracts the runtime branches on: a
+// failed request has to stay retryable, and a typed error status has to keep
+// producing the same typed error whichever transport carried it.
+// These run against a loopback origin, which they select through
+// `VERCEL_WORKFLOW_SERVER_URL`. The inline `WORKFLOW_SERVER_URL_OVERRIDE`
+// constant WINS over that env var by design, so while a branch-testing
+// override is pinned there is no way for these to reach their own server and
+// every request leaves the machine. Skipped in that case rather than left to
+// fail confusingly; they run again the moment the override goes back to ''.
+describe.skipIf(WORKFLOW_SERVER_URL_OVERRIDE !== '')(
+  'makeRequest over node:http',
+  () => {
+    const schema = z.object({ value: z.string() });
+    const originalEnv = process.env;
+    let server: Server | undefined;
+
+    beforeEach(() => {
+      process.env = { ...originalEnv };
+      delete process.env.VERCEL_OIDC_TOKEN;
+      process.env[NODE_HTTP_ENV_VAR] = '1';
+    });
+
+    afterEach(async () => {
+      process.env = originalEnv;
+      const toClose = server;
+      server = undefined;
+      if (toClose) {
+        toClose.closeAllConnections();
+        await new Promise((resolve) => toClose.close(resolve));
+      }
+    });
+
+    /** Start a loopback origin and point the client at it. */
+    async function listen(handler: RequestListener): Promise<void> {
+      server = createServer(handler);
+      await new Promise<void>((resolve) =>
+        server?.listen(0, '127.0.0.1', resolve)
+      );
+      const { port } = server.address() as AddressInfo;
+      process.env.VERCEL_WORKFLOW_SERVER_URL = `http://127.0.0.1:${port}`;
+    }
+
+    it('maps a dropped socket to a retryable TRANSPORT error', async () => {
+      await listen((request) => request.socket.destroy());
+
+      // Node raises ECONNRESET on the error itself rather than on a `cause`, so
+      // this only passes if getTransientTransportCode reads the top-level code.
+      await expect(
+        makeRequest({
+          endpoint: '/v3/runs/wrun_test/events',
+          options: { method: 'GET' },
+          schema,
+        })
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        code: 'TRANSPORT',
+      });
+    });
+
+    it('maps a 412 response to PreconditionFailedError', async () => {
+      await listen((request, response) => {
+        request.resume();
+        response.statusCode = 412;
+        response.setHeader('content-type', 'application/cbor');
+        response.end(
+          encode({
+            success: false,
+            error: 'precondition-failed',
+            code: 'precondition-failed',
+            message: 'precondition-failed',
+          })
+        );
+      });
+
+      await expect(
+        makeRequest({
+          endpoint: '/v3/runs/wrun_test/events',
+          options: { method: 'POST' },
+          data: { eventType: 'run_completed' },
+          schema,
+        })
+      ).rejects.toBeInstanceOf(PreconditionFailedError);
+    });
+
+    it('round-trips a CBOR POST body to the origin', async () => {
+      let seen: { method?: string; length?: string } = {};
+      await listen((request, response) => {
+        seen = {
+          method: request.method,
+          length: request.headers['content-length'],
+        };
+        request.resume();
+        response.setHeader('content-type', 'application/cbor');
+        response.end(encode({ value: 'ok' }));
+      });
+
+      const result = await makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'POST' },
+        data: { eventType: 'run_completed' },
+        schema,
+      });
+
+      expect(result).toEqual({ value: 'ok' });
+      expect(seen.method).toBe('POST');
+      // A declared length, not a chunked body: some origins reject the latter.
+      expect(Number(seen.length)).toBeGreaterThan(0);
+    });
+  }
+);

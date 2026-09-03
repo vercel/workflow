@@ -18,7 +18,7 @@ export const StepStatusSchema = z.enum([
  * - specVersion >= 2: Uint8Array (binary devalue format)
  * - specVersion 1: any (legacy JSON format)
  */
-// TODO: implement a discriminated union here just like the run schema
+// TODO: implement a discriminated union here to match the run schema
 export const StepSchema = z.object({
   runId: z.string(),
   stepId: z.string(),
@@ -88,6 +88,8 @@ export function isTerminalStepStatus(
 }
 
 export type Step = z.infer<typeof StepSchema>;
+/** A step with its first start time materialized. */
+export type StartedStep = Step & { startedAt: Date };
 
 /**
  * Step with input/output fields excluded (when resolveData='none').

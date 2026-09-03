@@ -15,9 +15,11 @@ import {
   vi,
 } from 'vitest';
 import { z } from 'zod';
+import { UnwritableDataDirError } from './build-target-mismatch.js';
 import {
   assertSafeEntityId,
   clearCreatedFilesCache,
+  deleteJSON,
   ensureDir,
   paginatedFileSystemQuery,
   readFirstByte,
@@ -117,6 +119,67 @@ describe('fs utilities', () => {
     });
   });
 
+  describe('deleteJSON', () => {
+    it('deletes the file and tolerates one that is already gone', async () => {
+      const filePath = path.join(testDir, 'victim.json');
+      await fs.writeFile(filePath, '{}');
+
+      await deleteJSON(filePath);
+      await expect(fs.access(filePath)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+
+      await expect(deleteJSON(filePath)).resolves.toBeUndefined();
+    });
+
+    it('propagates non-ENOENT unlink failures', async () => {
+      const eisdir = Object.assign(new Error('EISDIR: illegal operation'), {
+        code: 'EISDIR',
+      });
+      vi.spyOn(fs, 'unlink').mockRejectedValue(eisdir);
+
+      await expect(deleteJSON(path.join(testDir, 'x.json'))).rejects.toThrow(
+        'EISDIR'
+      );
+    });
+
+    it('retries transient EPERM unlink failures on Windows', async () => {
+      // On Windows, unlink fails with EPERM while a concurrent reader briefly
+      // holds the file open (e.g. hook polling racing deleteAllHooksForRun).
+      // Re-import the module with the platform stubbed so its module-level
+      // isWindows check takes the retry path.
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      vi.resetModules();
+      try {
+        const freshFsModule = await import('./fs.js');
+        const filePath = path.join(testDir, 'locked.json');
+        await fs.writeFile(filePath, '{}');
+
+        const eperm = Object.assign(
+          new Error('EPERM: operation not permitted, unlink'),
+          { code: 'EPERM' }
+        );
+        const unlinkSpy = vi
+          .spyOn(fs, 'unlink')
+          .mockRejectedValueOnce(eperm)
+          .mockRejectedValueOnce(eperm);
+
+        await freshFsModule.deleteJSON(filePath);
+
+        expect(unlinkSpy).toHaveBeenCalledTimes(3);
+        await expect(fs.access(filePath)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      } finally {
+        if (platform) {
+          Object.defineProperty(process, 'platform', platform);
+        }
+        vi.resetModules();
+      }
+    });
+  });
+
   describe('ensureDir', () => {
     it('does not repeat mkdir for a directory created by this process', async () => {
       clearCreatedFilesCache();
@@ -155,6 +218,33 @@ describe('fs utilities', () => {
       expect(await writeExclusive(path.join(locksDir, 'second'), '')).toBe(
         true
       );
+    });
+
+    it('names the unwritable directory instead of letting the write fail as ENOENT', async () => {
+      clearCreatedFilesCache();
+      const readOnlyDir = path.join(testDir, 'read-only', 'runs');
+      const rofs: NodeJS.ErrnoException = new Error('read-only file system');
+      rofs.code = 'EROFS';
+      vi.spyOn(fs, 'mkdir').mockRejectedValue(rofs);
+
+      const error = await ensureDir(readOnlyDir).catch((e) => e);
+
+      assert(UnwritableDataDirError.is(error));
+      expect(error.dataDir).toBe(readOnlyDir);
+      // The message has to name the build-time cause, since a Vercel deployment
+      // running the local world is the likeliest way to reach a read-only path.
+      expect(error.message).toContain('WORKFLOW_TARGET_WORLD=vercel');
+    });
+
+    it('still tolerates a permission error on a directory that already exists', async () => {
+      clearCreatedFilesCache();
+      const eacces: NodeJS.ErrnoException = new Error('permission denied');
+      eacces.code = 'EACCES';
+      vi.spyOn(fs, 'mkdir').mockRejectedValue(eacces);
+
+      // `testDir` exists, so the failure was incidental — a racing writer, or an
+      // unsearchable parent that `stat` can still resolve.
+      await expect(ensureDir(testDir)).resolves.toBeUndefined();
     });
   });
 
@@ -884,6 +974,86 @@ describe('fs utilities', () => {
             allItems[i].createdAt.getTime()
           );
         }
+      });
+    });
+
+    describe('sort-key cursors', () => {
+      // Slot-numbered events: the file id carries the sort key, and the
+      // stored `createdAt` deliberately runs backwards relative to it, the
+      // way a writer that loses a slot race and bumps produces a higher slot
+      // with an older timestamp.
+      const RUN_PREFIX = 'run1-';
+      const SLOT_COUNT = 12;
+      const slotId = (slot: number) => `evnt_${String(slot).padStart(26, '0')}`;
+
+      beforeEach(async () => {
+        const baseTime = new Date('2024-01-01T00:00:00.000Z').getTime();
+        const files: Record<string, object> = {};
+        for (let slot = 1; slot <= SLOT_COUNT; slot++) {
+          const id = slotId(slot);
+          files[`${RUN_PREFIX}${id}`] = {
+            id,
+            name: `event-${slot}`,
+            createdAt: new Date(baseTime - ms(`${slot}m`)),
+          };
+        }
+        await createFilesystem(testDir, files);
+      });
+
+      const query = (cursor?: string) =>
+        paginatedFileSystemQuery({
+          directory: testDir,
+          schema: TestItemSchema,
+          filePrefix: RUN_PREFIX,
+          getCreatedAt: () => null,
+          getId: (item: TestItem) => item.id,
+          getSortKey: (item: TestItem) => item.id,
+          getSortKeyFromFileId: (fileId: string) =>
+            fileId.slice(RUN_PREFIX.length),
+          sortOrder: 'asc',
+          limit: 5,
+          cursor,
+        });
+
+      it('pages through the whole log in slot order', async () => {
+        const seen: string[] = [];
+        let cursor: string | undefined;
+        let hasMore = true;
+
+        while (hasMore) {
+          const page: PaginatedResponse<TestItem> = await query(cursor);
+          seen.push(...page.data.map((item) => item.id));
+          cursor = page.cursor ?? undefined;
+          hasMore = page.hasMore;
+        }
+
+        expect(seen).toEqual(
+          Array.from({ length: SLOT_COUNT }, (_, index) => slotId(index + 1))
+        );
+      });
+
+      it('does not read files the cursor has already passed', async () => {
+        const firstPage = await query();
+        assert(firstPage.cursor, 'expected first page cursor to be defined');
+
+        const readFile = vi.spyOn(fs, 'readFile');
+        const secondPage = await query(firstPage.cursor);
+        const readIds = readFile.mock.calls.map((call) =>
+          path.basename(String(call[0]), '.json')
+        );
+        readFile.mockRestore();
+
+        // Only the tail past the cursor is opened. Without the filename-level
+        // prefilter every page reads every file for the run, which makes
+        // walking a long event log quadratic.
+        expect(readIds).toEqual(
+          Array.from(
+            { length: SLOT_COUNT - firstPage.data.length },
+            (_, index) =>
+              `${RUN_PREFIX}${slotId(firstPage.data.length + index + 1)}`
+          )
+        );
+        expect(secondPage.data).toHaveLength(5);
       });
     });
   });

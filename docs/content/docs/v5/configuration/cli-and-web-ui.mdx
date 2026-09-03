@@ -2,13 +2,13 @@
 title: CLI and Web UI
 description: CLI flags and environment variables for inspecting local, Postgres, and Vercel Workflow runs.
 type: reference
-summary: Configure workflow inspect, workflow web, workflow health, and observability tooling.
+summary: Configure workflow inspect, workflow cancel, workflow web, workflow health, and observability tooling.
 related:
   - /docs/observability
   - /docs/configuration/worlds
 ---
 
-The `workflow` CLI uses flags first, then environment variables, then defaults or local inference.
+The Workflow CLI uses flags first, then environment variables, then defaults or local inference.
 
 Vercel project and auth settings can often be inferred from `.vercel/project.json` and your Vercel CLI login.
 
@@ -57,7 +57,7 @@ Vercel project and auth settings can often be inferred from `.vercel/project.jso
 
 - Environment variable: none
 - Default: disabled
-- Opens the relevant dashboard or web UI instead of printing terminal output.
+- Opens the relevant dashboard or web user interface (UI) instead of printing terminal output.
 
 ### `--webPort`
 
@@ -114,6 +114,34 @@ Vercel project and auth settings can often be inferred from `.vercel/project.jso
 - Environment variable: none
 - Default: disabled
 - Enables keyboard-controlled pagination for supported list commands.
+
+## Bulk cancel
+
+`workflow cancel <run-id>` cancels one run. Given a filter instead, it bulk-cancels a batch; bulk mode requires `--status` or `--workflowName`.
+
+### `--status`
+
+- Command: `workflow cancel`
+- Default: unset
+- Restricts the batch to this status. Only `pending` and `running` are accepted; terminal runs cannot be canceled.
+
+### `--workflowName` / `-n`
+
+- Command: `workflow cancel`
+- Default: unset
+- Restricts the batch to one workflow. Expects the generated workflow ID from `workflow inspect runs`, not the short function name.
+
+### `--limit` (cancel)
+
+- Command: `workflow cancel`
+- Default: `50`
+- Maximum runs to cancel in one batch (1–500). Only one batch is canceled per invocation; run the command again to cancel the next batch.
+
+### `--confirm` / `-y`
+
+- Command: `workflow cancel`
+- Default: disabled
+- Skips the interactive confirmation prompt.
 
 ## Health checks
 

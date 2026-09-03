@@ -1,6 +1,6 @@
 ---
 title: SvelteKit
-description: This guide will walk through setting up your first workflow in a SvelteKit app. Along the way, you'll learn more about the concepts that are fundamental to using the Workflow SDK in your own projects.
+description: Set up your first durable workflow in a SvelteKit app.
 type: guide
 summary: Set up Workflow SDK in a SvelteKit app.
 prerequisites:
@@ -16,9 +16,9 @@ related:
 <Steps>
 
 <Step>
-## Create Your SvelteKit Project
+## Create your SvelteKit project
 
-Start by creating a new SvelteKit project. This command will create a new directory named `my-workflow-app` with a minimal setup and setup a SvelteKit project inside it.
+Create a minimal SvelteKit project in a new directory named `my-workflow-app`:
 
 ```bash
 npx sv create my-workflow-app --template=minimal --types=ts --no-add-ons
@@ -54,16 +54,16 @@ export default defineConfig({
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production (smaller function bundles — helps stay under the Vercel 250MB function size limit). Set it explicitly, or use the `WORKFLOW_SOURCEMAP` environment variable, to override in either environment. |
+| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production (smaller function bundles, which helps stay under the Vercel 250 MB function size limit). Set it explicitly, or use the `WORKFLOW_SOURCEMAP` environment variable, to override in either environment. |
 
 <Accordion type="single" collapsible>
   <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
     <AccordionTrigger className="text-sm">
-      ### Setup IntelliSense for TypeScript (Optional)
+      ### Set up IntelliSense for TypeScript (optional)
     </AccordionTrigger>
     <AccordionContent className="[&_p]:my-2">
 
-To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json`:
+To enable helpful hints in your IDE, set up the workflow plugin in `tsconfig.json`:
 
 ```json title="tsconfig.json" lineNumbers
 {
@@ -86,7 +86,7 @@ To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json
 
 <Step>
 
-## Create Your First Workflow
+## Create your first workflow
 
 Create a new file for our first workflow:
 
@@ -109,14 +109,14 @@ export async function handleUserSignup(email: string) {
 
 ```
 
-We'll fill in those functions next, but let's take a look at this code:
+We'll fill in those functions next, but first review this code:
 
 * We define a **workflow** function with the directive `"use workflow"`. Think of the workflow function as the _orchestrator_ of individual **steps**.
 * The Workflow SDK's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
 
-## Create Your Workflow Steps
+## Create your workflow steps
 
-Let's now define those missing functions.
+Define the missing functions.
 
 ```typescript title="workflows/user-signup.ts" lineNumbers
 import { FatalError } from "workflow"
@@ -157,7 +157,7 @@ async function sendOnboardingEmail(user: { id: string; email: string}) {
 
 Taking a look at this code:
 
-* Business logic lives inside **steps**. When a step is invoked inside a **workflow**, it gets enqueued to run on a separate request while the workflow is suspended, just like `sleep`.
+* Business logic lives inside **steps**. When a workflow invokes a step, the workflow suspends while the step runs with full Node.js access. The combined handler may execute it inline; queued retries and continuations return through the same flow route.
 * If a step throws an error, like in `sendWelcomeEmail`, the step will automatically be retried until it succeeds (or hits the step's max retry count).
 * Steps can throw a `FatalError` if an error is intentional and should not be retried.
 
@@ -169,7 +169,7 @@ We'll dive deeper into workflows, steps, and other ways to suspend or handle eve
 
 <Step>
 
-## Create Your Route Handler
+## Create your route handler
 
 To invoke your new workflow, we'll have to add your workflow to a `POST` API route handler, `src/routes/api/signup/+server.ts` with the following code:
 
@@ -232,7 +232,7 @@ npx workflow inspect runs
 
 ## Deploying to production
 
-Workflow SDK apps currently work best when deployed to [Vercel](https://vercel.com/home) and needs no special configuration.
+Workflow SDK apps currently work best when deployed to [Vercel](https://vercel.com/home) and need no special configuration.
 
 <FluidComputeCallout />
 
@@ -244,8 +244,8 @@ Check the [Deploying](/docs/deploying) section to learn how your workflows can b
 
 If you see this error:
 
-```
-'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.
+```text
+'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.
 ```
 
 Check both of these first:
@@ -255,7 +255,7 @@ Check both of these first:
 
 See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function) for full examples and fixes.
 
-## Next Steps
+## Next steps
 
 * Learn more about the [Foundations](/docs/foundations).
 * Check [Errors](/docs/errors) if you encounter issues.

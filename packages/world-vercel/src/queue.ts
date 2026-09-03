@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Transport } from '@vercel/queue';
-import { DuplicateMessageError, QueueClient } from '@vercel/queue';
+import { ConsumerDiscoveryError, QueueClient } from '@vercel/queue';
+import { globalSingleton } from '@workflow/utils';
 import {
   MessageId,
   type Queue,
@@ -13,17 +14,19 @@ import {
 } from '@workflow/world';
 import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
 import { z } from 'zod/v4';
-import { getDispatcher } from './http-client.js';
+import { missingDeploymentIdMessage } from './deployment-id.js';
+import { getQueueDispatcher } from './http-client.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
+import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
 /**
  * CBOR-based queue transport. Encodes values with cbor-x on send and
  * decodes on receive, preserving Uint8Array values natively (workflow
  * input is a Uint8Array in specVersion >= 2).
  *
- * Used for specVersion >= SPEC_VERSION_CURRENT (3).
+ * Used for specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT.
  */
 class CborTransport implements Transport<unknown> {
   readonly contentType = 'application/cbor';
@@ -45,8 +48,9 @@ class CborTransport implements Transport<unknown> {
 }
 
 /**
- * JSON-based queue transport. Used for specVersion < SPEC_VERSION_CURRENT
- * to maintain compatibility with older deployments that expect JSON messages.
+ * JSON-based queue transport. Used for specVersion <
+ * SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT to maintain compatibility with
+ * older deployments that expect JSON messages.
  */
 class JsonTransport implements Transport<unknown> {
   readonly contentType = 'application/json';
@@ -96,6 +100,9 @@ class DualTransport implements Transport<unknown> {
   }
 }
 
+// per-copy-ok: both ends of this store live in the same `createQueueHandler`
+// closure: the `run()` wrapper and the `getStore()` read always come from the
+// same module copy, so the context never has to cross a copy boundary.
 const requestIdStorage = new AsyncLocalStorage<string | undefined>();
 
 const MessageWrapper = z.object({
@@ -140,13 +147,13 @@ const HANDLER_ERROR_RETRY_AFTER_SECONDS = 1;
 // Ceiling for the per-redelivery backoff. This value is the `retry-after` we
 // hand to VQS, which clamps it into [5s, MAX_SQS_DELAY_SECONDS=900s] for the
 // first 32 deliveries and then applies its own exponential growth (also capped
-// at 900s) — see vqs-server `calculateBackoffDelay`. Capping our base at 60s
+// at 900s); see vqs-server `calculateBackoffDelay`. Capping our base at 60s
 // (the old value) wasted that headroom: a run stuck behind a sustained backend
 // outage exhausted its delivery budget in ~3.7h. Ramping to the 900s ceiling
 // instead stretches survival to ~9–10h (across `MAX_QUEUE_DELIVERIES` = 48
 // attempts), so transient outages don't fail otherwise-healthy runs. Spanning
 // the full ~24h message-visibility window would require a higher delivery cap,
-// not a higher ceiling — VQS clamps every hop at 900s, so going above it here
+// not a higher ceiling: VQS clamps every hop at 900s, so going above it here
 // is pointless.
 const HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS = 900;
 const HANDLER_ERROR_RETRY_JITTER_RATIO = 0.25;
@@ -169,23 +176,72 @@ function getHandlerErrorRetryAfterSeconds(deliveryCount: number): number {
 /**
  * Default region used when no explicit override, no tagged run ID, and no
  * `VERCEL_REGION` env var are available. `iad1` preserves the historical
- * behaviour from before per-message regional routing existed.
+ * behavior from before per-message regional routing existed.
  */
 const FALLBACK_REGION = 'iad1';
 
 /**
  * Extract the workflow run ID from a queue payload, returning `undefined` for
- * payloads that don't carry one (e.g. health-check messages).
+ * payloads that don't carry one.
+ *
+ * Health-check payloads usually have no run ID, but a probe issued to prepare a
+ * cross-deployment `start()` carries the run id it is about to create. Reading
+ * it here is intentional: it routes the probe to the region the run will live
+ * in, matching the invoke that follows.
  */
 function getRunIdFromPayload(payload: QueuePayload): string | undefined {
   if ('runId' in payload && typeof payload.runId === 'string') {
     return payload.runId;
   }
-  if ('workflowRunId' in payload && typeof payload.workflowRunId === 'string') {
-    return payload.workflowRunId;
-  }
   return undefined;
 }
+
+/**
+ * Bind this run's events channel to one invocation of the flow route. This is
+ * the only pair of calls that opens one: nothing else in the SDK does, so every
+ * other writer (`start()` writing `run_created` from an arbitrary request
+ * handler, where a lone write would not repay a handshake) stays on HTTP.
+ *
+ * Both halves are no-ops on the HTTP default, and the gate is checked before the
+ * import so a deployment on the default never loads `ws`.
+ */
+const wsEventsChannelForInvocation = (
+  runId: string | undefined,
+  config: APIConfig | undefined
+) => {
+  /** This invocation's release, once the open has resolved one. */
+  let claim: Promise<(() => void) | undefined> | undefined;
+
+  return {
+    /**
+     * Unawaited and failure-proof: callers treat the handshake as free. The
+     * refcount therefore rises a microtask late, so a write racing the import
+     * finds no channel and goes over HTTP: one frame, not the invocation,
+     * since `close` awaits this same promise and so cannot release ahead of
+     * the claim it is releasing.
+     */
+    open(): void {
+      if (!runId || !isWsEventsTransportEnabled()) return;
+      claim = import('./ws-transport.js')
+        .then(({ openWsChannel }) => openWsChannel(runId, config))
+        .catch(() => undefined);
+    },
+    /**
+     * Awaited, unlike the open: work scheduled after the handler returns is not
+     * guaranteed to run, and an open socket is not `unref`'d, so skipping this
+     * stops the process exiting and keeps a server invocation pinned.
+     *
+     * Releases the claim the open returned rather than re-resolving the run,
+     * which is what keeps a channel this invocation never opened (a later
+     * invocation's, registered under the same URL after ours was evicted) out
+     * of reach of our release.
+     */
+    async close(): Promise<void> {
+      const release = await claim;
+      release?.();
+    },
+  };
+};
 
 /**
  * Workflow run IDs are prefixed with `wrun_` before the underlying ULID.
@@ -217,12 +273,12 @@ function regionFromTaggedRunId(runId: string | undefined): string | undefined {
  *   1. Explicit `opts.region` override.
  *   2. Region embedded in the payload's tagged run ID.
  *   3. `VERCEL_REGION` environment variable.
- *   4. {@link FALLBACK_REGION} (preserves pre-regional behaviour).
+ *   4. {@link FALLBACK_REGION} (preserves pre-regional behavior).
  *
  * The `opts.region` override and `VERCEL_REGION` are arbitrary strings, so
  * each is validated against the known region table and ignored (falling
  * through to the next source) when it isn't a routable region code. This keeps
- * a bad override — e.g. `start({ region: 'xyz9' })` — from
+ * a bad override (e.g. `start({ region: 'xyz9' })`) from
  * clobbering the payload-derived region with an undeliverable destination.
  */
 function resolveTargetRegion(
@@ -249,9 +305,6 @@ function getHeadersFromPayload(
   if ('runId' in payload && typeof payload.runId === 'string') {
     headers['x-vercel-workflow-run-id'] = payload.runId;
   }
-  if ('workflowRunId' in payload && typeof payload.workflowRunId === 'string') {
-    headers['x-vercel-workflow-run-id'] = payload.workflowRunId;
-  }
   if ('stepId' in payload && typeof payload.stepId === 'string') {
     headers['x-vercel-workflow-step-id'] = payload.stepId;
   }
@@ -262,22 +315,20 @@ function getHeadersFromPayload(
 /**
  * Resolves the physical VQS topic for a message.
  *
- * Normally this is just the logical queue name. When
+ * Normally this is the logical queue name. When
  * `WORKFLOW_SEQUENTIAL_REPLAYS` is enabled, messages on flow (workflow)
  * topics get a payload-dependent physical topic. VQS scopes `maxConcurrency`
  * per concrete topic, so combined with `maxConcurrency: 1` on the flow
  * trigger:
  *
  * - Orchestrator replays (`WorkflowInvokePayload` without a `stepId`) get a
- *   per-run topic — at most one replay per run at a time.
- * - Inline step executions (`WorkflowInvokePayload` WITH a `stepId` — they
+ *   per-run topic: at most one replay per run at a time.
+ * - Inline step executions (`WorkflowInvokePayload` WITH a `stepId`; they
  *   ride the flow topic in the combined handler model) get a per-step topic
  *   so steps keep full parallelism across a run; only redeliveries of the
  *   same step serialize.
  * - Health checks get a per-probe topic (their correlation id) so concurrent
  *   probes never queue behind one shared `…_health_check` slot.
- *
- * Legacy `*_wkf_step_*` topics are intentionally excluded.
  *
  * The flow-topic match allows an optional queue namespace prefix
  * (`__<namespace>_wkf_workflow_`, see `@workflow/builders` constants) so the
@@ -291,11 +342,18 @@ function getHeadersFromPayload(
  */
 const FLOW_TOPIC_PATTERN = /^__([a-z][a-z0-9]*_)?wkf_workflow_/;
 
-let loggedSequentialReplays = false;
+// Logged at most once per process; a field rather than a module-level `let`
+// because a bundler can put several copies of this file in one process and
+// "once" should not become once per copy (see `globalSingleton`).
+const queueLogs = globalSingleton(
+  '@workflow/world-vercel//queueLogLatches',
+  1,
+  () => ({ loggedSequentialReplays: false })
+);
 
 /**
  * Whether sequential replays are enabled (`WORKFLOW_SEQUENTIAL_REPLAYS=1`).
- * Mirrors `isSequentialReplaysEnabled` in `@workflow/builders` — world-vercel
+ * Mirrors `isSequentialReplaysEnabled` in `@workflow/builders`; world-vercel
  * must not depend on the build-time package, so the check is duplicated.
  */
 function isSequentialReplaysEnabled(): boolean {
@@ -309,8 +367,8 @@ function getPhysicalQueueName(
   if (!isSequentialReplaysEnabled() || !FLOW_TOPIC_PATTERN.test(queueName)) {
     return queueName;
   }
-  if (!loggedSequentialReplays) {
-    loggedSequentialReplays = true;
+  if (!queueLogs.loggedSequentialReplays) {
+    queueLogs.loggedSequentialReplays = true;
     // One-time breadcrumb so a half-applied configuration (env var set without
     // a maxConcurrency-bearing flow trigger, or vice versa) is diagnosable
     // from function logs. Must go to stderr: this code also runs inside CLI
@@ -320,6 +378,13 @@ function getPhysicalQueueName(
       '[workflow] WORKFLOW_SEQUENTIAL_REPLAYS=1: routing flow messages to per-run queue topics'
     );
   }
+  // Health checks are matched before the runId branch: a probe issued to
+  // prepare a cross-deployment `start()` carries the run id it is about to
+  // create, and must still get its per-probe topic rather than being routed to
+  // that run's serialized replay topic.
+  if ('__healthCheck' in payload && typeof payload.correlationId === 'string') {
+    return `${queueName}_${payload.correlationId}`;
+  }
   if ('runId' in payload && typeof payload.runId === 'string') {
     // Inline step execution: full parallelism via a per-step topic.
     if ('stepId' in payload && typeof payload.stepId === 'string') {
@@ -327,9 +392,6 @@ function getPhysicalQueueName(
     }
     // Orchestrator replay: serialize per run.
     return `${queueName}_${payload.runId}`;
-  }
-  if ('__healthCheck' in payload && typeof payload.correlationId === 'string') {
-    return `${queueName}_${payload.correlationId}`;
   }
   return queueName;
 }
@@ -356,7 +418,7 @@ export function createQueue(config?: APIConfig): Queue {
    * from the incoming `ce-vqsregion` header regardless).
    */
   const clientOptions = {
-    dispatcher: getDispatcher(config),
+    dispatcher: getQueueDispatcher(config),
     transport: dualTransport,
     ...(usingProxy && {
       // final path will be /queues-proxy/api/v3/topic/...
@@ -376,9 +438,8 @@ export function createQueue(config?: APIConfig): Queue {
     const deploymentId = opts?.deploymentId ?? process.env.VERCEL_DEPLOYMENT_ID;
     if (!deploymentId) {
       throw new Error(
-        'No deploymentId provided and VERCEL_DEPLOYMENT_ID environment variable is not set. ' +
-          'Queue messages require a deployment ID to route correctly. ' +
-          'Either set VERCEL_DEPLOYMENT_ID or provide deploymentId in options.'
+        `${missingDeploymentIdMessage('Enqueuing a workflow message')} ` +
+          'Callers outside a deployment can instead pass an explicit deploymentId in options.'
       );
     }
 
@@ -393,7 +454,7 @@ export function createQueue(config?: APIConfig): Queue {
     // we decode it from the payload's tagged run ID so messages produced by
     // `start()` land in the same region the run was created in. Falls back
     // to the `VERCEL_REGION` env var, then `iad1` to preserve historical
-    // behaviour for legacy / untagged run IDs.
+    // behavior for legacy / untagged run IDs.
     const region = resolveTargetRegion(payload, opts);
 
     const client = new QueueClient({
@@ -429,34 +490,22 @@ export function createQueue(config?: APIConfig): Queue {
       /[^A-Za-z0-9-_]/g,
       '-'
     );
-    try {
-      const { messageId } = await client.send(sanitizedQueueName, wrapper, {
-        idempotencyKey: opts?.idempotencyKey,
-        delaySeconds: opts?.delaySeconds,
-        headers: {
-          ...getHeadersFromPayload(payload),
-          ...opts?.headers,
-        },
-      });
-      return {
-        // messageId may be null when VQS fails over to a different region —
-        // the event is ingested but the responding region cannot return an ID.
-        messageId: messageId ? MessageId.parse(messageId) : null,
-      };
-    } catch (error) {
-      // Silently handle idempotency key conflicts - the message was already queued.
-      // This matches the behavior of world-local and world-postgres.
-      if (error instanceof DuplicateMessageError) {
-        // Return a placeholder messageId since the original is not available from the error.
-        // Callers using idempotency keys shouldn't depend on the returned messageId.
-        return {
-          messageId: MessageId.parse(
-            `msg_duplicate_${error.idempotencyKey ?? opts?.idempotencyKey ?? 'unknown'}`
-          ),
-        };
-      }
-      throw error;
-    }
+    // A repeated `idempotencyKey` is accepted rather than rejected: the send
+    // returns a fresh message ID and only one of the messages is delivered, so
+    // there is no conflict for the caller to handle here.
+    const { messageId } = await client.send(sanitizedQueueName, wrapper, {
+      idempotencyKey: opts?.idempotencyKey,
+      delaySeconds: opts?.delaySeconds,
+      headers: {
+        ...getHeadersFromPayload(payload),
+        ...opts?.headers,
+      },
+    });
+    return {
+      // messageId may be null when the queue fails over to a different region:
+      // the event is ingested but the responding region cannot return an ID.
+      messageId: messageId ? MessageId.parse(messageId) : null,
+    };
   };
 
   const createQueueHandler: Queue['createQueueHandler'] = (
@@ -476,38 +525,60 @@ export function createQueue(config?: APIConfig): Queue {
         const { payload, queueName, deploymentId } =
           MessageWrapper.parse(message);
 
-        const result = await handler(payload, {
-          queueName,
-          messageId: MessageId.parse(metadata.messageId),
-          attempt: metadata.deliveryCount,
-          requestId,
-        });
+        // Earliest point in an invocation where the run id is known, so the WS
+        // handshake happens here instead of on the runtime's first event write
+        // (which would record a `step_started` later than the work it
+        // timestamps). This path also absorbs `ws`'s module init.
+        const wsEvents = wsEventsChannelForInvocation(
+          getRunIdFromPayload(payload),
+          config
+        );
+        wsEvents.open();
 
-        if (typeof result?.timeoutSeconds === 'number') {
-          // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
-          // Otherwise, clamp to one continuation hop (23h by default). Longer
-          // sleeps chain delayed messages until the full duration has elapsed.
-          const delaySeconds =
-            result.timeoutSeconds > 0
-              ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
-              : undefined;
+        try {
+          const result = await handler(payload, {
+            queueName,
+            messageId: MessageId.parse(metadata.messageId),
+            attempt: metadata.deliveryCount,
+            requestId,
+          });
 
-          // Send new message BEFORE acknowledging current message.
-          // This ensures crash safety: if process dies after send but before ack,
-          // we may get a duplicate invocation but won't lose the scheduled wakeup.
-          await queue(queueName, payload, { deploymentId, delaySeconds });
+          if (typeof result?.timeoutSeconds === 'number') {
+            // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
+            // Otherwise, clamp to one continuation hop (23h by default). Longer
+            // sleeps chain delayed messages until the full duration has elapsed.
+            const delaySeconds =
+              result.timeoutSeconds > 0
+                ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
+                : undefined;
+
+            // Send new message BEFORE acknowledging current message.
+            // This ensures crash safety: if process dies after send but before ack,
+            // we may get a duplicate invocation but won't lose the scheduled wakeup.
+            await queue(queueName, payload, { deploymentId, delaySeconds });
+          }
+        } finally {
+          // The only point in the SDK that knows an invocation has no writes
+          // left. In a `finally` so a failed handler closes too, since the
+          // retry arrives as a new invocation and opens its own channel.
+          await wsEvents.close();
         }
       },
       {
         // Without an explicit retry directive, @vercel/queue leaves failed
         // handler messages invisible until the default 300s visibility timeout
-        // expires. Start retrying quickly, then back off by delivery count
+        // expires. Start retrying after 1s, then back off by delivery count
         // with jitter so an outage or poison message cannot hot-loop or
         // redrive in lockstep. Workflow handlers are event-sourced and must
         // remain idempotent because queue retries can happen close together.
-        retry: (_error, { deliveryCount }) => ({
-          afterSeconds: getHandlerErrorRetryAfterSeconds(deliveryCount),
-        }),
+        retry: (error, { messageId, deliveryCount }) => {
+          const afterSeconds = getHandlerErrorRetryAfterSeconds(deliveryCount);
+          console.error(
+            `[workflow] Queue handler failed for message "${messageId}" on delivery attempt ${deliveryCount}; retrying in ${afterSeconds}s:`,
+            error
+          );
+          return { afterSeconds };
+        },
       }
     );
 
@@ -518,13 +589,25 @@ export function createQueue(config?: APIConfig): Queue {
     };
   };
 
+  // `start()` resolves the current deployment before writing anything, so this
+  // is where a Vercel world running outside a deployment fails: ahead of any
+  // state write, and regardless of whether credentials happen to be valid.
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
     const deploymentId = process.env.VERCEL_DEPLOYMENT_ID;
     if (!deploymentId) {
-      throw new Error('VERCEL_DEPLOYMENT_ID environment variable is not set');
+      throw new Error(missingDeploymentIdMessage('Starting a workflow run'));
     }
     return deploymentId;
   };
 
-  return { queue, createQueueHandler, getDeploymentId };
+  const isDeploymentUnavailableError: Queue['isDeploymentUnavailableError'] = (
+    error
+  ) => error instanceof ConsumerDiscoveryError;
+
+  return {
+    queue,
+    createQueueHandler,
+    getDeploymentId,
+    isDeploymentUnavailableError,
+  };
 }

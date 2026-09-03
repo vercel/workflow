@@ -1,13 +1,19 @@
 import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
-import { createWorkflowUrl } from '@workflow/utils';
+import { createWorkflowUrl, debugLog } from '@workflow/utils';
 import {
+  isNodeHttpEnabled,
   MessageId,
   parseQueueName,
   type Queue,
   type QueuePrefix,
   ValidQueueName,
 } from '@workflow/world';
+import {
+  createNodeHttpAgents,
+  destroyNodeHttpAgents,
+  nodeHttpFetch,
+} from '@workflow/world/node-http.js';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
@@ -61,6 +67,44 @@ const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
   DEFAULT_CONCURRENCY_LIMIT;
 
+/** Default time-to-first-byte deadline for local queue deliveries. */
+export const DEFAULT_HEADERS_TIMEOUT_MS = 30_000;
+
+/** Default maximum gap between response body chunks for local deliveries. */
+export const DEFAULT_BODY_TIMEOUT_MS = 30_000;
+
+function envTimeoutMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/**
+ * Bounds a stalled delivery below the queue handler's retry horizon. A
+ * transport timeout is retried by the delivery loop with the same durable
+ * message; `0` remains available for applications that need unbounded calls.
+ *
+ * Both transports honor every field. Over undici this is the `Agent`'s own
+ * configuration; over `node:http` (`WORKFLOW_NODE_HTTP`) the two timeouts are
+ * passed per request and `connections` / `keepAliveTimeout` size the socket
+ * pool, so the two env vars tune a delivery identically either way.
+ */
+export function getQueueAgentOptions() {
+  return {
+    bodyTimeout: envTimeoutMs(
+      'WORKFLOW_LOCAL_BODY_TIMEOUT_MS',
+      DEFAULT_BODY_TIMEOUT_MS
+    ),
+    connections: 1000,
+    headersTimeout: envTimeoutMs(
+      'WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS',
+      DEFAULT_HEADERS_TIMEOUT_MS
+    ),
+    keepAliveTimeout: 30_000,
+  } as const;
+}
+
 export type DirectHandler = (req: Request) => Promise<Response>;
 
 export type LocalQueue = Queue & {
@@ -94,29 +138,18 @@ function isDetachedArrayBufferQueueError(error: unknown): boolean {
   return false;
 }
 
-function getQueueRoute(queueName: ValidQueueName): {
-  pathname: 'flow' | 'step';
-  prefix: QueuePrefix;
-} {
-  const { kind, prefix } = parseQueueName(queueName);
-
-  return {
-    pathname: kind === 'workflow' ? 'flow' : 'step',
-    prefix,
-  };
-}
-
 export function createQueue(config: Partial<Config>): LocalQueue {
-  // Create a custom agent optimized for high-concurrency local workflows:
-  // - headersTimeout: 0 allows long-running steps
-  // - connections: 1000 allows many parallel connections to the same host
-  // - pipelining: 1 (default) for HTTP/1.1 compatibility
-  // - keepAliveTimeout: 30s keeps connections warm for rapid step execution
-  const httpAgent = new Agent({
-    headersTimeout: 0,
-    connections: 1000,
-    keepAliveTimeout: 30_000,
-  });
+  // Exactly one of these is built, and close() shuts down whichever it is.
+  // Resolved once per queue rather than per delivery so a single queue never
+  // mixes transports mid-flight.
+  const agentOptions = getQueueAgentOptions();
+  const nodeHttpAgents = isNodeHttpEnabled()
+    ? createNodeHttpAgents({
+        maxSockets: agentOptions.connections,
+        keepAliveMs: agentOptions.keepAliveTimeout,
+      })
+    : undefined;
+  const httpAgent = nodeHttpAgents ? undefined : new Agent(agentOptions);
   const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
@@ -148,15 +181,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     }
 
     const body = transport.serialize(message);
-    const { pathname, prefix } = getQueueRoute(queueName);
+    const { prefix } = parseQueueName(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
 
     // Extract identifiers from the message for structured logging.
-    // Workflow messages have `runId`, step messages have `workflowRunId` + `stepId`.
+    // Combined workflow messages carry `runId` and may include `stepId`.
     const msg = message as Record<string, unknown>;
-    const runId = (msg.runId ?? msg.workflowRunId ?? undefined) as
-      | string
-      | undefined;
+    const runId = (msg.runId ?? undefined) as string | undefined;
     const stepId = (msg.stepId ?? undefined) as string | undefined;
 
     if (opts?.idempotencyKey) {
@@ -170,7 +201,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     (async () => {
       // Honor the caller's requested delivery delay before acquiring a queue
       // slot. Sleeping outside the semaphore so a delayed message doesn't
-      // hold a worker hostage for its delay window — the worker should be
+      // hold a worker hostage for its delay window: the worker should be
       // free to process other (immediate) messages until this one is ready.
       // VQS-side queues honor delaySeconds at the broker, so this brings
       // world-local in line with production behavior.
@@ -181,23 +212,24 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
       const token = semaphore.tryAcquire();
       if (!token) {
-        console.warn(
+        // Debug-gated: this is the semaphore doing its job. A fan-out wider
+        // than the limit queues behind it and every message still runs, so a
+        // per-message warning turns a healthy wide run into a wall of output.
+        debugLog(
           `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
         );
         await semaphore.acquire();
       }
       // Safety limit to prevent infinite loops in the local queue.
-      // The actual max delivery enforcement happens in the workflow/step handlers
-      // (at MAX_QUEUE_DELIVERIES = 48), so this just needs to be comfortably higher.
+      // The actual max delivery enforcement happens in the workflow handler
+      // (at MAX_QUEUE_DELIVERIES = 48), so this only needs to be comfortably higher.
       const MAX_LOCAL_SAFETY_LIMIT = 256;
       // Number of times the message has actually reached a handler (returned
-      // ok, a timeoutSeconds re-delivery, or an HTTP error response). This —
-      // not the loop counter — is the attempt the handler sees via
+      // ok, a timeoutSeconds re-delivery, or an HTTP error response). This,
+      // not the loop counter, is the attempt the handler sees via
       // `x-vqs-message-attempt`, which it counts against MAX_QUEUE_DELIVERIES.
-      // Transport-level failures (below) never reach the handler, so they must
-      // not advance this, or a burst of "fetch failed"/ETIMEDOUT timeouts under
-      // local load would exhaust the handler's delivery budget before its first
-      // real execution.
+      // Failures before response headers do not advance this; body failures do,
+      // because the handler has already accepted that delivery.
       let delivery = 0;
       try {
         for (let loop = 0; loop < MAX_LOCAL_SAFETY_LIMIT; loop++) {
@@ -210,40 +242,49 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           };
           const directHandler = directHandlers.get(prefix);
           let response: Response;
+          let text: string;
 
           try {
             if (directHandler) {
               const req = new Request(
                 createWorkflowUrl(resolveDirectBaseUrl(config), {
-                  type: pathname,
+                  type: 'flow',
                 }),
                 { method: 'POST', headers, body }
               );
               response = await directHandler(req);
             } else {
               const baseUrl = await resolveBaseUrl(config);
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-              response = await fetch(
-                createWorkflowUrl(baseUrl, { type: pathname }),
-                {
-                  method: 'POST',
-                  duplex: 'half',
-                  dispatcher: httpAgent,
-                  headers,
-                  body,
-                } as any
-              );
+              const url = createWorkflowUrl(baseUrl, { type: 'flow' });
+              response = nodeHttpAgents
+                ? await nodeHttpFetch(url, {
+                    method: 'POST',
+                    headers: new Headers(headers),
+                    body,
+                    agents: nodeHttpAgents,
+                    signal: closeSignal,
+                    headersTimeoutMs: agentOptions.headersTimeout,
+                    bodyTimeoutMs: agentOptions.bodyTimeout,
+                  })
+                : // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+                  await fetch(url, {
+                    method: 'POST',
+                    duplex: 'half',
+                    dispatcher: httpAgent,
+                    headers,
+                    body,
+                    signal: closeSignal,
+                  } as any);
             }
+            delivery++;
+            text = await response.text();
           } catch (err) {
-            // The delivery never reached the handler: undici threw before a
-            // response. Under heavy local concurrency the single-process dev
-            // server can't accept every connection, so undici reports
-            // `TypeError: fetch failed` with an ETIMEDOUT/ECONNRESET cause.
-            // These are transient — back off and retry the *same* delivery
-            // rather than dropping the message (which would leave the step
-            // never started, with no retry). Two failures are not retryable:
+            // A transport can fail before response headers or while consuming
+            // the body. Both are transient: back off and retry the same
+            // durable message rather than leaving its run stalled. Two
+            // failures are not retryable:
             //  - shutdown: close() aborted the agent / the backoff sleep.
-            //  - a detached-ArrayBuffer proxy misconfig, which never succeeds —
+            //  - a detached-ArrayBuffer proxy misconfig, which never succeeds:
             //    rethrow so the outer catch surfaces the actionable guidance.
             const name = (err as { name?: string } | undefined)?.name;
             if (
@@ -268,9 +309,6 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             await setTimeout(5000, undefined, { signal: closeSignal });
             continue;
           }
-
-          delivery++;
-          const text = await response.text();
 
           if (response.ok) {
             try {
@@ -307,7 +345,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
           // 5s linear backoff to approximate VQS retry timing in local dev.
           // VQS uses 5s linear for attempts 1–32, then exponential, but for
-          // local dev linear 5s is sufficient — the handler enforces the real
+          // local dev linear 5s is sufficient: the handler enforces the real
           // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
           await setTimeout(5000, undefined, { signal: closeSignal });
         }
@@ -428,7 +466,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       // may close the queue more than once.
       if (closeSignal.aborted) return;
       closeController.abort();
-      await httpAgent.close();
+      if (nodeHttpAgents) destroyNodeHttpAgents(nodeHttpAgents);
+      await httpAgent?.close();
     },
   };
 }

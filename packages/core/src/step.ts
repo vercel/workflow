@@ -1,15 +1,17 @@
 import { FatalError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { EventConsumerResult } from './events-consumer.js';
-import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
+import type { StepInvocationQueueItem } from './global.js';
 import { stepLogger } from './logger.js';
 import {
-  scheduleWhenIdle,
+  awaitEarlierDeliveries,
+  registerDeliveryBarrier,
+  scheduleWorkflowSuspension,
   type WorkflowOrchestratorContext,
 } from './private.js';
 import type { Serializable } from './schemas.js';
+import { markUseStepClosureFn } from './serialization/hardened.js';
 import { hydrateStepError, hydrateStepReturnValue } from './serialization.js';
-import { getOrHydrateStepReturnValue } from './step-hydration-cache.js';
 
 export function createUseStep(ctx: WorkflowOrchestratorContext) {
   return function useStep<Args extends Serializable[], Result>(
@@ -57,11 +59,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // Crucially, if we got here, then this step Promise does
           // not resolve so that the user workflow code does not proceed any further.
           // Notify the workflow handler that this step has not been run / has not completed yet.
-          scheduleWhenIdle(ctx, () => {
-            ctx.onWorkflowError(
-              new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
-            );
-          });
+          scheduleWorkflowSuspension(ctx);
           return EventConsumerResult.NotConsumed;
         }
 
@@ -122,7 +120,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         }
 
         if (event.eventType === 'step_started') {
-          // Step was started but is not terminal — it stays in the
+          // Step was started but is not terminal, so it stays in the
           // invocationQueue so the suspension handler can decide how to
           // dispatch it. Record the inline-ownership state from the event:
           // the LATEST start wins, so a stamped start (inline execution or
@@ -147,7 +145,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         }
 
         if (event.eventType === 'step_retrying') {
-          // Step is being retried — consume the event and wait for the next
+          // Step is being retried: consume the event and wait for the next
           // step_started. From here on the step is queue-owned (the delayed
           // retry handoff message, or the replay requeue), so inline
           // ownership is permanently lapsed for this correlation ID.
@@ -166,15 +164,37 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // deterministic ordering of all promise resolutions/rejections.
           // Hydrate the serialized thrown value from the event log so the
           // original type identity and custom properties are preserved.
+          //
+          // The rejection is as branch-deciding as a success: it decides
+          // whether a `try`/`catch` continuation runs, and therefore which
+          // ULIDs the follow-up `useStep` calls draw. So it is ordered by
+          // event-log position exactly like `step_completed` below; see there
+          // for why the deferral is captured here, at event-consumption time,
+          // and awaited off the serial queue.
+          const eventIndex = ctx.eventsConsumer.eventIndex;
+          const barrier = registerDeliveryBarrier(ctx, eventIndex, 'step');
+          let rejection: unknown;
+          const earlierDelivered = awaitEarlierDeliveries(
+            ctx,
+            eventIndex,
+            'step'
+          );
+          ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
-              const hydrated = await hydrateStepError(
+              const prepared = await ctx.replayPayloadCache.prepareEventPayload(
+                event.eventId,
+                'error',
+                event.eventData.error
+              );
+              rejection = await hydrateStepError(
                 event.eventData.error,
                 ctx.runId,
                 ctx.encryptionKey,
-                ctx.globalThis
+                ctx.globalThis,
+                {},
+                prepared
               );
-              reject(hydrated);
             } catch (hydrateErr) {
               // If hydration fails for any reason, fall back to a generic
               // FatalError so the workflow doesn't hang. This should be
@@ -186,16 +206,20 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
                     ? hydrateErr.message
                     : String(hydrateErr),
               });
-              reject(
-                new FatalError(
-                  `Failed to hydrate step error: ${
-                    hydrateErr instanceof Error
-                      ? hydrateErr.message
-                      : String(hydrateErr)
-                  }`
-                )
+              rejection = new FatalError(
+                `Failed to hydrate step error: ${
+                  hydrateErr instanceof Error
+                    ? hydrateErr.message
+                    : String(hydrateErr)
+                }`
               );
+            } finally {
+              ctx.pendingDeliveries--;
             }
+            void earlierDelivered.then(() => {
+              barrier.markDelivered();
+              reject(rejection);
+            });
           });
           return EventConsumerResult.Finished;
         }
@@ -211,40 +235,97 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // Each step's hydration + resolve waits for all prior hydrations
           // to complete before executing, preserving deterministic ordering.
           //
-          // Memoization: on every replay this consumer re-runs and would
-          // otherwise re-decrypt + re-parse the same serialized result — O(N²)
-          // across an invocation for a sequential N-step workflow. The
-          // per-run `stepHydrationCache` short-circuits that work on
-          // subsequent replays. Crucially, the cache lookup happens INSIDE
-          // this same promiseQueue slot (and still resolves via `resolve`),
-          // so a cache hit occupies the exact same position in the ordered
-          // delivery chain a re-hydrate would have — preserving the
-          // determinism that pendingDeliveries, the delivery barriers, and
-          // Promise.race/all replay depend on. Only primitive results are
-          // memoized; non-primitives re-hydrate fresh each replay so a shared
-          // reference can never carry a mutation between replays.
+          // Prepared serialized bytes are shared across replay VMs, but final
+          // objects are always revived here inside this ordered queue slot.
+          // Only immutable primitive final values bypass revival entirely.
+          //
+          // Hydration cost is what makes this delivery's timing unstable
+          // across replays of one invocation: the first replay pays the full
+          // decrypt/decompress/revive, later replays memo-hit a primitive
+          // result in `ReplayPayloadCache` and finish in a hop or two. A
+          // workflow awaiting this result on one branch and a `sleep()` or
+          // hook payload on another would therefore allocate its follow-up
+          // step ULIDs in a different order on a warm replay than the
+          // invocation that WROTE those `step_created` events did, which is a
+          // permanent `ReplayDivergenceError`. So the result is ordered by
+          // event-log position through the delivery-barrier registry (see
+          // `ctx.pendingDeliveryBarriers`):
+          //  - Register a 'step' barrier at this event's index so a
+          //    LATER-in-log wait/hook delivery is handed over only after it.
+          //  - Hydrate inside this serial queue slot (keeping async
+          //    deserialization in event-log order) but only CAPTURE the
+          //    outcome; then defer behind every EARLIER-in-log wait and hook
+          //    delivery before resolving, and mark this step delivered.
+          //
+          // The deferral is captured HERE, while consuming the event, and not
+          // inside the queue slot. Two reasons, both load-bearing:
+          //  - Determinism: the set of earlier deliveries is then a function of
+          //    log position alone. Captured later it would depend on how much
+          //    hydration the earlier deliveries had already finished, the exact
+          //    coupling this barrier exists to remove.
+          //  - Coverage: an earlier delivery whose own hydration slot runs
+          //    first on this serial queue has usually already resolved (and so
+          //    deregistered its barrier) by the time a later slot starts. Read
+          //    at slot start, its barrier would be invisible and this step
+          //    would not defer at all. Every event in one drain window is
+          //    consumed before any slot runs, so capturing at consumption time
+          //    sees all of them.
+          //
+          // The deferral runs OFF the serial queue: it may wait on an earlier
+          // wait/hook delivery whose own resolution is driven by this queue,
+          // and blocking a queue slot on that would deadlock the queue (the
+          // same constraint sleep.ts and hook.ts document). `pendingDeliveries`
+          // is likewise released inside the slot, before the detached defer, so
+          // `scheduleWhenIdle` can still reach idle and retire the barriers
+          // this deferral may be waiting on.
           const completedEventId = event.eventId;
           const serializedResult = event.eventData.result;
+          const eventIndex = ctx.eventsConsumer.eventIndex;
+          const barrier = registerDeliveryBarrier(ctx, eventIndex, 'step');
+          let outcome:
+            | { ok: true; value: Result }
+            | { ok: false; error: unknown };
+          const earlierDelivered = awaitEarlierDeliveries(
+            ctx,
+            eventIndex,
+            'step'
+          );
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
-              const hydratedResult = await getOrHydrateStepReturnValue(
-                ctx.stepHydrationCache,
+              const hydratedResult = await ctx.replayPayloadCache.getStepResult(
                 completedEventId,
-                () =>
-                  hydrateStepReturnValue(
+                async () => {
+                  const prepared =
+                    await ctx.replayPayloadCache.prepareEventPayload(
+                      completedEventId,
+                      'result',
+                      serializedResult
+                    );
+                  return await hydrateStepReturnValue(
                     serializedResult,
                     ctx.runId,
                     ctx.encryptionKey,
-                    ctx.globalThis
-                  )
+                    ctx.globalThis,
+                    {},
+                    prepared
+                  );
+                }
               );
-              resolve(hydratedResult as Result);
+              outcome = { ok: true, value: hydratedResult as Result };
             } catch (error) {
-              reject(error);
+              outcome = { ok: false, error };
             } finally {
               ctx.pendingDeliveries--;
             }
+            void earlierDelivered.then(() => {
+              barrier.markDelivered();
+              if (outcome.ok) {
+                resolve(outcome.value);
+              } else {
+                reject(outcome.error);
+              }
+            });
           });
           return EventConsumerResult.Finished;
         }
@@ -279,8 +360,14 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
       configurable: false,
     });
 
-    // Store the closure variables function for serialization
+    // Store the closure variables function for serialization. Mark it so the
+    // step-function reducer can tell a function that came through `useStep`
+    // apart from one workflow code assigned over the property afterwards:
+    // the reducer has to invoke whatever is there, and only the latter is
+    // worth reporting. See `markUseStepClosureFn` for the limits of what
+    // this proves.
     if (closureVarsFn) {
+      markUseStepClosureFn(closureVarsFn);
       Object.defineProperty(stepFunction, '__closureVarsFn', {
         value: closureVarsFn,
         writable: false,
@@ -293,20 +380,20 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
     // metadata that `getStepFunctionReducer` relies on for serialization.
     // Without this override, `Function.prototype.bind` would return a new
     // function that doesn't inherit `stepId`, `__closureVarsFn`, or any
-    // other own properties of the original proxy — so the StepFunction
+    // other own properties of the original proxy, so the StepFunction
     // reducer would refuse to serialize it (it'd look like a plain
     // function), and a `useStep(...).bind(this)` proxy that flowed
     // through workflow serialization would silently break.
     //
     // The override stashes three pieces of state on the bound function so
     // the round trip is faithful:
-    //   - `stepId`             — already set on the original proxy.
-    //   - `__closureVarsFn`    — only when the original proxy had one.
-    //   - `__boundThis`        — the receiver passed to `.bind(thisArg, …)`.
+    //   - `stepId`: already set on the original proxy.
+    //   - `__closureVarsFn`: only when the original proxy had one.
+    //   - `__boundThis`: the receiver passed to `.bind(thisArg, …)`.
     //                            Always set (even when `thisArg` is
     //                            `null`/`undefined`) so the reducer can
     //                            distinguish "was bound" from "wasn't".
-    //   - `__boundArgs`        — only when the user supplied prefilled
+    //   - `__boundArgs`: only when the user supplied prefilled
     //                            arguments (`.bind(thisArg, x, y)`). The
     //                            SWC plugin only ever emits `.bind(this)`
     //                            today, so this is rare in practice; we

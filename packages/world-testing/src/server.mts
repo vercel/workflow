@@ -1,15 +1,8 @@
 import fs from 'node:fs';
-import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { serve } from '@hono/node-server';
-import {
-  createWorldFromModule,
-  type WorldFactoryModule,
-} from '@workflow/core/runtime';
-import { getWorldImport } from '@workflow/utils';
 import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
-import { getWorld, setWorld } from 'workflow/runtime';
+import { getWorld } from 'workflow/runtime';
 import * as z from 'zod';
 import { POST as flowPOST } from '../.well-known/workflow/v1/flow.mjs';
 import manifest from '../.well-known/workflow/v1/manifest.json' with {
@@ -22,27 +15,6 @@ if (!process.env.WORKFLOW_TARGET_WORLD) {
   );
   process.exit(1);
 }
-
-function normalizeTargetWorldSpecifier(targetWorld: string): string {
-  if (targetWorld.startsWith('./') || targetWorld.startsWith('../')) {
-    return pathToFileURL(resolve(process.cwd(), targetWorld)).href;
-  }
-  return getWorldImport({ WORKFLOW_TARGET_WORLD: targetWorld });
-}
-
-async function initializeTestWorld() {
-  const targetWorld = process.env.WORKFLOW_TARGET_WORLD;
-  if (!targetWorld) {
-    throw new Error('WORKFLOW_TARGET_WORLD environment variable is not set.');
-  }
-
-  const mod = (await import(
-    normalizeTargetWorldSpecifier(targetWorld)
-  )) as WorldFactoryModule;
-  setWorld(await createWorldFromModule(mod));
-}
-
-await initializeTestWorld();
 
 type Files = keyof typeof manifest.workflows;
 type Workflows<F extends Files> = keyof (typeof manifest.workflows)[F];
@@ -70,6 +42,9 @@ const Invoke = z
   });
 
 // Track flow handler invocations per run for testing inline execution
+// per-copy-ok: this file is a standalone test server entry (it calls `serve()`
+// below), so it runs as its own process with one module instance. There is no
+// host bundler to compile it into several layers.
 const flowInvocationCounts = new Map<string, number>();
 
 const app = new Hono()
@@ -145,7 +120,11 @@ const app = new Hono()
   .get('/runs/:runId/events', async (ctx) => {
     const runId = ctx.req.param('runId');
     const world = await getWorld();
-    const allEvents: { eventType: string; correlationId?: string }[] = [];
+    const allEvents: {
+      eventId: string;
+      eventType: string;
+      correlationId?: string;
+    }[] = [];
     let cursor: string | undefined;
     while (true) {
       const page = await world.events.list({
@@ -154,6 +133,7 @@ const app = new Hono()
       });
       for (const e of page.data) {
         allEvents.push({
+          eventId: e.eventId,
           eventType: e.eventType,
           correlationId: e.correlationId,
         });

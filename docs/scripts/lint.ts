@@ -13,7 +13,12 @@ import {
   rewriteCookbookUrl,
 } from '../lib/geistdocs/cookbook-source';
 import { resolveSectionChildren } from '../lib/geistdocs/section-children';
-import { source, v5Source } from '../lib/geistdocs/source';
+import {
+  source,
+  v5Source,
+  v5WorldsSource,
+  worldsSource,
+} from '../lib/geistdocs/source';
 import { getWorldIds } from '../lib/worlds-data';
 import nextConfig from '../next.config';
 
@@ -21,6 +26,7 @@ const DOCS_DIR = fileURLToPath(new URL('..', import.meta.url));
 const STATIC_APP_LINK_FILES = [
   'geistdocs.tsx',
   'app/[lang]/(home)/components/templates/index.tsx',
+  'app/[lang]/worlds/page.tsx',
 ];
 const KNOWN_APP_PATHS = new Set(['/', '/docs', '/cookbook', '/worlds']);
 
@@ -117,10 +123,27 @@ async function listFilesRecursive(dir: string, prefix = ''): Promise<string[]> {
 function buildSpaces(
   v4Pages: LoadedPage[],
   v5Pages: LoadedPage[],
+  worldsV4Pages: LoadedPage[],
+  worldsV5Pages: LoadedPage[],
   shared: Map<string, UrlMeta>
 ): { v4Space: Scanned; v5Space: Scanned } {
   const v4Space: Scanned = { urls: new Map(shared), fallbackUrls: [] };
   const v5Space: Scanned = { urls: new Map(shared), fallbackUrls: [] };
+
+  // World docs are versioned like the docs trees and rendered at /worlds/*
+  // (v4/current) and /v5/worlds/* (pre-release). They follow the same URL
+  // resolution model: on v5 pages, unversioned /worlds/... hrefs are
+  // rewritten to /v5/worlds/... at render time. Unlike the manifest-derived
+  // entries in getSharedUrls, these carry heading hashes.
+  for (const { page, hashes } of worldsV4Pages) {
+    v4Space.urls.set(page.url, { hashes });
+  }
+  for (const { page, hashes } of worldsV5Pages) {
+    const meta = { hashes };
+    v4Space.urls.set(`/v5${page.url}`, meta);
+    v5Space.urls.set(`/v5${page.url}`, meta);
+    v5Space.urls.set(page.url, meta);
+  }
 
   for (const { page, hashes } of v4Pages) {
     const meta = { hashes };
@@ -278,13 +301,22 @@ function checkFrontmatterRefs(
 }
 
 async function checkLinks() {
-  const [v4Pages, v5Pages, shared] = await Promise.all([
-    loadPages(source),
-    loadPages(v5Source),
-    getSharedUrls(),
-  ]);
+  const [v4Pages, v5Pages, worldsV4Pages, worldsV5Pages, shared] =
+    await Promise.all([
+      loadPages(source),
+      loadPages(v5Source),
+      loadPages(worldsSource),
+      loadPages(v5WorldsSource),
+      getSharedUrls(),
+    ]);
 
-  const { v4Space, v5Space } = buildSpaces(v4Pages, v5Pages, shared);
+  const { v4Space, v5Space } = buildSpaces(
+    v4Pages,
+    v5Pages,
+    worldsV4Pages,
+    worldsV5Pages,
+    shared
+  );
   await applyRedirects(v4Space, v5Space);
 
   const markdown = {
@@ -293,20 +325,38 @@ async function checkLinks() {
     },
   };
 
-  const [v4Errors, v5Errors] = await Promise.all([
-    validateFiles(toFileObjects(v4Pages), {
-      scanned: v4Space,
-      markdown,
-      checkRelativePaths: 'as-url',
-    }),
-    validateFiles(toFileObjects(v5Pages), {
-      scanned: v5Space,
-      markdown,
-      checkRelativePaths: 'as-url',
-    }),
-  ]);
+  const [v4Errors, v5Errors, worldsV4Errors, worldsV5Errors] =
+    await Promise.all([
+      validateFiles(toFileObjects(v4Pages), {
+        scanned: v4Space,
+        markdown,
+        checkRelativePaths: 'as-url',
+      }),
+      validateFiles(toFileObjects(v5Pages), {
+        scanned: v5Space,
+        markdown,
+        checkRelativePaths: 'as-url',
+      }),
+      // World pages resolve links version-relative, exactly like docs pages:
+      // v4 world pages against the v4 space, v5 world pages against the v5
+      // space (where unversioned /docs and /worlds hrefs are render-rewritten
+      // into the /v5 view).
+      validateFiles(toFileObjects(worldsV4Pages), {
+        scanned: v4Space,
+        markdown,
+        checkRelativePaths: 'as-url',
+      }),
+      validateFiles(toFileObjects(worldsV5Pages), {
+        scanned: v5Space,
+        markdown,
+        checkRelativePaths: 'as-url',
+      }),
+    ]);
 
-  printErrors([...v4Errors, ...v5Errors], true);
+  printErrors(
+    [...v4Errors, ...v5Errors, ...worldsV4Errors, ...worldsV5Errors],
+    true
+  );
 
   const frontmatterErrors: {
     href: string;
@@ -315,6 +365,8 @@ async function checkLinks() {
   }[] = [];
   checkFrontmatterRefs(v4Pages, v4Space, frontmatterErrors);
   checkFrontmatterRefs(v5Pages, v5Space, frontmatterErrors);
+  checkFrontmatterRefs(worldsV4Pages, v4Space, frontmatterErrors);
+  checkFrontmatterRefs(worldsV5Pages, v5Space, frontmatterErrors);
 
   if (frontmatterErrors.length > 0) {
     console.error('\nBroken frontmatter references:');
@@ -470,11 +522,16 @@ async function unresolvedMetaEntries(metaPath: string): Promise<string[]> {
 
 async function checkMetaEntriesResolve() {
   const errors: { sourcePath: string; entry: string }[] = [];
-  const contentRoot = join(DOCS_DIR, 'content/docs');
+  const contentRoots = [
+    join(DOCS_DIR, 'content/docs'),
+    join(DOCS_DIR, 'content/worlds'),
+  ];
 
-  for (const metaPath of await findFiles(contentRoot, 'meta.json')) {
-    for (const entry of await unresolvedMetaEntries(metaPath)) {
-      errors.push({ sourcePath: metaPath, entry });
+  for (const contentRoot of contentRoots) {
+    for (const metaPath of await findFiles(contentRoot, 'meta.json')) {
+      for (const entry of await unresolvedMetaEntries(metaPath)) {
+        errors.push({ sourcePath: metaPath, entry });
+      }
     }
   }
 
@@ -554,7 +611,8 @@ function isKnownInternalPath(href: string) {
 
   return (
     KNOWN_APP_PATHS.has(pathname) ||
-    source.getPageByHref(pathname) !== undefined
+    source.getPageByHref(pathname) !== undefined ||
+    worldsSource.getPageByHref(pathname) !== undefined
   );
 }
 

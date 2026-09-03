@@ -1,26 +1,26 @@
 import { z } from 'zod/v4';
 
-export type QueueKind = 'workflow' | 'step';
+export type QueueKind = 'workflow';
 
 /**
  * Pattern matching valid queue prefixes:
- * - `__wkf_workflow_` / `__wkf_step_` (default, no namespace)
- * - `__{namespace}_wkf_workflow_` / `__{namespace}_wkf_step_` (namespaced)
+ * - `__wkf_workflow_` (default, no namespace)
+ * - `__{namespace}_wkf_workflow_` (namespaced)
  *
  * Namespace must be lowercase alphanumeric starting with a letter.
  */
 export const QueuePrefix = z
   .string()
   .regex(
-    /^__(?:[a-z][a-z0-9]*_)?wkf_(?:workflow|step)_$/,
-    'Must match __wkf_{workflow|step}_ or __{namespace}_wkf_{workflow|step}_'
+    /^__(?:[a-z][a-z0-9]*_)?wkf_workflow_$/,
+    'Must match __wkf_workflow_ or __{namespace}_wkf_workflow_'
   );
 export type QueuePrefix = z.infer<typeof QueuePrefix>;
 
 export const ValidQueueName = z
   .string()
   .regex(
-    /^__(?:[a-z][a-z0-9]*_)?wkf_(?:workflow|step)_.+$/,
+    /^__(?:[a-z][a-z0-9]*_)?wkf_workflow_.+$/,
     'Must be a valid queue name with a recognized prefix'
   );
 export type ValidQueueName = z.infer<typeof ValidQueueName>;
@@ -41,7 +41,10 @@ export function resolveQueueNamespace(namespace?: string): string | undefined {
 }
 
 /**
- * Builds a queue topic prefix for the given kind and optional namespace.
+ * Builds the workflow queue topic prefix for an optional namespace.
+ *
+ * The literal kind argument is retained so existing workflow-only callers keep
+ * their meaning after removal of the former `'step'` variant.
  *
  * - `getQueueTopicPrefix('workflow')` → `'__wkf_workflow_'`
  * - `getQueueTopicPrefix('workflow', 'custom')` → `'__custom_wkf_workflow_'`
@@ -50,33 +53,21 @@ export function getQueueTopicPrefix(
   kind: QueueKind,
   namespace?: string
 ): QueuePrefix {
+  if (kind !== 'workflow') {
+    throw new Error(`Unsupported queue kind: ${kind}`);
+  }
   if (namespace !== undefined) {
     QueueNamespace.parse(namespace);
-    return `__${namespace}_wkf_${kind}_` as QueuePrefix;
+    return `__${namespace}_wkf_workflow_` as QueuePrefix;
   }
-  return `__wkf_${kind}_` as QueuePrefix;
-}
-
-export function getQueuePrefixKind(prefix: QueuePrefix): QueueKind {
-  const match = QueuePrefix.parse(prefix).match(
-    /^__(?:[a-z][a-z0-9]*_)?wkf_(workflow|step)_$/
-  );
-
-  if (!match) {
-    throw new Error(`Invalid queue prefix: ${prefix}`);
-  }
-
-  return match[1] as QueueKind;
+  return '__wkf_workflow_' as QueuePrefix;
 }
 
 export function parseQueueName(name: ValidQueueName): {
   prefix: QueuePrefix;
-  kind: QueueKind;
   id: string;
 } {
-  const match = name.match(
-    /^(__(?:[a-z][a-z0-9]*_)?wkf_(workflow|step)_)(.+)$/
-  );
+  const match = name.match(/^(__(?:[a-z][a-z0-9]*_)?wkf_workflow_)(.+)$/);
 
   if (!match) {
     throw new Error(`Invalid queue name: ${name}`);
@@ -84,8 +75,7 @@ export function parseQueueName(name: ValidQueueName): {
 
   return {
     prefix: QueuePrefix.parse(match[1]),
-    kind: match[2] as QueueKind,
-    id: match[3],
+    id: match[2],
   };
 }
 
@@ -103,7 +93,7 @@ export type TraceCarrier = z.infer<typeof TraceCarrierSchema>;
 
 /**
  * Run creation data carried through the queue for resilient start.
- * Only present on the first queue delivery — re-enqueues omit this.
+ * Only present on the first queue delivery: re-enqueues omit this.
  * When the runtime processes the message, it passes this data to the
  * run_started event so the server can create the run if it doesn't exist yet.
  */
@@ -121,8 +111,160 @@ export const RunInputSchema = z.object({
    * the original `run_created` attempt.
    */
   allowReservedAttributes: z.literal(true).optional(),
+  /**
+   * The environment the creating client's writes are attributed to, as
+   * reported by {@link World.getEnvironment} at `start()` time (on Vercel:
+   * `'production' | 'preview' | 'development'`).
+   *
+   * This exists so the resilient-start path can be checked for a tenant
+   * mismatch. `start()` writes `run_created` under the caller's own
+   * credentials while pinning the queue message to a deployment, and those
+   * two can disagree: if the message is consumed by a deployment in a
+   * DIFFERENT environment, that consumer's `run_started` re-creates the run
+   * under ITS tenant, so the same client-minted `wrun_` id ends up existing
+   * in two environments: one stuck pending forever, the other executing.
+   * Carrying the creator's environment lets the consumer compare it against
+   * its own and refuse the delivery instead of forking the run.
+   *
+   * Absent for worlds with no environment dimension (local, Postgres), and
+   * for older SDKs. Consumers must treat it as advisory and skip the check
+   * when it is missing.
+   */
+  environment: z.string().optional(),
 });
 export type RunInput = z.infer<typeof RunInputSchema>;
+
+/**
+ * Legacy lazy hook resume data carried through the queue alongside a workflow
+ * invocation. Older producers publish this invocation and write no event of
+ * their own. On receipt, a consumer that understands `hookInput` idempotently
+ * ensures the `hook_received` event exists (keyed by `resumeId`) before
+ * replaying, so repeated deliveries converge on exactly one event.
+ *
+ * The `payload` is the already-serialized (and possibly encrypted) resume
+ * payload, and on this path the queue message is its only carrier. Every write
+ * derived from this message therefore hashes to the same digest under the
+ * `(runId, resumeId)` constraint.
+ */
+/**
+ * Resilient step dispatch data carried through the queue alongside a
+ * step-execution message ({@link WorkflowInvokePayload.stepId}). Present when
+ * the producer (the suspension handler dispatching a newly created step)
+ * parallelized the `step_created` event write with the queue publish: the
+ * same shape as resilient start (`runInput`) and the resilient hook resume
+ * (`hookInput`).
+ *
+ * When the producer's `step_created` write fails transiently (429 / 5xx /
+ * transport), the step entity may not exist when this message is consumed. A
+ * consumer that understands `stepInput` idempotently re-ensures the
+ * `step_created` event, keyed by the message's `stepId` (the step's
+ * correlation id, unique per `(runId, correlationId)`), before executing, so
+ * the producer's write and the consumer's re-ensure converge on exactly one
+ * event.
+ *
+ * The `input` is the already-serialized (and possibly encrypted) step input:
+ * the identical bytes the producer also sent on the direct `events.create`.
+ */
+export const StepDispatchInputSchema = z.object({
+  /**
+   * The serialized step input, reused verbatim from the direct write. Always
+   * binary: producers only attach `stepInput` when the dehydrated input is a
+   * `Uint8Array` and the run's queue transport preserves bytes (CBOR).
+   * Validated here so a malformed or transport-mangled payload fails the
+   * message parse instead of being silently written into a `step_created` as
+   * non-binary data. `Buffer` is a `Uint8Array` subclass and passes.
+   */
+  input: z.custom<Uint8Array>((value) => value instanceof Uint8Array, {
+    message: 'stepInput.input must be a Uint8Array',
+  }),
+});
+export type StepDispatchInput = z.infer<typeof StepDispatchInputSchema>;
+
+export const HookResumeInputSchema = z.object({
+  /** Stable idempotency key minted once per `resumeHook()` call. */
+  resumeId: z.string(),
+  /** The hook being resumed. */
+  hookId: z.string(),
+  /**
+   * The hook's token, written into the `hook_received` event's `eventData` so
+   * the consumer's re-ensured event carries the same token the producer
+   * would. Replay validates `eventData.token` against the `createHook` token.
+   */
+  token: z.string(),
+  /** The serialized resume payload, reused verbatim from the direct write. */
+  payload: z.unknown(),
+  /**
+   * Content digest of `payload`, computed once by the producer over the
+   * serialized bytes and forwarded verbatim on both the direct `events.create`
+   * and this queue message. The consumer forwards it back to the server so both
+   * writers of the same `resumeId` record an identical digest on the
+   * `(runId, resumeId)` constraint, required because the v4 payload ref is not
+   * content-stable server-side.
+   */
+  payloadDigest: z.string(),
+  /**
+   * The deployment the run is pinned to, from the producer's resume context.
+   * Lets the consumer detect a misrouted delivery with a cheap ambient
+   * deployment-id comparison BEFORE its hoisted `hook_received` replay-preload
+   * write: only a detected mismatch pays for the authoritative run fetch and
+   * the deployment-affinity guard. Optional for queued-message compatibility:
+   * messages from older producers omit it and skip the pre-write
+   * check (the authoritative guard before replay still protects them).
+   */
+  deploymentId: z.string().optional(),
+});
+export type HookResumeInput = z.infer<typeof HookResumeInputSchema>;
+
+/**
+ * Wall-clock boundaries of a hook-triggered resume, carried on the queue
+ * message so the SDK can report end-to-end time-to-resume (TTR, entry into
+ * `resumeHook()` through to the first line of the next durable step) and its
+ * non-overlapping phase breakdown, as span attributes on that step's
+ * `step.execute` span. See `runtime/resume-latency.ts` in `@workflow/core`.
+ *
+ * Two groups of fields:
+ *
+ * - Producer fields (`resumeRequestedAtMs`, `queuePublishRequestedAtMs`,
+ *   `strategy`) are stamped by `resumeHook()` on the invocation message. They
+ *   ride along on a deployment-affinity re-route unchanged, so a misrouted
+ *   delivery's extra hop stays inside `queue_delivery`.
+ * - Consumer fields (`consumerStartedAtMs`, `replayStartedAtMs`,
+ *   `nextStepEncounteredAtMs`, `setupSource`) are filled in by the invocation
+ *   that replayed the resume, and ONLY when it dispatches the next durable
+ *   step to a separate queue invocation instead of running it inline. They let
+ *   that invocation report the same single TTR measurement.
+ *
+ * Every field is advisory and the whole object is optional, in all three
+ * directions that matter for a rolling deploy: a new producer's timing is
+ * ignored by an old consumer, a new consumer reports no TTR for an old
+ * message, and workflow-server never reads it at all.
+ *
+ * `strategy` and `setupSource` are deliberately typed as plain strings rather
+ * than enums: an unrecognized value from a newer producer must not fail the
+ * parse of the whole invocation payload (which would wedge the run), since it
+ * is only ever forwarded to a span attribute.
+ */
+export const HookResumeTimingSchema = z.object({
+  /** Epoch ms at entry into `resumeHook()`: the start of the TTR window. */
+  resumeRequestedAtMs: z.number(),
+  /** Epoch ms immediately before the queue publish was requested. */
+  queuePublishRequestedAtMs: z.number(),
+  /**
+   * Which `resumeHook()` dispatch path ran. Current producers always report
+   * `sequential` (durable write, then wake); older producers may report
+   * `lazy` or `parallel`.
+   */
+  strategy: z.string().optional(),
+  /** Epoch ms the final consumer's queue handler was entered. */
+  consumerStartedAtMs: z.number().optional(),
+  /** Epoch ms this invocation's first replay pass began. */
+  replayStartedAtMs: z.number().optional(),
+  /** Epoch ms replay first encountered a durable step after the resume. */
+  nextStepEncounteredAtMs: z.number().optional(),
+  /** How the consumer initialized replay state: see `ResumeSetupSource`. */
+  setupSource: z.string().optional(),
+});
+export type HookResumeTiming = z.infer<typeof HookResumeTimingSchema>;
 
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
@@ -135,43 +277,131 @@ export const WorkflowInvokePayloadSchema = z.object({
       count: z.number().int().positive(),
     })
     .optional(),
+  /**
+   * Re-invocations so far in this chain of stale-snapshot (precondition)
+   * rejections. Counted on the message because the in-process restart budget
+   * lives in the invocation closure and the queue's delivery count resets on
+   * every fresh enqueue, so without this a permanently fenced run would cycle
+   * forever instead of failing.
+   */
+  preconditionReinvocations: z.number().int().positive().optional(),
   /** Number of times this message has been re-enqueued due to server errors (5xx) */
   serverErrorRetryCount: z.number().int().optional(),
+  /** Number of times this message has been re-routed after a deployment mismatch */
+  deploymentMismatchRetryCount: z.number().int().nonnegative().optional(),
+  /**
+   * The wait this message is the delayed continuation for, and which attempt
+   * in that wait's chain it is.
+   *
+   * Present only on wait-continuation messages. It exists so the invocation a
+   * continuation wakes can recognize itself as that continuation: if the wait
+   * is STILL pending when it replays — the continuation arrived before its
+   * deadline — then its own idempotency key is already spent, and re-enqueueing
+   * under the same key is silently dropped by the world's dedupe window. The
+   * attempt number is what makes the next key fresh, so an early delivery
+   * costs one extra hop instead of losing the wait's timer permanently.
+   *
+   * Counted on the message for the same reason as
+   * {@link WorkflowInvokePayloadSchema.shape.preconditionReinvocations}: the
+   * budget has to survive across invocations, and a fresh enqueue resets
+   * anything the queue tracks itself. Absent on the first continuation, so a
+   * producer that predates this field is indistinguishable from attempt 0 and
+   * a consumer that predates it simply ignores the field.
+   */
+  /**
+   * `.catch(undefined)` for the reason `hookResumeTiming` has it: this field
+   * must never be able to fail the parse of the invocation payload. A
+   * malformed value would otherwise throw on every delivery of the message
+   * and burn the run's delivery budget. Degrading to `undefined` reads as
+   * "not a continuation", which costs at worst the pre-attempt behavior for
+   * that one wait rather than killing the run.
+   */
+  waitContinuation: z
+    .object({
+      correlationId: z.string(),
+      attempt: z.number().int().nonnegative(),
+    })
+    .optional()
+    .catch(undefined),
   /** Step ID for inline step execution in combined handler. If provided, the flow execution
    * will jump directly to execute the step with the given ID before doing an event replay. */
   stepId: z.string().optional(),
-  /** Step name, sent alongside stepId to avoid loading the event log just to resolve the name. */
+  /** Step name, sent alongside stepId to avoid loading the event log to resolve the name. */
   stepName: z.string().optional(),
   /** Run creation data, only present on the first queue delivery from start() */
   runInput: RunInputSchema.optional(),
-});
-
-export const StepInvokePayloadSchema = z.object({
-  workflowName: z.string(),
-  workflowRunId: z.string(),
-  workflowStartedAt: z.number(),
-  stepId: z.string(),
-  traceCarrier: TraceCarrierSchema.optional(),
-  requestedAt: z.coerce.date().optional(),
+  /**
+   * Legacy lazy hook resume data. A consumer that understands this field
+   * idempotently ensures the `hook_received` event exists (keyed by `resumeId`)
+   * before replaying.
+   */
+  hookInput: HookResumeInputSchema.optional(),
+  /**
+   * Resilient step dispatch data, only present alongside `stepId` when the
+   * producer parallelized the `step_created` write with this queue publish. A
+   * consumer that understands this field idempotently ensures the
+   * `step_created` event exists (keyed by `stepId`) before executing the step.
+   */
+  stepInput: StepDispatchInputSchema.optional(),
+  /**
+   * Hook-resume TTR timing. Present on both `resumeHook()` dispatch paths
+   * (unlike legacy `hookInput`), and
+   * forwarded onto a dispatched step message when the resuming invocation
+   * hands the next durable step to another invocation. Purely observational.
+   * See {@link HookResumeTimingSchema}.
+   *
+   * `.catch(undefined)` because this field must never be able to fail the
+   * parse of the invocation payload: a malformed value (a NaN boundary, a
+   * shape change from a future producer) would otherwise throw on every
+   * delivery of that message and burn the run's delivery budget over a
+   * telemetry field. Anything unparseable degrades to "no measurement".
+   */
+  hookResumeTiming: HookResumeTimingSchema.optional().catch(undefined),
 });
 
 export type WorkflowInvokePayload = z.infer<typeof WorkflowInvokePayloadSchema>;
-export type StepInvokePayload = z.infer<typeof StepInvokePayloadSchema>;
 export type HealthCheckPayload = z.infer<typeof HealthCheckPayloadSchema>;
 
 /**
  * Health check payload - used to verify that the queue pipeline
- * can deliver messages to workflow/step endpoints.
+ * can deliver messages to the combined workflow endpoint.
  */
 export const HealthCheckPayloadSchema = z.object({
   __healthCheck: z.literal(true),
   correlationId: z.string(),
+  /**
+   * The run id the caller is about to create, when the probe is being used to
+   * prepare a cross-deployment `start()`.
+   *
+   * The responder runs inside the target deployment, so it can derive that
+   * run's public key locally from its own key material and return it in the
+   * probe response. That lets the caller seal the workflow arguments without
+   * a separate key lookup. Absent for probes issued for other reasons (CLI
+   * health command, dashboard), in which case no key is returned.
+   */
+  runId: z.string().optional(),
 });
 
+/**
+ * Health check MUST come first.
+ *
+ * Zod unions return the first matching member's output, and `z.object` strips
+ * keys the matching member doesn't declare. `HealthCheckPayloadSchema` carries
+ * an optional `runId`, so a probe payload also satisfies
+ * `WorkflowInvokePayloadSchema` (whose only required field is `runId`). With
+ * the invoke member first, parsing a runId-bearing probe silently dropped
+ * `__healthCheck` and `correlationId`, and the runtime (which dispatches on
+ * `__healthCheck` before falling through to the invoke schema) reinterpreted
+ * the probe as "replay this run". That made the queue handler POST
+ * `run_started` for a run that doesn't exist yet (404), fail, and retry
+ * forever, so the probe never answered and `start()` timed out.
+ *
+ * Ordering health check first is safe in the other direction: it requires
+ * `__healthCheck: true`, which an invoke payload never carries.
+ */
 export const QueuePayloadSchema = z.union([
-  WorkflowInvokePayloadSchema,
-  StepInvokePayloadSchema,
   HealthCheckPayloadSchema,
+  WorkflowInvokePayloadSchema,
 ]);
 export type QueuePayload = z.infer<typeof QueuePayloadSchema>;
 
@@ -192,13 +422,20 @@ export interface QueueOptions {
    * `@vercel/queue` client uses to route the message; when omitted, the
    * region is resolved from the payload's tagged run ID, then from the
    * `VERCEL_REGION` environment variable, and finally defaults to `'iad1'`
-   * (the pre-regional-routing behaviour).
+   * (the pre-regional-routing behavior).
    */
   region?: string;
 }
 
 export interface Queue {
   getDeploymentId(): Promise<string>;
+
+  /**
+   * Returns true only when a queue error definitively means the explicitly
+   * targeted deployment cannot receive the message. Unknown and transient
+   * errors must return false so the current delivery can be retried safely.
+   */
+  isDeploymentUnavailableError?(error: unknown): boolean;
 
   /**
    * Enqueues a message to the specified queue.
@@ -215,6 +452,7 @@ export interface Queue {
 
   /**
    * Creates an HTTP queue handler for processing messages from a specific queue.
+   * A rejected handler must retry the same message with an incremented attempt.
    *
    * `meta.messageId` SHOULD be stable across redeliveries of the same message
    * (one ID per enqueued message, reused on every delivery attempt). The
@@ -222,7 +460,7 @@ export interface Queue {
    * `step_started` records the handling invocation's messageId, and only a
    * delivery of that same message may re-execute the step before the
    * ownership lease expires (crash recovery via queue redelivery). A World
-   * whose queue mints a fresh ID per delivery degrades gracefully — owner
+   * whose queue mints a fresh ID per delivery degrades gracefully: owner
    * redeliveries fall back to the delayed-backstop path instead of executing
    * immediately, adding recovery latency but never wedging or duplicating.
    */

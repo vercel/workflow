@@ -63,7 +63,7 @@ export const WorkflowRunBaseSchema = z.object({
    * ```
    */
   workflowName: z.string(),
-  // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
+  // Optional in database for backward compatibility, defaults to 1 (legacy) when reading
   specVersion: z.number().optional(),
   executionContext: z.record(z.string(), z.any()).optional(),
   input: SerializedDataSchema.optional(),
@@ -91,15 +91,35 @@ export const WorkflowRunBaseSchema = z.object({
    *
    * Defaults to `{}` after schema parsing so consumers always receive
    * a record regardless of world. World adapters need not initialize
-   * the field on disk — `world-local` JSON files written before this
+   * the field on disk: `world-local` JSON files written before this
    * field existed, and rows from any other adapter that omits the
    * column, both read as `{}` after Zod parses them.
    *
    * EXPERIMENTAL (MVP): the full Workflow Attributes feature replaces
-   * the direct-mutation MVP path with an event-sourced model — see
+   * the direct-mutation MVP path with an event-sourced model. See
    * the attributes-mvp changelog entry.
    */
   attributes: z.record(z.string(), z.string()).default({}),
+  /**
+   * The run's X25519 public key, base64-encoded (~44 chars).
+   *
+   * Lets any party that can read this run seal a payload *to* it without
+   * being able to read the run's data. This is used for cross-run writes
+   * such as a hook resumption from another deployment, or a child workflow
+   * writing into a forwarded stream. The matching private scalar is never
+   * stored: it is re-derived on demand from the deployment's own key
+   * material, so this field is not secret and its presence does not weaken
+   * the run's confidentiality.
+   *
+   * Stamped at run creation by SDKs that support sealed (`encp`) envelopes.
+   * **Presence is the writer-side gate**: a run only carries a public key if
+   * the runtime that created it could also open sealed payloads, and runs are
+   * pinned to their creating deployment. Writers therefore seal iff this
+   * field is set, and otherwise fall back to fetching the symmetric per-run
+   * key. Absent on runs created by older SDKs, and on worlds that do not
+   * implement `getEncryptionKeyForRun` (encryption disabled).
+   */
+  encryptionPublicKey: z.string().optional(),
   expiredAt: z.coerce.date().optional(),
   startedAt: z.coerce.date().optional(),
   completedAt: z.coerce.date().optional(),
@@ -126,7 +146,7 @@ export const WorkflowRunSchema = z.discriminatedUnion('status', [
   // Completed state - output can be v1 or v2 format
   WorkflowRunBaseSchema.extend({
     status: z.literal('completed'),
-    output: SerializedDataSchema,
+    output: SerializedDataSchema.optional(),
     error: z.undefined().optional(),
     completedAt: z.coerce.date(),
   }),
@@ -134,13 +154,15 @@ export const WorkflowRunSchema = z.discriminatedUnion('status', [
   WorkflowRunBaseSchema.extend({
     status: z.literal('failed'),
     output: z.undefined().optional(),
-    error: SerializedDataSchema,
+    error: SerializedDataSchema.optional(),
     completedAt: z.coerce.date(),
   }),
 ]);
 
 // Inferred types
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
+/** A workflow run with its first start time materialized. */
+export type StartedWorkflowRun = WorkflowRun & { startedAt: Date };
 
 /**
  * WorkflowRun with input/output fields excluded (when resolveData='none').
@@ -166,6 +188,28 @@ export interface GetWorkflowRunParams {
   resolveData?: ResolveData;
 }
 
+/**
+ * Params for the optional `runs.waitForTerminalStatus` long poll.
+ */
+export interface WaitForTerminalRunStatusParams extends GetWorkflowRunParams {
+  /**
+   * How long the caller is willing to wait, in milliseconds. Treat it as an
+   * upper bound on the wait, not a promise about the duration: the call
+   * resolves as soon as the run is terminal, and a World may also resolve
+   * early with a non-terminal snapshot (see
+   * {@link Storage.runs.waitForTerminalStatus}).
+   *
+   * Implementations clamp this to whatever their backend can hold open.
+   */
+  timeoutMs?: number;
+
+  /**
+   * Abandon the wait when this signal aborts. Implementations that cannot
+   * observe it may ignore it; callers must not rely on it to bound the call.
+   */
+  signal?: AbortSignal;
+}
+
 export interface ListWorkflowRunsParams {
   workflowName?: string;
   status?: WorkflowRunStatus;
@@ -176,3 +220,84 @@ export interface ListWorkflowRunsParams {
 export interface CancelWorkflowRunParams {
   resolveData?: ResolveData;
 }
+
+/**
+ * Maximum number of run IDs that a single bulk cancellation request may
+ * carry. Kept small enough that the backend can process one request
+ * synchronously without an asynchronous job or cursor.
+ */
+export const BULK_CANCEL_MAX_RUN_IDS = 500;
+
+/**
+ * Request payload for cancelling many runs in a single operation.
+ *
+ * `runIds` must contain 1–{@link BULK_CANCEL_MAX_RUN_IDS} unique IDs.
+ * `cancelReason` (max 512 chars) is recorded on each run_cancelled event,
+ * mirroring the single-run {@link CancelRunOptions.cancelReason}.
+ */
+export const BulkCancelWorkflowRunsRequestSchema = z.object({
+  runIds: z
+    .array(z.string())
+    .min(1)
+    .max(BULK_CANCEL_MAX_RUN_IDS)
+    .refine((ids) => new Set(ids).size === ids.length, {
+      message: 'runIds must not contain duplicates',
+    }),
+  cancelReason: z.string().max(512).optional(),
+});
+export type BulkCancelWorkflowRunsRequest = z.infer<
+  typeof BulkCancelWorkflowRunsRequestSchema
+>;
+
+/**
+ * Per-run outcome of a bulk cancellation.
+ *
+ * - `cancelled`: the run was transitioned to cancelled by this request.
+ * - `already_cancelled`: the run was already cancelled (idempotent success).
+ * - `not_cancellable`: the run is in a terminal, non-cancellable state
+ *   (e.g. `completed`/`failed`); `status` reports the observed status.
+ * - `not_found`: no run exists for this ID.
+ * - `failed`: cancellation failed; `code` is a machine-readable error code
+ *   and `retryable` indicates whether retrying may succeed.
+ */
+export const BulkCancelWorkflowRunResultSchema = z.discriminatedUnion(
+  'outcome',
+  [
+    z.object({ runId: z.string(), outcome: z.literal('cancelled') }),
+    z.object({ runId: z.string(), outcome: z.literal('already_cancelled') }),
+    z.object({
+      runId: z.string(),
+      outcome: z.literal('not_cancellable'),
+      status: z.string(),
+    }),
+    z.object({ runId: z.string(), outcome: z.literal('not_found') }),
+    z.object({
+      runId: z.string(),
+      outcome: z.literal('failed'),
+      code: z.string(),
+      retryable: z.boolean(),
+    }),
+  ]
+);
+export type BulkCancelWorkflowRunResult = z.infer<
+  typeof BulkCancelWorkflowRunResultSchema
+>;
+
+/**
+ * Aggregate result of a bulk cancellation. `results` preserves the order of
+ * the requested `runIds`; `summary` counts each outcome.
+ */
+export const BulkCancelWorkflowRunsResultSchema = z.object({
+  summary: z.object({
+    requested: z.number(),
+    cancelled: z.number(),
+    alreadyCancelled: z.number(),
+    notCancellable: z.number(),
+    notFound: z.number(),
+    failed: z.number(),
+  }),
+  results: z.array(BulkCancelWorkflowRunResultSchema),
+});
+export type BulkCancelWorkflowRunsResult = z.infer<
+  typeof BulkCancelWorkflowRunsResultSchema
+>;

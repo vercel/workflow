@@ -17,7 +17,7 @@
  *
  * ## Adding a new non-format capability
  *
- * Some capabilities aren't serialization format prefixes — e.g.
+ * Some capabilities aren't serialization format prefixes: e.g.
  * byte-stream wire framing is an envelope around chunks rather than
  * a content format. For those, add a boolean field to `RunCapabilities`
  * and an entry in `CAPABILITY_VERSION_TABLE` below.
@@ -30,7 +30,19 @@
  * - `framedByteStreams` (wire-level chunk framing for byte streams): added in `5.0.0-beta.15`
  * - `gzip` (gzip payload compression): added in `5.0.0-beta.18`
  * - `zstd` (zstd payload compression, preferred codec): added in `5.0.0-beta.18`
- *   alongside gzip — they co-ship, so any run that can read one can read both.
+ *   alongside gzip; they co-ship, so any run that can read one can read both.
+ * - `encp` (X25519 sealed-box encryption for cross-run writes): added in
+ *   `5.0.0-beta.37`. Note that producers do **not** gate `encp` on this table:
+ *   they gate on the presence of `encryptionPublicKey` on the target run,
+ *   which a run only carries if the deployment that created it could also
+ *   open `encp`. The entry exists so the capability set stays a complete,
+ *   auditable description of a run's decoding ability.
+ * - Hook-resume consumer protocol ("consumer re-ensures `hook_received` from
+ *   `hookInput`"): deliberately NOT tracked here. Rather than predict a
+ *   release cutoff, the run's creating deployment stamps an explicit
+ *   `hookResumeInputVersion` execution-context marker (mirrored onto the
+ *   hook's resumeContext by the server); older producers gate their lazy path
+ *   on that marker.
  */
 
 import semver from 'semver';
@@ -54,7 +66,7 @@ export interface RunCapabilities {
    * Whether the target run can decode wire-framed byte streams. When true,
    * byte streams (`type: 'bytes'` ReadableStreams passed across boundaries)
    * are wrapped in a length-prefixed frame envelope on the wire so the
-   * reader can identify chunk boundaries — which enables auto-reconnect
+   * reader can identify chunk boundaries, which enables auto-reconnect
    * on transient stream errors. When false, byte streams are written as
    * raw bytes (the legacy format) for compatibility with older runs.
    */
@@ -76,9 +88,15 @@ const FORMAT_VERSION_TABLE: ReadonlyArray<{
   // bump to the next beta. A too-low cutoff makes new producers write
   // compressed payloads to consumers that cannot decompress them; too-high
   // merely delays the optimization (safe). gzip and zstd ship together, so
-  // they share a min version — a run that can read one can read both.
+  // they share a min version: a run that can read one can read both.
   { format: SerializationFormat.GZIP, minVersion: '5.0.0-beta.18' },
   { format: SerializationFormat.ZSTD, minVersion: '5.0.0-beta.18' },
+  // TODO(release): verify this matches the actual version that ships sealed-box
+  // encryption. If a "Version Packages (beta)" PR merges before this change,
+  // bump to the next beta. Unlike the entries above, a wrong cutoff here is
+  // not a correctness hazard: producers gate `encp` on the target run carrying
+  // an `encryptionPublicKey`, not on this table (see History above).
+  { format: SerializationFormat.SEALED, minVersion: '5.0.0-beta.37' },
   // Future entries:
   // { format: SerializationFormat.CBOR, minVersion: '5.x.y' },
   // { format: SerializationFormat.ENCRYPTED_V2, minVersion: '5.x.y' },
@@ -91,12 +109,21 @@ const FORMAT_VERSION_TABLE: ReadonlyArray<{
 const CAPABILITY_VERSION_TABLE: ReadonlyArray<{
   capability: keyof Omit<RunCapabilities, 'supportedFormats'>;
   minVersion: string;
+}> = [
   // TODO(release): verify this matches the actual version that ships byte-stream
   // framing. If a "Version Packages (beta)" PR merges before this change, bump
   // to the next beta. A too-low cutoff makes new producers write framed bytes to
   // consumers that cannot unframe them (silent corruption); too-high merely
   // delays the optimization (safe).
-}> = [{ capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' }];
+  { capability: 'framedByteStreams', minVersion: '5.0.0-beta.15' },
+  // NOTE: the hook-resume consumer protocol ("does the consumer re-ensure
+  // `hook_received` from the queue message's `hookInput`?") is intentionally
+  // NOT gated here. A version-compare against a predicted release cutoff is a
+  // guess; instead the run's creating deployment stamps an explicit
+  // `hookResumeInputVersion` marker into its execution context, which the
+  // server mirrors onto the hook's resumeContext. Older producers gate their
+  // lazy path on that marker.
+];
 
 /**
  * The set of formats supported by all specVersion 2 runs, regardless of
@@ -112,7 +139,7 @@ const BASELINE_FORMATS: ReadonlySet<SerializationFormatType> = new Set([
  * its `@workflow/core` version string (from `executionContext.workflowCoreVersion`).
  *
  * When the version is `undefined`, not a string, or not a valid semver string
- * (e.g. very old runs that predate the field, or corrupted metadata),
+ * (e.g. older runs that predate the field, or corrupted metadata),
  * we assume the most conservative capabilities (baseline formats only,
  * non-format capabilities all `false`).
  */

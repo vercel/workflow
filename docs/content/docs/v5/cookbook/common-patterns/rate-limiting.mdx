@@ -67,7 +67,7 @@ async function upsertToWarehouse(contactId: string, contact: unknown) {
 }
 ```
 
-## Pattern: Exponential backoff
+## Pattern: exponential backoff
 
 Use `getStepMetadata()` to access the current attempt number and calculate increasing delays:
 
@@ -90,7 +90,7 @@ async function callFlakeyApi(endpoint: string) {
 }
 ```
 
-## Pattern: Circuit breaker with sleep
+## Pattern: circuit breaker with sleep
 
 When a dependency is completely down, stop hitting it for a cooldown period using `sleep()`, then probe with a single test request:
 
@@ -138,7 +138,7 @@ async function callService(requestNum: number): Promise<boolean> {
 }
 ```
 
-## Pattern: Custom max retries
+## Pattern: custom max retries
 
 Override the default retry count (3) for steps that need more or fewer attempts:
 

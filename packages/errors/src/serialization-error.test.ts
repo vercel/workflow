@@ -46,7 +46,7 @@ describe('SerializationError', () => {
   test('is fatal — FatalError.is() short-circuits retry loop', () => {
     // Serialization failures are deterministic. Retrying a step that
     // returned a non-POJO will produce the same error on every attempt,
-    // so the step handler should not burn the retry budget. We opt in
+    // so the step executor should not burn the retry budget. We opt in
     // via a `fatal: true` own property that FatalError.is() recognizes.
     const err = new SerializationError('boom');
     expect(err.fatal).toBe(true);

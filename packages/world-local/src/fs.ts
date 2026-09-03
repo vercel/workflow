@@ -1,11 +1,33 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import type { PaginatedResponse } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
+import {
+  isUnwritableDirCode,
+  UnwritableDataDirError,
+} from './build-target-mismatch.js';
 
-const ulid = monotonicFactory(() => Math.random());
+/**
+ * Temp-file suffixes for atomic writes, and the write-path caches below.
+ *
+ * On `globalThis` rather than at module scope because a bundler can put several
+ * copies of this file in one process (see `globalSingleton`): per-copy monotonic
+ * factories can hand two writers the same suffix in the same millisecond, and
+ * per-copy caches make the syscalls they exist to skip happen once per copy.
+ */
+const fsState = globalSingleton('@workflow/world-local//fs', 1, () => ({
+  ulid: monotonicFactory(() => Math.random()),
+  // In-memory cache of created files to avoid expensive fs.access() calls.
+  // Safe because we only write once per file path (no overwrites without an
+  // explicit flag).
+  createdFilesCache: new Set<string>(),
+  // Writes repeatedly target a small fixed set of entity directories. Once one
+  // exists in this process, avoid another recursive mkdir syscall per event.
+  createdDirectoriesCache: new Set<string>(),
+}));
 
 /**
  * Truncate a possibly-untrusted value for inclusion in an error message.
@@ -100,7 +122,7 @@ const isWindows = process.platform === 'win32';
  * are briefly locked by another process or antivirus. This wrapper adds
  * exponential backoff retry logic. On non-Windows platforms, executes directly.
  */
-async function withWindowsRetry<T>(
+export async function withWindowsRetry<T>(
   fn: () => Promise<T>,
   maxRetries = 5
 ): Promise<T> {
@@ -125,19 +147,12 @@ async function withWindowsRetry<T>(
   throw new Error('Retry loop exited unexpectedly');
 }
 
-// In-memory cache of created files to avoid expensive fs.access() calls
-// This is safe because we only write once per file path (no overwrites without explicit flag)
-const createdFilesCache = new Set<string>();
-// Writes repeatedly target a small fixed set of entity directories. Once one
-// exists in this process, avoid another recursive mkdir syscall per event.
-const createdDirectoriesCache = new Set<string>();
-
 /**
  * Clear write-path caches. Useful for testing or when files are deleted externally.
  */
 export function clearCreatedFilesCache(): void {
-  createdFilesCache.clear();
-  createdDirectoriesCache.clear();
+  fsState.createdFilesCache.clear();
+  fsState.createdDirectoriesCache.clear();
 }
 
 export { ulidToDate } from '@workflow/world';
@@ -175,8 +190,8 @@ export function hasTag(fileId: string, tag: string): boolean {
  *
  * An untagged world's reads (`readJSONWithFallback`) can only resolve untagged
  * files, so when it lists entities for recovery it must skip files tagged by
- * other worlds (e.g. the vitest harness) sharing the same data directory —
- * otherwise it would re-enqueue runs it cannot subsequently read back.
+ * other worlds (e.g. the vitest harness) sharing the same data directory.
+ * Otherwise it would re-enqueue runs it cannot subsequently read back.
  */
 export function isUntagged(fileId: string): boolean {
   return !TAG_PATTERN.test(fileId);
@@ -270,14 +285,35 @@ export async function listTaggedFilesByExtension(
 
 export async function ensureDir(dirPath: string): Promise<void> {
   const resolvedPath = path.resolve(dirPath);
-  if (createdDirectoriesCache.has(resolvedPath)) {
+  if (fsState.createdDirectoriesCache.has(resolvedPath)) {
     return;
   }
   try {
     await fs.mkdir(resolvedPath, { recursive: true });
-    createdDirectoriesCache.add(resolvedPath);
-  } catch (_error) {
+    fsState.createdDirectoriesCache.add(resolvedPath);
+  } catch (error) {
+    // A filesystem that refuses the directory outright will refuse every write
+    // into it too, and the caller's write would surface as a confusing ENOENT
+    // on the file rather than a missing directory. Report it here instead,
+    // unless the directory turns out to exist, in which case the failure was
+    // incidental (a race, or an unsearchable parent that reads fine) and the
+    // historical "ignore if already exists" behavior applies.
+    const code = (error as NodeJS.ErrnoException).code;
+    if (
+      isUnwritableDirCode(code) &&
+      !(await isExistingDirectory(resolvedPath))
+    ) {
+      throw new UnwritableDataDirError(resolvedPath, code as string);
+    }
     // Ignore if already exists
+  }
+}
+
+async function isExistingDirectory(dirPath: string): Promise<boolean> {
+  try {
+    return (await fs.stat(dirPath)).isDirectory();
+  } catch {
+    return false;
   }
 }
 
@@ -295,7 +331,7 @@ async function withEnsuredDirectory<T>(
 
     // A dev server may outlive an external cleanup of its data directory.
     // Forget the cached directory and retry once after recreating it.
-    createdDirectoriesCache.delete(path.resolve(dirPath));
+    fsState.createdDirectoriesCache.delete(path.resolve(dirPath));
     await ensureDir(dirPath);
     return operation();
   }
@@ -345,8 +381,8 @@ export async function writeJSON(
 /**
  * Writes data to a file using atomic write-rename pattern.
  *
- * Note: While this function uses temp files to avoid partial writes,
- * it does not provide protection against concurrent writes from multiple
+ * This function uses temporary files to avoid partial writes, but it does not
+ * protect against concurrent writes from multiple
  * processes. In a multi-writer scenario, the last writer wins.
  * For production use with multiple writers, consider using a proper
  * database or locking mechanism.
@@ -359,7 +395,7 @@ export async function write(
   if (!opts?.overwrite) {
     // Fast path: check in-memory cache first to avoid expensive fs.access() calls
     // This provides significant performance improvement when creating many files
-    if (createdFilesCache.has(filePath)) {
+    if (fsState.createdFilesCache.has(filePath)) {
       throw new EntityConflictError(
         `File ${filePath} already exists and 'overwrite' is false`
       );
@@ -369,7 +405,7 @@ export async function write(
     try {
       await fs.access(filePath);
       // File exists on disk, add to cache for future checks
-      createdFilesCache.add(filePath);
+      fsState.createdFilesCache.add(filePath);
       throw new EntityConflictError(
         `File ${filePath} already exists and 'overwrite' is false`
       );
@@ -381,7 +417,7 @@ export async function write(
     }
   }
 
-  const tempPath = `${filePath}.tmp.${ulid()}`;
+  const tempPath = `${filePath}.tmp.${fsState.ulid()}`;
   let tempFileCreated = false;
   try {
     await withEnsuredDirectory(path.dirname(filePath), async () => {
@@ -390,7 +426,7 @@ export async function write(
       await withWindowsRetry(() => fs.rename(tempPath, filePath));
     });
     // Track this file in cache so future writes know it exists
-    createdFilesCache.add(filePath);
+    fsState.createdFilesCache.add(filePath);
   } catch (error) {
     // Only try to clean up temp file if it was actually created
     if (tempFileCreated) {
@@ -433,7 +469,12 @@ export async function readFirstByte(
 
 export async function deleteJSON(filePath: string): Promise<void> {
   try {
-    await fs.unlink(filePath);
+    // On Windows, a concurrent reader briefly holding the file open makes
+    // unlink fail with EPERM (share violation), so retry like the other
+    // mutation paths in this module. A reader's window is milliseconds;
+    // without the retry a transient EPERM surfaces as a failed operation
+    // (e.g. run cancellation via deleteAllHooksForRun).
+    await withWindowsRetry(() => fs.unlink(filePath));
   } catch (error) {
     if ((error as any).code !== 'ENOENT') throw error;
   }
@@ -452,7 +493,7 @@ export async function writeExclusive(
   filePath: string,
   data: string
 ): Promise<boolean> {
-  const tempPath = `${filePath}.tmp.${ulid()}`;
+  const tempPath = `${filePath}.tmp.${fsState.ulid()}`;
   let tempFileCreated = false;
 
   try {
@@ -474,6 +515,42 @@ export async function writeExclusive(
     if (tempFileCreated) {
       await withWindowsRetry(() => fs.unlink(tempPath), 3).catch(() => {});
     }
+  }
+}
+
+/**
+ * Atomically promote a previously staged file (see {@link writeExclusive})
+ * to its visible destination via a hard link. The single `link(2)` call is
+ * the linearization point:
+ *
+ *   - `'linked'`:  this call made the destination visible.
+ *   - `'exists'`:  another writer published the destination first
+ *                   (same meaning as `writeExclusive` returning false).
+ *   - `'missing'`: the staged file was concurrently unlinked, so the
+ *                   promotion atomically lost to whoever removed it and
+ *                   the destination was never made visible.
+ *
+ * The staged file is left in place on success; callers unlink it
+ * themselves (a leftover staged file is harmless: it is not at a
+ * reader-visible path).
+ */
+export async function promoteExclusive(
+  stagedPath: string,
+  filePath: string
+): Promise<'linked' | 'exists' | 'missing'> {
+  try {
+    await withEnsuredDirectory(path.dirname(filePath), () =>
+      withWindowsRetry(() => fs.link(stagedPath, filePath))
+    );
+    return 'linked';
+  } catch (error: any) {
+    if (error.code === 'EEXIST') {
+      return 'exists';
+    }
+    if (error.code === 'ENOENT') {
+      return 'missing';
+    }
+    throw error;
   }
 }
 
@@ -507,30 +584,77 @@ interface PaginatedFileSystemQueryConfig<T> {
   cachedItems?: ReadonlyMap<string, T>;
   filePrefix?: string;
   fileIdFilter?: (fileId: string) => boolean;
-  filter?: (item: T) => boolean;
+  /** Runs concurrently for each read batch and must not mutate storage. */
+  filter?: (item: T) => boolean | Promise<boolean>;
   sortOrder?: 'asc' | 'desc';
   limit?: number;
   cursor?: string;
   getCreatedAt(filename: string): Date | null;
   getId?(item: T): string;
+  /**
+   * Opt an item out of `createdAt` ordering in favor of a total order carried
+   * by the item itself.
+   *
+   * Slot-numbered events are the case this exists for: the slot is assigned
+   * at the publish, which is the linearization point, while `createdAt` is
+   * stamped when the request arrives. A writer that loses a slot race and
+   * bumps therefore lands at a higher slot with an older `createdAt`, and
+   * ordering by time would hand back a log whose order contradicts the
+   * positions the World assigned. Return null to keep the `createdAt`
+   * ordering (ULID-numbered events, and every other entity).
+   */
+  getSortKey?(item: T): string | null;
+  /**
+   * The same key as {@link getSortKey}, read off the file id instead of the
+   * item, so a sort-key cursor can skip files without opening them.
+   *
+   * Without it a sort-key scan has no filename-level prefilter and every page
+   * loads and parses every file for the run, which makes walking a long event
+   * log quadratic. Return null when the file id does not carry the key; those
+   * files are kept and decided by the item-level filter.
+   */
+  getSortKeyFromFileId?(fileId: string): string | null;
 }
-// Cursor format: "timestamp|id" for tie-breaking
+
+// Cursor formats:
+//   "timestamp|id":  createdAt order, id for tie-breaking
+//   "key:<sortKey>": sort-key order (see getSortKey)
+// A run never mixes the two, so a cursor never has to cross formats mid-scan.
+export const SORT_KEY_CURSOR_PREFIX = 'key:';
+
 interface ParsedCursor {
   timestamp: Date;
   id: string | null;
+  sortKey: string | null;
 }
 
 function parseCursor(cursor: string | undefined): ParsedCursor | null {
   if (!cursor) return null;
 
+  if (cursor.startsWith(SORT_KEY_CURSOR_PREFIX)) {
+    return {
+      timestamp: new Date(0),
+      id: null,
+      sortKey: cursor.slice(SORT_KEY_CURSOR_PREFIX.length),
+    };
+  }
+
   const parts = cursor.split('|');
   return {
     timestamp: new Date(parts[0]),
     id: parts[1] || null,
+    sortKey: null,
   };
 }
 
-function createCursor(timestamp: Date, id: string | undefined): string {
+function createCursor(
+  timestamp: Date,
+  id: string | undefined,
+  sortKey?: string | null
+): string {
+  if (sortKey) {
+    return `${SORT_KEY_CURSOR_PREFIX}${sortKey}`;
+  }
   return id ? `${timestamp.toISOString()}|${id}` : timestamp.toISOString();
 }
 
@@ -549,12 +673,14 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     cursor,
     getCreatedAt,
     getId,
+    getSortKey,
+    getSortKeyFromFileId,
   } = config;
 
   // Validate filePrefix (typically `${runId}-`) so request-derived prefixes
   // consistently reject unsafe characters. filePrefix is only used below to
-  // filter readdir() results by prefix — it doesn't participate in path
-  // construction — but keeping the validation rule uniform across the
+  // filter readdir() results by prefix (it doesn't participate in path
+  // construction), but keeping the validation rule uniform across the
   // storage layer avoids special cases and catches bad values earlier.
   if (filePrefix !== undefined) {
     assertSafeEntityId('filePrefix', filePrefix);
@@ -577,7 +703,20 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
   const parsedCursor = parseCursor(cursor);
   let candidateFileIds = filteredFileIds;
 
-  if (parsedCursor) {
+  if (parsedCursor?.sortKey && getSortKeyFromFileId) {
+    // Sort-key cursor: the filename carries the key, so the same strict
+    // comparison the item-level filter below applies can run here, before any
+    // file is read.
+    const cursorSortKey = parsedCursor.sortKey;
+    candidateFileIds = filteredFileIds.filter((fileId) => {
+      const key = getSortKeyFromFileId(fileId);
+      if (key === null) {
+        return true;
+      }
+      const comparison = key.localeCompare(cursorSortKey);
+      return sortOrder === 'desc' ? comparison < 0 : comparison > 0;
+    });
+  } else if (parsedCursor && !parsedCursor.sortKey) {
     candidateFileIds = filteredFileIds.filter((fileId) => {
       const filenameDate = getCreatedAt(`${fileId}.json`);
       if (filenameDate) {
@@ -623,16 +762,18 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     const loadedBatch = await Promise.all(
       batch.map(async (fileId): Promise<T | null> => {
         const filePath = path.join(resolvedDirectory, `${fileId}.json`);
+        let item: T | null;
         try {
           const cachedItem = cachedItems?.get(filePath);
-          return cachedItem === undefined
-            ? await readJSON(filePath, schema)
-            : structuredClone(cachedItem);
+          item =
+            cachedItem === undefined
+              ? await readJSON(filePath, schema)
+              : structuredClone(cachedItem);
         } catch (error: unknown) {
           // We don't expect zod errors to happen, but if the JSON does get malformed,
           // we skip the item. Preferably, we'd have a way to mark items as malformed,
           // so that the UI can display them as such, with richer messaging. In the meantime,
-          // we just log a warning and skip the item.
+          // we log a warning and skip the item.
           if (error instanceof z.ZodError) {
             console.warn(
               `Skipping item ${fileId} due to malformed JSON: ${error.message}`
@@ -641,13 +782,29 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
           }
           throw error;
         }
+        return item && filter && !(await filter(item)) ? null : item;
       })
     );
 
     for (const item of loadedBatch) {
       if (!item) continue;
-      // Apply custom filter early if provided
-      if (filter && !filter(item)) continue;
+
+      const itemSortKey = getSortKey?.(item) ?? null;
+
+      if (parsedCursor?.sortKey) {
+        // Sort-key cursor: the key alone is the total order, so there is no
+        // tie to break. An item without a key cannot be placed relative to
+        // the cursor at all (that would mean a run mixed the two schemes),
+        // so keep it and let the comparator below order it.
+        if (itemSortKey) {
+          const comparison = itemSortKey.localeCompare(parsedCursor.sortKey);
+          if (sortOrder === 'desc' ? comparison >= 0 : comparison <= 0) {
+            continue;
+          }
+        }
+        validItems.push(item);
+        continue;
+      }
 
       // Double-check cursor filtering with actual createdAt from JSON
       // (in case ULID timestamp differs from stored createdAt)
@@ -678,8 +835,18 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     }
   }
 
-  // 5. Sort by createdAt (and by ID for tie-breaking if getId is provided)
+  // 5. Sort by sortKey when the items carry one, else by createdAt (and by ID
+  // for tie-breaking if getId is provided)
   validItems.sort((a, b) => {
+    if (getSortKey) {
+      const aKey = getSortKey(a);
+      const bKey = getSortKey(b);
+      if (aKey !== null && bKey !== null) {
+        return sortOrder === 'asc'
+          ? aKey.localeCompare(bKey)
+          : bKey.localeCompare(aKey);
+      }
+    }
     const aTime = a.createdAt.getTime();
     const bTime = b.createdAt.getTime();
     const timeComparison = sortOrder === 'asc' ? aTime - bTime : bTime - aTime;
@@ -703,7 +870,8 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     items.length > 0
       ? createCursor(
           items[items.length - 1].createdAt,
-          getId?.(items[items.length - 1])
+          getId?.(items[items.length - 1]),
+          getSortKey?.(items[items.length - 1])
         )
       : null;
 

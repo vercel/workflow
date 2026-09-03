@@ -8,7 +8,7 @@ Used by default for deployments on Vercel. Authentication and API endpoints are 
 
 ## Custom dispatcher
 
-HTTP requests (including the queue) default to a shared undici `RetryAgent` that handles connection pooling and retries. Pass a custom `dispatcher` to override it — e.g. to tune undici on newer Node runtimes:
+HTTP requests (including the queue) default to a shared undici `RetryAgent` that handles connection pooling and retries. Pass a custom `dispatcher` to override it, for example, to tune undici on newer Node.js runtimes:
 
 ```ts
 import { Agent } from 'undici';
@@ -18,3 +18,15 @@ import { setWorld } from '@workflow/core/runtime';
 setWorld(createWorld({ dispatcher: new Agent({ connections: 16 }) }));
 ```
 
+## Caller user agent
+
+Pass a `User-Agent` header to append a caller-specific product token while
+preserving the world-vercel token:
+
+```ts
+import { createWorld } from '@workflow/world-vercel';
+
+const world = createWorld({
+  headers: { 'User-Agent': 'my-framework/1.2.3' },
+});
+```

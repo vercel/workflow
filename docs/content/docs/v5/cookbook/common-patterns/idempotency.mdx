@@ -6,7 +6,7 @@ summary: Use step IDs for retry-safe external calls, and use deterministic hook 
 ---
 
 <CopyPrompt
-  text="Make this workflow's side effects idempotent. For retry-safe external calls, read the deterministic step ID inside the &quot;use step&quot; function with `getStepMetadata()` from `workflow` and pass `stepId` as the idempotency key to the external API (for example Stripe's `Idempotency-Key` header) so step retries deduplicate. For duplicate workflow starts, derive a deterministic hook token from the domain key (for example `order:${orderId}`): in the API route, look up the active hook with `getHookByToken(token)` from `workflow/api` — catching `HookNotFoundError` from `workflow/errors` — and reuse its `runId`, otherwise call `start(...)`; inside the workflow, create the hook with the same token and check `await hook.getConflict()` before duplicate-sensitive work. Verify retried steps deduplicate, duplicate starts reuse the active run, and conflicts are handled."
+  text="Make this workflow's side effects idempotent. For retry-safe external calls, read the deterministic step ID inside the &quot;use step&quot; function with `getStepMetadata()` from `workflow` and pass `stepId` as the idempotency key to the external API (for example Stripe's `Idempotency-Key` header) so step retries deduplicate. For duplicate workflow starts, derive a deterministic hook token from the domain key (for example `order:${orderId}`): in the API route, look up the active hook with `getHookByToken(token)` from `workflow/api` (catching `HookNotFoundError` from `workflow/errors`) and reuse its `runId`, otherwise call `start(...)`; inside the workflow, create the hook with the same token and check `await hook.getConflict()` before duplicate-sensitive work. Verify retried steps deduplicate, duplicate starts reuse the active run, and conflicts are handled."
 />
 
 Use idempotency when a retry or duplicate request should not repeat the underlying work. In Workflow, there are two common patterns: use the step ID for retry-safe external calls, and use hook tokens to coordinate duplicate workflow starts.
@@ -82,14 +82,14 @@ export async function POST(request: Request) {
 }
 ```
 
-The workflow should create the deterministic hook and check `await hook.getConflict()` before duplicate-sensitive work — awaiting `getConflict()` suspends the workflow to commit the hook registration and resolves with the conflicting run when another active run already owns the token (or `null` once the hook is registered). See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for the full pattern, including how to steer an active run with `resumeHook()` and how to handle the current race between `start()` and hook registration.
+The workflow should create the deterministic hook and check `await hook.getConflict()` before duplicate-sensitive work: awaiting `getConflict()` suspends the workflow to commit the hook registration and resolves with the conflicting run when another active run already owns the token (or `null` once the hook is registered). See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for the full pattern, including how to steer an active run with `resumeHook()` and how to handle the current race between `start()` and hook registration.
 
 ## Key APIs
 
-- [`"use workflow"`](/docs/foundations/workflows-and-steps#workflow-functions) -- declares the orchestrator function
-- [`"use step"`](/docs/foundations/workflows-and-steps#step-functions) -- declares step functions with full Node.js access
-- [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) -- provides the deterministic `stepId` for idempotency keys
-- [`createHook()`](/docs/api-reference/workflow/create-hook) -- creates a hook with an optional deterministic token
-- [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) -- finds the active hook for a token
-- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) -- resumes the active hook when the duplicate request carries data
-- [`start()`](/docs/api-reference/workflow-api/start) -- starts a new workflow run
+- [`"use workflow"`](/docs/foundations/workflows-and-steps#workflow-functions): Declares the orchestrator function.
+- [`"use step"`](/docs/foundations/workflows-and-steps#step-functions): Declares step functions with full Node.js access.
+- [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata): Provides the deterministic `stepId` for idempotency keys.
+- [`createHook()`](/docs/api-reference/workflow/create-hook): Creates a hook with an optional deterministic token.
+- [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token): Finds the hook that owns a token.
+- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook): Resumes the active hook when the duplicate request carries data.
+- [`start()`](/docs/api-reference/workflow-api/start): Starts a new workflow run.

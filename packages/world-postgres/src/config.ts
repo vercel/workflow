@@ -13,6 +13,13 @@ export type PostgresWorldConfig = PgConnectionConfig & {
   namespace?: string;
   queueConcurrency?: number;
   /**
+   * Whether the application coordinates shutdown instead of Graphile Worker
+   * responding automatically. The application must await world.close().
+   * Defaults to false. The package's default createWorld() configuration
+   * enables it when WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN is `1`.
+   */
+  applicationManagedShutdown?: boolean;
+  /**
    * Override the flush interval (in ms) for buffered stream writes.
    * Default is 10ms. Set to 0 for immediate flushing.
    */

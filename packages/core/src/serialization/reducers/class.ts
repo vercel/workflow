@@ -8,6 +8,7 @@
 
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { getSerializationClass } from '../../class-serialization.js';
+import { readProperty, recordGuestCode } from '../hardened.js';
 import type { Reducers, Revivers } from '../types.js';
 
 // ---- Reducers ----
@@ -19,25 +20,29 @@ export function getClassReducers(): Partial<Reducers> {
     // over the generic Error serialization (devalue uses first-match-wins).
     Class: (value) => {
       if (typeof value !== 'function') return false;
-      const classId = (value as any).classId;
+      const classId = readProperty(value, 'classId');
       if (typeof classId !== 'string') return false;
       return { classId };
     },
     Instance: (value) => {
       if (value === null || typeof value !== 'object') return false;
-      const cls = value.constructor;
+      const cls = readProperty(value, 'constructor');
       if (!cls || typeof cls !== 'function') return false;
 
-      const serialize = cls[WORKFLOW_SERIALIZE];
+      const serialize = readProperty(cls, WORKFLOW_SERIALIZE);
       if (typeof serialize !== 'function') return false;
 
-      const classId = cls.classId;
+      const classId = readProperty(cls, 'classId');
       if (typeof classId !== 'string') {
         throw new Error(
-          `Class "${cls.name}" with ${String(WORKFLOW_SERIALIZE)} must have a static "classId" property.`
+          `Class "${String(readProperty(cls, 'name'))}" with ${String(WORKFLOW_SERIALIZE)} must have a static "classId" property.`
         );
       }
 
+      // Custom serializers are workflow code by definition: the data only
+      // exists behind them. Record the execution so retention-aware callers
+      // can account for possible VM-state perturbation.
+      recordGuestCode('method', `[WORKFLOW_SERIALIZE] (${classId})`);
       const data = serialize.call(cls, value);
       return { classId, data };
     },

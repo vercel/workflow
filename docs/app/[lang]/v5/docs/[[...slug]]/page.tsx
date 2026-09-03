@@ -6,12 +6,10 @@ import type { ComponentProps, ComponentType } from 'react';
 import { AutoCards } from '@/components/geistdocs/auto-cards';
 import { getMDXComponents } from '@/components/geistdocs/mdx-components';
 import { config } from '@/lib/geistdocs/config';
-import {
-  rewriteCookbookUrl,
-  rewriteCookbookUrlForVersion,
-} from '@/lib/geistdocs/cookbook-source';
+import { rewriteCookbookUrl } from '@/lib/geistdocs/cookbook-source';
 import { resolveSectionChildren } from '@/lib/geistdocs/section-children';
 import { source, v5GeistdocsSource } from '@/lib/geistdocs/source';
+import { rewriteHrefForVersion } from '@/lib/geistdocs/version-href';
 import { getDocsTreeForVersion } from '@/lib/geistdocs/version-source';
 import { PRE_RELEASE_VERSION } from '@/lib/geistdocs/versions';
 
@@ -21,21 +19,12 @@ const DEFAULT_LANG = config.defaultLanguage ?? 'en';
 const getPageUrl = ({ page }: { page: { url: string } }) =>
   `${VERSION_PREFIX}${page.url}`;
 
-// Content links are authored against the raw `/docs/...` URL space; rewrite
-// them into the v5 view so navigation doesn't escape to the v4 route. Card
-// renders its own Link (not the `a` component), so it needs the same rewrite
-// applied separately.
+// Content links are authored against the raw `/docs/...` and `/worlds/...`
+// URL spaces; rewrite them into the v5 view so navigation doesn't escape to
+// the v4 route. Card renders its own Link (not the `a` component), so it
+// needs the same rewrite applied separately.
 function v5Href<T>(href: T): T {
-  if (typeof href !== 'string') {
-    return href;
-  }
-
-  let rewritten = rewriteCookbookUrlForVersion(href, VERSION_PREFIX);
-  if (rewritten.startsWith('/docs')) {
-    rewritten = `${VERSION_PREFIX}${rewritten}`;
-  }
-
-  return rewritten as T;
+  return rewriteHrefForVersion(href, VERSION_PREFIX);
 }
 
 function V5Card(props: CardProps) {

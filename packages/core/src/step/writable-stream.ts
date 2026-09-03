@@ -4,14 +4,17 @@ import {
   flushablePipe,
   pollWritableLock,
 } from '../flushable-stream.js';
+import { bytesToBase64 } from '../sealed-box.js';
 import {
   getExternalReducers,
   getSerializeStream,
+  isRunPayloadKeys,
   WorkflowServerWritableStream,
 } from '../serialization.js';
 import {
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+  STREAM_SERVER_PUBLIC_KEY_SYMBOL,
   STREAM_SERVER_RUN_ID_SYMBOL,
 } from '../symbols.js';
 import { getWorkflowRunStreamId } from '../util.js';
@@ -29,10 +32,10 @@ export interface WorkflowWritableStreamOptions {
 }
 
 /**
- * Retrieves a writable stream that is associated with the current workflow.
+ * Retrieves the writable stream associated with the current workflow.
  *
- * The writable stream is intended to be used within step functions to write
- * data that can be read outside the workflow by using the readable method of getRun.
+ * Use the writable stream within step functions to write data. Read the data
+ * outside the workflow by using the readable method of `getRun`.
  *
  * @param options - Optional configuration for the writable stream
  * @returns The writable stream associated with the current workflow run
@@ -56,8 +59,8 @@ export function getWritable<W = any>(
 
   // Cache the writable per (runId, namespace) within the step context.
   //
-  // The previous behavior — constructing a fresh TransformStream and
-  // background pipe on every call — produced non-deterministic chunk
+  // The previous behavior (constructing a fresh TransformStream and
+  // background pipe on every call) produced non-deterministic chunk
   // ordering when callers acquired a new writer per write (e.g. a
   // per-chunk loop). Each pipe flushed to the same (runId, name) server
   // stream independently, and on Vercel the 50-100ms HTTP latency
@@ -67,7 +70,8 @@ export function getWritable<W = any>(
   // unsafe pattern correct: writes go through one serial sink in the
   // order the user wrote them. See
   // https://github.com/vercel/workflow/issues/2058.
-  const cache = (ctx.writables ??= new Map<string, CachedWritable>());
+  ctx.writables ??= new Map<string, CachedWritable>();
+  const cache = ctx.writables;
   const cached = cache.get(name);
   if (cached) {
     return cached.writable as WritableStream<W>;
@@ -119,7 +123,7 @@ export function getWritable<W = any>(
   // server stream. Calling `start(child, [args, theWritable])` from
   // the same step uses these tags to emit `{ name, runId }` in the
   // dehydrated descriptor, so the child's reviver can open the
-  // writable against the original `(runId, name)` directly — no
+  // writable against the original `(runId, name)` directly, with no
   // in-process bridge tied to this step's lifetime.
   Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
     value: name,
@@ -138,6 +142,16 @@ export function getWritable<W = any>(
         writable: false,
       }
     );
+  }
+  // Publish this run's X25519 public key on the handle so that a run this
+  // writable is forwarded to can seal frames without looking anything up.
+  // The key is already resolved on the step context, so this costs nothing
+  // here and saves the receiver a round trip.
+  if (isRunPayloadKeys(ctx.encryptionKey)) {
+    Object.defineProperty(serialize.writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
+      value: bytesToBase64(ctx.encryptionKey.keyPair.publicKey),
+      writable: false,
+    });
   }
 
   cache.set(name, { writable: serialize.writable, state });

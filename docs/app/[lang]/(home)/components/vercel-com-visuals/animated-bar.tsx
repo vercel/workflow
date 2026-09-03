@@ -1,16 +1,16 @@
 'use client';
 
-import type { JSX } from 'react';
-import { cn } from '@/lib/utils';
-import { Bar } from './bar';
 import {
+  animate,
   motion,
   useMotionValue,
-  useTransform,
-  animate,
   useReducedMotion,
+  useTransform,
 } from 'motion/react';
+import type { JSX } from 'react';
 import { useEffect, useState } from 'react';
+import { cn } from '@/lib/utils';
+import { Bar } from './bar';
 
 export interface AnimatedBarProps {
   className?: string;

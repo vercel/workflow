@@ -15,9 +15,9 @@ related:
 
 This error occurs when you try to pass non-serializable data between execution boundaries in your workflow. All data passed between workflow functions, step functions, and the workflow runtime must be serializable to persist in the event log.
 
-## Error Message
+## Error message
 
-```
+```text
 Failed to serialize workflow arguments. Ensure you're passing serializable types
 (plain objects, arrays, primitives, Date, RegExp, Map, Set).
 ```
@@ -29,7 +29,35 @@ This error can appear when:
 - Serializing step arguments
 - Serializing step return values
 
-## Why This Happens
+## Where the error surfaces
+
+Where you observe the failure depends on which boundary it crosses:
+
+- **Workflow arguments**: `start()` throws synchronously in your application code.
+- **Step arguments and step return values**: the *step* fails with the `SerializationError`, exactly like a step whose body threw a fatal error: no retries (the failure is deterministic), and a `try/catch` around the step call in your workflow code observes it. The step's recorded input shows `[input unavailable: step argument serialization failed]` when the arguments were the unserializable part.
+- **Workflow return values**: the workflow body has already returned, so nothing can catch it; the run fails.
+
+```typescript lineNumbers
+async function stepWithBadArguments(value: unknown) {
+  "use step";
+  return value;
+}
+
+export async function processWorkflow(someValue: unknown) {
+  "use workflow";
+
+  try {
+    await stepWithBadArguments(someValue);
+  } catch (err) {
+    // err.name === "SerializationError"
+    // "Failed to serialize step arguments at path ..."
+  }
+}
+```
+
+Uncaught, the error propagates out of the workflow body and the run fails immediately with the error code `USER_ERROR`; it does not retry.
+
+## Why this happens
 
 Workflows persist their state using an event log. Every value that crosses execution boundaries must be:
 
@@ -38,9 +66,9 @@ Workflows persist their state using an event log. Every value that crosses execu
 
 Functions, class instances, symbols, and other non-serializable types cannot be properly reconstructed after serialization, which would break workflow replay.
 
-## Common Causes
+## Common causes
 
-### Passing Functions
+### Passing functions
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
@@ -72,7 +100,7 @@ async function processStep(config: { shouldLog: boolean }) {
 }
 ```
 
-### Class Instances
+### Class instances
 
 ```typescript lineNumbers
 class User {
@@ -111,11 +139,11 @@ async function greetStep(userData: { name: string }) {
 }
 ```
 
-## Supported Serializable Types
+## Supported serializable types
 
 Workflow SDK supports these types across execution boundaries:
 
-### Standard JSON Types
+### Standard JSON types
 
 - `string`, `number`, `boolean`, `null`
 - Arrays of serializable values
@@ -123,10 +151,10 @@ Workflow SDK supports these types across execution boundaries:
 
 To learn more about supported types, see the [Serialization](/docs/foundations/serialization) section.
 
-## Debugging Serialization Issues
+## Debugging serialization issues
 
 To identify what's causing serialization to fail:
 
-1. **Check the error stack trace** - it often shows which property failed
-2. **Simplify your data** - temporarily pass smaller objects to isolate the issue
-3. **Ensure you are using supported data types** - see the [Serialization](/docs/foundations/serialization) section for more details
+1. **Check the error stack trace**: It often shows which property failed.
+2. **Simplify your data**: Temporarily pass smaller objects to isolate the issue.
+3. **Use supported data types**: See [Serialization](/docs/foundations/serialization) for details.

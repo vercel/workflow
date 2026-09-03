@@ -1,5 +1,5 @@
 /**
- * Just the core utilities that are meant to be imported by user
+ * Core utilities intended for import by user
  * steps/workflows. This allows the bundler to tree-shake and limit what goes
  * into the final user bundles. Logic for running/handling steps/workflows
  * should live in runtime. Eventually these might be separate packages
@@ -26,7 +26,6 @@ export {
 } from './create-hook.js';
 export { defineHook, type TypedHook } from './define-hook.js';
 export {
-  experimental_setAttributes,
   type SetAttributesOptions,
   setAttributes,
 } from './set-attributes.js';

@@ -7,6 +7,7 @@
     "@changesets/changelog-github": "0.5.2",
     "@changesets/cli": "^2.29.8",
     "@vitest/coverage-v8": "catalog:",
+    "@vitest/runner": "catalog:",
     "esbuild": "catalog:",
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
@@ -15,9 +16,9 @@
     "vitest": "catalog:"
   },
   "engines": {
-    "node": "^18.0.0 || ^20.0.0 || ^22.0.0 || ^24.0.0"
+    "node": "^22.0.0 || ^24.0.0"
   },
-  "packageManager": "pnpm@10.20.0+sha512.cf9998222162dd85864d0a8102e7892e7ba4ceadebbf5a31f9c2fce48dfce317a9c53b9f6464d1ef9042cba2e02ae02a9f7c143a2b438cd93c91840f0192b9dd",
+  "packageManager": "pnpm@11.24.0",
   "scripts": {
     "prepare": "husky",
     "build": "turbo build --filter='./packages/*'",
@@ -26,6 +27,7 @@
     "typecheck": "turbo typecheck",
     "test:e2e": "vitest run packages/core/e2e/e2e.test.ts packages/core/e2e/e2e-agent.test.ts",
     "test:e2e:event-log-race-repro": "vitest run packages/core/e2e/event-log-race-repro.test.ts",
+    "test:e2e:event-log-race-repro:local": "bash scripts/event-log-race-repro-local.sh",
     "test:e2e:nextjs-webpack:staged": "node scripts/test-staged-nextjs-webpack.mjs",
     "test:docs": "pnpm --filter @workflow/docs-typecheck test:docs",
     "bench": "vitest run packages/core/e2e/benchmark.test.ts",

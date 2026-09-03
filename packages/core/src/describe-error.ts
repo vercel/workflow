@@ -18,7 +18,7 @@ import {
  *
  * - `user`: the error came from customer code (a step or workflow function
  *   threw, or a value they passed across a boundary wasn't serializable).
- * - `sdk`: the SDK produced the error itself — an internal invariant broke,
+ * - `sdk`: the SDK produced the error itself: an internal invariant broke,
  *   or a runtime guard rejected the call. These should be rare; when they
  *   happen we want to frame the terminal output as "this is us, not you."
  */
@@ -42,7 +42,7 @@ export interface ErrorDescription {
  *
  * - `errorCode` is typed as `string` rather than `RunErrorCode` because
  *   the value comes from stored JSON/CBOR and may predate the current
- *   enum — callers should not narrow on it blindly. Values that don't
+ *   enum, so callers should not narrow on it blindly. Values that don't
  *   match a known `RUN_ERROR_CODES` entry fall through to USER_ERROR.
  * - `errorName` is the thrown `Error#name`. It is not universally
  *   persisted today; callers that have access to it (either via an
@@ -83,11 +83,15 @@ const REPLAY_TIMEOUT_HINT =
   'The workflow replay between step boundaries took too long. This bounds workflow-VM and event-log replay time only — step bodies (`"use step"` functions) are excluded. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work in workflow code outside of step bodies. Override the default budget via the WORKFLOW_REPLAY_TIMEOUT_MS env var if needed.';
 const MAX_DELIVERIES_HINT =
   'The workflow queue exceeded its max-delivery budget. This usually indicates a persistent runtime failure — check the most recent stack traces for the underlying cause.';
+const MAX_EVENTS_HINT =
+  'The workflow exceeded the maximum number of events per run. This usually means unbounded work in the workflow function — e.g. a loop that keeps creating steps without terminating. Break long-running workflows into child workflows to stay under the limit.';
 const WORLD_CONTRACT_HINT =
   'The workflow backend returned data that violated the SDK contract. This is not retryable; please report it with the stack trace and runId.';
+const DEPLOYMENT_MISMATCH_HINT =
+  "The run was delivered to a deployment other than the deployment it is pinned to, and was stopped to protect against code-skew errors after the runtime failed to re-route it there. Verify that the run's deployment is still available and that queue callbacks route to it.";
 
 function normalizeErrorCode(code: string | undefined): RunErrorCode {
-  // Values read back from persisted events are `string | undefined` — we
+  // Values read back from persisted events are `string | undefined`, so we
   // only trust codes that match a known entry in `RUN_ERROR_CODES`.
   const known = Object.values(RUN_ERROR_CODES) as readonly string[];
   if (code && known.includes(code)) {
@@ -98,9 +102,9 @@ function normalizeErrorCode(code: string | undefined): RunErrorCode {
 
 /**
  * Data-driven variant of {@link describeError} that works from persisted
- * event fields instead of a live `Error` instance. Intended for CLI/web
- * renderers that read failure events and no longer have the original
- * thrown object.
+ * event fields instead of a live `Error` instance. Intended for command-line
+ * interface (CLI) and web renderers that read failure events and no longer
+ * have the original thrown object.
  */
 export function describeRunError(
   signal: PersistedErrorSignal
@@ -130,6 +134,9 @@ export function describeRunError(
   if (errorCode === RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED) {
     return { attribution: 'sdk', errorCode, hint: MAX_DELIVERIES_HINT };
   }
+  if (errorCode === RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED) {
+    return { attribution: 'user', errorCode, hint: MAX_EVENTS_HINT };
+  }
   if (errorCode === RUN_ERROR_CODES.CORRUPTED_EVENT_LOG) {
     return {
       attribution: 'sdk',
@@ -144,6 +151,9 @@ export function describeRunError(
       hint: WORLD_CONTRACT_HINT,
     };
   }
+  if (errorCode === RUN_ERROR_CODES.DEPLOYMENT_MISMATCH) {
+    return { attribution: 'sdk', errorCode, hint: DEPLOYMENT_MISMATCH_HINT };
+  }
   if (name === 'WorkflowRuntimeError' || name === 'StepNotRegisteredError') {
     return { attribution: 'sdk', errorCode, hint: RUNTIME_ERROR_HINT };
   }
@@ -154,7 +164,7 @@ export function describeRunError(
 }
 
 /**
- * Describe an error for user-facing presentation. Purely informational —
+ * Describe an error for user-facing presentation. Purely informational: it
  * does not change any persisted event data or error classification used by
  * the runtime.
  *
@@ -166,7 +176,7 @@ export function describeRunError(
  * - Context-violation errors (`NotInWorkflowContextError`, etc.) likewise
  *   describe a user mistake.
  * - `WorkflowRuntimeError` (and subclasses like `StepNotRegisteredError`)
- *   indicates an internal SDK invariant broke — surface that as `sdk`.
+ *   indicates an internal SDK invariant broke, so surface that as `sdk`.
  *
  * @param err The error value thrown by the workflow / step.
  * @param errorCode Optional precomputed error code. Callers that already
@@ -204,6 +214,16 @@ export function describeError(
     };
   }
 
+  // Check DEPLOYMENT_MISMATCH before the generic WorkflowRuntimeError branch:
+  // WorkflowDeploymentMismatchError subclasses it, but has its own code + hint.
+  if (effectiveCode === RUN_ERROR_CODES.DEPLOYMENT_MISMATCH) {
+    return {
+      attribution: 'sdk',
+      errorCode: effectiveCode,
+      hint: DEPLOYMENT_MISMATCH_HINT,
+    };
+  }
+
   if (err instanceof WorkflowRuntimeError) {
     return {
       attribution: 'sdk',
@@ -225,6 +245,14 @@ export function describeError(
       attribution: 'sdk',
       errorCode: effectiveCode,
       hint: MAX_DELIVERIES_HINT,
+    };
+  }
+
+  if (effectiveCode === RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED) {
+    return {
+      attribution: 'user',
+      errorCode: effectiveCode,
+      hint: MAX_EVENTS_HINT,
     };
   }
 

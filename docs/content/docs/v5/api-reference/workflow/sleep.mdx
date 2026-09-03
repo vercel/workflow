@@ -14,7 +14,7 @@ Suspends a workflow for a specified duration or until an end date without consum
 This is useful when you want to resume a workflow after some duration or date.
 
 <Callout>
-`sleep` is a *special* type of step function and should be called directly inside workflow functions.
+`sleep` is a built-in workflow runtime function (backed by a timer event in the event log, not a step) and should be called directly inside workflow functions.
 </Callout>
 
 ```typescript lineNumbers
@@ -26,7 +26,7 @@ async function testWorkflow() {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -39,7 +39,7 @@ showSections={['parameters']}
 
 ## Examples
 
-### Sleeping With a Duration
+### Sleeping with a duration
 
 You can specify a duration for `sleep` to suspend the workflow for a fixed amount of time.
 
@@ -52,7 +52,7 @@ async function testWorkflow() {
 }
 ```
 
-### Sleeping Until an End Date
+### Sleeping until an end date
 
 You can specify a future `Date` object for `sleep` to suspend the workflow until a specific date.
 

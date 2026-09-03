@@ -1,5 +1,101 @@
 # @workflow/nuxt
 
+## 5.0.0-beta.47
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.47
+
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.46
+
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.45
+
+## 5.0.0-beta.44
+
+### Patch Changes
+
+- Updated dependencies [[`8a2648e`](https://github.com/vercel/workflow/commit/8a2648e35f3ccfdffd275bc37470dd3396981773)]:
+  - @workflow/nitro@5.0.0-beta.44
+
+## 5.0.0-beta.43
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.43
+
+## 5.0.0-beta.42
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.42
+
+## 5.0.0-beta.41
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.41
+
+## 5.0.0-beta.40
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.40
+
+## 5.0.0-beta.39
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@5.0.0-beta.39
+
+## 5.0.0-beta.38
+
+### Patch Changes
+
+- [#3142](https://github.com/vercel/workflow/pull/3142) [`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Revert the static workflow world target injection: the world package is again resolved at runtime from `WORKFLOW_TARGET_WORLD` instead of being aliased into host bundles at build time.
+
+- Updated dependencies [[`25715d4`](https://github.com/vercel/workflow/commit/25715d4521164836d7f2eb2493b73d13ec595b10), [`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804)]:
+  - @workflow/nitro@5.0.0-beta.38
+
+## 5.0.0-beta.37
+
+### Patch Changes
+
+- Updated dependencies [[`cfe7570`](https://github.com/vercel/workflow/commit/cfe7570d67b585363644044f5ee9c9ea1fea1d24), [`b406a04`](https://github.com/vercel/workflow/commit/b406a04dfa86aae5d1482b71f18a8c7bfb1272ed), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91)]:
+  - @workflow/builders@5.0.0-beta.37
+  - @workflow/nitro@5.0.0-beta.37
+
+## 5.0.0-beta.36
+
+### Patch Changes
+
+- Updated dependencies [[`927b61a`](https://github.com/vercel/workflow/commit/927b61ab419e98c027c077af81273e73650cb94f)]:
+  - @workflow/builders@5.0.0-beta.36
+  - @workflow/nitro@5.0.0-beta.36
+
+## 5.0.0-beta.35
+
+### Patch Changes
+
+- Updated dependencies [[`3589958`](https://github.com/vercel/workflow/commit/35899580bd2a1b6eb2817f04583139dcee4ffd2a), [`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94), [`c44b4f8`](https://github.com/vercel/workflow/commit/c44b4f8586a159e4deb5ec947e1855d80cc2680d)]:
+  - @workflow/nitro@5.0.0-beta.35
+  - @workflow/builders@5.0.0-beta.35
+
 ## 5.0.0-beta.34
 
 ### Patch Changes

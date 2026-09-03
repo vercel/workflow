@@ -1,5 +1,5 @@
-import { importKey } from '@workflow/core/encryption';
 import {
+  deriveRunPayloadKeys,
   type EncryptionKeyParam,
   getDeserializeStream,
   getExternalRevivers,
@@ -34,7 +34,7 @@ import { resolveTimeWindow } from './time-window.js';
 
 /**
  * Create an EncryptionKeyResolver from a World instance.
- * Returns null if decrypt is false — encrypted data will show as a placeholder.
+ * Returns null if decrypt is false; encrypted data will show as a placeholder.
  *
  * The resolver fetches the full WorkflowRun (cached per runId) so that the
  * World can inspect deployment-specific fields for key resolution.
@@ -463,7 +463,7 @@ const showJson = (data: unknown) => {
  * Defensively evaluate `World.describeRun` for one run row.
  *
  * The interface contract says implementations are pure and must not
- * throw — but it is an external extension point, so the CLI does not
+ * throw, but it is an external extension point, so the CLI does not
  * trust that: a throwing implementation contributes no fields instead
  * of crashing the command. Keys that already exist on the run row are
  * dropped so a world can never overwrite canonical fields (`status`,
@@ -476,7 +476,7 @@ const safeWorldFields = async (
   let fields: Record<string, string | null> | null;
   try {
     // The hook may be sync or async; a rejection is treated the same as
-    // a throw — no fields.
+    // a throw: no fields.
     fields = await describeRun(row);
   } catch {
     return {};
@@ -571,7 +571,7 @@ export const hasExpiredData = (run: WorkflowRun): boolean => {
 
 /**
  * Checks if any data field in a hydrated resource has been replaced with an
- * expired placeholder. Works for runs, steps, hooks, and events — unlike
+ * expired placeholder. Works for runs, steps, hooks, and events, unlike
  * `hasExpiredData` which only checks the run-level `expiredAt` field.
  */
 const hasExpiredFields = (resource: Record<string, unknown>): boolean => {
@@ -630,7 +630,7 @@ const inlineFormatIO = <T>(io: T, topLevel: boolean = true): string => {
 /**
  * List views surface metadata only. When the active backend exposes the
  * optional `world.analytics` read namespace we read list pages from it
- * (metadata-only — no payload resolution); otherwise we fall back to the
+ * (metadata-only, no payload resolution); otherwise we fall back to the
  * runtime storage APIs with `resolveData: 'none'`.
  *
  * `--withData` forces the runtime path so payloads can be resolved into the
@@ -749,7 +749,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
     };
   };
 
-  // For JSON output, just fetch once and return
+  // For JSON output, fetch once and return
   if (opts.json) {
     try {
       const page = await fetchRunsPage(opts.cursor);
@@ -792,7 +792,7 @@ export const getRecentRun = async (
   try {
     const runs = await world.runs.list({
       pagination: { limit: 1, sortOrder: opts.sort || 'desc' },
-      resolveData: 'none', // Don't need data for just getting the ID
+      resolveData: 'none', // Don't need data when getting only the ID
     });
     runs.data = await Promise.all(
       runs.data.map((r) => hydrateResourceIO(r, resolveKey))
@@ -820,7 +820,7 @@ export const showRun = async (
     const run = await world.runs.get(runId, { resolveData: 'all' });
     const hydrated = await hydrateResourceIO(run, resolveKey);
     // World-specific display fields (World.describeRun), evaluated
-    // defensively — see safeWorldFields. `null` field values are kept so
+    // defensively; see safeWorldFields. `null` field values are kept so
     // structured output distinguishes "undeterminable" from "hook absent".
     const worldFields = world.describeRun
       ? await safeWorldFields(
@@ -930,7 +930,7 @@ export const listSteps = async (
     };
   };
 
-  // For JSON output, just fetch once and return
+  // For JSON output, fetch once and return
   if (opts.json) {
     try {
       const page = await fetchStepsPage(opts.cursor);
@@ -1039,7 +1039,9 @@ export const showStream = async (
     encryptionKey = (async () => {
       const run = await world.runs.get(opts.runId!);
       const rawKey = await world.getEncryptionKeyForRun?.(run);
-      return rawKey ? await importKey(rawKey) : undefined;
+      // Full capability, so sealed ('encp') stream frames written by other
+      // runs are readable too, not just the run's own symmetric frames.
+      return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
     })();
   } else if (opts.decrypt && !opts.runId) {
     logger.warn(
@@ -1196,7 +1198,7 @@ export const listEvents = async (
     };
   };
 
-  // For JSON output, just fetch once and return
+  // For JSON output, fetch once and return
   if (opts.json) {
     try {
       const page = await fetchEventsPage(opts.cursor);
@@ -1274,7 +1276,7 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
     };
   };
 
-  // For JSON output, just fetch once and return
+  // For JSON output, fetch once and return
   if (opts.json) {
     try {
       const page = await fetchHooksPage(opts.cursor);

@@ -1,5 +1,18 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { StreamExpiredError } from '@workflow/errors';
+import { NODE_HTTP_ENV_VAR } from '@workflow/world';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeMultiChunks, MAX_CHUNKS_PER_REQUEST } from './streamer.js';
+
+// Every request-issuing test in this file observes the streamer through a
+// stubbed `fetch`. The node:http path does not call `fetch`, so the flag is
+// pinned off for all of them.
+beforeEach(() => {
+  vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('encodeMultiChunks', () => {
   /**
@@ -205,6 +218,60 @@ describe('streams.get', () => {
     // v3, not v2: the reconnecting reader relies on the server erroring the
     // body on a max-duration timeout rather than closing it cleanly.
     expect(url.pathname).toBe('/v3/runs/run-123/stream/my-stream');
+  });
+
+  it('throws a typed terminal error with the retention details on 410', async () => {
+    const expiredAt = '2026-08-10T14:40:00.000Z';
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      Response.json(
+        {
+          success: false,
+          error: 'stream-expired',
+          message: 'The stream reached its storage retention limit',
+          details: {
+            runId: 'wrun_test',
+            streamId: 'stream-test',
+            expiredAt,
+          },
+        },
+        { status: 410 }
+      )
+    );
+
+    const streamer = await getStreamer();
+    const error = await streamer.streams
+      .get('wrun_test', 'stream-test')
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(StreamExpiredError);
+    expect(error).toMatchObject({
+      message: 'The stream reached its storage retention limit',
+      runId: 'wrun_test',
+      streamId: 'stream-test',
+      expiredAt: new Date(expiredAt),
+      status: 410,
+      code: 'stream-expired',
+    });
+    const request = vi.mocked(globalThis.fetch).mock.calls[0];
+    const headers = (request[1] as RequestInit).headers as Headers;
+    expect(headers.get('Accept')).toBe('application/json');
+  });
+
+  it('falls back safely for non-stream-expired errors', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      Response.json(
+        { error: 'run-expired', message: 'Run is unavailable' },
+        { status: 410 }
+      )
+    );
+
+    const streamer = await getStreamer();
+    await expect(
+      streamer.streams.get('wrun_test', 'stream-test')
+    ).rejects.toThrow('Run is unavailable');
+    await expect(
+      streamer.streams.get('wrun_test', 'stream-test')
+    ).rejects.not.toBeInstanceOf(StreamExpiredError);
   });
 
   it('passes startIndex as a query parameter on the v3 read', async () => {

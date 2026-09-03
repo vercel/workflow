@@ -1,7 +1,9 @@
 import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import {
+  HOOK_RESUME_INPUT_VERSION,
   isLegacySpecVersion,
   PARENT_RUN_ID_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
@@ -18,8 +20,15 @@ import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import type { Serializable } from '../schemas.js';
 import {
+  bytesToBase64,
+  decodeRunPublicKey,
+  deriveRunKeyPair,
+} from '../sealed-box.js';
+import {
   dehydrateWorkflowArguments,
+  type PayloadKey,
   SerializationFormat,
+  sealTo,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -28,6 +37,7 @@ import { version as workflowCoreVersion } from '../version.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName, healthCheck } from './helpers.js';
 import { Run } from './run.js';
+import { getWorkflowVmFromEnv } from './vm-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
 import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
 
@@ -36,7 +46,7 @@ import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
  * dehydrating workflow arguments. Kept tight on purpose: the probe is
  * an optimization (it lets the caller emit the framed byte-stream wire
  * format when the target supports it), and the fallback on timeout is
- * the legacy raw format which always works. Long delays here would just
+ * the legacy raw format which always works. Long delays here would
  * make `start({ deploymentId: ... })` slower for users whose target
  * deployments don't recognize the health check at all.
  */
@@ -71,16 +81,22 @@ function resolveLineageAttributes(): Record<string, string> | undefined {
 // The warning that explains this only needs to fire once per process: a
 // workflow that hardcodes 'latest' for its Vercel deployment would otherwise
 // log it on every local/Postgres run, flooding tight dev loops.
-let hasWarnedLatestNoOp = false;
+// On `globalThis` (see `globalSingleton`) so "once per process" is not once
+// per bundler layer.
+const latestNoOpWarning = globalSingleton(
+  '@workflow/core//latestNoOpWarning',
+  1,
+  () => ({ warned: false })
+);
 
 /**
- * Reset the `deploymentId: 'latest'` no-op warn-once guard. Test-only —
+ * Reset the `deploymentId: 'latest'` no-op warn-once guard. Test-only,
  * exported so unit tests can exercise the warn path across `start()` calls.
  *
  * @internal
  */
 export function _resetLatestNoOpWarnForTests(): void {
-  hasWarnedLatestNoOp = false;
+  latestNoOpWarning.warned = false;
 }
 
 export interface StartOptionsBase {
@@ -101,7 +117,7 @@ export interface StartOptionsBase {
    * run ID and routes the initial workflow message to the matching
    * regional queue. When omitted, the world falls back to its own
    * default (for `world-vercel`: the `VERCEL_REGION` environment
-   * variable, then the server-side default region `iad1` — a concrete,
+   * variable, then the server-side default region `iad1`; a concrete,
    * routable region is always chosen).
    *
    * Worlds without a regional dimension ignore this field.
@@ -171,7 +187,7 @@ export interface StartOptionsWithDeploymentId extends StartOptionsBase {
    * This is only meaningful in worlds with atomic, immutable deployments
    * (currently Vercel). In other worlds (local dev, Postgres) there is no
    * notion of multiple deployments to resolve between, so `'latest'` has no
-   * effect — a warning is logged and the run targets the current deployment.
+   * effect: a warning is logged and the run targets the current deployment.
    *
    * **Note:** When `deploymentId` is provided, the argument and return types become `unknown`
    * since there is no guarantee the types will be consistent across deployments.
@@ -286,14 +302,14 @@ export async function start<TArgs extends unknown[], TResult>(
       // resolveLatestDeploymentId(). Worlds without that concept (local dev,
       // self-hosted Postgres) have nothing to resolve between, so rather than
       // fail a run that works fine on Vercel, we warn and fall back to the
-      // current deployment — making 'latest' an effective no-op there.
+      // current deployment, making 'latest' an effective no-op there.
       if (deploymentId === 'latest') {
         if (world.resolveLatestDeploymentId) {
           deploymentId = await world.resolveLatestDeploymentId();
         } else {
-          // Warn once per process — see hasWarnedLatestNoOp above.
-          if (!hasWarnedLatestNoOp) {
-            hasWarnedLatestNoOp = true;
+          // Warn once per process; see latestNoOpWarning.warned above.
+          if (!latestNoOpWarning.warned) {
+            latestNoOpWarning.warned = true;
             runtimeLogger.warn(
               "deploymentId: 'latest' has no effect in this world and was ignored. " +
                 'It is only supported by worlds with atomic deployments, such as Vercel. ' +
@@ -311,34 +327,11 @@ export async function start<TArgs extends unknown[], TResult>(
       // deployment starts (explicit deploymentId or 'latest' that resolves
       // to a different deployment) we probe the target via healthCheck to
       // learn its workflow-core version, then derive the capability. The
-      // probe has a tight timeout — on miss/failure we fall back to the
+      // probe has a tight timeout: on miss/failure we fall back to the
       // legacy raw byte format, which is universally readable.
       //
       // Worlds that don't expose the `streams` API (e.g. minimal test
       // mocks) can't service health checks, so we skip the probe for them.
-      let framedByteStreams: boolean;
-      let targetSupportsCompression: boolean;
-      if (deploymentId === currentDeploymentId) {
-        framedByteStreams = true;
-        targetSupportsCompression = true;
-      } else if (typeof world.streams?.get !== 'function') {
-        framedByteStreams = false;
-        targetSupportsCompression = false;
-      } else {
-        const probe = await healthCheck(world, 'workflow', {
-          deploymentId,
-          timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
-          namespace: opts.namespace,
-        }).catch(() => undefined);
-        const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
-        framedByteStreams = capabilities.framedByteStreams;
-        targetSupportsCompression = capabilities.supportedFormats.has(
-          SerializationFormat.GZIP
-        );
-      }
-
-      const ops: Promise<void>[] = [];
-
       // Generate runId client-side so we have it before serialization
       // (required for future E2E encryption where runId is part of the
       // encryption context). When the World provides a `createRunId()`
@@ -351,6 +344,59 @@ export async function start<TArgs extends unknown[], TResult>(
           ? world.createRunId(opts as Readonly<Record<string, unknown>>)
           : ulid()
       }`;
+
+      let framedByteStreams: boolean;
+      let targetSupportsCompression: boolean;
+      // The consumer's hook-resume protocol version, stamped onto the new
+      // run. Current producers write the hook_received event durably before
+      // publishing the wake and never read it; OLDER producers gate their
+      // lazy (hookInput-carrying) path on the deployment that will actually
+      // consume the queue message. `undefined` means "could not attest" and
+      // fails that gate closed.
+      let targetHookResumeInputVersion: number | undefined;
+      // Public key of the target run, when the capability probe was able to
+      // supply one (cross-deployment only).
+      let probedRunPublicKey: string | undefined;
+      if (deploymentId === currentDeploymentId) {
+        framedByteStreams = true;
+        targetSupportsCompression = true;
+        // Same deployment: this process is the consumer, so its own constant
+        // is authoritative.
+        targetHookResumeInputVersion = HOOK_RESUME_INPUT_VERSION;
+      } else if (typeof world.streams?.get !== 'function') {
+        framedByteStreams = false;
+        targetSupportsCompression = false;
+        // No probe channel to the target, so we cannot attest the consumer
+        // honors `hookInput`; leave the marker off (older producers fail
+        // closed to their sequential path).
+        targetHookResumeInputVersion = undefined;
+      } else {
+        // Ask for this run's public key while we're here. The probe already
+        // blocks `start()` on every cross-deployment call, and the responder
+        // executes inside the target deployment where the key material is
+        // local, so the key comes back for free on a response we are
+        // already awaiting, and we can skip the key-lookup API request
+        // entirely. Best-effort: on timeout or an older target, no key comes
+        // back and we fall through to the regular lookup below.
+        const probe = await healthCheck(world, {
+          deploymentId,
+          runId,
+          timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
+          namespace: opts.namespace,
+        }).catch(() => undefined);
+        probedRunPublicKey = probe?.encryptionPublicKey;
+        const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
+        framedByteStreams = capabilities.framedByteStreams;
+        targetSupportsCompression = capabilities.supportedFormats.has(
+          SerializationFormat.GZIP
+        );
+        // The responder runs inside the target deployment, so its
+        // `hookResumeInputVersion` reflects the consumer. Undefined on an
+        // older target or a probe timeout, leaving the marker off.
+        targetHookResumeInputVersion = probe?.hookResumeInputVersion;
+      }
+
+      const ops: Promise<void>[] = [];
 
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
@@ -368,7 +414,7 @@ export async function start<TArgs extends unknown[], TResult>(
           );
         }
         // `normalizeAttributeChanges` treats `undefined` as "remove this
-        // key", which is meaningless at creation time — reject it up front
+        // key", which is meaningless at creation time. Reject it up front
         // so JS callers get a clear error instead of a downstream schema
         // failure (the types already forbid non-string values).
         for (const [key, value] of Object.entries(opts.attributes)) {
@@ -428,11 +474,45 @@ export async function start<TArgs extends unknown[], TResult>(
       // deploymentId (not just the raw opts) so the World can use it for
       // key resolution even when deploymentId was inferred from the environment
       // rather than explicitly provided in opts (e.g., in e2e test runners).
-      const rawKey = await world.getEncryptionKeyForRun?.(runId, {
-        ...opts,
-        deploymentId,
-      });
-      const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+      // Resolve how to encrypt the workflow arguments.
+      //
+      // Preferred: the capability probe already told us this run's public
+      // key, so seal to it. That skips `getEncryptionKeyForRun`, which for a
+      // cross-deployment start is a `run-key` API request, the last one left
+      // on this path. It is also a privilege reduction: the caller ends up
+      // able to write the arguments but not read them back, whereas fetching
+      // the symmetric key grants full read access to a run it merely
+      // launched.
+      const probedPublicKey = decodeRunPublicKey(probedRunPublicKey);
+
+      let encryptionKey: PayloadKey | undefined;
+      let encryptionPublicKey: string | undefined;
+
+      if (probedPublicKey) {
+        encryptionKey = sealTo(probedPublicKey);
+        encryptionPublicKey = probedRunPublicKey;
+      } else {
+        const rawKey = await world.getEncryptionKeyForRun?.(runId, {
+          ...opts,
+          deploymentId,
+        });
+        encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+
+        // Publish the run's X25519 public key so that cross-run writers (a
+        // hook resumption from another deployment, a sibling writing into a
+        // forwarded stream) can seal payloads *to* this run without holding
+        // its symmetric key.
+        //
+        // Presence of this field is the writer-side gate for sealed
+        // envelopes, so it must only be stamped when this runtime could
+        // itself open one. That holds by construction here: derivation and
+        // `encp` dispatch live in the same package, so any core that can
+        // stamp can also open. Runs are pinned to their creating deployment,
+        // so the capability this attests to is still accurate at resume time.
+        encryptionPublicKey = rawKey
+          ? bytesToBase64((await deriveRunKeyPair(rawKey)).publicKey)
+          : undefined;
+      }
 
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it
@@ -454,10 +534,48 @@ export async function start<TArgs extends unknown[], TResult>(
         compression
       );
 
+      // The environment this caller's own `run_created` write is attributed
+      // to. Stamped into the queue message's `runInput` (NOT into
+      // `run_created`, whose tenant the backend already knows) so the
+      // deployment that consumes the message can tell whether the run it is
+      // being asked to resiliently create was created against a different
+      // environment than its own.
+      //
+      // The two writes below go to different places by different routes:
+      // `events.create` is attributed to THIS client's tenant, while the queue
+      // message is pinned to a deploymentId. When those disagree (a
+      // production-credentialed client pinning a preview deployment) the
+      // preview consumer can't find the run in its own tenant, falls back to
+      // resilient start, and re-creates it: one client-minted run id, two
+      // environments, the production copy pending forever and the preview copy
+      // executing. Worlds with a single tenant return undefined and the field
+      // is absent.
+      const creatorEnvironment = world.getEnvironment?.();
+
+      // If WORKFLOW_VM is set on the client starting the run, stamp the
+      // engine choice into the run's executionContext so the run keeps
+      // executing on the engine it started on (the same deployment can
+      // serve both VM engines). Unknown values throw; see
+      // getWorkflowVmFromEnv().
+      const workflowVm = getWorkflowVmFromEnv();
+
       const executionContext = {
         traceCarrier,
         workflowCoreVersion,
         features: { encryption: !!encryptionKey },
+        // Attest that the *consumer* deployment's runtime re-ensures a
+        // `hook_received` event from a queue message's `hookInput` on replay.
+        // An OLDER producer resuming this run reads the marker (mirrored onto
+        // the hook's resumeContext by the server) to decide whether its lazy
+        // fast path is safe. For a cross-deployment start the consumer is the
+        // target deployment, so we stamp the *target's* value carried back on
+        // the health-check probe, never the caller's. Omitted when we could
+        // not attest the target (older target, timeout, or no probe channel),
+        // which fails the resume gate closed to the sequential path.
+        ...(targetHookResumeInputVersion !== undefined
+          ? { hookResumeInputVersion: targetHookResumeInputVersion }
+          : {}),
+        ...(workflowVm ? { workflowVm } : {}),
         ...(opts.replayedFromRunId
           ? { replayedFromRunId: opts.replayedFromRunId }
           : {}),
@@ -477,6 +595,7 @@ export async function start<TArgs extends unknown[], TResult>(
               workflowName: workflowName,
               input: workflowArguments,
               executionContext,
+              ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
               ...attributeSeed,
             },
           },
@@ -495,6 +614,10 @@ export async function start<TArgs extends unknown[], TResult>(
                     workflowName,
                     specVersion,
                     executionContext,
+                    ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+                    ...(creatorEnvironment !== undefined
+                      ? { environment: creatorEnvironment }
+                      : {}),
                     ...attributeSeed,
                   },
                 }
@@ -512,7 +635,7 @@ export async function start<TArgs extends unknown[], TResult>(
         ),
       ]);
 
-      // Queue failure is always fatal — the run was not enqueued
+      // Queue failure is always fatal: the run was not enqueued
       if (queueResult.status === 'rejected') {
         throw queueResult.reason;
       }
@@ -528,7 +651,7 @@ export async function start<TArgs extends unknown[], TResult>(
           // In this case, we can safely return.
         } else if (isRetryableWorldError(err)) {
           // 429 (ThrottleError), 5xx, and transient transport failures
-          // (TRANSPORT/TIMEOUT) are retryable — the run was accepted via the
+          // (TRANSPORT/TIMEOUT) are retryable: the run was accepted via the
           // queue and creation will be re-tried by the runtime when it calls
           // run_started.
           resilientStart = true;
@@ -542,13 +665,6 @@ export async function start<TArgs extends unknown[], TResult>(
         }
       } else {
         const result = runCreatedResult.value;
-        // Assert that the run was created
-        if (!result.run) {
-          throw new WorkflowRuntimeError(
-            "Missing 'run' in server response for 'run_created' event"
-          );
-        }
-
         // Verify server accepted our runId
         if (!v1Compat && result.run.runId !== runId) {
           throw new WorkflowRuntimeError(
@@ -574,8 +690,7 @@ export async function start<TArgs extends unknown[], TResult>(
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),
         ...Attribute.DeploymentId(deploymentId),
-        ...(runCreatedResult.status === 'fulfilled' &&
-        runCreatedResult.value.run
+        ...(runCreatedResult.status === 'fulfilled'
           ? Attribute.WorkflowRunStatus(runCreatedResult.value.run.status)
           : {}),
       });

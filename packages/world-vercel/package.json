@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-vercel",
-  "version": "5.0.0-beta.30",
+  "version": "5.0.0-beta.43",
   "description": "Vercel platform World implementation for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -34,13 +34,16 @@
     "typecheck": "genversion --es6 src/version.ts && tsc --noEmit"
   },
   "dependencies": {
+    "@vercel/functions": "catalog:",
     "@vercel/oidc": "catalog:",
     "@vercel/queue": "catalog:",
     "@workflow/errors": "workspace:*",
+    "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
     "cbor-x": "1.6.0",
     "ulid": "catalog:",
     "undici": "catalog:",
+    "ws": "^8.20.0",
     "zod": "catalog:"
   },
   "peerDependencies": {
@@ -57,6 +60,7 @@
     "@opentelemetry/core": "1.30.1",
     "@opentelemetry/sdk-trace-base": "1.30.1",
     "@types/node": "catalog:",
+    "@types/ws": "^8.18.1",
     "@workflow/tsconfig": "workspace:*",
     "genversion": "3.2.0",
     "typescript": "catalog:",

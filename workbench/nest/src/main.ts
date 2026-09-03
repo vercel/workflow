@@ -1,15 +1,13 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { createWorld as createPostgresWorld } from '@workflow/world-postgres';
-import { setWorld } from 'workflow/runtime';
 import { AppModule } from './app.module.js';
 
 async function bootstrap() {
   // Start the Postgres World if configured
   if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
-    const world = await createPostgresWorld();
-    setWorld(world);
+    const { getWorld } = await import('workflow/runtime');
+    const world = await getWorld();
     if (world.start) {
       console.log('Starting World workers...');
       await world.start();

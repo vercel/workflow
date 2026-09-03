@@ -2,7 +2,7 @@
 title: Webhooks & External Callbacks
 description: Receive HTTP callbacks from external services, process them durably, and respond inline.
 type: guide
-summary: Create webhook endpoints that your workflow can await, process incoming requests in steps, and respond to the caller — all within durable workflow context.
+summary: Create webhook endpoints that your workflow can await, process incoming requests in steps, and respond to the caller, all within durable workflow context.
 ---
 
 <CopyPrompt
@@ -17,7 +17,7 @@ Use webhooks when external services push events to your application via HTTP cal
 - Waiting for third-party verification or processing results
 - Any integration where an external system calls you back asynchronously
 
-## Pattern: Processing webhook events
+## Pattern: processing webhook events
 
 Create a webhook with manual response control, then iterate over incoming requests:
 
@@ -77,7 +77,7 @@ async function processEvent(
 }
 ```
 
-## Pattern: Async request-reply with timeout
+## Pattern: async request-reply with timeout
 
 Submit a request to an external service, pass it your webhook URL, then race the callback against a deadline:
 
@@ -128,7 +128,7 @@ async function processCallback(
 }
 ```
 
-## Pattern: Large payload by reference
+## Pattern: large payload by reference
 
 When payloads are too large to serialize into the event log, pass a lightweight reference (a "claim check") instead. Use a hook to signal when the data is ready:
 
@@ -143,7 +143,7 @@ export async function importLargeFile(importId: string) {
   // Suspend until the external system signals the blob is uploaded
   const { blobToken } = await blobReady.create({ token: `upload:${importId}` }); // [!code highlight]
 
-  // Process by reference -- the full payload never enters the event log
+  // Process by reference. The full payload never enters the event log.
   await processBlob(blobToken);
 
   return { importId, blobToken, status: "indexed" };
@@ -177,7 +177,7 @@ export async function POST(request: Request) {
 - **`for await` on a webhook** lets you process multiple events from the same URL. Use `break` to stop listening after a terminal event.
 - **Webhooks auto-generate URLs** at `/.well-known/workflow/v1/webhook/:token`. Pass this URL to external services.
 - **Race webhooks against `sleep()`** for deadlines. If the callback doesn't arrive in time, the workflow can take a fallback action.
-- **For large payloads**, use a hook + reference token instead of passing the data through the workflow. The event log serializes all step inputs/outputs, so large payloads hurt performance.
+- **For large payloads**, use a hook and reference token instead of passing the data through the workflow. The event log serializes all step inputs and outputs, so large payloads hurt performance.
 
 ## Key APIs
 

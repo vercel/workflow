@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,8 +7,17 @@ import type { Event, Storage } from '@workflow/world';
 import { SPEC_VERSION_CURRENT, stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { writeJSON } from './fs.js';
-import { hashToken, hookDisposeLockPath } from './storage/helpers.js';
+import * as fsModule from './fs.js';
+import { promoteExclusive, writeExclusive, writeJSON } from './fs.js';
+import { MAX_CACHED_EVENT_ENTRIES } from './storage/events-storage.js';
+import * as helpers from './storage/helpers.js';
+import {
+  hashToken,
+  hookDisposeLockPath,
+  hookTokenClaimPath,
+  runTerminalMarkerPath,
+  withHookTokenClaimLock,
+} from './storage/helpers.js';
 import { createStorage } from './storage.js';
 import {
   completeWait,
@@ -16,6 +26,7 @@ import {
   createStep,
   createWait,
   disposeHook,
+  permissionEnforcement,
   updateRun,
   updateStep,
 } from './test-helpers.js';
@@ -152,6 +163,7 @@ describe('Storage', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     // Clean up test dir
     await fs.rm(testDir, { recursive: true, force: true });
   });
@@ -235,6 +247,94 @@ describe('Storage', () => {
       });
     });
 
+    describe('getMany', () => {
+      it('preserves input order, deduplicates reads, and returns null for missing runs', async () => {
+        const first = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'first-workflow',
+          input: new Uint8Array([1]),
+        });
+        const second = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'second-workflow',
+          input: new Uint8Array([2]),
+        });
+
+        const results = await storage.runs.getMany(
+          [first.runId, 'wrun_missing', second.runId, first.runId],
+          { resolveData: 'none' }
+        );
+
+        expect(results.map((run) => run?.runId ?? null)).toEqual([
+          first.runId,
+          null,
+          second.runId,
+          first.runId,
+        ]);
+        expect(results[0]?.input).toBeUndefined();
+        expect(results[2]?.output).toBeUndefined();
+      });
+    });
+
+    describe('encryptionPublicKey', () => {
+      const PUBLIC_KEY = `${'A'.repeat(43)}=`;
+
+      it('persists the public key from run_created', async () => {
+        const result = await storage.events.create(null, {
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            deploymentId: 'deployment-123',
+            workflowName: 'test-workflow',
+            input: new Uint8Array(),
+            encryptionPublicKey: PUBLIC_KEY,
+          },
+        } as never);
+        expect(result.run?.encryptionPublicKey).toBe(PUBLIC_KEY);
+
+        const reread = await storage.runs.get(result.run!.runId);
+        expect(reread.encryptionPublicKey).toBe(PUBLIC_KEY);
+      });
+
+      it('carries the public key through resilient-start run creation', async () => {
+        // run_started for a run that was never created rebuilds it from the
+        // queued message. This is the one path where losing the key is
+        // permanent — the run would silently stop accepting sealed cross-run
+        // writes for the rest of its life, with no error anywhere.
+        const runId = `wrun_${monotonicFactory()()}`;
+        const result = await storage.events.create(runId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: {
+            deploymentId: 'deployment-123',
+            workflowName: 'resilient-test',
+            input: new Uint8Array(),
+            encryptionPublicKey: PUBLIC_KEY,
+          },
+        } as never);
+
+        expect(result.run?.encryptionPublicKey).toBe(PUBLIC_KEY);
+
+        // The synthesized run_created event must carry it too, so a replay
+        // rebuilding state from the log sees the same key.
+        const events = await storage.events.list({ runId });
+        const created = events.data.find((e) => e.eventType === 'run_created');
+        expect(
+          (created?.eventData as { encryptionPublicKey?: string })
+            ?.encryptionPublicKey
+        ).toBe(PUBLIC_KEY);
+      });
+
+      it('leaves the field unset when the SDK does not supply it', async () => {
+        const created = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
+        expect(created.encryptionPublicKey).toBeUndefined();
+      });
+    });
+
     describe('update via events', () => {
       it('should update run status to running via run_started event', async () => {
         const created = await createRun(storage, {
@@ -253,6 +353,15 @@ describe('Storage', () => {
         expect(updated.updatedAt.getTime()).toBeGreaterThanOrEqual(
           created.updatedAt.getTime()
         );
+      });
+
+      it('should reject run_started on a non-existent run', async () => {
+        await expect(
+          storage.events.create('wrun_nonexistent', {
+            eventType: 'run_started',
+            specVersion: SPEC_VERSION_CURRENT,
+          })
+        ).rejects.toMatchObject({ name: 'WorkflowRunNotFoundError' });
       });
 
       it('should update run status to completed via run_completed event', async () => {
@@ -725,6 +834,7 @@ describe('Storage', () => {
 
         const events = await storage.events.listByCorrelationId({
           correlationId: 'lazy_step_2',
+          runId: testRunId,
         });
         const types = events.data.map((e) => e.eventType);
         // Both a step_created (synthetic) and a step_started must be present:
@@ -1173,6 +1283,118 @@ describe('Storage', () => {
         expect(fileExists).toBe(true);
       });
 
+      // Sized one event past the event cache so the preload cannot be served
+      // from cached entries alone and has to go back to the JSON files for at
+      // least one of them. Below the ceiling this still passes, and would stop
+      // covering that fallback, so the count tracks the ceiling rather than
+      // restating it.
+      //
+      // Those writes are sequential and each one is a file write, which is the
+      // whole cost of the test: ~1s on a developer machine, but two minutes on
+      // the Windows CI runner, where per-write latency is orders of magnitude
+      // worse. Batching them with `Promise.all` is slower, not faster: writers
+      // then contend for the same event slot and re-probe. Hence the timeout
+      // well past any other test in this file.
+      it('returns the complete preload when run_started is retried', async () => {
+        const total = MAX_CACHED_EVENT_ENTRIES + 1;
+
+        await storage.events.create(testRunId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+
+        // `run_created` from the fixture and the first `run_started` are
+        // already on the log, and the retry below is idempotent and appends
+        // nothing, so the fill is two short of `total`.
+        for (let index = 0; index < total - 2; index++) {
+          await storage.events.create(testRunId, {
+            eventType: 'attr_set',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              changes: [{ key: 'index', value: String(index) }],
+              writer: { type: 'workflow' },
+            },
+          });
+        }
+
+        const preloaded = await storage.events.create(testRunId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+        assert(preloaded.events);
+        assert(preloaded.cursor);
+        expect(preloaded.events).toHaveLength(total);
+        expect(preloaded.hasMore).toBe(false);
+
+        const all = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', limit: total * 2 },
+        });
+
+        expect(preloaded.events).toEqual(all.data);
+      }, 300_000);
+
+      it('returns a resumable partial preload at the event ceiling', async () => {
+        await storage.events.create(testRunId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+        for (let index = 0; index < 4; index++) {
+          await storage.events.create(testRunId, {
+            eventType: 'attr_set',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: {
+              changes: [{ key: 'index', value: String(index) }],
+              writer: { type: 'workflow' },
+            },
+          });
+        }
+        vi.stubEnv('WORKFLOW_MAX_EVENTS', '4');
+
+        const preloaded = await storage.events.create(testRunId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+        assert(preloaded.events);
+        assert(preloaded.cursor);
+        expect(preloaded.events).toHaveLength(4);
+        expect(preloaded.hasMore).toBe(true);
+
+        const remaining = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: preloaded.cursor },
+        });
+        const all = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', limit: 100 },
+        });
+
+        expect([...preloaded.events, ...remaining.data]).toEqual(all.data);
+        expect(remaining.hasMore).toBe(false);
+      });
+
+      it('skips the run_started preload when requested', async () => {
+        const started = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'run_started',
+            specVersion: SPEC_VERSION_CURRENT,
+          },
+          { skipPreload: true }
+        );
+        expect(started.events).toBeUndefined();
+
+        const retried = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'run_started',
+            specVersion: SPEC_VERSION_CURRENT,
+          },
+          { skipPreload: true }
+        );
+        expect(retried.events).toBeUndefined();
+      });
+
       it('should handle run completed events', async () => {
         const eventData = {
           eventType: 'run_completed' as const,
@@ -1295,13 +1517,9 @@ describe('Storage', () => {
       });
 
       it('truncates the delta and surfaces hasMore=true when it exceeds one page, matching events.list', async () => {
-        // Safety property the runtime relies on (see the limit/hasMore/fallback
-        // contract at events-storage.ts and the consume gate in runtime.ts):
-        // the inline-delta query uses paginatedFileSystemQuery's default page
-        // size, so a delta larger than one page is truncated and MUST report
-        // hasMore=true. The runtime refuses to consume a truncated delta and
-        // falls back to the exhaustive events.list loop, so a partial page can
-        // never be mistaken for the complete delta.
+        // The inline-delta query uses paginatedFileSystemQuery's default page
+        // size, so a larger delta is truncated and MUST report hasMore=true.
+        // The runtime consumes this page and continues from its cursor.
         await updateRun(storage, testRunId, 'run_started');
 
         await createHook(storage, testRunId, {
@@ -1346,7 +1564,7 @@ describe('Storage', () => {
         // that more remains — byte-identical to events.list(sinceCursor).
         const firstPage = await storage.events.list({
           runId: testRunId,
-          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+          pagination: { limit: 20, sortOrder: 'asc', cursor: sinceCursor },
         });
 
         expect(result.hasMore).toBe(true);
@@ -1379,7 +1597,7 @@ describe('Storage', () => {
         expect(result.cursor).toBeUndefined();
       });
 
-      it('does not return a delta for non-terminal step events', async () => {
+      it('returns a delta for non-terminal event types too', async () => {
         await updateRun(storage, testRunId, 'run_started');
         const sinceCursor = await currentCursor();
         await createStep(storage, testRunId, {
@@ -1387,8 +1605,9 @@ describe('Storage', () => {
           stepName: 'seq-step',
           input: new Uint8Array(),
         });
-        // step_started carries sinceCursor but is not a loop boundary, so the
-        // World should not compute a delta for it.
+        // Whether the delta is worth asking for is the caller's decision, not
+        // the World's: outside turbo the runtime sends `sinceCursor` on every
+        // write so each response carries its log forward.
         const result = await storage.events.create(
           testRunId,
           {
@@ -1398,7 +1617,46 @@ describe('Storage', () => {
           },
           { sinceCursor }
         );
-        expect(result.events).toBeUndefined();
+        const expected = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+        });
+        expect(result.events?.map((e) => e.eventId)).toEqual(
+          expected.data.map((e) => e.eventId)
+        );
+        expect(result.events?.at(-1)?.eventType).toBe('step_started');
+        expect(result.cursor).toBe(expected.cursor);
+        expect(result.hasMore).toBe(expected.hasMore);
+      });
+
+      it('returns a delta for a wait_completed write', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        await storage.events.create(testRunId, {
+          eventType: 'wait_created' as const,
+          correlationId: 'corr_wait1',
+          eventData: { resumeAt: new Date(Date.now() - 1000) },
+        });
+        const sinceCursor = await currentCursor();
+        // The runtime's elapsed-wait pass relies on this delta instead of a
+        // follow-up events.list, so the response must carry the completion it
+        // just wrote.
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'wait_completed' as const,
+            correlationId: 'corr_wait1',
+            eventData: { resumeAt: new Date(Date.now() - 1000) },
+          },
+          { sinceCursor }
+        );
+        expect(
+          result.events?.some(
+            (e) =>
+              e.eventType === 'wait_completed' &&
+              e.correlationId === 'corr_wait1'
+          )
+        ).toBe(true);
+        expect(result.hasMore).toBe(false);
       });
     });
 
@@ -1514,6 +1772,20 @@ describe('Storage', () => {
         expect(page2.data).toHaveLength(2);
         expect(page2.data[0].eventId).not.toBe(page1.data[0].eventId);
       });
+
+      it('returns all remaining events when no limit is set', async () => {
+        await storage.events.create(testRunId, {
+          eventType: 'run_started',
+        });
+
+        const result = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc' },
+        });
+
+        expect(result.data).toHaveLength(2);
+        expect(result.hasMore).toBe(false);
+      });
     });
 
     describe('listByCorrelationId', () => {
@@ -1560,6 +1832,7 @@ describe('Storage', () => {
 
         const result = await storage.events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1574,7 +1847,11 @@ describe('Storage', () => {
         expect(result.data[2].correlationId).toBe(correlationId);
       });
 
-      it('should list events across multiple runs with same correlation ID', async () => {
+      it('returns only the named run when two runs share a correlation ID', async () => {
+        // A correlation id names a hook, step or wait within its run. Two runs
+        // can hold the same one — a slot-numbered run counts its own steps, so
+        // `step_…001` is the first step of every such run — and the query
+        // answers for the run it was given, not for both.
         const correlationId = 'hook-xyz789';
 
         // Create another run
@@ -1611,16 +1888,27 @@ describe('Storage', () => {
 
         const result = await storage.events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: {},
         });
 
-        expect(result.data).toHaveLength(3);
-        expect(result.data[0].eventId).toBe(event1.eventId);
-        expect(result.data[0].runId).toBe(testRunId);
-        expect(result.data[1].eventId).toBe(event2.eventId);
-        expect(result.data[1].runId).toBe(run2.runId);
-        expect(result.data[2].eventId).toBe(event3.eventId);
-        expect(result.data[2].runId).toBe(testRunId);
+        expect(result.data.map((event) => event.eventId)).toEqual([
+          event1.eventId,
+          event3.eventId,
+        ]);
+        expect(result.data.every((event) => event.runId === testRunId)).toBe(
+          true
+        );
+
+        // The other run's event is not lost, it belongs to the other run.
+        const other = await storage.events.listByCorrelationId({
+          correlationId,
+          runId: run2.runId,
+          pagination: {},
+        });
+        expect(other.data.map((event) => event.eventId)).toEqual([
+          event2.eventId,
+        ]);
       });
 
       it('should return empty list for non-existent correlation ID', async () => {
@@ -1638,6 +1926,7 @@ describe('Storage', () => {
 
         const result = await storage.events.listByCorrelationId({
           correlationId: 'non-existent-correlation-id',
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1688,6 +1977,7 @@ describe('Storage', () => {
         // Get first page (step_created + step_started = 2)
         const page1 = await storage.events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: { limit: 2 },
         });
 
@@ -1698,6 +1988,7 @@ describe('Storage', () => {
         // Get second page (step_retrying + step_started + step_completed = 3)
         const page2 = await storage.events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: { limit: 3, cursor: page1.cursor || undefined },
         });
 
@@ -1723,6 +2014,7 @@ describe('Storage', () => {
 
         const result = await storage.events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: {},
           resolveData: 'none',
         });
@@ -1767,6 +2059,7 @@ describe('Storage', () => {
 
         const result = await storage.events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1808,6 +2101,7 @@ describe('Storage', () => {
 
         const result = await storage.events.listByCorrelationId({
           correlationId,
+          runId: testRunId,
           pagination: { sortOrder: 'desc' },
         });
 
@@ -1857,6 +2151,7 @@ describe('Storage', () => {
 
         const result = await storage.events.listByCorrelationId({
           correlationId: hookId,
+          runId: testRunId,
           pagination: {},
         });
 
@@ -1945,6 +2240,7 @@ describe('Storage', () => {
 
       const events = await storage.events.listByCorrelationId({
         correlationId: stepId,
+        runId: testRunId,
         pagination: {},
       });
 
@@ -2056,6 +2352,31 @@ describe('Storage', () => {
     });
   });
 
+  it('fails an operation when its Hook token lock is compromised', async () => {
+    const token = 'compromised-lock';
+    let started!: () => void;
+    const lockAcquired = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const operation = withHookTokenClaimLock(testDir, token, async (signal) => {
+      started();
+      await new Promise<void>((resolve) => {
+        signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      signal.throwIfAborted();
+    });
+
+    await lockAcquired;
+    await fs.rm(`${hookTokenClaimPath(testDir, token)}.lock`, {
+      recursive: true,
+    });
+
+    await expect(operation).rejects.toMatchObject({
+      name: 'WorkflowWorldError',
+      message: 'Hook token claim lock was compromised',
+    });
+  });
+
   describe('hooks', () => {
     let testRunId: string;
 
@@ -2069,6 +2390,46 @@ describe('Storage', () => {
     });
 
     describe('create', () => {
+      it('rejects retention beyond the 30-day default before writing Hook state', async () => {
+        const hookId = 'hook_over_retention_limit';
+        const before = await storage.events.list({ runId: testRunId });
+
+        await expect(
+          createHook(storage, testRunId, {
+            hookId,
+            token: 'over-retention-limit',
+            tokenRetentionUntil: new Date(
+              Date.now() + 31 * 24 * 60 * 60 * 1000
+            ),
+          })
+        ).rejects.toMatchObject({
+          name: 'WorkflowWorldError',
+          status: 400,
+          message:
+            'Hook minimum retention cannot exceed 30 days in the Local World.',
+        });
+
+        await expect(storage.hooks.get(hookId)).rejects.toMatchObject({
+          name: 'HookNotFoundError',
+        });
+        expect(await storage.events.list({ runId: testRunId })).toEqual(before);
+      });
+
+      it('accepts retention within the configured Local limit', async () => {
+        vi.stubEnv('WORKFLOW_LOCAL_HOOK_RETENTION_LIMIT_DAYS', '60');
+        const configuredStorage = createStorage(testDir);
+
+        await expect(
+          createHook(configuredStorage, testRunId, {
+            hookId: 'hook_custom_retention_limit',
+            token: 'custom-retention-limit',
+            tokenRetentionUntil: new Date(
+              Date.now() + 31 * 24 * 60 * 60 * 1000
+            ),
+          })
+        ).resolves.toMatchObject({ hookId: 'hook_custom_retention_limit' });
+      });
+
       it('should create a new hook', async () => {
         const hookData = {
           hookId: 'hook_123',
@@ -2212,6 +2573,7 @@ describe('Storage', () => {
         const hook1 = await createHook(storage, testRunId, {
           hookId: 'hook_1',
           token,
+          tokenRetentionUntil: new Date(Date.now() + 60_000),
         });
 
         expect(hook1.token).toBe(token);
@@ -2240,6 +2602,144 @@ describe('Storage', () => {
 
         expect(hook2.token).toBe(token);
         expect(hook2.hookId).toBe('hook_2');
+      });
+
+      it.each([
+        ['run_completed', { output: new Uint8Array() }],
+        ['run_failed', { error: new Uint8Array() }],
+        ['run_cancelled', undefined],
+      ] as const)('keeps a retained Hook available after %s', async (terminalEvent, terminalData) => {
+        const token = 'retained-token';
+        const hookId = 'hook_retained';
+        const retainedUntil = new Date(Date.now() + 60_000);
+        await createHook(storage, testRunId, {
+          hookId,
+          token,
+          tokenRetentionUntil: retainedUntil,
+        });
+        await fs.rm(hookTokenClaimPath(testDir, token));
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, terminalEvent, terminalData);
+
+        // Terminal cleanup reads retention from the Hook, not the lost claim.
+        await expect(storage.hooks.list({})).resolves.toMatchObject({
+          data: [
+            expect.objectContaining({
+              hookId,
+              tokenRetentionUntil: retainedUntil,
+            }),
+          ],
+        });
+      });
+
+      it('does not delete expired Hooks while reading', async () => {
+        const tokenRetentionUntil = new Date(Date.now() + 60_000);
+        await createHook(storage, testRunId, {
+          hookId: 'hook_expired',
+          token: 'expired-hook',
+          tokenRetentionUntil,
+        });
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        vi.spyOn(Date, 'now').mockReturnValue(tokenRetentionUntil.getTime());
+        await expect(storage.hooks.list({})).resolves.toMatchObject({
+          data: [],
+        });
+        await expect(
+          fs.access(path.join(testDir, 'hooks', 'hook_expired.json'))
+        ).resolves.toBeUndefined();
+      });
+
+      it('releases retention only after both its deadline and run end', async () => {
+        const token = 'expired-retention-token';
+        const retainedUntil = new Date(Date.now() + 60_000);
+        await createHook(storage, testRunId, {
+          hookId: 'hook_owner',
+          token,
+          tokenRetentionUntil: retainedUntil,
+        });
+
+        const replacement = await createRun(storage, {
+          deploymentId: 'deployment-replacement',
+          workflowName: 'replacement',
+          input: new Uint8Array(),
+        });
+        vi.spyOn(Date, 'now').mockReturnValue(retainedUntil.getTime());
+
+        const conflict = await storage.events.create(replacement.runId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_conflict',
+          eventData: { token },
+        });
+        expect(conflict.event.eventType).toBe('hook_conflict');
+
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+        await expect(storage.hooks.getByToken(token)).rejects.toMatchObject({
+          name: 'HookNotFoundError',
+        });
+        await expect(storage.hooks.list({})).resolves.toMatchObject({
+          data: [],
+        });
+        await expect(
+          createHook(storage, replacement.runId, {
+            hookId: 'hook_replacement',
+            token,
+          })
+        ).resolves.toMatchObject({ runId: replacement.runId, token });
+      });
+
+      it('admits one replacement across storage instances after retention ends', async () => {
+        const token = 'concurrent-expired-retention-token';
+        const retainedUntil = new Date(Date.now() + 500);
+        await createHook(storage, testRunId, {
+          hookId: 'hook_expiring_owner',
+          token,
+          tokenRetentionUntil: retainedUntil,
+        });
+        await updateRun(storage, testRunId, 'run_started');
+        await updateRun(storage, testRunId, 'run_completed', {
+          output: new Uint8Array(),
+        });
+
+        const workers = Array.from({ length: 10 }, () =>
+          createStorage(testDir)
+        );
+        const runs = await Promise.all(
+          workers.map((worker, index) =>
+            createRun(worker, {
+              deploymentId: `deployment-contender-${index}`,
+              workflowName: 'retention-contender',
+              input: new Uint8Array(),
+            })
+          )
+        );
+        await new Promise((resolve) =>
+          setTimeout(
+            resolve,
+            Math.max(0, retainedUntil.getTime() - Date.now() + 1)
+          )
+        );
+
+        const results = await Promise.all(
+          workers.map((worker, index) =>
+            worker.events.create(runs[index].runId, {
+              eventType: 'hook_created',
+              correlationId: `hook_contender_${index}`,
+              eventData: { token },
+            })
+          )
+        );
+        expect(
+          results.filter(({ event }) => event.eventType === 'hook_created')
+        ).toHaveLength(1);
+        expect(
+          results.filter(({ event }) => event.eventType === 'hook_conflict')
+        ).toHaveLength(workers.length - 1);
       });
 
       // Regression test for #2778: a claim whose owning run is terminal can
@@ -3322,6 +3822,7 @@ describe('Storage', () => {
       // and the outer code path emits the `hook_created` event.
       const token = 'orphaned-claim-token';
       const hookId = 'hook_orphan_1';
+      const tokenRetentionUntil = new Date(Date.now() + 60_000);
 
       // Pre-seed an orphaned token claim — same shape as one written
       // by `events.create` but with no corresponding hook entity on
@@ -3331,7 +3832,7 @@ describe('Storage', () => {
       await fs.mkdir(tokensDir, { recursive: true });
       await fs.writeFile(
         path.join(tokensDir, `${hashToken(token)}.json`),
-        JSON.stringify({ token, hookId, runId: testRunId, foo: 'bar' })
+        JSON.stringify({ token, hookId, runId: testRunId, tokenRetentionUntil })
       );
 
       // Sanity: the hook entity is not on disk yet.
@@ -3341,7 +3842,11 @@ describe('Storage', () => {
 
       // Retry: must succeed, write the hook entity, and emit a
       // hook_created event.
-      const hook = await createHook(storage, testRunId, { hookId, token });
+      const hook = await createHook(storage, testRunId, {
+        hookId,
+        token,
+        tokenRetentionUntil: new Date(Date.now() + 120_000),
+      });
       expect(hook.hookId).toBe(hookId);
       expect(hook.token).toBe(token);
 
@@ -3361,7 +3866,11 @@ describe('Storage', () => {
       const conflicts = events.data.filter(
         (e) => e.eventType === 'hook_conflict'
       );
-      expect(created).toHaveLength(1);
+      expect(created).toEqual([
+        expect.objectContaining({
+          eventData: expect.objectContaining({ tokenRetentionUntil }),
+        }),
+      ]);
       expect(conflicts).toHaveLength(0);
     });
 
@@ -3572,11 +4081,12 @@ describe('Storage', () => {
       const metadata = new Uint8Array([0xee]);
       const hookId = 'hook_event_log_rebuild';
       const token = 'event-log-rebuild-token';
+      const tokenRetentionUntil = new Date(Date.now() + 60_000);
 
       const created = await storage.events.create(testRunId, {
         eventType: 'hook_created',
         correlationId: hookId,
-        eventData: { token, metadata, isWebhook: true },
+        eventData: { token, metadata, isWebhook: true, tokenRetentionUntil },
       });
       expect(created.event.eventType).toBe('hook_created');
 
@@ -3613,6 +4123,7 @@ describe('Storage', () => {
         token,
         metadata,
         isWebhook: true,
+        tokenRetentionUntil,
       });
 
       const claim = JSON.parse(await fs.readFile(tokenClaimPath, 'utf8'));
@@ -4497,6 +5008,570 @@ describe('Storage', () => {
           token: 'new-token-cancelled',
         })
       ).rejects.toThrow(/terminal/i);
+    });
+
+    it('should reject hook_received on a completed run', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_before_complete',
+        token: 'token-before-complete',
+      });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([3]),
+      });
+
+      // run_completed's deleteAllHooksForRun cleanup runs before hook_received
+      // is attempted here, so this sequential case surfaces as the hook no
+      // longer existing rather than the terminal-run guard below (which
+      // covers the case where hook_received's write is still in flight when
+      // the run terminates concurrently, see the next test).
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'HookNotFoundError' });
+    });
+
+    it('should reject hook_received when the run state is already terminal (fast path)', async () => {
+      // hook_received's early currentRun / hook-exists checks pass while the
+      // run is still running, then the run reaches a terminal state before
+      // the event write. Writing the terminal status directly to disk
+      // (bypassing updateRun's deleteAllHooksForRun cleanup, so the hook
+      // still exists) isolates the assertion to the terminal-run guard at
+      // the event-publish site rather than the hook-existence check.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_race_terminal',
+        token: 'token-race-terminal',
+      });
+
+      const runPath = path.join(testDir, 'runs', `${run.runId}.json`);
+      await writeJSON(
+        runPath,
+        {
+          ...run,
+          status: 'completed',
+          completedAt: new Date(),
+          output: new Uint8Array([1]),
+        },
+        { overwrite: true }
+      );
+
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
+
+      // No hook_received event may have been appended.
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(0);
+    });
+
+    it('should reject hook_received when a run-terminal marker is committed by another process', async () => {
+      // The cross-process case the in-memory `withRunFileLock` cannot cover.
+      // A terminal transition in another process publishes the durable
+      // `runTerminalMarkerPath` marker BEFORE writing the run state and
+      // appending its terminal event. Here we write ONLY that marker (run
+      // state left 'running', hook left intact) so the guard's fast path
+      // must reject purely on the marker — the cross-instance signal — and
+      // must not append an event.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_marker_terminal',
+        token: 'token-marker-terminal',
+      });
+
+      await writeExclusive(runTerminalMarkerPath(testDir, run.runId), '');
+
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
+
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(0);
+    });
+
+    it('should reject a hook_received when the terminal marker commits in the stage-to-check window', async () => {
+      // Exercises step 3 of the stage → check → promote protocol: a
+      // terminal transition in another process commits its marker and reaps
+      // the staging directory AFTER hook_received's fast-path check but
+      // BEFORE its post-stage marker re-check. We simulate that exact
+      // interleaving by making the FIRST `isRunTerminalCommitted` probe
+      // (the fast path) still observe no marker, but perform the concurrent
+      // transition's marker write + reap as a side effect so the SECOND
+      // probe (post-stage, the real implementation) sees the marker and
+      // rejects before the promote — the event must never become visible.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_stage_window',
+        token: 'token-stage-window',
+      });
+
+      const markerPath = runTerminalMarkerPath(testDir, run.runId);
+      const realIsRunTerminalCommitted = helpers.isRunTerminalCommitted;
+      let probes = 0;
+      const spy = vi
+        .spyOn(helpers, 'isRunTerminalCommitted')
+        .mockImplementation(async (base, runId, tag) => {
+          probes++;
+          if (probes === 1) {
+            // Fast path: report not-terminal, but perform the concurrent
+            // terminal transition's durable prefix (marker + reap) now so
+            // the post-stage re-check observes it.
+            await writeExclusive(markerPath, '');
+            await helpers.reapPendingHookEvents(base, runId, tag);
+            return false;
+          }
+          return realIsRunTerminalCommitted(base, runId, tag);
+        });
+
+      try {
+        await expect(
+          storage.events.create(run.runId, {
+            eventType: 'hook_received',
+            correlationId: hook.hookId,
+            eventData: { payload: {} },
+          })
+        ).rejects.toMatchObject({ name: 'RunExpiredError' });
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(probes).toBeGreaterThanOrEqual(2);
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(0);
+    });
+
+    it('should reject a hook_received whose staged event is reaped in the check-to-promote window', async () => {
+      // Exercises step 4 — the atomic arbitration itself. The terminal
+      // transition's marker + reap land AFTER hook_received's post-stage
+      // marker re-check but BEFORE its promote: the reap unlinks the staged
+      // file, so the promote's hard link fails ('missing') and the resume
+      // is rejected. We simulate this by having the SECOND
+      // `isRunTerminalCommitted` probe truthfully report "no marker as of
+      // the check", while committing the marker and reaping (as the
+      // concurrent process) before returning. The event must never become
+      // visible — there is no rollback of reader-visible state anywhere on
+      // this path.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_promote_window',
+        token: 'token-promote-window',
+      });
+
+      const markerPath = runTerminalMarkerPath(testDir, run.runId);
+      const realIsRunTerminalCommitted = helpers.isRunTerminalCommitted;
+      let probes = 0;
+      const spy = vi
+        .spyOn(helpers, 'isRunTerminalCommitted')
+        .mockImplementation(async (base, runId, tag) => {
+          probes++;
+          if (probes === 2) {
+            // The staged file exists at this point. Perform the concurrent
+            // terminal transition's marker write + reap, then report the
+            // state as of the check (before the transition): no marker.
+            await writeExclusive(markerPath, '');
+            await helpers.reapPendingHookEvents(base, runId, tag);
+            return false;
+          }
+          return realIsRunTerminalCommitted(base, runId, tag);
+        });
+
+      try {
+        await expect(
+          storage.events.create(run.runId, {
+            eventType: 'hook_received',
+            correlationId: hook.hookId,
+            eventData: { payload: {} },
+          })
+        ).rejects.toMatchObject({ name: 'RunExpiredError' });
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(probes).toBeGreaterThanOrEqual(2);
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(0);
+    });
+
+    it('should keep a hook_received that won the promote before the run terminated', async () => {
+      // The accept side of the arbitration: the resume's hard link lands
+      // before any terminal transition, so the event is visible and stays
+      // in the log; a subsequent run_completed (which writes the marker and
+      // reaps an already-empty staging directory) must not disturb it.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_promote_winner',
+        token: 'token-promote-winner',
+      });
+
+      await storage.events.create(run.runId, {
+        eventType: 'hook_received',
+        correlationId: hook.hookId,
+        eventData: { payload: {} },
+      });
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([7]),
+      });
+
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(1);
+      // The terminal transition committed its durable marker.
+      await expect(
+        fs.access(runTerminalMarkerPath(testDir, run.runId))
+      ).resolves.toBeUndefined();
+    });
+
+    it('should reap a staged hook_received from another process on a terminal transition', async () => {
+      // The transition-side half of the arbitration, with the "other
+      // process" represented purely by filesystem state: a resume in
+      // another process staged its event and stalled before promoting.
+      // A real run_completed here must reap that staged file, so the
+      // stalled resume's later promote atomically fails and its event is
+      // never visible.
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await createHook(storage, run.runId, {
+        hookId: 'hook_stalled_resume',
+        token: 'token-stalled-resume',
+      });
+
+      const stalledEventId = 'evnt_00000000000000000000000000';
+      const stagedPath = helpers.pendingHookEventPath(
+        testDir,
+        run.runId,
+        stalledEventId
+      );
+      await writeExclusive(stagedPath, '{}');
+
+      await updateRun(storage, run.runId, 'run_completed', {
+        output: new Uint8Array([1]),
+      });
+
+      // The transition reaped the staged file...
+      await expect(fs.access(stagedPath)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      // ...so the stalled resume's promote loses the arbitration.
+      const eventPath = path.join(
+        testDir,
+        'events',
+        `${run.runId}-${stalledEventId}.json`
+      );
+      await expect(promoteExclusive(stagedPath, eventPath)).resolves.toBe(
+        'missing'
+      );
+      // And its event never became visible.
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(0);
+    });
+
+    it('should order the terminal event after a hook_received accepted while the terminal call was stalled', async () => {
+      // The replay-ordering half of the guard. events.list() sorts by
+      // (createdAt, eventId), both normally allocated at createImpl()
+      // entry. Interleaving: run_completed enters and allocates its (older)
+      // key, stalls before writing the terminal marker; a hook_received
+      // then enters with a newer key and legitimately wins the promote
+      // arbitration; the terminal call resumes and appends its event. With
+      // the entry-allocated key the accepted hook would replay AFTER the
+      // terminal event. The terminal transition must therefore re-derive
+      // its key at the marker+reap linearization point, dominating every
+      // reader-visible event of the run.
+      //
+      // The stall is reproduced by intercepting the terminal marker's
+      // writeExclusive — the first cross-process-visible step of the
+      // transition — and running the full hook_received to completion
+      // inside the interception (the marker is not yet on disk, so the
+      // hook is accepted).
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      const hook = await createHook(storage, run.runId, {
+        hookId: 'hook_stalled_terminal',
+        token: 'token-stalled-terminal',
+      });
+
+      const markerPath = runTerminalMarkerPath(testDir, run.runId);
+      const realWriteExclusive = fsModule.writeExclusive;
+      let intercepted = false;
+      const spy = vi
+        .spyOn(fsModule, 'writeExclusive')
+        .mockImplementation(async (filePath, data) => {
+          if (!intercepted && filePath === markerPath) {
+            intercepted = true;
+            await storage.events.create(run.runId, {
+              eventType: 'hook_received',
+              correlationId: hook.hookId,
+              eventData: { payload: {} },
+            });
+          }
+          return realWriteExclusive(filePath, data);
+        });
+
+      try {
+        await updateRun(storage, run.runId, 'run_completed', {
+          output: new Uint8Array([9]),
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(intercepted).toBe(true);
+
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: { sortOrder: 'asc' },
+      });
+      const types = events.data.map((e) => e.eventType);
+      expect(types.filter((t) => t === 'hook_received')).toHaveLength(1);
+      // The accepted hook must replay BEFORE the terminal event, and the
+      // terminal event must be the last event of the run.
+      expect(types.indexOf('hook_received')).toBeLessThan(
+        types.indexOf('run_completed')
+      );
+      expect(types.at(-1)).toBe('run_completed');
+    });
+
+    // chmod-based permission simulation is a no-op for directories on
+    // Windows, and is bypassed outright by root / CAP_DAC_OVERRIDE, so these
+    // two abort-path tests only run where the permission bits are actually
+    // enforced — see `permissionEnforcement`.
+    it.skipIf(!permissionEnforcement.write)(
+      'should abort the terminal transition when the staging reap fails',
+      async () => {
+        // The reap is the correctness-critical half of the arbitration: if
+        // it fails for any reason other than "nothing staged" (ENOENT), a
+        // staged file may remain linkable, and proceeding would let the
+        // stalled resume promote its event after the terminal state is
+        // written. A non-ENOENT reap failure must therefore abort the
+        // terminal transition BEFORE the state write, leaving it retryable.
+        const run = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
+        const stagedPath = helpers.pendingHookEventPath(
+          testDir,
+          run.runId,
+          'evnt_00000000000000000000000001'
+        );
+        await writeExclusive(stagedPath, '{}');
+        const pendingDir = path.dirname(stagedPath);
+        await fs.chmod(pendingDir, 0o000);
+
+        try {
+          await expect(
+            updateRun(storage, run.runId, 'run_completed', {
+              output: new Uint8Array([1]),
+            })
+          ).rejects.toMatchObject({ code: 'EACCES' });
+        } finally {
+          await fs.chmod(pendingDir, 0o755);
+        }
+
+        // The transition aborted before the terminal state write, and the
+        // staged file survived — the arbitration was never forfeited.
+        expect((await storage.runs.get(run.runId)).status).toBe('pending');
+        await expect(fs.access(stagedPath)).resolves.toBeUndefined();
+
+        // A retry completes the transition and reaps the staged file.
+        await updateRun(storage, run.runId, 'run_completed', {
+          output: new Uint8Array([1]),
+        });
+        expect((await storage.runs.get(run.runId)).status).toBe('completed');
+        await expect(fs.access(stagedPath)).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      }
+    );
+
+    it.skipIf(!permissionEnforcement.read)(
+      'should abort the terminal transition when the dominance scan fails',
+      async () => {
+        // mintRunDominantEventKey's ordering guarantee depends on seeing
+        // every visible event of the run. A non-ENOENT readdir failure must
+        // abort the terminal transition before the state write instead of
+        // silently minting a wall-clock key with no dominance guarantee.
+        const run = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
+        const eventsDir = path.join(testDir, 'events');
+        await fs.chmod(eventsDir, 0o000);
+
+        try {
+          await expect(
+            updateRun(storage, run.runId, 'run_completed', {
+              output: new Uint8Array([1]),
+            })
+          ).rejects.toMatchObject({ code: 'EACCES' });
+        } finally {
+          await fs.chmod(eventsDir, 0o755);
+        }
+
+        // Aborted before the terminal state write.
+        expect((await storage.runs.get(run.runId)).status).toBe('pending');
+
+        // A retry completes the transition normally.
+        await updateRun(storage, run.runId, 'run_completed', {
+          output: new Uint8Array([1]),
+        });
+        expect((await storage.runs.get(run.runId)).status).toBe('completed');
+      }
+    );
+  });
+
+  describe('terminal-run guard for legacy runs', () => {
+    // Legacy runs (specVersion <= 1) are routed to handleLegacyEvent, which
+    // bypasses the current-spec guard chain entirely — so the guard must be
+    // applied there too. A legacy run is simulated by downgrading a real
+    // run's persisted specVersion.
+    async function createLegacyRun() {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'legacy-workflow',
+        input: new Uint8Array(),
+      });
+      const runPath = path.join(testDir, 'runs', `${run.runId}.json`);
+      await writeJSON(runPath, { ...run, specVersion: 1 }, { overwrite: true });
+      return run;
+    }
+
+    it('accepts hook_received on a live legacy run', async () => {
+      const run = await createLegacyRun();
+      const result = await storage.events.create(run.runId, {
+        eventType: 'hook_received',
+        correlationId: 'hook_legacy_live',
+        eventData: { payload: {} },
+      });
+      expect(result.event?.eventType).toBe('hook_received');
+
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(1);
+    });
+
+    it('rejects hook_received on a cancelled legacy run', async () => {
+      const run = await createLegacyRun();
+      await storage.events.create(run.runId, { eventType: 'run_cancelled' });
+
+      // The legacy cancellation path committed the durable marker before
+      // its state write, like current-spec terminal transitions.
+      await expect(
+        fs.access(runTerminalMarkerPath(testDir, run.runId))
+      ).resolves.toBeUndefined();
+
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: 'hook_legacy_cancelled',
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
+
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(0);
+    });
+
+    it('rejects hook_received when only the terminal marker is committed (cross-process)', async () => {
+      // A legacy run_cancelled in another process has committed its marker
+      // but not yet written the cancelled state: the run file still says
+      // 'running', so only the durable marker can reject this resume.
+      const run = await createLegacyRun();
+      await writeExclusive(runTerminalMarkerPath(testDir, run.runId), '');
+
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'hook_received',
+          correlationId: 'hook_legacy_marker',
+          eventData: { payload: {} },
+        })
+      ).rejects.toMatchObject({ name: 'RunExpiredError' });
+
+      const events = await storage.events.list({
+        runId: run.runId,
+        pagination: {},
+      });
+      expect(
+        events.data.filter((e) => e.eventType === 'hook_received')
+      ).toHaveLength(0);
     });
   });
 

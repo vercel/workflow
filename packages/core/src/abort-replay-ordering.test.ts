@@ -32,6 +32,7 @@ import {
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from './private.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { createContext } from './vm/index.js';
 import { createCreateAbortController } from './workflow/abort-controller.js';
 
@@ -69,8 +70,11 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   return {
     runId: 'wrun_test',
     encryptionKey: undefined,
+    replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => ctx.promiseQueue,
     }),

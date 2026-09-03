@@ -7,12 +7,12 @@ prerequisites:
   - /docs/getting-started/nestjs
 ---
 
-Builder that scans a NestJS project for workflow files and compiles them into the step, workflow, and webhook bundles plus a manifest. [`WorkflowModule.forRoot()`](/docs/api-reference/workflow-nest/workflow-module) creates and runs one automatically on startup — instantiate it yourself only when you need to build bundles outside the module lifecycle (e.g. a custom build script for production with `skipBuild`).
+Builder that scans a NestJS project for workflow files and compiles them into the step, workflow, and webhook bundles plus a manifest. [`WorkflowModule.forRoot()`](/docs/api-reference/workflow-nest/workflow-module) creates and runs one automatically on startup. Instantiate it yourself only when you need to build bundles outside the module lifecycle (e.g. a custom build script for production with `skipBuild`).
 
 ## Usage
 
 ```typescript title="scripts/build-workflows.ts" lineNumbers
-import { NestLocalBuilder } from "workflow/nest"; // [!code highlight]
+import { NestLocalBuilder } from "workflow/nest/builder"; // [!code highlight]
 
 const builder = new NestLocalBuilder({
   dirs: ["src"],
@@ -23,7 +23,7 @@ await builder.build(); // [!code highlight]
 console.log(`Workflow bundles written to ${builder.outDir}`);
 ```
 
-## API Signature
+## API signature
 
 ### Constructor
 
@@ -43,7 +43,7 @@ console.log(`Workflow bundles written to ${builder.outDir}`);
 | `dirs` | `string[]` | `['src']` | Directories to scan for workflow files. |
 | `outDir` | `string` | `'.nestjs/workflow'` (relative to `workingDir`) | Output directory for generated workflow bundles. |
 | `watch` | `boolean` | `false` | Enable watch mode for development. |
-| `moduleType` | `'es6' \| 'commonjs'` | `'es6'` | SWC module compilation type. When `'commonjs'`, the builder rewrites externalized imports in the steps bundle to use `require()` via `createRequire`, avoiding ESM/CJS named-export interop issues with SWC's output. |
+| `moduleType` | `'es6' \| 'commonjs'` | `'es6'` | SWC module compilation type. When `'commonjs'`, the builder rewrites externalized imports in the steps bundle to use `require()` through `createRequire`, avoiding ECMAScript module (ESM) and CommonJS (CJS) named-export interop issues with SWC's output. |
 | `distDir` | `string` | `'dist'` | Directory where NestJS compiles `.ts` source files to `.js` (relative to `workingDir`). Used when `moduleType` is `'commonjs'` to resolve compiled file paths. Should match the `outDir` in your `tsconfig.json`. |
 | `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
 
@@ -57,7 +57,7 @@ Builds the workflow bundles. Writes `steps.mjs`, `workflows.mjs`, `webhook.mjs`,
 
 #### `outDir`
 
-Read-only getter that returns the output directory for generated workflow bundles — the `outDir` option as passed, or the default `.nestjs/workflow` resolved against `workingDir`.
+Read-only getter that returns the output directory for generated workflow bundles: the `outDir` option as passed, or the default `.nestjs/workflow` resolved against `workingDir`.
 
 ### Returns
 

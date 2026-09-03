@@ -166,11 +166,10 @@ jobs:
         uses: ./.github/actions/setup-workflow-dev
         with:
           setup-rust: 'true'
-          install-args: '--ignore-scripts'
           build-packages: 'false'
 
       - name: Run Unit Tests
-        run: pnpm test --filter='!./docs' --filter='!./workbench/vitest'
+        run: pnpm turbo test --filter='!./docs' --filter='!./workbench/vitest'
 
   serializable-revivers:
     name: Serializable Reviver Compatibility
@@ -190,7 +189,6 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-args: '--ignore-scripts'
           build-packages: 'false'
 
       - name: Build reviver packages
@@ -215,16 +213,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
-          node-version: 22.x
-          cache: "pnpm"
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
+          install: true
+          require-lockfile: true
+          runtime: node@22
+          cache: true
 
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*'
@@ -237,11 +231,26 @@ jobs:
         env:
           APP_NAME: "nextjs-turbopack"
 
+      # Regression test for the o2flow beta.26 incident: hook.resume() from a
+      # plain API route must resolve the workflow world inside an isolated
+      # (lambda-like) route bundle. Runs in this job because it also performs
+      # a production Turbopack build of the nextjs-turbopack workbench.
+      - name: Run Route Bundle Isolation Tests
+        run: pnpm vitest run packages/core/e2e/route-bundle-isolation.test.ts
+        env:
+          APP_NAME: "nextjs-turbopack"
+
   vitest-plugin:
-    name: Vitest Plugin Tests
+    name: Vitest Plugin Tests (${{ matrix.vm }})
     runs-on: ubuntu-latest
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Workflow VM engines: node:vm (default) and the opt-in QuickJS
+        # WASM engine (WORKFLOW_VM=quickjs).
+        vm: [node, quickjs]
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -253,7 +262,6 @@ jobs:
         uses: ./.github/actions/setup-workflow-dev
         with:
           setup-rust: 'true'
-          install-args: '--ignore-scripts'
           build-packages: 'false'
 
       - name: Build packages
@@ -262,6 +270,8 @@ jobs:
       - name: Run Vitest Plugin Tests
         run: pnpm test
         working-directory: workbench/vitest
+        env:
+          WORKFLOW_VM: ${{ matrix.vm }}
 
   e2e-package-build:
     name: Build Shared E2E Packages
@@ -293,15 +303,20 @@ jobs:
             packages/*/dist
             packages/*/.well-known
             packages/*/src/version.ts
+            packages/core/src/runtime/vm-serde-bundle.generated.ts
+            packages/core/src/runtime/quickjs-assets.generated.ts
             packages/swc-plugin-workflow/swc_plugin_workflow.wasm
             packages/swc-plugin-workflow/build-hash.json
           include-hidden-files: true
           retention-days: 1
 
   e2e-vercel-prod:
-    name: E2E Vercel Prod Tests (${{ matrix.app.name }})
+    name: E2E Vercel Prod Tests (${{ matrix.app.name }} - ${{ matrix.vm }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Keep cross-language coverage visible without blocking JavaScript SDK
+    # changes while the Python runtime catches up with the current protocol.
+    continue-on-error: ${{ matrix.app.name == 'python' }}
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
     permissions:
@@ -312,6 +327,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Workflow VM engines: node:vm (default) and the opt-in QuickJS
+        # WASM engine. The env var is set on the e2e test runner, which is
+        # the client that starts runs against the deployed app — start()
+        # stamps executionContext.workflowVm so the deployed handler
+        # executes each run on the requested engine.
+        vm: [node, quickjs]
         app:
           - name: "example"
             project-id: "prj_xWq20Dd860HHAfzMjK2Mb6TPVxMa"
@@ -343,16 +364,36 @@ jobs:
           - name: "fastify"
             project-id: "prj_5Yap0VDQ633v998iqQ3L3aQ25Cck"
             project-slug: "workbench-fastify-workflow"
+          - name: "nest"
+            project-id: "prj_AV3YrzooDhMlvfmZybqeugHRk48Y"
+            project-slug: "workbench-nestjs-workflow"
           - name: "astro"
             project-id: "prj_YDAXj3K8LM0hgejuIMhioz2yLgTI"
             project-slug: "workbench-astro-workflow"
           - name: "tanstack-start"
             project-id: "prj_643jeVugTMq5ivsOFQHcbLG1qcnu"
             project-slug: "workbench-tanstack-start-workflow"
+          - name: "python"
+            project-id: "prj_MtdPMACTDJnukz8LzWM65Fob0IVU"
+            project-slug: "workbench-python-workflow"
+        exclude:
+          # `vm` selects the JS engine the workflow body runs on. There is no
+          # Python meaning to that axis — the Python app has one runtime — so
+          # only the `node` half of the pair is a real configuration.
+          #
+          # GitHub Actions matches an `exclude` entry by deep equality on every
+          # key it names, so the whole `app` object has to be repeated verbatim.
+          # Keep it in sync with the entry above.
+          - vm: quickjs
+            app:
+              name: "python"
+              project-id: "prj_MtdPMACTDJnukz8LzWM65Fob0IVU"
+              project-slug: "workbench-python-workflow"
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
+      WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS: '5000'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -367,8 +408,18 @@ jobs:
       - name: Build CLI
         run: pnpm turbo run build --filter='@workflow/cli'
 
+      # `changeset-release/*` PRs (the changesets "Version Packages" PR) are
+      # deliberately not deployed: the branch is force-pushed and can point at
+      # main's HEAD SHA, and Vercel keeps one commit status per project per
+      # SHA, so a same-SHA preview deployment overwrites the production one
+      # that the step below reads the deployment ID from. Every project's
+      # vercel.json therefore sets `git.deploymentEnabled` false for that
+      # branch, which leaves these PRs with no deployment of their own to wait
+      # for. Their content is main plus a version-bump commit, so they run
+      # against the production deployment main already produced instead.
       - name: Waiting for the Vercel deployment
         id: waitForDeployment
+        if: ${{ !startsWith(github.head_ref, 'changeset-release/') }}
         uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
         with:
           project-slug: ${{ matrix.app.project-slug }}
@@ -376,18 +427,39 @@ jobs:
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
+      # The base SHA, not the PR head: that is the main commit whose
+      # production deployment carries the code under test. Waiting on it also
+      # means a production build still in flight is waited out instead of
+      # testing whatever happens to be aliased to production. The commit-status
+      # ID this action reads is unambiguous for main SHAs once this repo stops
+      # deploying `changeset-release/main` (see above) — that branch was the
+      # only one that ever deployed a commit main also deployed.
+      - name: Waiting for the Vercel deployment (changeset-release PR)
+        id: prodDeployment
+        if: ${{ startsWith(github.head_ref, 'changeset-release/') }}
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
+        with:
+          project-slug: ${{ matrix.app.project-slug }}
+          timeout: 1000
+          check-interval: 15
+          environment: production
+          sha: ${{ github.event.pull_request.base.sha }}
+
       - name: Record E2E start time
         id: e2eStart
         run: echo "ms=$(($(date +%s) * 1000))" >> "$GITHUB_OUTPUT"
 
       - name: Run E2E Tests
-        run: pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-prod-$APP_NAME.json"
+        run: pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-prod-$APP_NAME-$WORKFLOW_VM.json"
         env:
           NODE_OPTIONS: "--enable-source-maps"
-          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
-          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url || steps.prodDeployment.outputs.deployment-url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id || steps.prodDeployment.outputs.deployment-id }}
           APP_NAME: ${{ matrix.app.name }}
-          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          WORKFLOW_VM: ${{ matrix.vm }}
+          # changeset-release PRs test main's production deployment, so they
+          # must be treated as a production run everywhere downstream.
+          WORKFLOW_VERCEL_ENV: ${{ (github.ref == 'refs/heads/main' || startsWith(github.head_ref, 'changeset-release/')) && 'production' || 'preview' }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
@@ -401,8 +473,11 @@ jobs:
           # a single pre-minted token that would expire mid-suite.
           # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
           # Point PRs at the protected workflow-server preview; unset on main
-          # so production runs hit the public vercel-workflow.com URL.
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          # so production runs hit the public vercel-workflow.com URL. Also
+          # unset for changeset-release PRs: they test a production deployment
+          # that is wired to the production workflow-server, and the harness
+          # has to read run state from the same server the app writes it to.
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && !startsWith(github.head_ref, 'changeset-release/') && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
 
       - name: Capture runtime logs on failure
         if: failure()
@@ -411,8 +486,8 @@ jobs:
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
-          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
-          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+          WORKFLOW_VERCEL_ENV: ${{ (github.ref == 'refs/heads/main' || startsWith(github.head_ref, 'changeset-release/')) && 'production' || 'preview' }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id || steps.prodDeployment.outputs.deployment-id }}
           E2E_START_MS: ${{ steps.e2eStart.outputs.ms }}
         run: node .github/scripts/fetch-e2e-runtime-logs.mjs
 
@@ -420,17 +495,20 @@ jobs:
         if: always()
         env:
           APP_NAME: ${{ matrix.app.name }}
-        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Vercel Prod ($APP_NAME)" >> $GITHUB_STEP_SUMMARY || true
+          WORKFLOW_VM: ${{ matrix.vm }}
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Vercel Prod ($APP_NAME - $WORKFLOW_VM)" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-results-vercel-prod-${{ matrix.app.name }}
+          name: e2e-results-vercel-prod-${{ matrix.app.name }}-${{ matrix.vm }}
           path: |
-            e2e-vercel-prod-${{ matrix.app.name }}.json
+            e2e-vercel-prod-${{ matrix.app.name }}-${{ matrix.vm }}.json
             e2e-metadata-${{ matrix.app.name }}-vercel.json
             e2e-failures-${{ matrix.app.name }}-vercel.json
+            e2e-flaky-${{ matrix.app.name }}-vercel.json
+            e2e-infra-${{ matrix.app.name }}-vercel.json
             e2e-diagnostics-${{ matrix.app.name }}-vercel.json
             e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
           retention-days: 7
@@ -459,6 +537,7 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
+      WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS: '5000'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -473,8 +552,11 @@ jobs:
       - name: Build CLI
         run: pnpm turbo run build --filter='@workflow/cli'
 
+      # See the note on e2e-vercel-prod: `changeset-release/*` PRs have no
+      # deployment of their own and test main's production deployment.
       - name: Waiting for the Vercel deployment
         id: waitForDeployment
+        if: ${{ !startsWith(github.head_ref, 'changeset-release/') }}
         uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
         with:
           project-slug: "example-nextjs-workflow-turbopack"
@@ -482,21 +564,34 @@ jobs:
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
+      - name: Waiting for the Vercel deployment (changeset-release PR)
+        id: prodDeployment
+        if: ${{ startsWith(github.head_ref, 'changeset-release/') }}
+        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
+        with:
+          project-slug: "example-nextjs-workflow-turbopack"
+          timeout: 1000
+          check-interval: 15
+          environment: production
+          sha: ${{ github.event.pull_request.base.sha }}
+
       - name: Run Multi-Region E2E Tests
         run: pnpm vitest run packages/core/e2e/e2e-region.test.ts --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-multi-region-$APP_NAME.json"
         env:
           NODE_OPTIONS: "--enable-source-maps"
-          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
-          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url || steps.prodDeployment.outputs.deployment-url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id || steps.prodDeployment.outputs.deployment-id }}
           APP_NAME: "nextjs-turbopack"
-          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          # changeset-release PRs test main's production deployment, so they
+          # must be treated as a production run everywhere downstream.
+          WORKFLOW_VERCEL_ENV: ${{ (github.ref == 'refs/heads/main' || startsWith(github.head_ref, 'changeset-release/')) && 'production' || 'preview' }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
           WORKFLOW_VERCEL_PROJECT_SLUG: "example-nextjs-workflow-turbopack"
           # See the note on e2e-vercel-prod: PRs point at the protected
           # workflow-server preview; unset on main for production.
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && !startsWith(github.head_ref, 'changeset-release/') && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
 
       - name: Capture runtime logs on failure
         if: failure()
@@ -505,8 +600,8 @@ jobs:
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
-          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
-          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+          WORKFLOW_VERCEL_ENV: ${{ (github.ref == 'refs/heads/main' || startsWith(github.head_ref, 'changeset-release/')) && 'production' || 'preview' }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id || steps.prodDeployment.outputs.deployment-id }}
         run: node .github/scripts/fetch-e2e-runtime-logs.mjs
 
       - name: Upload E2E results
@@ -518,8 +613,367 @@ jobs:
             e2e-vercel-multi-region-nextjs-turbopack.json
             e2e-metadata-nextjs-turbopack-vercel.json
             e2e-failures-nextjs-turbopack-vercel.json
+            e2e-flaky-nextjs-turbopack-vercel.json
+            e2e-infra-nextjs-turbopack-vercel.json
             e2e-diagnostics-nextjs-turbopack-vercel.json
             e2e-runtime-logs-nextjs-turbopack-vercel.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  e2e-vercel-ws-transport:
+    # Dedicated coverage for world-vercel's WebSocket events transport
+    # (WORKFLOW_EVENTS_TRANSPORT=ws — see events-v4.ts's
+    # isWsEventsTransportEnabled). This lane predates the default flip,
+    # when it was the only WS coverage in the file; it is kept because it
+    # still pins the transport explicitly, which every other Vercel lane
+    # now only gets by inheriting the default. See
+    # e2e-vercel-http-transport below for the other side.
+    #
+    # Mirrors e2e-vercel-prod's shape (same apps subset, same full e2e
+    # suite) but deploys itself via a plain `vercel deploy` (no
+    # `--prebuilt`) instead of waiting for the GitHub App's passive
+    # deployment — that's the only way to get a *second*, independent
+    # deployment of a project we don't own the Environment Variables UI
+    # for, with its own env var, without creating a whole new project.
+    #
+    # Deliberately NOT `--prebuilt`: an earlier version of this job built
+    # locally on the runner via `vercel build --prebuilt` and hit a string
+    # of environment-specific bugs that don't reproduce on a real
+    # deployment (missing `serverExternalPackages` tracing for
+    # `@workflow/world-vercel`, nitro preset auto-detection picking
+    # `node-server` instead of `vercel`, needing the whole monorepo
+    # pre-built on this runner). Plain `vercel deploy` uploads source and
+    # builds remotely on Vercel's own infra — the exact same pipeline the
+    # GitHub App uses for e2e-vercel-prod's deployments — so none of that
+    # applies here.
+    # Runs on every PR. It was opt-in behind `ws-transport-test` when four real
+    # `vercel deploy`s were too much to charge an unrelated PR for a transport
+    # that was off by default. That reasoning expired with the default: every
+    # deployment now uses WebSockets, so this stopped being a cost charged for
+    # someone else's feature and became the only check that the feature works.
+    name: E2E Vercel WS Transport Test (${{ matrix.app.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: ci-scope
+    # Mirrors e2e-vercel-prod and the HTTP lane: this is the only lane that
+    # *asserts* the socket carried the events, since e2e-vercel-prod inherits
+    # the default but checks nothing.
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - name: "example"
+            project-id: "prj_xWq20Dd860HHAfzMjK2Mb6TPVxMa"
+            project-slug: "example-workflow"
+          - name: "nextjs-turbopack"
+            project-id: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
+            project-slug: "example-nextjs-workflow-turbopack"
+          - name: "express"
+            project-id: "prj_cCZjpBy92VRbKHHbarDMhOHtkuIr"
+            project-slug: "workbench-express-workflow"
+          # Vite resolves `ws`'s absent optional accelerators to a stub
+          # instead of failing the require, so a build check can't see the
+          # breakage and only a masked frame at or above 48 bytes trips it
+          # (see WORKFLOW_OPTIONAL_WS_NATIVE_MODULES). Every CBOR event
+          # frame clears that, so this lane is the coverage for it.
+          - name: "vite"
+            project-id: "prj_uLIcNZNDmETulAvj5h0IcDHi5432"
+            project-slug: "workbench-vite-workflow"
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
+      WS_TEAM_ID: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      - name: Build CLI
+        run: pnpm turbo run build --filter='@workflow/cli'
+
+      # Pinned and installed once rather than `npx vercel@<version>` per
+      # command — repeated `npx` resolution showed inconsistent behavior
+      # (different Node version in the CLI's own banner, a doubled project
+      # path) across otherwise-identical earlier CI attempts.
+      - name: Install vercel CLI
+        run: pnpm add --global vercel@56.2.0
+
+      - name: Deploy a dedicated WS-transport preview
+        id: wsDeploy
+        env:
+          WS_VERCEL_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+        run: |
+          set -euo pipefail
+          # `vercel deploy` (source-upload mode, no --prebuilt) re-applies
+          # the linked project's own Root Directory setting internally —
+          # unlike `vercel build`, it expects to run from the repo root and
+          # narrow down itself, the same way the GitHub App's own deploy
+          # does. Passing `--cwd=<app dir>` here double-joins that Root
+          # Directory underneath itself ("workbench/x/workbench/x does not
+          # exist"). Link and deploy from the repo root — no --cwd at all —
+          # and let the project's own Root Directory setting do the
+          # narrowing, matching how every passively-triggered deployment in
+          # this file already works.
+          vercel pull --yes --environment=preview \
+            --project="${{ matrix.app.project-id }}" \
+            --scope="$WS_TEAM_ID" --token="$WS_VERCEL_TOKEN"
+          # `vercel deploy` writes the new deployment's URL to stdout and
+          # progress/logs to stderr, specifically so it composes as
+          # `url=$(vercel deploy ...)` in scripts — do not redirect stderr
+          # into this capture. `--target=preview` is explicit here even
+          # though it's the default without `--prod` — these are shared,
+          # production-adjacent projects, and this shouldn't ever silently
+          # start deploying to their production aliases if a future edit
+          # changes flags around this call.
+          # Strict mode turns a silent HTTP demotion into a failed run, so this
+          # lane actually asserts the socket carried traffic instead of only
+          # asserting the feature was harmless. Scoped to `step_completed` —
+          # see STRICT_WS_EVENT_TYPES in events-v4.ts for why the other event
+          # types fall back legitimately. Never set on e2e-vercel-prod.
+          URL=$(vercel deploy --yes --target=preview \
+            -e WORKFLOW_EVENTS_TRANSPORT=ws \
+            -e WORKFLOW_INTERNAL_EVENTS_TRANSPORT_STRICT=1 \
+            --scope="$WS_TEAM_ID" --token="$WS_VERCEL_TOKEN")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          # Best-effort: only used by the runtime-logs capture on failure,
+          # which already skips gracefully if this doesn't parse.
+          DEPLOYMENT_ID=$(vercel inspect "$URL" --format=json \
+            --scope="$WS_TEAM_ID" --token="$WS_VERCEL_TOKEN" 2>/dev/null \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{}})" || true)
+          echo "deploymentId=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Record E2E start time
+        id: e2eStart
+        run: echo "ms=$(($(date +%s) * 1000))" >> "$GITHUB_OUTPUT"
+
+      - name: Run E2E Tests
+        run: pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-ws-transport-$APP_NAME.json"
+        env:
+          NODE_OPTIONS: "--enable-source-maps"
+          DEPLOYMENT_URL: ${{ steps.wsDeploy.outputs.url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.wsDeploy.outputs.deploymentId }}
+          APP_NAME: ${{ matrix.app.name }}
+          WORKFLOW_VERCEL_ENV: "preview"
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: ${{ env.WS_TEAM_ID }}
+          WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
+          WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+
+      - name: Capture runtime logs on failure
+        if: failure()
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: ${{ env.WS_TEAM_ID }}
+          WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
+          WORKFLOW_VERCEL_ENV: "preview"
+          VERCEL_DEPLOYMENT_ID: ${{ steps.wsDeploy.outputs.deploymentId }}
+          E2E_START_MS: ${{ steps.e2eStart.outputs.ms }}
+        run: node .github/scripts/fetch-e2e-runtime-logs.mjs
+
+      - name: Generate E2E summary
+        if: always()
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Vercel WS Transport ($APP_NAME)" >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Upload E2E results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-vercel-ws-transport-${{ matrix.app.name }}
+          path: |
+            e2e-vercel-ws-transport-${{ matrix.app.name }}.json
+            e2e-metadata-${{ matrix.app.name }}-vercel.json
+            e2e-failures-${{ matrix.app.name }}-vercel.json
+            e2e-flaky-${{ matrix.app.name }}-vercel.json
+            e2e-infra-${{ matrix.app.name }}-vercel.json
+            e2e-diagnostics-${{ matrix.app.name }}-vercel.json
+            e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  e2e-vercel-http-transport:
+    # The counterpart to e2e-vercel-ws-transport, and the reason it exists
+    # is the default flip: with WORKFLOW_EVENTS_TRANSPORT defaulting to
+    # `ws`, e2e-vercel-prod — which sets no transport env var at all — is
+    # now a WebSocket lane. Nothing in this file would exercise the HTTP
+    # events transport against a real Vercel deployment any more. This is
+    # not additive coverage; it replaces coverage that the flip silently
+    # took away.
+    #
+    # HTTP is now the fallback path, and the fallback is *silent*:
+    # resolveWsTransport returning null costs a write nothing and logs
+    # nothing. A path that is both unexercised and quiet is the exact
+    # shape of the durabench bug this stack came out of, so this lane is
+    # unconditional and required rather than label-gated like the WS one.
+    #
+    # Six apps, chosen by server shape rather than by count. Before the flip
+    # HTTP was the default, so all 28 e2e-vercel-prod lane-runs covered it;
+    # after the flip they cover WebSockets instead and this lane is the whole
+    # of the HTTP coverage. Each row is a real `vercel deploy` charged to
+    # every PR, so the full 14 is too expensive, but two was too thin for a
+    # transport that is still supported.
+    #
+    # The shapes, one fixture each:
+    #   example          - baseline, no framework server
+    #   nextjs-turbopack - Next; also the only fixture emitting OTEL spans,
+    #                      so the only one that can show which transport ran
+    #   vite             - Vite SSR
+    #   express          - Node req/res server
+    #   nitro            - Nitro/h3, which also covers nuxt
+    #   hono             - fetch-API Request/Response server, a genuinely
+    #                      different mount shape from express
+    #
+    # Omitted because they duplicate a shape already here: nextjs-webpack
+    # (same runtime as turbopack, different bundler), nuxt (nitro), fastify
+    # and nest (both express-shaped), astro and tanstack-start (adapter
+    # variants). `python` is omitted because it has no conformance gate and
+    # needs routes this suite does not serve - see the e2e-python job.
+    #
+    # The first four deliberately match the WS lane's matrix, so the same
+    # fixture is exercised on both transports and a failure on one can be
+    # compared against the other.
+    #
+    # Deploys itself with `vercel deploy` rather than `--prebuilt` for the
+    # same reasons documented on e2e-vercel-ws-transport above.
+    name: E2E Vercel HTTP Transport Test (${{ matrix.app.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: ci-scope
+    # Mirrors e2e-vercel-prod's condition exactly, so this lane runs in
+    # every case that one does, including under `workflow-server-test`.
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        app:
+          - name: "example"
+            project-id: "prj_xWq20Dd860HHAfzMjK2Mb6TPVxMa"
+            project-slug: "example-workflow"
+          - name: "nextjs-turbopack"
+            project-id: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
+            project-slug: "example-nextjs-workflow-turbopack"
+          - name: "vite"
+            project-id: "prj_uLIcNZNDmETulAvj5h0IcDHi5432"
+            project-slug: "workbench-vite-workflow"
+          - name: "express"
+            project-id: "prj_cCZjpBy92VRbKHHbarDMhOHtkuIr"
+            project-slug: "workbench-express-workflow"
+          - name: "nitro"
+            project-id: "prj_e7DZirYdLrQKXNrlxg7KmA6ABx8r"
+            project-slug: "workbench-nitro-workflow"
+          - name: "hono"
+            project-id: "prj_p0GIEsfl53L7IwVbosPvi9rPSOYW"
+            project-slug: "workbench-hono-workflow"
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
+      WS_TEAM_ID: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      - name: Build CLI
+        run: pnpm turbo run build --filter='@workflow/cli'
+
+      - name: Install vercel CLI
+        run: pnpm add --global vercel@56.2.0
+
+      - name: Deploy a dedicated HTTP-transport preview
+        id: httpDeploy
+        env:
+          WS_VERCEL_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+        run: |
+          set -euo pipefail
+          vercel pull --yes --environment=preview \
+            --project="${{ matrix.app.project-id }}" \
+            --scope="$WS_TEAM_ID" --token="$WS_VERCEL_TOKEN"
+          # `http` is the one value that opts out; the gate compares against
+          # exactly this string, so a typo here would silently test the
+          # default instead of the fallback and this lane would quietly
+          # become a duplicate of e2e-vercel-prod.
+          URL=$(vercel deploy --yes --target=preview \
+            -e WORKFLOW_EVENTS_TRANSPORT=http \
+            --scope="$WS_TEAM_ID" --token="$WS_VERCEL_TOKEN")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          DEPLOYMENT_ID=$(vercel inspect "$URL" --format=json \
+            --scope="$WS_TEAM_ID" --token="$WS_VERCEL_TOKEN" 2>/dev/null \
+            | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{console.log(JSON.parse(d).id||'')}catch{}})" || true)
+          echo "deploymentId=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Record E2E start time
+        id: e2eStart
+        run: echo "ms=$(($(date +%s) * 1000))" >> "$GITHUB_OUTPUT"
+
+      - name: Run E2E Tests
+        run: pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-vercel-http-transport-$APP_NAME.json"
+        env:
+          NODE_OPTIONS: "--enable-source-maps"
+          DEPLOYMENT_URL: ${{ steps.httpDeploy.outputs.url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.httpDeploy.outputs.deploymentId }}
+          APP_NAME: ${{ matrix.app.name }}
+          WORKFLOW_VERCEL_ENV: "preview"
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: ${{ env.WS_TEAM_ID }}
+          WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
+          WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+
+      - name: Capture runtime logs on failure
+        if: failure()
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_TEAM: ${{ env.WS_TEAM_ID }}
+          WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
+          WORKFLOW_VERCEL_ENV: "preview"
+          VERCEL_DEPLOYMENT_ID: ${{ steps.httpDeploy.outputs.deploymentId }}
+          E2E_START_MS: ${{ steps.e2eStart.outputs.ms }}
+        run: node .github/scripts/fetch-e2e-runtime-logs.mjs
+
+      - name: Generate E2E summary
+        if: always()
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Vercel HTTP Transport ($APP_NAME)" >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Upload E2E results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-vercel-http-transport-${{ matrix.app.name }}
+          path: |
+            e2e-vercel-http-transport-${{ matrix.app.name }}.json
+            e2e-metadata-${{ matrix.app.name }}-vercel.json
+            e2e-failures-${{ matrix.app.name }}-vercel.json
+            e2e-flaky-${{ matrix.app.name }}-vercel.json
+            e2e-infra-${{ matrix.app.name }}-vercel.json
+            e2e-diagnostics-${{ matrix.app.name }}-vercel.json
+            e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -573,7 +1027,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-dependencies: 'false'
+          install-dependencies: ${{ !matrix.app.canary }}
           build-packages: 'false'
 
       - name: Setup canary
@@ -581,12 +1035,9 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
@@ -621,6 +1072,7 @@ jobs:
           DEV_TEST_CONFIG: ${{ toJSON(matrix.app) }}
           WORKFLOW_DEV_HMR_LOGS: "1"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
+          WORKFLOW_VM: ${{ matrix.app.vm || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -631,7 +1083,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
-          path: e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+          path: |
+            e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+            e2e-flaky-${{ matrix.app.name }}-local.json
+            e2e-infra-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -659,7 +1114,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-dependencies: 'false'
+          install-dependencies: ${{ !matrix.app.canary }}
           build-packages: 'false'
 
       - name: Setup canary
@@ -667,12 +1122,9 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
@@ -697,6 +1149,16 @@ jobs:
           APP_NAME: ${{ matrix.app.name }}
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
 
+      # Asserts the shape of the manifest the step above just built. It needs
+      # its own invocation rather than another file in that one: local-build
+      # is what runs `pnpm build`, and vitest would run both files
+      # concurrently, against a manifest that does not exist yet.
+      - name: Run Manifest Tests
+        run: pnpm vitest run packages/core/e2e/manifest.test.ts
+        env:
+          APP_NAME: ${{ matrix.app.name }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
+
       - name: Run E2E Tests
         run: |
           export PROD_SERVER_LOG_PATH="$GITHUB_WORKSPACE/prod-server-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.log"
@@ -709,6 +1171,7 @@ jobs:
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
+          WORKFLOW_VM: ${{ matrix.app.vm || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -719,7 +1182,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
-          path: e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+          path: |
+            e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+            e2e-flaky-${{ matrix.app.name }}-local.json
+            e2e-infra-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -764,7 +1230,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
-          install-dependencies: 'false'
+          install-dependencies: ${{ !matrix.app.canary }}
           build-packages: 'false'
 
       - name: Setup canary
@@ -772,12 +1238,9 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.1-canary.17"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.1-canary.17"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Download shared package builds
         if: ${{ !matrix.app.canary }}
@@ -817,6 +1280,7 @@ jobs:
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
+          WORKFLOW_VM: ${{ matrix.app.vm || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -827,16 +1291,137 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: e2e-results-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
-          path: e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+          path: |
+            e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
+            e2e-flaky-${{ matrix.app.name }}-local.json
+            e2e-infra-${{ matrix.app.name }}-local.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # Cross-language conformance: the same TypeScript e2e suite, driven against the
+  # Python workbench app instead of a JavaScript one. Deliberately its own job
+  # rather than a `getTestMatrix` row — every step in the two local lanes is JS
+  # toolchain (`pnpm dev` / `pnpm start`, the canary `next` patch, `dev.test.ts`
+  # and `local-build.test.ts`, and the per-framework `DEV_TEST_CONFIG` of
+  # compiler-generated paths), and none of it has a Python counterpart. The
+  # `e2e-vercel-prod` lane, whose rows only need a URL, does carry `python` as an
+  # ordinary matrix row.
+  #
+  # This lane is advisory while the Python runtime catches up with the current
+  # protocol. A test that stops skipping correctly, or a fixture declared in
+  # `e2e-conformance.json` that the app stops registering, still fails visibly
+  # here and nowhere else.
+  e2e-python:
+    name: E2E Python Conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    needs: [ci-scope, e2e-package-build]
+
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      # The Python app needs nothing from `packages/`, but the driver does: the
+      # vitest suite imports `@workflow/core` and shells out to the `workflow`
+      # CLI to inspect runs.
+      - name: Download shared package builds
+        uses: actions/download-artifact@v4
+        with:
+          name: e2e-package-build-artifacts
+          path: packages
+
+      # Pinned rather than floating to latest: `uv sync --locked` below is only
+      # a meaningful gate if the tool reading the lock is a known quantity.
+      # Pinning here rather than via `[tool.uv] required-version` is deliberate
+      # — that key would also bind the uv that `@vercel/python` bundles on the
+      # build image, which we do not control.
+      - name: Setup uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.12.2'
+          enable-cache: true
+          cache-dependency-glob: workbench/python/uv.lock
+
+      # `--locked` rather than `--frozen`: a `pyproject.toml` edit that was never
+      # relocked should fail the job, not be silently ignored.
+      - name: Install Python dependencies
+        working-directory: workbench/python
+        run: uv sync --locked
+
+      - name: Run E2E Tests
+        run: |
+          APP_LOG="$GITHUB_WORKSPACE/python-app.log"
+          rm -f "$APP_LOG"
+          (cd workbench/python && uv run uvicorn app:app --port 3000 > "$APP_LOG" 2>&1) &
+
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:3000/.well-known/workflow/v1/manifest.json -o /dev/null; then
+              echo "app is up"
+              break
+            fi
+            sleep 1
+          done
+          curl -sf http://localhost:3000/.well-known/workflow/v1/manifest.json | head -c 2000
+          echo
+
+          # Only `e2e.test.ts` — `e2e-agent.test.ts` (which `pnpm test:e2e` also
+          # runs) has no conformance gate and needs routes this app does not serve.
+          pnpm vitest run packages/core/e2e/e2e.test.ts \
+            --reporter=verbose --reporter=json \
+            --reporter=./packages/core/e2e/github-reporter.ts \
+            --outputFile=e2e-conformance-python.json
+        env:
+          NODE_OPTIONS: "--enable-source-maps"
+          APP_NAME: "python"
+          WORKBENCH_APP_PATH: ${{ github.workspace }}/workbench/python
+          DEPLOYMENT_URL: "http://localhost:3000"
+
+      - name: Print Python app logs
+        if: always()
+        run: cat "$GITHUB_WORKSPACE/python-app.log" || true
+
+      - name: Generate E2E summary
+        if: always()
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Python Conformance" >> $GITHUB_STEP_SUMMARY || true
+
+      - name: Upload E2E results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-results-conformance-python
+          path: |
+            e2e-conformance-python.json
+            e2e-flaky-python-local.json
+            e2e-infra-python-local.json
+            e2e-diagnostics-python-local.json
           retention-days: 7
           if-no-files-found: ignore
 
   e2e-windows:
-    name: E2E Windows Tests
+    name: E2E Windows Tests (${{ matrix.vm }})
     runs-on: windows-latest
     timeout-minutes: 30
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Workflow VM engines: node:vm (default) and the opt-in QuickJS
+        # WASM engine (WORKFLOW_VM=quickjs).
+        vm: [node, quickjs]
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -855,16 +1440,12 @@ jobs:
           target: wasm32-unknown-unknown
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
-          node-version: 22.x
-          cache: "pnpm"
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
+          install: true
+          require-lockfile: true
+          runtime: node@22
+          cache: true
 
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*' --filter='!./docs'
@@ -874,7 +1455,10 @@ jobs:
           cd workbench/nextjs-turbopack
           $logFile = "$env:GITHUB_WORKSPACE/nextjs-server.log"
           $env:DEV_SERVER_LOG_PATH = $logFile
-          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev *>&1 | Tee-Object -FilePath $using:logFile }
+          # `$using:` only resolves PowerShell variables, not env vars, so
+          # copy MATRIX_VM into a session variable before Start-Job.
+          $matrixVm = $env:MATRIX_VM
+          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; $env:WORKFLOW_VM = $using:matrixVm; pnpm dev *>&1 | Tee-Object -FilePath $using:logFile }
           Start-Sleep -Seconds 15
           cd ../..
 
@@ -888,14 +1472,21 @@ jobs:
           # (2) probe the server before the long e2e run to catch any other
           # silent breakage.
           #
-          # Get-DevServerStatus returns the HTTP status code of GET /api/chat,
-          # or 0 if the request never produced a response. /api/chat is a
-          # POST-only endpoint, so a healthy dev server responds with 405
-          # Method Not Allowed; we only treat 5xx (and no-response) as
-          # unhealthy.
+          # Get-DevServerStatus returns the HTTP status code of the workflow
+          # flow route's health endpoint, or 0 if the request never produced a
+          # response. A healthy dev server answers `?__health` with 200; we
+          # only treat 5xx (and no-response) as unhealthy.
+          #
+          # Probe the flow route rather than /api/chat: the flow route is what
+          # every workflow dispatch hits, and it is the route that breaks. Its
+          # generated `__step_registrations.js` imports each discovered step
+          # file by path, so a step file the dev server failed to forget after
+          # a `dev.test.ts` fixture was deleted leaves it importing a path that
+          # no longer exists. /api/chat compiles independently and keeps
+          # answering 405 while every dispatch gets a 500.
           function Get-DevServerStatus {
             try {
-              $resp = Invoke-WebRequest -Uri "http://localhost:3000/api/chat" -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
+              $resp = Invoke-WebRequest -Uri "http://localhost:3000/.well-known/workflow/v1/flow?__health" -Method POST -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
               return [int]$resp.StatusCode
             } catch {
               if ($_.Exception.Response) {
@@ -921,14 +1512,14 @@ jobs:
           # would burn the full 30-minute job window polling stuck workflow
           # runs before getting cancelled.
           $status = Get-DevServerStatus
-          Write-Host "[health-check:pre-e2e] GET /api/chat -> $status"
+          Write-Host "[health-check:pre-e2e] POST /.well-known/workflow/v1/flow?__health -> $status"
           if ($status -eq 0 -or $status -ge 500) {
             Write-Host "::error title=Next.js dev server unhealthy::Dev server returned $status before e2e tests. Aborting to avoid the 30-minute job timeout. See the 'Print Next.js server logs' step for the underlying Turbopack error."
             Stop-Job $job -ErrorAction SilentlyContinue
             exit 1
           }
 
-          pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-windows-nextjs-turbopack.json
+          pnpm run test:e2e --reporter=verbose --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-windows-nextjs-turbopack-$env:MATRIX_VM.json
           $e2eExit = $LASTEXITCODE
           Stop-Job $job -ErrorAction SilentlyContinue
           exit $e2eExit
@@ -941,9 +1532,11 @@ jobs:
           # workbench's workflows are symlinks into workbench/example, and
           # Windows/Turbopack can rebuild from the symlink path while still
           # serving the previous module contents from the realpath cache.
-          DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/flow/__step_registrations.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000,"testWorkflowFile":"96_many_steps.ts"}'
+          DEV_TEST_CONFIG: '{"generatedStepRegistrationPath":"app/.well-known/workflow/v1/flow/__step_registrations.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000,"testWorkflowFile":"96_many_steps.ts"}'
           DEV_SERVER_LOG_PATH: "${{ github.workspace }}/nextjs-server.log"
           WORKFLOW_DEV_HMR_LOGS: "1"
+          WORKFLOW_VM: ${{ matrix.vm }}
+          MATRIX_VM: ${{ matrix.vm }}
 
       - name: Print Next.js server logs
         if: always()
@@ -961,14 +1554,19 @@ jobs:
       - name: Generate E2E summary
         if: always()
         shell: bash
-        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Windows (nextjs-turbopack)" >> $GITHUB_STEP_SUMMARY || true
+        env:
+          MATRIX_VM: ${{ matrix.vm }}
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Windows (nextjs-turbopack - $MATRIX_VM)" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-results-windows-nextjs-turbopack
-          path: e2e-windows-nextjs-turbopack.json
+          name: e2e-results-windows-nextjs-turbopack-${{ matrix.vm }}
+          path: |
+            e2e-windows-nextjs-turbopack-${{ matrix.vm }}.json
+            e2e-flaky-nextjs-turbopack-local.json
+            e2e-infra-nextjs-turbopack-local.json
           retention-days: 7
           if-no-files-found: ignore
 
@@ -976,7 +1574,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nextjs-server-logs-windows
+          name: nextjs-server-logs-windows-${{ matrix.vm }}
           path: nextjs-server.log
           retention-days: 7
           if-no-files-found: ignore
@@ -1032,7 +1630,7 @@ jobs:
   summary:
     name: E2E Summary
     runs-on: ubuntu-latest
-    needs: [ci-scope, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
+    needs: [ci-scope, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-vercel-http-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-python, e2e-windows]
     if: always() && !cancelled() && needs.ci-scope.outputs.fast-path != 'true'
     timeout-minutes: 10
 
@@ -1056,27 +1654,6 @@ jobs:
         run: |
           node .github/scripts/aggregate-e2e-results.js e2e-results --mode aggregate --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" | tee e2e-summary.md >> $GITHUB_STEP_SUMMARY
 
-      - name: Check E2E job statuses
-        id: check-status
-        run: |
-          VERCEL_STATUS="${{ needs.e2e-vercel-prod.result }}"
-          LOCAL_DEV_STATUS="${{ needs.e2e-local-dev.result }}"
-          LOCAL_PROD_STATUS="${{ needs.e2e-local-prod.result }}"
-          POSTGRES_STATUS="${{ needs.e2e-local-postgres.result }}"
-          WINDOWS_STATUS="${{ needs.e2e-windows.result }}"
-
-          echo "vercel=$VERCEL_STATUS" >> $GITHUB_OUTPUT
-          echo "local-dev=$LOCAL_DEV_STATUS" >> $GITHUB_OUTPUT
-          echo "local-prod=$LOCAL_PROD_STATUS" >> $GITHUB_OUTPUT
-          echo "postgres=$POSTGRES_STATUS" >> $GITHUB_OUTPUT
-          echo "windows=$WINDOWS_STATUS" >> $GITHUB_OUTPUT
-
-          if [[ "$VERCEL_STATUS" == "failure" || "$LOCAL_DEV_STATUS" == "failure" || "$LOCAL_PROD_STATUS" == "failure" || "$POSTGRES_STATUS" == "failure" || "$WINDOWS_STATUS" == "failure" ]]; then
-            echo "has_failures=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_failures=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Update PR comment with results
         if: github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
@@ -1084,30 +1661,12 @@ jobs:
           header: e2e-test-results
           path: e2e-summary.md
 
-      - name: Append failure notice to PR comment
-        if: github.event_name == 'pull_request' && steps.check-status.outputs.has_failures == 'true'
-        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
-        with:
-          header: e2e-test-results
-          append: true
-          message: |
-
-            ---
-            ❌ **Some E2E test jobs failed:**
-            - Vercel Prod: ${{ needs.e2e-vercel-prod.result }}
-            - Local Dev: ${{ needs.e2e-local-dev.result }}
-            - Local Prod: ${{ needs.e2e-local-prod.result }}
-            - Local Postgres: ${{ needs.e2e-local-postgres.result }}
-            - Windows: ${{ needs.e2e-windows.result }}
-
-            Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
-
-  # Final required check: passes only when unit + all E2E jobs succeed.
-  # Community worlds are intentionally excluded — they are disabled on main.
+  # Final required check: passes only when unit + required E2E jobs succeed.
+  # Python conformance is advisory, and community worlds are disabled on main.
   e2e-required-check:
     name: E2E Required Check
     runs-on: ubuntu-latest
-    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
+    needs: [ci-scope, unit, e2e-package-build, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-vercel-http-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows]
     if: always()
     timeout-minutes: 5
 
@@ -1117,6 +1676,8 @@ jobs:
           UNIT_STATUS: ${{ needs.unit.result }}
           BUILD_STATUS: ${{ needs.e2e-package-build.result }}
           VERCEL_STATUS: ${{ needs.e2e-vercel-prod.result }}
+          VERCEL_WS_STATUS: ${{ needs.e2e-vercel-ws-transport.result }}
+          VERCEL_HTTP_STATUS: ${{ needs.e2e-vercel-http-transport.result }}
           LOCAL_DEV_STATUS: ${{ needs.e2e-local-dev.result }}
           LOCAL_PROD_STATUS: ${{ needs.e2e-local-prod.result }}
           POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
@@ -1141,6 +1702,13 @@ jobs:
           if [[ "$HAS_LABEL" == "true" ]]; then
             echo "workflow-server-test label detected - only checking required jobs"
             [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
+            # This label is itself opt-in for the WS lane (see that job's `if`),
+            # so it runs here and is required.
+            [[ "$VERCEL_WS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-ws-transport ($VERCEL_WS_STATUS)")
+            # Unconditional, exactly like e2e-vercel-prod above: the HTTP
+            # lane has no opt-in label, so there is no case in which it is
+            # legitimately skipped while the rest of this branch runs.
+            [[ "$VERCEL_HTTP_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-http-transport ($VERCEL_HTTP_STATUS)")
 
             # Verify other jobs were actually skipped
             [[ "$UNIT_STATUS" == "skipped" ]] || echo "Warning: unit was not skipped ($UNIT_STATUS)"
@@ -1149,10 +1717,12 @@ jobs:
             [[ "$POSTGRES_STATUS" == "skipped" ]] || echo "Warning: e2e-local-postgres was not skipped ($POSTGRES_STATUS)"
             [[ "$WINDOWS_STATUS" == "skipped" ]] || echo "Warning: e2e-windows was not skipped ($WINDOWS_STATUS)"
           else
-            echo "Standard PR - checking all jobs"
+            echo "Standard PR - checking all required jobs"
             [[ "$UNIT_STATUS" == "success" ]] || FAILED_JOBS+=("unit ($UNIT_STATUS)")
             [[ "$BUILD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-package-build ($BUILD_STATUS)")
             [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
+            [[ "$VERCEL_WS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-ws-transport ($VERCEL_WS_STATUS)")
+            [[ "$VERCEL_HTTP_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-http-transport ($VERCEL_HTTP_STATUS)")
             [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
             [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
             [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")

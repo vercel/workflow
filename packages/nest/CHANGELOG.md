@@ -1,5 +1,106 @@
 # @workflow/nest
 
+## 5.0.0-beta.47
+
+### Patch Changes
+
+- Updated dependencies [[`88f5d21`](https://github.com/vercel/workflow/commit/88f5d214d48b15d3126943313ed03d48667e772c), [`ffc5807`](https://github.com/vercel/workflow/commit/ffc58078d0c3cd2786d69bab7e41614566a9ea4e)]:
+  - @workflow/builders@5.0.0-beta.47
+  - @workflow/utils@5.0.0-beta.10
+
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- Updated dependencies [[`f806f8c`](https://github.com/vercel/workflow/commit/f806f8c258fb9ba45fec8b0e4919f55b0bf81a3f)]:
+  - @workflow/builders@5.0.0-beta.46
+
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- Updated dependencies [[`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c)]:
+  - @workflow/builders@5.0.0-beta.45
+
+## 5.0.0-beta.44
+
+### Patch Changes
+
+- [#3728](https://github.com/vercel/workflow/pull/3728) [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8) Thanks [@pranaygp](https://github.com/pranaygp)! - Hold process-wide state on `globalThis` rather than at module scope in the packages that get bundled into the host application's server build, where a bundler compiles one copy of each module per layer. Covers warn-once latches, lazy caches, the VM script and QuickJS asset caches, the dev-server port cache, and step single-flight, whose per-copy map was not actually single-flight. State that is deliberately per-copy is annotated with the reason.
+
+- Updated dependencies [[`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`8a2648e`](https://github.com/vercel/workflow/commit/8a2648e35f3ccfdffd275bc37470dd3396981773), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8)]:
+  - @workflow/utils@5.0.0-beta.9
+  - @workflow/builders@5.0.0-beta.44
+
+## 5.0.0-beta.43
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.43
+
+## 5.0.0-beta.42
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.42
+
+## 5.0.0-beta.41
+
+### Patch Changes
+
+- Updated dependencies [[`4ec7aca`](https://github.com/vercel/workflow/commit/4ec7acaa7196a6f2f5025a65f05d5bdaaf5705ba), [`264ddff`](https://github.com/vercel/workflow/commit/264ddff67b3cfceea24235ee6d865c48e7982727)]:
+  - @workflow/builders@5.0.0-beta.41
+
+## 5.0.0-beta.40
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.40
+
+## 5.0.0-beta.39
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.39
+
+## 5.0.0-beta.38
+
+### Patch Changes
+
+- [#3142](https://github.com/vercel/workflow/pull/3142) [`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Revert the static workflow world target injection: the world package is again resolved at runtime from `WORKFLOW_TARGET_WORLD` instead of being aliased into host bundles at build time.
+
+- Updated dependencies [[`a09d001`](https://github.com/vercel/workflow/commit/a09d00135bd96f22bd1ae1dee6b5a6f797b7d804)]:
+  - @workflow/builders@5.0.0-beta.38
+
+## 5.0.0-beta.37
+
+### Patch Changes
+
+- Updated dependencies [[`cfe7570`](https://github.com/vercel/workflow/commit/cfe7570d67b585363644044f5ee9c9ea1fea1d24), [`b406a04`](https://github.com/vercel/workflow/commit/b406a04dfa86aae5d1482b71f18a8c7bfb1272ed), [`62d570e`](https://github.com/vercel/workflow/commit/62d570ed4bf38db333ae9fe9ba513c0d6a9d6b91)]:
+  - @workflow/builders@5.0.0-beta.37
+
+## 5.0.0-beta.36
+
+### Major Changes
+
+- [#2988](https://github.com/vercel/workflow/pull/2988) [`542138d`](https://github.com/vercel/workflow/commit/542138dc0b37f492fbf51b75e8ba4f57e291fc8f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `workflow-nest build --vercel` command for emitting a Vercel Build Output API directory, enabling deployment of NestJS apps on Vercel. **Breaking:** `NestLocalBuilder` moved from the package root to the `@workflow/nest/builder` (`workflow/nest/builder`) subpath so importing `WorkflowModule` no longer pulls the build toolchain into the runtime bundle; the new `NestVercelBuilder` lives at `@workflow/nest/vercel-builder` (`workflow/nest/vercel-builder`).
+
+### Patch Changes
+
+- Updated dependencies [[`927b61a`](https://github.com/vercel/workflow/commit/927b61ab419e98c027c077af81273e73650cb94f)]:
+  - @workflow/builders@5.0.0-beta.36
+
+## 5.0.0-beta.35
+
+### Patch Changes
+
+- Updated dependencies [[`a00d169`](https://github.com/vercel/workflow/commit/a00d16947085f8e94cf191c4d8850121cf201a94)]:
+  - @workflow/builders@5.0.0-beta.35
+
 ## 5.0.0-beta.34
 
 ### Patch Changes

@@ -17,7 +17,7 @@ import {
  *       step   step_… · add (./workflows/x)
  *       hint:  Move the call to a step function.
  *     FatalError: …
- *         at … (trimmed stack — internals collapsed)
+ *         at … (trimmed stack, internals collapsed)
  *
  * Without this composition, callers passing `${framing}\n${stack}` as the
  * message and structured fields as the metadata object got `util.inspect`'s
@@ -26,7 +26,7 @@ import {
  *
  * The same metadata is also emitted as structured OTel span events from
  * the logger itself, so backends that want JSON-shaped data still get it.
- * web/web-shared do not consume stderr at all — they read CBOR/JSON event
+ * web/web-shared do not consume stderr at all: they read CBOR/JSON event
  * payloads from the World event log.
  */
 export function composeLogLine(
@@ -52,7 +52,7 @@ function renderStructuredFields(
   if (!metadata || Object.keys(metadata).length === 0) return null;
 
   // Drop fields that the message already encodes. We render framings and
-  // stacks into the message string itself in step-handler / runtime, so
+  // stacks into the message string itself in step executor / combined runtime, so
   // repeating them here would be pure noise.
   const redundant = new Set<string>();
   redundant.add('errorStack');
@@ -155,7 +155,7 @@ function renderStructuredFields(
  *
  *     Name: message
  *         at userStep (./workflows/foo.ts:12:11)
- *         at <unknown> (../../packages/core/src/runtime/step-handler.ts:535:32)
+ *         at <unknown> (../../packages/core/src/runtime/step-executor.ts:535:32)
  *         at <unknown> (.../node_modules/.pnpm/next@…/…/base-server.js:1454:9)
  *         at <unknown> (.../node_modules/.pnpm/@opentelemetry+api@…/…/api.js:5440)
  *         at … (15 more frames into Next.js / pnpm internals)
@@ -164,7 +164,7 @@ function renderStructuredFields(
  *
  *   1. Drop framework-internal frames (`node_modules/.pnpm/`, `node:internal/`,
  *      Turbopack-bundled `node_modules__pnpm_*` / `_next_dist_*` chunks).
- *   2. Cap the surviving frames at `MAX_VISIBLE_FRAMES` — past that, even
+ *   2. Cap the surviving frames at `MAX_VISIBLE_FRAMES`: past that, even
  *      "user-ish" frames are usually deep async wrapping that doesn't help
  *      pinpoint the throw. The user can drop into the inspect CLI for the
  *      full stack on demand.
@@ -230,7 +230,7 @@ function isFrameworkFrame(line: string): boolean {
   // Turbopack/Next bundle the same framework code into chunks like
   // `node_modules__pnpm_<hash>._.js` and `<...>_next_dist_<hash>._.js`,
   // and emits Next.js loader runtime as `0dx6_next_dist_<hash>._.js`.
-  // These are the frames that show up after Turbopack DCE — same intent
+  // These are the frames that show up after Turbopack DCE, same intent
   // as the raw `node_modules/.pnpm/` filter above.
   if (trimmed.includes('node_modules__pnpm_')) return true;
   if (trimmed.includes('_next_dist_')) return true;

@@ -58,7 +58,7 @@ type DrizzlishOfType<T extends object> = {
 };
 
 /**
- * Sadly we do `any[]` right now
+ * Serialization currently uses `any[]`.
  */
 export type SerializedContent = any[];
 
@@ -90,8 +90,8 @@ export const runs = schema.table(
     error: Cbor<SerializedData>()('error_cbor'),
     /**
      * The high-level error category (USER_ERROR, RUNTIME_ERROR, etc.) from
-     * a run_failed event. Plaintext metadata for routing — does not require
-     * decryption or hydration.
+     * a run_failed event. Plaintext metadata for routing, so it does not
+     * require decryption or hydration.
      */
     errorCode: varchar('error_code'),
     /**
@@ -105,6 +105,14 @@ export const runs = schema.table(
       .$type<Record<string, string>>()
       .default({})
       .notNull(),
+    /**
+     * The run's X25519 public key (base64), stamped at creation by SDKs that
+     * support sealed (`encp`) envelopes. Lets cross-run writers seal payloads
+     * to this run without holding its symmetric key. Not secret. The private
+     * scalar is re-derived on demand and never stored. Null on runs created by
+     * older SDKs, which fall back to the symmetric path.
+     */
+    encryptionPublicKey: varchar('encryption_public_key'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
       .defaultNow()
@@ -125,7 +133,7 @@ export const runs = schema.table(
 export const events = schema.table(
   'workflow_events',
   {
-    eventId: varchar('id').primaryKey(),
+    eventId: varchar('id').notNull(),
     eventType: varchar('type').$type<Event['eventType']>().notNull(),
     correlationId: varchar('correlation_id'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -134,14 +142,28 @@ export const events = schema.table(
     eventDataJson: jsonb('payload'),
     eventData: Cbor<unknown>()('payload_cbor'),
     specVersion: integer('spec_version'),
+    // `resumeId` is omitted deliberately: world-postgres does not advertise
+    // lazy hook-resume dedup and stays on the sequential single-writer path,
+    // so it never needs to persist the resume idempotency key (no column, no
+    // migration).
   } satisfies DrizzlishOfType<
-    Cborized<Omit<Event, 'occurredAt'> & { eventData?: undefined }, 'eventData'>
+    Cborized<
+      Omit<Event, 'occurredAt' | 'resumeId'> & { eventData?: undefined },
+      'eventData'
+    >
   >,
   (tb) => [
-    index().on(tb.runId),
+    // Event ids are per-run slot positions, so `evnt_…0001` exists once per
+    // run and is only unique together with the run it belongs to. Runs
+    // created before slots keep globally-unique ULIDs, which this key also
+    // admits.
+    primaryKey({ columns: [tb.runId, tb.eventId] }),
+    // No standalone index on `runId`: the primary key leads with it, so every
+    // by-run lookup and range scan is served by that index already. Keeping one
+    // would cost a second write per event on the table's hottest path.
     index().on(tb.correlationId),
-    // Runtime-correlated one-shot events must be unique per (run, correlation)
-    // — without
+    // Runtime-correlated one-shot events must be unique per (run, correlation).
+    // Without
     // this, two concurrent invocations producing identical correlationIds
     // (e.g. the snapshot runtime's deterministic ULIDs across replays) can
     // both insert events, causing duplicate operations in the log.
@@ -154,6 +176,21 @@ export const events = schema.table(
       ),
   ]
 );
+
+/**
+ * Which runs are slot-numbered. A row exists iff the run is, so its absence is
+ * exactly the "this run predates slots, keep minting ULIDs" signal, so no scan
+ * of the event log is needed to tell the two schemes apart.
+ *
+ * A marker, not a counter. Positions are allocated by the insert that occupies
+ * them (`MAX(slot) + 1` read from the log inside the INSERT), so nothing is
+ * handed out ahead of the write that uses it and a write that fails leaves the
+ * position free for the next one. A counter here would instead burn a position
+ * per failed write, and every such hole is permanent.
+ */
+export const eventSlots = schema.table('workflow_event_slots', {
+  runId: varchar('run_id').primaryKey(),
+});
 
 export const steps = schema.table(
   'workflow_steps',
@@ -208,13 +245,23 @@ export const hooks = schema.table(
     projectId: varchar('project_id').notNull(),
     environment: varchar('environment').notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
+    tokenRetentionUntil: timestamp('token_retention_until', {
+      withTimezone: true,
+    }),
     /** @deprecated */
     metadataJson: jsonb('metadata').$type<SerializedContent>(),
     metadata: Cbor<SerializedContent>()('metadata_cbor'),
     specVersion: integer('spec_version'),
     isWebhook: boolean('is_webhook').default(true),
     isSystem: boolean('is_system').default(false),
-  } satisfies DrizzlishOfType<Cborized<Hook, 'metadata'>>,
+    // Server-synthesized resume slice. Not carried by the hook_created event,
+    // so this backend leaves it null; reads fall back to runs.get.
+    resumeContext: Cbor<NonNullable<Hook['resumeContext']>>()('resume_context'),
+    // `resumeCapabilities` is deliberately response-only (attested fresh on
+    // each by-token lookup, never persisted), so it must not become a column.
+  } satisfies DrizzlishOfType<
+    Cborized<Omit<Hook, 'resumeCapabilities'>, 'metadata'>
+  >,
   (tb) => [index().on(tb.runId), index().on(tb.token)]
 );
 

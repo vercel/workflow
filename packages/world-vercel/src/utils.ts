@@ -3,9 +3,15 @@ import { inspect } from 'node:util';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowWorldError } from '@workflow/errors';
 import type { SerializedData } from '@workflow/world';
+import { nodeHttpFetch } from '@workflow/world/node-http.js';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
-import { getDispatcher } from './http-client.js';
+import {
+  getDispatcher,
+  getNodeHttpAgents,
+  NODE_HTTP_BODY_TIMEOUT_MS,
+  NODE_HTTP_HEADERS_TIMEOUT_MS,
+} from './http-client.js';
 import {
   errorForResponse,
   formatVercelDiagnostics,
@@ -23,20 +29,22 @@ import {
   HttpResponseStatusCode,
   injectTraceContextIntoHeaders,
   trace,
+  WorkflowHttpTransport,
   WorldParseFormat,
 } from './telemetry.js';
 import { version } from './version.js';
 
 /**
  * Inline workflow-server URL override. Must remain an empty string on
- * `main` — rewritten by external CI for branch-deployment testing.
+ * `main`. It is rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
+// biome-ignore format: External CI replaces only this line with a deployment URL that may exceed the formatter width.
 export const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
- * A retry re-sends the request, so it is only safe for idempotent reads — a
+ * A retry re-sends the request, so it is only safe for idempotent reads. A
  * write could be applied twice. Writes rely on the workflow runtime's
  * idempotent replay (and server-side correlation-id de-duplication) instead.
  */
@@ -44,7 +52,7 @@ const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD']);
 
 /**
  * How many extra times to re-issue an idempotent request when reading or
- * decoding the response body fails transiently — a truncated/terminated
+ * decoding the response body fails transiently, such as a truncated/terminated
  * stream, a connection reset mid-body, or a gateway returning a non-CBOR/JSON
  * body. The shared `RetryAgent` (see `http-client.ts`) already retries
  * connection and 5xx failures, but body-consumption errors surface *after* it
@@ -58,15 +66,31 @@ const BODY_PARSE_RETRY_BASE_MS = 100;
 
 /**
  * Transient transport failure codes. When a request to workflow-server cannot
- * complete, `fetch()` throws rather than returning a response: the shared
- * `RetryAgent` exhausted its retries (`UND_ERR_REQ_RETRY` — e.g. the firewall
- * in front of workflow-server shedding load with sustained 429/503, which the
- * RetryAgent retries internally and never surfaces to us), the socket dropped,
- * or connect/DNS failed. These are retryable infrastructure failures, not
- * contract or user errors, so we map them to a typed `WorkflowWorldError`
- * (`code: 'TRANSPORT'`) that the runtime recognizes as retryable and bubbles
- * to the queue for a fast redrive — instead of crashing the invocation or
- * failing the run.
+ * complete, the request throws rather than returning a response, and the code
+ * it carries depends on which transport issued it.
+ *
+ * Over undici (`fetch` plus the shared dispatcher): the `RetryAgent` exhausted
+ * its retries (`UND_ERR_REQ_RETRY`, e.g. the firewall in front of
+ * workflow-server shedding load with sustained 429/503, which the RetryAgent
+ * retries internally and never surfaces to us), the socket dropped, or
+ * connect/DNS failed.
+ *
+ * Over `node:http` / `node:https` (`WORKFLOW_NODE_HTTP`): there is no undici in
+ * the path, so no `UND_ERR_*` code ever appears. Node's own socket and DNS
+ * codes are raised instead, plus `ETIMEDOUT` from the client's own header and
+ * body deadlines, which stand in for `UND_ERR_HEADERS_TIMEOUT` /
+ * `UND_ERR_BODY_TIMEOUT`.
+ *
+ * Either way these are retryable infrastructure failures, not contract or user
+ * errors, so we map them to a typed `WorkflowWorldError` (`code: 'TRANSPORT'`)
+ * that the runtime recognizes as retryable and bubbles to the queue for a fast
+ * redrive, instead of crashing the invocation or failing the run.
+ *
+ * The set is consulted on both paths, so adding `ETIMEDOUT` for the node:http
+ * deadlines also classifies it on the undici path, where it is near
+ * unreachable, since undici's 10s `connectTimeout` fires long before the OS
+ * raises `ETIMEDOUT` on a connect, and its own stalls surface as `UND_ERR_*`.
+ * Deliberate either way: a socket that timed out is transient under any client.
  */
 const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
   'UND_ERR_REQ_RETRY',
@@ -81,14 +105,17 @@ const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
   'ENOTFOUND',
   'EAI_AGAIN',
   'EPIPE',
+  'ETIMEDOUT',
 ]);
 
 /**
  * Walks the `cause` chain of a thrown value looking for a transient transport
  * error code. `fetch()` wraps the underlying undici error in a
  * `TypeError: fetch failed` whose `cause` carries the real `.code`, so the
- * code we care about is usually one level down (sometimes two). Bounded depth
- * guards against pathological or cyclic `cause` chains.
+ * code we care about is usually one level down (sometimes two). The
+ * `node:http` client throws the socket error itself, so there the code is on
+ * the top-level value. Bounded depth guards against pathological or cyclic
+ * `cause` chains.
  */
 function getTransientTransportCode(error: unknown): string | undefined {
   let current: unknown = error;
@@ -122,7 +149,7 @@ const getWorkflowServerUrlOverride = (): string =>
 
 /**
  * Header the server reads to tighten its own limits (stream max-duration,
- * chunk-batch size, …) per request — only ever to a stricter value than the
+ * chunk-batch size, …) per request, only ever to a stricter value than the
  * deployment default. See `world-vercel`'s server counterpart.
  */
 const TEST_LIMIT_OVERRIDES_HEADER = 'x-workflow-test-limit-overrides';
@@ -133,9 +160,9 @@ const TEST_LIMIT_OVERRIDES_HEADER = 'x-workflow-test-limit-overrides';
  * The value is a JSON object of server-constant name → value (e.g.
  * `{"STREAM_MAX_DURATION_MS":5000}`) sent verbatim as
  * `x-workflow-test-limit-overrides`. The server validates and clamps it
- * (stricter-only), so a malformed value is harmlessly ignored there — we don't
+ * (stricter-only), so a malformed value is harmlessly ignored there. We don't
  * parse it here. Intended for a dedicated e2e deployment so the suite exercises
- * edge paths (stream reconnect, batch splitting) quickly; unset in production.
+ * edge paths (stream reconnect, batch splitting) without long waits; unset in production.
  */
 const getTestLimitOverridesHeader = (): string =>
   process.env.WORKFLOW_TEST_LIMIT_OVERRIDES?.trim() || '';
@@ -153,7 +180,7 @@ export interface APIConfig {
    * dispatcher from a different undici version. Callers may pass any undici
    * version's dispatcher, or any object implementing the dispatcher contract.
    *
-   * Note: when provided, this dispatcher replaces *every* default — including
+   * Note: when provided, this dispatcher replaces *every* default, including
    * the one used for stream writes (the `PUT` write/close path). Stream appends
    * are not idempotent, and undici's `RetryAgent` retries `PUT` on 5xx by
    * default, which can duplicate a chunk the server already persisted. A custom
@@ -201,6 +228,17 @@ export function serializeError<T extends { error?: SerializedData }>(
   return data;
 }
 
+/**
+ * Joins User-Agent product tokens with spaces per the RFC 9110 `User-Agent`
+ * grammar (`product *( RWS ( product / comment ) )`), skipping empty parts.
+ * Never join UA products with `Headers.append()`. Repeated header values
+ * combine with `", "`, and a comma glued to a product token breaks
+ * whitespace-delimited parsers on the receiving side.
+ */
+const joinUserAgentProducts = (
+  ...products: (string | null | undefined)[]
+): string => products.filter(Boolean).join(' ');
+
 const getUserAgent = () => {
   const deploymentId = process.env.VERCEL_DEPLOYMENT_ID;
   if (deploymentId) {
@@ -233,21 +271,75 @@ export const getHttpUrl = (
   return { baseUrl, usingProxy };
 };
 
+/**
+ * The environment this client's writes will be attributed to by the backend.
+ *
+ * Two distinct auth paths, two distinct sources. This must mirror both
+ * exactly, because callers compare it against the environment a *different*
+ * client reported to detect a cross-tenant fork (see `World.getEnvironment`):
+ *
+ * - **With `projectConfig`** (CLI, CI, the observability dashboard, or anything
+ *   going through the api.vercel.com proxy with a Vercel auth token): the proxy
+ *   attributes the write to the `x-vercel-environment` header, so the answer is
+ *   whatever {@link getHeaders} puts there. Both read this one function so they
+ *   cannot drift; the `|| 'production'` default is part of that contract, not
+ *   an incidental fallback.
+ *
+ * - **Without `projectConfig`** (inside a Vercel deployment, authenticating
+ *   with the per-request OIDC token): the backend reads the token's
+ *   `environment` claim, which the platform mints as
+ *   `customEnvironment?.slug ?? envTarget`, and `VERCEL_TARGET_ENV` is
+ *   populated from exactly the same pair (`customEnvironmentSlug ||
+ *   envTarget`), so it matches the claim by construction. `VERCEL_ENV` alone
+ *   would be wrong for Vercel *custom* environments: it reports `preview`
+ *   there while the claim (and therefore the tenant) carries the custom
+ *   environment's slug, which would make the cross-environment guard refuse a
+ *   legitimate delivery. `VERCEL_ENV` remains as the fallback for contexts
+ *   where `VERCEL_TARGET_ENV` isn't injected (e.g. `vercel dev`).
+ *
+ * Note for custom environments on the `projectConfig` path: the proxy accepts
+ * a custom environment's slug **or ID** in `x-vercel-environment` but always
+ * attributes the write to the **slug**. Configure the slug (not the ID) so the
+ * value stamped into `runInput` matches what the consuming deployment sees.
+ *
+ * Returns `undefined` when neither source is available (e.g. a bare Node
+ * process with no Vercel env vars). `undefined` is the honest answer there and
+ * callers skip their checks. Guessing `'production'` would fabricate a
+ * mismatch against a genuine preview deployment.
+ */
+export const resolveClientEnvironment = (
+  config: APIConfig | undefined
+): string | undefined => {
+  const projectConfig = config?.projectConfig;
+  if (projectConfig) {
+    return projectConfig.environment || 'production';
+  }
+  return process.env.VERCEL_TARGET_ENV || process.env.VERCEL_ENV || undefined;
+};
+
 export const getHeaders = (
   config: APIConfig | undefined,
   options: { usingProxy: boolean }
 ): Headers => {
   const projectConfig = config?.projectConfig;
   const headers = new Headers(config?.headers);
-  headers.set('User-Agent', getUserAgent());
+  headers.set(
+    'User-Agent',
+    joinUserAgentProducts(getUserAgent(), headers.get('User-Agent'))
+  );
   const testLimitOverrides = getTestLimitOverridesHeader();
   if (testLimitOverrides) {
     headers.set(TEST_LIMIT_OVERRIDES_HEADER, testLimitOverrides);
   }
   if (projectConfig) {
+    // Derived from the same helper `getEnvironment` uses so the header and the
+    // value stamped into `runInput` can never disagree. A drift between them
+    // would make the cross-environment guard either miss a real fork or
+    // reject a legitimate start.
     headers.set(
       'x-vercel-environment',
-      projectConfig.environment || 'production'
+      // biome-ignore lint/style/noNonNullAssertion: projectConfig is present, so the helper always returns a string
+      resolveClientEnvironment(config)!
     );
     if (projectConfig.projectId) {
       headers.set('x-vercel-project-id', projectConfig.projectId);
@@ -313,6 +405,7 @@ export async function makeRequest<T>({
   schema,
   data,
   onResponse,
+  retryConnectTimeout = false,
 }: {
   endpoint: string;
   options?: Omit<RequestInit, 'body'>;
@@ -322,8 +415,12 @@ export async function makeRequest<T>({
   data?: unknown;
   /** Optional callback invoked with the raw Response before body consumption. Use to read response headers. */
   onResponse?: (response: Response) => void;
+  /** Retry an idempotent read once when connecting timed out before a request was sent. */
+  retryConnectTimeout?: boolean;
 }): Promise<T> {
-  const method = options.method || 'GET';
+  // Normalized once: `Request` used to do this uppercasing on the way into
+  // `fetch`, and both the idempotency check and the curl repro read it.
+  const method = (options.method || 'GET').toUpperCase();
   const { baseUrl, headers } = await getHttpConfig(config);
   const url = `${baseUrl}${endpoint}`;
 
@@ -346,7 +443,7 @@ export async function makeRequest<T>({
 
       // Explicitly propagate the active trace context (traceparent /
       // tracestate / baggage) onto the outgoing request so workflow-server
-      // can parent its spans to this client span — without relying on the
+      // can parent its spans to this client span without relying on the
       // customer app having undici auto-instrumentation. No-ops when no
       // OTEL SDK is registered.
       await injectTraceContextIntoHeaders(headers);
@@ -359,13 +456,13 @@ export async function makeRequest<T>({
       }
 
       // Reading or decoding the response body can fail transiently even on a
-      // successful (2xx) response — a truncated/terminated stream, a
+      // successful (2xx) response, such as a truncated/terminated stream, a
       // connection reset mid-body, or a gateway returning a non-CBOR/JSON
       // body. The RetryAgent retries connection/5xx failures, but it has
       // already handed back the response by the time we consume the body, so
       // we retry such failures here. Only idempotent reads are re-issued; a
       // write must not be replayed (it could be applied twice).
-      const canRetryBody = IDEMPOTENT_METHODS.has(method.toUpperCase());
+      const canRetryRead = IDEMPOTENT_METHODS.has(method);
       let parseResult: ParseResult;
       let responseDiagnostics = '';
       for (let attempt = 0; ; attempt++) {
@@ -380,19 +477,39 @@ export async function makeRequest<T>({
         const signal = options.signal
           ? AbortSignal.any([options.signal, timeoutSignal])
           : timeoutSignal;
-        const request = new Request(url, {
-          ...options,
-          body,
-          headers,
-          signal,
-        });
         const fetchStart = Date.now();
         let response: Response;
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-          response = await fetch(request, {
-            dispatcher: getDispatcher(config),
-          } as any);
+          // `WORKFLOW_NODE_HTTP` takes this request off undici entirely, rather
+          // than leaving it on the undici behind `fetch`. `getNodeHttpAgents`
+          // returns the pool only when no caller dispatcher was supplied, so
+          // an explicit `config.dispatcher` still keeps the request on `fetch`.
+          const nodeAgents = getNodeHttpAgents(config);
+          // Both transports issue the same span against the same URL, so this
+          // is the only thing that tells them apart in a trace.
+          span?.setAttributes({
+            ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
+          });
+          response = nodeAgents
+            ? await nodeHttpFetch(url, {
+                method,
+                headers,
+                body,
+                signal,
+                agents: nodeAgents,
+                // Match undici's per-phase defaults (which the undici agents
+                // inherit implicitly): without these the node:http path arms
+                // no stalled-socket deadline.
+                headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
+                bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
+              })
+            : await fetch(
+                new Request(url, { ...options, body, headers, signal }),
+                {
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+                  dispatcher: getDispatcher(config),
+                } as any
+              );
         } catch (error) {
           const elapsed = Date.now() - fetchStart;
           // AbortSignal.timeout() surfaces as a DOMException with name
@@ -416,6 +533,17 @@ export async function makeRequest<T>({
           // of failing the run. See TRANSIENT_TRANSPORT_ERROR_CODES.
           const transportCode = getTransientTransportCode(error);
           if (transportCode) {
+            if (
+              retryConnectTimeout &&
+              canRetryRead &&
+              transportCode === 'UND_ERR_CONNECT_TIMEOUT' &&
+              attempt === 0
+            ) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, BODY_PARSE_RETRY_BASE_MS)
+              );
+              continue;
+            }
             const transportError = new WorkflowWorldError(
               `${method} ${endpoint} transport failure after ${elapsed}ms (${transportCode})`,
               { url, code: 'TRANSPORT', cause: error }
@@ -436,15 +564,24 @@ export async function makeRequest<T>({
         });
 
         if (!response.ok) {
-          const errorData: { message?: string; code?: string; error?: string } =
-            await parseResponseBody(response)
-              .then(
-                (r) =>
-                  r.data as { message?: string; code?: string; error?: string }
-              )
-              .catch(() => ({}));
+          const errorData: {
+            message?: string;
+            code?: string;
+            error?: string;
+            details?: unknown;
+          } = await parseResponseBody(response)
+            .then(
+              (r) =>
+                r.data as {
+                  message?: string;
+                  code?: string;
+                  error?: string;
+                  details?: unknown;
+                }
+            )
+            .catch(() => ({}));
           const errorCode = errorData.code ?? errorData.error;
-          logCurlRepro(request.method, url, headers);
+          logCurlRepro(method, url, headers);
 
           // Used by 425 and 429. The RetryAgent no longer retries 429
           // in-process (see http-client.ts), so every 429 reaches here.
@@ -454,7 +591,7 @@ export async function makeRequest<T>({
 
           const defaultMessage =
             (errorData.message ||
-              `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`) +
+              `${method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`) +
             responseDiagnostics;
 
           // Map the status to the typed error the runtime branches on (shared
@@ -465,6 +602,7 @@ export async function makeRequest<T>({
             code: errorCode,
             retryAfter,
             mitigated: response.headers.get('x-vercel-mitigated'),
+            details: errorData.details,
           });
           span?.setAttributes({
             ...ErrorType(errorCode || `HTTP ${response.status}`),
@@ -491,7 +629,7 @@ export async function makeRequest<T>({
           // Body read and decoded successfully.
           break;
         } catch (error) {
-          if (canRetryBody && attempt < MAX_BODY_PARSE_RETRIES) {
+          if (canRetryRead && attempt < MAX_BODY_PARSE_RETRIES) {
             const backoffMs = BODY_PARSE_RETRY_BASE_MS * 2 ** attempt;
             span?.setAttributes({
               ...ErrorType('PARSE_ERROR_RETRYING'),

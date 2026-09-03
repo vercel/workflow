@@ -14,6 +14,24 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  biome:
+    name: Biome
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        with:
+          install: true
+          require-lockfile: true
+          runtime: node@22
+          cache: true
+
+      - name: Biome check
+        run: pnpm exec biome ci --max-diagnostics=200
+
   no-test-overrides:
     name: No Test Overrides
     runs-on: ubuntu-latest
@@ -35,6 +53,24 @@ jobs:
             grep "const WORKFLOW_SERVER_URL_OVERRIDE" "$FILE" || true
             exit 1
           fi
+
+  no-unrun-tests:
+    name: No Unrun Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      # `turbo test` only runs a package's tests if that package declares a
+      # `test` script, so a suite can exist for months without ever running.
+      # See #3731.
+      - name: Check every test file is run by turbo test or a CI lane
+        run: node scripts/check-no-unrun-tests.mjs
 
   scripts-tests:
     name: CI Scripts Tests
@@ -62,19 +98,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
-          node-version: 22.x
-          cache: "pnpm"
+          install: true
+          require-lockfile: true
+          runtime: node@22
+          cache: true
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Validate docs links
         run: bun ./scripts/lint.ts

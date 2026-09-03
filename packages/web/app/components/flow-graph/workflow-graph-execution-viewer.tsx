@@ -17,8 +17,6 @@ import '@xyflow/react/dist/style.css';
 import { GitBranch, Loader2, X } from 'lucide-react';
 import './workflow-graph-viewer.css';
 import { formatDuration } from '@workflow/web-shared';
-import type { EnvMap } from '~/lib/types';
-import { useWorkflowResourceData } from '~/lib/workflow-api-client';
 import { StatusBadge } from '~/components/display-utils/status-badge';
 import { Badge } from '~/components/ui/badge';
 import type {
@@ -27,6 +25,8 @@ import type {
   WorkflowGraph,
   WorkflowRunExecution,
 } from '~/lib/flow-graph/workflow-graph-types';
+import type { EnvMap } from '~/lib/types';
+import { useWorkflowResourceData } from '~/lib/workflow-api-client';
 import {
   type ConsolidatedEdge,
   calculateEnhancedLayout,

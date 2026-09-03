@@ -4,7 +4,7 @@ function resolveQueueNamespace(namespace?: string): string | undefined {
   return namespace ?? process.env.WORKFLOW_QUEUE_NAMESPACE ?? undefined;
 }
 
-function getQueueTopicPrefix(kind: 'workflow' | 'step', namespace?: string) {
+function getQueueTopicPrefix(namespace?: string) {
   if (namespace !== undefined) {
     if (!QUEUE_NAMESPACE_PATTERN.test(namespace)) {
       throw new Error(
@@ -12,10 +12,10 @@ function getQueueTopicPrefix(kind: 'workflow' | 'step', namespace?: string) {
       );
     }
 
-    return `__${namespace}_wkf_${kind}_`;
+    return `__${namespace}_wkf_workflow_`;
   }
 
-  return `__wkf_${kind}_`;
+  return '__wkf_workflow_';
 }
 
 /**
@@ -40,7 +40,7 @@ export function createWorkflowQueueTrigger(options?: { namespace?: string }) {
 
   return {
     type: 'queue/v2beta' as const,
-    topic: `${getQueueTopicPrefix('workflow', namespace)}*`,
+    topic: `${getQueueTopicPrefix(namespace)}*`,
     consumer: 'default',
     retryAfterSeconds: 5, // Delay between retries (default: 60)
     initialDelaySeconds: 0, // Initial delay before first delivery (default: 0)
@@ -63,7 +63,7 @@ export function createWorkflowEntrypointOptionsCode(options?: {
 
   if (namespace) {
     // Reuse prefix construction for namespace validation.
-    getQueueTopicPrefix('workflow', namespace);
+    getQueueTopicPrefix(namespace);
     fields.push(`namespace: ${JSON.stringify(namespace)}`);
   }
 
@@ -101,16 +101,17 @@ export const WORKFLOW_QUEUE_TRIGGER = createWorkflowQueueTrigger();
 /**
  * Returns the queue trigger configuration for workflow (flow) routes.
  *
- * Builds on `createWorkflowQueueTrigger()` — the namespace comes from
+ * Builds on `createWorkflowQueueTrigger()`: the namespace comes from
  * `options` or `WORKFLOW_QUEUE_NAMESPACE`, resolved at call time. When
  * `WORKFLOW_SEQUENTIAL_REPLAYS` is enabled, sets `maxConcurrency: 1` so the
  * queue processes at most one flow invocation per concrete topic at a time.
  * Paired with the per-run physical topic naming in `@workflow/world-vercel`
  * (which appends the run id to the flow topic), this enforces at most one
- * orchestrator invocation per run. Step routes are intentionally excluded.
+ * orchestrator invocation per run. Queued step invocations share this flow
+ * trigger rather than using a separate route.
  *
  * Integrations that write their own flow trigger config instead of calling
- * this must mirror the conditional `maxConcurrency: 1` themselves — the
+ * this must mirror the conditional `maxConcurrency: 1` themselves, since the
  * runtime half (per-run topics) activates from the env var alone, and without
  * the trigger half those topics are not serialized.
  *

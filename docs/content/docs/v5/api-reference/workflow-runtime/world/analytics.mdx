@@ -20,14 +20,18 @@ keywords:
   - metadata-only
 ---
 
-`world.analytics` is an optional, read-only namespace for observability surfaces — dashboards, CLIs, and admin tools that list large numbers of runs without touching payload data.
+`world.analytics` is an optional, read-only namespace for observability surfaces: dashboards, command-line interface (CLI) tools, and admin tools that list large numbers of runs without touching payload data.
+
+For observability and inspection listings, prefer this namespace over
+[`world.runs.list()`](/docs/api-reference/workflow-runtime/world/storage#runslist).
+The storage API remains available for operational and payload-bearing reads.
 
 It differs from [Storage](/docs/api-reference/workflow-runtime/world/storage) in two ways:
 
-- **Metadata only.** Results never include run input/output, step data, or hook tokens. There is no `resolveData` option.
-- **Served from the observability pipeline.** On Vercel, queries are served from the Vercel observability data pipeline, so large listings do not compete with workflow execution. Data is ingested asynchronously and may trail the live state by a few seconds.
+- **Metadata only**: Results never include run input/output, step data, or hook tokens. There is no `resolveData` option.
+- **Served from the observability pipeline**: On Vercel, queries are served from the Vercel observability data pipeline, so large listings do not compete with workflow execution. Data is ingested asynchronously and may trail the live state by a few seconds.
 
-The namespace is optional — worlds that don't implement it (such as the local development world) leave it `undefined`, so feature-detect before use:
+The namespace is optional: worlds that don't implement it (such as the local development world) leave it `undefined`, so feature-detect before use:
 
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
@@ -63,13 +67,13 @@ const page = await world.analytics.runs.list({
 | `params.attributes` | `Record<string, string>` | Only return runs whose latest attributes match every pair (up to 8) |
 | `params.pagination` | `PaginationOptions` | Cursor pagination |
 
-**Returns:** `PaginatedResponse<AnalyticsRun>` — each run includes `runId`, `status`, `workflowName`, `deploymentId`, `attributes`, and lifecycle timestamps.
+**Returns:** `PaginatedResponse<AnalyticsRun>`. Each run includes `runId`, `status`, `workflowName`, `deploymentId`, `attributes`, and lifecycle timestamps.
 
 Attribute matching is latest-write-wins: a run whose attribute moved from `"v1"` to `"v2"` no longer matches `{ key: "v1" }`. Reserved `$`-prefixed keys may be used in filters even though user code cannot write them.
 
 ### runs.get()
 
-Fetch one run by ID. Point lookups search the full plan window, not just the trailing 24 hours.
+Fetch one run by ID. Point lookups search the full plan window rather than only the trailing 24 hours.
 
 ```typescript lineNumbers
 const run = await world.analytics.runs.get(runId);
@@ -79,7 +83,7 @@ const run = await world.analytics.runs.get(runId);
 
 ## analytics.attributes
 
-Discover which [attributes](/docs/observability/attributes) exist on your runs — for example to build filter dropdowns over arbitrary user-defined keys.
+Discover which [attributes](/docs/observability/attributes) exist on your runs, for example to build filter dropdowns over arbitrary user-defined keys.
 
 ### attributes.list()
 
@@ -100,7 +104,7 @@ for (const { key, runCount, lastSeenAt } of page.data) {
 | `params.startTime` / `params.endTime` | `string` | ISO 8601 window; must be provided together |
 | `params.pagination` | `PaginationOptions` | Cursor pagination |
 
-**Returns:** `PaginatedResponse<AnalyticsAttributeKey>` — `{ key, runCount, firstSeenAt, lastSeenAt }`
+**Returns:** `PaginatedResponse<AnalyticsAttributeKey>`: `{ key, runCount, firstSeenAt, lastSeenAt }`
 
 ---
 
@@ -111,12 +115,12 @@ Run-scoped listings mirroring their [Storage](/docs/api-reference/workflow-runti
 ```typescript lineNumbers
 const steps = await world.analytics.steps.list({ runId });
 const events = await world.analytics.events.list({ runId, eventType: "step_failed" });
-const related = await world.analytics.events.listByCorrelationId({ correlationId });
+const related = await world.analytics.events.listByCorrelationId({ runId, correlationId });
 const hooks = await world.analytics.hooks.list({ runId });
 const waits = await world.analytics.waits.list({ runId, status: "waiting" });
 ```
 
-Each namespace also has a `get()` for point lookups (`steps.get(runId, stepId)`, `events.get(runId, eventId)`, `hooks.get(hookId)`, `waits.get(runId, waitId)`). Hook listings never include the hook token — resolve it separately through the runtime APIs if you need to deliver a payload.
+Each namespace also has a `get()` for point lookups (`steps.get(runId, stepId)`, `events.get(runId, eventId)`, `hooks.get(hookId)`, `waits.get(runId, waitId)`). Hook listings never include the hook token. Resolve it separately through the runtime APIs if you need to deliver a payload.
 
 ---
 

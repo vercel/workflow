@@ -1,11 +1,13 @@
 import {
   CorruptedEventLogError,
+  MaxEventsExceededError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   type RunErrorCode,
   RuntimeDecryptionError,
   StepNotRegisteredError,
   ThrottleError,
+  WorkflowDeploymentMismatchError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -20,7 +22,7 @@ const WORLD_CONTRACT_ERROR_CODES = new Set([
 /**
  * `WorkflowWorldError.code` values that mark a transient transport failure
  * (set by world-vercel's HTTP client): `TRANSPORT` covers an exhausted
- * RetryAgent (`UND_ERR_REQ_RETRY` — e.g. the firewall in front of
+ * RetryAgent (`UND_ERR_REQ_RETRY`, e.g. the firewall in front of
  * workflow-server shedding load with 429/503), a dropped socket, or a
  * connect/DNS failure; `TIMEOUT` covers a request that exceeded the client
  * timeout. Both are infrastructure failures a fresh invocation can recover
@@ -32,7 +34,7 @@ const RETRYABLE_WORLD_ERROR_CODES = new Set(['TRANSPORT', 'TIMEOUT']);
 /**
  * Set of error names that should classify as generic `RUNTIME_ERROR`. Each
  * `*.is()` static does a name-based duck check, so subclassing alone is
- * not enough — we have to enumerate every concrete subclass we want to
+ * not enough, so we have to enumerate every concrete subclass we want to
  * recognize. Keep in sync with the `WorkflowRuntimeError` class hierarchy
  * in `@workflow/errors`.
  */
@@ -116,9 +118,17 @@ export function classifyRunError(err: unknown): RunErrorCode {
     return RUN_ERROR_CODES.CORRUPTED_EVENT_LOG;
   }
 
-  // World-layer faults — both a malformed response (contract violation) and a
+  if (MaxEventsExceededError.is(err)) {
+    return RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED;
+  }
+
+  if (WorkflowDeploymentMismatchError.is(err)) {
+    return RUN_ERROR_CODES.DEPLOYMENT_MISMATCH;
+  }
+
+  // World-layer faults, both a malformed response (contract violation) and a
   // transient infrastructure failure (throttle / 5xx / transport / timeout,
-  // e.g. a firewall challenge) — are the backend's fault, not the user's.
+  // e.g. a firewall challenge), are the backend's fault, not the user's.
   // Bucket them under WORLD_CONTRACT_ERROR rather than USER_ERROR so dashboards
   // attribute an outage correctly. Note the retryable variants are normally
   // redelivered via the queue (see `isRetryableWorldError`) and only reach this

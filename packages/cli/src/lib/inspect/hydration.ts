@@ -24,7 +24,7 @@ import chalk from 'chalk';
 
 /**
  * A function that resolves an encryption key for a run, or null to skip
- * decryption. Accepts a runId — the resolver is responsible for looking
+ * decryption. Accepts a runId; the resolver is responsible for looking
  * up the WorkflowRun internally (with caching) if the World needs it.
  */
 export type EncryptionKeyResolver =
@@ -167,7 +167,7 @@ const ERROR_REVIVER_KEYS = [
  * non-enumerable `toJSON` method. The runtime revivers return real `Error`
  * instances (good for `util.inspect`, `instanceof`, `toString`, etc.), but
  * `Error.prototype`'s `name` / `message` / `stack` / `cause` are
- * non-enumerable and would be dropped by `JSON.stringify` — which is how
+ * non-enumerable and would be dropped by `JSON.stringify`, which is how
  * the CLI emits its `--json` output. Adding `toJSON` (which `JSON.stringify`
  * calls but `util.inspect` ignores) gives us the best of both worlds:
  * round-tripped errors render cleanly in both modes without the
@@ -216,7 +216,7 @@ function wrapErrorReviverWithToJSON(
  * `RetryableError`, the built-in `Error` subclasses) would silently
  * disappear from CLI output: devalue throws "Unknown type X" for
  * unrecognized reduced types, and `hydrateResourceIO` swallows that error
- * and surfaces the raw `Uint8Array` payload to consumers — which then
+ * and surfaces the raw `Uint8Array` payload to consumers, which then
  * shows up as `step.error` / `run.error` byte dumps instead of usable
  * `{ message, stack, … }` objects.
  *
@@ -243,7 +243,7 @@ export function getCLIRevivers(): Revivers {
     // O11y-specific revivers (streams, step functions → display objects).
     ...observabilityRevivers,
     // Node `Request` / `Response` revivers that don't rely on running an
-    // actual fetch handler — used to render request/response IO inline.
+    // actual fetch handler, used to render request/response IO inline.
     Request: (value) => {
       // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
       const ctor = { Request: function () {} }.Request!;
@@ -338,8 +338,13 @@ async function maybeDecryptFields<
 
   try {
     const rawKey = await resolver(runId);
-    const { importKey } = await import('@workflow/core/encryption');
-    const k = rawKey ? await importKey(rawKey) : undefined;
+    // Resolve the full key capability so `--decrypt` can open sealed
+    // ('encp') payloads that other runs wrote to this one, not just the
+    // run's own symmetric ('encr') payloads.
+    const { deriveRunPayloadKeys } = await import(
+      '@workflow/core/serialization'
+    );
+    const k = rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
 
     // Decrypt input/output/error fields (WorkflowRun, Step)
     result.input = await maybeDecrypt(result.input, k);
@@ -367,7 +372,7 @@ async function maybeDecryptFields<
       throw err;
     }
 
-    // Decryption failed (bad key, corrupted ciphertext, etc.) — fall back
+    // Decryption failed (bad key, corrupted ciphertext, etc.), so fall back
     // to showing encrypted placeholders instead of crashing the CLI.
     const { logger } = await import('../config/log.js');
     logger.warn(`Decryption failed for resource ${runId}: ${message}`);

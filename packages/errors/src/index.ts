@@ -1,10 +1,10 @@
-import { parseDurationToDate } from '@workflow/utils';
+import { parseDurationToDate, pluralize } from '@workflow/utils';
 
 import type { StringValue } from 'ms';
 
 // Note: `Ansi` helpers live under the `@workflow/errors/ansi` subpath so the
 // main entry point doesn't pull `chalk` (and its ESM machinery) into every
-// consumer — most places that `import from '@workflow/errors'` only want the
+// consumer; most places that `import from '@workflow/errors'` only want the
 // error classes and never render framed messages.
 
 const BASE_URL = 'https://workflow-sdk.dev/err';
@@ -26,7 +26,7 @@ function isError(value: unknown): value is { name: string; message: string } {
 
 /**
  * @internal
- * Compose a framed-detail body for an error message — same `╰▶` /
+ * Compose a framed-detail body for an error message, using the same `╰▶` /
  * `├▶` box-drawing structure used by `ContextViolationError` (in
  * `@workflow/core`), so every error class with a hint or docs slug
  * renders consistently:
@@ -35,11 +35,11 @@ function isError(value: unknown): value is { name: string; message: string } {
  *     ├▶ hint: <hint>
  *     ╰▶ docs: https://workflow-sdk.dev/err/<slug>
  *
- * Plain text only — no ANSI here, since `@workflow/errors`'s main entry
+ * Plain text only, no ANSI here, since `@workflow/errors`'s main entry
  * stays chalk-free. The runtime logger renders the same chars with
  * dim styling at log time.
  *
- * Returns just `title` when there are no details to frame. Multi-line
+ * Returns only `title` when there are no details to frame. Multi-line
  * detail values are indented under their branch so the tree stays
  * readable.
  */
@@ -54,9 +54,9 @@ function appendFramedDetails(
     const head = isLast ? '╰▶ ' : '├▶ ';
     const cont = isLast ? '   ' : '│  ';
     const text = `${detail.label}: ${detail.value}`;
-    text
-      .split('\n')
-      .forEach((line, i) => lines.push(`${i === 0 ? head : cont}${line}`));
+    text.split('\n').forEach((line, i) => {
+      lines.push(`${i === 0 ? head : cont}${line}`);
+    });
   });
   return lines.join('\n');
 }
@@ -89,6 +89,7 @@ export const ERROR_SLUGS = {
   STEP_NOT_REGISTERED: 'step-not-registered',
   WORKFLOW_NOT_REGISTERED: 'workflow-not-registered',
   RUNTIME_DECRYPTION_FAILED: 'runtime-decryption-failed',
+  DEPLOYMENT_MISMATCH: 'deployment-mismatch',
 } as const;
 
 type ErrorSlug = (typeof ERROR_SLUGS)[keyof typeof ERROR_SLUGS];
@@ -152,7 +153,7 @@ export class WorkflowError extends Error {
  * This is the catch-all error for world implementations. Specific,
  * well-known failure modes have dedicated error types (e.g.
  * EntityConflictError, RunExpiredError, ThrottleError). This error
- * covers everything else — validation failures, missing entities
+ * covers everything else: validation failures, missing entities
  * without a dedicated type, or unexpected HTTP errors from world-vercel.
  */
 export class WorkflowWorldError extends WorkflowError {
@@ -353,12 +354,36 @@ export class ReplayDivergenceError extends WorkflowRuntimeError {
 }
 
 /**
+ * Thrown when a run's event log reaches the server-supplied per-run event
+ * ceiling. Classified as `MAX_EVENTS_EXCEEDED` (see `classifyRunError`).
+ */
+export class MaxEventsExceededError extends WorkflowError {
+  readonly eventCount: number;
+  readonly limit: number;
+
+  constructor(
+    eventCount: number,
+    limit: number,
+    options?: WorkflowErrorOptions
+  ) {
+    super(`Workflow exceeded the maximum of ${limit} events per run`, options);
+    this.name = 'MaxEventsExceededError';
+    this.eventCount = eventCount;
+    this.limit = limit;
+  }
+
+  static is(value: unknown): value is MaxEventsExceededError {
+    return isError(value) && value.name === 'MaxEventsExceededError';
+  }
+}
+
+/**
  * Optional structured context attached to a {@link RuntimeDecryptionError},
  * carried over from the underlying decrypt call site to help diagnose the
  * failure without poking through stacks.
  */
 export interface RuntimeDecryptionErrorContext {
-  /** The operation that failed — useful to tell encrypt vs decrypt apart. */
+  /** The operation that failed, useful to tell encrypt vs decrypt apart. */
   operation?: 'encrypt' | 'decrypt';
   /** Byte length of the input payload at the time of the failure. */
   byteLength?: number;
@@ -375,7 +400,7 @@ export interface RuntimeDecryptionErrorContext {
  * Thrown when the SDK's built-in AES-GCM encryption layer fails to encrypt
  * or decrypt a workflow payload.
  *
- * This is an internal SDK failure — user code never invokes the SDK's
+ * This is an internal SDK failure: user code never invokes the SDK's
  * encryption primitives directly. Common causes:
  *
  * - A ciphertext / auth tag mismatch, typically surfaced as the native Web
@@ -426,11 +451,11 @@ interface WorkflowBuildErrorOptions extends ErrorOptions {
  * discovery, bundler integration) fails in a way the user can act on.
  *
  * This is distinct from `WorkflowRuntimeError` (which is raised at runtime
- * by the workflow engine) — `WorkflowBuildError` fires during `pnpm build`,
+ * by the workflow engine): `WorkflowBuildError` fires during `pnpm build`,
  * `next build`, or equivalent, before any workflow has started executing.
  *
  * Prefer attaching a short, actionable `hint` (e.g. `run \`pnpm install workflow\``)
- * as plain text — the rendering layer is responsible for any styling or
+ * as plain text; the rendering layer is responsible for any styling or
  * "hint:" label. Keeping `hint` plain keeps it useful in non-TTY contexts
  * (CI logs, structured error serialization) where ANSI escapes are noise.
  */
@@ -476,13 +501,13 @@ interface SerializationErrorOptions extends ErrorOptions {
  * returning from a step.
  *
  * Internal invariants (corrupted buffers, unknown format bytes) should use
- * `WorkflowRuntimeError` instead — this class is scoped to things the user
+ * `WorkflowRuntimeError` instead; this class is scoped to things the user
  * can fix in their own code.
  */
 export class SerializationError extends WorkflowError {
   readonly hint?: string;
   /**
-   * Serialization errors are deterministic — if a step returns a non-POJO,
+   * Serialization errors are deterministic: if a step returns a non-POJO,
    * replaying the step will always produce the same non-serializable value.
    * Retrying is guaranteed to fail, so these errors are surfaced as fatal
    * and skip the step-retry loop. `FatalError.is()` recognizes any error
@@ -495,7 +520,7 @@ export class SerializationError extends WorkflowError {
     // The hint carries its own docs URL (pointing at the foundations
     // serialization page, which is what users actually need to see what
     // round-trips), so we don't add a separate `╰▶ docs:` line here.
-    // Avoids two URLs on the message — one already-actionable, the other
+    // Avoids two URLs on the message: one already-actionable, the other
     // pointing at a generic error explainer.
     const body = appendFramedDetails(
       message,
@@ -514,7 +539,7 @@ export class SerializationError extends WorkflowError {
 /**
  * Thrown when a step function is not registered in the current deployment.
  *
- * This is an infrastructure error — not a user code error. It typically means
+ * This is an infrastructure error, not a user code error. It typically means
  * something went wrong with the bundling/build tooling that caused the step
  * to not get built correctly.
  *
@@ -541,7 +566,7 @@ export class StepNotRegisteredError extends WorkflowRuntimeError {
 /**
  * Thrown when a workflow function is not registered in the current deployment.
  *
- * This is an infrastructure error — not a user code error. It typically means:
+ * This is an infrastructure error, not a user code error. It typically means:
  * - A run was started against a deployment that does not have the workflow
  *   (e.g., the workflow was renamed or moved and a new run targeted the latest deployment)
  * - Something went wrong with the bundling/build tooling that caused the workflow
@@ -567,12 +592,59 @@ export class WorkflowNotRegisteredError extends WorkflowRuntimeError {
 }
 
 /**
+ * Thrown when a workflow run is delivered to a deployment other than the one
+ * it is pinned to.
+ *
+ * A run is pinned to one deployment when it starts, and executing anywhere
+ * else is unsafe: that deployment's bundles may not match the run's history.
+ */
+export class WorkflowDeploymentMismatchError extends WorkflowRuntimeError {
+  readonly runId: string;
+  readonly expectedDeploymentId: string;
+  readonly actualDeploymentId: string;
+  /**
+   * How many times the runtime re-routed the message before giving up. `0`
+   * means recovery was never attempted: the budget is disabled, or the
+   * re-route itself failed and `cause` holds the enqueue error.
+   */
+  readonly recoveryAttempts: number;
+
+  constructor(
+    runId: string,
+    expectedDeploymentId: string,
+    actualDeploymentId: string,
+    options?: { recoveryAttempts?: number; cause?: unknown }
+  ) {
+    const recoveryAttempts = options?.recoveryAttempts ?? 0;
+    // Carried in the persisted message, not just a log line: the attempt count
+    // separates racing routing from a deployment that is gone.
+    const recovery =
+      recoveryAttempts > 0
+        ? ` The runtime re-routed the message to "${expectedDeploymentId}" ${recoveryAttempts} ${pluralize('time', 'times', recoveryAttempts)} and it kept arriving elsewhere, so the run was stopped to protect against code-skew errors.`
+        : ' The run was stopped to protect against code-skew errors.';
+    super(
+      `Workflow run "${runId}" is pinned to deployment "${expectedDeploymentId}", but was received by deployment "${actualDeploymentId}".${recovery} Verify that the run's deployment is still available and that queue callbacks are routed to it.`,
+      { slug: ERROR_SLUGS.DEPLOYMENT_MISMATCH, cause: options?.cause }
+    );
+    this.name = 'WorkflowDeploymentMismatchError';
+    this.runId = runId;
+    this.expectedDeploymentId = expectedDeploymentId;
+    this.actualDeploymentId = actualDeploymentId;
+    this.recoveryAttempts = recoveryAttempts;
+  }
+
+  static is(value: unknown): value is WorkflowDeploymentMismatchError {
+    return isError(value) && value.name === 'WorkflowDeploymentMismatchError';
+  }
+}
+
+/**
  * Thrown when performing operations on a workflow run that does not exist.
  *
  * This error occurs when you call methods on a run object (e.g. `run.status`,
  * `run.cancel()`, `run.returnValue`) but the underlying run ID does not match
  * any known workflow run. Note that `getRun(id)` itself is synchronous and will
- * not throw — this error is raised when subsequent operations discover the run
+ * not throw; this error is raised when subsequent operations discover the run
  * is missing.
  *
  * Use the static `WorkflowRunNotFoundError.is()` method for type-safe checking
@@ -608,7 +680,7 @@ export class WorkflowRunNotFoundError extends WorkflowError {
 /**
  * Thrown when a hook token is already in use by another active workflow run.
  *
- * This is a user error — it means the same custom token was passed to
+ * This is a user error: it means the same custom token was passed to
  * `createHook` in two or more concurrent runs. Use a unique token per run
  * (or omit the token to let the runtime generate one automatically).
  */
@@ -660,7 +732,7 @@ export class HookConflictError extends WorkflowError {
  *   await resumeHook(token, payload);
  * } catch (error) {
  *   if (HookNotFoundError.is(error)) {
- *     // Hook doesn't exist — start a new workflow run instead
+ *     // Hook doesn't exist, so start a new workflow run instead
  *     await startWorkflow("myWorkflow", payload);
  *   }
  * }
@@ -700,7 +772,7 @@ export class EntityConflictError extends WorkflowWorldError {
 }
 
 /**
- * Thrown when a run is no longer available — either because it has been
+ * Thrown when a run is no longer available, either because it has been
  * cleaned up, expired, or already reached a terminal state (completed/failed).
  *
  * The workflow runtime handles this error automatically. Users interacting
@@ -714,6 +786,29 @@ export class RunExpiredError extends WorkflowWorldError {
 
   static is(value: unknown): value is RunExpiredError {
     return isError(value) && value.name === 'RunExpiredError';
+  }
+}
+
+/**
+ * Thrown when a stream is no longer readable because its owning run passed its
+ * storage-retention boundary. This is terminal: retrying cannot restore data.
+ *
+ * Unlike {@link RunExpiredError}, this identifies the failed stream read and
+ * exposes the server's authoritative expiry timestamp for user-facing errors.
+ */
+export class StreamExpiredError extends WorkflowWorldError {
+  constructor(
+    message: string,
+    readonly runId?: string,
+    readonly streamId?: string,
+    readonly expiredAt?: Date
+  ) {
+    super(message, { status: 410, code: 'stream-expired' });
+    this.name = 'StreamExpiredError';
+  }
+
+  static is(value: unknown): value is StreamExpiredError {
+    return isError(value) && value.name === 'StreamExpiredError';
   }
 }
 
@@ -762,18 +857,36 @@ export class ThrottleError extends WorkflowWorldError {
 
 /**
  * Thrown when the backend rejects an event creation because the client's
- * event-log snapshot is stale — a newer out-of-band event (e.g. a received
- * hook or a completed step) was recorded after the snapshot the client
- * replayed from (HTTP 412).
+ * event-log snapshot is stale: the log the client replayed from is missing
+ * an event the backend has already recorded (HTTP 412).
  *
- * The workflow runtime handles this automatically: it reloads the event log
- * and retries, ultimately re-enqueueing the run if it cannot catch up. Users
- * interacting with world storage backends directly may encounter it.
+ * The workflow runtime handles this automatically: it restarts the replay from
+ * a corrected event log, ultimately re-enqueueing the run if it cannot catch
+ * up. Users interacting with world storage backends directly may encounter it.
+ *
+ * @property retryAfter - Delay in seconds before retrying. Accepted for
+ *   forward-compatibility; the runtime restarts its replay immediately and
+ *   does not read this field.
+ * @property details - Optional rejection detail supplied by the World. A World
+ *   MAY attach the events the client's snapshot was missing so the client can
+ *   correct its log without a follow-up fetch. The attached set must account
+ *   for the whole discrepancy the rejection reported or be omitted entirely; a
+ *   client that receives nothing does the authoritative full reload, which is
+ *   always correct. Typed `unknown` because this package cannot depend
+ *   on the event type; consumers narrow it themselves and must treat a
+ *   missing or malformed value as "no detail" (a full reload is always
+ *   correct).
  */
 export class PreconditionFailedError extends WorkflowWorldError {
-  constructor(message: string, options?: { retryAfter?: number }) {
+  readonly details?: unknown;
+
+  constructor(
+    message: string,
+    options?: { retryAfter?: number; details?: unknown }
+  ) {
     super(message, { status: 412, retryAfter: options?.retryAfter });
     this.name = 'PreconditionFailedError';
+    this.details = options?.details;
   }
 
   static is(value: unknown): value is PreconditionFailedError {
@@ -871,9 +984,9 @@ export class RunNotSupportedError extends WorkflowError {
  * Any error can opt into the non-retry behavior by setting a `fatal: true`
  * own property. This is how structured error classes that aren't direct
  * `FatalError` subclasses (e.g. context-violation errors) signal to the
- * step handler that retrying will never help — the user's code is calling
- * a workflow-only API from the wrong context, or similar — and burning
- * retry attempts just produces a wall of duplicated log output.
+ * step executor that retrying will never help (the user's code is calling
+ * a workflow-only API from the wrong context, or similar) and burning
+ * retry attempts produces a wall of duplicated log output.
  */
 export class FatalError extends Error {
   fatal = true;
@@ -937,7 +1050,7 @@ export { RUN_ERROR_CODES, type RunErrorCode } from './error-codes.js';
 //
 // `FatalError`, `RetryableError`, and `HookConflictError` are not built-ins, so different realms
 // (e.g. the workflow VM context vs. the host context that runs the queue
-// handler) bundle and load their own copies of this module — meaning each
+// handler) bundle and load their own copies of this module, meaning each
 // realm has its own distinct class identity. Cross-realm `instanceof` fails
 // because the prototype chains never meet.
 //

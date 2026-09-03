@@ -1,0 +1,159 @@
+---
+title: Upgrading a World to v5
+description: Port a custom World implementation from the v4 spec to v5, including the interface delta, the contract changes, and the new event ID allocation rules.
+type: guide
+summary: What changed in the World spec between v4 and v5, and how to update a custom World.
+prerequisites:
+  - /worlds/building-a-world
+related:
+  - /docs/whats-new
+  - /worlds/building-a-world
+  - /worlds/postgres
+  - /worlds/vercel
+---
+
+This page is for people who implement the `World` interface themselves, or who maintain a build integration that compiles workflow files. It covers what changed between the v4 and v5 spec, which of those changes break an existing implementation, and what new surface is worth adopting.
+
+Three things are required to be a v5 World: the [interface changes](#interface-changes), the [contract changes](#contract-changes), and [event ID allocation](#event-id-allocation). The last one is the largest piece of work and the only one that is not visible from the type signatures. Everything under [new optional surface](#new-optional-surface) can wait.
+
+If your application runs on the [Vercel](/worlds/vercel), [Local](/worlds/local), or [Postgres](/worlds/postgres) World, you need nothing from this page. Those implementations ship with the SDK and are already on the v5 spec. For the application-facing changes, see [What's new in v5](/docs/whats-new).
+
+The fastest way to start is to install the World migration skill and hand the job to an agent:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-world-v4-to-v5
+```
+
+<CopyPrompt text="Upgrade this custom Workflow SDK World from the v4 spec to v5 using the migrating-world-v4-to-v5 skill. Start with event ID allocation, which is required and is not visible from the type signatures, then apply the interface and contract changes. Wire up the @workflow/world-testing conformance suite and report its output, along with anything the skill flags as a decision rather than an edit." />
+
+This is a different skill from `migrating-workflow-v4-to-v5`, which upgrades the application code. If the same repository does both, run the application one first.
+
+If you would rather work from the diff directly:
+
+<CopyPrompt text="My app uses a custom Workflow SDK World. Help me upgrade it from the v4 World spec to v5. Clone https://github.com/vercel/workflow and, on the main branch, study packages/world (the World interface and types) plus the first-party implementations in packages/world-vercel and packages/world-postgres. Run git diff stable...workflow@<the 5.x version I am upgrading to> -- packages/world packages/world-vercel packages/world-postgres (release tags are named like workflow@5.0.0; fall back to main if the tag does not exist) to see exactly what changed since the 4.x line, and use those diffs to identify the spec and implementation changes. Then port the same changes into my custom World and verify it by running a workflow end to end against it. Pay particular attention to event id allocation, which is required and is not visible from the type signatures: a v5 World assigns each event a dense, 1-based slot within its run, must settle races on a slot in the store rather than in process, and must never reject a create for a taken slot. It advances to the next free slot and returns the events it skipped." />
+
+We're working on bringing back World compatibility tests and reporting on the [Worlds page](/worlds), to make it easier to see which Workflow versions each World is compatible with.
+
+## Spec versions
+
+A World declares the protocol version it speaks on `specVersion`, and that number is stamped on every run it creates. Declare `SPEC_VERSION_CURRENT` from `@workflow/world`, not a literal:
+
+{/* @skip-typecheck - partial World, the other members are elided */}
+```typescript
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
+
+export function createWorld(): World {
+  return {
+    specVersion: SPEC_VERSION_CURRENT,
+    // ...
+  };
+}
+```
+
+In v4 the runtime required that number to equal its own current version exactly. In v5 it checks the declaration against a range, `[SPEC_VERSION_CURRENT, SPEC_VERSION_MAX_SUPPORTED]`, before it creates or replays anything, and refuses a World outside it with an error naming both the range and what your World declared.
+
+The two bounds are the same version today, so exactly one is accepted. That is a consequence of [event ID allocation](#event-id-allocation) being a requirement rather than an option: a World declaring anything lower allocates IDs the runtime cannot read positions out of, and admitting it would only move the failure from startup into the middle of a run. The check is written as a range because the constants answer different questions and come apart while a version bump is staged. The ceiling rises when the runtime learns to read the next version, and the floor rises when that version becomes the one Worlds stamp.
+
+Using the constant is what keeps the check passing across upgrades. It moves with the `@workflow/world` version your package resolves, so a bump raises your declaration and the runtime's floor together, while a hard-coded number leaves your World a version behind the next bump and gets it rejected by the runtime it ships alongside. This is worth re-checking if you followed earlier guidance: `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY` names the version that introduced slot-numbered IDs and is equal to `SPEC_VERSION_CURRENT` today, but declaring it pins you to a literal by another name. `@workflow/world-vercel` declared it and now declares the current version instead. Keep `@workflow/world` in the same release channel as the `workflow` version your users install.
+
+Runs carry a spec version too, and a run keeps the version it was created under for its whole life. Read the stamped version off the run rather than assuming every run matches what your World declares today. Bumping the constant does not reach runs already in your store: their version is persisted, every version test in the runtime is a lower bound, and a run's event ID scheme is resolved from what is stored.
+
+## Interface changes
+
+These break an existing v4 implementation. Each one is a signature or module-shape change your World has to follow.
+
+| Change | What to do |
+| --- | --- |
+| `getWorld()` and `createWorld()` are async | `await getWorld()`. This already worked in 4.x, so it is safe to write before upgrading. See [`getWorld`](/docs/api-reference/workflow-runtime/get-world). |
+| Stream methods moved to `world.streams.*`, with `runId` first | `writeToStream(name, runId, chunk)` becomes `streams.write(runId, name, chunk)`; likewise `writeToStreamMulti` → `streams.writeMulti`, `closeStream` → `streams.close`, `readFromStream` → `streams.get`, `getStreamChunks` → `streams.getChunks`, `listStreamsByRunId` → `streams.list`. |
+| `world.steps.get()` requires `runId` | The first argument is no longer `string \| undefined`. Pass the run ID that owns the step. |
+| `events.listByCorrelationId()` requires `runId` | A correlation ID identifies a step, hook, or wait within its run, not across runs, so the lookup is scoped to one run. Pass the run that owns the correlation ID. The same applies to `analytics.events.listByCorrelationId()`. A World that paginates by event ID also needs the scope in its cursor comparison because two runs can hold the same correlation ID. |
+| `createLocalWorld()` and `createVercelWorld()` removed | Export a `createWorld()` factory from your package instead, matching the first-party Worlds. The arguments are unchanged. |
+| Worlds are injected into host bundles at build time | Selection is static rather than resolved dynamically at runtime. Verify your World still resolves after the upgrade, and that its module graph survives bundling. |
+| `@workflow/world-local` stream chunks moved | Chunks live at `streams/chunks/<streamName>/`. Files written in the old flat layout are not read back, so local development state from 4.x can be deleted. Only relevant if your World inherited that layout. |
+
+## Contract changes
+
+These do not change any signature, so an implementation ported by types alone will compile and then behave incorrectly.
+
+**Suspension and dispatch.** The asymmetric `{ timeoutSeconds }` wait-return contract is gone. A wait is now an ordinary queue continuation with `delaySeconds`, and a suspension dispatches its waits and its steps as one parallel batch. A queue that assumed one message per suspension needs to handle the batch.
+
+**Step queue topics are retired.** The `'step'` queue kind no longer exists. Queued steps travel on the workflow topic, carrying `stepId` and `stepName` in the payload, and execute in the combined flow handler. A World that provisioned separate `__wkf_step_*` topics can drop them.
+
+**Capabilities fail closed.** The optional `capabilities` object advertises behavior the runtime otherwise assumes is absent. An unadvertised capability costs performance, never correctness, so a partial World stays correct while it catches up. The reverse is not true: advertising something you do not enforce removes a guard the runtime was relying on. Only set a flag once the behavior is implemented.
+
+**A stale replay no longer has to be refused.** v5 shipped with a `preconditionGuard` capability for a World that rejected an event creation whose snapshot was behind the log. It is gone, and nothing replaced it: allocating positions at the commit means a reader's log is a prefix rather than a prefix with a hole, replay is deterministic on a prefix, and a write reports the events it was pushed past. As a result, a stale replay costs a merge instead of a rejection. If you implemented the guard, you can delete it. `PreconditionFailedError` and the runtime's handling of it remain for a World that allocates positions away from the commit (see [Event ID allocation](#event-id-allocation)); no World in the SDK throws it.
+
+**Event creation can return a delta.** `events.create()` may return events alongside the one it created, in `events` with a matching `cursor` and `hasMore`. The runtime uses this to skip a follow-up `events.list` round trip on `run_started`, on step-terminal writes that carried a `sinceCursor`, and on `hook_received` writes that carried `preloadEvents`. All three are advisory: a World that returns only the created event stays correct and pays one more round trip.
+
+## Event ID allocation
+
+This is the largest change for a World implementation, and it is required.
+
+In v4 an event ID was a ULID your World minted however it liked. In v5 an event ID is its **slot**: `evnt_` followed by the event's 1-based position in that run's log, zero-padded to 26 characters, so a run's first event is `evnt_00000000000000000000000001`. Format one with `slotToEventId()` from `@workflow/world`.
+
+There is no capability to declare and no fallback path. The runtime reads a position out of every ID it loads and fails the run when it cannot. A World whose IDs are not positions will pass a type check and start runs, but it cannot replay a single workflow. The first replay fails with `Event id is not slot-numbered`.
+
+The scheme exists for what a reader can conclude from a log it just fetched: positions are dense, so a truncated log is distinguishable from a complete one by its length alone. The runtime relies on that, and it fails a run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log) rather than replay across a hole, so three rules bind an implementation:
+
+- **Uniqueness.** Settle a race for a position where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, not by reading the maximum in your own process and adding one.
+- **Density.** Positions run from 1 with no holes. A writer that loses a race re-derives its position from the store instead of incrementing a local number, which would leave a permanent hole.
+- **Bump and report.** `events.create()` params carry `eventCount`, so the expected position is `eventCount + 1`. When it is taken, do not reject the write: commit at the next free position and return the events you skipped on the success response. A stale count is the normal case for a parallel fan-out, and rejecting it would serialize writes the runtime deliberately issues concurrently.
+- **Allocate at the commit.** Take the position in the same operation that appends the event, not earlier. This is what makes a reader's log a prefix of the run's log rather than a prefix with a hole in it: nothing can land behind a position a reader has already passed. A World that mints a position in a request handler and commits later breaks the property every replay depends on, and is the only kind that still has a use for a stale-write rejection.
+
+[Event ID Allocation](/worlds/building-a-world#event-id-allocation) carries the full rules, and [Event IDs](/docs/how-it-works/event-sourcing#event-ids) covers what the format means for anything that reads an ID back.
+
+One consequence is specific to an upgrade, and it is the thing to plan around.
+
+<Callout type="warn">
+  **Runs already in your store cannot be replayed by the new code.** A ULID-numbered run is not readable as positions, and the runtime refuses it rather than guessing, so there is no mixed-scheme mode and no per-run fallback. Drain those runs on your 4.x build before deploying a v5 World, or accept that the ones still in flight will fail. On a platform such as Vercel, where a run executes on the deployment that created it, this resolves itself: those runs finish on the build that started them and never meet the new code. Anywhere a single deployment serves every run, sequencing matters.
+</Callout>
+
+## New optional surface
+
+None of this is required. Each entry is a hook the runtime uses if your World provides it, and routes around if it does not.
+
+| Member | What it buys |
+| --- | --- |
+| `capabilities` | Advertises `hookRetention.active`, `hookResumeDedup`, `deploymentAffinity`, and `maxConcurrency`. See the contract note above about failing closed. Event ID allocation is *not* in here: it is a requirement, not a capability. |
+| `analytics` | A metadata-only read namespace for observability surfaces. Payload-bearing reads stay on `runs`, `steps`, `events`, and `hooks`. |
+| `runs.experimentalSetAttributes` | Backs `setAttributes()` from application code. Without it, run attributes are unavailable. |
+| `runs.cancelMany` | Bulk cancellation: up to 500 unique run IDs per request (`BULK_CANCEL_MAX_RUN_IDS`), an optional `cancelReason` of at most 512 characters, and a per-run outcome for every ID. Without it, the runtime falls back to bounded-concurrency individual cancels. |
+| `getRuntimeDeadline()` | The absolute time the current invocation will be terminated. The runtime derives its inline replay budget from this, so a host with a long function timeout gets more work per invocation. Without it, the budget is a flat two minutes. See [`WORKFLOW_V2_TIMEOUT_MS`](/docs/configuration/runtime-tuning#workflow_v2_timeout_ms). |
+| `getEnvironment()` | The environment your World's writes are attributed to. Must be synchronous, side-effect free, and match what the backend will actually apply. A wrong answer is worse than `undefined`, because callers use it to detect cross-environment mismatches. Worlds with a single tenant should omit it. |
+| `createRunId(options)` | Mints the bare run ID; the core adds the `wrun_` prefix. Return a valid ULID. You may embed World-specific metadata in it, as `@workflow/world-vercel` does with a region identifier. Read only the option keys you recognize and ignore the rest. |
+| `describeRun(run)` | World-specific display fields for observability surfaces. |
+| `getEncryptionKeyForRun()` | Returns a ready-to-use 32-byte AES-256 key. Without it, data is stored unencrypted. Two overloads: pass the `WorkflowRun` when you have it, or a `runId` plus opaque World context when the entity is not available locally. |
+| `resolveLatestDeploymentId()` | Resolves `deploymentId: 'latest'`. Only meaningful for Worlds where deployment routing exists. |
+| `close()` | Releases connection pools and listeners so CLI commands and short-lived processes can exit without `process.exit()`. |
+| `streams.streamFlushIntervalMs` | Sets the stream flush window. The v5 default is `0`, so the first chunk flushes immediately; set a value to coalesce writes again. |
+| Hook token retention | `Hook.tokenRetentionUntil` marks the earliest time a token may become available after its run ends. Keep the owning run readable at least that long, and honor `hook_disposed` as an immediate release. Declare `capabilities.hookRetention.active` only once this is implemented, since the runtime otherwise rejects retained hooks before registration. |
+| Hook resume dedup | `resumeHook()` writes `hook_received` and dispatches the queue message in parallel when the backend collapses concurrent writes carrying the same `(runId, resumeId)` onto one committed event. Declare `capabilities.hookResumeDedup` only if you enforce that constraint **and** `events.list()` returns the committed event's top-level `resumeId`. A World that omits either guarantee must leave the flag unset, which keeps the sequential path. See [Durable hook resume](/docs/changelog/lazy-hook-resume). |
+
+## If you also maintain a build integration
+
+Compiling workflow files changed independently of the storage contract.
+
+| Change | What to do |
+| --- | --- |
+| The `client` SWC transform mode was removed | It merged into `step` mode. Integrations passing `mode: 'client'` pass `mode: 'step'`. |
+| `stepEntrypoint` removed from `workflow/runtime` | Steps execute through the combined workflow handler the framework integrations generate. Custom hosts use `getWorldHandlers()`. |
+| Step, workflow and webhook bundles are ESM | Generated output moved from CJS to ESM, with a `createRequire` banner for CJS dependencies. The VM-executed workflow bundle stays CJS. The CLI's standalone output is renamed to match: `flow.mjs`, `webhook.mjs`, and `__step_registrations.mjs` in place of `flow.js`, `webhook.js`, and `step.js`. Consumers import the namespace rather than a default. |
+| `workflow/internal/private` and `@workflow/core/private` removed | These were never public API. The compiler no longer emits imports from them, so regenerate build output rather than importing them yourself. |
+| Duplicate step or workflow IDs fail the build | 4.x resolved collisions across non-exported workspace files last-write-wins. A build integration that derived IDs from a partial path may now produce build failures. |
+
+## Verifying the upgrade
+
+Run a workflow end to end against your World, not just the type checker. The contract changes above compile cleanly and fail at runtime.
+
+The cases worth covering explicitly:
+
+- A run that suspends on a step and one that suspends on a wait, to exercise the batched dispatch.
+- A parallel fan-out, so concurrent `events.create()` calls race on the same position or the same precondition.
+- A hook resumed after its run has already progressed, and a hook whose token is retained past the end of its run.
+- A stream written and read back, including a stream closed before the reader attaches.
+- A run created under an older spec version, if your World has any, read back by the new code.
+
+`@workflow/world-testing` is the shared suite the first-party Worlds run, and it now covers event ID allocation directly: `numbers events by position` fails a World whose IDs do not decode to slots, whose run is not dense from 1, or whose IDs are not in canonical form. A World padding to a different width sorts its own log incorrectly past ten events. Run it against your World before the end-to-end cases above; it turns the failure that would otherwise appear on a first replay into one line of test output.
+
+The first-party implementations in `packages/world-local` and `packages/world-postgres` are the reference for everything else, and their test suites are the closest thing to full conformance while the compatibility tests are being rebuilt.

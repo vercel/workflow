@@ -6,7 +6,7 @@
       "package": "@workflow/world-local",
       "name": "Local",
       "description": "Zero-config world bundled with Workflow for local development. No external services required.",
-      "docs": "/docs/deploying/world/local-world",
+      "docs": "/worlds/local",
       "env": {},
       "services": [],
       "features": []
@@ -17,7 +17,7 @@
       "package": "@workflow/world-postgres",
       "name": "Postgres",
       "description": "Production-ready, self-hosted world using PostgreSQL for durable storage and graphile-worker for reliable job processing.",
-      "docs": "/docs/deploying/world/postgres-world",
+      "docs": "/worlds/postgres",
       "example": "https://github.com/vercel/workflow-examples/tree/main/postgres",
       "features": [],
       "env": {
@@ -50,7 +50,7 @@
       "package": "@workflow/world-vercel",
       "name": "Vercel",
       "description": "Fully-managed world for Vercel deployments. Zero config, infinitely scalable, built-in authentication.",
-      "docs": "/docs/deploying/world/vercel-world",
+      "docs": "/worlds/vercel",
       "features": ["encryption"],
       "env": {
         "WORKFLOW_VERCEL_ENV": "production"
@@ -128,6 +128,48 @@
           }
         }
       ]
+    },
+    {
+      "id": "surrealdb",
+      "type": "community",
+      "package": "workflow-world-surrealdb",
+      "name": "SurrealDB",
+      "description": "SurrealDB world using LIVE SELECT for queueing and real-time streaming",
+      "repository": "https://github.com/sepcnt/workflow-world-surrealdb",
+      "docs": "https://github.com/sepcnt/workflow-world-surrealdb",
+      "features": [],
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "workflow-world-surrealdb",
+        "WORKFLOW_SURREAL_URL": "ws://127.0.0.1:8000/rpc",
+        "WORKFLOW_SURREAL_NAMESPACE": "workflow",
+        "WORKFLOW_SURREAL_DATABASE": "workflow",
+        "WORKFLOW_SURREAL_USERNAME": "root",
+        "WORKFLOW_SURREAL_PASSWORD": "root"
+      },
+      "services": [
+        {
+          "name": "surrealdb",
+          "image": "surrealdb/surrealdb:v3",
+          "args": [
+            "start",
+            "--user",
+            "root",
+            "--pass",
+            "root",
+            "--bind",
+            "0.0.0.0:8000",
+            "memory"
+          ],
+          "ports": ["8000:8000"],
+          "healthCheck": {
+            "cmd": "curl -sf http://localhost:8000/health || exit 1",
+            "interval": "5s",
+            "timeout": "3s",
+            "retries": 10
+          }
+        }
+      ],
+      "setup": "pnpm exec workflow-surreal-setup"
     },
     {
       "id": "jazz",

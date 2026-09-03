@@ -15,6 +15,7 @@ import {
 import { EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
+import { ReplayPayloadCache } from '../replay-payload-cache.js';
 import { Run } from '../runtime/run.js';
 import { dehydrateStepReturnValue } from '../serialization.js';
 import { createContext } from '../vm/index.js';
@@ -37,8 +38,12 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   return {
     runId: 'wrun_test',
     encryptionKey: undefined,
+    worldCapabilities: { hookRetention: { active: true } },
+    replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => Promise.resolve(),
     }),
@@ -208,7 +213,7 @@ describe('createCreateHook', () => {
     const hook = createHook();
 
     // Start awaiting the hook - it will process events asynchronously
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
@@ -238,7 +243,7 @@ describe('createCreateHook', () => {
     const hook = createHook();
 
     // Start awaiting the hook - it will process events asynchronously
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
@@ -336,7 +341,7 @@ describe('createCreateHook', () => {
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
     if (WorkflowSuspension.is(workflowError)) {
       expect(workflowError.hookCount).toBe(1);
-      expect(workflowError.steps[0]).toMatchObject({
+      expect(workflowError.items[0]).toMatchObject({
         type: 'hook',
         hasConflictAwaiter: true,
       });
@@ -447,7 +452,7 @@ describe('createCreateHook', () => {
     ]);
 
     const createHook = createCreateHook(ctx);
-    const hook = createHook({ token: 'test-token' });
+    const _hook = createHook({ token: 'test-token' });
 
     // Wait for event processing (hook_disposed removes from invocationsQueue)
     await vi.waitFor(() => {
@@ -558,7 +563,7 @@ describe('createCreateHook', () => {
     const hook = createHook({ token: 'my-custom-token' });
 
     // Start awaiting the hook
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
@@ -730,9 +735,9 @@ describe('createCreateHook', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
+    let _workflowError: Error | undefined;
     ctx.onWorkflowError = (err) => {
-      workflowError = err;
+      _workflowError = err;
     };
 
     const createHook = createCreateHook(ctx);
@@ -881,9 +886,9 @@ describe('createCreateHook', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
+    let _workflowError: Error | undefined;
     ctx.onWorkflowError = (err) => {
-      workflowError = err;
+      _workflowError = err;
     };
 
     const createHook = createCreateHook(ctx);
@@ -953,7 +958,7 @@ describe('createCreateHook', () => {
 
     const createHook = createCreateHook(ctx);
     const hook1 = createHook({ token: 'token-a' });
-    const hook2 = createHook({ token: 'token-b' });
+    const _hook2 = createHook({ token: 'token-b' });
 
     // Only dispose the first hook
     hook1.dispose();
@@ -1109,7 +1114,7 @@ describe('createCreateHook', () => {
     });
 
     // Start awaiting — this pushes a resolver to promises[] since payloadsQueue is empty
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     // Now dispose while the promise is pending — this should drain promises
     // and trigger suspension (not leave an orphaned promise)
@@ -1137,7 +1142,7 @@ describe('createCreateHook', () => {
     hook.dispose();
 
     // Then await — the event log is empty, so this should trigger suspension
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
@@ -1173,12 +1178,93 @@ describe('createCreateHook', () => {
     }
   });
 
+  it('evaluates minimum retention with the same duration parser as sleep', () => {
+    const ctx = setupWorkflowContext([]);
+    const createHook = createCreateHook(ctx);
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      createHook({ experimental_minRetention: 1_000 });
+
+      const queueItem = ctx.invocationsQueue.values().next().value;
+      expect(queueItem?.type).toBe('hook');
+      if (queueItem?.type === 'hook') {
+        expect(queueItem.tokenRetentionUntil).toEqual(new Date(1_001_000));
+      }
+    } finally {
+      dateNow.mockRestore();
+    }
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['inactive', { hookRetention: { active: false } }],
+  ])('rejects minimum retention when the capability is %s', (_state, capabilities) => {
+    const ctx = setupWorkflowContext([]);
+    ctx.worldCapabilities = capabilities;
+    const createHook = createCreateHook(ctx);
+
+    expect(() => createHook({ experimental_minRetention: '30d' })).toThrow(
+      'The configured World does not support `experimental_minRetention` for Hooks.'
+    );
+    expect(ctx.invocationsQueue.size).toBe(0);
+  });
+
+  it.each([
+    {
+      name: 'uses the persisted retention deadline',
+      eventData: {
+        token: 'test-token',
+        tokenRetentionUntil: new Date('2026-07-15T00:00:00.000Z'),
+      },
+      expected: new Date('2026-07-15T00:00:00.000Z'),
+    },
+    {
+      name: 'keeps an old event without a retention deadline unchanged',
+      eventData: { token: 'test-token' },
+      expected: undefined,
+    },
+  ])('$name on replay', async ({ eventData, expected }) => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'hook_created',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData,
+        createdAt: new Date(),
+      },
+    ]);
+    const createHook = createCreateHook(ctx);
+    const hook = createHook({
+      token: 'test-token',
+      experimental_minRetention: '30d',
+    });
+
+    await expect(hook.getConflict()).resolves.toBeNull();
+
+    const queueItem = ctx.invocationsQueue.values().next().value;
+    expect(queueItem?.type).toBe('hook');
+    if (queueItem?.type === 'hook') {
+      expect(queueItem.tokenRetentionUntil).toEqual(expected);
+    }
+  });
+
+  it('rejects minimum retention for a webhook hook', () => {
+    const ctx = setupWorkflowContext([]);
+    const createHook = createCreateHook(ctx);
+
+    expect(() =>
+      createHook({ isWebhook: true, experimental_minRetention: '30d' })
+    ).toThrow('Webhook hooks do not support `experimental_minRetention`.');
+    expect(ctx.invocationsQueue.size).toBe(0);
+  });
+
   it('should throw when an empty string token is provided', () => {
     const ctx = setupWorkflowContext([]);
     const createHook = createCreateHook(ctx);
 
     expect(() => createHook({ token: '' })).toThrow(
-      '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a randomly generated one.'
+      '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a generated one.'
     );
 
     // The rejected hook must not be registered in the invocations queue.
@@ -1204,7 +1290,7 @@ describe('createCreateHook', () => {
 describe('createWebhook', () => {
   it('should throw when a token option is passed', () => {
     expect(() => (createWebhook as any)({ token: 'anything' })).toThrow(
-      '`createWebhook()` does not accept a `token` option. Webhook tokens are always randomly generated. Use `createHook()` with `resumeHook()` for deterministic token patterns.'
+      '`createWebhook()` does not accept a `token` option. Webhook tokens are always generated for you. Use `createHook()` with `resumeHook()` for deterministic token patterns.'
     );
   });
 });

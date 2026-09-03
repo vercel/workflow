@@ -1,12 +1,12 @@
 export { BenchmarkBar, BenchmarkChart } from './BenchmarkChart';
+export { BenchmarkHistoryChart } from './BenchmarkHistoryChart';
 export type * from './types';
 export { formatTime } from './types';
 export { WorldCard } from './WorldCard';
 export { WorldCardSimple } from './WorldCardSimple';
-export { WorldsDashboard } from './WorldsDashboard';
-export { WorldsDashboardServer } from './WorldsDashboardServer';
 export { WorldDetailHero } from './WorldDetailHero';
 export { WorldDetailToc } from './WorldDetailToc';
 export { WorldInstructions } from './WorldInstructions';
+export { WorldsDashboard } from './WorldsDashboard';
+export { WorldsDashboardServer } from './WorldsDashboardServer';
 export { WorldTestingPerformance } from './WorldTestingPerformance';
-export { BenchmarkHistoryChart } from './BenchmarkHistoryChart';

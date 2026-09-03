@@ -124,6 +124,14 @@ jobs:
               done <<< "$env_lines"
             fi
             args+=("$image")
+            # Optional command args passed to the image entrypoint (e.g. a
+            # `start` subcommand for images whose entrypoint is the bare binary).
+            cmd_args=$(echo "$svc" | jq -r '.args // [] | .[]')
+            if [ -n "$cmd_args" ]; then
+              while IFS= read -r line; do
+                args+=("$line")
+              done <<< "$cmd_args"
+            fi
 
             echo "Starting $name ($image)..."
             "${args[@]}"
@@ -210,7 +218,7 @@ jobs:
           DEPLOYMENT_URL: "http://localhost:3000"
           WORKFLOW_DEV_HMR_LOGS: "1"
         run: |
-          DEV_TEST_CONFIG="$(jq -nc --arg name "$APP_NAME" '{name:$name,project:"workbench-\($name)-workflow",generatedStepPath:"app/.well-known/workflow/v1/flow/__step_registrations.js",generatedWorkflowPath:"app/.well-known/workflow/v1/flow/route.js",apiFilePath:"app/api/chat/route.ts",apiFileImportPath:"../../.."}')"
+          DEV_TEST_CONFIG="$(jq -nc --arg name "$APP_NAME" '{name:$name,project:"workbench-\($name)-workflow",generatedStepRegistrationPath:"app/.well-known/workflow/v1/flow/__step_registrations.js",generatedWorkflowPath:"app/.well-known/workflow/v1/flow/route.js",apiFilePath:"app/api/chat/route.ts",apiFileImportPath:"../../.."}')"
           export DEV_TEST_CONFIG
           export DEV_SERVER_LOG_PATH="$GITHUB_WORKSPACE/dev-server-$APP_NAME-$WORLD_ID.log"
           rm -f "$DEV_SERVER_LOG_PATH"

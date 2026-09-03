@@ -615,6 +615,9 @@ describe('AbortSignal deserialized in step context', () => {
  * flake). The hook resume must land in `ctx.preCompletionOps`, which the step
  * handler awaits before writing `step_completed`. The real-time stream write
  * (which reaches an in-flight sibling) stays in the background `ctx.ops`.
+ *
+ * `resumeHook()` is itself the durable barrier: it does not resolve until the
+ * hook_received write and the workflow wake have both completed.
  */
 describe('step-initiated abort: durable hook resume is committed before completion', () => {
   beforeEach(() => {
@@ -705,7 +708,7 @@ describe('step-initiated abort: durable hook resume is committed before completi
     // The durable hook resume is queued for pre-completion draining.
     expect(preCompletionOps.length).toBe(1);
 
-    // Draining preCompletionOps (what the step handler awaits before
+    // Draining preCompletionOps (what the step executor awaits before
     // step_completed) actually fires the resume with the correct payload.
     await Promise.all(preCompletionOps);
     expect(mockResumeHook).toHaveBeenCalledTimes(1);

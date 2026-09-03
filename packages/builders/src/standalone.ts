@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import { BaseBuilder } from './base-builder.js';
 import type { WorkflowConfig } from './types.js';
 
@@ -10,6 +11,11 @@ export class StandaloneBuilder extends BaseBuilder {
   }
 
   async build(): Promise<void> {
+    // Existing standalone output may still contain the retired step route.
+    await rm(this.resolvePath('.well-known/workflow/v1/step.mjs'), {
+      force: true,
+    });
+
     const inputFiles = await this.getInputFiles();
     const tsconfigPath = await this.findTsConfigPath();
 

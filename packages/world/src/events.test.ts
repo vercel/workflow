@@ -1,6 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import { CreateEventSchema, EventSchema } from './events';
 
+describe('hook_created token retention', () => {
+  it('coerces tokenRetentionUntil to a Date', () => {
+    const parsed = CreateEventSchema.parse({
+      eventType: 'hook_created',
+      correlationId: 'hook_1',
+      specVersion: 5,
+      eventData: {
+        token: 'order:123',
+        tokenRetentionUntil: '2026-08-01T00:00:00.000Z',
+      },
+    });
+
+    expect(parsed.eventType).toBe('hook_created');
+    if (parsed.eventType === 'hook_created') {
+      expect(parsed.eventData.tokenRetentionUntil).toEqual(
+        new Date('2026-08-01T00:00:00.000Z')
+      );
+    }
+  });
+});
+
 describe('step_started ownerMessageId', () => {
   it('accepts a bare step_started with no eventData (legacy contract)', () => {
     const parsed = CreateEventSchema.parse({
@@ -86,5 +107,41 @@ describe('run_cancelled cancelReason', () => {
       (parsed as { eventData?: { cancelReason?: string } }).eventData
         ?.cancelReason
     ).toBe('operator cancelled');
+  });
+});
+
+describe('sealed-log noop events', () => {
+  it('parses a noop event from the read union', () => {
+    // Written only by the World's backend when it seals an abandoned slot
+    // (specVersion >= 7); readers must accept it wherever events are parsed.
+    const parsed = EventSchema.parse({
+      eventType: 'noop',
+      runId: 'wrun_123',
+      eventId: 'evnt_00000000000000000000000003',
+      createdAt: new Date().toISOString(),
+      specVersion: 7,
+      eventData: { sealed: true },
+    });
+    expect(parsed.eventType).toBe('noop');
+  });
+
+  it('parses a noop with no eventData at all', () => {
+    const parsed = EventSchema.parse({
+      eventType: 'noop',
+      runId: 'wrun_123',
+      eventId: 'evnt_00000000000000000000000003',
+      createdAt: new Date().toISOString(),
+    });
+    expect(parsed.eventType).toBe('noop');
+  });
+
+  it('is not user-creatable', () => {
+    // A client-minted noop would burn a slot it never allocated; only the
+    // backend's sealer writes them.
+    const result = CreateEventSchema.safeParse({
+      eventType: 'noop',
+      eventData: { sealed: true },
+    });
+    expect(result.success).toBe(false);
   });
 });

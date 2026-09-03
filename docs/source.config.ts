@@ -42,4 +42,33 @@ export const v5docs = defineDocs({
   },
 });
 
+// Canonical World docs rendered at /worlds/* (v4/current) and /v5/worlds/*
+// (the docs trees only keep the Deploying overview; world pages live outside
+// the docs, versioned with the same v4/v5 strategy).
+export const worldsV4Docs = defineDocs({
+  dir: 'content/worlds/v4',
+  docs: {
+    schema: docsSchema,
+    postprocess: {
+      includeProcessedMarkdown: true,
+    },
+  },
+  meta: {
+    schema: geistdocsMetaSchema,
+  },
+});
+
+export const worldsV5Docs = defineDocs({
+  dir: 'content/worlds/v5',
+  docs: {
+    schema: docsSchema,
+    postprocess: {
+      includeProcessedMarkdown: true,
+    },
+  },
+  meta: {
+    schema: geistdocsMetaSchema,
+  },
+});
+
 export default defineGeistdocsSourceConfig();

@@ -29,14 +29,10 @@ export {
   type ModuleSpecifierResult,
   resolveModuleSpecifier,
 } from './module-specifier.js';
-export {
-  WORKFLOW_NODE_COMPAT_BANNER,
-  WORKFLOW_NODE_FILENAME_BANNER,
-} from './node-compat-banner.js';
 export { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 export { WORKFLOW_OPTIONAL_OTEL_API_MODULE } from './optional-otel-api.js';
-export { WORKFLOW_OPTIONAL_PG_NATIVE_ALIAS } from './optional-pg-native-alias.js';
 export { WORKFLOW_OPTIONAL_TYPESCRIPT_ALIAS } from './optional-typescript-alias.js';
+export { WORKFLOW_OPTIONAL_WS_NATIVE_MODULES } from './optional-ws-native.js';
 export {
   createPseudoPackagePlugin,
   PSEUDO_PACKAGES,
@@ -49,7 +45,11 @@ export {
   type SerdeClassCheckResult,
 } from './serde-checker.js';
 export { StandaloneBuilder } from './standalone.js';
-export { createSwcPlugin } from './swc-esbuild-plugin.js';
+export {
+  createSwcPlugin,
+  type WorkflowAfterTransformHook,
+  type WorkflowTransformResult,
+} from './swc-esbuild-plugin.js';
 export {
   detectWorkflowPatterns,
   generatedWorkflowPathPattern,
@@ -74,15 +74,4 @@ export type {
 export { isValidBuildTarget, validBuildTargets } from './types.js';
 export { VercelBuildOutputAPIBuilder } from './vercel-build-output-api.js';
 export { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
-export {
-  createWorkflowWorldTargetEsbuildPlugin,
-  ensureWorkflowTargetWorldEnv,
-  getWorldImport,
-  isWorkflowTargetWorldPath,
-  normalizeWorkflowTargetWorldImport,
-  resolveWorkflowCoreRuntimeAlias,
-  resolveWorkflowTargetWorldAlias,
-  WORKFLOW_CORE_RUNTIME_MODULE,
-  WORKFLOW_WORLD_TARGET_MODULE,
-  type WorkflowWorldTargetEnvironment,
-} from './world-target.js';
+export { hasSameContent, writeFileIfChanged } from './write-if-changed.js';

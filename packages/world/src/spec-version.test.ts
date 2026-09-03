@@ -1,17 +1,64 @@
 import { describe, expect, it } from 'vitest';
 import {
   isLegacySpecVersion,
+  mintedSpecVersion,
   requiresNewerWorld,
+  SEALED_LOG_ENV_VAR,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  SPEC_VERSION_SUPPORTS_SEALED_LOG,
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from './spec-version.js';
 
 describe('spec version constants', () => {
-  it('current spec version is the compression version', () => {
-    expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_COMPRESSION);
-    expect(SPEC_VERSION_SUPPORTS_COMPRESSION).toBe(5);
+  it('current spec version is the sealed-log version', () => {
+    expect(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY).toBe(6);
+    expect(SPEC_VERSION_SUPPORTS_SEALED_LOG).toBe(7);
+    expect(SPEC_VERSION_CURRENT).toBe(SPEC_VERSION_SUPPORTS_SEALED_LOG);
+  });
+
+  describe('mintedSpecVersion', () => {
+    it('stamps the sealed-log version by default', () => {
+      expect(mintedSpecVersion({})).toBe(SPEC_VERSION_CURRENT);
+      expect(mintedSpecVersion({})).toBe(SPEC_VERSION_SUPPORTS_SEALED_LOG);
+    });
+
+    it('falls back to slot identity when switched off', () => {
+      for (const off of ['0', 'false']) {
+        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: off })).toBe(
+          SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+        );
+      }
+    });
+
+    it('stays on by default for an unset or malformed value', () => {
+      // A flag is an escape hatch, not a hard requirement: a typo must not
+      // silently move a deployment onto the older identity scheme.
+      for (const raw of ['', '1', 'true', 'yes-please']) {
+        expect(mintedSpecVersion({ [SEALED_LOG_ENV_VAR]: raw })).toBe(
+          SPEC_VERSION_CURRENT
+        );
+      }
+    });
+
+    it('never stamps a version this build cannot read back', () => {
+      expect(mintedSpecVersion({})).toBeLessThanOrEqual(
+        SPEC_VERSION_MAX_SUPPORTED
+      );
+    });
+  });
+
+  it('the readable ceiling moves with the version we stamp', () => {
+    // "What do we write?" and "what can we still read?" are separate dials,
+    // and the ceiling must never sit below the default: an SDK that stamps a
+    // version it cannot read back would reject its own runs.
+    expect(SPEC_VERSION_MAX_SUPPORTED).toBe(SPEC_VERSION_SUPPORTS_SEALED_LOG);
+    expect(SPEC_VERSION_MAX_SUPPORTED).toBeGreaterThanOrEqual(
+      SPEC_VERSION_CURRENT
+    );
   });
 });
 
@@ -24,13 +71,20 @@ describe('requiresNewerWorld', () => {
     expect(requiresNewerWorld(null)).toBe(false);
   });
 
-  it('rejects runs newer than the current spec version', () => {
+  it('accepts a slot-identity run even though it is above the default', () => {
+    // world-vercel stamps this version on the runs it creates. Testing
+    // against SPEC_VERSION_CURRENT instead of the ceiling would make this SDK
+    // reject the runs its own adapter just wrote.
+    expect(requiresNewerWorld(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY)).toBe(false);
+  });
+
+  it('rejects runs newer than the highest supported spec version', () => {
     // This is the contract that protects older SDKs from compressed
     // payloads they cannot decode: a spec-5 run read by an SDK whose
-    // SPEC_VERSION_CURRENT is 4 fails this check up front (with
-    // RunNotSupportedError at the storage layer) instead of failing on
-    // individual gzip payloads.
-    expect(requiresNewerWorld(SPEC_VERSION_CURRENT + 1)).toBe(true);
+    // ceiling is 4 fails this check up front (with RunNotSupportedError at
+    // the storage layer) instead of failing on individual compressed
+    // payloads.
+    expect(requiresNewerWorld(SPEC_VERSION_MAX_SUPPORTED + 1)).toBe(true);
   });
 
   it('simulates a v4 reader rejecting a compression-era run', () => {

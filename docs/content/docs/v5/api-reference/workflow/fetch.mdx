@@ -34,7 +34,7 @@ async function apiWorkflow() {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -60,9 +60,9 @@ showSections={['returns']}
 
 ## Examples
 
-### Basic Usage
+### Basic usage
 
-Here's a simple example of how you can use `fetch` inside your workflow.
+Here's an example of how you can use `fetch` inside your workflow.
 
 ```typescript lineNumbers
 import { fetch } from "workflow"
@@ -87,13 +87,13 @@ async function apiWorkflow() {
 }
 ```
 
-We call `fetch()` with a URL and optional request options, just like the standard fetch API. The workflow runtime automatically handles the response serialization.
+We call `fetch()` with a URL and optional request options, like the standard fetch API. The workflow runtime automatically handles the response serialization.
 
-This API is provided as a convenience to easily use `fetch` in workflow, but often, you might want to extend and implement your own fetch for more powerful error handing and retry logic.
+This API lets you use `fetch` in a workflow. You can also implement a custom fetch for different error handling and retry logic.
 
-### Customizing Fetch Behavior
+### Customizing fetch behavior
 
-Here's an example of a custom fetch wrapper that provides more sophisticated error handling with custom retry logic:
+The following custom fetch wrapper provides more advanced error handling with custom retry logic. Call `globalThis.fetch` inside your own `"use step"` function because calling the workflow `fetch` imported from `workflow` would nest a step inside a step:
 
 ```typescript lineNumbers
 import { FatalError, RetryableError } from "workflow"
@@ -104,7 +104,7 @@ export async function customFetch(
 ) {
     "use step"
 
-    const response = await fetch(url, init)
+    const response = await globalThis.fetch(url, init)
 
     // Handle client errors (4xx) - don't retry
     if (response.status >= 400 && response.status < 500) {
@@ -145,7 +145,6 @@ export async function customFetch(
 
 This example demonstrates:
 
-- Setting custom `maxRetries` to 5 retries (6 total attempts including the initial attempt).
 - Throwing [`FatalError`](/docs/api-reference/workflow/fatal-error) for client errors (400-499) to prevent retries.
 - Handling 429 rate limiting by reading the `Retry-After` header and using [`RetryableError`](/docs/api-reference/workflow/retryable-error).
-- Allowing automatic retries for server errors (5xx).
+- Allowing automatic retries for server errors (5xx) by throwing a plain `Error`.

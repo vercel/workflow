@@ -1,11 +1,13 @@
 import {
   CorruptedEventLogError,
   HookConflictError,
+  MaxEventsExceededError,
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   RuntimeDecryptionError,
   ThrottleError,
   TooEarlyError,
+  WorkflowDeploymentMismatchError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
   WorkflowWorldError,
@@ -18,6 +20,12 @@ describe('classifyRunError', () => {
     expect(
       classifyRunError(new CorruptedEventLogError('corrupted event log'))
     ).toBe(RUN_ERROR_CODES.CORRUPTED_EVENT_LOG);
+  });
+
+  it('classifies MaxEventsExceededError as MAX_EVENTS_EXCEEDED', () => {
+    expect(classifyRunError(new MaxEventsExceededError(25_100, 25_000))).toBe(
+      RUN_ERROR_CODES.MAX_EVENTS_EXCEEDED
+    );
   });
 
   it('classifies ReplayDivergenceError as REPLAY_DIVERGENCE', () => {
@@ -40,6 +48,18 @@ describe('classifyRunError', () => {
     expect(classifyRunError(new WorkflowNotRegisteredError('myWorkflow'))).toBe(
       RUN_ERROR_CODES.RUNTIME_ERROR
     );
+  });
+
+  it('classifies WorkflowDeploymentMismatchError as DEPLOYMENT_MISMATCH', () => {
+    expect(
+      classifyRunError(
+        new WorkflowDeploymentMismatchError(
+          'wrun_test',
+          'dpl_expected',
+          'dpl_actual'
+        )
+      )
+    ).toBe(RUN_ERROR_CODES.DEPLOYMENT_MISMATCH);
   });
 
   it('classifies plain Error as USER_ERROR', () => {
@@ -123,6 +143,16 @@ describe('classifyRunError', () => {
     expect(classifyRunError(native)).toBe(RUN_ERROR_CODES.USER_ERROR);
   });
 
+  it('classifies an explicit world contract error as WORLD_CONTRACT_ERROR', () => {
+    expect(
+      classifyRunError(
+        new WorkflowWorldError('unknown terminal event stream error', {
+          code: 'WORLD_CONTRACT_ERROR',
+        })
+      )
+    ).toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
+  });
+
   it('classifies a TRANSPORT error as WORLD_CONTRACT_ERROR (backend fault, not USER_ERROR)', () => {
     // Transport blips are normally redelivered via the queue (see
     // isRetryableWorldError); if one ever reaches terminal classification it is
@@ -177,6 +207,18 @@ describe('isRetryableWorldError', () => {
         new WorkflowWorldError('timed out after 60000ms', { code: 'TIMEOUT' })
       )
     ).toBe(true);
+  });
+
+  it('does NOT treat a lost event payload as retryable', () => {
+    // The world layer raises this when the backend reports that an event's
+    // stored payload is gone (`payload-missing` terminal frame). Redelivering
+    // re-reads the same absent object forever, which is what turned one lost
+    // payload into 12,932 reads of the same run in 26 minutes.
+    expect(
+      isRetryableWorldError(
+        new CorruptedEventLogError('payload no longer exists in storage')
+      )
+    ).toBe(false);
   });
 
   it('does NOT treat 4xx (other than 429) as retryable', () => {

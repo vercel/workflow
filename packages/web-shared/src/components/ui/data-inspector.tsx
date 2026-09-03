@@ -25,6 +25,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { cn } from '../../lib/cn';
 import { ENCRYPTED_DISPLAY_NAME } from '../../lib/hydration';
 import {
   type DecodedStreamChunkSource,
@@ -144,6 +145,8 @@ export const StreamClickContext = createContext<
 export type DecryptClickContextValue = {
   onDecrypt: () => void;
   isDecrypting: boolean;
+  isDecryptDisabled?: boolean;
+  decryptDisabledReason?: string;
   hasEncryptedData?: boolean;
 };
 
@@ -166,7 +169,8 @@ function EncryptedInlineLabel() {
       <Button
         size="xs"
         className="align-baseline gap-x-1"
-        disabled={ctx.isDecrypting}
+        disabled={ctx.isDecrypting || ctx.isDecryptDisabled}
+        title={ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined}
         onClick={(e) => {
           e.stopPropagation();
           ctx.onDecrypt();
@@ -182,16 +186,8 @@ function EncryptedInlineLabel() {
     );
   }
   return (
-    <span style={{ color: 'var(--ds-gray-600)', fontStyle: 'italic' }}>
-      <Lock
-        className="h-3 w-3"
-        style={{
-          display: 'inline',
-          verticalAlign: 'middle',
-          marginRight: '3px',
-          marginTop: '-1px',
-        }}
-      />
+    <span className="text-gray-600 italic">
+      <Lock className="-mt-px mr-[3px] inline h-3 w-3 align-middle" />
       Encrypted
     </span>
   );
@@ -199,18 +195,10 @@ function EncryptedInlineLabel() {
 
 function StreamRefInline({ streamRef }: { streamRef: StreamRef }) {
   const onStreamClick = useContext(StreamClickContext);
-  const [hovered, setHovered] = useState(false);
   return (
     <button
       type="button"
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono cursor-pointer underline decoration-transparent transition-colors"
-      style={{
-        backgroundColor: hovered ? 'var(--ds-blue-200)' : 'var(--ds-blue-100)',
-        color: 'var(--ds-blue-900)',
-        border: '1px solid var(--ds-blue-300)',
-      }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      className="inline-flex cursor-pointer items-center gap-1 rounded border border-blue-300 bg-blue-100 px-1.5 py-0.5 font-mono text-[10px] text-blue-900 underline decoration-transparent transition-colors hover:bg-blue-200"
       onClick={(e) => {
         e.stopPropagation();
         onStreamClick?.(streamRef.streamId);
@@ -225,20 +213,10 @@ function StreamRefInline({ streamRef }: { streamRef: StreamRef }) {
 
 function RunRefInline({ runRef }: { runRef: RunRef }) {
   const onRunClick = useContext(RunClickContext);
-  const [hovered, setHovered] = useState(false);
   return (
     <button
       type="button"
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono cursor-pointer underline decoration-transparent transition-colors"
-      style={{
-        backgroundColor: hovered
-          ? 'var(--ds-purple-200)'
-          : 'var(--ds-purple-100)',
-        color: 'var(--ds-purple-900)',
-        border: '1px solid var(--ds-purple-300)',
-      }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      className="inline-flex cursor-pointer items-center gap-1 rounded border border-purple-300 bg-purple-100 px-1.5 py-0.5 font-mono text-[10px] text-purple-900 underline decoration-transparent transition-colors hover:bg-purple-200"
       onClick={(e) => {
         e.stopPropagation();
         onRunClick?.(runRef.runId);
@@ -267,10 +245,7 @@ function DecodedBytesChunk({
       {selectedView === 'decoded' ? (
         <div className="min-w-0">
           {typeof parsed === 'string' ? (
-            <span
-              className="whitespace-pre-wrap break-words"
-              style={{ color: 'var(--ds-gray-1000)' }}
-            >
+            <span className="whitespace-pre-wrap break-words text-gray-1000">
               {deserializeChunkText(parsed)}
             </span>
           ) : (
@@ -282,20 +257,15 @@ function DecodedBytesChunk({
       )}
       <div className="mt-2 flex">
         <div
-          className="inline-flex overflow-hidden rounded border"
-          style={{ borderColor: 'var(--ds-gray-400)' }}
+          className="inline-flex overflow-hidden rounded border border-gray-400"
           title={`${source.type} decoded as ${source.encoding.toUpperCase()} text. Switch to Bytes to inspect the summarized raw value.`}
         >
           <button
             type="button"
-            className="h-5 px-1.5 text-[10px] font-medium"
-            style={{
-              backgroundColor:
-                selectedView === 'decoded'
-                  ? 'var(--ds-gray-200)'
-                  : 'var(--ds-gray-100)',
-              color: 'var(--ds-gray-900)',
-            }}
+            className={cn(
+              'h-5 px-1.5 font-medium text-[10px] text-gray-900',
+              selectedView === 'decoded' ? 'bg-gray-200' : 'bg-gray-100'
+            )}
             onClick={() => setSelectedView('decoded')}
             aria-pressed={selectedView === 'decoded'}
             aria-label="Show decoded text"
@@ -304,15 +274,10 @@ function DecodedBytesChunk({
           </button>
           <button
             type="button"
-            className="h-5 border-l px-1.5 text-[10px] font-medium"
-            style={{
-              borderColor: 'var(--ds-gray-400)',
-              backgroundColor:
-                selectedView === 'bytes'
-                  ? 'var(--ds-gray-200)'
-                  : 'var(--ds-gray-100)',
-              color: 'var(--ds-gray-900)',
-            }}
+            className={cn(
+              'h-5 border-gray-400 border-l px-1.5 font-medium text-[10px] text-gray-900',
+              selectedView === 'bytes' ? 'bg-gray-200' : 'bg-gray-100'
+            )}
             onClick={() => setSelectedView('bytes')}
             aria-pressed={selectedView === 'bytes'}
             aria-label="Show raw bytes summary"
@@ -338,23 +303,19 @@ function DecodedBytesInspector({
     <div className="font-mono">
       <button
         type="button"
-        className="flex max-w-full items-start gap-1 text-left"
-        style={{ color: 'var(--ds-gray-1000)' }}
+        className="flex max-w-full items-start gap-1 text-left text-gray-1000"
         onClick={() => setExpanded((value) => !value)}
         title={`${source.type} decoded as ${source.encoding.toUpperCase()} text`}
       >
-        <span className="select-none" style={{ color: 'var(--ds-gray-700)' }}>
+        <span className="select-none text-gray-700">
           {expanded ? '▼' : '▶'}
         </span>
         <span className="min-w-0 break-words">{source.rawSummary}</span>
       </button>
       {expanded && (
         <div className="mt-1 pl-5">
-          <span style={{ color: 'var(--ds-gray-700)' }}>decoded: </span>
-          <span
-            className="whitespace-pre-wrap break-words"
-            style={{ color: 'var(--ds-green-900)' }}
-          >
+          <span className="text-gray-700">decoded: </span>
+          <span className="whitespace-pre-wrap break-words text-green-900">
             {JSON.stringify(decodedText)}
           </span>
         </div>
@@ -373,10 +334,7 @@ function BytesDisplayValue({ display }: { display: BytesDisplay }) {
     );
   }
   return (
-    <span
-      className="whitespace-pre-wrap break-words"
-      style={{ color: 'var(--ds-gray-1000)' }}
-    >
+    <span className="whitespace-pre-wrap break-words text-gray-1000">
       {display.text}
     </span>
   );
@@ -386,7 +344,7 @@ function BytesDisplayValue({ display }: { display: BytesDisplay }) {
 // Tree renderer
 // ---------------------------------------------------------------------------
 
-type Entry = [field: string | undefined, value: unknown];
+type Entry = [field: string | undefined, value: unknown, key?: string | number];
 
 interface NodeContext {
   level: number;
@@ -399,10 +357,51 @@ function formatField(field: string): string {
   return field === '' ? '""' : field;
 }
 
+function isGenericIterable(
+  value: unknown
+): value is object & Iterable<unknown> {
+  if (
+    value === null ||
+    (typeof value !== 'object' && typeof value !== 'function') ||
+    Array.isArray(value) ||
+    value instanceof Map ||
+    value instanceof Set
+  ) {
+    return false;
+  }
+  return (
+    typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] ===
+    'function'
+  );
+}
+
+function isEntryIterable(
+  value: object & Iterable<unknown>
+): value is object & Iterable<unknown> & { entries(): Iterable<unknown> } {
+  return typeof (value as { entries?: unknown }).entries === 'function';
+}
+
+function collectEntries(
+  iterable: Iterable<unknown>,
+  asPairs: boolean
+): Entry[] {
+  return Array.from(iterable, (item, index) => {
+    if (asPairs && Array.isArray(item) && item.length >= 2) {
+      return [String(item[0]), collapseRefs(item[1]), index];
+    }
+    return [undefined, collapseRefs(item), index];
+  });
+}
+
+function isSelfIterableIterator(value: object & Iterable<unknown>): boolean {
+  return Object.is(value[Symbol.iterator](), value);
+}
+
 /**
- * Describe an object/array/map/set as an expandable container. Returns null for
- * values that should render as a primitive. `prefix` carries a class name shown
- * before the opening bracket (Map/Set and named class instances).
+ * Describe an object/array/iterable as an expandable container. Returns null
+ * for values that should render as a primitive. `prefix` carries a class name
+ * shown before the opening bracket (Map/Set, generic iterables, and named class
+ * instances).
  */
 function describeContainer(
   value: unknown
@@ -431,6 +430,25 @@ function describeContainer(
       open: '[',
       close: ']',
       prefix: 'Set',
+    };
+  }
+  if (isGenericIterable(value)) {
+    const name = (value as { constructor?: { name?: string } }).constructor
+      ?.name;
+    const prefix = name && name !== 'Object' ? name : undefined;
+    if (isEntryIterable(value)) {
+      return {
+        entries: collectEntries(value.entries(), true),
+        open: '{',
+        close: '}',
+        prefix,
+      };
+    }
+    return {
+      entries: collectEntries(value, false),
+      open: '[',
+      close: ']',
+      prefix,
     };
   }
   if (value !== null && typeof value === 'object') {
@@ -658,9 +676,9 @@ function ExpandableContainer({
       {expanded ? (
         // biome-ignore lint/a11y/useSemanticElements: ARIA tree group is the correct role here
         <ul id={contentsId} className={CLS.childFields} role="group">
-          {entries.map(([childField, childValue], index) => (
+          {entries.map(([childField, childValue, entryKey], index) => (
             <DataRender
-              key={childField ?? index}
+              key={entryKey ?? childField ?? index}
               field={childField}
               value={childValue}
               isLast={index === lastIndex}
@@ -862,8 +880,8 @@ function makeBytesDisplay(display: FormattedStreamChunkDisplay): unknown {
  * non-expandable versions so the renderer doesn't show their internals.
  * Only recurses into plain objects and arrays to avoid stripping class
  * instances (Date, Error, URL, Headers, etc.) that have their own rendering.
- * Map and Set containers are preserved while their contents are prepared for
- * display.
+ * Map and Set contents are prepared here; other iterable contents are prepared
+ * when the renderer traverses them.
  *
  * Exported for testing the typed-array detection path used by hydrated
  * AI agent stream chunks (e.g. `{ delta: new Uint8Array(...) }`).
@@ -887,7 +905,7 @@ export function collapseRefs(data: unknown): unknown {
   if (data instanceof Set) {
     return new Set(Array.from(data.values(), collapseRefs));
   }
-  // Only recurse into plain objects — leave class instances untouched
+  // Only recurse into plain objects; leave class instances untouched
   const proto = Object.getPrototypeOf(data);
   if (proto !== Object.prototype && proto !== null) return data;
   const result: Record<string, unknown> = {};
@@ -916,6 +934,10 @@ export interface DataInspectorProps {
   onDecrypt?: () => void;
   /** Whether decryption is currently in progress */
   isDecrypting?: boolean;
+  /** Whether decryption is unavailable */
+  isDecryptDisabled?: boolean;
+  /** Explains why decryption is unavailable */
+  decryptDisabledReason?: string;
 }
 
 export function DataInspector({
@@ -926,6 +948,8 @@ export function DataInspector({
   onRunClick,
   onDecrypt,
   isDecrypting = false,
+  isDecryptDisabled = false,
+  decryptDisabledReason,
 }: DataInspectorProps) {
   const collapsedData = useMemo(() => collapseRefs(data), [data]);
   const stableData = useStableInspectorData(collapsedData);
@@ -957,7 +981,14 @@ export function DataInspector({
   }
   if (onDecrypt) {
     content = (
-      <DecryptClickContext.Provider value={{ onDecrypt, isDecrypting }}>
+      <DecryptClickContext.Provider
+        value={{
+          onDecrypt,
+          isDecrypting,
+          isDecryptDisabled,
+          decryptDisabledReason,
+        }}
+      >
         {content}
       </DecryptClickContext.Provider>
     );
@@ -991,7 +1022,28 @@ function isSameBytesDisplay(a: BytesDisplay, b: BytesDisplay): boolean {
   );
 }
 
-function isDeepEqual(a: unknown, b: unknown, seen = new WeakMap()): boolean {
+function haveSameIterableValues(
+  a: Iterable<unknown>,
+  b: Iterable<unknown>,
+  seen: WeakMap<object, object>
+): boolean {
+  const aIterator = a[Symbol.iterator]();
+  const bIterator = b[Symbol.iterator]();
+  while (true) {
+    const aResult = aIterator.next();
+    const bResult = bIterator.next();
+    if (aResult.done || bResult.done) {
+      return aResult.done === bResult.done;
+    }
+    if (!isDeepEqual(aResult.value, bResult.value, seen)) return false;
+  }
+}
+
+export function isDeepEqual(
+  a: unknown,
+  b: unknown,
+  seen = new WeakMap()
+): boolean {
   if (Object.is(a, b)) return true;
 
   if (isBytesDisplay(a) || isBytesDisplay(b)) {
@@ -1004,6 +1056,21 @@ function isDeepEqual(a: unknown, b: unknown, seen = new WeakMap()): boolean {
 
   if (a instanceof RegExp && b instanceof RegExp) {
     return a.source === b.source && a.flags === b.flags;
+  }
+
+  if (isGenericIterable(a) || isGenericIterable(b)) {
+    if (!isGenericIterable(a) || !isGenericIterable(b)) return false;
+    if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
+    if (isSelfIterableIterator(a) || isSelfIterableIterator(b)) return false;
+    if (seen.get(a) === b) return true;
+    seen.set(a, b);
+    const aHasEntries = isEntryIterable(a);
+    const bHasEntries = isEntryIterable(b);
+    if (aHasEntries !== bHasEntries) return false;
+    if (aHasEntries && bHasEntries) {
+      return haveSameIterableValues(a.entries(), b.entries(), seen);
+    }
+    return haveSameIterableValues(a, b, seen);
   }
 
   if (a instanceof Map && b instanceof Map) {

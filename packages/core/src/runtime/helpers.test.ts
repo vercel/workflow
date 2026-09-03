@@ -1,14 +1,30 @@
 import { PreconditionFailedError, WorkflowWorldError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
-import { ulid } from 'ulid';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { slotToEventId } from '@workflow/world';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { bytesToBase64, deriveRunKeyPair, seal } from '../sealed-box.js';
 import {
+  decrypt,
+  encodeWithFormatPrefix,
+  encrypt,
+  peekFormatPrefix,
+  SerializationFormat,
+} from '../serialization.js';
+import {
+  appendUniqueEvents,
+  findEventSlotGap,
   getWorkflowQueueName,
+  handleHealthCheckMessage,
   healthCheck,
-  latestEventStateUpdatedAt,
+  insertEventByEventId,
   loadWorkflowRunEvents,
-  type MutableEventLog,
-  withPreconditionRetry,
+  maxEventSlot,
+  memoizeEncryptionKey,
+  mergeReportedEvents,
+  preconditionEventDelta,
+  SLOT_GAP_RECHECK_ATTEMPTS,
+  settleEventSlotGap,
+  slotSnapshotParams,
 } from './helpers.js';
 
 // Mock the logger to suppress output during tests
@@ -39,6 +55,53 @@ const makeEvent = (eventId: string): Event =>
     correlationId: 'step_mock',
     createdAt: new Date(),
   }) as unknown as Event;
+
+describe('insertEventByEventId', () => {
+  it('keeps ascending eventId order when splicing a late-committing earlier event', () => {
+    // The lazy-resume consumer may splice a hook_received whose eventId sorts
+    // BEFORE events already in the ascending-loaded preload. A plain push would
+    // corrupt replay order; insertEventByEventId must place it correctly.
+    const events = [makeEvent('evnt_a'), makeEvent('evnt_c')];
+    insertEventByEventId(events, makeEvent('evnt_b'));
+    expect(events.map((e) => e.eventId)).toEqual([
+      'evnt_a',
+      'evnt_b',
+      'evnt_c',
+    ]);
+  });
+
+  it('appends an event that sorts at the tail (the common case)', () => {
+    const events = [makeEvent('evnt_a'), makeEvent('evnt_b')];
+    insertEventByEventId(events, makeEvent('evnt_c'));
+    expect(events.map((e) => e.eventId)).toEqual([
+      'evnt_a',
+      'evnt_b',
+      'evnt_c',
+    ]);
+  });
+
+  it('inserts at the head when the event sorts before everything', () => {
+    const events = [makeEvent('evnt_b'), makeEvent('evnt_c')];
+    insertEventByEventId(events, makeEvent('evnt_a'));
+    expect(events.map((e) => e.eventId)).toEqual([
+      'evnt_a',
+      'evnt_b',
+      'evnt_c',
+    ]);
+  });
+
+  it('is idempotent when the eventId is already present', () => {
+    const events = [makeEvent('evnt_a'), makeEvent('evnt_b')];
+    insertEventByEventId(events, makeEvent('evnt_b'));
+    expect(events.map((e) => e.eventId)).toEqual(['evnt_a', 'evnt_b']);
+  });
+
+  it('inserts into an empty log', () => {
+    const events: Event[] = [];
+    insertEventByEventId(events, makeEvent('evnt_a'));
+    expect(events.map((e) => e.eventId)).toEqual(['evnt_a']);
+  });
+});
 
 describe('getWorkflowQueueName', () => {
   it('should return a valid queue name for a simple workflow name', () => {
@@ -166,7 +229,7 @@ describe('healthCheck response parsing', () => {
       })
     );
 
-    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+    const result = await healthCheck(world, { timeout: 1000 });
 
     expect(result.healthy).toBe(true);
     expect(result.specVersion).toBe(3);
@@ -187,7 +250,7 @@ describe('healthCheck response parsing', () => {
       })
     );
 
-    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+    const result = await healthCheck(world, { timeout: 1000 });
 
     expect(result.healthy).toBe(true);
     expect(result.specVersion).toBe(3);
@@ -207,10 +270,70 @@ describe('healthCheck response parsing', () => {
       })
     );
 
-    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+    const result = await healthCheck(world, { timeout: 1000 });
 
     expect(result.healthy).toBe(true);
     expect(result.workflowCoreVersion).toBeUndefined();
+  });
+
+  it('surfaces hookResumeInputVersion from the target so the caller stamps the consumer value', async () => {
+    // Blocker 1: the marker must reflect the TARGET deployment (the queue
+    // consumer that re-ensures the event), not the caller. The responder
+    // stamps its own `HOOK_RESUME_INPUT_VERSION`; the parser passes it through
+    // so a cross-deployment start records the consumer's real capability.
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        hookResumeInputVersion: 1,
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.hookResumeInputVersion).toBe(1);
+  });
+
+  it('omits hookResumeInputVersion for an older target that does not attest it', async () => {
+    // An older target deployment predates the marker in the health response.
+    // The field is absent, and the caller must fail closed (stamp nothing) so
+    // the cross-deployment resume stays sequential.
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        // No hookResumeInputVersion field
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.hookResumeInputVersion).toBeUndefined();
+  });
+
+  it('omits hookResumeInputVersion when the field is the wrong type', async () => {
+    // Defensive: only a number is accepted; anything else is dropped rather
+    // than surfaced as a bogus capability.
+    const world = makeWorldWithResponse(
+      JSON.stringify({
+        healthy: true,
+        endpoint: 'workflow',
+        specVersion: 3,
+        hookResumeInputVersion: 'yes',
+        timestamp: Date.now(),
+      })
+    );
+
+    const result = await healthCheck(world, { timeout: 1000 });
+
+    expect(result.healthy).toBe(true);
+    expect(result.hookResumeInputVersion).toBeUndefined();
   });
 
   it('returns healthy with no fields for non-JSON plain-text responses', async () => {
@@ -221,7 +344,7 @@ describe('healthCheck response parsing', () => {
       'Workflow SDK "workflow" endpoint is healthy'
     );
 
-    const result = await healthCheck(world, 'workflow', { timeout: 1000 });
+    const result = await healthCheck(world, { timeout: 1000 });
 
     expect(result.healthy).toBe(true);
     expect(result.specVersion).toBeUndefined();
@@ -233,7 +356,7 @@ describe('healthCheck response parsing', () => {
       JSON.stringify({ healthy: true, endpoint: 'workflow' })
     );
 
-    await healthCheck(world, 'workflow', { timeout: 1000 });
+    await healthCheck(world, { timeout: 1000 });
 
     expect(world.queue).toHaveBeenCalledWith(
       '__wkf_workflow_health_check',
@@ -247,7 +370,7 @@ describe('healthCheck response parsing', () => {
       JSON.stringify({ healthy: true, endpoint: 'workflow' })
     );
 
-    const result = await healthCheck(world, 'workflow', {
+    const result = await healthCheck(world, {
       timeout: 1000,
       namespace: 'eve',
     });
@@ -271,7 +394,7 @@ describe('healthCheck response parsing', () => {
       },
     } as unknown as World;
 
-    const result = await healthCheck(world, 'workflow', { timeout: 300 });
+    const result = await healthCheck(world, { timeout: 300 });
 
     expect(result.healthy).toBe(false);
     expect(result.error).toMatch(/timed out/);
@@ -296,6 +419,10 @@ describe('loadWorkflowRunEvents', () => {
     expect(result.events).toHaveLength(2);
     expect(result.cursor).toBe('eid:evnt_b');
     expect(eventsListMock).toHaveBeenCalledTimes(1);
+    expect(eventsListMock).toHaveBeenCalledWith({
+      runId: 'wrun_test',
+      pagination: { sortOrder: 'asc', cursor: undefined },
+    });
   });
 
   // Regression test for the "Event cursor missing after initial load" warning.
@@ -461,162 +588,483 @@ describe('loadWorkflowRunEvents', () => {
   });
 });
 
-const makeUlidEvent = (time: number): Event =>
-  ({
-    eventId: `evnt_${ulid(time)}`,
-    runId: 'wrun_mockidnumber0001',
-    eventType: 'step_created',
-    correlationId: 'step_mock',
-    createdAt: new Date(time),
-  }) as unknown as Event;
+/** An id from the scheme slots replaced: a ULID, which carries no position. */
+const UNPOSITIONED_EVENT_ID = 'evnt_01HF7YATRRC3M0F1K9Q2J8XW5B';
 
-describe('latestEventStateUpdatedAt', () => {
-  it('returns undefined for an empty event list', () => {
-    expect(latestEventStateUpdatedAt([])).toBeUndefined();
+describe('slotSnapshotParams', () => {
+  it('sends the highest slot the loaded log occupies', () => {
+    const events = [1, 2, 3].map((slot) => makeEvent(slotToEventId(slot)));
+
+    expect(slotSnapshotParams(events)).toEqual({ eventCount: 3 });
   });
 
-  it('decodes the ULID time of the last (newest) event, stripping the prefix', () => {
-    const time = 1_700_000_000_000;
-    // ULID time resolution is whole milliseconds.
-    expect(
-      latestEventStateUpdatedAt([
-        makeUlidEvent(time - 1000),
-        makeUlidEvent(time),
-      ])
-    ).toBe(time);
+  it('reports the highest slot, not the number of events', () => {
+    // A slot is claimed by the write that occupies it, and a write that then
+    // fails leaves it empty forever. Sending the count would make every later
+    // write in this run ask below the hole and be handed the same events back
+    // on every single create.
+    const events = [1, 2, 5].map((slot) => makeEvent(slotToEventId(slot)));
+
+    expect(slotSnapshotParams(events)).toEqual({ eventCount: 5 });
   });
 
-  it('returns undefined when the latest event id is not a decodable ULID', () => {
-    expect(
-      latestEventStateUpdatedAt([makeEvent('evnt_not-a-ulid')])
-    ).toBeUndefined();
+  it('is invariant under the order the World returned the log in', () => {
+    const forward = [1, 2, 3].map((slot) => makeEvent(slotToEventId(slot)));
+
+    expect(slotSnapshotParams([...forward].reverse())).toEqual(
+      slotSnapshotParams(forward)
+    );
+  });
+
+  it('sends nothing on an empty log', () => {
+    expect(slotSnapshotParams([])).toEqual({});
+  });
+
+  it('throws when any event of the log carries no slot', () => {
+    // Skipping the id instead would understate the writer's position, and the
+    // World cannot tell an understated position from an honest one: it would
+    // hand back the same events on every create for the rest of the run.
+    const events = [
+      makeEvent(slotToEventId(1)),
+      makeEvent(UNPOSITIONED_EVENT_ID),
+    ];
+
+    expect(() => slotSnapshotParams(events)).toThrow(UNPOSITIONED_EVENT_ID);
   });
 });
 
-describe('withPreconditionRetry', () => {
-  let originalGuard: string | undefined;
+describe('maxEventSlot', () => {
+  it('is undefined for an empty log', () => {
+    expect(maxEventSlot([])).toBeUndefined();
+  });
 
+  it('throws rather than ignoring an id that carries no slot', () => {
+    expect(() => maxEventSlot([makeEvent(UNPOSITIONED_EVENT_ID)])).toThrow(
+      UNPOSITIONED_EVENT_ID
+    );
+  });
+});
+
+/**
+ * The hole check a replay runs over its loaded log. It gates whether the run
+ * executes at all, so it is one-sided in the opposite direction from the
+ * World's density counter: it reports a hole only where the log proves one.
+ */
+describe('findEventSlotGap', () => {
+  const slotLog = (...slots: number[]) =>
+    slots.map((slot) => makeEvent(slotToEventId(slot)));
+
+  it('finds no hole in a dense log', () => {
+    expect(findEventSlotGap(slotLog(1, 2, 3))).toBeUndefined();
+  });
+
+  it('names the hole and how much of the log is missing', () => {
+    expect(findEventSlotGap(slotLog(1, 2, 5))).toEqual({
+      firstMissingSlot: 3,
+      missingCount: 2,
+      maxSlot: 5,
+    });
+  });
+
+  it('reports the lowest hole when there is more than one', () => {
+    expect(findEventSlotGap(slotLog(1, 3, 5))).toEqual({
+      firstMissingSlot: 2,
+      missingCount: 2,
+      maxSlot: 5,
+    });
+  });
+
+  it('does not depend on the log being in slot order', () => {
+    // The loaded log is listed pages plus whatever a bump-and-report write
+    // handed back. mergeReportedEvents restores order, but a check that fails
+    // a run outright must not be the thing that notices when it did not.
+    expect(findEventSlotGap(slotLog(3, 1, 2))).toBeUndefined();
+    expect(findEventSlotGap(slotLog(4, 1, 2))?.firstMissingSlot).toBe(3);
+  });
+
+  it('excuses a log missing only its reserved first slot', () => {
+    // `start()` posts run_created concurrently with the queue send, so a log
+    // read in that window legitimately begins at the second slot.
+    expect(findEventSlotGap(slotLog(2, 3))).toBeUndefined();
+  });
+
+  it('still reports a hole above an absent first slot', () => {
+    expect(findEventSlotGap(slotLog(2, 4))).toEqual({
+      firstMissingSlot: 3,
+      missingCount: 1,
+      maxSlot: 4,
+    });
+  });
+
+  it('says nothing about an empty log', () => {
+    expect(findEventSlotGap([])).toBeUndefined();
+  });
+
+  it('throws on a log whose ids carry no position', () => {
+    // The check is entirely positional. An id it cannot read is a log it
+    // cannot judge, and passing the run as dense would be a verdict it never
+    // reached.
+    expect(() =>
+      findEventSlotGap([...slotLog(1, 2), makeEvent(UNPOSITIONED_EVENT_ID)])
+    ).toThrow(UNPOSITIONED_EVENT_ID);
+  });
+});
+
+/**
+ * The re-read that stands between a hole and a failed run. A hole can be one
+ * commit wide: the World allocates a slot inside the insert that occupies it,
+ * so a writer can commit a higher slot while a lower one is still in flight.
+ * Only a hole that survives the re-reads is a position no write will ever take.
+ */
+describe('settleEventSlotGap', () => {
   beforeEach(() => {
     eventsListMock.mockReset();
-    originalGuard = process.env.WORKFLOW_PRECONDITION_GUARD;
-    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
   });
 
-  afterEach(() => {
-    if (originalGuard !== undefined) {
-      process.env.WORKFLOW_PRECONDITION_GUARD = originalGuard;
-    } else {
-      delete process.env.WORKFLOW_PRECONDITION_GUARD;
-    }
-  });
+  const slotLog = (...slots: number[]) =>
+    slots.map((slot) => makeEvent(slotToEventId(slot)));
 
-  it('passes no snapshot to op when the guard is not opted in', async () => {
-    delete process.env.WORKFLOW_PRECONDITION_GUARD;
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
-    const op = vi.fn(async (stateUpdatedAt?: number) => {
-      expect(stateUpdatedAt).toBeUndefined();
-      return 'ok';
+  it('reports no gap for a log that is already dense', async () => {
+    const settled = await settleEventSlotGap('wrun_test', {
+      events: slotLog(1, 2, 3),
+      cursor: 'eid:c',
     });
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'ok'
-    );
-    expect(op).toHaveBeenCalledTimes(1);
+    expect(settled.gap).toBeUndefined();
+    // Nothing to settle, so nothing is re-read.
     expect(eventsListMock).not.toHaveBeenCalled();
   });
 
-  it('passes the latest snapshot time to op and returns its result without reloading', async () => {
-    const time = 1_700_000_000_000;
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(time)],
-      cursor: 'c0',
-    };
-    const op = vi.fn(async (stateUpdatedAt?: number) => {
-      expect(stateUpdatedAt).toBe(time);
-      return 'ok';
-    });
-
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'ok'
-    );
-    expect(op).toHaveBeenCalledTimes(1);
-    expect(eventsListMock).not.toHaveBeenCalled();
-  });
-
-  it('reloads the event log and retries on a stale (412) rejection, then succeeds', async () => {
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
-    // Each reload returns one newer event and advances the cursor.
+  it('adopts the log it re-read once the hole has filled in', async () => {
     eventsListMock.mockResolvedValueOnce({
-      data: [makeUlidEvent(1_700_000_001_000)],
-      cursor: 'c1',
-      hasMore: false,
-    });
-    eventsListMock.mockResolvedValueOnce({
-      data: [makeUlidEvent(1_700_000_002_000)],
-      cursor: 'c2',
+      data: slotLog(1, 2, 3),
+      cursor: 'eid:filled',
       hasMore: false,
     });
 
-    let calls = 0;
-    const op = vi.fn(async () => {
-      calls++;
-      if (calls <= 2) {
-        throw new PreconditionFailedError('stale');
-      }
-      return 'done';
+    const settled = await settleEventSlotGap('wrun_test', {
+      events: slotLog(1, 3),
+      cursor: 'eid:stale',
     });
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).resolves.toBe(
-      'done'
+    expect(settled.gap).toBeUndefined();
+    // The caller replays what settled, not the snapshot that looked holey.
+    expect(settled.log.events.map((e) => e.eventId)).toEqual(
+      slotLog(1, 2, 3).map((e) => e.eventId)
     );
-    expect(op).toHaveBeenCalledTimes(3);
-    // Two reloads merged their events into the shared log and advanced cursor.
-    expect(log.events).toHaveLength(3);
-    expect(log.cursor).toBe('c2');
+    expect(settled.log.cursor).toBe('eid:filled');
+    expect(eventsListMock).toHaveBeenCalledTimes(1);
   });
 
-  it('rethrows the precondition error after exhausting reload retries', async () => {
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
+  it('reports a hole that survives every re-read', async () => {
     eventsListMock.mockResolvedValue({
-      data: [],
-      cursor: 'c1',
+      data: slotLog(1, 4),
+      cursor: 'eid:stuck',
       hasMore: false,
     });
 
-    const op = vi.fn(async () => {
-      throw new PreconditionFailedError('always stale');
+    const settled = await settleEventSlotGap('wrun_test', {
+      events: slotLog(1, 4),
+      cursor: 'eid:stuck',
     });
 
-    await expect(
-      withPreconditionRetry('wrun_test', log, op)
-    ).rejects.toBeInstanceOf(PreconditionFailedError);
-    // attempts 0,1,2 — two reloads between them, then rethrow on the third.
-    expect(op).toHaveBeenCalledTimes(3);
-    expect(eventsListMock).toHaveBeenCalledTimes(2);
+    expect(settled.gap).toEqual({
+      firstMissingSlot: 2,
+      missingCount: 2,
+      maxSlot: 4,
+    });
+    expect(eventsListMock).toHaveBeenCalledTimes(SLOT_GAP_RECHECK_ATTEMPTS);
+  });
+});
+
+describe('mergeReportedEvents', () => {
+  it('restores slot order after folding in events below the tail', () => {
+    // Bump-and-report hands back events the writer had not seen, and they sit
+    // BELOW the write that reported them. Appending would leave the log in an
+    // order no replay can walk.
+    const target = [1, 4].map((slot) => makeEvent(slotToEventId(slot)));
+
+    const added = mergeReportedEvents(
+      target,
+      [3, 2].map((slot) => makeEvent(slotToEventId(slot)))
+    );
+
+    expect(added).toBe(2);
+    expect(target.map((e) => e.eventId)).toEqual(
+      [1, 2, 3, 4].map(slotToEventId)
+    );
   });
 
-  it('rethrows non-precondition errors immediately without reloading', async () => {
-    const log: MutableEventLog = {
-      events: [makeUlidEvent(1_700_000_000_000)],
-      cursor: 'c0',
-    };
-    const op = vi.fn(async () => {
-      throw new Error('boom');
-    });
+  it('is a no-op when every reported event is already present', () => {
+    const target = [1, 2].map((slot) => makeEvent(slotToEventId(slot)));
 
-    await expect(withPreconditionRetry('wrun_test', log, op)).rejects.toThrow(
-      'boom'
+    expect(mergeReportedEvents(target, [makeEvent(slotToEventId(2))])).toBe(0);
+    expect(target).toHaveLength(2);
+  });
+});
+
+describe('appendUniqueEvents', () => {
+  it('appends in receipt order', () => {
+    const target = [makeEvent(slotToEventId(1))];
+
+    appendUniqueEvents(target, [
+      makeEvent(slotToEventId(2)),
+      makeEvent(slotToEventId(3)),
+    ]);
+
+    expect(target.map((e) => e.eventId)).toEqual([1, 2, 3].map(slotToEventId));
+  });
+
+  it('preserves the order the World returned, never re-sorting by event id', () => {
+    // Unlike mergeReportedEvents, this appends a page the World handed back as
+    // a unit. Every source is already in canonical order relative to the tail,
+    // so a sort could only ever be a wasted pass over the log — the reason
+    // helpers.ts gives. Asserting the unsorted order is how a sort creeping in
+    // gets noticed.
+    const target = [makeEvent(slotToEventId(1)), makeEvent(slotToEventId(3))];
+
+    appendUniqueEvents(target, [makeEvent(slotToEventId(2))]);
+
+    expect(target.map((e) => e.eventId)).toEqual([1, 3, 2].map(slotToEventId));
+  });
+
+  it('deduplicates by event id', () => {
+    const first = makeEvent(slotToEventId(1));
+    const second = makeEvent(slotToEventId(2));
+    const target = [first];
+
+    appendUniqueEvents(target, [first, second, second]);
+
+    expect(target.map((e) => e.eventId)).toEqual([1, 2].map(slotToEventId));
+  });
+
+  it('leaves the snapshot correct even when the merge is not id-ordered', () => {
+    // Why the merge needs no sort of its own: the snapshot reads the maximum
+    // slot across the log rather than the tail, so an out-of-order tail costs
+    // nothing.
+    const target = [makeEvent(slotToEventId(1)), makeEvent(slotToEventId(3))];
+
+    appendUniqueEvents(target, [makeEvent(slotToEventId(2))]);
+
+    expect(target.at(-1)?.eventId).toBe(slotToEventId(2));
+    expect(slotSnapshotParams(target)).toEqual({ eventCount: 3 });
+  });
+});
+
+describe('preconditionEventDelta', () => {
+  // The run every fixture event below belongs to.
+  const RUN_ID = 'wrun_mockidnumber0001';
+  const delta = (details: unknown) =>
+    preconditionEventDelta(
+      new PreconditionFailedError('stale', { details }),
+      RUN_ID
     );
-    expect(op).toHaveBeenCalledTimes(1);
-    expect(eventsListMock).not.toHaveBeenCalled();
+
+  it('returns the decoded events and cursor a World attached to the 412', () => {
+    const event = makeEvent(slotToEventId(1));
+
+    expect(delta({ events: [event], cursor: 'eid:next' })).toEqual({
+      events: [event],
+      cursor: 'eid:next',
+    });
+  });
+
+  it('returns a null cursor when the World sent events without one', () => {
+    const event = makeEvent(slotToEventId(1));
+
+    expect(delta({ events: [event] })).toEqual({
+      events: [event],
+      cursor: null,
+    });
+  });
+
+  it('returns null when the World attached no details at all', () => {
+    expect(
+      preconditionEventDelta(new PreconditionFailedError('stale'), RUN_ID)
+    ).toBe(null);
+  });
+
+  it('returns null for a non-precondition error', () => {
+    expect(preconditionEventDelta(new Error('boom'), RUN_ID)).toBe(null);
+  });
+
+  it('returns null when any event belongs to another run', () => {
+    // The delta is merged straight into the replay's log, so a foreign event
+    // there produces a corrupt log rather than a corrected one: the replay
+    // consumes a correlation id for an event this run does not have.
+    const mine = makeEvent(slotToEventId(1));
+    const theirs = {
+      ...makeEvent(slotToEventId(2)),
+      runId: 'wrun_someotherrun001',
+    } as Event;
+
+    expect(delta({ events: [theirs] })).toBe(null);
+    expect(delta({ events: [mine, theirs] })).toBe(null);
+    expect(delta({ events: [mine] })).not.toBe(null);
+  });
+
+  it('returns null for an empty or malformed events payload', () => {
+    // Nothing here is repaired: a full reload is always correct, so anything
+    // that does not narrow cleanly falls back to it.
+    expect(delta({ events: [] })).toBe(null);
+    expect(delta({ events: 'not-an-array' })).toBe(null);
+    expect(delta({ events: [{ noEventId: true }] })).toBe(null);
+    expect(delta({ events: [null] })).toBe(null);
+    expect(delta('not-an-object')).toBe(null);
+  });
+});
+
+describe('memoizeEncryptionKey', () => {
+  const MATERIAL = new Uint8Array(32).fill(0x6b);
+
+  function worldWithKey(getEncryptionKeyForRun: unknown): World {
+    return { getEncryptionKeyForRun } as unknown as World;
+  }
+
+  it('resolves a key that can open payloads sealed to the run', async () => {
+    // A run reading its own event log may find sealed ('encp') payloads that
+    // another run wrote to it — a cross-deployment hook resumption, say. If
+    // this resolved only the symmetric key, those payloads would fail to open
+    // and wedge the run, so the sealed capability must be part of what every
+    // reader gets by default.
+    const getKey = memoizeEncryptionKey(
+      worldWithKey(vi.fn().mockResolvedValue(MATERIAL)),
+      'wrun_1'
+    );
+    const resolved = await getKey();
+    expect(resolved).toBeDefined();
+
+    const { publicKey } = await deriveRunKeyPair(MATERIAL);
+    const sealed = await seal(publicKey, new TextEncoder().encode('"hi"'));
+    const prefixed = encodeWithFormatPrefix(
+      SerializationFormat.SEALED,
+      sealed
+    ) as Uint8Array;
+
+    await expect(decrypt(prefixed, resolved)).resolves.toEqual(
+      new TextEncoder().encode('"hi"')
+    );
+  });
+
+  it("resolves a key that still opens the run's own symmetric payloads", async () => {
+    const getKey = memoizeEncryptionKey(
+      worldWithKey(vi.fn().mockResolvedValue(MATERIAL)),
+      'wrun_1'
+    );
+    const resolved = await getKey();
+
+    const encrypted = await encrypt(new TextEncoder().encode('"hi"'), resolved);
+    expect(peekFormatPrefix(encrypted)).toBe(SerializationFormat.ENCRYPTED);
+    await expect(decrypt(encrypted, resolved)).resolves.toEqual(
+      new TextEncoder().encode('"hi"')
+    );
+  });
+
+  it('memoizes so the key is derived once per run', async () => {
+    // Derivation now costs several Web Crypto round trips (HKDF + a PKCS#8
+    // import + a JWK export), so re-deriving per payload would be wasteful.
+    const spy = vi.fn().mockResolvedValue(MATERIAL);
+    const getKey = memoizeEncryptionKey(worldWithKey(spy), 'wrun_1');
+
+    const [a, b] = await Promise.all([getKey(), getKey()]);
+    expect(a).toBe(b);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves undefined when encryption is not configured', async () => {
+    const getKey = memoizeEncryptionKey(worldWithKey(undefined), 'wrun_1');
+    await expect(getKey()).resolves.toBeUndefined();
+  });
+});
+
+describe('health check run public key', () => {
+  const MATERIAL = new Uint8Array(32).fill(0x5e);
+
+  /** Capture what the responder writes to the probe response stream. */
+  function responderWorld(getEncryptionKeyForRun?: unknown) {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const world = {
+      streams: { write, close: vi.fn().mockResolvedValue(undefined) },
+      getEncryptionKeyForRun,
+    } as unknown as World;
+    return { world, write };
+  }
+
+  function writtenResponse(write: ReturnType<typeof vi.fn>) {
+    return JSON.parse(write.mock.calls[0][2] as string);
+  }
+
+  it('returns the run public key when the probe names a run', async () => {
+    // The responder executes inside the target deployment, so it can derive
+    // the key locally — that is what lets a cross-deployment start() skip the
+    // key-lookup API request entirely.
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(
+      vi.fn().mockResolvedValue(MATERIAL)
+    );
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_1', runId: 'wrun_1' },
+      'workflow'
+    );
+
+    const { publicKey } = await deriveRunKeyPair(MATERIAL);
+    expect(writtenResponse(write).encryptionPublicKey).toBe(
+      bytesToBase64(publicKey)
+    );
+  });
+
+  it('omits the key when the probe names no run', async () => {
+    // Probes issued by the CLI health command or the dashboard carry no
+    // runId; they must not trigger key derivation at all.
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const getEncryptionKeyForRun = vi.fn().mockResolvedValue(MATERIAL);
+    const { world, write } = responderWorld(getEncryptionKeyForRun);
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_2' },
+      'workflow'
+    );
+
+    expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+    expect(writtenResponse(write).encryptionPublicKey).toBeUndefined();
+    expect(writtenResponse(write).healthy).toBe(true);
+  });
+
+  it('omits the key when encryption is not configured', async () => {
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(undefined);
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_3', runId: 'wrun_1' },
+      'workflow'
+    );
+
+    expect(writtenResponse(write).encryptionPublicKey).toBeUndefined();
+    expect(writtenResponse(write).healthy).toBe(true);
+  });
+
+  it('still reports healthy when key derivation fails', async () => {
+    // The probe doubles as plain capability detection, so a key problem must
+    // degrade to "no key" (caller falls back to a lookup) rather than fail
+    // the health check and lose the capability information too.
+    const { getWorldLazy } = await import('./get-world-lazy.js');
+    const { world, write } = responderWorld(
+      vi.fn().mockRejectedValue(new Error('key service down'))
+    );
+    vi.mocked(getWorldLazy).mockReturnValue(world as any);
+
+    await handleHealthCheckMessage(
+      { __healthCheck: true, correlationId: 'corr_4', runId: 'wrun_1' },
+      'workflow'
+    );
+
+    const response = writtenResponse(write);
+    expect(response.healthy).toBe(true);
+    expect(response.encryptionPublicKey).toBeUndefined();
+    expect(response.workflowCoreVersion).toBeDefined();
   });
 });
