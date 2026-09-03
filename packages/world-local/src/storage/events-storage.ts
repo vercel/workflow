@@ -2397,11 +2397,38 @@ export function createEventsStorage(
             const storedConflict = await storeEvent(conflictEvent);
             const resolveData =
               params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-            return {
+            // Inline delta, when the writer asked for one. This return is
+            // ahead of the shared `sinceCursor` block below, and the conflict
+            // it carries is the event the create's awaiters settle on — so a
+            // caller that asked has to get the delta here too, or it pays a
+            // re-invocation to read back an event this response could have
+            // handed it. Same single-page-or-fallback contract as below: a
+            // truncated page comes back with `hasMore` and the SDK falls back
+            // to `events.list`.
+            const conflictDelta =
+              typeof params?.sinceCursor === 'string'
+                ? await queryRunEvents(effectiveRunId, {
+                    sortOrder: 'asc',
+                    cursor: params.sinceCursor,
+                  })
+                : undefined;
+            const conflictResult = {
               event: stripEventDataRefs(storedConflict, resolveData),
               run,
               step,
               hook: undefined,
+            };
+            if (!conflictDelta) return conflictResult;
+            return {
+              ...conflictResult,
+              events:
+                resolveData === 'none'
+                  ? conflictDelta.data.map((delta) =>
+                      stripEventDataRefs(delta, resolveData)
+                    )
+                  : conflictDelta.data,
+              cursor: conflictDelta.cursor,
+              hasMore: conflictDelta.hasMore,
             };
           }
 
