@@ -1359,7 +1359,7 @@ describe('retained VM through the inline replay loop', () => {
             'wrun_retained_taken_get_conflict',
             conflictingGetConflictWorkflow,
             { type: 'normal' },
-        { conflictToken: CONFLICTING_TOKEN }
+            { conflictToken: CONFLICTING_TOKEN }
           );
 
         // The log holds the conflict, not a creation — and the workflow both
@@ -1388,7 +1388,7 @@ describe('retained VM through the inline replay loop', () => {
           'wrun_retained_taken_await',
           conflictingAwaitWorkflow,
           { type: 'normal' },
-        { conflictToken: CONFLICTING_TOKEN }
+          { conflictToken: CONFLICTING_TOKEN }
         );
 
         expect(result).toBe('rejected:10');
@@ -1404,7 +1404,7 @@ describe('retained VM through the inline replay loop', () => {
           'wrun_retained_taken_no_delta',
           conflictingAwaitWorkflow,
           { type: 'normal' },
-        { conflictToken: CONFLICTING_TOKEN, withholdDelta: true }
+          { conflictToken: CONFLICTING_TOKEN, withholdDelta: true }
         );
 
         expect(result).toBe('rejected:10');
@@ -1420,7 +1420,7 @@ describe('retained VM through the inline replay loop', () => {
           'wrun_retained_taken_off',
           conflictingAwaitWorkflow,
           { type: 'normal' },
-        { conflictToken: CONFLICTING_TOKEN }
+          { conflictToken: CONFLICTING_TOKEN }
         );
 
         expect(committedTypes).toContain('hook_conflict');
@@ -1438,7 +1438,7 @@ describe('retained VM through the inline replay loop', () => {
           'wrun_retained_taken_stale_read',
           conflictingAwaitWorkflow,
           { type: 'normal' },
-        {
+          {
             conflictToken: CONFLICTING_TOKEN,
             withholdDelta: true,
             staleFirstReload: true,
