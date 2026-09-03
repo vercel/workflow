@@ -340,7 +340,16 @@ export default class Inspect extends BaseCommand {
   }
 }
 
-function toInspectOptions(
+/**
+ * Project parsed flags onto the options the listings read.
+ *
+ * Every filtering flag must be copied through: a flag missing here parses,
+ * clears validation, and is then dropped silently, which reads as a
+ * successful unfiltered answer. `inspect-flag-forwarding.test.ts` pins the
+ * mapping, and checks it through `Inspect.run` as well as directly: a listing's
+ * own unit tests pass options in, so they cannot see a drop that happens here.
+ */
+export function toInspectOptions(
   flags: any,
   attributes: Record<string, string> | undefined
 ): InspectCLIOptions {
@@ -348,6 +357,10 @@ function toInspectOptions(
     json: flags.json,
     runId: flags.runId,
     stepId: flags.stepId,
+    // Omitted here until now, so `--hookId` parsed, passed every check, and
+    // was dropped before any listing saw it: `inspect events --hookId` sent
+    // no correlationId and returned the run's whole event list.
+    hookId: flags.hookId,
     cursor: flags.cursor,
     sort: flags.sort as 'asc' | 'desc' | undefined,
     limit: flags.limit,

@@ -33,6 +33,10 @@ export default class Cancel extends BaseCommand {
   /**
    * Recorded in `run()` so `catch()` can tell a Vercel 403 from any other
    * one. oclif hands `catch` the error alone, with no parsed flags.
+   *
+   * Assigned after `this.parse()`, so a `catch` reached by a parse failure
+   * sees `undefined`. That costs nothing: a parse failure is not an API
+   * error, so there is no 403 to classify.
    */
   private backend?: string;
 
