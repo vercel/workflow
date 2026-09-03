@@ -48,6 +48,8 @@ import {
   ABORT_READER_CANCEL,
   ABORT_STREAM_NAME,
   STABLE_ULID,
+  STREAM_GLOBAL_ENCRYPTION_SYMBOL,
+  STREAM_GLOBAL_ID_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_PUBLIC_KEY_SYMBOL,
@@ -550,6 +552,98 @@ describe('workflow arguments', () => {
     expect(text).toContain('strm_parentstreamname');
     expect(text).toContain('wrun_parent');
     expect(text).toContain('dpl_parent');
+  });
+
+  it('round-trips and writes a global stream descriptor without run lookup', async () => {
+    const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+    const ownerMaterial = new Uint8Array(32).fill(0x51);
+    const ownerKeyPair = await deriveRunKeyPair(ownerMaterial);
+    const publicKey = bytesToBase64(ownerKeyPair.publicKey);
+    const write = vi.fn().mockResolvedValue(undefined);
+    const close = vi.fn().mockResolvedValue(undefined);
+    const getEncryptionKeyForRun = vi.fn();
+    const runsGet = vi.fn();
+    const world = {
+      ...makeMockWorld(),
+      runs: { get: runsGet },
+      getDeploymentId: vi.fn().mockResolvedValue('dpl_child'),
+      getEncryptionKeyForRun,
+      globalStreams: {
+        write,
+        close,
+        get: vi.fn(),
+        getChunks: vi.fn(),
+        getInfo: vi.fn(),
+        delete: vi.fn(),
+      },
+    } as any;
+    vi.mocked(getWorldLazy).mockReturnValue(world);
+
+    try {
+      const writable = new WritableStream();
+      for (const [symbol, value] of [
+        [STREAM_GLOBAL_ID_SYMBOL, 'gstr_01ARZ3NDEKTSV4RRFFQ69G5FAV'],
+        [
+          STREAM_GLOBAL_ENCRYPTION_SYMBOL,
+          JSON.stringify({
+            v: 1,
+            s: 'dpl',
+            d: 'dpl_anchor',
+            k: publicKey,
+          }),
+        ],
+      ] as const) {
+        Object.defineProperty(writable, symbol, { value, writable: false });
+      }
+
+      const serialized = await dehydrateStepArguments(
+        writable,
+        'wrun_child',
+        noEncryptionKey
+      );
+      const descriptorText = new TextDecoder().decode(serialized as Uint8Array);
+      expect(descriptorText).toContain('GlobalWritableStream');
+      expect(descriptorText).toContain('gstr_01ARZ3NDEKTSV4RRFFQ69G5FAV');
+      expect(() =>
+        hydrateData(serialized, {
+          WritableStream: () => new WritableStream(),
+        } as any)
+      ).toThrow(/GlobalWritableStream|Unknown type/);
+
+      const ops: Promise<void>[] = [];
+      const revived = (await hydrateStepArguments(
+        serialized,
+        'wrun_child',
+        noEncryptionKey,
+        ops,
+        globalThis,
+        {},
+        'dpl_child'
+      )) as WritableStream<string>;
+      const writer = revived.getWriter();
+      await writer.write('sealed global write');
+      await writer.close();
+      await Promise.all(ops);
+
+      expect(write).toHaveBeenCalled();
+      expect(close).toHaveBeenCalledWith('gstr_01ARZ3NDEKTSV4RRFFQ69G5FAV');
+      expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+      expect(runsGet).not.toHaveBeenCalled();
+      const bytes = write.mock.calls[0][1] as Uint8Array;
+      expect(new TextDecoder().decode(bytes)).toContain('encp');
+      const frameLength = new DataView(
+        bytes.buffer,
+        bytes.byteOffset,
+        bytes.byteLength
+      ).getUint32(0, false);
+      const opened = (await decryptEnvelope(
+        bytes.slice(4, 4 + frameLength),
+        runPayloadKeys(await importKey(ownerMaterial), ownerKeyPair)
+      )) as Uint8Array;
+      expect(new TextDecoder().decode(opened)).toContain('sealed global write');
+    } finally {
+      vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
+    }
   });
 
   it('uses the forwarded stream deployment to resolve its encryption key', async () => {

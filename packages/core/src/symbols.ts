@@ -26,6 +26,12 @@ export const STREAM_FRAMING_SYMBOL = Symbol.for('WORKFLOW_STREAM_FRAMING');
 export const STREAM_SERVER_RUN_ID_SYMBOL = Symbol.for(
   'WORKFLOW_STREAM_SERVER_RUN_ID'
 );
+/** Identifies a server-backed writable whose owner is a global stream. */
+export const STREAM_GLOBAL_ID_SYMBOL = Symbol.for('WORKFLOW_STREAM_GLOBAL_ID');
+/** Canonical JSON encryption declaration carried with a global writable. */
+export const STREAM_GLOBAL_ENCRYPTION_SYMBOL = Symbol.for(
+  'WORKFLOW_STREAM_GLOBAL_ENCRYPTION'
+);
 /**
  * Stamped alongside `STREAM_SERVER_RUN_ID_SYMBOL` when the deployment that
  * owns a forwarded writable stream is known. Cross-deployment consumers use

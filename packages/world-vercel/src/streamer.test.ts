@@ -290,6 +290,127 @@ describe('streams.get', () => {
   });
 });
 
+describe('globalStreams transport', () => {
+  async function getStreamer() {
+    const { createStreamer } = await import('./streamer.js');
+    return createStreamer();
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('sends the canonical encryption on writes but not close', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response('', { status: 200 }));
+    const streamer = await getStreamer();
+    const options = {
+      encryption: {
+        v: 1 as const,
+        s: 'dpl' as const,
+        d: 'dpl_anchor',
+        k: 'a2V5',
+      },
+    };
+    await streamer.globalStreams.write('gstr_abc', 'chunk', options);
+    await streamer.globalStreams.close('gstr_abc');
+    const writeHeaders = new Headers(
+      (fetchSpy.mock.calls[0][1] as RequestInit).headers
+    );
+    const encodedEncryption = writeHeaders.get('X-Stream-Encryption');
+    expect(encodedEncryption).not.toBeNull();
+    expect(Buffer.from(encodedEncryption ?? '', 'base64url').toString()).toBe(
+      '{"d":"dpl_anchor","k":"a2V5","s":"dpl","v":1}'
+    );
+    expect(
+      new Headers((fetchSpy.mock.calls[1][1] as RequestInit).headers).get(
+        'X-Stream-Encryption'
+      )
+    ).toBeNull();
+    for (const call of fetchSpy.mock.calls) {
+      expect(new URL(call[0] as string).pathname).toBe('/v3/streams/gstr_abc');
+    }
+    expect(
+      new Headers((fetchSpy.mock.calls[1][1] as RequestInit).headers).get(
+        'X-Stream-Done'
+      )
+    ).toBe('true');
+  });
+
+  it('preserves the encryption-mismatch code on write conflicts', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: 'stream_encryption_mismatch',
+            message: 'encryption mismatch',
+          }),
+          { status: 409, headers: { 'content-type': 'application/json' } }
+        )
+    );
+    const streamer = await getStreamer();
+    await expect(
+      streamer.globalStreams.write('gstr_abc', 'chunk', {
+        encryption: {
+          v: 1,
+          s: 'dpl',
+          d: 'dpl_anchor',
+          k: 'a2V5',
+        },
+      })
+    ).rejects.toMatchObject({
+      status: 409,
+      code: 'stream_encryption_mismatch',
+    });
+  });
+
+  it('maps every global read 410 to terminal stream expiry', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response('gone', { status: 410 })
+    );
+    const streamer = await getStreamer();
+    await expect(streamer.globalStreams.get('gstr_abc')).rejects.toBeInstanceOf(
+      StreamExpiredError
+    );
+  });
+
+  it('preserves delete status errors', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () => new Response('not found', { status: 404 })
+    );
+    const streamer = await getStreamer();
+    await expect(
+      streamer.globalStreams.delete('gstr_abc')
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('frames multi writes and reads from the v3 route', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response(null, { status: 200 }));
+    const streamer = await getStreamer();
+    const options = {
+      encryption: {
+        v: 1 as const,
+        s: 'dpl' as const,
+        d: 'dpl_anchor',
+        k: 'a2V5',
+      },
+    };
+    await streamer.globalStreams.writeMulti('gstr_abc', ['a', 'b'], options);
+    // The live reader is intentionally long-lived; inspect its URL through a
+    // separate finite response rather than holding the test open.
+    await streamer.globalStreams.get('gstr_abc', 7).catch(() => {});
+    expect(
+      new Headers((fetchSpy.mock.calls[0][1] as RequestInit).headers).get(
+        'X-Stream-Multi'
+      )
+    ).toBe('true');
+    const url = new URL(fetchSpy.mock.calls[1][0] as string);
+    expect(url.pathname).toBe('/v3/streams/gstr_abc');
+    expect(url.searchParams.get('startIndex')).toBe('7');
+  });
+});
+
 describe('streams.write error diagnostics', () => {
   async function getStreamer() {
     const { createStreamer } = await import('./streamer.js');

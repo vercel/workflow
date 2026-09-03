@@ -30,6 +30,7 @@ import {
  * because it has no other layer.
  */
 const VM_ONLY_TYPES = [
+  'GlobalWritableStream',
   'ReadableStream',
   'Request',
   'Response',

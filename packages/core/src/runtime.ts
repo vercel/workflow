@@ -146,6 +146,12 @@ import {
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
 export {
+  createGlobalStreamId,
+  GlobalStream,
+  getGlobalStream,
+  globalStreamIdFor,
+} from './runtime/global-stream.js';
+export {
   type HealthCheckOptions,
   type HealthCheckResult,
   healthCheck,

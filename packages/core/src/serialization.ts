@@ -5,6 +5,7 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { once } from '@workflow/utils';
+import type { DeploymentGlobalStreamEncryption } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
@@ -99,6 +100,8 @@ import {
   STABLE_ULID,
   STREAM_DRAIN_SYMBOL,
   STREAM_FRAMING_SYMBOL,
+  STREAM_GLOBAL_ENCRYPTION_SYMBOL,
+  STREAM_GLOBAL_ID_SYMBOL,
   STREAM_NAME_SYMBOL,
   STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
   STREAM_SERVER_PUBLIC_KEY_SYMBOL,
@@ -916,7 +919,11 @@ export function createReconnectingFramedStream(
   name: string,
   startIndex?: number,
   prefetchEncryptionKey: () => Promise<PayloadKey | undefined> = async () =>
-    undefined
+    undefined,
+  source?: {
+    get(startIndex?: number): Promise<ReadableStream<Uint8Array>>;
+    getInfo(): Promise<{ tailIndex: number; done: boolean }>;
+  }
 ): ReadableStream<Uint8Array> {
   const reconnectSupported = startIndex === undefined || startIndex >= 0;
   let currentStartIndex = startIndex ?? 0;
@@ -963,7 +970,9 @@ export function createReconnectingFramedStream(
       ? currentStartIndex + consumedFrames
       : startIndex;
     const connectStart = Date.now();
-    const stream = await world.streams.get(runId, name, effectiveStartIndex);
+    const stream = source
+      ? await source.get(effectiveStartIndex)
+      : await world.streams.get(runId, name, effectiveStartIndex);
     if (canceled) {
       await stream.cancel(cancelReason).catch(() => {});
       return false;
@@ -984,9 +993,15 @@ export function createReconnectingFramedStream(
   async function isVerifiedComplete(): Promise<boolean> {
     try {
       const world = await getWorldLazy();
-      const info = await world.streams.getInfo(runId, name);
+      const info = source
+        ? await source.getInfo()
+        : await world.streams.getInfo(runId, name);
       return info.done && currentStartIndex + consumedFrames > info.tailIndex;
-    } catch {
+    } catch (error) {
+      // Injected sources (global streams) have no run lifecycle to make a
+      // missing metadata record equivalent to completion. Preserve their
+      // 404/410/transport error rather than silently truncating the read.
+      if (source) throw error;
       return true;
     }
   }
@@ -1272,6 +1287,11 @@ function recordStreamClose(
   })();
 }
 
+export interface WorkflowStreamWriteTarget {
+  write(chunks: Uint8Array[]): Promise<void>;
+  close(): Promise<void>;
+}
+
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
   /**
    * @param runReadyBarrier Turbo mode only: a promise that resolves once the
@@ -1282,7 +1302,12 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
    * flush/close orders the write after the run's creation. `undefined` outside
    * turbo and on the await path, where the run was already durable.
    */
-  constructor(runId: string, name: string, runReadyBarrier?: Promise<unknown>) {
+  constructor(
+    runId: string,
+    name: string,
+    runReadyBarrier?: Promise<unknown>,
+    target?: WorkflowStreamWriteTarget
+  ) {
     if (typeof runId !== 'string') {
       throw new WorkflowRuntimeError(
         `"runId" must be a string, got "${typeof runId}"`
@@ -1427,7 +1452,12 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       await ensureRunReady();
       const world = await worldPromise;
       const dispatchAt = Date.now();
-      if (typeof world.streams.writeMulti === 'function' && group.length > 1) {
+      if (target) {
+        await target.write(group);
+      } else if (
+        typeof world.streams.writeMulti === 'function' &&
+        group.length > 1
+      ) {
         await world.streams.writeMulti(runId, name, group);
       } else {
         // Fall back to sequential writes
@@ -1435,7 +1465,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
           await world.streams.write(runId, name, chunk);
         }
       }
-      if (groupT0 !== undefined) {
+      if (groupT0 !== undefined && !target) {
         recordStreamWriteFlush(
           groupT0,
           dispatchAt,
@@ -1635,8 +1665,11 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
 
         const world = await worldPromise;
         const closeStart = Date.now();
-        await world.streams.close(runId, name);
-        recordStreamClose(closeStart, runId, name);
+        if (target) await target.close();
+        else {
+          await world.streams.close(runId, name);
+          recordStreamClose(closeStart, runId, name);
+        }
       },
       async abort(reason) {
         // Buffered chunks were already ACKED to their writers (early-ack
@@ -1681,6 +1714,105 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       value: drain,
       enumerable: false,
       writable: false,
+    });
+  }
+}
+
+/** Buffered server sink for a run-independent global stream. */
+type GlobalStreamWriteState = {
+  encryption: DeploymentGlobalStreamEncryption;
+  key: PayloadKey;
+};
+
+function isEncryptionMismatch(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: unknown }).code === 'stream_encryption_mismatch'
+  );
+}
+
+/** Buffered server sink that encrypts global frames against a mutable declaration. */
+export class WorkflowServerGlobalWritableStream extends WorkflowServerWritableStream {
+  constructor(
+    id: string,
+    initialState: GlobalStreamWriteState | Promise<GlobalStreamWriteState>,
+    refreshState: () => Promise<GlobalStreamWriteState>
+  ) {
+    let statePromise = Promise.resolve(initialState);
+    let sealSession: ReturnType<typeof createSealSession> | undefined;
+
+    const encryptFrames = async (
+      chunks: Uint8Array[],
+      state: GlobalStreamWriteState
+    ): Promise<Uint8Array[]> => {
+      if (isSealTarget(state.key) && !sealSession) {
+        sealSession = createSealSession(state.key.recipientPublicKey);
+      }
+      return Promise.all(
+        chunks.map(async (chunk) => {
+          const length = new DataView(
+            chunk.buffer,
+            chunk.byteOffset,
+            chunk.byteLength
+          ).getUint32(0, false);
+          const payload = chunk.slice(4, 4 + length);
+          const encrypted = (
+            sealSession
+              ? encodeWithFormatPrefix(
+                  SerializationFormat.SEALED,
+                  await sealSession.seal(payload)
+                )
+              : await encrypt(payload, state.key)
+          ) as Uint8Array;
+          const frame = new Uint8Array(4 + encrypted.byteLength);
+          new DataView(frame.buffer).setUint32(0, encrypted.byteLength, false);
+          frame.set(encrypted, 4);
+          return frame;
+        })
+      );
+    };
+
+    super(id, id, undefined, {
+      async write(chunks) {
+        const world = await getWorldLazy();
+        const streams = world.globalStreams;
+        if (!streams) {
+          throw new WorkflowRuntimeError(
+            'Global streams are not supported by the configured World'
+          );
+        }
+        for (let attempt = 0; ; attempt++) {
+          const state = await statePromise;
+          const encrypted = await encryptFrames(chunks, state);
+          try {
+            const options = { encryption: state.encryption };
+            if (encrypted.length > 1) {
+              await streams.writeMulti(id, encrypted, options);
+            } else {
+              for (const chunk of encrypted) {
+                await streams.write(id, chunk, options);
+              }
+            }
+            return;
+          } catch (error) {
+            if (!isEncryptionMismatch(error) || attempt > 0) throw error;
+            statePromise = refreshState();
+            sealSession = undefined;
+          }
+        }
+      },
+      async close() {
+        const world = await getWorldLazy();
+        const streams = world.globalStreams;
+        if (!streams) {
+          throw new WorkflowRuntimeError(
+            'Global streams are not supported by the configured World'
+          );
+        }
+        await streams.close(id);
+      },
     });
   }
 }
@@ -2020,18 +2152,24 @@ export function getExternalReducers(
       return s;
     },
 
+    GlobalWritableStream: (value) => {
+      if (!(value instanceof global.WritableStream)) return false;
+      const globalId = (value as any)[STREAM_GLOBAL_ID_SYMBOL];
+      if (typeof globalId !== 'string') return false;
+      return {
+        kind: 'global',
+        id: globalId,
+        encryption: readGlobalStreamEncryption(
+          (value as any)[STREAM_GLOBAL_ENCRYPTION_SYMBOL]
+        ),
+      };
+    },
+
     WritableStream: (value) => {
       if (!(value instanceof global.WritableStream)) return false;
 
       // Fast path: when the writable is already backed by a workflow
-      // server stream (e.g. it came from a step-context `getWritable()`
-      // or was hydrated from a workflow input by `getStepRevivers`),
-      // forward its underlying `(runId, name)` to the receiving run.
-      // The receiving run's step-side reviver opens a server writable
-      // against the original `(runId, name)` and resolves that run's
-      // encryption key directly, so writes land on the original stream
-      // for the full lifetime of the receiving run, with no in-process
-      // bridge tied to the dehydrating step's lifetime.
+      // server stream (e.g. it came from a step-context `getWritable()`).
       const existingName = (value as any)[STREAM_NAME_SYMBOL];
       const existingRunId = (value as any)[STREAM_SERVER_RUN_ID_SYMBOL];
       if (
@@ -2195,6 +2333,19 @@ export function getWorkflowReducers(
         | undefined;
       if (framing) s.framing = framing;
       return s;
+    },
+    GlobalWritableStream: (value) => {
+      if (!isInstanceOfPrototype(value, writableStreamPrototype.value))
+        return false;
+      const globalId = readProperty(value, STREAM_GLOBAL_ID_SYMBOL);
+      if (typeof globalId !== 'string') return false;
+      return {
+        kind: 'global',
+        id: globalId,
+        encryption: readGlobalStreamEncryption(
+          readProperty(value, STREAM_GLOBAL_ENCRYPTION_SYMBOL)
+        ),
+      };
     },
     WritableStream: (value) => {
       // See the ReadableStream reducer above for why this walks the chain.
@@ -2369,9 +2520,21 @@ function getStepReducers(
       return s;
     },
 
+    GlobalWritableStream: (value) => {
+      if (!(value instanceof global.WritableStream)) return false;
+      const globalId = (value as any)[STREAM_GLOBAL_ID_SYMBOL];
+      if (typeof globalId !== 'string') return false;
+      return {
+        kind: 'global',
+        id: globalId,
+        encryption: readGlobalStreamEncryption(
+          (value as any)[STREAM_GLOBAL_ENCRYPTION_SYMBOL]
+        ),
+      };
+    },
+
     WritableStream: (value) => {
       if (!(value instanceof global.WritableStream)) return false;
-
       let name = value[STREAM_NAME_SYMBOL];
       const foreignRunId = (value as any)[STREAM_SERVER_RUN_ID_SYMBOL];
       if (!name) {
@@ -2769,6 +2932,94 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
  * restriction: the same bytes could decrypt. Tier 1 makes it a cryptographic
  * guarantee: a public key cannot read anything.
  */
+function canonicalGlobalStreamEncryption(
+  encryption: import('@workflow/world').GlobalStreamEncryption
+): string {
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(encryption).sort(([left], [right]) =>
+        left < right ? -1 : left > right ? 1 : 0
+      )
+    )
+  );
+}
+
+function readGlobalStreamEncryption(
+  value: unknown
+): import('@workflow/world').GlobalStreamEncryption {
+  if (typeof value !== 'string') {
+    throw new SerializationError(
+      'Global stream writable is missing its encryption declaration.'
+    );
+  }
+  try {
+    return JSON.parse(
+      value
+    ) as import('@workflow/world').GlobalStreamEncryption;
+  } catch (cause) {
+    throw new SerializationError(
+      'Global stream encryption declaration is invalid.',
+      {
+        cause,
+      }
+    );
+  }
+}
+
+function requireDeploymentEncryption(
+  encryption: import('@workflow/world').GlobalStreamEncryption
+): DeploymentGlobalStreamEncryption {
+  if (
+    encryption.v !== 1 ||
+    encryption.s !== 'dpl' ||
+    typeof encryption.d !== 'string' ||
+    typeof encryption.k !== 'string'
+  ) {
+    throw new WorkflowRuntimeError(
+      `Unsupported global stream encryption scheme: ${encryption.s}`
+    );
+  }
+  return encryption as DeploymentGlobalStreamEncryption;
+}
+
+async function getGlobalWritableEncryptionKey(
+  id: string,
+  encryptionInput: import('@workflow/world').GlobalStreamEncryption
+): Promise<GlobalStreamWriteState> {
+  const encryption = requireDeploymentEncryption(encryptionInput);
+  const world = await getWorldLazy();
+  const currentDeploymentId = await world.getDeploymentId();
+  if (currentDeploymentId !== encryption.d) {
+    const publicKey = decodeRunPublicKey(encryption.k);
+    if (!publicKey) {
+      throw new WorkflowRuntimeError(
+        `Global stream ${id} has an invalid encryption public key`
+      );
+    }
+    return { encryption, key: sealTo(publicKey) };
+  }
+  if (!world.getEncryptionKeyForRun) {
+    throw new WorkflowRuntimeError(
+      'Global streams require encryption support from the configured World'
+    );
+  }
+  const material = await world.getEncryptionKeyForRun(id, {
+    deploymentId: encryption.d,
+  });
+  if (!material) {
+    throw new WorkflowRuntimeError(
+      `No encryption key is available for global stream ${id}`
+    );
+  }
+  const keys = await deriveRunPayloadKeys(material);
+  if (bytesToBase64(keys.keyPair.publicKey) !== encryption.k) {
+    throw new WorkflowRuntimeError(
+      `Global stream ${id} encryption does not match its deployment key`
+    );
+  }
+  return { encryption, key: keys };
+}
+
 async function getForwardedWritableEncryptionKey(
   runId: string,
   deploymentId: string | undefined,
@@ -2927,7 +3178,7 @@ export function getExternalRevivers(
       if (value.type === 'bytes') {
         // For byte streams, use flushable pipe with lock polling.
         // If the producer wrote framed bytes (framing === 'framed-v1'),
-        // unwrap the length-prefix envelope before handing chunks to
+        // unwrap the length-prefix encryption before handing chunks to
         // the user. Absent / 'raw' framing means legacy raw bytes:
         // pipe through unchanged for backwards compatibility.
         //
@@ -2998,6 +3249,39 @@ export function getExternalRevivers(
 
         return transform.readable;
       }
+    },
+    GlobalWritableStream: (value) => {
+      const key = getGlobalWritableEncryptionKey(value.id, value.encryption);
+      const serialize = getSerializeStream(
+        getExternalReducers(global, ops, value.id, undefined),
+        undefined
+      );
+      const refresh = async () => {
+        const world = await getWorldLazy();
+        const info = await world.globalStreams?.getInfo(value.id);
+        if (!info?.encryption) {
+          throw new WorkflowRuntimeError(
+            `Global stream ${value.id} is missing its encryption`
+          );
+        }
+        return getGlobalWritableEncryptionKey(value.id, info.encryption);
+      };
+      const sink = new WorkflowServerGlobalWritableStream(
+        value.id,
+        key,
+        refresh
+      );
+      const state = createFlushableState();
+      ops.push(state.promise);
+      flushablePipe(serialize.readable, sink, state).catch(() => {});
+      pollWritableLock(serialize.writable, state);
+      Object.defineProperties(serialize.writable, {
+        [STREAM_GLOBAL_ID_SYMBOL]: { value: value.id },
+        [STREAM_GLOBAL_ENCRYPTION_SYMBOL]: {
+          value: canonicalGlobalStreamEncryption(value.encryption),
+        },
+      });
+      return serialize.writable;
     },
     WritableStream: (value) => {
       // Same handling as `getStepRevivers.WritableStream`: see comments
@@ -3157,6 +3441,14 @@ export function getWorkflowRevivers(
         },
       });
     },
+    GlobalWritableStream: (value) =>
+      Object.create(global.WritableStream.prototype, {
+        [STREAM_GLOBAL_ID_SYMBOL]: { value: value.id, writable: false },
+        [STREAM_GLOBAL_ENCRYPTION_SYMBOL]: {
+          value: canonicalGlobalStreamEncryption(value.encryption),
+          writable: false,
+        },
+      }),
     WritableStream: (value) => {
       const descriptor: PropertyDescriptorMap = {
         [STREAM_NAME_SYMBOL]: {
@@ -3373,7 +3665,7 @@ function getStepRevivers(
       if (value.type === 'bytes') {
         // For byte streams, use flushable pipe with lock polling.
         // If the producer wrote framed bytes (framing === 'framed-v1'),
-        // unwrap the length-prefix envelope before handing chunks to
+        // unwrap the length-prefix encryption before handing chunks to
         // the user step. Absent / 'raw' framing means legacy raw bytes:
         // pipe through unchanged for backwards compatibility.
         const state = createFlushableState();
@@ -3412,6 +3704,39 @@ function getStepRevivers(
 
         return transform.readable;
       }
+    },
+    GlobalWritableStream: (value) => {
+      const key = getGlobalWritableEncryptionKey(value.id, value.encryption);
+      const serialize = getSerializeStream(
+        getStepReducers(global, ops, value.id, undefined),
+        undefined
+      );
+      const refresh = async () => {
+        const world = await getWorldLazy();
+        const info = await world.globalStreams?.getInfo(value.id);
+        if (!info?.encryption) {
+          throw new WorkflowRuntimeError(
+            `Global stream ${value.id} is missing its encryption`
+          );
+        }
+        return getGlobalWritableEncryptionKey(value.id, info.encryption);
+      };
+      const sink = new WorkflowServerGlobalWritableStream(
+        value.id,
+        key,
+        refresh
+      );
+      const state = createFlushableState();
+      ops.push(state.promise);
+      flushablePipe(serialize.readable, sink, state).catch(() => {});
+      pollWritableLock(serialize.writable, state);
+      Object.defineProperties(serialize.writable, {
+        [STREAM_GLOBAL_ID_SYMBOL]: { value: value.id },
+        [STREAM_GLOBAL_ENCRYPTION_SYMBOL]: {
+          value: canonicalGlobalStreamEncryption(value.encryption),
+        },
+      });
+      return serialize.writable;
     },
     WritableStream: (value) => {
       // Same-run case: the writable belongs to the current run. Use the
@@ -4192,6 +4517,8 @@ export async function hydrateStepReturnValue(
 
 const STREAM_AND_REQUEST_KEYS = [
   'ReadableStream',
+  // Must precede WritableStream: a global handle has the same native brand.
+  'GlobalWritableStream',
   'WritableStream',
   'Request',
   'Response',
