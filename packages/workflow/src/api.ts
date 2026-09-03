@@ -15,6 +15,12 @@ export type {
   WorkflowRun,
 } from '@workflow/core/runtime';
 export {
+  createGlobalStreamId,
+  GlobalStream,
+  getGlobalStream,
+  globalStreamIdFor,
+} from '@workflow/core/runtime';
+export {
   getHookByToken,
   type ResumedHook,
   resumeHook,

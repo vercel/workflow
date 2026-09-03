@@ -189,6 +189,25 @@ describe('createGetEncryptionKeyForRun (runId, { deploymentId }) overload', () =
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
+  it('forceRemote bypasses local derivation for BYOK rotation fallback', async () => {
+    const keyBase64 = Buffer.from(testDeploymentKey).toString('base64');
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ key: keyBase64 }), { status: 200 })
+    );
+
+    const getKey = createGetEncryptionKeyForRun(projectId, undefined, 'tok');
+    if (!getKey) throw new Error('expected getEncryptionKeyForRun to exist');
+    await getKey(runId, {
+      deploymentId: currentDeployment,
+      forceRemote: true,
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(mockFetch.mock.calls[0])).toContain(
+      `run-key/${currentDeployment}`
+    );
+  });
+
   it('fetches the run key for a different context deployment', async () => {
     const keyBase64 = Buffer.from(testDeploymentKey).toString('base64');
     mockFetch.mockResolvedValueOnce(

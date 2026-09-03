@@ -1,7 +1,54 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createRunId, describeRun, regionForRunId } from './create-run-id.js';
+import {
+  createGlobalStreamId,
+  createRunId,
+  describeRun,
+  globalStreamIdFor,
+  regionForRunId,
+} from './create-run-id.js';
 import { decode } from './run-id/index.js';
 import { REGION_IDS } from './run-id/regions.js';
+
+describe('createGlobalStreamId', () => {
+  it('uses the global prefix and the region-tagged run ID encoding', () => {
+    process.env.VERCEL_REGION = 'sfo1';
+    const id = createGlobalStreamId();
+    expect(id).toMatch(/^gstr_/);
+    expect(decode(id.slice('gstr_'.length)).region).toBe('sfo1');
+  });
+});
+
+describe('globalStreamIdFor', () => {
+  it('is stable, tenant-scoped, region-tagged, and version 2', () => {
+    const first = globalStreamIdFor({
+      projectId: 'prj_one',
+      environment: 'production',
+      name: 'chat',
+      region: 'sfo1',
+    });
+    const second = globalStreamIdFor({
+      projectId: 'prj_one',
+      environment: 'production',
+      name: 'chat',
+      region: 'sfo1',
+    });
+    expect(second).toBe(first);
+    expect(first).toMatch(/^gstr_[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
+    expect(decode(first.slice(5))).toMatchObject({
+      tagged: true,
+      region: 'sfo1',
+      version: 2,
+    });
+    expect(
+      globalStreamIdFor({
+        projectId: 'prj_two',
+        environment: 'production',
+        name: 'chat',
+        region: 'sfo1',
+      })
+    ).not.toBe(first);
+  });
+});
 
 describe('createRunId', () => {
   const originalRegion = process.env.VERCEL_REGION;
