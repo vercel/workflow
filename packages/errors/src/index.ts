@@ -162,6 +162,12 @@ export class WorkflowWorldError extends WorkflowError {
   url?: string;
   /** Retry-After value in seconds, present on 429 and 425 responses */
   retryAfter?: number;
+  /**
+   * The offending argument, present on client-side validation failures
+   * (`code: 'INVALID_ARGUMENT'`). Lets a caller correct the specific
+   * parameter without parsing the message.
+   */
+  field?: string;
 
   constructor(
     message: string,
@@ -170,6 +176,7 @@ export class WorkflowWorldError extends WorkflowError {
       url?: string;
       code?: string;
       retryAfter?: number;
+      field?: string;
       cause?: unknown;
     }
   ) {
@@ -181,6 +188,7 @@ export class WorkflowWorldError extends WorkflowError {
     this.code = options?.code;
     this.url = options?.url;
     this.retryAfter = options?.retryAfter;
+    this.field = options?.field;
   }
 
   static is(value: unknown): value is WorkflowWorldError {
