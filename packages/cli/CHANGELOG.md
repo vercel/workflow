@@ -1,5 +1,34 @@
 # @workflow/cli
 
+## 5.0.0-beta.48
+
+### Minor Changes
+
+- [#3950](https://github.com/vercel/workflow/pull/3950) [`f9073d0`](https://github.com/vercel/workflow/commit/f9073d073990c7eb834a0ad660f1796e19356c0d) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add `wf inspect attributes`, which lists the attribute keys recorded on your runs with a run count and when each was first and last seen, and `wf inspect runs --attribute key=value` (repeatable) to filter runs by them.
+
+  `wf cancel` now resolves the plan's listing window once instead of once per status, removing a redundant request.
+
+  `wf inspect sleeps` now falls back to the event log when the analytics read is unavailable, rather than ending the command. Plan, access, and invalid-argument failures are still reported, since their messages tell you what to do.
+
+  `--limit`, `--runId` and `--attribute` are checked before any backend work, so a mistyped value or a flag given to a listing that cannot use it names the flag instead of being ignored, and an argument the read path rejects is now reported rather than raised as an unhandled error.
+
+  `wf inspect events --hookId` now filters events to that hook. The flag parsed and was then dropped before the listing read it, so it returned the run's whole event list.
+
+  `wf inspect --limit` now accepts 1-100, matching what the listings actually serve. Run-scoped listings previously took values up to 1000 and failed against the backend for anything above 100. `wf cancel --limit` is bounded the same way, down from an advertised 500 that no backend accepted.
+
+### Patch Changes
+
+- [#3850](https://github.com/vercel/workflow/pull/3850) [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add a catchable `StreamError` and classify Workflow stream infrastructure failures as `STREAM_ERROR` instead of `USER_ERROR`.
+
+- Updated dependencies [[`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762), [`564ad39`](https://github.com/vercel/workflow/commit/564ad3966c5d16d73fd6fd88acdf01e6f92843aa), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`4a18b01`](https://github.com/vercel/workflow/commit/4a18b0133aaedaf922b903818c6b0db3adc91beb), [`3c08778`](https://github.com/vercel/workflow/commit/3c0877890500257fb19e9575d57399ec4bb159c9), [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491), [`31dabce`](https://github.com/vercel/workflow/commit/31dabce0c87fa48af210362061324ff0369e094f), [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15), [`1280163`](https://github.com/vercel/workflow/commit/12801635511bc7e301bf8eaeb09c5fb763838826)]:
+  - @workflow/world@5.0.0-beta.33
+  - @workflow/world-vercel@5.0.0-beta.44
+  - @workflow/errors@5.0.0-beta.20
+  - @workflow/web@5.0.0-beta.48
+  - @workflow/core@5.0.0-beta.48
+  - @workflow/world-local@5.0.0-beta.42
+  - @workflow/builders@5.0.0-beta.48
+
 ## 5.0.0-beta.47
 
 ### Patch Changes

@@ -1,5 +1,26 @@
 # workflow
 
+## 5.0.0-beta.48
+
+### Minor Changes
+
+- [#3850](https://github.com/vercel/workflow/pull/3850) [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add a catchable `StreamError` and classify Workflow stream infrastructure failures as `STREAM_ERROR` instead of `USER_ERROR`.
+
+### Patch Changes
+
+- Updated dependencies [[`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762), [`564ad39`](https://github.com/vercel/workflow/commit/564ad3966c5d16d73fd6fd88acdf01e6f92843aa), [`f9073d0`](https://github.com/vercel/workflow/commit/f9073d073990c7eb834a0ad660f1796e19356c0d), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`3c08778`](https://github.com/vercel/workflow/commit/3c0877890500257fb19e9575d57399ec4bb159c9), [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491), [`31dabce`](https://github.com/vercel/workflow/commit/31dabce0c87fa48af210362061324ff0369e094f)]:
+  - @workflow/errors@5.0.0-beta.20
+  - @workflow/core@5.0.0-beta.48
+  - @workflow/cli@5.0.0-beta.48
+  - @workflow/nitro@5.0.0-beta.48
+  - @workflow/next@5.0.0-beta.48
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.48
+  - @workflow/nest@5.0.0-beta.48
+  - @workflow/rollup@5.0.0-beta.48
+  - @workflow/sveltekit@5.0.0-beta.48
+  - @workflow/nuxt@5.0.0-beta.48
+
 ## 5.0.0-beta.47
 
 ### Patch Changes

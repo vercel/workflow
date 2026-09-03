@@ -1,5 +1,25 @@
 # @workflow/core
 
+## 5.0.0-beta.48
+
+### Patch Changes
+
+- [#3882](https://github.com/vercel/workflow/pull/3882) [`564ad39`](https://github.com/vercel/workflow/commit/564ad3966c5d16d73fd6fd88acdf01e6f92843aa) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Stop framed stream reconnects after the consumer cancels, including while completion checks or reconnect acquisition are still pending.
+
+- [#3938](https://github.com/vercel/workflow/pull/3938) [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46) Thanks [@pranaygp](https://github.com/pranaygp)! - Settle a hook's awaiter in the invocation that wrote its `hook_created` or `hook_conflict`, instead of re-invoking through the queue and replaying. Falls back to an incremental read when the World returns no delta, and to the re-invocation under `WORKFLOW_RETAINED_VM=0`.
+
+- [#3892](https://github.com/vercel/workflow/pull/3892) [`3c08778`](https://github.com/vercel/workflow/commit/3c0877890500257fb19e9575d57399ec4bb159c9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retain a live workflow VM across inline progress when sleeps are open or created at the same suspension boundary.
+
+- [#3850](https://github.com/vercel/workflow/pull/3850) [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add a catchable `StreamError` and classify Workflow stream infrastructure failures as `STREAM_ERROR` instead of `USER_ERROR`.
+
+- [#3871](https://github.com/vercel/workflow/pull/3871) [`31dabce`](https://github.com/vercel/workflow/commit/31dabce0c87fa48af210362061324ff0369e094f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Prefetch run encryption keys when reading workflow streams.
+
+- Updated dependencies [[`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`4a18b01`](https://github.com/vercel/workflow/commit/4a18b0133aaedaf922b903818c6b0db3adc91beb), [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491), [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15)]:
+  - @workflow/world@5.0.0-beta.33
+  - @workflow/world-vercel@5.0.0-beta.44
+  - @workflow/errors@5.0.0-beta.20
+  - @workflow/world-local@5.0.0-beta.42
+
 ## 5.0.0-beta.47
 
 ### Patch Changes
