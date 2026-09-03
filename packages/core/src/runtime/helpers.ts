@@ -711,6 +711,23 @@ export interface LoadedEventLog {
 }
 
 /**
+ * Extend a loaded log with a page that continues it — a listed page, or the
+ * inline delta a write handed back — and move its read position with it.
+ *
+ * The cursor is only advanced when the page carries one, so a source with no
+ * position of its own (a skipped-slot report) cannot walk the read position
+ * past events it did not carry. Appending does not re-sort; see
+ * {@link appendUniqueEvents} for why receipt order is the order to keep.
+ */
+export function appendEventLog(
+  log: LoadedEventLog,
+  appended: { events: readonly Event[]; cursor?: string | null }
+): void {
+  appendUniqueEvents(log.events, appended.events);
+  log.cursor = appended.cursor ?? log.cursor;
+}
+
+/**
  * Whether a replay refuses to run over a log with a hole in it (see
  * {@link findEventSlotGap}). **On by default**; set
  * `WORKFLOW_SLOT_GAP_CHECK=0` to replay across holes instead.

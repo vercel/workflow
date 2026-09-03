@@ -55,7 +55,13 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     onWorkflowError: vi.fn(),
     promiseQueue: Promise.resolve(),
     pendingDeliveries: 0,
+    suspensionGeneration: 0,
   };
+}
+
+/** Let every queued timer and microtask settle. */
+function settleTimers(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 20));
 }
 
 describe('createCreateHook', () => {
@@ -346,6 +352,58 @@ describe('createCreateHook', () => {
         hasConflictAwaiter: true,
       });
     }
+  });
+
+  // The hook consumer's suspension signal carries the generation guard (see
+  // `suspendWhenIdle`), which is what lets the runtime resume a retained VM
+  // over the `hook_created` it just committed instead of re-invoking. Without
+  // it, a signal armed at the boundary the resume moved past would raise a
+  // suspension the workflow never reached — carrying none of the work the
+  // resume kicked off, leaving the run dormant.
+  it('drops a suspension signal armed for a boundary the run has moved past', async () => {
+    const ctx = setupWorkflowContext([]);
+    const errors: Error[] = [];
+    ctx.onWorkflowError = (error) => {
+      errors.push(error);
+    };
+    // Hold the idle gate so the signal is armed but cannot fire yet — the
+    // window a resume lands in.
+    ctx.pendingDeliveries = 1;
+
+    const hook = createCreateHook(ctx)({ token: 'stale-signal' });
+    void hook.getConflict();
+    await settleTimers();
+    expect(errors).toHaveLength(0);
+
+    // What the runtime does when it resumes the parked VM.
+    ctx.suspensionGeneration++;
+    ctx.pendingDeliveries = 0;
+    await settleTimers();
+
+    expect(errors).toHaveLength(0);
+  });
+
+  it('still signals when the run has not moved past the boundary', async () => {
+    // The control for the test above: the same held-then-released signal
+    // reaches the runtime when the generation has not moved, so the guard
+    // cannot be swallowing signals that are still wanted.
+    const ctx = setupWorkflowContext([]);
+    const errors: Error[] = [];
+    ctx.onWorkflowError = (error) => {
+      errors.push(error);
+    };
+    ctx.pendingDeliveries = 1;
+
+    const hook = createCreateHook(ctx)({ token: 'live-signal' });
+    void hook.getConflict();
+    await settleTimers();
+    expect(errors).toHaveLength(0);
+
+    ctx.pendingDeliveries = 0;
+    await settleTimers();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(WorkflowSuspension);
   });
 
   it('should resolve getConflict with the conflicting run when hook_conflict event is received', async () => {

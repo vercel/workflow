@@ -1658,6 +1658,62 @@ describe('Storage', () => {
         ).toBe(true);
         expect(result.hasMore).toBe(false);
       });
+
+      it('returns a delta for a create that committed hook_conflict', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        await storage.events.create(testRunId, {
+          eventType: 'hook_created' as const,
+          correlationId: 'corr_hook_owner',
+          eventData: { token: 'delta-conflict-token' },
+        });
+        const sinceCursor = await currentCursor();
+
+        // A create whose token is taken commits `hook_conflict` and returns
+        // early, ahead of the shared delta block — but the conflict is the
+        // event the create's awaiters settle on, so the caller has to get it
+        // here or pay a re-invocation to read back an event this response
+        // already held.
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'hook_created' as const,
+            correlationId: 'corr_hook_loser',
+            eventData: { token: 'delta-conflict-token' },
+          },
+          { sinceCursor }
+        );
+
+        expect(result.event?.eventType).toBe('hook_conflict');
+        const expected = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+        });
+        expect(result.events?.map((e) => e.eventId)).toEqual(
+          expected.data.map((e) => e.eventId)
+        );
+        expect(result.events?.at(-1)?.eventType).toBe('hook_conflict');
+        expect(result.cursor).toBe(expected.cursor);
+        expect(result.hasMore).toBe(expected.hasMore);
+      });
+
+      it('does not return a delta on a hook_conflict when sinceCursor is omitted', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        await storage.events.create(testRunId, {
+          eventType: 'hook_created' as const,
+          correlationId: 'corr_hook_owner2',
+          eventData: { token: 'no-delta-conflict-token' },
+        });
+
+        const result = await storage.events.create(testRunId, {
+          eventType: 'hook_created' as const,
+          correlationId: 'corr_hook_loser2',
+          eventData: { token: 'no-delta-conflict-token' },
+        });
+
+        expect(result.event?.eventType).toBe('hook_conflict');
+        expect(result.events).toBeUndefined();
+        expect(result.cursor).toBeUndefined();
+      });
     });
 
     describe('list', () => {
