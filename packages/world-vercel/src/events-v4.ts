@@ -127,11 +127,9 @@ async function fetchV4(
     // request builds a fresh one. undici keeps a black-holed HTTP/2 session in
     // service indefinitely, so without this every request routed onto it fails
     // until the compute instance is recycled. See noteEventsTransportOutcome.
-    onTransportOutcome: (error) => {
-      // A response header is not a successful streamed request yet. Only report
-      // failures here; the wrapped body below reports success after clean EOF.
-      if (error !== undefined) noteEventsTransportOutcome(dispatcher, error);
-    },
+    onTransportOutcome: (error) =>
+      noteEventsTransportOutcome(dispatcher, error),
+    deferTransportSuccessUntilBody: true,
     timeoutMs: null,
     transportErrorCode: 'STREAM_ERROR',
     logLabel: opName,
@@ -1458,14 +1456,21 @@ export async function getEventV4(
 
   // GET emits a single frame (no sentinel); decodeFrames returns at EOF
   // after yielding it.
-  for await (const frame of decodeFrames(chunks)) {
-    if (frame.meta._error === 1) {
-      throw streamErrorFrameToError(frame.meta, 'getEvent');
+  try {
+    for await (const frame of decodeFrames(chunks)) {
+      if (frame.meta._error === 1) {
+        throw streamErrorFrameToError(frame.meta, 'getEvent');
+      }
+      if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
+        throw new Error('v4 getEvent: unexpected control frame');
+      }
+      return decodeEventFrame(frame);
     }
-    if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
-      throw new Error('v4 getEvent: unexpected control frame');
+  } catch (cause) {
+    if (cause instanceof IncompleteFrameError && StreamError.is(cause.cause)) {
+      throw cause.cause;
     }
-    return decodeEventFrame(frame);
+    throw cause;
   }
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
 }
@@ -1611,7 +1616,7 @@ async function consumeEventFrameStream(
       throw cause;
     }
     if (cause instanceof IncompleteFrameError && StreamError.is(cause.cause)) {
-      throw cause.cause;
+      return partialEventFrameStream(events, cause.cause);
     }
     if (!(cause instanceof IncompleteFrameError)) {
       throw new WorkflowWorldError(`v4 ${opName}: invalid event frame stream`, {

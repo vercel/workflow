@@ -1,4 +1,8 @@
-import { StreamError, StreamExpiredError } from '@workflow/errors';
+import {
+  StreamError,
+  StreamExpiredError,
+  ThrottleError,
+} from '@workflow/errors';
 import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeMultiChunks, MAX_CHUNKS_PER_REQUEST } from './streamer.js';
@@ -187,6 +191,7 @@ describe('encodeMultiChunks', () => {
 // makes the intent clear. The encodeMultiChunks tests above are pure
 // functions and are unaffected.
 vi.mock('./utils.js', () => ({
+  makeRequest: vi.fn(),
   getHttpConfig: vi.fn().mockResolvedValue({
     baseUrl: 'https://test.example.com',
     headers: new Headers(),
@@ -287,6 +292,22 @@ describe('streams.get', () => {
     const url = new URL(fetchSpy.mock.calls[0][0] as string);
     expect(url.pathname).toBe('/v3/runs/run-123/stream/my-stream');
     expect(url.searchParams.get('startIndex')).toBe('5');
+  });
+});
+
+describe('stream snapshot errors', () => {
+  it('preserves typed World errors from snapshot requests', async () => {
+    const { makeRequest } = await import('./utils.js');
+    const throttled = new ThrottleError('rate limited', { retryAfter: 5 });
+    vi.mocked(makeRequest).mockRejectedValueOnce(throttled);
+    const { createStreamer } = await import('./streamer.js');
+
+    const error = await createStreamer()
+      .streams.getInfo('wrun_test', 'stream-test')
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBe(throttled);
+    expect(error).toMatchObject({ name: 'ThrottleError', retryAfter: 5 });
   });
 });
 

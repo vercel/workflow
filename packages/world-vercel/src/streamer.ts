@@ -1,6 +1,11 @@
 import {
+  EntityConflictError,
+  PreconditionFailedError,
+  RunExpiredError,
   StreamError,
   StreamExpiredError,
+  ThrottleError,
+  TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
@@ -134,12 +139,19 @@ async function createStreamReadError(response: Response): Promise<Error> {
 }
 
 function toStreamError(message: string, cause: unknown): Error {
-  if (StreamError.is(cause) || StreamExpiredError.is(cause)) return cause;
-  return new StreamError(message, {
-    cause,
-    status: WorkflowWorldError.is(cause) ? cause.status : undefined,
-    url: WorkflowWorldError.is(cause) ? cause.url : undefined,
-  });
+  if (
+    WorkflowWorldError.is(cause) ||
+    EntityConflictError.is(cause) ||
+    RunExpiredError.is(cause) ||
+    StreamError.is(cause) ||
+    StreamExpiredError.is(cause) ||
+    TooEarlyError.is(cause) ||
+    ThrottleError.is(cause) ||
+    PreconditionFailedError.is(cause)
+  ) {
+    return cause;
+  }
+  return new StreamError(message, { cause });
 }
 
 function createStreamRequestError(
