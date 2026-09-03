@@ -1,6 +1,9 @@
 export type * from './analytics.js';
 export {
   ANALYTICS_EVENTS_GET_MANY_LIMIT,
+  ANALYTICS_MAX_ATTRIBUTE_FILTERS,
+  ANALYTICS_PAGE_LIMIT,
+  ANALYTICS_RUN_SCOPED_PAGE_LIMIT,
   AnalyticsAttributeKeySchema,
   AnalyticsEventSchema,
   AnalyticsHookSchema,
