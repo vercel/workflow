@@ -80,3 +80,24 @@ describe('validateAttributeScope', () => {
     );
   });
 });
+
+describe('validateAttributeScope with the web UI', () => {
+  // Both flags return before the filter is parsed or forwarded, so the view
+  // opened unfiltered and a malformed pair was never checked.
+  it.each([
+    true,
+    false,
+  ])('rejects --attribute when handing off to the web UI (hasId=%s)', (hasId) => {
+    expect(validateAttributeScope('run', hasId, true, true)).toContain(
+      'cannot be forwarded to the web UI'
+    );
+  });
+
+  it('still allows it for a local runs listing', () => {
+    expect(validateAttributeScope('run', false, true, false)).toBeUndefined();
+  });
+
+  it('says nothing when the flag is absent', () => {
+    expect(validateAttributeScope('run', false, false, true)).toBeUndefined();
+  });
+});

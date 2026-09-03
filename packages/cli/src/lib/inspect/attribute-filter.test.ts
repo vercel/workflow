@@ -56,6 +56,26 @@ describe('parseAttributeFilters', () => {
     );
   });
 
+  // On a plain object literal these are truthy for `in` before anything is
+  // stored, so each was rejected as a duplicate on first sight; `__proto__`
+  // would additionally have set the prototype instead of storing a value.
+  it.each([
+    'toString',
+    'constructor',
+    'hasOwnProperty',
+    '__proto__',
+  ])('accepts %s as an ordinary key', (key) => {
+    const parsed = parseAttributeFilters([`${key}=v`]);
+    expect(Object.hasOwn(parsed ?? {}, key)).toBe(true);
+    expect((parsed as Record<string, string>)[key]).toBe('v');
+  });
+
+  it('still rejects a prototype-named key given twice', () => {
+    expect(() => parseAttributeFilters(['toString=a', 'toString=b'])).toThrow(
+      'was given more than once'
+    );
+  });
+
   it('allows the same value under different keys', () => {
     expect(parseAttributeFilters(['tenant=a', 'region=a'])).toEqual({
       tenant: 'a',

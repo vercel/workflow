@@ -49,12 +49,12 @@ const runInspect = async (argv: string[]): Promise<string> => {
 
 const VALID_RUN = 'wrun_01K4BZQ5T2J8HXFM6WD3PNAVCE';
 
-describe('inspect flag validation runs before any backend setup', () => {
-  beforeEach(() => {
-    state.setupCliWorld.mockReset();
-    process.exitCode = 0;
-  });
+beforeEach(() => {
+  state.setupCliWorld.mockReset();
+  process.exitCode = 0;
+});
 
+describe('inspect flag validation runs before any backend setup', () => {
   // --attribute was parsed on every resource but consumed only by the runs
   // listing, so these returned a normal, unfiltered answer.
   it.each([
@@ -97,5 +97,30 @@ describe('inspect flag validation runs before any backend setup', () => {
     ]);
     expect(message).not.toContain('--attribute');
     expect(state.setupCliWorld).toHaveBeenCalled();
+  });
+});
+
+describe('inspect --attribute cannot reach the web UI', () => {
+  // Both of these return before `toInspectOptions` parses the filter, so the
+  // flag used to be accepted, never validated, and the view opened unfiltered.
+  it.each([
+    ['--url', ['runs', '--attribute', 'tenant=acme', '--url']],
+    ['--web', ['runs', '--attribute', 'tenant=acme', '--web']],
+    ['the web resource', ['web', '--attribute', 'tenant=acme']],
+  ])('rejects --attribute with %s', async (_label, argv) => {
+    const message = await runInspect(argv);
+    expect(message).toContain('cannot be forwarded to the web UI');
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+
+  // Previously bypassed validation entirely on this path.
+  it('rejects a malformed pair even with --url', async () => {
+    const message = await runInspect([
+      'runs',
+      '--attribute',
+      'tenant',
+      '--url',
+    ]);
+    expect(message).toContain('cannot be forwarded to the web UI');
   });
 });

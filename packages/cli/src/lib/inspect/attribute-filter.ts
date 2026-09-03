@@ -31,7 +31,12 @@ export function parseAttributeFilters(
       `--attribute may be given at most ${MAX_ATTRIBUTE_FLAGS} times (received ${values.length})`
     );
   }
-  const attributes: Record<string, string> = {};
+  // Null-prototype, so an attribute key that happens to name an
+  // `Object.prototype` member is an ordinary key. On a plain object literal
+  // `'toString' in attributes` is true before anything is stored, which
+  // rejected such a key as a duplicate on first sight, and assigning
+  // `__proto__` would have set the prototype instead of storing a value.
+  const attributes: Record<string, string> = Object.create(null);
   for (const value of values) {
     const separator = value.indexOf('=');
     if (separator < 1) {
@@ -40,7 +45,7 @@ export function parseAttributeFilters(
       );
     }
     const key = value.slice(0, separator);
-    if (key in attributes) {
+    if (Object.hasOwn(attributes, key)) {
       throw new Error(
         `--attribute ${JSON.stringify(key)} was given more than once; a run matches one value per key`
       );

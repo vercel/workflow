@@ -214,7 +214,8 @@ export default class Inspect extends BaseCommand {
         validateAttributeScope(
           resource,
           id !== undefined,
-          Boolean(flags.attribute?.length)
+          Boolean(flags.attribute?.length),
+          Boolean(flags.url) || Boolean(flags.web) || resource === 'web'
         );
       if (flagError) {
         this.logError(flagError);

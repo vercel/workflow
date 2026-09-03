@@ -94,7 +94,7 @@ Vercel project and auth settings can often be inferred from `.vercel/project.jso
 ### `--sort`
 
 - Environment variable: none
-- Default: `desc`
+- Default: `desc` for time-ordered listings; `workflow inspect attributes` orders keys alphabetically unless you pass this flag
 - Sort order for list commands. Accepts `asc` or `desc`.
 
 ### `--limit`
@@ -150,13 +150,14 @@ per flag.
 - Default: unset
 - Filters runs to those whose [attributes](/docs/observability/attributes) match every `key=value` pair given. Repeatable up to 8 times, and splits on the first `=` so a value may contain one.
 - Requires a backend with the analytics read path; ignored with a warning otherwise.
+- Cannot be combined with `--url` or `--web`: the dashboard takes no attribute filter.
 - Use `workflow inspect attributes` to discover which keys exist.
 
 ### `--since` / `--until`
 
 - Command: `workflow inspect runs`, `workflow inspect attributes`
 - Default: the backend's own window
-- Bounds the listing to a window. Each accepts a relative duration (`30m`, `12h`, `7d`, `2w`) or a timestamp; `--until` defaults to now. Supply both or neither.
+- Bounds the listing to a window. `--since` opens the window and accepts a relative duration (`30m`, `12h`, `7d`, `2w`) or a timestamp. `--until` is optional and defaults to now, so `--until` on its own is rejected.
 - Requires a backend with the analytics read path; ignored with a warning otherwise.
 
 ### `--withData` / `-d`

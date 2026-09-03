@@ -48,13 +48,22 @@ export function validateInspectRunId(runId: string): string | undefined {
  *
  * `resource` is the normalized resource and `hasId` marks a single-item
  * lookup, which reads one run directly and has nothing to filter.
+ * `opensWebUi` marks `--url`/`--web`, which hand the request to the
+ * dashboard rather than filtering here.
  */
 export function validateAttributeScope(
   resource: string,
   hasId: boolean,
-  hasAttribute: boolean
+  hasAttribute: boolean,
+  opensWebUi = false
 ): string | undefined {
   if (!hasAttribute) return undefined;
+  // --url and --web hand off to the dashboard, which takes no attribute
+  // filter, and both return before the filter is parsed — so the flag was
+  // accepted, never validated, and the view opened unfiltered.
+  if (opensWebUi) {
+    return '--attribute cannot be forwarded to the web UI; drop it, or drop --url/--web to filter here.';
+  }
   if (resource === 'run' && hasId) {
     return '--attribute filters run listings; `inspect run <id>` already names one run. Drop the flag or the ID.';
   }
