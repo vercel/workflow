@@ -637,6 +637,10 @@ export const serializedClassToString = (value: { classId: string }): string => {
  */
 export const observabilityRevivers: Revivers = {
   ReadableStream: streamToStreamRef,
+  GlobalWritableStream: (value: { id: string }) => ({
+    __type: STREAM_REF_TYPE,
+    streamId: value.id,
+  }),
   WritableStream: streamToStreamRef,
   TransformStream: streamToStreamRef,
   AbortController: (value: any) =>

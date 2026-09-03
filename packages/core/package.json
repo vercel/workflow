@@ -36,6 +36,10 @@
       "types": "./dist/runtime/run.d.ts",
       "default": "./dist/runtime/run.js"
     },
+    "./runtime/global-stream": {
+      "types": "./dist/runtime/global-stream.d.ts",
+      "default": "./dist/runtime/global-stream.js"
+    },
     "./runtime/start": {
       "types": "./dist/runtime/start.d.ts",
       "default": "./dist/runtime/start.js"

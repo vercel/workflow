@@ -623,6 +623,43 @@ describe('workflow-specific reducers', () => {
     });
   });
 
+  it('global writable handles round-trip with a distinct descriptor tag', () => {
+    vm.evalCode(`
+      if (typeof globalThis.WritableStream === "undefined") {
+        globalThis.WritableStream = function () {};
+      }
+    `).dispose();
+    serde.dispose();
+    serde = createQuickJSSerde(vm);
+
+    const bytes = serializeGuest(
+      `(() => {
+        const s = Object.create(globalThis.WritableStream.prototype);
+        s[Symbol.for("WORKFLOW_STREAM_GLOBAL_ID")] = "gstr_abc";
+        s[Symbol.for("WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID")] = "dpl_anchor";
+        s[Symbol.for("WORKFLOW_STREAM_SERVER_PUBLIC_KEY")] = "cHVibGlj";
+        return s;
+      })()`
+    );
+    expect(text(bytes)).toContain('GlobalWritableStream');
+    expect(
+      checkInGuest(
+        bytes,
+        `function (s) {
+          return {
+            id: s[Symbol.for("WORKFLOW_STREAM_GLOBAL_ID")],
+            deployment: s[Symbol.for("WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID")],
+            publicKey: s[Symbol.for("WORKFLOW_STREAM_SERVER_PUBLIC_KEY")],
+          };
+        }`
+      )
+    ).toEqual({
+      id: 'gstr_abc',
+      deployment: 'dpl_anchor',
+      publicKey: 'cHVibGlj',
+    });
+  });
+
   it('class instances with WORKFLOW_SERIALIZE round-trip through the registry', () => {
     vm.evalCode(`
       (function () {

@@ -301,6 +301,26 @@ export function getCommonReducers(): Partial<Reducers> {
       }
       return { name: '__empty' };
     }) as any,
+    GlobalWritableStream: ((value: any) => {
+      if (value == null) return false;
+      const WS = (globalThis as any).WritableStream;
+      if (
+        !WS ||
+        !(value instanceof WS || Object.getPrototypeOf(value) === WS.prototype)
+      )
+        return false;
+      const globalId = value[Symbol.for('WORKFLOW_STREAM_GLOBAL_ID')];
+      if (typeof globalId === 'string') {
+        const encoded = value[Symbol.for('WORKFLOW_STREAM_GLOBAL_ENCRYPTION')];
+        if (typeof encoded !== 'string') {
+          throw new Error(
+            'Global stream writable is missing its encryption envelope'
+          );
+        }
+        return { kind: 'global', id: globalId, envelope: JSON.parse(encoded) };
+      }
+      return false;
+    }) as any,
     WritableStream: ((value: any) => {
       if (value == null) return false;
       const WS = (globalThis as any).WritableStream;
@@ -310,9 +330,12 @@ export function getCommonReducers(): Partial<Reducers> {
       )
         return false;
       const name = value[Symbol.for('WORKFLOW_STREAM_NAME')];
-      const s: { name: string; runId?: string; deploymentId?: string } = {
-        name: name || '__empty',
-      };
+      const s: {
+        name: string;
+        runId?: string;
+        deploymentId?: string;
+        encryptionPublicKey?: string;
+      } = { name: name || '__empty' };
       // When the handle was forwarded from another run (parent -> child
       // via start()), preserve the foreign runId/deploymentId so the
       // step-side reviver opens the writable against the original stream.
@@ -323,6 +346,11 @@ export function getCommonReducers(): Partial<Reducers> {
         value[Symbol.for('WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID')];
       if (typeof foreignDeploymentId === 'string') {
         s.deploymentId = foreignDeploymentId;
+      }
+      const foreignPublicKey =
+        value[Symbol.for('WORKFLOW_STREAM_SERVER_PUBLIC_KEY')];
+      if (typeof foreignPublicKey === 'string') {
+        s.encryptionPublicKey = foreignPublicKey;
       }
       return s;
     }) as any,
@@ -552,6 +580,15 @@ export function getCommonRevivers(): Partial<Revivers> {
       }
       return stream;
     },
+    GlobalWritableStream: (value) => {
+      const WS = (globalThis as any).WritableStream;
+      const stream = Object.create(WS ? WS.prototype : {});
+      stream[Symbol.for('WORKFLOW_STREAM_GLOBAL_ID')] = value.id;
+      stream[Symbol.for('WORKFLOW_STREAM_GLOBAL_ENCRYPTION')] = JSON.stringify(
+        value.envelope
+      );
+      return stream;
+    },
     WritableStream: (value) => {
       const WS = (globalThis as any).WritableStream;
       const stream = Object.create(WS ? WS.prototype : {});
@@ -571,6 +608,11 @@ export function getCommonRevivers(): Partial<Revivers> {
         stream[Symbol.for('WORKFLOW_STREAM_SERVER_DEPLOYMENT_ID')] = (
           value as any
         ).deploymentId;
+      }
+      if (value && typeof (value as any).encryptionPublicKey === 'string') {
+        stream[Symbol.for('WORKFLOW_STREAM_SERVER_PUBLIC_KEY')] = (
+          value as any
+        ).encryptionPublicKey;
       }
       return stream;
     },

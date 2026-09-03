@@ -1,6 +1,10 @@
+import { StreamExpiredError, WorkflowWorldError } from '@workflow/errors';
 import {
   envNumber,
   type GetChunksOptions,
+  type GlobalStreamer,
+  type GlobalStreamInfoResponse,
+  type GlobalStreamWriteOptions,
   type StreamChunksResponse,
   type Streamer,
   type StreamInfoResponse,
@@ -84,6 +88,10 @@ function getStreamReadUrl(name: string, runId: string, httpConfig: HttpConfig) {
   );
 }
 
+function getGlobalStreamUrl(id: string, httpConfig: HttpConfig) {
+  return new URL(`${httpConfig.baseUrl}/v3/streams/${encodeURIComponent(id)}`);
+}
+
 /**
  * Stream-operation attributes layered onto the shared HTTP client span (see
  * instrumentedFetch). These make stream writes/reads sliceable by run, stream
@@ -123,6 +131,49 @@ async function createStreamReadError(response: Response): Promise<Error> {
     );
   } catch {
     return new Error(fallback);
+  }
+}
+
+async function createGlobalStreamReadError(response: Response): Promise<Error> {
+  if (response.status === 410) {
+    let message = 'Global stream data is no longer available';
+    try {
+      const body = (await response.json()) as { message?: unknown };
+      if (typeof body.message === 'string') message = body.message;
+    } catch {
+      // Keep the stable fallback for empty/non-JSON 410 responses.
+    }
+    return new StreamExpiredError(message);
+  }
+  return errorForResponse(
+    response.status,
+    `Failed to fetch global stream: ${response.status}`
+  );
+}
+
+async function createGlobalStreamWriteError(
+  url: URL,
+  response: Response
+): Promise<Error> {
+  const fallback = `Global stream write failed: HTTP ${response.status}`;
+  try {
+    const body = (await response.json()) as {
+      error?: unknown;
+      message?: unknown;
+    };
+    return new WorkflowWorldError(
+      typeof body.message === 'string' ? body.message : fallback,
+      {
+        status: response.status,
+        code: typeof body.error === 'string' ? body.error : undefined,
+        url: url.toString(),
+      }
+    );
+  } catch {
+    return new WorkflowWorldError(fallback, {
+      status: response.status,
+      url: url.toString(),
+    });
   }
 }
 
@@ -184,6 +235,19 @@ const StreamInfoResponseSchema = z.object({
   done: z.boolean(),
 });
 
+const GlobalStreamEncryptionEnvelopeSchema = z
+  .object({
+    v: z.number().int().nonnegative(),
+    s: z.string().min(1),
+  })
+  .catchall(z.unknown());
+
+const GlobalStreamInfoResponseSchema = StreamInfoResponseSchema.extend({
+  earliestIndex: z.number(),
+  encryption: GlobalStreamEncryptionEnvelopeSchema.nullable(),
+  retentionDays: z.number().nullable(),
+});
+
 /**
  * Zod schema for the paginated stream chunks response from the server.
  * When using CBOR (the default for makeRequest), chunk data arrives as
@@ -202,7 +266,7 @@ const StreamChunksResponseSchema = z.object({
 });
 
 /** Creates the HTTP-backed streamer that talks to workflow-server. */
-export function createStreamer(config?: APIConfig): Streamer {
+export function createStreamer(config?: APIConfig): Streamer & GlobalStreamer {
   return {
     streams: {
       async write(
@@ -407,6 +471,128 @@ export function createStreamer(config?: APIConfig): Streamer {
         });
         return (await response.json()) as string[];
       },
+    },
+    globalStreams: createGlobalStreamer(config),
+  };
+}
+
+export function encodeGlobalStreamEncryptionEnvelope(
+  envelope: GlobalStreamWriteOptions['envelope']
+): string {
+  const canonical = JSON.stringify(
+    Object.fromEntries(
+      Object.entries(envelope).sort(([left], [right]) =>
+        left < right ? -1 : left > right ? 1 : 0
+      )
+    )
+  );
+  return Buffer.from(canonical).toString('base64url');
+}
+
+function createGlobalStreamer(
+  config?: APIConfig
+): GlobalStreamer['globalStreams'] {
+  const put = async (
+    id: string,
+    body: string | Uint8Array | undefined,
+    options: GlobalStreamWriteOptions | undefined,
+    multi = false,
+    done = false
+  ) => {
+    const http = await getHttpConfig(config);
+    const headers = new Headers(http.headers);
+    if (options) {
+      headers.set(
+        'X-Stream-Encryption',
+        encodeGlobalStreamEncryptionEnvelope(options.envelope)
+      );
+    }
+    if (multi) headers.set('X-Stream-Multi', 'true');
+    if (done) headers.set('X-Stream-Done', 'true');
+    const url = getGlobalStreamUrl(id, http);
+    const response = await instrumentedFetch({
+      method: 'PUT',
+      url: url.toString(),
+      body,
+      headers,
+      dispatcher: done
+        ? getStreamCloseDispatcher(config)
+        : getStreamDispatcher(config),
+      timeoutMs: null,
+      logLabel: url.pathname,
+      buildError: options
+        ? (res) => createGlobalStreamWriteError(url, res)
+        : async (res) =>
+            createStreamRequestError('close', url, res, await res.text()),
+    });
+    await response.text();
+  };
+  return {
+    write: (id, chunk, options) => put(id, chunk, options),
+    async writeMulti(id, chunks, options) {
+      const max = getMaxChunksPerRequest();
+      for (let i = 0; i < chunks.length; i += max) {
+        await put(
+          id,
+          encodeMultiChunks(chunks.slice(i, i + max)),
+          options,
+          true
+        );
+      }
+    },
+    close: (id) => put(id, undefined, undefined, false, true),
+    async get(id, startIndex) {
+      const http = await getHttpConfig(config);
+      http.headers.set('Accept', 'application/json');
+      const url = getGlobalStreamUrl(id, http);
+      if (startIndex !== undefined)
+        url.searchParams.set('startIndex', String(startIndex));
+      const response = await instrumentedFetch({
+        method: 'GET',
+        url: url.toString(),
+        headers: http.headers,
+        dispatcher: undefined,
+        timeoutMs: null,
+        logLabel: url.pathname,
+        buildError: createGlobalStreamReadError,
+      });
+      if (!response.body) throw new Error('No response body for global stream');
+      return response.body as ReadableStream<Uint8Array>;
+    },
+    getChunks(id, options) {
+      const query = new URLSearchParams();
+      if (options?.cursor) query.set('cursor', options.cursor);
+      if (options?.limit != null) query.set('limit', String(options.limit));
+      return makeRequest({
+        endpoint: `/v3/streams/${encodeURIComponent(id)}/chunks${query.size ? `?${query}` : ''}`,
+        config,
+        schema: StreamChunksResponseSchema,
+      });
+    },
+    getInfo(id): Promise<GlobalStreamInfoResponse> {
+      return makeRequest({
+        endpoint: `/v3/streams/${encodeURIComponent(id)}/info`,
+        config,
+        schema: GlobalStreamInfoResponseSchema,
+      });
+    },
+    async delete(id) {
+      const http = await getHttpConfig(config);
+      const url = getGlobalStreamUrl(id, http);
+      const response = await instrumentedFetch({
+        method: 'DELETE',
+        url: url.toString(),
+        headers: http.headers,
+        dispatcher: undefined,
+        timeoutMs: null,
+        logLabel: url.pathname,
+        buildError: async (res) =>
+          errorForResponse(
+            res.status,
+            `Global stream delete failed: HTTP ${res.status}: ${await res.text()}`
+          ),
+      });
+      await response.text();
     },
   };
 }

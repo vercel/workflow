@@ -92,6 +92,17 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
   FatalError: [['FatalError', 1], { message: 2 }, 'cannot retry'],
   Float32Array: [['Float32Array', 1], '.'],
   Float64Array: [['Float64Array', 1], '.'],
+  GlobalWritableStream: [
+    ['GlobalWritableStream', 1],
+    { kind: 2, id: 3, envelope: 4 },
+    'global',
+    'gstr_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    { v: 5, s: 6, d: 7, k: 8 },
+    1,
+    'dpl',
+    'dpl_anchor',
+    'cHVibGlj',
+  ],
   Headers: [['Headers', 1], [2], [3, 4], 'x-test', 'value'],
   HookConflictError: [
     ['HookConflictError', 1],

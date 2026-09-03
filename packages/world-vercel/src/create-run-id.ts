@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { globalSingleton } from '@workflow/utils';
 import { monotonicFactory } from 'ulid';
 import { bytesToUlid, ulidToBytes } from './run-id/codec.js';
@@ -143,6 +144,31 @@ export function createRunId(
  *   routing.
  * - Malformed IDs return `null` (never throws).
  */
+/** Mint a global-stream ID using the exact same region-tagged ULID scheme. */
+export function createGlobalStreamId(): string {
+  return `gstr_${createRunId()}`;
+}
+
+/** Derive a stable, region-routed global stream ID from tenant scope + name. */
+export function globalStreamIdFor(options: {
+  projectId: string;
+  environment: string;
+  name: string;
+  region?: string;
+}): string {
+  if (!options.projectId || !options.environment || !options.name) {
+    throw new Error(
+      'globalStreamIdFor requires non-empty projectId, environment, and name'
+    );
+  }
+  const digest = createHash('sha256')
+    .update(`${options.projectId}|${options.environment}|${options.name}`)
+    .digest();
+  const hashUlid = bytesToUlid(new Uint8Array(digest.subarray(0, 16)));
+  const region = resolveRegion({ region: options.region });
+  return `gstr_${encode(hashUlid, REGION_IDS[region], { version: 2 })}`;
+}
+
 export function regionForRunId(runId: string): string | null {
   const bare = runId.startsWith('wrun_') ? runId.slice('wrun_'.length) : runId;
   try {
