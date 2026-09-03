@@ -4,16 +4,17 @@ version = "0.0.0"
 description = "Python conformance target for the @workflow/core e2e suite"
 requires-python = ">=3.10"
 dependencies = [
+  "vercel-headers",
   "vercel-workflow",
   "uvicorn>=0.30",
 ]
 
 [tool.uv.sources]
-vercel-workflow = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-compression-write", subdirectory = "src/vercel-workflow" }
-vercel-headers = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-compression-write", subdirectory = "src/vercel-headers" }
-vercel-internal-core = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-compression-write", subdirectory = "src/vercel-internal-core" }
-vercel-oidc = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-compression-write", subdirectory = "src/vercel-oidc" }
-vercel-queue = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-compression-write", subdirectory = "src/vercel-queue" }
+vercel-workflow = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-encryption-write", subdirectory = "src/vercel-workflow" }
+vercel-headers = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-encryption-write", subdirectory = "src/vercel-headers" }
+vercel-internal-core = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-encryption-write", subdirectory = "src/vercel-internal-core" }
+vercel-oidc = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-encryption-write", subdirectory = "src/vercel-oidc" }
+vercel-queue = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-encryption-write", subdirectory = "src/vercel-queue" }
 
 [tool.vercel]
 entrypoint = "app:app"

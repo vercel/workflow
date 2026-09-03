@@ -1,4 +1,4 @@
 ---
 ---
 
-Pin the Python workbench to vercel-py spec version 5 and cover compressed payload writes in the shared e2e suite.
+Pin the Python workbench to the pending vercel-py spec-version-5 compression and encryption writers and cover their payload envelopes in e2e.

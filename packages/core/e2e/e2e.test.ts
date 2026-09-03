@@ -1001,8 +1001,9 @@ describe.concurrent('e2e', () => {
     'payloadCompressionWorkflow',
     { timeout: 60_000 },
     async () => {
-      // Well above the 1 KiB compression threshold and deliberately repetitive,
-      // so Python should find that either gzip or zstd saves at least 5%.
+      // Well above the 1 KiB compression threshold and deliberately repetitive.
+      // Local World exposes the gzip/zstd envelope; Vercel World supplies a run
+      // key, so encryption becomes the outer envelope for Python-written data.
       const payload = 'workflow-compression-e2e:'.repeat(512);
       const run = await start(await e2e('payloadCompressionWorkflow'), [
         payload,
@@ -1026,10 +1027,13 @@ describe.concurrent('e2e', () => {
       });
 
       expect(payloads).toHaveLength(3);
+      const expectedPrefixes = isLocalDeployment()
+        ? ['gzip', 'zstd']
+        : ['encr'];
       for (const serialized of payloads) {
         assert(serialized instanceof Uint8Array);
         const prefix = new TextDecoder().decode(serialized.subarray(0, 4));
-        expect(['gzip', 'zstd']).toContain(prefix);
+        expect(expectedPrefixes).toContain(prefix);
       }
     }
   );
@@ -2882,6 +2886,11 @@ describe.concurrent('e2e', () => {
         childResult: inputValue * 2,
         originalValue: inputValue,
       });
+      if (process.env.APP_NAME === 'python') {
+        // Python publishes the highest synthetic @workflow/core version whose
+        // wire capabilities it has audited, rather than its package version.
+        expect(childRunData.workflowCoreVersion).toBe('4.2.0');
+      }
     }
   );
 
@@ -3026,15 +3035,14 @@ describe.concurrent('e2e', () => {
         timeout: 30000,
       });
       expect(workflowResult.healthy).toBe(true);
-      // A JavaScript app advertises its `@workflow/core` version so
-      // callers can derive capability metadata (see `getRunCapabilities`
-      // in `capabilities.ts`).
-      // An SDK in another language has no such package, and the field is
-      // not advertised; cross-language capability detection should not
-      // be built on top of emulated `@workflow/core` version, thus needs
-      // further design and evolution.
+      // JavaScript advertises its actual `@workflow/core` version. Python has
+      // no such package, so it advertises the highest synthetic version whose
+      // wire capabilities it has audited. Callers feed either form into
+      // `getRunCapabilities()`.
       if (isJsApp()) {
         expect(typeof workflowResult.workflowCoreVersion).toBe('string');
+      } else if (process.env.APP_NAME === 'python') {
+        expect(workflowResult.workflowCoreVersion).toBe('4.2.0');
       }
     }
   );
