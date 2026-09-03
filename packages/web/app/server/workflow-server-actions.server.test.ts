@@ -1,7 +1,8 @@
 import type { AnalyticsEvent, Hook } from '@workflow/world';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   analyticsEventToEvent,
+  getPublicServerConfig,
   hookToListItem,
 } from './workflow-server-actions.server';
 
@@ -98,5 +99,32 @@ describe('hookToListItem', () => {
       specVersion: 2,
     });
     expect('token' in listItem).toBe(false);
+  });
+});
+
+describe('getPublicServerConfig', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('redacts the celld shared secret while exposing connection metadata', async () => {
+    vi.stubEnv('WORKFLOW_TARGET_WORLD', '@ewhauser/world-celld');
+    vi.stubEnv('CELLD_FLEET_URL', 'http://fleet.internal:8080');
+    vi.stubEnv('CELLD_WORLD_SECRET', 'super-secret');
+    vi.stubEnv('WORKFLOW_BASE_URL', 'https://workflow.example.com');
+
+    const config = await getPublicServerConfig();
+
+    expect(config).toMatchObject({
+      backendDisplayName: 'world-celld',
+      backendId: '@ewhauser/world-celld',
+      publicEnv: {
+        WORKFLOW_TARGET_WORLD: '@ewhauser/world-celld',
+        CELLD_FLEET_URL: 'http://fleet.internal:8080',
+        WORKFLOW_BASE_URL: 'https://workflow.example.com',
+      },
+      sensitiveEnvKeys: ['CELLD_WORLD_SECRET'],
+    });
+    expect(config.publicEnv).not.toHaveProperty('CELLD_WORLD_SECRET');
   });
 });

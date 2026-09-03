@@ -224,6 +224,12 @@ const WORLD_ENV_ALLOWLIST_BY_TARGET_WORLD: Record<string, string[]> = {
     'JAZZ_WORKER_ACCOUNT',
     'JAZZ_WORKER_SECRET',
   ],
+  '@ewhauser/world-celld': [
+    'WORKFLOW_TARGET_WORLD',
+    'CELLD_FLEET_URL',
+    'CELLD_WORLD_SECRET',
+    'WORKFLOW_BASE_URL',
+  ],
 };
 
 function getAllowedEnvKeysForBackend(backendId: string): string[] {
@@ -247,6 +253,7 @@ const WORLD_SENSITIVE_ENV_KEYS = new Set<string>([
   'WORKFLOW_REDIS_URI',
   'JAZZ_API_KEY',
   'JAZZ_WORKER_SECRET',
+  'CELLD_WORLD_SECRET',
 ]);
 
 function isSet(value: string | undefined): value is string {

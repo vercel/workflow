@@ -188,6 +188,26 @@
       "credentialsNote": "Requires JAZZ_API_KEY, JAZZ_WORKER_ACCOUNT, and JAZZ_WORKER_SECRET from Jazz Cloud"
     },
     {
+      "id": "celld",
+      "type": "community",
+      "package": "@ewhauser/world-celld",
+      "name": "celld",
+      "description": "Experimental self-hosted World backed by celld Durable Objects for durable workflow storage, queues, and streams",
+      "repository": "https://github.com/ewhauser/world-celld",
+      "docs": "https://github.com/ewhauser/world-celld#readme",
+      "features": [],
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@ewhauser/world-celld",
+        "CELLD_FLEET_URL": "http://fleet.internal:8080",
+        "CELLD_WORLD_SECRET": "",
+        "WORKFLOW_BASE_URL": "https://workflow.example.com"
+      },
+      "services": [],
+      "requiresCredentials": true,
+      "credentialsNote": "Requires a deployed celld fleet and CELLD_WORLD_SECRET matching the fleet's WORLD_SECRET",
+      "requiresDeployment": true
+    },
+    {
       "id": "fantasticfour-redis",
       "type": "community",
       "package": "@fantasticfour/world-redis",
