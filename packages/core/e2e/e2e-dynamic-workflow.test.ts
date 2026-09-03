@@ -85,6 +85,26 @@ beforeEach((ctx) => {
  * the stored `dynamicWorkflowCode` bytes. `resolveData: 'all'` is what makes
  * the payload fields present rather than stripped.
  */
+/**
+ * Assert the run's workflow code was persisted, skipping when it was not.
+ *
+ * Absent bytes are the same "backend has no dynamic-source storage" fact the
+ * other tests skip on, reached a step later: `start()`'s fail-fast check reads
+ * the created run off `run_created`'s own response, and a resilient start has
+ * no response to read — so a short dynamic run can still finish (turbo runs it
+ * from the queue message inside one invocation) while the backend stored
+ * nothing. These assertions are what notice that.
+ */
+function requireStoredCode(code: unknown): Uint8Array {
+  if (code === undefined) {
+    getCurrentTest()?.context.skip(
+      "this deployment's Workflow backend has no dynamic-source storage yet: the run completed from the queue message without its code being persisted"
+    );
+  }
+  expect(code).toBeInstanceOf(Uint8Array);
+  return code as Uint8Array;
+}
+
 async function readRunRecord(runId: string) {
   const world = await getWorld();
   return world.runs.get(runId, { resolveData: 'all' });
@@ -193,21 +213,9 @@ async function workflow() {
     // encrypts — must not contain the source in the clear. This is the
     // property that distinguishes ref-backed storage from the prototype's
     // plaintext `executionContext` field.
-    const code = (stored as { dynamicWorkflowCode?: unknown })
-      .dynamicWorkflowCode;
-    if (code === undefined) {
-      // Same "backend has no dynamic-source storage" fact the other tests
-      // skip on, reached a step later. `start()`'s fail-fast check reads the
-      // created run off its own response, and a resilient start has no
-      // response to read — so a short dynamic run can still finish (turbo
-      // executes it from the queue message, within one invocation) while
-      // nothing was ever persisted. This assertion is what catches that.
-      getCurrentTest()?.context.skip(
-        "this deployment's Workflow backend has no dynamic-source storage yet: the run completed from the queue message without its code being persisted"
-      );
-    }
-    expect(code).toBeInstanceOf(Uint8Array);
-    const codeBytes = code as Uint8Array;
+    const codeBytes = requireStoredCode(
+      (stored as { dynamicWorkflowCode?: unknown }).dynamicWorkflowCode
+    );
     expect(codeBytes.byteLength).toBeGreaterThan(0);
 
     const encryptionEnabled = Boolean(
@@ -283,12 +291,12 @@ ${padding}
     expect(await run.returnValue).toBe(42);
 
     const stored = await readRunRecord(run.runId);
-    const code = (stored as { dynamicWorkflowCode?: unknown })
-      .dynamicWorkflowCode;
-    expect(code).toBeInstanceOf(Uint8Array);
     // Read back through the ref, so the run executed code the creating write
     // never carried.
-    expect((code as Uint8Array).byteLength).toBeGreaterThan(0);
+    const codeBytes = requireStoredCode(
+      (stored as { dynamicWorkflowCode?: unknown }).dynamicWorkflowCode
+    );
+    expect(codeBytes.byteLength).toBeGreaterThan(0);
   });
 
   it('fails the run when the source calls a step it was not given', async () => {
