@@ -181,7 +181,7 @@ per flag.
 - Command: `workflow cancel`
 - Default: unset
 - Restricts the batch to this status. Only `pending` and `running` are accepted; terminal runs cannot be canceled.
-- Also filters `workflow inspect runs`, which accepts any run status.
+- Also filters `workflow inspect runs`, which accepts any run status. It does not narrow `workflow inspect attributes`, which indexes keys per tenant rather than per run; passing it there warns and lists every key.
 
 ### `--workflowName` / `-n`
 
@@ -194,7 +194,7 @@ per flag.
 
 - Command: `workflow cancel`
 - Default: `50`
-- Maximum runs to cancel in one batch (1–500). Only one batch is canceled per invocation; run the command again to cancel the next batch.
+- Maximum runs to cancel in one batch (1–100), the largest page the run listing serves. Only one batch is canceled per invocation; run the command again to cancel the next batch.
 
 ### `--confirm` / `-y`
 

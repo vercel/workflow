@@ -102,17 +102,26 @@ function makeWorld(opts: {
 }
 
 describe('validateBulkCancelLimit', () => {
-  it('accepts integers within [1, 500]', () => {
+  it('accepts integers within [1, 100]', () => {
     expect(validateBulkCancelLimit(1)).toBeUndefined();
     expect(validateBulkCancelLimit(50)).toBeUndefined();
-    expect(validateBulkCancelLimit(500)).toBeUndefined();
+    expect(validateBulkCancelLimit(100)).toBeUndefined();
   });
 
   it('rejects out-of-range and non-integer values', () => {
-    expect(validateBulkCancelLimit(0)).toMatch(/between 1 and 500/);
-    expect(validateBulkCancelLimit(501)).toMatch(/between 1 and 500/);
-    expect(validateBulkCancelLimit(-5)).toMatch(/between 1 and 500/);
-    expect(validateBulkCancelLimit(1.5)).toMatch(/between 1 and 500/);
+    expect(validateBulkCancelLimit(0)).toMatch(/between 1 and 100/);
+    expect(validateBulkCancelLimit(101)).toMatch(/between 1 and 100/);
+    expect(validateBulkCancelLimit(-5)).toMatch(/between 1 and 100/);
+    expect(validateBulkCancelLimit(1.5)).toMatch(/between 1 and 100/);
+  });
+
+  // 101-500 was advertised and accepted here, and then rejected by whichever
+  // path served it: the analytics runs listing rejects it locally, and the
+  // storage listing it falls back to caps at 100 server-side. Neither message
+  // reached the user, because cancel's catch printed nothing for either.
+  it('rejects the range no backend ever served', () => {
+    expect(validateBulkCancelLimit(200)).toBeDefined();
+    expect(validateBulkCancelLimit(500)).toBeDefined();
   });
 });
 

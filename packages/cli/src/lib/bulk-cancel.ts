@@ -10,7 +10,19 @@ import Table from 'easy-table';
 import { planWindowStartFromResponse } from './inspect/time-window.js';
 
 export const BULK_CANCEL_MIN_LIMIT = 1;
-export const BULK_CANCEL_MAX_LIMIT = 500;
+/**
+ * Upper bound on `--limit`.
+ *
+ * 100 is what both read paths accept: the analytics runs listing caps there
+ * and rejects more locally, and the storage listing it falls back to caps
+ * there server-side. This advertised 500 and no backend ever served it, so
+ * `--limit 200` failed however the command was routed.
+ *
+ * The bound is per status, and an unpinned `--status` fans out across
+ * {@link CANCELLABLE_STATUSES}, so a batch can still exceed it before the
+ * merged list is truncated to `limit`.
+ */
+export const BULK_CANCEL_MAX_LIMIT = 100;
 export const CLI_CANCEL_REASON = 'Cancelled via Workflow CLI';
 
 /**
@@ -33,7 +45,7 @@ export const CANCELLABLE_STATUSES = [
  */
 export const HAS_MORE_GUIDANCE =
   'More runs match these filters. Re-run this command to cancel the next batch,\n' +
-  'or use --limit up to 500.';
+  `or use --limit up to ${BULK_CANCEL_MAX_LIMIT}.`;
 
 export interface CancelLogger {
   log(message: string): void;
@@ -43,7 +55,8 @@ export interface CancelLogger {
 
 /**
  * Validate the `--limit` flag. Returns an error message when invalid, or
- * `undefined` when the value is an integer within [1, 500].
+ * `undefined` when the value is an integer within
+ * [{@link BULK_CANCEL_MIN_LIMIT}, {@link BULK_CANCEL_MAX_LIMIT}].
  */
 export function validateBulkCancelLimit(limit: number): string | undefined {
   if (

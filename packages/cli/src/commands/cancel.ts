@@ -5,16 +5,15 @@ import { WorkflowRunStatusSchema } from '@workflow/world';
 import chalk from 'chalk';
 import { BaseCommand } from '../base.js';
 import {
+  BULK_CANCEL_MAX_LIMIT,
+  BULK_CANCEL_MIN_LIMIT,
   CANCELLABLE_STATUSES,
   CLI_CANCEL_REASON,
   performBulkCancel,
   validateBulkCancelLimit,
 } from '../lib/bulk-cancel.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
-import {
-  getObservabilityUpgradeRequiredMessage,
-  isObservabilityUpgradeRequiredError,
-} from '../lib/inspect/errors.js';
+import { reportActionableApiError } from '../lib/inspect/errors.js';
 import { cliFlags } from '../lib/inspect/flags.js';
 import { setupCliWorld } from '../lib/inspect/setup.js';
 
@@ -31,11 +30,21 @@ export default class Cancel extends BaseCommand {
     '$ workflow cancel --status=running -y',
   ];
 
+  /**
+   * Recorded in `run()` so `catch()` can tell a Vercel 403 from any other
+   * one. oclif hands `catch` the error alone, with no parsed flags.
+   */
+  private backend?: string;
+
   async catch(error: any) {
-    if (isObservabilityUpgradeRequiredError(error)) {
-      logger.error(getObservabilityUpgradeRequiredMessage());
+    // Print the errors that name something the caller can fix. Only the plan
+    // gate was handled before, so an argument the World rejected locally —
+    // `--limit` above the listing cap, say — reached oclif's default handler
+    // and exited 1 with nothing on screen unless -v was set.
+    if (reportActionableApiError(error, this.backend)) {
       process.exit(1);
-    } else if (LOGGING_CONFIG.VERBOSE_MODE) {
+    }
+    if (LOGGING_CONFIG.VERBOSE_MODE) {
       console.error(error);
     }
     throw error;
@@ -68,7 +77,7 @@ export default class Cancel extends BaseCommand {
       helpLabel: '-n, --workflowName',
     }),
     limit: Flags.integer({
-      description: 'Max runs to cancel in bulk mode (1-500)',
+      description: `Max runs to cancel in bulk mode (${BULK_CANCEL_MIN_LIMIT}-${BULK_CANCEL_MAX_LIMIT})`,
       required: false,
       default: 50,
       helpGroup: 'Bulk Cancel',
@@ -87,6 +96,7 @@ export default class Cancel extends BaseCommand {
 
   public async run(): Promise<void> {
     const { flags, args } = await this.parse(Cancel);
+    this.backend = flags.backend;
 
     const world = await setupCliWorld(flags, this.config.version);
     if (!world) {

@@ -4,16 +4,11 @@ import { WorkflowRunStatusSchema } from '@workflow/world';
 import { BaseCommand } from '../base.js';
 import { LOGGING_CONFIG, logger } from '../lib/config/log.js';
 import type { InspectCLIOptions } from '../lib/config/types.js';
-import { parseAttributeFilters } from '../lib/inspect/attribute-filter.js';
 import {
   getObservabilityUpgradeRequiredMessage,
   isObservabilityUpgradeRequiredError,
 } from '../lib/inspect/errors.js';
-import {
-  validateAttributeScope,
-  validateInspectLimit,
-  validateInspectRunId,
-} from '../lib/inspect/flag-bounds.js';
+import { validateInspectFlags } from '../lib/inspect/flag-bounds.js';
 import { cliFlags, urlFlag } from '../lib/inspect/flags.js';
 import {
   listAttributes,
@@ -203,39 +198,26 @@ export default class Inspect extends BaseCommand {
 
       const id = args.id;
 
-      // Bounded before any backend setup: a mistyped flag should name itself
-      // rather than surface as a rejected argument from the read path.
-      const flagError =
-        (flags.limit !== undefined
-          ? validateInspectLimit(flags.limit)
-          : undefined) ??
-        (flags.runId !== undefined
-          ? validateInspectRunId(flags.runId)
-          : undefined) ??
-        validateAttributeScope(
-          resource,
-          id !== undefined,
-          Boolean(flags.attribute?.length),
+      // Bounds and `--attribute` parsing, both before any backend setup: a
+      // mistyped flag should name itself rather than surface as a rejected
+      // argument from the read path, and a malformed pair used to cost a
+      // full auth and project lookup before failing.
+      const bounded = validateInspectFlags({
+        resource,
+        hasId: id !== undefined,
+        limit: flags.limit,
+        runId: flags.runId,
+        attribute: flags.attribute,
+        opensWebUi:
           Boolean(flags.url) || Boolean(flags.web) || resource === 'web',
-          Boolean(flags.withData)
-        );
-      if (flagError) {
-        this.logError(flagError);
+        withData: flags.withData,
+      });
+      if ('error' in bounded) {
+        this.logError(bounded.error);
         process.exitCode = 1;
         return;
       }
-
-      // Parsed here rather than inside `toInspectOptions`, which runs after
-      // `setupCliWorld`: a malformed pair used to cost a full auth and
-      // project lookup before failing.
-      let attributes: Record<string, string> | undefined;
-      try {
-        attributes = parseAttributeFilters(flags.attribute);
-      } catch (error) {
-        this.logError(error instanceof Error ? error.message : String(error));
-        process.exitCode = 1;
-        return;
-      }
+      const { attributes } = bounded;
 
       // Print-only deep link: resolve config and emit the URL, no browser/server.
       if (flags.url) {

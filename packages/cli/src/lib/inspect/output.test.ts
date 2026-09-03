@@ -939,6 +939,47 @@ describe('listAttributes', () => {
     expect(process.exitCode).toBe(1);
     process.exitCode = 0;
   });
+
+  // Every one of these parsed, was dropped, and left the full key table
+  // looking like a filtered answer. The sibling listings warn on the
+  // selectors they cannot apply; this one warned on nothing.
+  describe.each([
+    ['status', { status: 'failed' as const }, 'Filtering by status'],
+    ['runId', { runId: 'wrun_x' }, 'Filtering by run-id'],
+    ['stepId', { stepId: 'step_x' }, 'Filtering by step-id'],
+    ['hookId', { hookId: 'hook_x' }, 'Filtering by hook-id'],
+    ['withData', { withData: true }, '`withData` flag is ignored'],
+  ])('with --%s', (_flag, opts, expected) => {
+    it('warns that the filter does not apply', async () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      const list = vi
+        .fn()
+        .mockResolvedValue({ data: [key], cursor: null, hasMore: false });
+
+      await listAttributes(worldWith(list), { json: true, ...opts });
+
+      expect(warn.mock.calls.flat().join(' ')).toContain(expected);
+      warn.mockRestore();
+    });
+
+    // The listing takes a workflow name and a window; nothing here reaches
+    // the backend, so warning is the only signal the caller gets.
+    it('forwards none of it to the backend', async () => {
+      vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      const list = vi
+        .fn()
+        .mockResolvedValue({ data: [key], cursor: null, hasMore: false });
+
+      await listAttributes(worldWith(list), { json: true, ...opts });
+
+      const params = list.mock.calls[0][0];
+      expect(params.status).toBeUndefined();
+      expect(params.runId).toBeUndefined();
+      expect(params.stepId).toBeUndefined();
+      expect(params.hookId).toBeUndefined();
+      vi.restoreAllMocks();
+    });
+  });
 });
 
 describe('listRuns attribute filtering', () => {

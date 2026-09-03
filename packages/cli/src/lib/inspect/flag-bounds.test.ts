@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   validateAttributeScope,
+  validateInspectFlags,
   validateInspectLimit,
   validateInspectRunId,
 } from './flag-bounds.js';
@@ -10,9 +11,9 @@ describe('validateInspectLimit', () => {
     expect(validateInspectLimit(limit)).toBeUndefined();
   });
 
-  // 101-1000 used to be accepted here and rejected by the backend as an
-  // opaque 400: the cross-run listings cap at 100, as does the storage step
-  // listing a run-scoped read can fall back to.
+  // 101-1000 used to be accepted here and rejected downstream: the cross-run
+  // listings reject them locally, and the run-scoped ones take them as far as
+  // a storage fallback that caps at 100 and answers with an opaque 400.
   it.each([
     0,
     -1,
@@ -105,5 +106,53 @@ describe('validateAttributeScope with the web UI', () => {
 
   it('says nothing when the flag is absent', () => {
     expect(validateAttributeScope('run', false, false, true)).toBeUndefined();
+  });
+});
+
+// The command calls this once, before any backend setup. It composes the
+// three checks above with the `--attribute` parse, so a malformed pair and an
+// out-of-range limit reach the user the same way.
+describe('validateInspectFlags', () => {
+  const base = { resource: 'run', hasId: false, opensWebUi: false };
+
+  it('returns the parsed filters when everything checks out', () => {
+    expect(
+      validateInspectFlags({ ...base, attribute: ['tenant=acme'], limit: 50 })
+    ).toEqual({ attributes: { tenant: 'acme' } });
+  });
+
+  it('leaves attributes undefined when the flag was not given', () => {
+    expect(validateInspectFlags(base)).toEqual({ attributes: undefined });
+  });
+
+  it('reports a malformed pair rather than throwing', () => {
+    const result = validateInspectFlags({ ...base, attribute: ['tenant'] });
+    expect(result).toHaveProperty('error');
+  });
+
+  // Order matters: a bound that fails should be reported before the parse
+  // runs, so the message names the flag the caller can act on first.
+  it.each([
+    ['limit', { limit: 500 }, '--limit must be an integer'],
+    ['runId', { runId: 'nope' }, '--runId must be a run id'],
+    [
+      'scope',
+      { resource: 'step', attribute: ['a=b'] },
+      '--attribute filters run listings only',
+    ],
+    [
+      'withData',
+      { attribute: ['a=b'], withData: true },
+      'cannot be combined with --withData',
+    ],
+    [
+      'web UI',
+      { attribute: ['a=b'], opensWebUi: true },
+      'cannot be forwarded to the web UI',
+    ],
+  ])('reports a bad %s', (_label, flags, expected) => {
+    const result = validateInspectFlags({ ...base, ...flags });
+    expect(result).toHaveProperty('error');
+    expect((result as { error: string }).error).toContain(expected);
   });
 });

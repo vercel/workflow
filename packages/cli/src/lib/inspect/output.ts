@@ -4,7 +4,6 @@ import {
   getDeserializeStream,
   getExternalRevivers,
 } from '@workflow/core/serialization';
-import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
@@ -20,10 +19,7 @@ import { formatDistance } from 'date-fns';
 import Table from 'easy-table';
 import { logger } from '../config/log.js';
 import type { InspectCLIOptions } from '../config/types.js';
-import {
-  getObservabilityUpgradeRequiredMessage,
-  isObservabilityUpgradeRequiredError,
-} from './errors.js';
+import { errorMessage, reportActionableApiError } from './errors.js';
 import {
   type EncryptionKeyResolver,
   hydrateResourceIO,
@@ -170,20 +166,6 @@ const isSleepStep = (stepName: string) => {
   return stepName.includes('-sleep');
 };
 
-const checkAndHandleVercelAccessError = (
-  error: unknown,
-  backend?: string
-): boolean => {
-  if (backend === 'vercel' && error && typeof error === 'object') {
-    const err = error as Record<string, unknown>;
-    if (err.status === 403) {
-      logger.error(VERCEL_403_ERROR_MESSAGE);
-      return true;
-    }
-  }
-  return false;
-};
-
 const extractErrorMessage = (
   err: Record<string, unknown>
 ): string | undefined => {
@@ -215,38 +197,10 @@ const getPageInfo = (result: unknown): AnalyticsPageInfo | undefined => {
   return (result as { pageInfo?: AnalyticsPageInfo }).pageInfo;
 };
 
-/**
- * True for a client-side argument rejection from the World
- * (`code: 'INVALID_ARGUMENT'`).
- *
- * These carry no HTTP status because no request was made, which is exactly
- * why they need naming: the status-based branches below would let them fall
- * through to be rethrown as an unhandled exception.
- */
-const isInvalidArgumentError = (error: unknown): boolean =>
-  typeof error === 'object' &&
-  error !== null &&
-  (error as { code?: unknown }).code === 'INVALID_ARGUMENT';
-
-const errorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error);
-
 const handleApiError = (error: unknown, backend?: string): boolean => {
-  // First check for Vercel access errors
-  if (checkAndHandleVercelAccessError(error, backend)) {
-    return true;
-  }
-
-  if (isObservabilityUpgradeRequiredError(error)) {
-    logger.error(getObservabilityUpgradeRequiredMessage());
-    return true;
-  }
-
-  // An argument the World rejected before sending anything. Report it as
-  // given: the message already names the method, the parameter, and what it
-  // received.
-  if (isInvalidArgumentError(error)) {
-    logger.error(errorMessage(error));
+  // Access, plan, and locally-rejected-argument errors, in one place shared
+  // with the callers that handle that set without the HTTP arms below.
+  if (reportActionableApiError(error, backend)) {
     return true;
   }
 
@@ -1462,33 +1416,23 @@ export const listSleeps = async (
   // only one whose fallback reconstructs the same answer from events, so
   // there is something to degrade *to* here.
   //
-  // Two classes are reported rather than degraded, because retrying against
-  // storage would replace an actionable message with a silent one:
+  // `reportActionableApiError` covers the classes that must be reported
+  // rather than degraded, because retrying against storage would replace an
+  // actionable message with a silent one: an invalid argument, which either
+  // path rejects identically, and a plan or access failure, whose message
+  // tells the caller what to do. Everything else is an availability failure,
+  // which is what the fallback is for.
   //
-  //   - an invalid argument, which either path rejects identically;
-  //   - a plan or access failure, whose message tells the caller what to do
-  //     (upgrade Observability Plus, or fix project access).
-  //
-  // Only the first page may degrade. `--interactive` prints each page as it
-  // arrives, so failing on page two and restarting from the event log would
-  // reprint the listing under a partial table.
+  // Only a whole-listing failure reaches this catch, so the fallback cannot
+  // reprint under a partial table: the non-interactive and JSON paths fetch
+  // exactly one page, and under `--interactive` pages after the first are
+  // fetched inside the keypress listener, whose rejection never lands here.
   if (world.analytics) {
     try {
       await listSleepsViaAnalytics(world.analytics, opts);
       return;
     } catch (error) {
-      // Called once: it logs as a side effect when it recognises the error.
-      if (checkAndHandleVercelAccessError(error, opts.backend)) {
-        process.exitCode = 1;
-        return;
-      }
-      if (isInvalidArgumentError(error)) {
-        logger.error(errorMessage(error));
-        process.exitCode = 1;
-        return;
-      }
-      if (isObservabilityUpgradeRequiredError(error)) {
-        logger.error(getObservabilityUpgradeRequiredMessage());
+      if (reportActionableApiError(error, opts.backend)) {
         process.exitCode = 1;
         return;
       }
@@ -1623,6 +1567,43 @@ export const listAttributes = async (
     return;
   }
   const analytics = world.analytics;
+
+  // Attribute keys are a per-tenant index, not a per-resource one: the
+  // listing takes a workflow name and a time window and nothing else. Every
+  // other selector below parses fine and describes a filter this listing
+  // cannot apply, so saying so beats returning the full table as if it had
+  // been narrowed. `--status` is the likely one to be typed here, since
+  // filtering runs by attribute and status together is a documented
+  // combination.
+  if (opts.status) {
+    logger.warn(
+      'Filtering by status is not supported for attributes, ignoring filter.'
+    );
+  }
+  if (opts.runId) {
+    logger.warn(
+      'Filtering by run-id is not supported for attributes, ignoring filter.'
+    );
+  }
+  if (opts.stepId) {
+    logger.warn(
+      'Filtering by step-id is not supported for attributes, ignoring filter.'
+    );
+  }
+  if (opts.hookId) {
+    logger.warn(
+      'Filtering by hook-id is not supported for attributes, ignoring filter.'
+    );
+  }
+  // Not the list-view deprecation warning the resource listings print:
+  // attribute keys carry no payload to resolve, so the flag is inapplicable
+  // here rather than on its way out.
+  if (opts.withData) {
+    logger.warn(
+      '`withData` flag is ignored for attributes, which carry no payload.'
+    );
+  }
+
   const timeWindow = resolveTimeWindow(opts);
 
   const fetchPage = async (
