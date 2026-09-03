@@ -1,11 +1,14 @@
 import { z } from 'zod';
 import { AttributeChangesSchema } from './attributes.js';
+import { getEventDataRefFields } from './event-metadata.js';
 import type { Hook } from './hooks.js';
 import type { StartedWorkflowRun, WorkflowRun } from './runs.js';
 import { SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
 import type { StartedStep, Step } from './steps.js';
 import type { Wait } from './waits.js';
+
+export * from './event-metadata.js';
 
 // Event type enum
 export const EventTypeSchema = z.enum([
@@ -93,59 +96,6 @@ export function isTerminalStepEventType(
   return TERMINAL_STEP_EVENT_TYPES.includes(eventType as TerminalStepEventType);
 }
 
-/**
- * Groups event types into the classes a replay tracks per entity: the entity
- * named by the event's `correlationId`, or the run itself for run events,
- * which carry none.
- *
- * Types that share a class are the mutually exclusive outcomes of one
- * decision, so the log records the class once and the first event of it is the
- * one that counts: a step either completes or fails.
- *
- * Classes are independent of each other. A step whose result is in the log has
- * still recorded exactly one `step_created`, and can still record another
- * `step_started` if an attempt is running somewhere. What a class bounds is
- * which events can be *ignored*: a replay may pass over an event whose class
- * it already recorded for that entity and which no consumer wants (see
- * `EventsConsumer`), and only then.
- *
- * Note the omissions, all of them types a mapping would be dead weight for.
- * `hook_received` and `hook_conflict` are deliveries whose consumer subscribes
- * lazily, `attr_set` is written on every attribute write, and `run_created`
- * precedes every replay. The terminal run types are absent for a different
- * reason: recording a class requires a consumer to take an event of it, and no
- * consumer takes `run_completed` / `run_failed` / `run_cancelled`: the runtime
- * exits before replaying the body once the log holds one, so they never reach a
- * consumer at all. An entry for them could never match.
- */
-const ENTITY_EVENT_CLASS_BY_TYPE = {
-  step_created: 'step_created',
-  step_started: 'step_started',
-  step_retrying: 'step_retrying',
-  step_completed: 'step_terminal',
-  step_failed: 'step_terminal',
-  wait_created: 'wait_created',
-  wait_completed: 'wait_completed',
-  hook_created: 'hook_created',
-  hook_disposed: 'hook_disposed',
-  run_started: 'run_started',
-} as const satisfies Partial<Record<EventType, string>>;
-
-export type EntityEventClass =
-  (typeof ENTITY_EVENT_CLASS_BY_TYPE)[keyof typeof ENTITY_EVENT_CLASS_BY_TYPE];
-
-/**
- * The per-entity class `eventType` belongs to, or `undefined` when it belongs
- * to none. See {@link ENTITY_EVENT_CLASS_BY_TYPE}.
- */
-export function entityEventClass(
-  eventType: string
-): EntityEventClass | undefined {
-  return (
-    ENTITY_EVENT_CLASS_BY_TYPE as Record<string, EntityEventClass | undefined>
-  )[eventType];
-}
-
 const HookLifecycleEventTypeSchema = EventTypeSchema.extract([
   'hook_created',
   'hook_received',
@@ -193,23 +143,6 @@ export function isWaitEventType(eventType: string): eventType is WaitEventType {
   return WAIT_EVENT_TYPES.includes(eventType as WaitEventType);
 }
 
-/**
- * Whether an event is a sealed-log filler occupying an abandoned slot.
- *
- * The single home for this test, deliberately: a noop is invisible to the run
- * but it is a real row of the log, so *every* pass over a log has to decide
- * whether it is walking positions (count it) or reconstructing what happened
- * (skip it). The two replay engines and the observability trace builder each
- * make that decision independently, and the one thing they must agree on is
- * that a noop's `createdAt`, the sealer's wall clock, can postdate every real
- * event around it but never becomes a time the run observed.
- */
-export function isSealedNoopEvent(
-  event: Pick<Event, 'eventType'> | { eventType: string }
-): boolean {
-  return event.eventType === 'noop';
-}
-
 const ChildEntityCreationEventTypeSchema = EventTypeSchema.extract([
   'step_created',
   'hook_created',
@@ -227,53 +160,6 @@ export function isChildEntityCreationEventType(
   return CHILD_ENTITY_CREATION_EVENT_TYPES.includes(
     eventType as ChildEntityCreationEventType
   );
-}
-
-/**
- * Field within eventData that carries the opaque user payload for event types
- * that have one. V4 worlds split this field into the wire body while keeping
- * the remaining eventData fields in metadata.
- */
-export const EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE = {
-  run_created: 'input',
-  run_started: 'input',
-  run_completed: 'output',
-  run_failed: 'error',
-  step_created: 'input',
-  step_started: 'input',
-  step_completed: 'result',
-  step_failed: 'error',
-  step_retrying: 'error',
-  hook_created: 'metadata',
-  hook_received: 'payload',
-} as const satisfies Partial<Record<EventType, string>>;
-
-export type EventDataPayloadField =
-  (typeof EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE)[keyof typeof EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE];
-
-/**
- * Fields within eventData that hold ref/payload data per event type.
- * When resolveData is 'none', only these fields are stripped, and all other
- * metadata (stepName, workflowName, etc.) is preserved.
- */
-export const EVENT_DATA_REF_FIELDS = Object.fromEntries(
-  Object.entries(EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE).map(
-    ([eventType, field]) => [eventType, [field]]
-  )
-) as Record<string, readonly EventDataPayloadField[]>;
-
-export function getEventDataRefFields(eventType: string): readonly string[] {
-  return EVENT_DATA_REF_FIELDS[eventType] ?? [];
-}
-
-export function getEventDataPayloadField(
-  eventType: string
-): EventDataPayloadField | undefined {
-  return (
-    EVENT_DATA_PAYLOAD_FIELD_BY_EVENT_TYPE as Partial<
-      Record<string, EventDataPayloadField>
-    >
-  )[eventType];
 }
 
 /**
@@ -916,6 +802,25 @@ export interface CreateEventParams {
    * point there is to keep the first invocation's writes as cheap as
    * possible, and it has no loaded log to extend.
    *
+   * The suspension handler sets it too, on the hook create of a single-hook
+   * suspension. That write is the whole continuation for the hook's own
+   * awaiter — the event it commits is what settles it — so a delta lets the
+   * runtime advance the workflow in the same process instead of enqueueing a
+   * message whose only job is to read back the event it just wrote. It is
+   * asked for on one hook create per suspension because two creates issued
+   * from the same cursor each diff against it, and only one of the returned
+   * deltas can be folded into the log.
+   *
+   * A World that answers it on `hook_created` MUST answer it on the
+   * `hook_conflict` a create whose token is already claimed commits instead.
+   * That event settles the same awaiter — a payload await rejects, a
+   * `hook.getConflict()` resolves with the conflicting run — and the runtime
+   * continues over it in-process just the same, so withholding the delta
+   * there would silently cost a delivery on exactly the path the caller
+   * asked to avoid one on. The delta is keyed on the requested event type,
+   * not the committed one; there is nothing extra to compute, since it is the
+   * same slice of the log either way.
+   *
    * The cursor MUST share `events.list` semantics: the returned `events`
    * are everything sorted strictly after `sinceCursor`, `cursor` is the
    * position past the last returned event, and `hasMore` indicates a
@@ -982,6 +887,13 @@ export interface CreateEventParams {
    * `resumeHook()` must not set it.
    */
   preloadEvents?: true;
+  /**
+   * Synchronously observes each validated event in a streamed replay-log
+   * response. A retried request may observe the same event again; observers
+   * must therefore be idempotent. Throwing aborts the operation and the World
+   * must surface the original error without retrying or reclassifying it.
+   */
+  replayEventObserver?: (event: Event) => void;
 }
 
 /**
@@ -1018,7 +930,7 @@ export type EventResult<T extends EventType = EventType> = {
 } & (
   | {
       /**
-       * Events with data resolved. Four producers populate this:
+       * Events with data resolved. Five producers populate this:
        *
        * - On a `run_started` response: all events up to this point, so the
        *   runtime can skip the initial `events.list` call and reduce TTFB.
@@ -1026,6 +938,12 @@ export type EventResult<T extends EventType = EventType> = {
        *   the caller passed {@link CreateEventParams.sinceCursor}: the delta
        *   of events written strictly after that cursor, so the inline loop
        *   can skip the per-step incremental `events.list` round-trip.
+       * - On a hook-create write when the caller passed
+       *   {@link CreateEventParams.sinceCursor}: the same delta, which
+       *   includes the event the create committed — the `hook_created`, or
+       *   the `hook_conflict` of an already-claimed token — so the hook's
+       *   awaiter can be settled in the writing process rather than by a
+       *   re-invocation that reads the event back.
        * - On a `hook_received` response when the caller passed
        *   {@link CreateEventParams.preloadEvents}: the run's current replay
        *   log through the canonical `hook_received`, so the lazy hook queue

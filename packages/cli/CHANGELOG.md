@@ -1,5 +1,74 @@
 # @workflow/cli
 
+## 5.0.0-beta.48
+
+### Minor Changes
+
+- [#3950](https://github.com/vercel/workflow/pull/3950) [`f9073d0`](https://github.com/vercel/workflow/commit/f9073d073990c7eb834a0ad660f1796e19356c0d) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add `wf inspect attributes`, which lists the attribute keys recorded on your runs with a run count and when each was first and last seen, and `wf inspect runs --attribute key=value` (repeatable) to filter runs by them.
+
+  `wf cancel` now resolves the plan's listing window once instead of once per status, removing a redundant request.
+
+  `wf inspect sleeps` now falls back to the event log when the analytics read is unavailable, rather than ending the command. Plan, access, and invalid-argument failures are still reported, since their messages tell you what to do.
+
+  `--limit`, `--runId` and `--attribute` are checked before any backend work, so a mistyped value or a flag given to a listing that cannot use it names the flag instead of being ignored, and an argument the read path rejects is now reported rather than raised as an unhandled error.
+
+  `wf inspect events --hookId` now filters events to that hook. The flag parsed and was then dropped before the listing read it, so it returned the run's whole event list.
+
+  `wf inspect --limit` now accepts 1-100, matching what the listings actually serve. Run-scoped listings previously took values up to 1000 and failed against the backend for anything above 100. `wf cancel --limit` is bounded the same way, down from an advertised 500 that no backend accepted.
+
+### Patch Changes
+
+- [#3850](https://github.com/vercel/workflow/pull/3850) [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add a catchable `StreamError` and classify Workflow stream infrastructure failures as `STREAM_ERROR` instead of `USER_ERROR`.
+
+- Updated dependencies [[`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762), [`564ad39`](https://github.com/vercel/workflow/commit/564ad3966c5d16d73fd6fd88acdf01e6f92843aa), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`4a18b01`](https://github.com/vercel/workflow/commit/4a18b0133aaedaf922b903818c6b0db3adc91beb), [`3c08778`](https://github.com/vercel/workflow/commit/3c0877890500257fb19e9575d57399ec4bb159c9), [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491), [`31dabce`](https://github.com/vercel/workflow/commit/31dabce0c87fa48af210362061324ff0369e094f), [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15), [`1280163`](https://github.com/vercel/workflow/commit/12801635511bc7e301bf8eaeb09c5fb763838826)]:
+  - @workflow/world@5.0.0-beta.33
+  - @workflow/world-vercel@5.0.0-beta.44
+  - @workflow/errors@5.0.0-beta.20
+  - @workflow/web@5.0.0-beta.48
+  - @workflow/core@5.0.0-beta.48
+  - @workflow/world-local@5.0.0-beta.42
+  - @workflow/builders@5.0.0-beta.48
+
+## 5.0.0-beta.47
+
+### Patch Changes
+
+- Updated dependencies [[`855e479`](https://github.com/vercel/workflow/commit/855e47990c0da35419325da27976bae925afb0e9), [`2668e33`](https://github.com/vercel/workflow/commit/2668e3325ba89dec973c3c2f35c49efdb239de8d), [`88f5d21`](https://github.com/vercel/workflow/commit/88f5d214d48b15d3126943313ed03d48667e772c), [`07ec212`](https://github.com/vercel/workflow/commit/07ec212fe762e0659d4528913716c59870fd6c7d), [`1c44cc8`](https://github.com/vercel/workflow/commit/1c44cc8c3f76f81553d04d21f56da1d2adbc1746), [`cc6eb7e`](https://github.com/vercel/workflow/commit/cc6eb7e837ff3cf64a09f613df5fdaad40131cb8), [`ee6f917`](https://github.com/vercel/workflow/commit/ee6f917cdbfcf50a5fd697c7a9cb70dd1294f931), [`e9d5c56`](https://github.com/vercel/workflow/commit/e9d5c56701821b090108a85b74bf8b0cbef8ea8e), [`ffc5807`](https://github.com/vercel/workflow/commit/ffc58078d0c3cd2786d69bab7e41614566a9ea4e), [`3e0c18a`](https://github.com/vercel/workflow/commit/3e0c18a4cab731a80942a334a01c7e215a784694), [`1c28eec`](https://github.com/vercel/workflow/commit/1c28eeca159f022c73912326baf78d69152db876), [`aaeb8e4`](https://github.com/vercel/workflow/commit/aaeb8e44633c1974f087ee7ce38666dbc8ad8a4d)]:
+  - @workflow/world@5.0.0-beta.32
+  - @workflow/core@5.0.0-beta.47
+  - @workflow/builders@5.0.0-beta.47
+  - @workflow/world-vercel@5.0.0-beta.43
+  - @workflow/world-local@5.0.0-beta.41
+  - @workflow/utils@5.0.0-beta.10
+  - @workflow/errors@5.0.0-beta.19
+  - @workflow/web@5.0.0-beta.47
+
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- Updated dependencies [[`f806f8c`](https://github.com/vercel/workflow/commit/f806f8c258fb9ba45fec8b0e4919f55b0bf81a3f), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`82e2678`](https://github.com/vercel/workflow/commit/82e267893917e06f5d3ce316baefc27cd024a912), [`556f3f0`](https://github.com/vercel/workflow/commit/556f3f080a33f8673cf3c08805997dba4e4d865e)]:
+  - @workflow/builders@5.0.0-beta.46
+  - @workflow/core@5.0.0-beta.46
+  - @workflow/world@5.0.0-beta.31
+  - @workflow/web@5.0.0-beta.46
+  - @workflow/errors@5.0.0-beta.18
+  - @workflow/world-local@5.0.0-beta.40
+  - @workflow/world-vercel@5.0.0-beta.42
+
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- Updated dependencies [[`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c), [`27cab14`](https://github.com/vercel/workflow/commit/27cab14adcc6f748500fca19cf78feeb60a125e7), [`f7fb012`](https://github.com/vercel/workflow/commit/f7fb0126528fac2168492c3143fe0379b6f5ef1a), [`5841558`](https://github.com/vercel/workflow/commit/584155897f75e712a1c2bc199d6d12027cd18dab)]:
+  - @workflow/builders@5.0.0-beta.45
+  - @workflow/core@5.0.0-beta.45
+  - @workflow/world@5.0.0-beta.30
+  - @workflow/web@5.0.0-beta.45
+  - @workflow/errors@5.0.0-beta.18
+  - @workflow/world-local@5.0.0-beta.39
+  - @workflow/world-vercel@5.0.0-beta.41
+
 ## 5.0.0-beta.44
 
 ### Patch Changes

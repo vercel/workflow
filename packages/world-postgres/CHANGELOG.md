@@ -1,5 +1,44 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.40
+
+### Patch Changes
+
+- [#3901](https://github.com/vercel/workflow/pull/3901) [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Upgrade repository tooling and CI from pnpm 10 to pnpm 11.
+
+- Updated dependencies [[`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`4a18b01`](https://github.com/vercel/workflow/commit/4a18b0133aaedaf922b903818c6b0db3adc91beb), [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491), [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15)]:
+  - @workflow/world@5.0.0-beta.33
+  - @workflow/errors@5.0.0-beta.20
+  - @workflow/world-local@5.0.0-beta.42
+
+## 5.0.0-beta.39
+
+### Patch Changes
+
+- Updated dependencies [[`855e479`](https://github.com/vercel/workflow/commit/855e47990c0da35419325da27976bae925afb0e9), [`2668e33`](https://github.com/vercel/workflow/commit/2668e3325ba89dec973c3c2f35c49efdb239de8d), [`e9d5c56`](https://github.com/vercel/workflow/commit/e9d5c56701821b090108a85b74bf8b0cbef8ea8e), [`ffc5807`](https://github.com/vercel/workflow/commit/ffc58078d0c3cd2786d69bab7e41614566a9ea4e), [`3e0c18a`](https://github.com/vercel/workflow/commit/3e0c18a4cab731a80942a334a01c7e215a784694)]:
+  - @workflow/world@5.0.0-beta.32
+  - @workflow/world-local@5.0.0-beta.41
+  - @workflow/utils@5.0.0-beta.10
+  - @workflow/errors@5.0.0-beta.19
+
+## 5.0.0-beta.38
+
+### Patch Changes
+
+- Updated dependencies [[`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d)]:
+  - @workflow/world@5.0.0-beta.31
+  - @workflow/errors@5.0.0-beta.18
+  - @workflow/world-local@5.0.0-beta.40
+
+## 5.0.0-beta.37
+
+### Patch Changes
+
+- Updated dependencies [[`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c)]:
+  - @workflow/world@5.0.0-beta.30
+  - @workflow/errors@5.0.0-beta.18
+  - @workflow/world-local@5.0.0-beta.39
+
 ## 5.0.0-beta.36
 
 ### Minor Changes

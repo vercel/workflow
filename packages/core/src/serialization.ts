@@ -1,11 +1,12 @@
 import {
   RuntimeDecryptionError,
   SerializationError,
+  StreamError,
   StreamExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { once } from '@workflow/utils';
-import { envNumber } from '@workflow/world';
+import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import { importKey } from './encryption.js';
@@ -248,7 +249,8 @@ async function recordCompression(
  * `recordCompression` above.
  */
 async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
-  if (stats.executions.length === 0) return;
+  const totalExecutions = stats.totalExecutions ?? stats.executions.length;
+  if (totalExecutions === 0) return;
   try {
     const span = await getActiveSpan();
     if (!span) return;
@@ -260,7 +262,7 @@ async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
       ),
     ];
     span.setAttributes({
-      ...Attr.SerializationGuestCodeExecutions(stats.executions.length),
+      ...Attr.SerializationGuestCodeExecutions(totalExecutions),
       ...Attr.SerializationGuestCodeDetails(details),
     });
   } catch {
@@ -698,6 +700,29 @@ function recordReadTimeToFirstChunk(
 }
 
 /**
+ * Record speculative run-key resolution independently from raw stream TTFC.
+ * This phase never carries key material and is intentionally separate from
+ * `workflow.stream.read`, whose endpoint remains the first raw frame.
+ */
+function recordStreamReadKeyResolution(
+  startEpochMs: number,
+  runId: string,
+  name: string,
+  succeeded: boolean
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.read.resolve_key', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.read.key_succeeded': succeeded,
+      },
+    });
+  })();
+}
+
+/**
  * Emit the client-observed read-completion span when a stream read drains:
  * back-dated to the read dispatch, so its duration is the total read, with
  * chunk/byte counts for throughput. Cancelled reads emit nothing. Fire-and-
@@ -890,7 +915,9 @@ const getFramedStreamMaxTotalReconnects = (): number =>
 export function createReconnectingFramedStream(
   runId: string,
   name: string,
-  startIndex?: number
+  startIndex?: number,
+  prefetchEncryptionKey: () => Promise<PayloadKey | undefined> = async () =>
+    undefined
 ): ReadableStream<Uint8Array> {
   const reconnectSupported = startIndex === undefined || startIndex >= 0;
   let currentStartIndex = startIndex ?? 0;
@@ -898,6 +925,8 @@ export function createReconnectingFramedStream(
   let reconnectCount = 0;
   let totalReconnectCount = 0;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let canceled = false;
+  let cancelReason: unknown;
   let buffer = new Uint8Array(0);
   // Read telemetry (same semantics as WorkflowServerReadableStream):
   // dispatch time, first-connect duration, first-frame latch, and totals.
@@ -906,16 +935,43 @@ export function createReconnectingFramedStream(
   let firstChunkReported = false;
   let chunksDelivered = 0;
   let bytesDelivered = 0;
+  let keyPrefetched = false;
 
-  async function connect(): Promise<void> {
+  function prefetchKey(): void {
+    if (keyPrefetched) return;
+    keyPrefetched = true;
+    const keyStart = Date.now();
+    // The raw stream and key lookup deliberately race. Observe a speculative
+    // failure here: if the stream is cancelled or fails before an encrypted
+    // frame reaches the deserialize transform, this promise otherwise has no
+    // consumer and would become an unhandled rejection. The transform still
+    // awaits the same promise and surfaces the original error on consumption.
+    void prefetchEncryptionKey().then(
+      (key) => {
+        // Unencrypted runs do not need a key-resolution span. Their resolver
+        // still runs speculatively so an encrypted frame can join it.
+        if (key) recordStreamReadKeyResolution(keyStart, runId, name, true);
+      },
+      () => recordStreamReadKeyResolution(keyStart, runId, name, false)
+    );
+  }
+
+  async function connect(): Promise<boolean> {
+    if (canceled) return false;
     const world = await getWorldLazy();
+    if (canceled) return false;
     const effectiveStartIndex = reconnectSupported
       ? currentStartIndex + consumedFrames
       : startIndex;
     const connectStart = Date.now();
     const stream = await world.streams.get(runId, name, effectiveStartIndex);
+    if (canceled) {
+      await stream.cancel(cancelReason).catch(() => {});
+      return false;
+    }
     if (connectMs === undefined) connectMs = Date.now() - connectStart;
     reader = stream.getReader();
+    return true;
   }
 
   /**
@@ -936,11 +992,13 @@ export function createReconnectingFramedStream(
     }
   }
 
-  async function reconnect(): Promise<void> {
+  async function reconnect(): Promise<boolean> {
+    if (canceled) return false;
     if (reader) {
       await reader.cancel().catch(() => {});
       reader = undefined;
     }
+    if (canceled) return false;
     // Advance the resume position past the frames already delivered, then
     // drop any partial-frame bytes: the reopened connection re-sends from a
     // frame boundary at the new index.
@@ -960,19 +1018,20 @@ export function createReconnectingFramedStream(
       reconnectCount++;
       totalReconnectCount++;
       if (reconnectCount > maxReconnects) {
-        throw new Error(
+        throw new StreamError(
           `Stream "${name}" exceeded maximum reconnection attempts (${maxReconnects})`
         );
       }
       if (totalReconnectCount > maxTotalReconnects) {
-        throw new Error(
+        throw new StreamError(
           `Stream "${name}" exceeded maximum total reconnection attempts (${maxTotalReconnects})`
         );
       }
       try {
-        await connect();
-        return;
+        if (!(await connect())) return false;
+        return true;
       } catch (error) {
+        if (canceled) return false;
         // Retention expiry is terminal and retrying cannot restore the stream.
         // Preserve the typed error immediately instead of turning one 410 into
         // 50 reconnect attempts and a generic budget-exhaustion error.
@@ -985,15 +1044,22 @@ export function createReconnectingFramedStream(
 
   return new ReadableStream<Uint8Array>({
     pull: async (controller) => {
+      if (canceled) return;
       if (readStart === undefined) readStart = Date.now();
+      // Begin resolving the key before awaiting streams.get()/the first raw
+      // frame. This is intentionally not awaited: buffered raw frames remain
+      // bounded by the Web Streams backpressure chain while the deserialize
+      // transform joins this promise only if an encrypted frame needs it.
+      prefetchKey();
       // Loop until we emit something, hit EOF, or fatally error. Reads that
       // only extend the in-flight-frame buffer don't enqueue anything; we
       // keep reading rather than returning empty-handed.
       for (;;) {
         if (!reader) {
           try {
-            await connect();
+            if (!(await connect())) return;
           } catch (err) {
+            if (canceled) return;
             controller.error(err);
             return;
           }
@@ -1004,12 +1070,13 @@ export function createReconnectingFramedStream(
           // biome-ignore lint/style/noNonNullAssertion: connect() guarantees reader
           result = await reader!.read();
         } catch (err) {
+          if (canceled) return;
           if (!reconnectSupported) {
             controller.error(err);
             return;
           }
           try {
-            await reconnect();
+            if (!(await reconnect())) return;
           } catch (reconnectErr) {
             controller.error(reconnectErr);
             return;
@@ -1017,6 +1084,7 @@ export function createReconnectingFramedStream(
           continue;
         }
 
+        if (canceled) return;
         if (result.done || !result.value) {
           reader = undefined;
           // A clean EOF is only trustworthy if the stream is actually
@@ -1026,9 +1094,12 @@ export function createReconnectingFramedStream(
           // errored body, but on some paths it reaches the client as a clean
           // EOF), and a completed stream can still be cut mid-body; both
           // would otherwise be silently read as a shorter, complete stream.
-          if (reconnectSupported && !(await isVerifiedComplete())) {
+          const verifiedComplete =
+            !reconnectSupported || (await isVerifiedComplete());
+          if (canceled) return;
+          if (!verifiedComplete) {
             try {
-              await reconnect();
+              if (!(await reconnect())) return;
             } catch (reconnectErr) {
               controller.error(reconnectErr);
               return;
@@ -1099,12 +1170,15 @@ export function createReconnectingFramedStream(
         // Only partial bytes: read more.
       }
     },
-    cancel: async () => {
-      if (reader) {
-        await reader.cancel().catch((err) => {
+    cancel: async (reason) => {
+      canceled = true;
+      cancelReason = reason;
+      const currentReader = reader;
+      reader = undefined;
+      if (currentReader) {
+        await currentReader.cancel(reason).catch((err) => {
           console.warn('Error closing ReadableStream reader:', err);
         });
-        reader = undefined;
       }
     },
   });
@@ -1881,7 +1955,13 @@ export function getExternalReducers(
   // first chunk can race `run_started`. Thread the run-ready barrier into that
   // sink so the write orders after the run exists. Undefined outside turbo /
   // on the await path.
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  // Operations that read data back from the workflow into caller-owned
+  // writables. These must stay separate from producer uploads: a readback can
+  // only finish after the workflow runs, so awaiting it before dispatch would
+  // deadlock. Defaults to `ops` for existing callers that flush everything in
+  // the background.
+  readbackOps: Promise<void>[] = ops
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -1925,7 +2005,8 @@ export function getExternalReducers(
                   runId,
                   cryptoKey,
                   framedByteStreams,
-                  runReadyBarrier
+                  runReadyBarrier,
+                  readbackOps
                 ),
                 cryptoKey
               )
@@ -1980,7 +2061,7 @@ export function getExternalReducers(
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
       const readable = new WorkflowServerReadableStream(runId, name);
-      ops.push(readable.pipeTo(value));
+      readbackOps.push(readable.pipeTo(value));
 
       return { name };
     },
@@ -2211,7 +2292,8 @@ function getStepReducers(
   // after the body but within the same op flush, so its first chunk can race
   // `run_started`. Thread the run-ready barrier into the sink so that write
   // orders after the run exists. Undefined outside turbo / on the await path.
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  readbackOps: Promise<void>[] = ops
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
@@ -2271,7 +2353,8 @@ function getStepReducers(
                     runId,
                     cryptoKey,
                     framedByteStreams,
-                    runReadyBarrier
+                    runReadyBarrier,
+                    readbackOps
                   ),
                   cryptoKey
                 )
@@ -2295,11 +2378,11 @@ function getStepReducers(
       if (!name) {
         const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
-        ops.push(
+        readbackOps.push(
           new WorkflowServerReadableStream(runId, name)
             .pipeThrough(
               getDeserializeStream(
-                getStepRevivers(global, ops, runId, cryptoKey),
+                getStepRevivers(global, readbackOps, runId, cryptoKey),
                 cryptoKey
               )
             )
@@ -2604,15 +2687,14 @@ function reviveAbortController(
         // completion) rather than `ops` (best-effort, background). The stream
         // write above stays in `ops`: it must fire ASAP to reach an in-flight
         // sibling step and is not the durable record.
+        //
         // Swallow errors here so the promise can only ever enforce ordering
         // when awaited (see the no-reject contract on
         // StepContext.preCompletionOps); a failed resume retries on next replay.
         const hookResume = (async () => {
           try {
-            const { resumeHook: resumeHookFn } = await import(
-              './runtime/resume-hook.js'
-            );
-            await resumeHookFn(value.hookToken, {
+            const { resumeHook } = await import('./runtime/resume-hook.js');
+            await resumeHook(value.hookToken, {
               aborted: true,
               reason,
             });
@@ -2706,6 +2788,69 @@ async function getForwardedWritableEncryptionKey(
 }
 
 /**
+ * Create a run's object readable without dispatching its stream GET or
+ * encryption-key lookup until the caller reads it. The external reviver starts
+ * its background pipe immediately, so this boundary belongs here—next to the
+ * source/transform assembly—rather than in `Run`.
+ *
+ * @internal
+ */
+export function getRunReadableStream<T>(
+  global: Record<string, any>,
+  ops: Promise<void>[],
+  runId: string,
+  name: string,
+  startIndex: number | undefined,
+  cryptoKey: EncryptionKeyParam
+): ReadableStream<T> {
+  let reader: ReadableStreamDefaultReader<T> | undefined;
+  let lockState: ReturnType<typeof createFlushableState> | undefined;
+  let lockPollingStarted = false;
+  let userReadable: ReadableStream<T>;
+
+  userReadable = new ReadableStream<T>(
+    {
+      async pull(controller) {
+        try {
+          if (!reader) {
+            const stream = getExternalRevivers(global, ops, runId, cryptoKey, {
+              onReadableState: (state) => {
+                lockState = state;
+              },
+            }).ReadableStream!({ name, startIndex }) as ReadableStream<T>;
+            reader = stream.getReader();
+            if (lockState && !lockPollingStarted) {
+              lockPollingStarted = true;
+              // The caller owns this wrapper's reader, so polling it preserves
+              // the documented releaseLock() completion signal.
+              pollReadableLock(userReadable, lockState);
+            }
+          }
+          const result = await reader.read();
+          if (result.done) controller.close();
+          else controller.enqueue(result.value);
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+      async cancel(reason) {
+        await reader?.cancel(reason).catch(() => {});
+      },
+    },
+    // A positive default high-water mark would run pull at construction to
+    // fill the queue, turning an unread Run.getReadable() into I/O.
+    { highWaterMark: 0 }
+  );
+  return userReadable;
+}
+
+/** Options for externally revived object streams. @internal */
+type ExternalReviverOptions = {
+  /** Receives completion state when a wrapper owns the public readable. */
+  onReadableState?: (state: ReturnType<typeof createFlushableState>) => void;
+};
+
+/**
  * Revivers for deserialization boundary from the client side,
  * receiving the return value from the workflow handler.
  *
@@ -2717,7 +2862,8 @@ export function getExternalRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  options?: ExternalReviverOptions
 ): Partial<Revivers> {
   return {
     ...getCommonRevivers(global),
@@ -2809,33 +2955,47 @@ export function getExternalRevivers(
           // Errors are handled via state.reject
         });
 
-        // Start polling to detect when user releases lock
-        pollReadableLock(userReadable, state);
+        // Direct reviver callers hold this readable. A future public wrapper
+        // can provide the state and poll the readable it hands to the caller.
+        if (options?.onReadableState) options.onReadableState(state);
+        else pollReadableLock(userReadable, state);
 
         return userReadable;
       } else {
         // Non-byte streams carry length-prefixed frames, so we can count
         // completed frames and transparently reconnect when the server
         // stream connection times out mid-run.
+        // Memoize this resolver per readable session. The first raw pull
+        // starts it concurrently with the stream GET; getDeserializeStream
+        // joins the same promise when an encrypted frame arrives. This also
+        // avoids invoking arbitrary EncryptionKeyParam callbacks twice.
+        let keyPromise: Promise<PayloadKey | undefined> | undefined;
+        const resolveKey = (): Promise<PayloadKey | undefined> => {
+          keyPromise ??= resolveEncryptionKey(cryptoKey);
+          return keyPromise;
+        };
         const readable = createReconnectingFramedStream(
           runId,
           value.name,
-          value.startIndex
+          value.startIndex,
+          resolveKey
         );
         const transform = getDeserializeStream(
-          getExternalRevivers(global, ops, runId, cryptoKey),
-          cryptoKey
+          getExternalRevivers(global, ops, runId, resolveKey),
+          resolveKey
         );
         const state = createFlushableState();
         ops.push(state.promise);
 
-        // Start the flushable pipe in the background
+        // Start the flushable pipe in the background.
         flushablePipe(readable, transform.writable, state).catch(() => {
           // Errors are handled via state.reject
         });
 
-        // Start polling to detect when user releases lock
-        pollReadableLock(transform.readable, state);
+        // Direct reviver callers hold this readable. The public Run factory
+        // wraps it for first-pull laziness and polls that wrapper instead.
+        if (options?.onReadableState) options.onReadableState(state);
+        else pollReadableLock(transform.readable, state);
 
         return transform.readable;
       }
@@ -3532,12 +3692,21 @@ export async function dehydrateWorkflowArguments(
   global: Record<string, any> = globalThis,
   v1Compat = false,
   framedByteStreams = false,
-  compression = false
+  compression = false,
+  readbackOps: Promise<void>[] = ops
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
       value,
-      getExternalReducers(global, ops, runId, key, framedByteStreams)
+      getExternalReducers(
+        global,
+        ops,
+        runId,
+        key,
+        framedByteStreams,
+        undefined,
+        readbackOps
+      )
     );
     return revive(str);
   }
@@ -3546,7 +3715,15 @@ export async function dehydrateWorkflowArguments(
     const result = await clientModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(
-        getExternalReducers(global, ops, runId, key, framedByteStreams)
+        getExternalReducers(
+          global,
+          ops,
+          runId,
+          key,
+          framedByteStreams,
+          undefined,
+          readbackOps
+        )
       ),
       compression,
       compressionStats,
@@ -3594,12 +3771,11 @@ export async function dehydrateWorkflowReturnValue(
   v1Compat = false,
   compression = false,
   /**
-   * Optional sink receiving every workflow-code execution serialization could
-   * not avoid, for callers that need them programmatically (e.g. a
-   * retained-VM gate deciding whether the VM is still reusable). The
-   * executions are emitted as span attributes either way, so omitting this
-   * loses nothing observability-wise. The retained-VM gate in
-   * runtime/suspension-handler.ts passes one for step-input dehydration.
+   * Optional sink receiving the first five samples and exact total count of
+   * workflow-code executions serialization could not avoid. The diagnostics
+   * are emitted as span attributes either way, so omitting this loses nothing
+   * observability-wise. The retained-VM gate in runtime/suspension-handler.ts
+   * passes one for step-input dehydration.
    */
   guestCodeStatsOut?: GuestCodeStats
 ): Promise<Uint8Array | unknown> {
@@ -3756,7 +3932,8 @@ export async function dehydrateStepReturnValue(
   // Turbo optimistic start: order the first chunk of a returned stream after
   // the backgrounded `run_started`. Threaded into the step reducers' stream
   // sink. Undefined outside turbo / on the await path.
-  runReadyBarrier?: Promise<unknown>
+  runReadyBarrier?: Promise<unknown>,
+  readbackOps: Promise<void>[] = ops
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -3767,7 +3944,8 @@ export async function dehydrateStepReturnValue(
         runId,
         key,
         framedByteStreams,
-        runReadyBarrier
+        runReadyBarrier,
+        readbackOps
       )
     );
     return revive(str);
@@ -3783,7 +3961,8 @@ export async function dehydrateStepReturnValue(
           runId,
           key,
           framedByteStreams,
-          runReadyBarrier
+          runReadyBarrier,
+          readbackOps
         )
       ),
       compression,

@@ -75,21 +75,30 @@ export interface StepLatencyTracking {
    * Wall-clock ms this invocation's synchronous workflow-function replay
    * took: from calling `runWorkflow` to it throwing the suspension that
    * scheduled this batch. Excludes awaited network I/O (the suspension's
-   * event commits, the step's own start POST). Present only alongside
-   * `rsfsAnchorMs`.
+   * event commits, the step's own start POST). Reported for every batch that
+   * qualifies for TTFS or STSO, not just the first step.
    *
-   * This is the FINAL replay pass only: the invocation that reached and
-   * scheduled the first step. Valid RSFS paths can replay more than once
-   * before the first step (e.g. a workflow-body `setAttributes()` detour
-   * replays twice), and a redelivery omits earlier invocations' replay work
-   * entirely; this value is not accumulated across those earlier passes.
-   * Do not read it as "the replay portion of RSFS": RSFS
-   * ({@link rsfsAnchorMs}) covers the whole run_started-to-first-step
-   * window, this covers only the last pass.
+   * This is the FINAL pass only: the one that reached and scheduled this
+   * batch. Valid RSFS paths can replay more than once before the first step
+   * (e.g. a workflow-body `setAttributes()` detour replays twice), and a
+   * redelivery omits earlier invocations' replay work entirely; this value is
+   * not accumulated across those earlier passes. Do not read it as "the
+   * replay portion of RSFS": RSFS ({@link rsfsAnchorMs}) covers the whole
+   * run_started-to-first-step window, this covers only the last pass.
+   *
+   * On a retained resume this measures the resume, not a replay, which is
+   * why the distribution is bimodal and why {@link retained} is reported
+   * alongside it as the dimension that separates the two modes.
    */
   replayMs?: number;
   /** Whether turbo mode is active for this invocation. */
   turbo: boolean;
+  /**
+   * Whether a retained VM session served this batch, as opposed to a full
+   * replay from the event log. Reported as a `retained` entry in
+   * {@link StepLatencyEventData.optimizations}, alongside `turbo`.
+   */
+  retained: boolean;
 }
 
 /**
@@ -111,12 +120,18 @@ export interface StepLatencyEventData {
   /** Client-measured run_started → first step's start POST, ms. */
   rsfs?: number;
   /**
-   * Client-measured wall-clock ms of the FINAL replay pass that scheduled
-   * the first step (see {@link StepLatencyTracking.replayMs}); not
-   * accumulated across earlier pre-first-step passes, so it must not be
-   * read as "the replay portion of `rsfs`".
+   * Client-measured wall-clock ms of the FINAL pass that scheduled this
+   * batch (see {@link StepLatencyTracking.replayMs}); not accumulated
+   * across earlier passes, so it must not be read as "the replay portion of
+   * `rsfs`". Present whenever `ttfs` or `stso` is.
    */
   finalSchedulingReplay?: number;
+  /**
+   * Active runtime modes for this measurement: `turbo`, `lazyStepStart`,
+   * `optimisticStart`, and `retained` (a retained VM served the batch; its
+   * absence means a full replay). The server turns each known entry into a
+   * bounded boolean tag on every latency metric.
+   */
   optimizations?: string[];
 }
 
@@ -215,6 +230,8 @@ export function computeStepLatencyTracking(params: {
   suspensionCreatedHooks: boolean;
   /** Whether turbo mode is active for this invocation. */
   turbo: boolean;
+  /** See {@link StepLatencyTracking.retained}. */
+  retained: boolean;
 }): StepLatencyTracking | undefined {
   const { events } = params;
 
@@ -291,16 +308,17 @@ export function computeStepLatencyTracking(params: {
           ...(preStepAttrStartMs !== undefined ? { preStepAttrStartMs } : {}),
         }
       : {}),
-    ...(rsfsEligible
-      ? {
-          rsfsAnchorMs: params.runStartedReceivedAtMs,
-          replayMs: params.replayMs,
-        }
-      : {}),
+    ...(rsfsEligible ? { rsfsAnchorMs: params.runStartedReceivedAtMs } : {}),
     ...(prevStepEndMs !== undefined
       ? { prevStepEndMs, stepCount, eventCount }
       : {}),
+    // Not gated on rsfsEligible: replay cost is meaningful for every batch
+    // this function returns tracking for. Gating it on RSFS left the STSO
+    // population — ordinary step-to-step transitions, the bulk of step
+    // scheduling — with no replay-cost telemetry at all.
+    replayMs: params.replayMs,
     turbo: params.turbo,
+    retained: params.retained,
   };
 }
 
@@ -378,12 +396,11 @@ export function computeStepLatencyEventData(params: {
   // passes (e.g. a setAttributes detour) and must not be read as "the
   // replay portion of rsfs"; rsfs covers the whole window.
   //
-  // finalSchedulingReplay duplicates what OTEL already captures on the run/invocation
-  // span, but is deliberately collected as client telemetry so the server
-  // can emit it as an UNSAMPLED, full-population metric: workflow-server's
-  // server spans are heavily sampled in production (~7%), and client spans
-  // can't be filtered by SDK version, so neither can serve as the
-  // dashboard's exact TTFS decomposition.
+  // finalSchedulingReplay duplicates what OTEL already captures on the
+  // run/invocation span, but is deliberately collected as client telemetry
+  // so the server can emit it as an UNSAMPLED, full-population metric:
+  // workflow-server's server spans are heavily sampled in production (~7%),
+  // so they cannot serve as the dashboard's exact TTFS decomposition.
   const rsfs =
     tracking.rsfsAnchorMs !== undefined &&
     params.stepStartPostSentAtMs !== undefined
@@ -403,6 +420,11 @@ export function computeStepLatencyEventData(params: {
   if (params.lazyStepStart) optimizations.push('lazyStepStart');
   if (params.optimisticStart) optimizations.push('optimisticStart');
   if (params.preclaimedStart) optimizations.push('preclaimedStart');
+  // Rides the existing optimizations list rather than a dedicated wire
+  // field: the server already parses this array and turns each known entry
+  // into a bounded boolean tag on every latency metric, so `retained`
+  // dimensions ttfs/stso/rsfs/finalSchedulingReplay for free.
+  if (tracking.retained) optimizations.push('retained');
 
   return {
     ...(ttfs !== undefined ? { ttfs } : {}),

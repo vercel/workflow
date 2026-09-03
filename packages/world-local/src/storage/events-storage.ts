@@ -1412,16 +1412,18 @@ export function createEventsStorage(
             throw new HookNotFoundError(data.correlationId);
           }
 
-          // Lazy hook resume idempotency: the parallel fast path writes this
-          // `hook_received` directly AND has the queue consumer re-ensure it,
-          // both carrying the same `resumeId`, so both may reach here under the
-          // per-hook lock. They must converge on ONE event. Keyed on
-          // `(runId, resumeId)` (NOT on the hookId) because a reusable hook
+          // Lazy hook resume idempotency: the queue consumer writes this
+          // `hook_received` from the message's `hookInput`, so every delivery
+          // of one resume's message repeats the write with the same
+          // `resumeId` and several may reach here under the per-hook lock (a
+          // redelivery, a deployment-affinity re-route, or an older producer
+          // that also wrote directly). They must converge on ONE event. Keyed
+          // on `(runId, resumeId)` (NOT on the hookId) because a reusable hook
           // receives many distinct resumes and each must record its own event;
-          // only the two writers of a single resume collapse. The claim pins
-          // the canonical eventId BEFORE the append so a cross-process writer
-          // converges too. Gated on `resumeId` so the historical single-write
-          // path is untouched.
+          // only the repeated writers of a single resume collapse. The claim
+          // pins the canonical eventId BEFORE the append so a cross-process
+          // writer converges too. Gated on `resumeId` so the historical
+          // single-write path is untouched.
           if (data.eventType === 'hook_received' && params?.resumeId) {
             const claimPath = hookResumeClaimPath(
               basedir,
@@ -2395,11 +2397,38 @@ export function createEventsStorage(
             const storedConflict = await storeEvent(conflictEvent);
             const resolveData =
               params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-            return {
+            // Inline delta, when the writer asked for one. This return is
+            // ahead of the shared `sinceCursor` block below, and the conflict
+            // it carries is the event the create's awaiters settle on — so a
+            // caller that asked has to get the delta here too, or it pays a
+            // re-invocation to read back an event this response could have
+            // handed it. Same single-page-or-fallback contract as below: a
+            // truncated page comes back with `hasMore` and the SDK falls back
+            // to `events.list`.
+            const conflictDelta =
+              typeof params?.sinceCursor === 'string'
+                ? await queryRunEvents(effectiveRunId, {
+                    sortOrder: 'asc',
+                    cursor: params.sinceCursor,
+                  })
+                : undefined;
+            const conflictResult = {
               event: stripEventDataRefs(storedConflict, resolveData),
               run,
               step,
               hook: undefined,
+            };
+            if (!conflictDelta) return conflictResult;
+            return {
+              ...conflictResult,
+              events:
+                resolveData === 'none'
+                  ? conflictDelta.data.map((delta) =>
+                      stripEventDataRefs(delta, resolveData)
+                    )
+                  : conflictDelta.data,
+              cursor: conflictDelta.cursor,
+              hasMore: conflictDelta.hasMore,
             };
           }
 

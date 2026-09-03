@@ -12,9 +12,11 @@ related:
 
 Resumes a workflow run by sending a payload to a hook identified by its token.
 
-It creates a `hook_received` event and re-triggers the workflow to continue execution.
+It durably writes the `hook_received` event and only then publishes a workflow wake. The call resolves only after both operations succeed, in that order.
 
-A Hook kept by `experimental_minRetention` after its workflow ends cannot be resumed. `resumeHook()` throws `HookNotFoundError` in that case.
+`resumeHook()` throws `HookNotFoundError` when no hook holds the token or when its `hook_received` write is refused because the hook was disposed or the run ended. See [durable hook resume](/docs/changelog/lazy-hook-resume).
+
+If `resumeHook()` throws any other error, the outcome is ambiguous only in dispatch, never in durability: the event may already be durable even though the workflow wake failed, and any later wake of the run delivers it. Calling `resumeHook()` again creates a new `resumeId` and can append a second `hook_received`. Callers that need at-most-once behavior across separate invocations must retain and deduplicate their own request key.
 
 <Callout type="warn">
 `resumeHook` is a runtime function that must be called from outside a workflow function.
@@ -50,7 +52,7 @@ showSections={["parameters"]}
 
 ### Returns
 
-Returns a `Promise<ResumedHook>`, a `Hook` extended with an optional `resilientResume` flag. Resolving means the resume was accepted and the workflow will continue, whether the `hook_received` event was written directly or, on the parallel fast path, delivered through the workflow queue for the runtime to materialize (see the [lazy hook resume changelog](/docs/changelog/resilient-resume)). `resilientResume` is `true` only when the direct event write failed transiently and the resume was recovered through the queue; on the happy path it is absent. The resolved hook:
+Returns a `Promise<ResumedHook>`, a `Hook` extended with an optional `resilientResume` flag. Resolving means the payload is durably recorded as `hook_received` and the workflow wake was accepted. `resilientResume` is retained for source compatibility and is no longer set by any path. The resolved hook:
 
 <TSDoc
 definition={`

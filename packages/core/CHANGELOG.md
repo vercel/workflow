@@ -1,5 +1,96 @@
 # @workflow/core
 
+## 5.0.0-beta.48
+
+### Patch Changes
+
+- [#3882](https://github.com/vercel/workflow/pull/3882) [`564ad39`](https://github.com/vercel/workflow/commit/564ad3966c5d16d73fd6fd88acdf01e6f92843aa) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Stop framed stream reconnects after the consumer cancels, including while completion checks or reconnect acquisition are still pending.
+
+- [#3938](https://github.com/vercel/workflow/pull/3938) [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46) Thanks [@pranaygp](https://github.com/pranaygp)! - Settle a hook's awaiter in the invocation that wrote its `hook_created` or `hook_conflict`, instead of re-invoking through the queue and replaying. Falls back to an incremental read when the World returns no delta, and to the re-invocation under `WORKFLOW_RETAINED_VM=0`.
+
+- [#3892](https://github.com/vercel/workflow/pull/3892) [`3c08778`](https://github.com/vercel/workflow/commit/3c0877890500257fb19e9575d57399ec4bb159c9) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retain a live workflow VM across inline progress when sleeps are open or created at the same suspension boundary.
+
+- [#3850](https://github.com/vercel/workflow/pull/3850) [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add a catchable `StreamError` and classify Workflow stream infrastructure failures as `STREAM_ERROR` instead of `USER_ERROR`.
+
+- [#3871](https://github.com/vercel/workflow/pull/3871) [`31dabce`](https://github.com/vercel/workflow/commit/31dabce0c87fa48af210362061324ff0369e094f) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Prefetch run encryption keys when reading workflow streams.
+
+- Updated dependencies [[`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`4a18b01`](https://github.com/vercel/workflow/commit/4a18b0133aaedaf922b903818c6b0db3adc91beb), [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491), [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15)]:
+  - @workflow/world@5.0.0-beta.33
+  - @workflow/world-vercel@5.0.0-beta.44
+  - @workflow/errors@5.0.0-beta.20
+  - @workflow/world-local@5.0.0-beta.42
+
+## 5.0.0-beta.47
+
+### Patch Changes
+
+- [#3849](https://github.com/vercel/workflow/pull/3849) [`855e479`](https://github.com/vercel/workflow/commit/855e47990c0da35419325da27976bae925afb0e9) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix runs failing with `CORRUPTED_EVENT_LOG` after every step had already succeeded, when the event log held two attribute writes under one id.
+
+- [#3841](https://github.com/vercel/workflow/pull/3841) [`2668e33`](https://github.com/vercel/workflow/commit/2668e3325ba89dec973c3c2f35c49efdb239de8d) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Make `resumeHook()` durable before it resolves: the `hook_received` event is
+  written durably first, and the workflow wake is published only after the write
+  is acknowledged. A disposal racing the queue delivery can no longer lose a
+  resume the caller was told succeeded. The wake message is unchanged, so no
+  consumer or backend coordination is needed; `WORKFLOW_DISABLE_LAZY_HOOK_RESUME`
+  is now a no-op and the internal `resumeHookDurable()` alias is removed.
+
+  Behavior changes: a resume against an ended run now throws `HookNotFoundError`
+  instead of resolving (the lazy path never observed the server's rejection, so a
+  late webhook delivery to a finished run answered 202 where it now answers 404).
+  A transient write conflict (HTTP 409, e.g. an event-slot conflict under
+  contention) is no longer re-keyed to `HookNotFoundError`: it surfaces as a
+  retryable error, since its transaction committed nothing.
+
+- [#3879](https://github.com/vercel/workflow/pull/3879) [`07ec212`](https://github.com/vercel/workflow/commit/07ec212fe762e0659d4528913716c59870fd6c7d) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Keep late-claimed buffered hook payloads from being preempted by workflow suspension in retained VMs.
+
+- [#3798](https://github.com/vercel/workflow/pull/3798) [`ee6f917`](https://github.com/vercel/workflow/commit/ee6f917cdbfcf50a5fd697c7a9cb70dd1294f931) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Compile Node.js workflow scripts while loading the replay event log.
+
+- [#3548](https://github.com/vercel/workflow/pull/3548) [`e9d5c56`](https://github.com/vercel/workflow/commit/e9d5c56701821b090108a85b74bf8b0cbef8ea8e) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Prepare replay payloads as validated event frames arrive, reuse primitive step results across fresh VMs, and preserve replay startup overlap.
+
+- [#3797](https://github.com/vercel/workflow/pull/3797) [`1c28eec`](https://github.com/vercel/workflow/commit/1c28eeca159f022c73912326baf78d69152db876) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Trace event loading, workflow VM creation, bundle compilation and evaluation, input hydration, and replay execution.
+
+- Updated dependencies [[`855e479`](https://github.com/vercel/workflow/commit/855e47990c0da35419325da27976bae925afb0e9), [`2668e33`](https://github.com/vercel/workflow/commit/2668e3325ba89dec973c3c2f35c49efdb239de8d), [`1c44cc8`](https://github.com/vercel/workflow/commit/1c44cc8c3f76f81553d04d21f56da1d2adbc1746), [`cc6eb7e`](https://github.com/vercel/workflow/commit/cc6eb7e837ff3cf64a09f613df5fdaad40131cb8), [`e9d5c56`](https://github.com/vercel/workflow/commit/e9d5c56701821b090108a85b74bf8b0cbef8ea8e), [`ffc5807`](https://github.com/vercel/workflow/commit/ffc58078d0c3cd2786d69bab7e41614566a9ea4e), [`3e0c18a`](https://github.com/vercel/workflow/commit/3e0c18a4cab731a80942a334a01c7e215a784694), [`aaeb8e4`](https://github.com/vercel/workflow/commit/aaeb8e44633c1974f087ee7ce38666dbc8ad8a4d)]:
+  - @workflow/world@5.0.0-beta.32
+  - @workflow/world-vercel@5.0.0-beta.43
+  - @workflow/world-local@5.0.0-beta.41
+  - @workflow/utils@5.0.0-beta.10
+  - @workflow/errors@5.0.0-beta.19
+
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- [#3794](https://github.com/vercel/workflow/pull/3794) [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Keep the eager `hook_received` write for the internal resume that records a step-issued abort, so it stays committed before the step completes.
+
+- [#3794](https://github.com/vercel/workflow/pull/3794) [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - `resumeHook()` no longer writes the `hook_received` event itself on the lazy path: the queue consumer creates it from the queue message, so a resume costs one round trip. A resume against an already-ended run now resolves instead of throwing `HookNotFoundError`.
+
+- [#3609](https://github.com/vercel/workflow/pull/3609) [`82e2678`](https://github.com/vercel/workflow/commit/82e267893917e06f5d3ce316baefc27cd024a912) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retain workflow VMs across workflow attribute writes.
+
+- [#3604](https://github.com/vercel/workflow/pull/3604) [`556f3f0`](https://github.com/vercel/workflow/commit/556f3f080a33f8673cf3c08805997dba4e4d865e) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Retain workflow VMs across safe step boundaries that also contain open hooks, and bound guest-code serialization diagnostics to five samples plus an exact count.
+
+- Updated dependencies [[`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d)]:
+  - @workflow/world@5.0.0-beta.31
+  - @workflow/errors@5.0.0-beta.18
+  - @workflow/world-local@5.0.0-beta.40
+  - @workflow/world-vercel@5.0.0-beta.42
+
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- [#3550](https://github.com/vercel/workflow/pull/3550) [`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Keep schema-only World modules out of workflow VM bundles, prevent unknown attribute deletions from offsetting new keys, and safely ignore prototype-like event type names.
+
+- [#3773](https://github.com/vercel/workflow/pull/3773) [`27cab14`](https://github.com/vercel/workflow/commit/27cab14adcc6f748500fca19cf78feeb60a125e7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Send the disposed hook's token on `hook_disposed` from the QuickJS engine, matching the node:vm engine
+
+- [#3490](https://github.com/vercel/workflow/pull/3490) [`f7fb012`](https://github.com/vercel/workflow/commit/f7fb0126528fac2168492c3143fe0379b6f5ef1a) Thanks [@shalabhc](https://github.com/shalabhc)! - Report replay cost for every step-to-step transition, not just a run's first step, and flag whether a retained VM served the batch
+
+- [#3682](https://github.com/vercel/workflow/pull/3682) [`5841558`](https://github.com/vercel/workflow/commit/584155897f75e712a1c2bc199d6d12027cd18dab) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fail the dev HMR e2e cleanup when a deleted workflow fixture is still imported by the generated step registrations, restoring the fixture so the dev server keeps serving the rest of the suite.
+
+- Updated dependencies [[`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c)]:
+  - @workflow/world@5.0.0-beta.30
+  - @workflow/errors@5.0.0-beta.18
+  - @workflow/world-local@5.0.0-beta.39
+  - @workflow/world-vercel@5.0.0-beta.41
+
 ## 5.0.0-beta.44
 
 ### Minor Changes

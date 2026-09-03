@@ -1,6 +1,7 @@
 import { parseDurationToDate, pluralize } from '@workflow/utils';
 
 import type { StringValue } from 'ms';
+import { RUN_ERROR_CODES } from './error-codes.js';
 
 // Note: `Ansi` helpers live under the `@workflow/errors/ansi` subpath so the
 // main entry point doesn't pull `chalk` (and its ESM machinery) into every
@@ -162,6 +163,12 @@ export class WorkflowWorldError extends WorkflowError {
   url?: string;
   /** Retry-After value in seconds, present on 429 and 425 responses */
   retryAfter?: number;
+  /**
+   * The offending argument, present on client-side validation failures
+   * (`code: 'INVALID_ARGUMENT'`). Lets a caller correct the specific
+   * parameter without parsing the message.
+   */
+  field?: string;
 
   constructor(
     message: string,
@@ -170,6 +177,7 @@ export class WorkflowWorldError extends WorkflowError {
       url?: string;
       code?: string;
       retryAfter?: number;
+      field?: string;
       cause?: unknown;
     }
   ) {
@@ -181,6 +189,7 @@ export class WorkflowWorldError extends WorkflowError {
     this.code = options?.code;
     this.url = options?.url;
     this.retryAfter = options?.retryAfter;
+    this.field = options?.field;
   }
 
   static is(value: unknown): value is WorkflowWorldError {
@@ -790,6 +799,29 @@ export class RunExpiredError extends WorkflowWorldError {
 }
 
 /**
+ * Thrown when Workflow's stream infrastructure fails to read or write data.
+ * The failure is attributable to the Workflow service rather than user code.
+ */
+export class StreamError extends WorkflowWorldError {
+  constructor(
+    message: string,
+    options?: { cause?: unknown; url?: string; status?: number }
+  ) {
+    super(message, {
+      code: RUN_ERROR_CODES.STREAM_ERROR,
+      cause: options?.cause,
+      url: options?.url,
+      status: options?.status,
+    });
+    this.name = 'StreamError';
+  }
+
+  static is(value: unknown): value is StreamError {
+    return isError(value) && value.name === 'StreamError';
+  }
+}
+
+/**
  * Thrown when a stream is no longer readable because its owning run passed its
  * storage-retention boundary. This is terminal: retrying cannot restore data.
  *
@@ -1070,6 +1102,7 @@ const HOOK_CONFLICT_ERROR_KEY = Symbol.for(
 const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
   '@workflow/errors//RuntimeDecryptionError'
 );
+const STREAM_ERROR_KEY = Symbol.for('@workflow/errors//StreamError');
 
 if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
@@ -1099,6 +1132,14 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, RUNTIME_DECRYPTION_ERROR_KEY)) {
     Object.defineProperty(globalThis, RUNTIME_DECRYPTION_ERROR_KEY, {
       value: RuntimeDecryptionError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, STREAM_ERROR_KEY)) {
+    Object.defineProperty(globalThis, STREAM_ERROR_KEY, {
+      value: StreamError,
       writable: false,
       enumerable: false,
       configurable: false,
