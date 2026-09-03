@@ -29,6 +29,7 @@ import type {
 } from './runs.js';
 import type {
   GetChunksOptions,
+  GetStreamInfoOptions,
   PaginatedResponse,
   StreamChunksResponse,
   StreamInfoResponse,
@@ -154,7 +155,11 @@ export interface Streamer {
      * @param runId - The workflow run ID that owns the stream
      * @param name - The stream name/ID
      */
-    getInfo(runId: string, name: string): Promise<StreamInfoResponse>;
+    getInfo(
+      runId: string,
+      name: string,
+      options?: GetStreamInfoOptions
+    ): Promise<StreamInfoResponse>;
   };
 }
 
