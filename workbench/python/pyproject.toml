@@ -9,7 +9,11 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-vercel-workflow = { git = "https://github.com/vercel/vercel-py", branch = "main", subdirectory = "src/vercel-workflow" }
+vercel-workflow = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-compression-write", subdirectory = "src/vercel-workflow" }
+vercel-headers = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-compression-write", subdirectory = "src/vercel-headers" }
+vercel-internal-core = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-compression-write", subdirectory = "src/vercel-internal-core" }
+vercel-oidc = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-compression-write", subdirectory = "src/vercel-oidc" }
+vercel-queue = { git = "https://github.com/vercel/vercel-py", branch = "fantix/workflow-compression-write", subdirectory = "src/vercel-queue" }
 
 [tool.vercel]
 entrypoint = "app:app"

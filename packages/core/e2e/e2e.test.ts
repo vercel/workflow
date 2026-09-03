@@ -997,6 +997,37 @@ describe.concurrent('e2e', () => {
     expect(returnValue).toBe('null byte \0');
   });
 
+  test('payloadCompressionWorkflow', { timeout: 60_000 }, async () => {
+    // Well above the 1 KiB compression threshold and deliberately repetitive,
+    // so every runtime should find that either gzip or zstd saves at least 5%.
+    const payload = 'workflow-compression-e2e:'.repeat(512);
+    const run = await start(await e2e('payloadCompressionWorkflow'), [payload]);
+
+    expect(await run.returnValue).toBe(payload);
+
+    const world = await getWorld();
+    const { data: events } = await world.events.list({ runId: run.runId });
+    const payloads = events.flatMap((event) => {
+      if (event.eventType === 'step_created') {
+        return [event.eventData.input];
+      }
+      if (event.eventType === 'step_completed') {
+        return [event.eventData.result];
+      }
+      if (event.eventType === 'run_completed' && event.eventData.output) {
+        return [event.eventData.output];
+      }
+      return [];
+    });
+
+    expect(payloads).toHaveLength(3);
+    for (const serialized of payloads) {
+      assert(serialized instanceof Uint8Array);
+      const prefix = new TextDecoder().decode(serialized.subarray(0, 4));
+      expect(['gzip', 'zstd']).toContain(prefix);
+    }
+  });
+
   test('workflowAndStepMetadataWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('workflowAndStepMetadataWorkflow'), []);
     const returnValue = await run.returnValue;
