@@ -35,18 +35,6 @@ export async function addTenWorkflow(input: number) {
 
 //////////////////////////////////////////////////////////
 
-async function roundTripCompressiblePayload(payload: string) {
-  'use step';
-  return payload;
-}
-
-export async function payloadCompressionWorkflow(payload: string) {
-  'use workflow';
-  return roundTripCompressiblePayload(payload);
-}
-
-//////////////////////////////////////////////////////////
-
 async function randomDelay(v: string) {
   'use step';
   await new Promise((resolve) => setTimeout(resolve, Math.random() * 3000));
