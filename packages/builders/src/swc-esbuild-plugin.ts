@@ -8,8 +8,10 @@ import {
   type WorkflowManifest,
 } from './apply-swc-transform.js';
 import {
+  type ImportParents,
+  importGraphHasChild,
+  importParents,
   jsTsRegex,
-  parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
 import {
   hashManifestSource,
@@ -34,6 +36,7 @@ export type WorkflowAfterTransformHook = (
 
 export interface SwcPluginOptions {
   mode: 'step' | 'workflow';
+  importParents?: ImportParents;
   entriesToBundle?: string[];
   outdir?: string;
   projectRoot?: string;
@@ -120,6 +123,7 @@ function normalizePath(path: string): string {
 }
 
 export function createSwcPlugin(options: SwcPluginOptions): Plugin {
+  const currentImportParents = options.importParents ?? importParents;
   return {
     name: 'swc-workflow-plugin',
     setup(build) {
@@ -285,7 +289,13 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               // if the current entry imports a child that needs
               // to be bundled then it needs to also be bundled so
               // that the child can have our transform applied
-              if (parentHasChild(normalizedResolvedPath, normalizedEntry)) {
+              if (
+                importGraphHasChild(
+                  currentImportParents,
+                  normalizedResolvedPath,
+                  normalizedEntry
+                )
+              ) {
                 shouldBundle = true;
                 break;
               }
@@ -301,7 +311,11 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
                   normalizedResolvedPath,
                   moduleSpecifierRoot
                 ) &&
-                parentHasChild(normalizedEntry, normalizedResolvedPath)
+                importGraphHasChild(
+                  currentImportParents,
+                  normalizedEntry,
+                  normalizedResolvedPath
+                )
               ) {
                 shouldBundle = true;
                 break;
