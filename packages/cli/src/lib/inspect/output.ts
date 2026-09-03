@@ -4,7 +4,6 @@ import {
   getDeserializeStream,
   getExternalRevivers,
 } from '@workflow/core/serialization';
-import { VERCEL_403_ERROR_MESSAGE } from '@workflow/errors';
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
@@ -20,10 +19,7 @@ import { formatDistance } from 'date-fns';
 import Table from 'easy-table';
 import { logger } from '../config/log.js';
 import type { InspectCLIOptions } from '../config/types.js';
-import {
-  getObservabilityUpgradeRequiredMessage,
-  isObservabilityUpgradeRequiredError,
-} from './errors.js';
+import { errorMessage, reportActionableApiError } from './errors.js';
 import {
   type EncryptionKeyResolver,
   hydrateResourceIO,
@@ -170,20 +166,6 @@ const isSleepStep = (stepName: string) => {
   return stepName.includes('-sleep');
 };
 
-const checkAndHandleVercelAccessError = (
-  error: unknown,
-  backend?: string
-): boolean => {
-  if (backend === 'vercel' && error && typeof error === 'object') {
-    const err = error as Record<string, unknown>;
-    if (err.status === 403) {
-      logger.error(VERCEL_403_ERROR_MESSAGE);
-      return true;
-    }
-  }
-  return false;
-};
-
 const extractErrorMessage = (
   err: Record<string, unknown>
 ): string | undefined => {
@@ -216,13 +198,9 @@ const getPageInfo = (result: unknown): AnalyticsPageInfo | undefined => {
 };
 
 const handleApiError = (error: unknown, backend?: string): boolean => {
-  // First check for Vercel access errors
-  if (checkAndHandleVercelAccessError(error, backend)) {
-    return true;
-  }
-
-  if (isObservabilityUpgradeRequiredError(error)) {
-    logger.error(getObservabilityUpgradeRequiredMessage());
+  // Access, plan, and locally-rejected-argument errors, in one place shared
+  // with the callers that handle that set without the HTTP arms below.
+  if (reportActionableApiError(error, backend)) {
     return true;
   }
 
@@ -665,10 +643,18 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
   // filter. Without the flags the backend applies its default window
   // (trailing 24h on the Vercel backend).
   const timeWindow = resolveTimeWindow(opts);
+  // `useAnalytics` is false either because the backend has no analytics
+  // namespace or because --withData asked for payloads, which only storage
+  // carries. Blaming the backend for the caller's own flag sends them
+  // looking in the wrong place.
+  const ignoredBecause = opts.withData
+    ? 'ignored with --withData, which reads payloads from storage'
+    : 'ignored by this backend, which has no analytics read path';
+  if (opts.attributes && !useAnalytics) {
+    logger.warn(`--attribute is ${ignoredBecause}.`);
+  }
   if (timeWindow && !useAnalytics) {
-    logger.warn(
-      '--since/--until require the analytics read path and are ignored by this backend.'
-    );
+    logger.warn(`--since/--until are ${ignoredBecause}.`);
   }
 
   // Determine which props to show based on withData flag
@@ -720,6 +706,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       const runs = await world.analytics.runs.list({
         workflowName: opts.workflowName,
         status,
+        ...(opts.attributes ? { attributes: opts.attributes } : {}),
         ...(timeWindow ?? {}),
         pagination,
       });
@@ -1423,16 +1410,35 @@ export const listSleeps = async (
     logger.warn('`withData` flag is ignored when listing sleeps');
   }
 
-  // Prefer the analytics read path for wait/sleep listing when available.
+  // Prefer the analytics read path, and degrade to the event log when it is
+  // merely unavailable. The sibling listings do not degrade — they choose a
+  // path up front and route failures to `handleApiError` — but sleeps is the
+  // only one whose fallback reconstructs the same answer from events, so
+  // there is something to degrade *to* here.
+  //
+  // `reportActionableApiError` covers the classes that must be reported
+  // rather than degraded, because retrying against storage would replace an
+  // actionable message with a silent one: an invalid argument, which either
+  // path rejects identically, and a plan or access failure, whose message
+  // tells the caller what to do. Everything else is an availability failure,
+  // which is what the fallback is for.
+  //
+  // Only a whole-listing failure reaches this catch, so the fallback cannot
+  // reprint under a partial table: the non-interactive and JSON paths fetch
+  // exactly one page, and under `--interactive` pages after the first are
+  // fetched inside the keypress listener, whose rejection never lands here.
   if (world.analytics) {
     try {
       await listSleepsViaAnalytics(world.analytics, opts);
       return;
     } catch (error) {
-      if (handleApiError(error, opts.backend)) {
-        process.exit(1);
+      if (reportActionableApiError(error, opts.backend)) {
+        process.exitCode = 1;
+        return;
       }
-      throw error;
+      logger.warn(
+        `Analytics read failed, falling back to the event log: ${errorMessage(error)}`
+      );
     }
   }
 
@@ -1531,4 +1537,126 @@ export const listSleeps = async (
     }
     throw error;
   }
+};
+
+const ATTRIBUTE_LISTED_PROPS = [
+  'key',
+  'runCount',
+  'firstSeenAt',
+  'lastSeenAt',
+] as const;
+
+/**
+ * List the distinct attribute keys recorded on this project's runs, with how
+ * many runs carry each and when it was first and last seen.
+ *
+ * Analytics-only: the storage APIs have no cross-run attribute index, so
+ * there is nothing to fall back to. Pair it with
+ * `inspect runs --attribute key=value` to go from discovering a key to
+ * filtering by it.
+ */
+export const listAttributes = async (
+  world: World,
+  opts: InspectCLIOptions = {}
+) => {
+  if (!world.analytics) {
+    logger.error(
+      'Listing attributes requires a backend with the analytics read path; this backend does not provide one.'
+    );
+    process.exitCode = 1;
+    return;
+  }
+  const analytics = world.analytics;
+
+  // Attribute keys are a per-tenant index, not a per-resource one: the
+  // listing takes a workflow name and a time window and nothing else. Every
+  // other selector below parses fine and describes a filter this listing
+  // cannot apply, so saying so beats returning the full table as if it had
+  // been narrowed. `--status` is the likely one to be typed here, since
+  // filtering runs by attribute and status together is a documented
+  // combination.
+  if (opts.status) {
+    logger.warn(
+      'Filtering by status is not supported for attributes, ignoring filter.'
+    );
+  }
+  if (opts.runId) {
+    logger.warn(
+      'Filtering by run-id is not supported for attributes, ignoring filter.'
+    );
+  }
+  if (opts.stepId) {
+    logger.warn(
+      'Filtering by step-id is not supported for attributes, ignoring filter.'
+    );
+  }
+  if (opts.hookId) {
+    logger.warn(
+      'Filtering by hook-id is not supported for attributes, ignoring filter.'
+    );
+  }
+  // Not the list-view deprecation warning the resource listings print:
+  // attribute keys carry no payload to resolve, so the flag is inapplicable
+  // here rather than on its way out.
+  if (opts.withData) {
+    logger.warn(
+      '`withData` flag is ignored for attributes, which carry no payload.'
+    );
+  }
+
+  const timeWindow = resolveTimeWindow(opts);
+
+  const fetchPage = async (
+    cursor: string | undefined
+  ): Promise<PageData<Record<string, unknown>>> => {
+    const page = await analytics.attributes.list({
+      workflowName: opts.workflowName,
+      ...(timeWindow ?? {}),
+      pagination: {
+        cursor,
+        limit: opts.limit || DEFAULT_PAGE_SIZE,
+        // Forwarded only when asked for, unlike the time-ordered listings
+        // which default to `desc`: attribute keys are ordered
+        // alphabetically by the backend, and that reads better than either
+        // direction imposed here.
+        ...(opts.sort ? { sortOrder: opts.sort } : {}),
+      },
+    });
+    return {
+      data: page.data as unknown as Record<string, unknown>[],
+      cursor: page.cursor,
+      hasMore: page.hasMore,
+      pageInfo: getPageInfo(page),
+    };
+  };
+
+  if (opts.json) {
+    try {
+      showJsonPage(await fetchPage(opts.cursor));
+      return;
+    } catch (error) {
+      if (handleApiError(error, opts.backend)) {
+        process.exit(1);
+      }
+      throw error;
+    }
+  }
+
+  await setupListPagination<Record<string, unknown>>({
+    initialCursor: opts.cursor,
+    interactive: opts.interactive,
+    fetchPage: async (cursor) => {
+      try {
+        return await fetchPage(cursor);
+      } catch (error) {
+        if (handleApiError(error, opts.backend)) {
+          process.exit(1);
+        }
+        throw error;
+      }
+    },
+    displayPage: async (attributes) => {
+      logger.log(showTable(attributes, [...ATTRIBUTE_LISTED_PROPS], opts));
+    },
+  });
 };

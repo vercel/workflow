@@ -10,7 +10,19 @@ import Table from 'easy-table';
 import { planWindowStartFromResponse } from './inspect/time-window.js';
 
 export const BULK_CANCEL_MIN_LIMIT = 1;
-export const BULK_CANCEL_MAX_LIMIT = 500;
+/**
+ * Upper bound on `--limit`.
+ *
+ * 100 is what both read paths accept: the analytics runs listing caps there
+ * and rejects more locally, and the storage listing it falls back to caps
+ * there server-side. This advertised 500 and no backend ever served it, so
+ * `--limit 200` failed however the command was routed.
+ *
+ * The bound is per status, and an unpinned `--status` fans out across
+ * {@link CANCELLABLE_STATUSES}, so a batch can still exceed it before the
+ * merged list is truncated to `limit`.
+ */
+export const BULK_CANCEL_MAX_LIMIT = 100;
 export const CLI_CANCEL_REASON = 'Cancelled via Workflow CLI';
 
 /**
@@ -33,7 +45,7 @@ export const CANCELLABLE_STATUSES = [
  */
 export const HAS_MORE_GUIDANCE =
   'More runs match these filters. Re-run this command to cancel the next batch,\n' +
-  'or use --limit up to 500.';
+  `or use --limit up to ${BULK_CANCEL_MAX_LIMIT}.`;
 
 export interface CancelLogger {
   log(message: string): void;
@@ -43,7 +55,8 @@ export interface CancelLogger {
 
 /**
  * Validate the `--limit` flag. Returns an error message when invalid, or
- * `undefined` when the value is an integer within [1, 500].
+ * `undefined` when the value is an integer within
+ * [{@link BULK_CANCEL_MIN_LIMIT}, {@link BULK_CANCEL_MAX_LIMIT}].
  */
 export function validateBulkCancelLimit(limit: number): string | undefined {
   if (
@@ -127,6 +140,30 @@ export interface BulkCancelOutcome {
 }
 
 /**
+ * Resolve the plan's observability window from a one-row probe listing.
+ *
+ * Returns the `startTime`/`endTime` pair to bound subsequent listings with,
+ * or `undefined` when the backend reports no window (nothing to widen to).
+ * The probe needs a status because the list API takes one, but the window it
+ * reads back is plan-wide, so any status will do.
+ */
+async function resolvePlanWindow(
+  analytics: NonNullable<World['analytics']>,
+  probeStatus: WorkflowRunStatus,
+  workflowName: string | undefined
+): Promise<{ startTime: string; endTime: string } | undefined> {
+  const probe = await analytics.runs.list({
+    status: probeStatus,
+    workflowName,
+    pagination: { limit: 1 },
+  });
+  const startTime = planWindowStartFromResponse(probe);
+  return startTime
+    ? { startTime, endTime: new Date().toISOString() }
+    : undefined;
+}
+
+/**
  * Fetch matching runs (up to `limit`), confirm, and cancel them in a single
  * bulk operation. Prints a table of what will be cancelled, rerun guidance
  * when more runs match than were fetched, a compact summary, and per-run
@@ -153,6 +190,19 @@ export async function performBulkCancel(
     ? [status]
     : [...CANCELLABLE_STATUSES];
 
+  // The analytics backend defaults its listing to a recent window (trailing
+  // 24h on the Vercel backend), but bulk cancel must match across the plan's
+  // whole observability window: a run can sleep or wait on a hook for days
+  // without emitting recent events. Probe once for the window bounds, then
+  // match across them.
+  //
+  // The window is a property of the plan, not of a run's status, so the probe
+  // is hoisted above the per-status fan-out. Running it inside meant a
+  // four-status cancel issued four identical probes.
+  const listingWindow = analytics
+    ? await resolvePlanWindow(analytics, targetStatuses[0], workflowName)
+    : undefined;
+
   const fetchPage = async (pageStatus: WorkflowRunStatus) => {
     if (!analytics) {
       return world.runs.list({
@@ -162,23 +212,10 @@ export async function performBulkCancel(
         resolveData: 'none',
       });
     }
-    // The analytics backend defaults its listing to a recent window
-    // (trailing 24h on the Vercel backend), but bulk cancel must match
-    // across the plan's whole observability window: a run can sleep or
-    // wait on a hook for days without emitting recent events. Probe for
-    // the plan window bounds first, then match across them.
-    const probe = await analytics.runs.list({
-      status: pageStatus,
-      workflowName,
-      pagination: { limit: 1 },
-    });
-    const windowStart = planWindowStartFromResponse(probe);
     return analytics.runs.list({
       status: pageStatus,
       workflowName,
-      ...(windowStart
-        ? { startTime: windowStart, endTime: new Date().toISOString() }
-        : {}),
+      ...(listingWindow ?? {}),
       pagination: { limit },
     });
   };
