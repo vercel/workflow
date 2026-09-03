@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   detectWorkflowPatterns,
   shouldTransformFile,
+  stripCommentsFromSource,
   useStepPattern,
   useWorkflowPattern,
   workflowSerdeComputedPropertyPattern,
@@ -406,6 +407,112 @@ console.log(
       expect(result.hasDirective).toBe(false);
     });
 
+    it('detects a directive after a backtick in a comment', () => {
+      const source = `// Markdown fence marker: \`\`\`
+export async function brokenStep() {
+  "use step";
+  return \`ok\`;
+}
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseStep).toBe(true);
+      expect(result.hasDirective).toBe(true);
+    });
+
+    it('detects a directive after a backtick in a regex literal', () => {
+      const source = `const openFence = /\`\`\`/;
+
+export async function brokenStep() {
+  "use step";
+  return \`ok\`;
+}
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseStep).toBe(true);
+      expect(result.hasDirective).toBe(true);
+    });
+
+    it('detects a directive after a backtick in a string literal', () => {
+      const source = `const fence = '\`';
+export async function run() {
+  'use workflow';
+  return \`done\`;
+}
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseWorkflow).toBe(true);
+    });
+
+    it('detects a directive after a division that looks like a regex start', () => {
+      const source = `const ratio = total / count;
+const other = (a) / b;
+export async function run() {
+  'use step';
+}
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseStep).toBe(true);
+    });
+
+    it('treats code inside template literal expressions as real code', () => {
+      const source = `const snippet = \`before \${(() => {
+  'use step';
+  return \`inner \${'x'} \`;
+})()} after\`;
+export const value = 1;
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseStep).toBe(true);
+    });
+
+    it('detects a directive after a template literal with nested expressions', () => {
+      const source = `const snippet = \`a \${b ? \`c \${d}\` : "}"} e\`;
+export async function run() {
+  'use step';
+}
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseStep).toBe(true);
+    });
+
+    it('ignores comment markers inside strings when masking', () => {
+      const source = `const url = 'https://example.com/*not-a-comment';
+export async function run() {
+  'use step';
+}
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseStep).toBe(true);
+    });
+
+    it('ignores directives inside an unterminated template literal', () => {
+      const source = `const snippet = \`
+  'use step';
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseStep).toBe(false);
+    });
+
+    it('detects a directive after a regex with a backtick that follows a tilde', () => {
+      const source = `const ok = ~/\`/.test(a);
+export async function run() {
+  "use step";
+}
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseStep).toBe(true);
+    });
+
+    it('still reads a slash after a template literal as a division', () => {
+      const source = `const half = \`a\` / 2;
+export async function run() {
+  "use step";
+}
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseStep).toBe(true);
+    });
+
     it('still detects real directives after template literals', () => {
       const source = `const CODE_SNIPPET = \`
   "use workflow";
@@ -483,6 +590,45 @@ export async function run() {
 
     it('does not transform files without directives or serde patterns', () => {
       expect(shouldTransformFile('/app/lib/utils.ts', noPatterns)).toBe(false);
+    });
+  });
+
+  describe('stripCommentsFromSource', () => {
+    it('removes comments but keeps strings, templates, and regex literals', () => {
+      const source = `const a = 'x // y'; // note
+const b = \`t /* u */\`; /* block
+comment */ const c = /\\/[/]/g;
+`;
+      expect(stripCommentsFromSource(source)).toBe(
+        `const a = 'x // y';        
+const b = \`t /* u */\`;         
+           const c = /\\/[/]/g;
+`
+      );
+    });
+
+    it('scans code inside template expressions when templates are not masked', () => {
+      const source = `const s = \`a \${'\`'} b // not a comment\`;
+const n = 1; // c
+`;
+      expect(stripCommentsFromSource(source)).toBe(
+        `const s = \`a \${'\`'} b // not a comment\`;
+const n = 1;     
+`
+      );
+    });
+
+    it('blanks template contents but keeps delimiters when masking', () => {
+      const source = `const s = \`a \${b} c\`;
+const t = \`line
+break\`;
+`;
+      expect(stripCommentsFromSource(source, true)).toBe(
+        `const s = \`  \${b}  \`;
+const t = \`    
+     \`;
+`
+      );
     });
   });
 });
