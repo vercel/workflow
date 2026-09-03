@@ -324,18 +324,23 @@ export function createDevTests(config?: DevTestConfig) {
       actual: number,
       expected: ExpectedHmrLogCount | undefined
     ) => {
+      if (expected === undefined) {
+        expect(actual).toBe(0);
+        return;
+      }
       if (typeof expected === 'number') {
         // Canary webpack can emit duplicate watcher events for one edit; keep
-        // stable exact while treating canary counts as lower bounds.
-        if (finalConfig.canary) {
+        // stable exact while treating positive canary counts as lower bounds.
+        // Zero always means that rebuild kind must not occur.
+        if (finalConfig.canary && expected > 0) {
           expect(actual).toBeGreaterThanOrEqual(expected);
           return;
         }
         expect(actual).toBe(expected);
         return;
       }
-      expect(actual).toBeGreaterThanOrEqual(expected?.min ?? 0);
-      if (expected?.max !== undefined) {
+      expect(actual).toBeGreaterThanOrEqual(expected.min ?? 0);
+      if (expected.max !== undefined) {
         expect(actual).toBeLessThanOrEqual(expected.max);
       }
     };
@@ -350,26 +355,38 @@ export function createDevTests(config?: DevTestConfig) {
       if (cursor === undefined) {
         return;
       }
+      const expectsAtLeastOne = (
+        count: ExpectedHmrLogCount | undefined
+      ): boolean =>
+        typeof count === 'number' ? count > 0 : (count?.min ?? 0) > 0;
+      const expectsRebuild =
+        expectsAtLeastOne(expected.hot) || expectsAtLeastOne(expected.full);
+      const assertCounts = async () => {
+        const log = (await readDevServerLog()).slice(cursor);
+        const skip = countLogMessage(log, hmrLogMessages.skip);
+        if (expectsRebuild) {
+          const minimumSkip =
+            typeof expected.skip === 'number'
+              ? expected.skip
+              : (expected.skip?.min ?? 0);
+          expect(skip).toBeGreaterThanOrEqual(minimumSkip);
+        } else {
+          expectLogCount(skip, expected.skip);
+        }
+        expectLogCount(countLogMessage(log, hmrLogMessages.hot), expected.hot);
+        expectLogCount(
+          countLogMessage(log, hmrLogMessages.full),
+          expected.full
+        );
+      };
       await pollUntil({
         description: 'dev server HMR logs to match expected rebuild counts',
         timeoutMs: hmrRediscoveryTimeoutMs,
         intervalMs: 250,
-        check: async () => {
-          const log = (await readDevServerLog()).slice(cursor);
-          expectLogCount(
-            countLogMessage(log, hmrLogMessages.skip),
-            expected.skip
-          );
-          expectLogCount(
-            countLogMessage(log, hmrLogMessages.hot),
-            expected.hot
-          );
-          expectLogCount(
-            countLogMessage(log, hmrLogMessages.full),
-            expected.full
-          );
-        },
+        check: assertCounts,
       });
+      await waitForHmrQuiescence();
+      await assertCounts();
     };
 
     const pollUntil = async ({
@@ -550,7 +567,7 @@ export async function hmrPageWorkflow() {
             );
           },
         });
-        await expectHmrLogCounts(logCursor, { full: 1, skip: { max: 1 } });
+        await expectHmrLogCounts(logCursor, { full: 1 });
       }
     );
 
@@ -1194,11 +1211,14 @@ ${apiFileContent}`
         };
 
         let snapshot = await waitForGeneratedArtifactStability();
+        // readDevServerLogCursor() drains delayed setup events before opening
+        // each exact-count window. These cases require a skip and implicitly
+        // assert zero hot/full rebuilds.
         const cases = [
           {
             file: files.step,
             kind: 'none',
-            expectedLogCounts: { skip: 1 },
+            expectedLogCounts: { skip: { min: 1 } },
             expectedStepValue: (iteration: number) => `step-only-${iteration}`,
             source: (
               iteration: number
@@ -1214,7 +1234,7 @@ export async function hmrFuzzStep() {
           {
             file: files.stepHelper,
             kind: 'none',
-            expectedLogCounts: { skip: 1 },
+            expectedLogCounts: { skip: { min: 1 } },
             expectedStepValue: (iteration: number) =>
               `step-helper-only-${iteration}`,
             source: (
@@ -1310,10 +1330,22 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
           const logCursor = await readDevServerLogCursor();
           await fs.writeFile(testCase.file, testCase.source(iteration));
 
+          await expectHmrLogCounts(logCursor, testCase.expectedLogCounts);
+          snapshot = await waitForGeneratedArtifactStability();
+          if (testCase.kind === 'workflow') {
+            expect(snapshot.stepMtimeMs).toBe(previousSnapshot.stepMtimeMs);
+          } else if (testCase.kind !== 'none') {
+            expect(snapshot.stepMtimeMs).toBeGreaterThanOrEqual(
+              previousSnapshot.stepMtimeMs
+            );
+          }
+
           // Next canary can keep executing a stale workflow bundle after the
           // workflow hot-rebuild completed. Stable still covers execution
           // correctness; canary keeps covering classification/log/artifact
-          // behavior for these changes.
+          // behavior for these changes. Wait for the rebuild above before
+          // starting runs so a slow dev compiler does not turn polling into a
+          // burst of concurrent workflow executions.
           if (!(finalConfig.canary && testCase.kind === 'workflow')) {
             await expectWorkflowResult({
               description: `${testCase.kind} HMR update to affect workflow execution`,
@@ -1326,21 +1358,6 @@ export function hmrFuzzWorkflowHelper(value: HmrFuzzBox) {
                   ? testCase.expectedWorkflowValue(iteration)
                   : undefined,
             });
-          }
-
-          if (testCase.kind === 'none') {
-            await expectHmrLogCounts(logCursor, testCase.expectedLogCounts);
-            snapshot = await waitForGeneratedArtifactStability();
-            continue;
-          }
-
-          snapshot = await waitForGeneratedArtifactStability();
-          if (testCase.kind === 'workflow') {
-            expect(snapshot.stepMtimeMs).toBe(previousSnapshot.stepMtimeMs);
-          } else {
-            expect(snapshot.stepMtimeMs).toBeGreaterThanOrEqual(
-              previousSnapshot.stepMtimeMs
-            );
           }
           await expectHmrLogCounts(logCursor, testCase.expectedLogCounts);
         }
@@ -1519,7 +1536,6 @@ ${apiFileContent}`
           const fullCase = fullCases[index];
           const logCursor = await readDevServerLogCursor();
           await fullCase.write(index + 1);
-          await fullCase.assert(index + 1);
           await expectHmrLogCounts(
             logCursor,
             'expectedLogCounts' in fullCase
@@ -1527,6 +1543,7 @@ ${apiFileContent}`
               : { full: 1 }
           );
           snapshot = await waitForGeneratedArtifactStability();
+          await fullCase.assert(index + 1);
         }
 
         const unrelatedLogCursor = await readDevServerLogCursor();

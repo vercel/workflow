@@ -1,0 +1,45 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+
+export const WORKFLOW_BUNDLE_DIRECTORY = 'workflow-bundles';
+
+const WORKFLOW_BUNDLE_FILE_NAME_PATTERN = /^[a-f0-9]{64}\.mjs$/;
+
+const WORKFLOW_BUNDLE_REFERENCE =
+  /import\(\s*['"]\.\/workflow-bundles\/([a-f0-9]{64}\.mjs)['"]\s*\)/g;
+
+export function isWorkflowBundleFileName(fileName: string): boolean {
+  return WORKFLOW_BUNDLE_FILE_NAME_PATTERN.test(fileName);
+}
+
+export function workflowBundleFileName(code: string): string {
+  const hash = createHash('sha256').update(code).digest('hex');
+  return `${hash}.mjs`;
+}
+
+/** Content-addressed sidecars referenced by the generated flow route. */
+export function referencedWorkflowBundleFileNames(routeCode: string): string[] {
+  return [
+    ...new Set(
+      [...routeCode.matchAll(WORKFLOW_BUNDLE_REFERENCE)].map(
+        (match) => match[1]
+      )
+    ),
+  ].sort();
+}
+
+export function serializeWorkflowBundle(code: string): string {
+  // Keep inert VM source opaque to framework plugins. Nitro, for example,
+  // runs textual global/template transforms over every .mjs file and can
+  // otherwise rewrite JavaScript that only exists inside the exported string.
+  const encoded = Buffer.from(code, 'utf8').toString('base64');
+  return `export default ${JSON.stringify(encoded)};\n`;
+}
+
+export function deserializeWorkflowBundle(moduleCode: string): string {
+  const prefix = 'export default ';
+  assert(moduleCode.startsWith(prefix));
+  assert(moduleCode.endsWith(';\n'));
+  const encoded = JSON.parse(moduleCode.slice(prefix.length, -2)) as string;
+  return Buffer.from(encoded, 'base64').toString('utf8');
+}

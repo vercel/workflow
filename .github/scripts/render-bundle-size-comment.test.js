@@ -28,7 +28,7 @@ function report({ app = 'hono', metrics, fingerprint: fp } = {}) {
     metrics: metrics ?? [
       {
         id: 'flow-bundle',
-        label: 'Flow route bundle',
+        label: 'Cold replay bundle',
         tier: 1,
         gated: true,
         raw: 5_000_000,
@@ -221,7 +221,7 @@ test('the table is the only thing outside the accordion', async () => {
   });
   assert.match(
     md,
-    /^\| Framework \| Flow route \| Step reg\. \| Framework output \|$/m
+    /^\| Framework \| Cold replay \| Step reg\. \| Framework output \|$/m
   );
   // Exactly one header row, one delimiter, two data rows.
   const rows = md.split('\n').filter((line) => line.startsWith('|'));
