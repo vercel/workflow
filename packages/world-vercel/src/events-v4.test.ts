@@ -4,6 +4,7 @@ import {
   EntityConflictError,
   PreconditionFailedError,
   RunExpiredError,
+  StreamError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
@@ -264,6 +265,10 @@ describe('throwForErrorResponse', () => {
  * `config.dispatcher` is honored (it was silently ignored before).
  */
 describe('getWorkflowRunEventsV4 over HTTP', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('parses a frame stream fetched via a custom dispatcher', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
@@ -545,6 +550,62 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     });
   });
 
+  it('resumes a transport-failed full stream after its last complete event', async () => {
+    let pull = 0;
+    const firstFrame = encodeFrame(
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_1',
+        eventType: 'run_created',
+        createdAt: CREATED_AT,
+        eventData: {
+          deploymentId: 'dpl_1',
+          workflowName: 'workflow',
+          input: null,
+        },
+      },
+      new Uint8Array()
+    );
+    const streamFailure = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('HTTP/2: "stream timeout after 300"'), {
+        code: 'UND_ERR_INFO',
+      }),
+    });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (pull++ === 0) controller.enqueue(firstFrame);
+              else controller.error(streamFailure);
+            },
+          }),
+          { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          encodeFrame({ _end: 1, hasMore: false }, new Uint8Array()),
+          { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+        )
+      );
+
+    const result = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      {
+        token: 'test-token',
+        dispatcher: {},
+      }
+    );
+
+    expect(result.events.map((event) => event.eventId)).toEqual(['evnt_1']);
+    expect(result.cursor).toBe('eid:evnt_1');
+    expect(result.hasMore).toBe(false);
+    const secondUrl = String(vi.mocked(globalThis.fetch).mock.calls[1]?.[0]);
+    expect(secondUrl).toContain('cursor=eid%3Aevnt_1');
+  });
+
   it('resumes a truncated full stream after its last complete event', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
@@ -779,6 +840,10 @@ describe('getEventsByCorrelationIdV4 over HTTP', () => {
  * value or hanging — the trailing frame below is never read.
  */
 describe('getEventV4 over HTTP', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('reports a terminal payload-missing frame as a corrupted event log', async () => {
     const origin =
       WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
@@ -811,6 +876,31 @@ describe('getEventV4 over HTTP', () => {
       })
     ).rejects.toSatisfy(CorruptedEventLogError.is);
     agent.assertNoPendingInterceptors();
+  });
+
+  it('unwraps a post-header transport failure from an incomplete single-event frame', async () => {
+    const transportFailure = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('HTTP/2: "stream timeout after 300"'), {
+        code: 'UND_ERR_INFO',
+      }),
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(transportFailure);
+          },
+        }),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      )
+    );
+
+    await expect(
+      getEventV4('wrun_1', 'evnt_1', 'resolve', {
+        token: 'test-token',
+        dispatcher: {},
+      })
+    ).rejects.toSatisfy(StreamError.is);
   });
 
   it('returns the first frame and stops reading the rest', async () => {
@@ -957,6 +1047,35 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     } finally {
       fetchSpy.mockRestore();
     }
+  });
+
+  it('preserves a post-header StreamError while reading a materialized response', async () => {
+    const transportFailure = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('HTTP/2: "stream timeout after 300"'), {
+        code: 'UND_ERR_INFO',
+      }),
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(transportFailure);
+          },
+        })
+      )
+    );
+
+    await expect(
+      createWorkflowRunEventV4(
+        {
+          runId: 'wrun_1',
+          eventType: 'step_completed',
+          specVersion: 2,
+          correlationId: 'step_1',
+        },
+        { token: 'test-token', dispatcher: {} }
+      )
+    ).rejects.toSatisfy(StreamError.is);
   });
 
   it('POSTs to the /events/:eventType alias and decodes the response', async () => {
@@ -1942,7 +2061,7 @@ describe('v4 transport reports failures to the events recycler', () => {
       }),
     });
 
-  it('rebuilds the shared pool after repeated stream timeouts', async () => {
+  it('rebuilds the shared pool after repeated pre-header stream timeouts', async () => {
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(wedgedSessionError());
 
     // No `dispatcher` in the config: the request must resolve the shared one,
@@ -1952,11 +2071,86 @@ describe('v4 transport reports failures to the events recycler', () => {
     for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
       await expect(
         getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
-      ).rejects.toThrow();
+      ).rejects.toSatisfy(StreamError.is);
       // Still the same pool until the threshold is reached.
       if (i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1) {
         expect(getEventsDispatcher({ token: 'test-token' })).toBe(before);
       }
+    }
+
+    expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
+  });
+
+  it('resets the failure streak when a complete HTTP error response arrives', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockRejectedValueOnce(wedgedSessionError());
+    fetchSpy.mockRejectedValueOnce(wedgedSessionError());
+    fetchSpy.mockResolvedValueOnce(new Response('', { status: 404 }));
+    fetchSpy.mockRejectedValueOnce(wedgedSessionError());
+
+    const before = getEventsDispatcher({ token: 'test-token' });
+    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1; i++) {
+      await expect(
+        getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
+      ).rejects.toSatisfy(StreamError.is);
+    }
+    await expect(
+      getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
+    ).rejects.toMatchObject({ status: 404 });
+    await expect(
+      getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
+    ).rejects.toSatisfy(StreamError.is);
+
+    expect(getEventsDispatcher({ token: 'test-token' })).toBe(before);
+  });
+
+  it('counts a non-2xx response body timeout as a transport failure', async () => {
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 20_000);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockRejectedValueOnce(wedgedSessionError());
+    fetchSpy.mockRejectedValueOnce(wedgedSessionError());
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(wedgedSessionError());
+          },
+        }),
+        { status: 500 }
+      )
+    );
+
+    const before = getEventsDispatcher({ token: 'test-token' });
+    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
+      await expect(
+        getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
+      ).rejects.toSatisfy(StreamError.is);
+    }
+
+    expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
+  });
+
+  it('classifies post-header stream timeouts and rebuilds the shared pool', async () => {
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 40_000);
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.error(wedgedSessionError());
+        },
+      });
+      return new Response(body, {
+        status: 200,
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+    });
+
+    const before = getEventsDispatcher({ token: 'test-token' });
+    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
+      await expect(
+        getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
+      ).rejects.toSatisfy(StreamError.is);
     }
 
     expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);

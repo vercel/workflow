@@ -1,4 +1,4 @@
-import { StreamExpiredError } from '@workflow/errors';
+import { StreamError, StreamExpiredError } from '@workflow/errors';
 import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -660,8 +660,11 @@ describe('createReconnectingFramedStream', () => {
     setWorld(world);
 
     const stream = createReconnectingFramedStream(RUN_ID, 's', 0);
-    await expect(readAll(stream)).rejects.toThrow(
-      /exceeded maximum reconnection attempts/
+    const error = await readAll(stream).catch((cause: unknown) => cause);
+    expect(StreamError.is(error)).toBe(true);
+    expect(error).toHaveProperty(
+      'message',
+      expect.stringMatching(/exceeded maximum reconnection attempts/)
     );
     // Initial connect + one connect per allowed reconnect; the following
     // reconnect throws before opening another stream.

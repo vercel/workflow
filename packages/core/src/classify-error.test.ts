@@ -5,6 +5,7 @@ import {
   ReplayDivergenceError,
   RUN_ERROR_CODES,
   RuntimeDecryptionError,
+  StreamError,
   ThrottleError,
   TooEarlyError,
   WorkflowDeploymentMismatchError,
@@ -153,6 +154,12 @@ describe('classifyRunError', () => {
     ).toBe(RUN_ERROR_CODES.WORLD_CONTRACT_ERROR);
   });
 
+  it('classifies StreamError as STREAM_ERROR', () => {
+    expect(classifyRunError(new StreamError('stream write failed'))).toBe(
+      RUN_ERROR_CODES.STREAM_ERROR
+    );
+  });
+
   it('classifies a TRANSPORT error as WORLD_CONTRACT_ERROR (backend fault, not USER_ERROR)', () => {
     // Transport blips are normally redelivered via the queue (see
     // isRetryableWorldError); if one ever reaches terminal classification it is
@@ -192,6 +199,22 @@ describe('isRetryableWorldError', () => {
         new WorkflowWorldError('Service Unavailable', { status: 503 })
       )
     ).toBe(true);
+  });
+
+  it('retries transport and server-side StreamErrors, but not terminal 4xx responses', () => {
+    expect(isRetryableWorldError(new StreamError('stream read failed'))).toBe(
+      true
+    );
+    expect(
+      isRetryableWorldError(
+        new StreamError('stream service failed', { status: 503 })
+      )
+    ).toBe(true);
+    expect(
+      isRetryableWorldError(
+        new StreamError('stream request was invalid', { status: 400 })
+      )
+    ).toBe(false);
   });
 
   it('treats TRANSPORT and TIMEOUT codes as retryable', () => {

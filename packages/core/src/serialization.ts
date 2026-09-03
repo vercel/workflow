@@ -1,6 +1,7 @@
 import {
   RuntimeDecryptionError,
   SerializationError,
+  StreamError,
   StreamExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
@@ -1017,12 +1018,12 @@ export function createReconnectingFramedStream(
       reconnectCount++;
       totalReconnectCount++;
       if (reconnectCount > maxReconnects) {
-        throw new Error(
+        throw new StreamError(
           `Stream "${name}" exceeded maximum reconnection attempts (${maxReconnects})`
         );
       }
       if (totalReconnectCount > maxTotalReconnects) {
-        throw new Error(
+        throw new StreamError(
           `Stream "${name}" exceeded maximum total reconnection attempts (${maxTotalReconnects})`
         );
       }
