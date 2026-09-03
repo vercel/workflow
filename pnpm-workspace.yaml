@@ -26,6 +26,12 @@ catalog:
   vitest: ^4.1.10
   zod: ~4.3.6
 
+catalogs:
+  ai-sdk-v7:
+    "@ai-sdk/react": 4.0.88
+    "@ai-sdk/workflow": 2.0.15
+    ai: 7.0.85
+
 overrides:
   # `@vercel/queue` accepts any `@vercel/oidc` in the 3.x line, and 3.3+ pulls in
   # `@vercel/cli-config`, whose `xdg-app-paths` dependency instantiates itself at

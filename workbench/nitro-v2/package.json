@@ -13,14 +13,15 @@
     "start": "node .output/server/index.mjs"
   },
   "devDependencies": {
-    "@workflow/world-postgres": "workspace:*",
+    "@ai-sdk/workflow": "catalog:ai-sdk-v7",
     "@types/node": "catalog:",
-    "workflow": "workspace:*",
-    "ai": "catalog:",
+    "@workflow/world-postgres": "workspace:*",
+    "ai": "catalog:ai-sdk-v7",
     "h3": "^1.15.5",
     "lodash.chunk": "^4.2.0",
     "nitropack": "^2.13.4",
     "openai": "^6.6.0",
+    "workflow": "workspace:*",
     "zod": "catalog:"
   }
 }

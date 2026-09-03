@@ -1,11 +1,8 @@
-import { DurableAgent } from '@workflow/ai/agent';
-import {
-  convertToModelMessages,
-  type UIMessage,
-  type UIMessageChunk,
-} from 'ai';
+import { type ModelCallStreamPart, WorkflowAgent } from '@ai-sdk/workflow';
+import { convertToModelMessages, tool, type UIMessage } from 'ai';
 import { getWritable } from 'workflow';
 import z from 'zod/v4';
+import { DEFAULT_AI_MODEL } from '@/lib/ai-models';
 
 // ============================================================================
 // Tool step functions
@@ -69,7 +66,7 @@ export async function chat(messages: UIMessage[], model?: string) {
 
   const modelMessages = await convertToModelMessages(messages);
 
-  const selectedModel = model || 'anthropic/claude-sonnet-4-20250514';
+  const selectedModel = model || DEFAULT_AI_MODEL;
 
   // Enable reasoning for models that support it
   const isAnthropic = selectedModel.includes('anthropic/');
@@ -82,21 +79,21 @@ export async function chat(messages: UIMessage[], model?: string) {
     ...(isOpenAI ? { openai: { reasoningEffort: 'medium' } } : {}),
   };
 
-  const agent = new DurableAgent({
+  const agent = new WorkflowAgent({
     model: selectedModel,
     providerOptions,
     instructions:
       'You are a helpful assistant with access to weather and calculator tools. Use them when the user asks about weather in a city or needs math calculations. Keep responses concise.',
     tools: {
-      getWeather: {
+      getWeather: tool({
         description:
           'Get the current weather for a city. Returns temperature in Fahrenheit and conditions.',
         inputSchema: z.object({
           city: z.string().describe('The city name to get weather for'),
         }),
         execute: getWeather,
-      },
-      calculate: {
+      }),
+      calculate: tool({
         description:
           'Evaluate a simple math expression. Supports +, -, *, /, and parentheses.',
         inputSchema: z.object({
@@ -105,18 +102,18 @@ export async function chat(messages: UIMessage[], model?: string) {
             .describe('The math expression to evaluate, e.g. "2 + 3 * 4"'),
         }),
         execute: calculate,
-      },
+      }),
     },
-    onStepFinish: async (stepResult) => {
-      console.log('[agent_chat] onStepFinish:', {
+    onStepEnd: async (stepResult) => {
+      console.log('[agent_chat] onStepEnd:', {
         finishReason: stepResult.finishReason,
         text: stepResult.text?.slice(0, 100),
         toolCalls: stepResult.toolCalls?.length ?? 0,
         toolResults: stepResult.toolResults?.length ?? 0,
       });
     },
-    onFinish: async (event) => {
-      console.log('[agent_chat] onFinish:', {
+    onEnd: async (event) => {
+      console.log('[agent_chat] onEnd:', {
         finishReason: event.finishReason,
         text: event.text?.slice(0, 100),
         totalSteps: event.steps.length,
@@ -127,7 +124,7 @@ export async function chat(messages: UIMessage[], model?: string) {
 
   const result = await agent.stream({
     messages: modelMessages,
-    writable: getWritable<UIMessageChunk>(),
+    writable: getWritable<ModelCallStreamPart>(),
   });
 
   return { messages: result.messages };

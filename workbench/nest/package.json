@@ -18,19 +18,19 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
+    "@ai-sdk/workflow": "catalog:ai-sdk-v7",
     "@nestjs/common": "^11.1.27",
     "@nestjs/core": "^11.1.27",
     "@nestjs/platform-express": "^11.1.27",
     "@workflow/nest": "workspace:*",
     "@workflow/world-postgres": "workspace:*",
-    "ai": "catalog:",
+    "ai": "catalog:ai-sdk-v7",
     "express": "^5.2.1",
     "lodash.chunk": "^4.2.0",
     "openai": "^6.1.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "workflow": "workspace:*",
-    "@workflow/ai": "workspace:*"
+    "workflow": "workspace:*"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.23",
