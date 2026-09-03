@@ -5,7 +5,7 @@ test driver and assertions remain in `packages/core/e2e/e2e.test.ts`; this
 workbench supplies equivalent Python fixtures and exposes them through the same
 manifest and workflow protocols as the JavaScript workbenches.
 
-`vercel-workflow` is sourced from the
+`vercel-workflow` and its in-repository `vercel-*` dependencies are sourced from the
 [`fantix/workflow-compression-write`](https://github.com/vercel/vercel-py/pull/372)
 branch of vercel-py while its spec-version-5 payload writer is under review.
 `uv.lock` records the exact commit used by local development, CI, and Vercel
