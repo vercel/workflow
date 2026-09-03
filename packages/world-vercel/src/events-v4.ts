@@ -876,6 +876,7 @@ async function decodeCreateEventResponse<T extends EventType>(
   try {
     bodyBytes = new Uint8Array(await response.arrayBuffer());
   } catch (cause) {
+    if (StreamError.is(cause)) throw cause;
     throw new WorkflowWorldError(
       'v4 createEvent: failed to read response body',
       { code: 'TRANSPORT', cause }

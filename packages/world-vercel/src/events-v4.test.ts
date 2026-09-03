@@ -595,6 +595,7 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
       {},
       {
         token: 'test-token',
+        dispatcher: {},
       }
     );
 
@@ -895,7 +896,10 @@ describe('getEventV4 over HTTP', () => {
     );
 
     await expect(
-      getEventV4('wrun_1', 'evnt_1', 'resolve', { token: 'test-token' })
+      getEventV4('wrun_1', 'evnt_1', 'resolve', {
+        token: 'test-token',
+        dispatcher: {},
+      })
     ).rejects.toSatisfy(StreamError.is);
   });
 
@@ -1043,6 +1047,35 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
     } finally {
       fetchSpy.mockRestore();
     }
+  });
+
+  it('preserves a post-header StreamError while reading a materialized response', async () => {
+    const transportFailure = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('HTTP/2: "stream timeout after 300"'), {
+        code: 'UND_ERR_INFO',
+      }),
+    });
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(transportFailure);
+          },
+        })
+      )
+    );
+
+    await expect(
+      createWorkflowRunEventV4(
+        {
+          runId: 'wrun_1',
+          eventType: 'step_completed',
+          specVersion: 2,
+          correlationId: 'step_1',
+        },
+        { token: 'test-token', dispatcher: {} }
+      )
+    ).rejects.toSatisfy(StreamError.is);
   });
 
   it('POSTs to the /events/:eventType alias and decodes the response', async () => {
