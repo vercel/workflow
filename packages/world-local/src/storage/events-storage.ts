@@ -1769,6 +1769,12 @@ export function createEventsStorage(
                 updatedAt: now,
                 attributes: currentRun.attributes,
                 encryptionPublicKey: currentRun.encryptionPublicKey,
+                // Carried through every transition for the same reason the
+                // public key is: these rebuild the record field by field, so
+                // anything not named here is dropped the first time the run
+                // changes status — and a dynamic run that loses its code can
+                // never be replayed.
+                dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
               }
             );
           }
@@ -1797,6 +1803,12 @@ export function createEventsStorage(
                 updatedAt: now,
                 attributes: currentRun.attributes,
                 encryptionPublicKey: currentRun.encryptionPublicKey,
+                // Carried through every transition for the same reason the
+                // public key is: these rebuild the record field by field, so
+                // anything not named here is dropped the first time the run
+                // changes status — and a dynamic run that loses its code can
+                // never be replayed.
+                dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
               }
             );
             await Promise.all([
@@ -1836,6 +1848,12 @@ export function createEventsStorage(
                 updatedAt: now,
                 attributes: currentRun.attributes,
                 encryptionPublicKey: currentRun.encryptionPublicKey,
+                // Carried through every transition for the same reason the
+                // public key is: these rebuild the record field by field, so
+                // anything not named here is dropped the first time the run
+                // changes status — and a dynamic run that loses its code can
+                // never be replayed.
+                dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
               }
             );
             await Promise.all([
@@ -1867,6 +1885,12 @@ export function createEventsStorage(
                 updatedAt: now,
                 attributes: currentRun.attributes,
                 encryptionPublicKey: currentRun.encryptionPublicKey,
+                // Carried through every transition for the same reason the
+                // public key is: these rebuild the record field by field, so
+                // anything not named here is dropped the first time the run
+                // changes status — and a dynamic run that loses its code can
+                // never be replayed.
+                dynamicWorkflowCode: currentRun.dynamicWorkflowCode,
               }
             );
             await Promise.all([

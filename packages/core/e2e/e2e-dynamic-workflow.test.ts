@@ -211,20 +211,10 @@ async function workflow() {
     }
   });
 
-  // KNOWN GAP — do not enable without fixing the underlying behavior first.
-  //
-  // A dynamic run that suspends does not come back on `world-local`: this test
-  // timed out at 120s (twice, with the retry) waiting on `returnValue`, while
-  // every non-suspending dynamic test in this file passed on the same world.
-  // So dynamic execution works and something about the *resume* delivery does
-  // not, which is exactly the case this test exists to cover — it is left in
-  // place, skipped, rather than deleted, because the coverage is the point.
-  //
-  // Not yet root-caused. The resume delivery has no in-memory copy of the code
-  // and no `runInput` on the message, so it takes the read-back path
-  // (`resolveWorkflowCodeForRun`'s second source) that no passing test here
-  // exercises. Worth ruling in or out before this ships beyond experiment.
-  it.skip('replays across a suspension, reading its code back on each delivery', async () => {
+  // This is the test that caught world-local dropping the stored code on a
+  // run's first status transition: it was the only dynamic test here that
+  // needed the read-back path, and it hung until that was fixed.
+  it('replays across a suspension, reading its code back on each delivery', async () => {
     // A sleep forces the run out of the invocation that started it, so the
     // delivery that resumes it has to resolve the stored code again — with no
     // in-memory copy and, on the turbo path, no run read it would otherwise
