@@ -38,7 +38,8 @@ export default class Inspect extends BaseCommand {
 
   static examples = [
     '$ workflow inspect runs',
-    '$ workflow inspect runs',
+    '$ workflow inspect attributes',
+    '$ workflow inspect runs --attribute tenant=acme --status failed',
     '$ workflow inspect events --step=step_01K5WAJZ8W367CV2RFKDSDNWB8',
     '$ workflow inspect hooks',
     '$ workflow inspect hook hook_01K5WAJZ8W367CV2RFKDSDNWB8',
@@ -136,7 +137,7 @@ export default class Inspect extends BaseCommand {
       helpValue: 'KEY=VALUE',
     }),
     workflowName: Flags.string({
-      description: 'workflow name to filter by (only for runs)',
+      description: 'workflow name to filter by (runs and attributes)',
       required: false,
       char: 'n',
       aliases: ['workflow'],
@@ -152,7 +153,7 @@ export default class Inspect extends BaseCommand {
     }),
     since: Flags.string({
       description:
-        'list runs active since a relative duration (30m, 12h, 7d, 2w) or timestamp; defaults to the backend window (only for runs)',
+        'list items active since a relative duration (30m, 12h, 7d, 2w) or timestamp; defaults to the backend window (runs and attributes)',
       required: false,
       helpGroup: 'Filtering',
       helpLabel: '--since',
@@ -160,7 +161,7 @@ export default class Inspect extends BaseCommand {
     }),
     until: Flags.string({
       description:
-        'end of the --since listing window, as a relative duration or timestamp; defaults to now (only for runs)',
+        'end of the --since listing window, as a relative duration or timestamp; defaults to now (runs and attributes)',
       required: false,
       helpGroup: 'Filtering',
       helpLabel: '--until',
@@ -215,10 +216,23 @@ export default class Inspect extends BaseCommand {
           resource,
           id !== undefined,
           Boolean(flags.attribute?.length),
-          Boolean(flags.url) || Boolean(flags.web) || resource === 'web'
+          Boolean(flags.url) || Boolean(flags.web) || resource === 'web',
+          Boolean(flags.withData)
         );
       if (flagError) {
         this.logError(flagError);
+        process.exitCode = 1;
+        return;
+      }
+
+      // Parsed here rather than inside `toInspectOptions`, which runs after
+      // `setupCliWorld`: a malformed pair used to cost a full auth and
+      // project lookup before failing.
+      let attributes: Record<string, string> | undefined;
+      try {
+        attributes = parseAttributeFilters(flags.attribute);
+      } catch (error) {
+        this.logError(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
         return;
       }
@@ -249,7 +263,7 @@ export default class Inspect extends BaseCommand {
       }
 
       // Convert flags to InspectCLIOptions with proper typing
-      const options = toInspectOptions(flags);
+      const options = toInspectOptions(flags, attributes);
 
       if (resource === 'run') {
         if (id) {
@@ -344,7 +358,10 @@ export default class Inspect extends BaseCommand {
   }
 }
 
-function toInspectOptions(flags: any): InspectCLIOptions {
+function toInspectOptions(
+  flags: any,
+  attributes: Record<string, string> | undefined
+): InspectCLIOptions {
   return {
     json: flags.json,
     runId: flags.runId,
@@ -353,7 +370,7 @@ function toInspectOptions(flags: any): InspectCLIOptions {
     sort: flags.sort as 'asc' | 'desc' | undefined,
     limit: flags.limit,
     workflowName: flags.workflowName,
-    attributes: parseAttributeFilters(flags.attribute),
+    attributes,
     status: flags.status
       ? WorkflowRunStatusSchema.parse(flags.status)
       : undefined,

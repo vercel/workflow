@@ -6,20 +6,25 @@ import {
 } from './flag-bounds.js';
 
 describe('validateInspectLimit', () => {
-  it.each([1, 20, 100, 1000])('accepts %s', (limit) => {
+  it.each([1, 20, 100])('accepts %s', (limit) => {
     expect(validateInspectLimit(limit)).toBeUndefined();
   });
 
+  // 101-1000 used to be accepted here and rejected by the backend as an
+  // opaque 400: the cross-run listings cap at 100, as does the storage step
+  // listing a run-scoped read can fall back to.
   it.each([
     0,
     -1,
+    101,
+    500,
     1001,
     1.5,
     Number.NaN,
     Number.POSITIVE_INFINITY,
   ])('rejects %s and names the flag', (limit) => {
     expect(validateInspectLimit(limit)).toBe(
-      '--limit must be an integer between 1 and 1000.'
+      '--limit must be an integer between 1 and 100.'
     );
   });
 });
@@ -58,7 +63,9 @@ describe('validateAttributeScope', () => {
     expect(validateAttributeScope('run', false, true)).toBeUndefined();
   });
 
-  // Every one of these parsed the flag and ignored it before.
+  // Every one of these parsed the flag and ignored it before. `web` is not
+  // listed: the command always passes `opensWebUi` for it, so it is rejected
+  // by that arm instead and this one is unreachable for that value.
   it.each([
     'step',
     'event',
@@ -66,7 +73,6 @@ describe('validateAttributeScope', () => {
     'sleep',
     'stream',
     'attribute',
-    'web',
   ])('rejects it on %s', (resource) => {
     expect(validateAttributeScope(resource, false, true)).toContain(
       '--attribute filters run listings only'

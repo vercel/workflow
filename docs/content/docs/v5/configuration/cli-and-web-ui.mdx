@@ -130,7 +130,7 @@ per flag.
 
 - Command: `workflow inspect`
 - Default: `20`
-- Must be an integer between 1 and 1000. Individual listings cap lower than that — a cross-run listing allows fewer rows than one scoped to a single run — and report the limit they accept when you exceed it.
+- Must be an integer between 1 and 100, the smallest page any inspect listing accepts. Larger pages are reachable by paging: pass `--cursor`, or `--interactive` to walk them.
 
 ### `--stepId` / `-s`
 
@@ -150,7 +150,7 @@ per flag.
 - Default: unset
 - Filters runs to those whose [attributes](/docs/observability/attributes) match every `key=value` pair given. Repeatable up to 8 times, and splits on the first `=` so a value may contain one.
 - Requires a backend with the analytics read path; ignored with a warning otherwise.
-- Cannot be combined with `--url` or `--web`: the dashboard takes no attribute filter.
+- Cannot be combined with `--url` or `--web`, which hand off to the dashboard, or with `--withData`, which reads payloads from storage. Storage carries no attribute index.
 - Use `workflow inspect attributes` to discover which keys exist.
 
 ### `--since` / `--until`

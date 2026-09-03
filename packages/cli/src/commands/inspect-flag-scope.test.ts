@@ -30,10 +30,14 @@ const runInspect = async (argv: string[]): Promise<string> => {
   );
   const messages: string[] = [];
   const logError = vi
-    // biome-ignore lint/suspicious/noExplicitAny: reaching a protected member
-    .spyOn(Inspect.prototype as any, 'logError')
-    .mockImplementation((message: unknown) => {
-      messages.push(String(message));
+    // `logError` is protected; the cast reaches it without widening the
+    // public surface.
+    .spyOn(
+      Inspect.prototype as unknown as Record<string, (message: string) => void>,
+      'logError'
+    )
+    .mockImplementation((message: string) => {
+      messages.push(message);
     });
   const exit = vi
     .spyOn(process, 'exit')
@@ -122,5 +126,55 @@ describe('inspect --attribute cannot reach the web UI', () => {
       '--url',
     ]);
     expect(message).toContain('cannot be forwarded to the web UI');
+  });
+});
+
+describe('inspect --attribute conflicts and syntax', () => {
+  it('rejects --attribute with --withData', async () => {
+    const message = await runInspect([
+      'runs',
+      '--attribute',
+      'tenant=acme',
+      '--withData',
+    ]);
+    expect(message).toContain('cannot be combined with --withData');
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+
+  // Previously parsed inside toInspectOptions, after setupCliWorld, so a
+  // syntax error cost a full auth and project lookup first.
+  it.each([
+    ['a missing separator', ['runs', '--attribute', 'tenant']],
+    ['an empty key', ['runs', '--attribute', '=acme']],
+  ])('rejects %s before backend setup', async (_label, argv) => {
+    const message = await runInspect(argv);
+    expect(message).toContain('--attribute must be key=value');
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+
+  it('rejects more than the allowed pairs before backend setup', async () => {
+    const argv = ['runs'];
+    for (let i = 0; i < 9; i += 1) argv.push('--attribute', `k${i}=v`);
+    const message = await runInspect(argv);
+    expect(message).toContain('--attribute may be given at most 8 times');
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+
+  it('rejects a duplicate key before backend setup', async () => {
+    const message = await runInspect([
+      'runs',
+      '--attribute',
+      'tenant=a',
+      '--attribute',
+      'tenant=b',
+    ]);
+    expect(message).toContain('was given more than once');
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
+  });
+
+  it('rejects a limit above the smallest listing cap', async () => {
+    const message = await runInspect(['runs', '--limit', '500']);
+    expect(message).toContain('--limit must be an integer between 1 and 100');
+    expect(state.setupCliWorld).not.toHaveBeenCalled();
   });
 });

@@ -2,10 +2,12 @@
  * Cap on `--attribute` flags, mirroring the bound the backend applies to an
  * attribute prefilter.
  *
- * Declared here rather than imported so this command does not depend on
- * `@workflow/world` exporting it. The World and the backend enforce the same
- * bound independently; this copy exists only so the error can name the flag
- * the user typed instead of the parameter it becomes.
+ * `@workflow/world` exports the same value as
+ * `ANALYTICS_MAX_ATTRIBUTE_FILTERS` and `@workflow/world-vercel` asserts it,
+ * so this copy is not the authority. It exists only so the error can name
+ * the flag the user typed rather than the parameter it becomes, and is kept
+ * local so the command does not fail to build against a World that predates
+ * that export.
  */
 const MAX_ATTRIBUTE_FLAGS = 8;
 

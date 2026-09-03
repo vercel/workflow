@@ -1456,21 +1456,39 @@ export const listSleeps = async (
     logger.warn('`withData` flag is ignored when listing sleeps');
   }
 
-  // Prefer the analytics read path for wait/sleep listing when available,
-  // and degrade to the event log the way the runs, steps, and events listings
-  // do. Before this, an analytics failure ended the command and the storage
-  // path below was unreachable on any backend that provides analytics.
+  // Prefer the analytics read path, and degrade to the event log when it is
+  // merely unavailable. The sibling listings do not degrade — they choose a
+  // path up front and route failures to `handleApiError` — but sleeps is the
+  // only one whose fallback reconstructs the same answer from events, so
+  // there is something to degrade *to* here.
   //
-  // An invalid argument is not degraded: the same argument would be rejected
-  // by either path, so retrying against storage would only replace a precise
-  // message with a slower failure.
+  // Two classes are reported rather than degraded, because retrying against
+  // storage would replace an actionable message with a silent one:
+  //
+  //   - an invalid argument, which either path rejects identically;
+  //   - a plan or access failure, whose message tells the caller what to do
+  //     (upgrade Observability Plus, or fix project access).
+  //
+  // Only the first page may degrade. `--interactive` prints each page as it
+  // arrives, so failing on page two and restarting from the event log would
+  // reprint the listing under a partial table.
   if (world.analytics) {
     try {
       await listSleepsViaAnalytics(world.analytics, opts);
       return;
     } catch (error) {
+      // Called once: it logs as a side effect when it recognises the error.
+      if (checkAndHandleVercelAccessError(error, opts.backend)) {
+        process.exitCode = 1;
+        return;
+      }
       if (isInvalidArgumentError(error)) {
         logger.error(errorMessage(error));
+        process.exitCode = 1;
+        return;
+      }
+      if (isObservabilityUpgradeRequiredError(error)) {
+        logger.error(getObservabilityUpgradeRequiredMessage());
         process.exitCode = 1;
         return;
       }

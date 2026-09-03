@@ -1,13 +1,17 @@
 /**
  * Upper bound on `--limit`.
  *
- * The per-endpoint caps are lower and differ by resource — a run listing
- * allows fewer rows than a run-scoped one — and the World enforces those.
- * This bound exists to catch the flag-level mistakes, a typo'd digit or a
- * negative, with an error that names `--limit` rather than the parameter it
- * becomes.
+ * 100 is the smallest cap any listing this flag reaches will accept: the
+ * cross-run analytics listings cap there, and so does the storage step
+ * listing that a run-scoped read falls back to. Allowing more meant
+ * `--limit 500` succeeded on some resources and returned an opaque backend
+ * 400 on others — and on the same resource it depended on whether analytics
+ * had rows for that run.
+ *
+ * Larger pages are still reachable by paging: the listings follow cursors,
+ * and `--interactive` walks them.
  */
-const MAX_LIMIT = 1000;
+const MAX_LIMIT = 100;
 
 /** `wrun_` plus a 26-character Crockford-Base32 ULID. */
 const RUN_ID_PATTERN =
@@ -28,8 +32,9 @@ export function validateInspectLimit(limit: number): string | undefined {
  * Validate `--runId`. Returns an error message, or `undefined` when the value
  * is a well-formed run id.
  *
- * Checked here so a mistyped id names the flag and costs no round trip. The
- * World validates the same shape, and remains the authority.
+ * Checked here so a mistyped id names the flag and costs no round trip.
+ * `@workflow/world-vercel` validates the same shape and remains the
+ * authority.
  */
 export function validateInspectRunId(runId: string): string | undefined {
   if (!RUN_ID_PATTERN.test(runId)) {
@@ -55,9 +60,17 @@ export function validateAttributeScope(
   resource: string,
   hasId: boolean,
   hasAttribute: boolean,
-  opensWebUi = false
+  opensWebUi = false,
+  withData = false
 ): string | undefined {
   if (!hasAttribute) return undefined;
+  // --withData reads payloads, which only storage carries, and storage has
+  // no attribute index. Warning and returning every row was the failure this
+  // guard exists to prevent, and unlike a backend without analytics it is a
+  // conflict between two flags the caller passed.
+  if (withData) {
+    return '--attribute cannot be combined with --withData, which reads payloads from storage; drop one.';
+  }
   // --url and --web hand off to the dashboard, which takes no attribute
   // filter, and both return before the filter is parsed — so the flag was
   // accepted, never validated, and the view opened unfiltered.
