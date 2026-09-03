@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import { Config } from '@oclif/core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -21,7 +22,12 @@ const { default: Inspect } = await import('./inspect.js');
  * instead deadlocks vitest's reporter — hence spying on the command.
  */
 const runInspect = async (argv: string[]): Promise<string> => {
-  const config = await Config.load(new URL('../..', import.meta.url).pathname);
+  // `fileURLToPath`, not `.pathname`: on Windows the latter yields
+  // `/D:/a/...` — a leading slash before the drive letter — which
+  // `Config.load` cannot resolve, so it reports a missing package.json.
+  const config = await Config.load(
+    fileURLToPath(new URL('../..', import.meta.url))
+  );
   const messages: string[] = [];
   const logError = vi
     // biome-ignore lint/suspicious/noExplicitAny: reaching a protected member
