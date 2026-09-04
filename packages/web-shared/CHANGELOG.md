@@ -1,5 +1,34 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.48
+
+### Patch Changes
+
+- [#3850](https://github.com/vercel/workflow/pull/3850) [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add a catchable `StreamError` and classify Workflow stream infrastructure failures as `STREAM_ERROR` instead of `USER_ERROR`.
+
+- Updated dependencies [[`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762), [`564ad39`](https://github.com/vercel/workflow/commit/564ad3966c5d16d73fd6fd88acdf01e6f92843aa), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`4a18b01`](https://github.com/vercel/workflow/commit/4a18b0133aaedaf922b903818c6b0db3adc91beb), [`3c08778`](https://github.com/vercel/workflow/commit/3c0877890500257fb19e9575d57399ec4bb159c9), [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491), [`31dabce`](https://github.com/vercel/workflow/commit/31dabce0c87fa48af210362061324ff0369e094f), [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15)]:
+  - @workflow/world@5.0.0-beta.33
+  - @workflow/core@5.0.0-beta.48
+
+## 5.0.0-beta.47
+
+### Patch Changes
+
+- [#3849](https://github.com/vercel/workflow/pull/3849) [`855e479`](https://github.com/vercel/workflow/commit/855e47990c0da35419325da27976bae925afb0e9) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Mark the second of two attribute writes under one id as read past, matching what the runtime does with it, and stop treating a run's step-written attribute events as repeats of each other.
+
+- [#3906](https://github.com/vercel/workflow/pull/3906) [`4f6cc69`](https://github.com/vercel/workflow/commit/4f6cc69eb127fa1340f48943799b83de44a394c0) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Prevent event payload flicker during decryption.
+
+- [#3825](https://github.com/vercel/workflow/pull/3825) [`36944cd`](https://github.com/vercel/workflow/commit/36944cdcad824f3628c29ecc056f3b9d1293cb05) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Allow trace callers to add product-specific attributes to event-derived step spans.
+
+- [#3806](https://github.com/vercel/workflow/pull/3806) [`695a1b7`](https://github.com/vercel/workflow/commit/695a1b76d0e14b1093f93757232efa5c2818d0da) Thanks [@mitul-s](https://github.com/mitul-s)! - Render Headers, URLSearchParams, and other iterables in the data inspector. Map-like values use `entries()`; other iterables render as lists.
+
+- [#3872](https://github.com/vercel/workflow/pull/3872) [`4d5852b`](https://github.com/vercel/workflow/commit/4d5852b901951b8cac3948e5478e8922dc60a8ce) Thanks [@mitul-s](https://github.com/mitul-s)! - Keep the trace viewer Alt+hover delta overlay working after a span click by stopping Chrome from stealing Alt.
+
+- Updated dependencies [[`855e479`](https://github.com/vercel/workflow/commit/855e47990c0da35419325da27976bae925afb0e9), [`2668e33`](https://github.com/vercel/workflow/commit/2668e3325ba89dec973c3c2f35c49efdb239de8d), [`07ec212`](https://github.com/vercel/workflow/commit/07ec212fe762e0659d4528913716c59870fd6c7d), [`ee6f917`](https://github.com/vercel/workflow/commit/ee6f917cdbfcf50a5fd697c7a9cb70dd1294f931), [`e9d5c56`](https://github.com/vercel/workflow/commit/e9d5c56701821b090108a85b74bf8b0cbef8ea8e), [`ffc5807`](https://github.com/vercel/workflow/commit/ffc58078d0c3cd2786d69bab7e41614566a9ea4e), [`1c28eec`](https://github.com/vercel/workflow/commit/1c28eeca159f022c73912326baf78d69152db876)]:
+  - @workflow/world@5.0.0-beta.32
+  - @workflow/core@5.0.0-beta.47
+  - @workflow/utils@5.0.0-beta.10
+
 ## 5.0.0-beta.46
 
 ### Patch Changes

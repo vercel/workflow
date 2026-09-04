@@ -8,6 +8,7 @@ import {
   runWithDiscontinuation,
   setupWorkflowContext,
 } from './test-support/orchestrator-context.js';
+import { createSetAttributes } from './workflow/attribute-dispatcher.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
@@ -179,6 +180,56 @@ describe('events repeating a class already in the log', () => {
     expect(pendingStepNames(ctx)).toEqual(['afterHook']);
     expect(onDuplicateEvent).toHaveBeenCalledTimes(1);
     expect(onDuplicateEvent).toHaveBeenCalledWith(events[2], 'hook_created');
+  });
+
+  it('ignores a second attr_set for an attribute already written', async () => {
+    // Two replays at the same body position draw the same attribute id, and a
+    // World that commits both leaves two events under it. The straggler is
+    // inert: the attribute is already applied, and the workflow function must
+    // still be able to return. Before this, the second event parked for a
+    // consumer that could never come and surfaced as `strandedEvent` the
+    // moment the body returned, failing a run whose every step had succeeded.
+    const changes = [{ key: 'phase', value: 'processing' }];
+    const attrData = { changes, writer: { type: 'workflow' } };
+    const result = await dehydrate('a-result');
+    const onDuplicateEvent = vi.fn();
+    const events = [
+      event(0, 'attr_set', `attr_${CORR_IDS[0]}`, attrData),
+      event(1, 'attr_set', `attr_${CORR_IDS[0]}`, attrData),
+      event(2, 'step_created', `step_${CORR_IDS[1]}`, {
+        stepName: 'afterAttr',
+      }),
+      event(3, 'step_started', `step_${CORR_IDS[1]}`, {
+        stepName: 'afterAttr',
+      }),
+      event(4, 'step_completed', `step_${CORR_IDS[1]}`, {
+        stepName: 'afterAttr',
+        result,
+      }),
+    ];
+    const ctx = setupWorkflowContext(events, { onDuplicateEvent });
+    const setAttributes = createSetAttributes(ctx);
+    const useStep = createUseStep(ctx);
+
+    const observed: unknown[] = [];
+    const { result: out, error } = await runWithDiscontinuation(
+      ctx,
+      async () => {
+        await setAttributes(changes);
+        observed.push(await useStep('afterAttr')());
+        return 'done';
+      }
+    );
+
+    expect(error).toBeUndefined();
+    expect(out).toBe('done');
+    expect(observed).toEqual(['a-result']);
+    expect(onDuplicateEvent).toHaveBeenCalledTimes(1);
+    expect(onDuplicateEvent).toHaveBeenCalledWith(events[1], 'attr_set');
+    // The predicate `workflow.ts` checks once the body returns. A survivor here
+    // is reported as a replay divergence and, after the recovery budget,
+    // terminates the run with CORRUPTED_EVENT_LOG.
+    expect(ctx.eventsConsumer.strandedEvent).toBeUndefined();
   });
 
   it('still reports divergence for an event repeating nothing in the log', async () => {

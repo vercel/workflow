@@ -320,12 +320,8 @@ export async function waitForSleep(
  * filter that hasn't had a `hook_received` event. Returns the matching hook,
  * which you can then resume with `resumeHook(hook.token, data)`.
  *
- * `resumeHook()` resolving does NOT mean the `hook_received` event is visible:
- * on the lazy resume path the consuming invocation writes it, so the event
- * appears once the run picks the resume up. A loop that resumes and then
- * immediately calls this again can therefore be handed back the hook it just
- * resumed. Pass `notHookId` with the hook you resumed to wait for the NEXT
- * one, or await something that implies the run made progress.
+ * Pass `notHookId` to explicitly exclude a previously observed hook when a
+ * workflow creates several hooks with the same token.
  *
  * @example
  * ```ts
@@ -360,10 +356,7 @@ export async function waitForHook(
       (h) =>
         !receivedCorrelationIds.has(h.hookId) &&
         (!options?.token || h.token === options.token) &&
-        // Skip a hook the caller has already resumed. Its `hook_received` may
-        // not be written yet (the lazy resume path defers that to the
-        // consuming invocation), so "no hook_received" alone cannot tell a
-        // fresh hook from one whose payload is still in flight.
+        // Skip a hook the caller explicitly excluded.
         (!options?.notHookId || h.hookId !== options.notHookId)
     );
 

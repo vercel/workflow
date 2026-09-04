@@ -233,8 +233,7 @@ export function getMaxInlineSteps(): number {
  * messages on its fast inline path instead of paying an S3 store+fetch
  * double-hop for bytes that already live in the event log. Above this size
  * the dispatch falls back to the sequential path (`step_created` write, then
- * a payload-less queue message). Matches `MAX_INLINE_RESUME_PAYLOAD_BYTES`
- * on the resilient hook resume path.
+ * a payload-less queue message).
  */
 export const MAX_RESILIENT_STEP_INPUT_BYTES = 128 * 1024;
 
@@ -244,7 +243,8 @@ export const MAX_RESILIENT_STEP_INPUT_BYTES = 128 * 1024;
  * step-execution queue publish, carrying the serialized step input in the
  * queue message (`stepInput`) so the consumer can idempotently re-ensure the
  * event if the direct write failed transiently. Mirrors the resilient start
- * (`runInput`) and resilient hook resume (`hookInput`) patterns.
+ * (`runInput`) pattern (and the legacy lazy hook resume's `hookInput`, which
+ * current producers no longer send).
  *
  * **Off by default.** Enable via `WORKFLOW_RESILIENT_STEP_DISPATCH=1`.
  *
@@ -400,15 +400,17 @@ export function isQuickJSBaselineSnapshotEnabled(): boolean {
 }
 
 /**
- * Whether the inline loop retains a suspended workflow VM across inline steps
- * within one invocation (default ON). When on, a step-only suspension keeps
- * the live VM, event consumer, and hydrated state alive, and the next loop
- * iteration appends only the newly durable events instead of rebuilding the
- * `vm.Context` and replaying the whole event log. Non-step suspensions and
- * replay divergence always fall back to the ordinary durable replay path.
+ * Whether the Node.js inline loop retains a suspended workflow VM within one
+ * invocation (default ON). When on, a step- or attribute-driven suspension can
+ * keep the live VM, event consumer, and hydrated state even with open hooks or
+ * waits. The next loop iteration appends newly durable events instead of
+ * rebuilding the `vm.Context` and replaying the whole event log. Hook- or
+ * wait-only suspensions park the invocation, while replay divergence falls back
+ * to the ordinary durable replay path. QuickJS manages its own retained loop.
  *
  * `WORKFLOW_RETAINED_VM=0` (or `false`) is the kill switch: every iteration
- * replays from scratch in a fresh VM, matching the pre-retention behavior.
+ * replays the Node.js engine from scratch in a fresh VM, matching the
+ * pre-retention behavior.
  */
 export function isVmRetentionEnabled(): boolean {
   const raw = process.env.WORKFLOW_RETAINED_VM;

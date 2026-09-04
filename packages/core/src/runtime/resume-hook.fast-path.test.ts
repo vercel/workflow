@@ -163,24 +163,20 @@ describe('resumeHook (resumeContext fast path)', () => {
     expect(queue).not.toHaveBeenCalled();
   });
 
-  it('re-keys an EntityConflictError (compat / conflict-shaped rejection) from events.create to HookNotFoundError(token)', async () => {
-    // Current Vercel behavior returns 404 for a terminal run (mapped to
-    // HookNotFoundError, covered above). EntityConflictError is kept for
-    // compatibility with older / conflict-shaped (HTTP 409) rejection
-    // behavior. On the fast path it surfaces from events.create and must be
-    // re-keyed to HookNotFoundError(token), matching the pre-fast-path
-    // contract where resumeHook threw HookNotFoundError.
+  it('passes an EntityConflictError (transient, HTTP 409) from events.create through unmapped', async () => {
+    // Terminal runs and disposed hooks reject with 404 (mapped to
+    // HookNotFoundError, covered above) or RunExpiredError (below). A 409 is
+    // the transient shape — an event-slot conflict past the server's retry
+    // budget, or a resume-claim race — whose transaction committed nothing.
+    // The historical re-key to HookNotFoundError presented that retryable
+    // failure as permanent (a webhook route would 404 and the sender would
+    // drop the resume), so it now surfaces as-is.
     const hook = { ...baseHook, resumeContext } satisfies Hook;
-    const createEvent = vi
-      .fn()
-      .mockRejectedValue(new EntityConflictError('run has already ended'));
+    const conflict = new EntityConflictError('event slot is already taken');
+    const createEvent = vi.fn().mockRejectedValue(conflict);
     const { runsGet, queue } = makeWorld(hook, { createEvent });
 
-    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toSatisfy(
-      (err: unknown) =>
-        HookNotFoundError.is(err) &&
-        (err as HookNotFoundError).token === hook.token
-    );
+    await expect(resumeHook(hook.token, { foo: 'bar' })).rejects.toBe(conflict);
     expect(runsGet).not.toHaveBeenCalled();
     expect(queue).not.toHaveBeenCalled();
   });

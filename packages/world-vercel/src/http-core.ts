@@ -23,6 +23,7 @@ import {
   EntityConflictError,
   PreconditionFailedError,
   RunExpiredError,
+  StreamError,
   StreamExpiredError,
   ThrottleError,
   TooEarlyError,
@@ -59,6 +60,40 @@ import {
  * upstream timeout handlers (e.g. the replay timeout).
  */
 export const REQUEST_TIMEOUT_MS = 60_000;
+
+/**
+ * Transport codes that can surface after `fetch()` fails before returning a
+ * response. The outer error is usually `TypeError: fetch failed`; undici hangs
+ * the actionable code off its `cause`, so callers must inspect the chain.
+ */
+const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
+  'UND_ERR_INFO',
+  'UND_ERR_REQ_RETRY',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_CLOSED',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+  'ETIMEDOUT',
+]);
+
+export function getTransientTransportCode(error: unknown): string | undefined {
+  let current = error;
+  for (let depth = 0; current && depth < 8; depth++) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string' && TRANSIENT_TRANSPORT_ERROR_CODES.has(code)) {
+      return code;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
 
 /**
  * Effective per-request timeout. Override via `WORKFLOW_REQUEST_TIMEOUT_MS`
@@ -508,7 +543,14 @@ export interface InstrumentedFetchOptions extends HttpClientSpanOptions {
    * worked. Lets a caller that owns a shared dispatcher retire it when its
    * connections stop delivering (see noteEventsTransportOutcome).
    */
-  onTransportOutcome?: (error?: unknown) => void;
+  onTransportOutcome?: (error?: unknown, response?: Response) => void;
+  /**
+   * Delay the successful transport outcome until the caller consumes the body.
+   * Non-2xx bodies consumed by `buildError` are still reported here.
+   */
+  deferTransportSuccessUntilBody?: boolean;
+  /** Error code used when the request itself fails before a response arrives. */
+  transportErrorCode?: 'TRANSPORT' | 'STREAM_ERROR';
 }
 
 /**
@@ -542,6 +584,8 @@ export async function instrumentedFetch(
     attributes,
     durationAttribute,
     onTransportOutcome,
+    deferTransportSuccessUntilBody = false,
+    transportErrorCode = 'TRANSPORT',
   } = opts;
   const label = logLabel ?? url;
 
@@ -613,18 +657,46 @@ export async function instrumentedFetch(
           error instanceof Error &&
           (error.name === 'TimeoutError' || error.name === 'AbortError')
         ) {
-          const timeoutError = new WorkflowWorldError(
-            `${method} ${label} timed out after ${elapsed}ms`,
-            { url, cause: error }
-          );
-          span?.setAttributes({ ...ErrorType('TIMEOUT') });
+          const message = `${method} ${label} timed out after ${elapsed}ms`;
+          const errorCode =
+            transportErrorCode === 'STREAM_ERROR' ? 'STREAM_ERROR' : 'TIMEOUT';
+          const timeoutError =
+            errorCode === 'STREAM_ERROR'
+              ? new StreamError(message, { url, cause: error })
+              : new WorkflowWorldError(message, {
+                  url,
+                  code: errorCode,
+                  cause: error,
+                });
+          span?.setAttributes({ ...ErrorType(errorCode) });
           span?.recordException?.(timeoutError);
           throw timeoutError;
+        }
+        const transportCode = getTransientTransportCode(error);
+        if (transportCode) {
+          const message = `${method} ${label} transport failure after ${elapsed}ms (${transportCode})`;
+          const errorCode =
+            transportErrorCode === 'STREAM_ERROR'
+              ? 'STREAM_ERROR'
+              : 'TRANSPORT';
+          const transportError =
+            errorCode === 'STREAM_ERROR'
+              ? new StreamError(message, { url, cause: error })
+              : new WorkflowWorldError(message, {
+                  url,
+                  code: errorCode,
+                  cause: error,
+                });
+          span?.setAttributes({ ...ErrorType(errorCode) });
+          span?.recordException?.(transportError);
+          throw transportError;
         }
         throw error;
       }
       const ms = Date.now() - start;
-      onTransportOutcome?.();
+      if (response.ok && !deferTransportSuccessUntilBody) {
+        onTransportOutcome?.(undefined, response);
+      }
 
       httpLog(method, label, response, ms);
       recordClientSpanStatus(span, response.status);
@@ -633,11 +705,40 @@ export async function instrumentedFetch(
       if (!response.ok) {
         logCurlRepro(method, url, headers);
         if (buildError) {
-          const error = await buildError(response);
+          let error: Error;
+          try {
+            error = await buildError(response);
+          } catch (cause) {
+            const transportCode = getTransientTransportCode(cause);
+            if (transportCode) {
+              onTransportOutcome?.(cause, response);
+              const message = `${method} ${label} response body transport failure (${transportCode})`;
+              const mappedError =
+                transportErrorCode === 'STREAM_ERROR'
+                  ? new StreamError(message, { url, cause })
+                  : new WorkflowWorldError(message, {
+                      url,
+                      code: 'TRANSPORT',
+                      cause,
+                    });
+              span?.setAttributes({ ...ErrorType(transportErrorCode) });
+              span?.recordException?.(mappedError);
+              throw mappedError;
+            }
+            onTransportOutcome?.(undefined, response);
+            throw cause;
+          }
+          onTransportOutcome?.(undefined, response);
           span?.recordException?.(error);
           throw error;
         }
-        const text = await response.text().catch(() => '');
+        let text = '';
+        try {
+          text = await response.text();
+          onTransportOutcome?.(undefined, response);
+        } catch (cause) {
+          onTransportOutcome?.(cause, response);
+        }
         const error = errorForResponse(
           response.status,
           `${method} ${label} -> HTTP ${response.status}: ${response.statusText}${

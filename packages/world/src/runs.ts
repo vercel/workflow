@@ -146,7 +146,7 @@ export const WorkflowRunSchema = z.discriminatedUnion('status', [
   // Completed state - output can be v1 or v2 format
   WorkflowRunBaseSchema.extend({
     status: z.literal('completed'),
-    output: SerializedDataSchema,
+    output: SerializedDataSchema.optional(),
     error: z.undefined().optional(),
     completedAt: z.coerce.date(),
   }),
@@ -154,7 +154,7 @@ export const WorkflowRunSchema = z.discriminatedUnion('status', [
   WorkflowRunBaseSchema.extend({
     status: z.literal('failed'),
     output: z.undefined().optional(),
-    error: SerializedDataSchema,
+    error: SerializedDataSchema.optional(),
     completedAt: z.coerce.date(),
   }),
 ]);

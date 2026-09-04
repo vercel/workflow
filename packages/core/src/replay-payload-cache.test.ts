@@ -55,6 +55,26 @@ function makeEvents(payloads: unknown[]): Event[] {
 }
 
 describe('ReplayPayloadCache', () => {
+  it('prepares a streamed event as soon as its deferred key resolves', async () => {
+    const payload = new Uint8Array([1]);
+    let resolveKey!: (key: undefined) => void;
+    const key = new Promise<undefined>((resolve) => {
+      resolveKey = resolve;
+    });
+    const preparer = vi.fn<ReplayPayloadPreparer>((value) => ({ data: value }));
+    const cache = new ReplayPayloadCache(key, preparer);
+    const [event] = makeEvents([payload]);
+
+    cache.prepareEvent(event);
+    expect(preparer).not.toHaveBeenCalled();
+
+    resolveKey(undefined);
+    await expect(
+      cache.prepareEventPayload(event.eventId, 'result', payload)
+    ).resolves.toEqual({ data: payload });
+    expect(preparer).toHaveBeenCalledOnce();
+  });
+
   it('deduplicates preparation and accepts a synchronous preparer', async () => {
     const payload = new Uint8Array([1]);
     const preparer = vi.fn<ReplayPayloadPreparer>((value) => ({ data: value }));
@@ -103,6 +123,7 @@ describe('ReplayPayloadCache', () => {
     const events = makeEvents(payloads.slice(1));
 
     const warming = cache.prewarm(run, events);
+    await Promise.resolve();
     expect(preparer).toHaveBeenCalledTimes(4);
     for (const resolve of resolvers.reverse()) resolve();
     await warming;
@@ -152,11 +173,7 @@ describe('ReplayPayloadCache', () => {
     expect(second.count).toBe(0);
   });
 
-  it('rescans a log whose missing events were filled in below the scanned prefix', async () => {
-    // A stale-snapshot (412) restart replaces the log with a corrected one, so
-    // the events it was missing appear BELOW the length already scanned and
-    // shift every later position. Resuming from that length skips exactly the
-    // events the reload was for, which is what `resetScan` exists to prevent.
+  it('rescans events inserted by an authoritative log replacement', async () => {
     const payloads = [0, 1, 2].map((value) => new Uint8Array([value]));
     const preparer = vi.fn<ReplayPayloadPreparer>((value) => ({ data: value }));
     const cache = new ReplayPayloadCache(undefined, preparer);
@@ -166,15 +183,11 @@ describe('ReplayPayloadCache', () => {
     await cache.prewarm(run, [first, second]);
     expect(preparer).toHaveBeenCalledTimes(2);
 
-    // Positional resume: `missing` sits inside the scanned prefix, so it is
-    // skipped and its payload is only prepared on demand.
     await cache.prewarm(run, [first, missing, second]);
     expect(preparer).toHaveBeenCalledTimes(2);
 
     cache.resetScan();
     await cache.prewarm(run, [first, missing, second]);
-    // Only the inserted event is new: the other two are keyed by event id and
-    // stay prepared across the rescan.
     expect(preparer).toHaveBeenCalledTimes(3);
     expect(preparer).toHaveBeenLastCalledWith(payloads[1], undefined);
   });
@@ -205,21 +218,24 @@ describe('ReplayPayloadCache', () => {
     }
   });
 
-  it('rehydrates mutable and oversized step results', async () => {
-    const oversized = 'x'.repeat(4097);
-    for (const value of [{ count: 0 }, oversized]) {
-      const cache = new ReplayPayloadCache(undefined);
-      const hydrate = vi
-        .fn()
-        .mockImplementation(async () =>
-          typeof value === 'object' ? { ...value } : value
-        );
+  it('rehydrates mutable step results', async () => {
+    const cache = new ReplayPayloadCache(undefined);
+    const hydrate = vi.fn().mockImplementation(async () => ({ count: 0 }));
 
-      const first = await cache.getStepResult('evnt_result', hydrate);
-      const second = await cache.getStepResult('evnt_result', hydrate);
-      expect(hydrate).toHaveBeenCalledTimes(2);
-      if (typeof value === 'object') expect(second).not.toBe(first);
-    }
+    const first = await cache.getStepResult('evnt_result', hydrate);
+    const second = await cache.getStepResult('evnt_result', hydrate);
+    expect(hydrate).toHaveBeenCalledTimes(2);
+    expect(second).not.toBe(first);
+  });
+
+  it('memoizes primitive step results without an arbitrary size cap', async () => {
+    const cache = new ReplayPayloadCache(undefined);
+    const oversized = 'x'.repeat(4097);
+    const hydrate = vi.fn().mockResolvedValue(oversized);
+
+    expect(await cache.getStepResult('evnt_result', hydrate)).toBe(oversized);
+    expect(await cache.getStepResult('evnt_result', hydrate)).toBe(oversized);
+    expect(hydrate).toHaveBeenCalledOnce();
   });
 
   it('does not memoize failed step hydration', async () => {
