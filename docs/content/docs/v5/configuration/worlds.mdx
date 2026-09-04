@@ -192,6 +192,8 @@ The Vercel World is configured automatically inside Vercel deployments. The plat
 
 Most applications should not set `WORKFLOW_VERCEL_*` variables on Vercel. They configure tooling that talks to a Vercel Workflow project from outside a deployment, such as the `workflow` CLI, the web UI, CI, or tests. The runtime warns if these variables are set in a deployed Vercel function because they do not control runtime configuration there.
 
+The entries below are the individual knobs. For a walkthrough of authenticating a local script or a CI job with a Vercel auth token — which variables are needed together, and how to pass them to the World factory — see [Connecting from outside a deployment](/worlds/vercel#connecting-from-outside-a-deployment).
+
 Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, and `VERCEL_DEPLOYMENT_KEY` are read by the runtime inside Vercel deployments. Do not set them yourself.
 
 ### `token`
@@ -200,6 +202,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - CLI flag: `--authToken`
 - Default: inferred when possible
 - Vercel API token for external tooling. Keep it secret.
+- Only meaningful alongside `projectConfig.projectId` and `projectConfig.teamId`: those three together route the client through the `api-workflow` proxy, which is the only path that accepts a Vercel auth token. Supplying both IDs but no token throws rather than failing later with a `401`.
 
 ### `projectConfig.environment`
 

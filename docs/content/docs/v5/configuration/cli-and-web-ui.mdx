@@ -12,6 +12,8 @@ The `workflow` CLI uses flags first, then environment variables, then defaults o
 
 Vercel project and auth settings can often be inferred from `.vercel/project.json` and your Vercel CLI login.
 
+Whichever way they are resolved, the CLI ends up building a Vercel World from an auth token plus a project ID, team ID, and environment — the same four values any external client needs. Set them explicitly when there is no interactive `vercel login` to infer from, or when writing your own script instead of using the CLI; see [Connecting from outside a deployment](/worlds/vercel#connecting-from-outside-a-deployment).
+
 ## Target backend
 
 ### `--backend` / `-b`
