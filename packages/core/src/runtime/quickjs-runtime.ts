@@ -282,6 +282,9 @@ globalThis.__workflowError = undefined;
 // Keyed by correlationId → array of payloads (preserves delivery order).
 // This mirrors the event-replay runtime's payloadsQueue in hook.ts.
 globalThis.__hookPayloadBuffer = {};
+// Delivered to a hook's pending resolver by the host when the hook_disposed
+// event is processed, so a parked iterator ends. Never a payload value.
+globalThis.__HOOK_DISPOSED = { __hookDisposed: true };
 
 // Buffer for step/wait/attr terminal outcomes that arrive before this VM
 // has constructed the corresponding awaiting promise. In fresh-VM replay
@@ -711,6 +714,11 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     token: token,
     created: false,
     conflict: null,
+    // Set by the host when the hook_disposed event is processed. Disposal is
+    // durable, not an in-memory switch: payloads accepted before it commits
+    // precede it in the log and are still delivered, and iteration ends only
+    // once this flag is set (mirrors the node:vm engine's hook.ts).
+    disposed: false,
     getConflictResolvers: [],
   };
 
@@ -751,11 +759,9 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
         hasCreatedEvent: false,
       });
     }
-    // If there's a pending resolver, resolve it with undefined to break the iterator
-    if (globalThis.__resolvers[correlationId]) {
-      globalThis.__resolvers[correlationId].resolve(undefined);
-      delete globalThis.__resolvers[correlationId];
-    }
+    // A pending awaiter stays parked: a payload that beat the disposal
+    // resolves it, and the hook_disposed event ends the iterator (the host
+    // resolves the resolver with __HOOK_DISPOSED when it processes it).
   }
 
   function getConflict() {
@@ -781,7 +787,12 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   var hook = {
     token: token,
     then: function(onFulfilled, onRejected) {
-      return createHookPromise().then(onFulfilled, onRejected);
+      return createHookPromise().then(function(value) {
+        // The disposal marker ends iterators, not plain awaits: a payload
+        // await on a disposed hook stays pending, as it always has.
+        if (value === globalThis.__HOOK_DISPOSED) return new Promise(function() {});
+        return value;
+      }).then(onFulfilled, onRejected);
     },
     getConflict: getConflict,
     dispose: disposeHook,
@@ -790,16 +801,18 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
   // Symbol.dispose for explicit resource management
   hook[Symbol.dispose] = disposeHook;
 
-  // AsyncIterable — yields payloads until disposed
+  // AsyncIterable — yields every payload that precedes hook_disposed in the
+  // log, then ends once that event has been processed.
   hook[Symbol.asyncIterator] = function() {
     return {
       next: function() {
-        if (isDisposed) {
+        var buf = globalThis.__hookPayloadBuffer[correlationId];
+        var state = globalThis.__hooks[correlationId];
+        if ((!buf || buf.length === 0) && state && state.disposed) {
           return Promise.resolve({ done: true, value: undefined });
         }
         return createHookPromise().then(function(value) {
-          // If disposed while waiting, signal done
-          if (isDisposed) return { done: true, value: undefined };
+          if (value === globalThis.__HOOK_DISPOSED) return { done: true, value: undefined };
           return { done: false, value: value };
         });
       },
@@ -2429,6 +2442,23 @@ async function processEvents(
         break;
       }
       case 'hook_disposed': {
+        // The disposal is durable: mark the hook so a later iterator `next()`
+        // ends, and end a parked iterator now. Payloads that precede this
+        // event in the log were delivered by the hook_received cases above,
+        // in log order; nothing can follow it.
+        vm.evalCode(
+          `if (globalThis.__hooks && globalThis.__hooks[${cidJs}]) globalThis.__hooks[${cidJs}].disposed = true;` +
+            `if (globalThis.__resolvers[${cidJs}]) {` +
+            `globalThis.__resolvers[${cidJs}].resolve(globalThis.__HOOK_DISPOSED);` +
+            `delete globalThis.__resolvers[${cidJs}];}`
+        ).dispose();
+        {
+          resolved = true;
+          let b: number;
+          do {
+            b = vm.executePendingJobs();
+          } while (b > 0);
+        }
         // Disambiguate from the `hook` pending op with the same
         // correlationId: we want to mark the `hook_dispose` entry.
         markCreated(vm, cidJs, 'hook_dispose');

@@ -237,7 +237,7 @@ hook.dispose(); // Manually release the token
 ```
 
 <Callout type="info">
-After disposal, the hook will no longer receive events and the async iterator will stop yielding values.
+The release is committed at the workflow's next suspension. Payloads accepted before that are still delivered, and the async iterator stops yielding once the release is durable, so a `for await` loop drains everything that beat the release and then ends on its own.
 </Callout>
 
 ## Understanding webhooks

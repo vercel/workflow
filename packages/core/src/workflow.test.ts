@@ -5000,6 +5000,92 @@ describe('runWorkflow', () => {
       }
     });
 
+    it('delivers payloads that precede hook_disposed to an iterator after dispose()', async () => {
+      // `dispose()` releases the token at the NEXT suspension, and resumes are
+      // accepted until then. A payload that lands in that window sits in the
+      // log before `hook_disposed`; it must reach a `for await` consumer, and
+      // iteration must end only when the disposal event is observed. Ending
+      // iteration at the `dispose()` call instead orphaned such payloads.
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        ),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+      const correlationId = 'hook_01HK153X00VFKAJV9XFN9JXXRS';
+      const payload = async (message: string) =>
+        dehydrateStepReturnValue({ message }, 'wrun_123', noEncryptionKey, ops);
+      const events: Event[] = [
+        {
+          eventId: 'event-0',
+          runId: workflowRun.runId,
+          eventType: 'hook_created' as const,
+          correlationId,
+          eventData: {},
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'event-1',
+          runId: workflowRun.runId,
+          eventType: 'hook_received',
+          correlationId,
+          eventData: { token: 'test-token', payload: await payload('one') },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'event-2',
+          runId: workflowRun.runId,
+          eventType: 'hook_received',
+          correlationId,
+          eventData: { token: 'test-token', payload: await payload('two') },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'event-3',
+          runId: workflowRun.runId,
+          eventType: 'hook_disposed',
+          correlationId,
+          eventData: { token: 'test-token' },
+          createdAt: new Date(),
+        },
+      ];
+
+      const result = await runWorkflow(
+        `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+        async function workflow() {
+          const hook = createHook({ token: 'test-token' });
+          const inbox = [];
+          const subscription = (async () => {
+            for await (const p of hook) inbox.push(p.message);
+          })();
+          hook.dispose();
+          await subscription;
+          return inbox;
+        }${getWorkflowTransformCode('workflow')}`,
+        workflowRun,
+        events,
+        noEncryptionKey
+      );
+      expect(
+        await hydrateWorkflowReturnValue(
+          result as any,
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        )
+      ).toEqual(['one', 'two']);
+    });
+
     it('should not warn when queue is empty on completion', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
