@@ -1721,22 +1721,6 @@ describe.concurrent('e2e', () => {
           )}`
         );
 
-        // When there was something to hand off, the child started with
-        // exactly the parent's late drain. (Whether anything arrived in the
-        // last turn is timing; the burst above makes it the common case, and
-        // the log line records when it did not happen.)
-        if (generations[0].late.length > 0) {
-          expect(generations).toHaveLength(2);
-          expect(generations[1].turns[0].steeringSeen).toEqual(
-            generations[0].late
-          );
-        } else {
-          expect(generations).toHaveLength(1);
-          console.warn(
-            '[handoff] no late arrivals; hand-off path not exercised'
-          );
-        }
-
         // Every generation: what the workflow observed at each turn matches
         // what the log recorded as that turn's step arguments.
         for (const g of generations) {
@@ -1749,13 +1733,34 @@ describe.concurrent('e2e', () => {
           }
         }
 
+        // Chain continuity. A successor's first turn is the set its parent
+        // handed off, as recorded in the step that started it. The parent's
+        // RETURNED `late` may be longer than that by payloads that fell in the
+        // disposal window (see below): the successor was started on the live
+        // run, while the return value comes from whichever replay committed
+        // it, and only a fresh replay delivers window payloads. So `carried`
+        // must be a prefix of `late`, and the excess is counted as divergence.
+        let divergence = 0;
+        for (let i = 0; i + 1 < generations.length; i++) {
+          const late = generations[i].late;
+          const carried = generations[i + 1].turns[0].steeringSeen;
+          expect(carried.length).toBeGreaterThan(0);
+          expect(late.slice(0, carried.length)).toEqual(carried);
+          divergence += late.length - carried.length;
+        }
+        const last = generations[generations.length - 1];
+        expect(last.childRunId).toBeNull();
+        if (generations.length === 1) {
+          console.warn(
+            '[handoff] no late arrivals; hand-off path not exercised'
+          );
+        }
+
         // Accounting. Every processed payload was acknowledged, each exactly
-        // once, in send order, and nothing was left in the final run.
+        // once, in send order.
         const processed = generations.flatMap((g) =>
           g.turns.flatMap((t) => t.steeringSeen)
         );
-        const last = generations[generations.length - 1];
-        expect(last.late).toEqual([]);
         expect(new Set(processed).size).toBe(processed.length);
         expect(processed).toEqual(
           accepted.filter((seq) => processed.includes(seq))
@@ -1765,48 +1770,52 @@ describe.concurrent('e2e', () => {
         // in-memory iterator at once, but the world keeps accepting resumes
         // until `hook_disposed` commits at the run's next suspension. A payload
         // acknowledged in that window sits in the log before `hook_disposed`
-        // with no consumer left to claim it, and is lost. Until the runtime
-        // delivers pre-disposal payloads, the only payloads that may go missing
-        // are those, so bound the loss by counting them in the parent's log:
-        // `hook_received` events after the last turn's `step_completed` and
+        // with no consumer left to claim it. On the retained-VM path it is
+        // lost; a fresh replay delivers it, which is the divergence counted
+        // above. Until the runtime delivers pre-disposal payloads, bound both
+        // by the number of such payloads in each generation's log:
+        // `hook_received` events after the TURNS-th `step_completed` and
         // before `hook_disposed`.
-        const parentEvents = await listAllRunEvents(parent.runId);
-        let turnsCompleted = 0;
         let inWindow = 0;
-        for (const event of parentEvents) {
-          if (event.eventType === 'step_completed') turnsCompleted++;
-          else if (event.eventType === 'hook_disposed') break;
-          else if (
-            event.eventType === 'hook_received' &&
-            turnsCompleted === TURNS
-          ) {
-            inWindow++;
+        const runIds = [
+          parent.runId,
+          ...generations.map((g) => g.childRunId).filter(Boolean),
+        ] as string[];
+        for (const runId of runIds) {
+          let turnsCompleted = 0;
+          for (const event of await listAllRunEvents(runId)) {
+            if (event.eventType === 'step_completed') turnsCompleted++;
+            else if (event.eventType === 'hook_disposed') break;
+            else if (
+              event.eventType === 'hook_received' &&
+              turnsCompleted === TURNS
+            ) {
+              inWindow++;
+            }
           }
         }
         const dropped = accepted.filter((seq) => !processed.includes(seq));
         console.log(
-          `[handoff] dropped=${JSON.stringify(dropped)} disposalWindowPayloads=${inWindow}`
+          `[handoff] dropped=${JSON.stringify(dropped)} divergence=${divergence} disposalWindowPayloads=${inWindow}`
         );
         expect(dropped.length).toBeLessThanOrEqual(inWindow);
-        // Anything dropped sits exactly at the hand-off seam: newer than
-        // everything the parent processed or handed off, older than everything
-        // the successor processed. Never a hole inside either generation.
-        const parentNewest = Math.max(
-          -1,
-          ...generations[0].turns.flatMap((t) => t.steeringSeen),
-          ...generations[0].late
-        );
-        // A successor's first turn is the carried set (the parent's late
-        // drain), so its own payloads start at turn 1.
-        const childOldest = Math.min(
-          Number.POSITIVE_INFINITY,
-          ...generations
-            .slice(1)
-            .flatMap((g) => g.turns.slice(1).flatMap((t) => t.steeringSeen))
-        );
-        for (const seq of dropped) {
-          expect(seq).toBeGreaterThan(parentNewest);
-          expect(seq).toBeLessThan(childOldest);
+        expect(divergence).toBeLessThanOrEqual(inWindow);
+        // A dropped payload sits at a hand-off seam or the tail, never inside
+        // the span a single generation processed.
+        for (const g of generations) {
+          // A successor's turn 0 is its parent's hand-off; its own span
+          // starts at turn 1, so the seam between them is not "inside".
+          const own = g.generation === 0 ? g.turns : g.turns.slice(1);
+          const span = own.flatMap((t) => t.steeringSeen);
+          if (span.length === 0) continue;
+          const lo = Math.min(...span);
+          const hi = Math.max(...span);
+          for (const seq of dropped) {
+            expect(
+              seq > lo && seq < hi,
+              `seq ${seq} inside gen ${g.generation}`
+            ).toBe(false);
+          }
         }
       }
     );
