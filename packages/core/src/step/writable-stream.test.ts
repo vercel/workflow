@@ -57,6 +57,71 @@ describe('step-level getWritable', () => {
     vi.clearAllMocks();
   });
 
+  it('flush waits for durability without requiring writer lock release', async () => {
+    const { contextStorage } = await import('./context-storage.js');
+    const { getWorldLazy } = await import('../runtime/get-world-lazy.js');
+    const world = await getWorldLazy();
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    vi.mocked(world.streams.writeMulti).mockImplementation(async () => {
+      await writeGate;
+    });
+    vi.mocked(world.streams.write).mockImplementation(async () => {
+      await writeGate;
+    });
+
+    const writable = await contextStorage.run(makeStepCtx(), async () => {
+      const { getWritable } = await import('./writable-stream.js');
+      return getWritable<string>();
+    });
+    const writer = writable.getWriter();
+    await writer.write('snapshot');
+
+    let flushed = false;
+    const flush = writable.flush().then(() => {
+      flushed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(flushed).toBe(false);
+    expect(writable.locked).toBe(true);
+
+    releaseWrite();
+    await flush;
+    expect(writable.locked).toBe(true);
+
+    await writer.write('after-flush');
+    await writable.flush();
+    expect(
+      vi.mocked(world.streams.write).mock.calls.length +
+        vi.mocked(world.streams.writeMulti).mock.calls.length
+    ).toBe(2);
+    writer.releaseLock();
+  });
+
+  it('flush rejects when the durable write fails', async () => {
+    const { contextStorage } = await import('./context-storage.js');
+    const { getWorldLazy } = await import('../runtime/get-world-lazy.js');
+    const world = await getWorldLazy();
+    vi.mocked(world.streams.write).mockRejectedValue(
+      new Error('durable write failed')
+    );
+    vi.mocked(world.streams.writeMulti).mockRejectedValue(
+      new Error('durable write failed')
+    );
+
+    const writable = await contextStorage.run(makeStepCtx(), async () => {
+      const { getWritable } = await import('./writable-stream.js');
+      return getWritable<string>();
+    });
+    const writer = writable.getWriter();
+    await writer.write('snapshot');
+
+    await expect(writable.flush()).rejects.toThrow('durable write failed');
+    writer.releaseLock();
+  });
+
   it('ops promise should resolve when writer lock is released (without closing stream)', async () => {
     const { contextStorage } = await import('./context-storage.js');
 

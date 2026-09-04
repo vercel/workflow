@@ -17,8 +17,10 @@ import {
   getMaxBytesPerBatch,
   getMaxChunksPerBatch,
   getMaxInflightChunks,
+  markFlushableFrameProduced,
   pollReadableLock,
   pollWritableLock,
+  withWorkflowFlush,
 } from './flushable-stream.js';
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
@@ -272,7 +274,8 @@ async function recordGuestCodeExecutions(stats: GuestCodeStats): Promise<void> {
 
 export function getSerializeStream(
   reducers: Partial<Reducers>,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  onFrameProduced?: () => void
 ): TransformStream<any, Uint8Array> {
   const encoder = new TextEncoder();
   // Resolve the key input once on first use and cache the result.
@@ -333,6 +336,7 @@ export function getSerializeStream(
         const frame = new Uint8Array(FRAME_HEADER_SIZE + prefixed.length);
         new DataView(frame.buffer).setUint32(0, prefixed.length, false);
         frame.set(prefixed, FRAME_HEADER_SIZE);
+        onFrameProduced?.();
         controller.enqueue(frame);
       } catch (error) {
         // Encryption failures must keep their RuntimeDecryptionError
@@ -3443,9 +3447,11 @@ function getStepRevivers(
               value.encryptionPublicKey
             );
 
+      const state = createFlushableState();
       const serialize = getSerializeStream(
         getStepReducers(global, ops, targetRunId, targetKey),
-        targetKey
+        targetKey,
+        () => markFlushableFrameProduced(state)
       );
       const serverWritable = new WorkflowServerWritableStream(
         targetRunId,
@@ -3453,7 +3459,6 @@ function getStepRevivers(
       );
 
       // Create flushable state for this stream
-      const state = createFlushableState();
       ops.push(state.promise);
 
       // Start the flushable pipe in the background
@@ -3464,29 +3469,27 @@ function getStepRevivers(
       // Start polling to detect when user releases lock
       pollWritableLock(serialize.writable, state);
 
+      const writable = withWorkflowFlush(serialize.writable, state);
+
       // Record the underlying `(runId, name)` so downstream reducers can
       // recognize that this writable is already backed by a workflow
       // server stream. When forwarded across `start()` again (e.g.
       // the child passes this writable on to a grandchild), the
       // external reducer needs both to emit the original `runId` in
       // the descriptor.
-      Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+      Object.defineProperty(writable, STREAM_NAME_SYMBOL, {
         value: value.name,
         writable: false,
       });
-      Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+      Object.defineProperty(writable, STREAM_SERVER_RUN_ID_SYMBOL, {
         value: targetRunId,
         writable: false,
       });
       if (targetDeploymentId) {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
-          {
-            value: targetDeploymentId,
-            writable: false,
-          }
-        );
+        Object.defineProperty(writable, STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, {
+          value: targetDeploymentId,
+          writable: false,
+        });
       }
       // Keep the owner's public key on the handle so a further forward stays on
       // the zero-lookup sealed path.
@@ -3510,27 +3513,19 @@ function getStepRevivers(
         targetRunId === runId &&
         isRunPayloadKeys(cryptoKey)
       ) {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
-          {
-            value: bytesToBase64(cryptoKey.keyPair.publicKey),
-            writable: false,
-          }
-        );
+        Object.defineProperty(writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
+          value: bytesToBase64(cryptoKey.keyPair.publicKey),
+          writable: false,
+        });
       }
       if (typeof value.encryptionPublicKey === 'string') {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
-          {
-            value: value.encryptionPublicKey,
-            writable: false,
-          }
-        );
+        Object.defineProperty(writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
+          value: value.encryptionPublicKey,
+          writable: false,
+        });
       }
 
-      return serialize.writable;
+      return writable;
     },
 
     AbortController: (value) => reviveAbortController(value, ops, runId),
