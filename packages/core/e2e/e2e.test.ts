@@ -1382,6 +1382,395 @@ describe.concurrent('e2e', () => {
     expect([...returnValue].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4]);
   });
 
+  // ==================== HOOK INBOX PATTERNS ====================
+  // Background hook subscribers and merged hook inboxes (see the matching
+  // section in workflows/99_e2e.ts). These stress two userland patterns:
+  //
+  //  1. A `for await` over a hook that the workflow body never awaits, pushing
+  //     payloads into a local inbox that the body drains at step boundaries
+  //     (steering an agent loop).
+  //  2. Several hooks merged into one async iterator, including a hook added
+  //     to the merge after the workflow has started.
+  //
+  // Both are plain JavaScript; what the tests establish is that hook delivery
+  // stays in event-log order relative to step results, so a replay observes
+  // the same inbox contents at every decision point as the live run did, even
+  // with dozens of payloads landing mid-step.
+  describe('hook inbox patterns', () => {
+    const range = (n: number) => Array.from({ length: n }, (_, i) => i);
+    // Soak knob: multiplies every per-hook message count. The default is a
+    // per-PR regression check; set e.g. `E2E_INBOX_SCALE=4` to push several
+    // hundred payloads through each pattern when hunting for ordering flakes.
+    const SCALE = Math.max(1, Number(process.env.E2E_INBOX_SCALE ?? 1) || 1);
+
+    /** Every event of `runId`, ascending, fetched as pages of EVENT_POLL_PAGE_SIZE. */
+    async function listAllRunEvents(runId: string): Promise<WorkflowEvent[]> {
+      const world = await getWorld();
+      const events: WorkflowEvent[] = [];
+      let cursor: string | undefined;
+      while (true) {
+        const page = await world.events.list({
+          runId,
+          resolveData: 'none',
+          pagination: { limit: EVENT_POLL_PAGE_SIZE, sortOrder: 'asc', cursor },
+        });
+        events.push(...page.data);
+        if (!page.hasMore || !page.cursor) break;
+        cursor = page.cursor ?? undefined;
+      }
+      return events;
+    }
+
+    /**
+     * Asserts the run's event log holds exactly the expected number of
+     * `hook_received` and `step_completed` events and no `hook_conflict`.
+     * Duplicated or dropped deliveries would already fail the return-value
+     * assertions; this pins the log itself so a run that happened to return
+     * the right answer over a wrong log still fails.
+     */
+    async function expectInboxEventLog(
+      runId: string,
+      expected: { hookReceived: number; stepCompleted: number }
+    ) {
+      const events = await listAllRunEvents(runId);
+      const count = (type: string) =>
+        events.filter((e) => e.eventType === type).length;
+      expect(count('hook_conflict')).toBe(0);
+      expect(count('hook_received')).toBe(expected.hookReceived);
+      expect(count('step_completed')).toBe(expected.stepCompleted);
+    }
+
+    test(
+      'backgroundInboxWorkflow - background subscriber steers turns deterministically under load',
+      { timeout: 240_000 },
+      async () => {
+        const token = `inbox-${Math.random().toString(36).slice(2)}`;
+        const TURNS = 10;
+        // Bursts are paced by the run's own progress (one burst per completed
+        // turn) so payloads land while a step is executing, i.e. between a
+        // turn's `step_created` and its `step_completed` in the log.
+        const BURSTS = TURNS - 2;
+        const BURST_SIZE = 8 * SCALE;
+        const MESSAGES = BURSTS * BURST_SIZE;
+
+        const run = await start(await e2e('backgroundInboxWorkflow'), [
+          token,
+          TURNS,
+        ]);
+        await waitForHook(token, { runId: run.runId });
+
+        let seq = 0;
+        for (let burst = 1; burst <= BURSTS; burst++) {
+          await waitForRunEvents(
+            run.runId,
+            (event) => event.eventType === 'step_completed',
+            {
+              minCount: burst,
+              timeoutMs: 120_000,
+              description: `step_completed #${burst} before burst ${burst}`,
+            }
+          );
+          for (let i = 0; i < BURST_SIZE; i++) {
+            await resumeHook(token, { seq: seq++ });
+          }
+        }
+        await resumeHook(token, { seq, done: true });
+
+        const result = await run.returnValue;
+        expect(result.turns).toHaveLength(TURNS);
+        expect(result.subscribed).toBe(MESSAGES);
+
+        // What the workflow observed in its inbox at each turn boundary must
+        // match what the event log recorded as that turn's step arguments.
+        // The live run wrote the arguments; the final replay produced
+        // `steeringSeen`. A replay that delivered a payload on the other side
+        // of a step boundary would make them disagree.
+        for (const turn of result.turns) {
+          expect(turn.steeringApplied, `turn ${turn.turn}`).toEqual(
+            turn.steeringSeen
+          );
+        }
+
+        // Every payload was delivered exactly once, in send order, across the
+        // turn boundaries and the final drain.
+        const delivered = [
+          ...result.turns.flatMap((t) => t.steeringSeen),
+          ...result.drained,
+        ];
+        expect(delivered).toEqual(range(MESSAGES));
+
+        // The subscriber really ran in the background: some payloads were
+        // drained at a turn boundary rather than all at the end. Bursts are
+        // sent after turn k completes and before turn k+2 completes, so at
+        // least the last burst is observed by a later turn.
+        expect(
+          result.turns.filter((t) => t.steeringSeen.length > 0).length
+        ).toBeGreaterThan(0);
+
+        await expectInboxEventLog(run.runId, {
+          hookReceived: MESSAGES + 1,
+          stepCompleted: TURNS,
+        });
+      }
+    );
+
+    test(
+      'backgroundInboxWorkflow - run completes while the subscriber is still awaiting the hook',
+      { timeout: 240_000 },
+      async () => {
+        const token = `inbox-open-${Math.random().toString(36).slice(2)}`;
+        const TURNS = 4;
+        const MESSAGES = 12 * SCALE;
+
+        const run = await start(await e2e('backgroundInboxWorkflow'), [
+          token,
+          TURNS,
+          false,
+        ]);
+        await waitForHook(token, { runId: run.runId });
+        // Send everything after the first turn so at least one turn boundary
+        // sees a non-empty inbox, then never send an end marker: the workflow
+        // must complete with the subscriber still parked on the hook.
+        await waitForRunEvents(
+          run.runId,
+          (event) => event.eventType === 'step_completed',
+          { timeoutMs: 120_000, description: 'first step_completed' }
+        );
+        for (let seq = 0; seq < MESSAGES; seq++) {
+          await resumeHook(token, { seq });
+        }
+
+        const result = await run.returnValue;
+        expect(result.subscribed).toBeNull();
+        expect(result.turns).toHaveLength(TURNS);
+        for (const turn of result.turns) {
+          expect(turn.steeringApplied, `turn ${turn.turn}`).toEqual(
+            turn.steeringSeen
+          );
+        }
+        const delivered = [
+          ...result.turns.flatMap((t) => t.steeringSeen),
+          ...result.drained,
+        ];
+        expect(delivered).toEqual(range(MESSAGES));
+
+        // `using` released the token even though the subscriber never saw an
+        // end marker: a new hook on the same token must not conflict.
+        const { json } = await cliInspectJson(`runs ${run.runId}`);
+        expect(json.status).toBe('completed');
+        await expectInboxEventLog(run.runId, {
+          hookReceived: MESSAGES,
+          stepCompleted: TURNS,
+        });
+      }
+    );
+
+    test(
+      'inboxWaitLoopWorkflow - drain-then-wait loop groups payloads identically on replay',
+      { timeout: 240_000 },
+      async () => {
+        const token = `inbox-wait-${Math.random().toString(36).slice(2)}`;
+        const BURSTS = 6;
+        const BURST_SIZE = 5 * SCALE;
+        const MESSAGES = BURSTS * BURST_SIZE;
+
+        const run = await start(await e2e('inboxWaitLoopWorkflow'), [token]);
+        await waitForHook(token, { runId: run.runId });
+
+        // Each burst is sent after the previous burst's turn has completed, so
+        // the live run drains bursts as groups while the payloads inside a
+        // burst arrive back-to-back and are mostly buffered during the step.
+        let seq = 0;
+        for (let burst = 0; burst < BURSTS; burst++) {
+          if (burst > 0) {
+            await waitForRunEvents(
+              run.runId,
+              (event) => event.eventType === 'step_completed',
+              {
+                minCount: burst,
+                timeoutMs: 120_000,
+                description: `step_completed #${burst} before burst ${burst}`,
+              }
+            );
+          }
+          for (let i = 0; i < BURST_SIZE; i++) {
+            await resumeHook(token, { seq: seq++ });
+          }
+        }
+        await waitForRunEvents(
+          run.runId,
+          (event) => event.eventType === 'step_completed',
+          {
+            minCount: BURSTS,
+            timeoutMs: 120_000,
+            description: 'step_completed for the last burst',
+          }
+        );
+        await resumeHook(token, { seq, done: true });
+
+        const result = await run.returnValue;
+        // Every turn drained at least one message (the loop only runs a turn
+        // after `wait()` resolves), and each turn's step was called with
+        // exactly what the workflow drained.
+        expect(result.turns.length).toBeGreaterThanOrEqual(BURSTS);
+        expect(result.turns.length).toBeLessThanOrEqual(MESSAGES);
+        for (const turn of result.turns) {
+          expect(turn.steeringSeen.length).toBeGreaterThan(0);
+          expect(turn.steeringApplied, `turn ${turn.turn}`).toEqual(
+            turn.steeringSeen
+          );
+        }
+        const delivered = [
+          ...result.turns.flatMap((t) => t.steeringSeen),
+          ...result.drained,
+        ];
+        expect(delivered).toEqual(range(MESSAGES));
+        expect(result.drained).toEqual([]);
+
+        await expectInboxEventLog(run.runId, {
+          hookReceived: MESSAGES + 1,
+          stepCompleted: result.turns.length,
+        });
+      }
+    );
+
+    test(
+      'mergedHooksWorkflow - merged iterator preserves event-log order across hooks',
+      { timeout: 240_000 },
+      async () => {
+        const id = Math.random().toString(36).slice(2);
+        const tokens = range(3).map((i) => `merge-${id}-${i}`);
+        const PER_HOOK = 40 * SCALE;
+
+        const run = await start(await e2e('mergedHooksWorkflow'), [
+          tokens,
+          false,
+        ]);
+        await Promise.all(
+          tokens.map((token) => waitForHook(token, { runId: run.runId }))
+        );
+
+        // Round-robin, strictly sequential sends: each `hook_received` is
+        // committed before the next is sent, so the log order IS this order,
+        // and the merged iterator must reproduce it exactly, not just per
+        // hook.
+        const expected: { source: number; seq: number }[] = [];
+        for (let seq = 0; seq < PER_HOOK; seq++) {
+          for (let source = 0; source < tokens.length; source++) {
+            await resumeHook(tokens[source], { seq });
+            expected.push({ source, seq });
+          }
+        }
+        for (const token of tokens) {
+          await resumeHook(token, { seq: PER_HOOK, done: true });
+        }
+
+        const received = await run.returnValue;
+        expect(received).toEqual(expected);
+
+        await expectInboxEventLog(run.runId, {
+          hookReceived: tokens.length * (PER_HOOK + 1),
+          stepCompleted: 0,
+        });
+      }
+    );
+
+    test(
+      'mergedHooksWorkflow - concurrent senders with a step per message keep per-hook order',
+      { timeout: 300_000 },
+      async () => {
+        const id = Math.random().toString(36).slice(2);
+        const tokens = range(3).map((i) => `merge-step-${id}-${i}`);
+        const PER_HOOK = 25 * SCALE;
+
+        const run = await start(await e2e('mergedHooksWorkflow'), [
+          tokens,
+          true,
+        ]);
+        await Promise.all(
+          tokens.map((token) => waitForHook(token, { runId: run.runId }))
+        );
+
+        // Three independent senders race each other; only each sender's own
+        // order is defined. Every message is processed through a step, so
+        // each payload forces a replay over a log that grows by a hook
+        // payload and a step per message.
+        await Promise.all(
+          tokens.map(async (token) => {
+            for (let seq = 0; seq < PER_HOOK; seq++) {
+              await resumeHook(token, { seq });
+            }
+            await resumeHook(token, { seq: PER_HOOK, done: true });
+          })
+        );
+
+        const received = await run.returnValue;
+        expect(received).toHaveLength(tokens.length * PER_HOOK);
+        for (let source = 0; source < tokens.length; source++) {
+          expect(
+            received.filter((r) => r.source === source).map((r) => r.seq),
+            `hook ${source}`
+          ).toEqual(range(PER_HOOK));
+        }
+
+        await expectInboxEventLog(run.runId, {
+          hookReceived: tokens.length * (PER_HOOK + 1),
+          stepCompleted: tokens.length * PER_HOOK,
+        });
+      }
+    );
+
+    test(
+      'dynamicInboxWorkflow - a hook added to a merged inbox mid-run joins the same ordered stream',
+      { timeout: 240_000 },
+      async () => {
+        const sessionId = Math.random().toString(36).slice(2);
+        const identityToken = `identity-${sessionId}`;
+        const threadToken = `thread:thread-${sessionId}`;
+        const PHASE_ONE = 15 * SCALE;
+        const PHASE_TWO = 30 * SCALE;
+
+        const run = await start(await e2e('dynamicInboxWorkflow'), [
+          identityToken,
+          sessionId,
+        ]);
+        await waitForHook(identityToken, { runId: run.runId });
+
+        const expected: { source: number; seq: number }[] = [];
+        let seq = 0;
+
+        // Phase 1: only the identity hook exists.
+        for (let i = 0; i < PHASE_ONE; i++) {
+          await resumeHook(identityToken, { seq });
+          expected.push({ source: 0, seq: seq++ });
+        }
+
+        // Phase 2: the thread hook is added after the first reply is posted.
+        // Alternate between the two hooks; the merged inbox must interleave
+        // them in exactly this (log) order.
+        await waitForHook(threadToken, { runId: run.runId });
+        for (let i = 0; i < PHASE_TWO; i++) {
+          const source = i % 2;
+          await resumeHook(source === 0 ? identityToken : threadToken, {
+            seq,
+          });
+          expected.push({ source, seq: seq++ });
+        }
+        await resumeHook(identityToken, { seq, done: true });
+
+        const result = await run.returnValue;
+        expect(result.threadId).toBe(`thread-${sessionId}`);
+        expect(result.received).toEqual(expected);
+
+        await expectInboxEventLog(run.runId, {
+          hookReceived: PHASE_ONE + PHASE_TWO + 1,
+          stepCompleted: 1,
+        });
+      }
+    );
+  });
+  // ==================== END HOOK INBOX PATTERNS ====================
+
   // ==================== ERROR HANDLING TESTS ====================
   describe('error handling', () => {
     describe('error propagation', () => {
