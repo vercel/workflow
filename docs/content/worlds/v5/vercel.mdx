@@ -130,7 +130,7 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 ## Connecting from outside a deployment
 
-Inside a Vercel deployment there is nothing to authenticate: the platform injects a per-request OIDC token and the Vercel World uses it automatically. A process that is *not* a deployment has no such token — a script on your laptop, a CI job driving end-to-end tests against a preview, a one-off backfill. Those clients authenticate with a **Vercel auth token** and route their requests through the `api-workflow` proxy on `api.vercel.com`, which checks the token against your team and project permissions and attributes the request to the environment you name.
+Inside a Vercel deployment there is nothing to authenticate: the platform injects a per-request OIDC token and the Vercel World uses it automatically. A process that is *not* a deployment has no such token — a script on your laptop, a CI job driving end-to-end tests against a preview, a one-off backfill. Those clients authenticate with a **Vercel auth token** instead. Vercel checks that token against your team and project permissions, and attributes the request to the environment you name.
 
 <Callout type="warn">
   Do not reuse the `VERCEL_OIDC_TOKEN` that `vercel env pull` writes into
@@ -152,8 +152,8 @@ These four values are what an external client needs. The names are the conventio
 | Variable | Value | Notes |
 | --- | --- | --- |
 | `WORKFLOW_VERCEL_AUTH_TOKEN` | Vercel auth token | Keep it secret. Create one under [account settings → tokens](https://vercel.com/account/tokens), scoped to the team that owns the project. |
-| `WORKFLOW_VERCEL_TEAM` | Vercel team ID (`team_...`) | Required — see [below](#why-both-ids-are-required). |
-| `WORKFLOW_VERCEL_PROJECT` | Vercel project ID (`prj_...`) | Required — see [below](#why-both-ids-are-required). |
+| `WORKFLOW_VERCEL_TEAM` | Vercel team ID (`team_...`) | Required. Set it together with the token and the project ID. |
+| `WORKFLOW_VERCEL_PROJECT` | Vercel project ID (`prj_...`) | Required. Set it together with the token and the team ID. |
 | `WORKFLOW_VERCEL_ENV` | The environment to target | Defaults to `production`. See [`WORKFLOW_VERCEL_ENV`](#workflow_vercel_env) for the accepted values. |
 
 Both IDs are in `.vercel/project.json` after `vercel link` — `projectId` is the project, `orgId` the team or user that owns it — or on the project's settings page.
@@ -162,9 +162,9 @@ Three more are situational:
 
 - `VERCEL_DEPLOYMENT_ID` — required to **start** runs, not to read them. See [Starting runs](#starting-runs-from-outside-a-deployment).
 - `WORKFLOW_VERCEL_PROJECT_NAME` — the project slug, used only to build dashboard links.
-- `VERCEL_TOKEN` — the one token variable the World itself reads, and only as a fallback for the direct Vercel API calls it makes alongside the proxy (fetching a run's encryption key, resolving `deploymentId: "latest"`). A client that passes `token` explicitly, as below, already covers those calls and does not need it.
+- `VERCEL_TOKEN` — a fallback the World reads for the Vercel API calls it makes alongside your Workflow requests (fetching a run's encryption key, resolving `deploymentId: "latest"`). A client that passes `token` explicitly, as below, already covers those calls and does not need it.
 
-For a custom environment, set `WORKFLOW_VERCEL_ENV` to the environment's **slug**, not its ID. The proxy accepts either but always attributes the write to the slug, and it is the slug that the consuming deployment compares against.
+For a custom environment, set `WORKFLOW_VERCEL_ENV` to the environment's **slug**, not its ID — the slug is what the consuming deployment compares against.
 
 <Callout type="info">
   The Workflow SDK does not read `WORKFLOW_VERCEL_*` from the environment on
@@ -202,19 +202,15 @@ const run = await start(myWorkflow, ["input"]);
 console.log(run.runId);
 ```
 
-Behind the scenes the client now sends every Workflow request to `https://api.vercel.com/v1/workflow` with `Authorization: Bearer <token>`, plus `x-vercel-team-id`, `x-vercel-project-id`, and `x-vercel-environment` headers derived from the config. The same token also authorizes the per-run key fetch that decrypts run and step data, so reads come back as values rather than opaque bytes — see [Encryption](/docs/how-it-works/encryption).
+Supply `token`, `projectId`, and `teamId` together. Setting the two IDs without a token fails immediately, with a message naming the missing token, rather than surfacing later as an opaque `401`.
+
+The same token authorizes the per-run key fetch that decrypts run and step data, so reads come back as values rather than opaque bytes — see [Encryption](/docs/how-it-works/encryption).
 
 This is exactly what the `workflow` CLI does under the hood. It resolves the same four values — from `--authToken` / `--project` / `--team` / `--env`, then the `WORKFLOW_VERCEL_*` variables, then `.vercel/project.json` and your `vercel login` credentials — and constructs the World with them. Passing them explicitly is the non-interactive equivalent of being logged in and linked.
 
-#### Why both IDs are required
-
-The project ID and team ID together are what put the client on the proxy. With both present it uses the proxy and a Vercel auth token; with either missing it talks to workflow-server directly, and that path authenticates with a deployment's per-request OIDC token — a credential an external process does not have. Supply all of `token`, `projectId`, and `teamId`, or none of them.
-
-Supplying both IDs but no token fails immediately, with a message naming the missing token, rather than surfacing later as an opaque `401`.
-
 ### Starting runs from outside a deployment
 
-[`start()`](/docs/api-reference/workflow-api/start) addresses its queue message to one deployment, because a run executes the code of the deployment that created it. Inside a deployment that is the current one; outside, there is nothing to infer, so set `VERCEL_DEPLOYMENT_ID` to the deployment whose code should run the workflow:
+[`start()`](/docs/api-reference/workflow-api/start) has to name a deployment, because a run executes the code of the deployment that created it. Inside a deployment that is the current one; outside, there is nothing to infer, so set `VERCEL_DEPLOYMENT_ID` to the deployment whose code should run the workflow:
 
 ```bash
 # `vercel inspect` prints the dpl_... ID for a deployment URL
@@ -225,13 +221,12 @@ Reads such as [`getRun()`](/docs/api-reference/workflow-api/get-run) do not need
 
 <Callout type="warn">
   The environment you authenticate as and the deployment you target must
-  agree. A client that writes a run to `preview` but pins the queue message to
-  a production deployment creates a run that never executes: the consuming
-  deployment compares the creator's environment against its own and discards
-  the delivery instead of forking the run into both tenants. If a run stays
-  `pending` and the deployment logs a refusal naming two environments, check
-  `WORKFLOW_VERCEL_ENV` against the environment of the deployment in
-  `VERCEL_DEPLOYMENT_ID`.
+  agree. A client that creates a run in `preview` but points it at a
+  production deployment creates a run that never executes: environments are
+  isolated from each other, so a deployment refuses work created in a
+  different one. If a run stays `pending` and the deployment logs a refusal
+  naming two environments, check `WORKFLOW_VERCEL_ENV` against the environment
+  of the deployment in `VERCEL_DEPLOYMENT_ID`.
 </Callout>
 
 ### In CI
