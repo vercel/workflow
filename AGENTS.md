@@ -428,6 +428,7 @@ Because those PRs have no deployment of their own, CI treats them specially: the
 - To check if one is needed, run `pnpm changeset status --since=main >/dev/null 2>&1 && echo "no changeset needed" || echo "changeset needed"`
 - Create a changeset using `pnpm changeset add`
   - All changed packages should be included in the changeset. Never include unchanged packages.
+  - Never list a package from the `ignore` array in `.changeset/config.json` (private workbench and simulation packages such as `@workflow/world-sim`), even when the PR changes it. Changesets rejects a changeset that mixes ignored and published packages, and the failure only surfaces in the Release job on `main`. `node scripts/check-changesets.mjs` runs that validation locally; CI runs it in `lint.yml`.
   - Use the correct semver bump type: `patch` for bug fixes, `minor` for new features, `major` for breaking changes
   - On `main` (pre-release mode), the bump type doesn't affect beta numbering (it always increments `beta.N`) but it **does matter** when changes are backported to `stable`
 - Remember to always build any packages that get changed before running downstream tests like e2e tests in the workbench
