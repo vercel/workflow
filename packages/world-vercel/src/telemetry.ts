@@ -322,12 +322,22 @@ export const StepLatencyOptimizations = SemanticConvention<string[]>(
 
 /**
  * The socket a WS event write actually travelled over
- * (workflow.events.ws.url). `url.full` names the v4 REST endpoint the frame is
- * forwarded into, so this is where the real wire destination is recorded.
+ * (workflow.events.ws.url). Frame spans carry no `url.full` (no HTTP request
+ * exists to name), so this is where the real wire destination is recorded.
  */
 export const WorkflowWsUrl = SemanticConvention<string>(
   'workflow.events.ws.url'
 );
+
+/**
+ * Datadog-reserved resource override (resource.name). Set where the derived
+ * resource would mislead: Datadog computes an HTTP-semconv CLIENT span's
+ * resource from `http.request.method` (+ route), ignoring the span name — so
+ * WS frame spans would render as a bare `POST` and the upgrade as `GET`.
+ * Spans without HTTP semconv fall back to the span name, where this override
+ * is belt-and-braces.
+ */
+export const DatadogResourceName = SemanticConvention<string>('resource.name');
 
 /**
  * Per-connection request id this write was multiplexed under
