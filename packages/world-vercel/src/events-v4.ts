@@ -274,6 +274,14 @@ interface CreateEventV4InputBase {
    *  the run entity so cross-run writers can seal to it without holding the
    *  run's symmetric key. */
   encryptionPublicKey?: string;
+  /** A dynamic run's serialized workflow VM code, inline on run_created (and
+   *  run_started for resilient start). Rides the frame meta as a CBOR byte
+   *  string — the body slot on those events already carries the run's input.
+   *  The backend stores it behind a ref on the run and never decodes it. */
+  dynamicWorkflowCode?: Uint8Array;
+  /** Ref key of dynamic workflow code uploaded ahead of this write, for
+   *  definitions too large to ride the meta inline. */
+  dynamicWorkflowCodeRef?: string;
   /** Client-measured time-to-first-step ms, riding on the run's first
    *  step_completed / step_failed. Consumed server-side for latency
    *  metrics; not read back. */
@@ -531,6 +539,12 @@ function buildPostFrameMeta(
   }
   if (input.encryptionPublicKey !== undefined) {
     meta.encryptionPublicKey = input.encryptionPublicKey;
+  }
+  if (input.dynamicWorkflowCode !== undefined) {
+    meta.dynamicWorkflowCode = input.dynamicWorkflowCode;
+  }
+  if (input.dynamicWorkflowCodeRef !== undefined) {
+    meta.dynamicWorkflowCodeRef = input.dynamicWorkflowCodeRef;
   }
   if (input.ttfs !== undefined) meta.ttfs = input.ttfs;
   if (input.stso !== undefined) meta.stso = input.stso;

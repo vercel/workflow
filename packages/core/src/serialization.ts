@@ -4060,6 +4060,101 @@ export async function hydrateStepError(
 }
 
 /**
+ * Serialize a dynamic run's generated workflow VM code for storage.
+ *
+ * Dynamic workflow code is application source, so it gets the same treatment
+ * as any other run payload: compressed (it is plain text, which compresses
+ * very well), then encrypted with the run's key. At rest it is opaque
+ * ciphertext, which is the point — generated orchestration can name internal
+ * step ids, prompts, and business rules, and observability surfaces must not
+ * read it without going through the decrypt flow.
+ *
+ * The code is a string, so this skips the devalue graph walk that
+ * `dehydrateRunError` needs and encodes it directly. The format prefix is
+ * still `DEVALUE_V1`: a JSON-quoted string *is* valid devalue, so anything
+ * that already knows how to hydrate a prefixed payload keeps working.
+ *
+ * @param code - Generated workflow VM code.
+ * @param key - Encryption key (undefined to skip encryption).
+ * @param compression - Whether the target run may carry compressed payloads.
+ */
+export async function dehydrateDynamicWorkflowCode(
+  code: string,
+  key: PayloadKey | undefined,
+  compression = false
+): Promise<Uint8Array> {
+  try {
+    const payload = new TextEncoder().encode(JSON.stringify(code));
+    const serialized = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      payload
+    ) as Uint8Array;
+    // Compress before encrypting — encrypted bytes don't compress.
+    const compressionStats: CompressionStats = {};
+    const compressed = await compress(
+      serialized,
+      compression,
+      compressionStats
+    );
+    const encrypted = (await maybeEncrypt(
+      compressed as Uint8Array,
+      key
+    )) as Uint8Array;
+    await recordCompression(compressionStats, 'serialize');
+    return encrypted;
+  } catch (error) {
+    const cause = unwrapSerializationCause(error);
+    const { message, hint } = formatSerializationError(
+      'dynamic workflow code',
+      cause
+    );
+    throw new SerializationError(message, { hint, cause });
+  }
+}
+
+/**
+ * Hydrate a dynamic run's workflow VM code back into source, on the replay
+ * path (and for observability surfaces that choose to reveal it).
+ *
+ * @param value - Stored bytes from the run's `dynamicWorkflowCode`.
+ * @param key - Encryption key (undefined when encryption is disabled).
+ * @throws SerializationError when the payload does not decode to a string —
+ *   a corrupted or foreign payload must not reach the workflow VM as code.
+ */
+export async function hydrateDynamicWorkflowCode(
+  value: Uint8Array | unknown,
+  key: PayloadKey | undefined
+): Promise<string> {
+  const compressionStats: CompressionStats = {};
+  const decrypted = await decompress(
+    await decrypt(value, key),
+    compressionStats
+  );
+  await recordCompression(compressionStats, 'deserialize');
+
+  if (!(decrypted instanceof Uint8Array)) {
+    throw new SerializationError(
+      'Dynamic workflow code did not decode to binary data.'
+    );
+  }
+
+  const { format, payload } = decodeFormatPrefix(decrypted);
+  if (format !== SerializationFormat.DEVALUE_V1) {
+    throw new SerializationError(
+      `Unsupported serialization format for dynamic workflow code: ${format}`
+    );
+  }
+
+  const code = JSON.parse(new TextDecoder().decode(payload));
+  if (typeof code !== 'string') {
+    throw new SerializationError(
+      `Dynamic workflow code decoded to ${typeof code}, expected a string.`
+    );
+  }
+  return code;
+}
+
+/**
  * Called from the workflow handler when the workflow itself throws.
  * Dehydrates the thrown value from within the workflow execution environment
  * into a format that can be saved to the database in a `run_failed` event.

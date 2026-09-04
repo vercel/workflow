@@ -5,7 +5,7 @@ type: reference
 summary: Tune Workflow runtime behavior where workflows execute.
 related:
   - /docs/configuration/worlds
-  - /docs/how-it-works/event-sourcing
+  - /docs/advanced/event-sourcing
 ---
 
 The runtime reads these variables where workflows execute. Set them on the deployment or dev server.
@@ -110,7 +110,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 ### `WORKFLOW_SLOT_GAP_CHECK`
 
 - Default: enabled
-- A replay checks that the [event log](/docs/how-it-works/event-sourcing#event-ids) it loaded is dense before it runs, and fails the run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log) when a position below the log's highest holds no event. A log missing only its first position, meaning a run whose `run_created` is still being written, is left alone.
+- A replay checks that the [event log](/docs/advanced/event-sourcing#event-ids) it loaded is dense before it runs, and fails the run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log) when a position below the log's highest holds no event. A log missing only its first position, meaning a run whose `run_created` is still being written, is left alone.
 - A position can be briefly empty while the write that occupies it is still committing, so the check re-reads the log a few times before it decides, and the replay continues from whichever log it settled on.
 - The check trades one failure for another. Most holes stand for an event that never happened, and replaying past those is correct. A hole standing for an event that did happen looks identical, and replaying past that one produces a run whose result is silently wrong. Failing is the recoverable side of that trade.
 - Set `0` to replay across holes instead.

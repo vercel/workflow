@@ -68,6 +68,7 @@ import {
   guardDeploymentAffinity,
   type ReenqueueArgs,
 } from './runtime/deployment-guard.js';
+import { readDynamicWorkflowMetadata } from './runtime/dynamic-workflow.js';
 import {
   absorbSkippedSlotReport,
   appendEventLog,
@@ -119,7 +120,11 @@ import {
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import { getWorld, type WorldHandlers } from './runtime/world.js';
-import { dehydrateRunError } from './serialization.js';
+import {
+  dehydrateRunError,
+  hydrateDynamicWorkflowCode,
+  type PayloadKey,
+} from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
@@ -178,6 +183,9 @@ export {
   wakeUpRun,
 } from './runtime/runs.js';
 export {
+  type DynamicStartOptions,
+  type DynamicWorkflowOptions,
+  type DynamicWorkflowStepReference,
   type StartOptions,
   type StartOptionsBase,
   type StartOptionsWithDeploymentId,
@@ -694,6 +702,63 @@ async function getMaxInlineDurationMs(
 }
 
 /**
+ * Pick the workflow code this run replays.
+ *
+ * For a static run — every run today — this is the deployment's bundle,
+ * returned unchanged after one plaintext property read. The dynamic branch
+ * exists for runs started from source: their workflow function was never in
+ * the bundle, so the code came with the run, and replaying it means
+ * evaluating that exact code rather than whatever the deployment now
+ * contains.
+ *
+ * The code is stored the way every other run payload is (compressed, then
+ * encrypted with the run's key), so it has to be hydrated before it can be
+ * evaluated. Two sources, in order of what the invocation already holds:
+ *
+ * 1. On the run snapshot. The normal case: `run_created` and the queue
+ *    message both carry the bytes, so a read is already unnecessary by the
+ *    time replay begins.
+ * 2. Read back from the run. Needed when the definition was too large to
+ *    send inline and lives behind a ref — the queue message carries only the
+ *    ref, and a turbo-synthesized snapshot has no bytes at all. The run has
+ *    to exist first, hence the barrier.
+ *
+ * @param getEncryptionKey - Resolved only on the dynamic branch. The key is
+ *   lazy for a reason: some deliveries never need it, and forcing it here
+ *   would put a key fetch on every static run's critical path.
+ * @param awaitRunReady - Orders the fallback read after the write that
+ *   creates the run; a no-op once the run is durable.
+ */
+async function resolveWorkflowCodeForRun(
+  staticWorkflowCode: string,
+  workflowRun: WorkflowRun,
+  getEncryptionKey: () => Promise<PayloadKey | undefined>,
+  world: World,
+  awaitRunReady: () => Promise<void>
+): Promise<string> {
+  const dynamicWorkflow = readDynamicWorkflowMetadata(
+    workflowRun.executionContext
+  );
+  if (!dynamicWorkflow) return staticWorkflowCode;
+
+  let stored = workflowRun.dynamicWorkflowCode;
+  if (stored === undefined) {
+    await awaitRunReady();
+    stored = (await world.runs.get(workflowRun.runId, { resolveData: 'all' }))
+      .dynamicWorkflowCode;
+  }
+
+  if (stored === undefined) {
+    throw new WorkflowRuntimeError(
+      `Workflow run "${workflowRun.runId}" is a dynamic run (source ${dynamicWorkflow.sourceHash.slice(0, 12)}) but its stored workflow code is missing, so it cannot be replayed. ` +
+        'This means the code was never persisted or its storage has expired.'
+    );
+  }
+
+  return hydrateDynamicWorkflowCode(stored, await getEncryptionKey());
+}
+
+/**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
  * and queue overhead.
@@ -974,6 +1039,17 @@ export function workflowEntrypoint(
                       >
                     ) => {
                       if (!workflow || useQuickJSVm(workflow)) return;
+                      // A dynamic run does not replay the deployment's
+                      // bundle, and its own code is not available yet (it is
+                      // encrypted, and resolving it needs the run's key). Skip
+                      // the warm-up rather than cache scripts the replay must
+                      // not use: `replayWorkflow` compiles the resolved code
+                      // itself when no compiled scripts are handed to it.
+                      if (
+                        readDynamicWorkflowMetadata(workflow.executionContext)
+                      ) {
+                        return;
+                      }
                       if (compiledWorkflowName !== workflow.workflowName) {
                         compiledWorkflowName = workflow.workflowName;
                         compiledWorkflowScripts = compileWorkflowBundle(
@@ -2346,6 +2422,13 @@ export function workflowEntrypoint(
                               attributes: runInput.attributes,
                               allowReservedAttributes:
                                 runInput.allowReservedAttributes,
+                              // Resilient start: this event is what creates
+                              // the run when `run_created` never landed, so a
+                              // dynamic run's code has to come with it or the
+                              // run is created unable to replay.
+                              dynamicWorkflowCode: runInput.dynamicWorkflowCode,
+                              dynamicWorkflowCodeRef:
+                                runInput.dynamicWorkflowCodeRef,
                             },
                           }
                         : {}),
@@ -2418,6 +2501,19 @@ export function workflowEntrypoint(
                         specVersion: runInput.specVersion,
                         executionContext: runInput.executionContext,
                         input: runInput.input,
+                        // A dynamic run's code rides the queue message for
+                        // exactly this: turbo synthesizes the run snapshot
+                        // instead of waiting for the `run_started` response,
+                        // and without the code there would be nothing to
+                        // execute on the first delivery. Absent when the
+                        // definition was too large to send inline, in which
+                        // case `resolveWorkflowCodeForRun` reads it back from
+                        // the run instead.
+                        ...(runInput.dynamicWorkflowCode
+                          ? {
+                              dynamicWorkflowCode: runInput.dynamicWorkflowCode,
+                            }
+                          : {}),
                         // Seed attributes from start() ride along in `runInput`
                         // (they live in `run_created`'s eventData, not separate
                         // `attr_set` events), so the synthesized snapshot carries
@@ -2748,6 +2844,20 @@ export function workflowEntrypoint(
                     } // end else (re-ensure needed)
                   }
 
+                  // The code this run replays. For every static run that is
+                  // the deployment's bundle, unchanged after one plaintext
+                  // property read. A dynamic run brings its own — resolved
+                  // once here, since the code is fixed for the run's lifetime
+                  // and each replay iteration below would otherwise redo the
+                  // decrypt.
+                  const effectiveWorkflowCode = await resolveWorkflowCodeForRun(
+                    workflowCode,
+                    workflowRun,
+                    () => encryptionKey.value,
+                    world,
+                    awaitRunReady
+                  );
+
                   // The live VM parked at the previous boundary, when the
                   // retention decision kept it. null → this iteration cold-
                   // replays. Invocation-scoped: dies with this delivery.
@@ -2875,7 +2985,7 @@ export function workflowEntrypoint(
                           './runtime/quickjs-entrypoint.js'
                         );
                         const quickjsResult = await runWorkflowWithQuickJS({
-                          workflowCode,
+                          workflowCode: effectiveWorkflowCode,
                           workflowName,
                           workflowRun,
                           preloadedEvents:
@@ -3205,17 +3315,27 @@ export function workflowEntrypoint(
                       if (workflowResult.type === 'replay') {
                         retainedSession = null;
                         const compiled = startWorkflowCompile(workflowRun);
+                        // Dynamic runs are the one Node replay with no
+                        // pre-compiled scripts: the warm-up above skips them
+                        // because their code is not the bundle. They compile
+                        // `effectiveWorkflowCode` inside `replayWorkflow`
+                        // instead, which is also cached by (code, filename).
                         assert(
-                          compiled,
+                          compiled ||
+                            readDynamicWorkflowMetadata(
+                              workflowRun.executionContext
+                            ),
                           'Node workflow replay requires compiled scripts'
                         );
                         workflowResult = await replayWorkflow({
-                          workflowCode,
+                          workflowCode: effectiveWorkflowCode,
                           workflowRun,
                           events: eventLog.events,
                           encryptionKey: await encryptionKey.value,
                           replayPayloadCache,
-                          compiledWorkflowScripts: await compiled,
+                          ...(compiled
+                            ? { compiledWorkflowScripts: await compiled }
+                            : {}),
                           // Turbo: the end-of-run drain inside workflow
                           // execution commits fire-and-forget `*_created`
                           // events before the terminal `awaitRunReady()` below.
@@ -4897,7 +5017,7 @@ export function workflowEntrypoint(
                           errorStack = remapErrorStack(
                             errorStack,
                             filename,
-                            workflowCode
+                            effectiveWorkflowCode
                           );
                         }
 

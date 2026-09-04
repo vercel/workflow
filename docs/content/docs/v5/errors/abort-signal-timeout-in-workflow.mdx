@@ -24,7 +24,7 @@ Use sleep() with an AbortController instead.
 
 ## Why this happens
 
-`AbortSignal.timeout()` creates a signal that aborts after a real-time delay using an internal timer. Workflow functions must be [deterministic](/docs/foundations/workflows-and-steps) to support replay: they run the same code multiple times during the workflow's lifecycle, using the [event log](/docs/how-it-works/event-sourcing) to resume execution to the correct point.
+`AbortSignal.timeout()` creates a signal that aborts after a real-time delay using an internal timer. Workflow functions must be [deterministic](/docs/foundations/workflows-and-steps) to support replay: they run the same code multiple times during the workflow's lifecycle, using the [event log](/docs/advanced/event-sourcing) to resume execution to the correct point.
 
 Real-time timers break this determinism because:
 - On the first execution, the timer might fire after 10 seconds.

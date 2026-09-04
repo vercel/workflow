@@ -69,6 +69,26 @@ export const WorkflowRunBaseSchema = z.object({
   input: SerializedDataSchema.optional(),
   output: SerializedDataSchema.optional(),
   /**
+   * A dynamic run's own workflow VM code, serialized through the same
+   * pipeline as `input` (compressed, then encrypted with the run's key).
+   *
+   * Present only on runs started from source rather than from a workflow
+   * function in the deployment's build-time manifest — see the Dynamic
+   * Workflows docs. The runtime hydrates it on every replay and evaluates
+   * *it* instead of the deployment's bundle, which is why it must be stored
+   * with the run: replaying a dynamic run means replaying the exact code it
+   * started on, and that code exists nowhere else.
+   *
+   * Written once at `run_created` and never updated. Worlds with a blob-ref
+   * layer keep it behind a ref (small definitions inline, larger ones in
+   * object storage) so an unbounded definition cannot bloat the run record.
+   *
+   * Like the run's other payload fields, this is opaque ciphertext at rest:
+   * observability surfaces get a locked placeholder until the reader chooses
+   * to decrypt, and hydration goes through the normal decryption pipeline.
+   */
+  dynamicWorkflowCode: SerializedDataSchema.optional(),
+  /**
    * The thrown value from a run_failed event, serialized via the workflow
    * serialization pipeline. To display the error to a user, hydrate it via
    * `hydrateRunError` (with the encryption key if encryption is enabled).
