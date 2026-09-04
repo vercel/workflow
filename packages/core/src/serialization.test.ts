@@ -1,5 +1,8 @@
 import { runInContext } from 'node:vm';
-import type { WorkflowRuntimeError } from '@workflow/errors';
+import {
+  WorkflowWorldError,
+  type WorkflowRuntimeError,
+} from '@workflow/errors';
 import {
   FatalError,
   HookConflictError,
@@ -552,6 +555,80 @@ describe('workflow arguments', () => {
     expect(text).toContain('strm_parentstreamname');
     expect(text).toContain('wrun_parent');
     expect(text).toContain('dpl_parent');
+  });
+
+  it('does not reject unhandled when the forwarded key lookup fails before the first write', async () => {
+    const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+    const timeout = new WorkflowWorldError(
+      'GET /v2/runs/wrun_parent timed out',
+      {
+        code: 'TIMEOUT',
+      }
+    );
+    const runsGet = vi.fn().mockRejectedValue(timeout);
+    const getEncryptionKeyForRun = vi.fn();
+    const world = {
+      ...makeMockWorld(),
+      runs: { get: runsGet },
+      getEncryptionKeyForRun,
+    } as any;
+    vi.mocked(getWorldLazy).mockReturnValue(world);
+
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
+
+    try {
+      // No deployment id and no public key on the forwarded writable, so the
+      // key lookup has to read the parent run's metadata.
+      const parentWritable = new WritableStream();
+      Object.defineProperty(parentWritable, STREAM_NAME_SYMBOL, {
+        value: 'strm_parentstreamname',
+        writable: false,
+      });
+      Object.defineProperty(parentWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: 'wrun_parent',
+        writable: false,
+      });
+
+      const serialized = await dehydrateStepArguments(
+        parentWritable,
+        'wrun_child',
+        noEncryptionKey
+      );
+      const ops: Promise<void>[] = [];
+      const hydrated = (await hydrateStepArguments(
+        serialized,
+        'wrun_child',
+        noEncryptionKey,
+        ops,
+        globalThis,
+        {}
+      )) as WritableStream<string>;
+
+      // Nothing is written yet, so nothing should have been requested and
+      // nothing can reject.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(runsGet).not.toHaveBeenCalled();
+      expect(unhandledRejections).toEqual([]);
+
+      // The failure belongs to the stream that needed the key: the serialize
+      // transform errors the stream, so it shows up on the writer.
+      const writer = hydrated.getWriter();
+      await writer.write('hello').catch(() => {});
+      await expect(writer.closed).rejects.toMatchObject({
+        cause: { code: 'TIMEOUT' },
+      });
+      expect(runsGet).toHaveBeenCalledTimes(1);
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandledRejections).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+      vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
+    }
   });
 
   it('uses the forwarded stream deployment to resolve its encryption key', async () => {

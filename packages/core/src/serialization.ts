@@ -2788,6 +2788,30 @@ async function getForwardedWritableEncryptionKey(
 }
 
 /**
+ * Defer the forwarded-writable key lookup until something is written.
+ *
+ * The thunk runs the lookup once and memoizes the result, so a failure (for
+ * example a run metadata request that timed out) surfaces on the write that
+ * needed the key instead of as an unhandled rejection on a writable nobody
+ * has written to.
+ */
+function lazyForwardedWritableEncryptionKey(
+  runId: string,
+  deploymentId: string | undefined,
+  encryptionPublicKey: string | undefined
+): () => Promise<PayloadKey | undefined> {
+  let keyPromise: Promise<PayloadKey | undefined> | undefined;
+  return () => {
+    keyPromise ??= getForwardedWritableEncryptionKey(
+      runId,
+      deploymentId,
+      encryptionPublicKey
+    );
+    return keyPromise;
+  };
+}
+
+/**
  * Create a run's object readable without dispatching its stream GET or
  * encryption-key lookup until the caller reads it. The external reviver starts
  * its background pipe immediately, so this boundary belongs here—next to the
@@ -3008,7 +3032,7 @@ export function getExternalRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(
+          : lazyForwardedWritableEncryptionKey(
               targetRunId,
               value.deploymentId,
               value.encryptionPublicKey
@@ -3421,10 +3445,11 @@ function getStepRevivers(
       // Cross-run case (parent → child via `start()`): the descriptor
       // carries the original `runId` and `name`. Open a server writable
       // against the original `(runId, name)` and resolve THAT run's key
-      // for encryption. The resolution is async but doesn't need to
-      // block reviver return: `getSerializeStream` accepts the
-      // `Promise<CryptoKey | undefined>` directly and awaits it lazily
-      // on the first chunk written. The key is imported encrypt-only
+      // for encryption. The lookup does not start until the first chunk
+      // is written: `getSerializeStream` calls the key thunk lazily, so a
+      // failed lookup errors the stream instead of becoming an unhandled
+      // rejection on a writable nobody wrote to. The key is imported
+      // encrypt-only
       // so the receiving run can never decrypt anything else on the
       // owning run's stream; it can only contribute new writes.
       const targetRunId = typeof value.runId === 'string' ? value.runId : runId;
@@ -3437,7 +3462,7 @@ function getStepRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(
+          : lazyForwardedWritableEncryptionKey(
               targetRunId,
               targetDeploymentId,
               value.encryptionPublicKey
