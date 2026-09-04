@@ -676,7 +676,7 @@ describe.concurrent('e2e', () => {
     expect(hook.runId).toBe(run.runId);
     await resumeHook(hook, {
       message: 'one',
-      customData: (hook.metadata as any)?.customData,
+      customData: ((await hook.metadata) as any)?.customData,
     });
 
     // Invalid token test
@@ -687,7 +687,7 @@ describe.concurrent('e2e', () => {
     expect(hook.runId).toBe(run.runId);
     await resumeHook(hook, {
       message: 'two',
-      customData: (hook.metadata as any)?.customData,
+      customData: ((await hook.metadata) as any)?.customData,
     });
 
     // Resume with third (final) payload
@@ -696,7 +696,7 @@ describe.concurrent('e2e', () => {
     await resumeHook(hook, {
       message: 'three',
       done: true,
-      customData: (hook.metadata as any)?.customData,
+      customData: ((await hook.metadata) as any)?.customData,
     });
 
     const returnValue = await run.returnValue;
@@ -737,7 +737,7 @@ describe.concurrent('e2e', () => {
       // Now resume via server-side resumeHook() — should work
       await resumeHook(hook, {
         message: 'via-server',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
         done: true,
       });
 
@@ -2056,7 +2056,7 @@ describe.concurrent('e2e', () => {
       expect(hook.runId).toBe(run1.runId);
       await resumeHook(hook, {
         message: 'test-message-1',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Get first workflow result
@@ -2080,7 +2080,7 @@ describe.concurrent('e2e', () => {
       expect(hook.runId).toBe(run2.runId);
       await resumeHook(hook, {
         message: 'test-message-2',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Get second workflow result
@@ -2142,7 +2142,7 @@ describe.concurrent('e2e', () => {
       const hook = await getHookByToken(token);
       await resumeHook(hook, {
         message: 'test-concurrent',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Verify workflow 1 completed successfully
@@ -2299,7 +2299,7 @@ describe.concurrent('e2e', () => {
 
       await resumeHook(hook, {
         message: 'ready-conflict-holder',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       const run1Result = await run1.returnValue;
@@ -2637,7 +2637,7 @@ describe.concurrent('e2e', () => {
       // Send payload to first workflow - this will trigger it to dispose the hook
       await resumeHook(hook, {
         message: 'first-payload',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Wait for workflow 1 to release the token before starting workflow 2.
@@ -2659,7 +2659,7 @@ describe.concurrent('e2e', () => {
       // Send payload to workflow 2
       await resumeHook(hook, {
         message: 'second-payload',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Wait for both workflows to complete

@@ -215,7 +215,7 @@ describe('resumeHook (resumeContext fast path)', () => {
 
   it('resumeWebhook default (no metadata) pays no key lookup and seals to the run', async () => {
     // The common default webhook — createWebhook() with no `respondWith` —
-    // stores no metadata, so getHookByTokenWithKey resolves no key and
+    // stores no metadata, so awaiting `hook.metadata` resolves no key and
     // resumeHook seals to the run's public key carried in the resume context.
     // Zero run reads, zero `run-key` API round trips. (Byte-level `encp` is
     // asserted with real serialization in resume-hook.test.ts.)

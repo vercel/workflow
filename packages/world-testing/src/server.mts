@@ -91,7 +91,8 @@ const app = new Hono()
     const hook = await getHookByToken(ctx.req.param('token'));
     const { runId } = await resumeHook(hook.token, {
       ...(await ctx.req.json()),
-      metadata: hook.metadata,
+      // `metadata` is a lazily-hydrated Promise; echo the resolved value.
+      metadata: await hook.metadata,
     });
     return ctx.json({ runId, hookId: hook.hookId });
   })

@@ -127,6 +127,66 @@ async function publishHookWakeWithRetry(
 }
 
 /**
+ * A hook record with its serialized `metadata` omitted: everything a resume
+ * actually reads. Resuming never looks at metadata, so the resume path accepts
+ * both a raw {@link Hook} straight out of a World and a
+ * {@link HookWithLazyMetadata} whose `metadata` is a Promise.
+ */
+type ResumableHook = Omit<Hook, 'metadata'>;
+
+/**
+ * A {@link Hook} whose user-defined `metadata` is hydrated lazily.
+ *
+ * `metadata` is a getter that returns a Promise — the same shape as
+ * `Run.returnValue` — so looking a hook up by token costs exactly one read.
+ * Hydrating metadata is a decrypting READ that needs the owning run's payload
+ * keys, and resolving those can cost a run fetch plus a `run-key` API round
+ * trip (~350ms). Deferring that to first access keeps the lookup fast for the
+ * many callers that only need `runId`/`token` — most importantly hook
+ * resumption, which never reads metadata at all.
+ *
+ * The promise is memoized: hydration (and the key resolution behind it) runs at
+ * most once per hook object. Awaiting it on a hook that stored no metadata
+ * resolves `undefined` and performs no I/O.
+ *
+ * Like `Run.returnValue`, the accessor is non-enumerable, so it is absent from
+ * `{ ...hook }` and `JSON.stringify(hook)` — read it explicitly and include the
+ * awaited value if you need to forward it.
+ *
+ * @example
+ *
+ * ```ts
+ * const hook = await getHookByToken(token);
+ * console.log(hook.runId); // no metadata work
+ * const metadata = (await hook.metadata) as { allowedUserId?: string } | undefined;
+ * ```
+ */
+export interface HookWithLazyMetadata extends ResumableHook {
+  /**
+   * The hook's user-defined metadata, hydrated on first access and memoized.
+   * Resolves `undefined` when the hook carries no metadata.
+   */
+  readonly metadata: Promise<unknown>;
+}
+
+/**
+ * A by-token hook lookup: the hook itself plus access to the payload keys that
+ * hydrating its `metadata` resolved, if anything ever awaited it.
+ */
+interface HookLookup {
+  hook: HookWithLazyMetadata;
+  /**
+   * The read-side payload keys resolved while hydrating `metadata`, or
+   * `undefined` when `metadata` was never awaited, the hook stored none, or the
+   * run has no key (encryption disabled). Lets `resumeWebhook` — the one caller
+   * that must read metadata — reuse that key for the payload WRITE instead of
+   * paying a second `run-key` round trip. Only meaningful after awaiting
+   * `hook.metadata`.
+   */
+  metadataEncryptionKey(): PayloadKey | undefined;
+}
+
+/**
  * The resume context for a hook plus where it came from. `run` is present only
  * on the fallback path (pre-`resumeContext` hooks), where it also carries the
  * run's mutable status for the terminal-run check. Key resolution is kept
@@ -170,7 +230,9 @@ function resumeContextFromRun(run: WorkflowRun): HookResumeContext {
  * seal/serialization work may run before the receiving side rejects
  * `hook_received` for an ended run.
  */
-async function resolveHookResumeInfo(hook: Hook): Promise<HookResumeInfo> {
+async function resolveHookResumeInfo(
+  hook: ResumableHook
+): Promise<HookResumeInfo> {
   if (hook.resumeContext) {
     return { resumeContext: hook.resumeContext, source: 'hook' };
   }
@@ -190,7 +252,7 @@ async function resolveHookResumeInfo(hook: Hook): Promise<HookResumeInfo> {
  * entity); on the fallback path the already fetched run is reused.
  */
 async function resolveHookEncryptionKey(
-  hook: Hook,
+  hook: ResumableHook,
   info: HookResumeInfo
 ): Promise<Awaited<ReturnType<typeof importKey>> | undefined> {
   const world = await getWorldLazy();
@@ -202,66 +264,126 @@ async function resolveHookEncryptionKey(
   return rawKey ? await importKey(rawKey) : undefined;
 }
 
-async function getHookByTokenWithKey(token: string): Promise<{
-  hook: Hook;
-  encryptionKey: PayloadKey | undefined;
-}> {
-  const world = await getWorldLazy();
-  const hook = await world.hooks.getByToken(token);
+/** Whether `metadata` on this record is already the lazy Promise accessor. */
+function hasLazyMetadata(hook: ResumableHook): boolean {
+  const descriptor = Object.getOwnPropertyDescriptor(hook, 'metadata');
+  return descriptor !== undefined && typeof descriptor.get === 'function';
+}
 
-  // Only a hook that actually carries metadata needs the run's key resolved
-  // here: hydrating that metadata is a READ, so derive the full RunPayloadKeys
-  // (which opens sealed `encp` metadata, not just symmetric `encr`). The common
-  // default webhook (createWebhook() with no `respondWith`) stores no
-  // metadata, so it skips this entirely: no ~350ms `run-key` API round trip,
-  // and, crucially, no resolved key handed to `resumeHook`, leaving it free to
-  // seal the payload to the run's published public key instead. Metadata-
-  // bearing webhooks still legitimately pay one lookup to hydrate.
+/**
+ * Wraps a raw hook record from a World in a {@link HookWithLazyMetadata},
+ * replacing its serialized `metadata` with a memoized Promise getter that
+ * hydrates on first access.
+ *
+ * Nothing here touches the network: the wrap is a property definition. All of
+ * the cost — resolving the run's payload keys and decrypting — moves inside the
+ * getter, so a lookup that never reads metadata pays for exactly one
+ * `hooks.getByToken`.
+ *
+ * The original record is left untouched; the returned object is a shallow copy
+ * carrying the accessor.
+ */
+function withLazyMetadata(raw: Hook): HookLookup {
+  const serialized = raw.metadata;
+  let hydrated: Promise<unknown> | undefined;
   let encryptionKey: PayloadKey | undefined;
-  if (typeof hook.metadata !== 'undefined') {
-    const info = await resolveHookResumeInfo(hook);
+
+  // Hydrating metadata is a decrypting READ, so it derives the full
+  // RunPayloadKeys (which open sealed `encp` metadata, not just symmetric
+  // `encr`) rather than the bare write key the resume path uses.
+  const hydrate = async (): Promise<unknown> => {
+    const world = await getWorldLazy();
+    const info = await resolveHookResumeInfo(raw);
     // On the fast path this resolves the key by runId + deploymentId (no run
     // read); on the fallback path it reuses the already-fetched run.
     const rawKey = info.run
       ? await world.getEncryptionKeyForRun?.(info.run)
-      : await world.getEncryptionKeyForRun?.(hook.runId, {
+      : await world.getEncryptionKeyForRun?.(raw.runId, {
           deploymentId: info.resumeContext.deploymentId,
         });
     encryptionKey = rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
-    hook.metadata = await hydrateStepArguments(
-      hook.metadata as any,
-      hook.runId,
+    return await hydrateStepArguments(
+      serialized as any,
+      raw.runId,
       encryptionKey
     );
-  }
-  return { hook, encryptionKey };
+  };
+
+  const hook = Object.create(
+    Object.getPrototypeOf(raw),
+    Object.getOwnPropertyDescriptors(raw)
+  ) as HookWithLazyMetadata;
+  Object.defineProperty(hook, 'metadata', {
+    // A hook with no metadata resolves `undefined` without any I/O, so callers
+    // can await unconditionally. Memoized either way: metadata is fixed at
+    // hook-creation time, so hydration runs at most once per hook object.
+    get: () =>
+      (hydrated ??=
+        typeof serialized === 'undefined'
+          ? Promise.resolve(undefined)
+          : hydrate()),
+    // Non-enumerable, matching `Run.returnValue` (a prototype getter, so it is
+    // absent from an instance's own keys). Spreading or `JSON.stringify`-ing a
+    // hook therefore cannot trigger hydration nobody asked for — which would
+    // otherwise leave a floating rejection when the run key is unreachable, and
+    // an unconsumed rejected Promise crashes Node as an unhandledRejection.
+    enumerable: false,
+    configurable: true,
+  });
+
+  return { hook, metadataEncryptionKey: () => encryptionKey };
 }
 
 /**
- * Get the hook by token to find the associated workflow run,
- * and hydrate the `metadata` property if it was set from within
- * the workflow run.
+ * Normalizes any hook record the resume path accepted into a
+ * {@link HookWithLazyMetadata} to return to the caller. Idempotent: a hook that
+ * already carries the lazy accessor (one that came from `getHookByToken`) is
+ * returned as-is rather than double-wrapped, which would hand
+ * `hydrateStepArguments` a Promise.
+ */
+function asLazyMetadataHook(hook: ResumableHook): HookWithLazyMetadata {
+  return hasLazyMetadata(hook)
+    ? (hook as HookWithLazyMetadata)
+    : withLazyMetadata(hook as Hook).hook;
+}
+
+/**
+ * Get the hook by token to find the associated workflow run.
+ *
+ * This is a single read. The returned hook's `metadata` is a getter that
+ * resolves a Promise (see {@link HookWithLazyMetadata}), so the run fetch and
+ * `run-key` round trip that hydrating it can require are only paid by callers
+ * that actually await it:
+ *
+ * ```ts
+ * const hook = await getHookByToken(token);
+ * const metadata = await hook.metadata;
+ * ```
  *
  * A Hook kept by minimum retention remains available here after its run ends,
  * but cannot be resumed.
  *
  * @param token - The unique token identifying the hook
  */
-export async function getHookByToken(token: string): Promise<Hook> {
-  const { hook } = await getHookByTokenWithKey(token);
-  return hook;
+export async function getHookByToken(
+  token: string
+): Promise<HookWithLazyMetadata> {
+  const world = await getWorldLazy();
+  return withLazyMetadata(await world.hooks.getByToken(token)).hook;
 }
 
 /**
- * The result of {@link resumeHook}: a {@link Hook} augmented with an optional
- * resilience signal.
+ * The result of {@link resumeHook}: a {@link HookWithLazyMetadata} augmented
+ * with an optional resilience signal.
  *
  * `resilientResume` is retained for source compatibility and is never set.
  * `resumeHook()` now requires the durable `hook_received` write and workflow
  * wake to both succeed before it resolves. Treat the result as a plain
- * {@link Hook}.
+ * {@link HookWithLazyMetadata}.
  */
-export type ResumedHook = Hook & { resilientResume?: boolean };
+export type ResumedHook = HookWithLazyMetadata & {
+  resilientResume?: boolean;
+};
 
 /**
  * Resumes a workflow run by sending a payload to a hook identified by its token.
@@ -309,7 +431,7 @@ export type ResumedHook = Hook & { resilientResume?: boolean };
  * ```
  */
 export async function resumeHook<T = any>(
-  tokenOrHook: string | Hook,
+  tokenOrHook: string | ResumableHook,
   payload: T,
   encryptionKeyOverride?: PayloadKey
 ): Promise<ResumedHook> {
@@ -352,7 +474,7 @@ export async function resumeHook<T = any>(
  *   would report the same metric over different windows.
  */
 async function resumeHookImpl<T = any>(
-  tokenOrHook: string | Hook,
+  tokenOrHook: string | ResumableHook,
   payload: T,
   encryptionKeyOverride: PayloadKey | undefined,
   hookFreshlyLookedUp: boolean,
@@ -364,7 +486,7 @@ async function resumeHookImpl<T = any>(
 
       try {
         const suppliedToken = typeof tokenOrHook === 'string';
-        const hook: Hook = suppliedToken
+        const hook: ResumableHook = suppliedToken
           ? await world.hooks.getByToken(tokenOrHook)
           : tokenOrHook;
         // The dynamic, response-only `resumeCapabilities` may only be trusted
@@ -644,7 +766,7 @@ async function resumeHookImpl<T = any>(
         );
         span?.setAttributes(Attribute.HookWakePublished(true));
 
-        return hook satisfies ResumedHook;
+        return asLazyMetadataHook(hook) satisfies ResumedHook;
       } catch (err) {
         span?.setAttributes({
           ...Attribute.HookToken(
@@ -703,7 +825,10 @@ export async function resumeWebhook(
   // and not inside `resumeHookImpl`; otherwise webhook resumes would report a
   // systematically shorter total than `resumeHook` ones into the same metric.
   const resumeRequestedAtMs = Date.now();
-  const { hook, encryptionKey } = await getHookByTokenWithKey(token);
+  const world = await getWorldLazy();
+  const { hook, metadataEncryptionKey } = withLazyMetadata(
+    await world.hooks.getByToken(token)
+  );
 
   // Only webhooks can be resumed via the public endpoint.
   // If the hook was created via createHook() (isWebhook !== true),
@@ -713,25 +838,29 @@ export async function resumeWebhook(
     throw new HookNotFoundError(token);
   }
 
+  // `respondWith` lives in the hook's metadata, so this is the one resume path
+  // that has to read it. Only a webhook that actually stored metadata pays for
+  // the hydration: the common default webhook — createWebhook() with no
+  // `respondWith` — stores none, so this resolves `undefined` with no ~350ms
+  // `run-key` API round trip, and hands `resumeHook` no key, leaving it free to
+  // seal the payload to the run's published public key instead.
+  const metadata = await hook.metadata;
+
   let response: Response | undefined;
   let responseReadable: ReadableStream<Response> | undefined;
-  if (
-    hook.metadata &&
-    typeof hook.metadata === 'object' &&
-    'respondWith' in hook.metadata
-  ) {
-    if (hook.metadata.respondWith === 'manual') {
+  if (metadata && typeof metadata === 'object' && 'respondWith' in metadata) {
+    if (metadata.respondWith === 'manual') {
       const { readable, writable } = new TransformStream<Response, Response>();
       responseReadable = readable;
 
       // The request instance includes the writable stream which will be used
       // to write the response to the client from within the workflow run
       (request as any)[WEBHOOK_RESPONSE_WRITABLE] = writable;
-    } else if (hook.metadata.respondWith instanceof Response) {
-      response = hook.metadata.respondWith;
+    } else if (metadata.respondWith instanceof Response) {
+      response = metadata.respondWith;
     } else {
       throw new WorkflowRuntimeError(
-        `Invalid \`respondWith\` value: ${hook.metadata.respondWith}`,
+        `Invalid \`respondWith\` value: ${metadata.respondWith}`,
         { slug: ERROR_SLUGS.WEBHOOK_INVALID_RESPOND_WITH_VALUE }
       );
     }
@@ -740,12 +869,22 @@ export async function resumeWebhook(
     response = new Response(null, { status: 202 });
   }
 
-  // `hook` was just fetched via `getHookByTokenWithKey` (a fresh by-token
-  // lookup) above, so its response-only `resumeCapabilities` reflects the live
-  // backend. Call the internal implementation with the fresh attestation so
-  // the write's idempotency claim stays available without a second GET. (The
-  // public `resumeHook` never sets this, so a caller cannot forge it.)
-  await resumeHookImpl(hook, request, encryptionKey, true, resumeRequestedAtMs);
+  // `hook` was just fetched by token above, so its response-only
+  // `resumeCapabilities` reflects the live backend. Call the internal
+  // implementation with the fresh attestation so the write's idempotency claim
+  // stays available without a second GET. (The public `resumeHook` never sets
+  // this, so a caller cannot forge it.)
+  //
+  // Reuse whatever key the metadata hydration above resolved (`undefined` when
+  // it resolved none) so a metadata-bearing webhook resolves the run key
+  // exactly once end to end.
+  await resumeHookImpl(
+    hook,
+    request,
+    metadataEncryptionKey(),
+    true,
+    resumeRequestedAtMs
+  );
 
   if (responseReadable) {
     // Wait for the readable stream to emit one chunk,
