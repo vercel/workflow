@@ -37,6 +37,7 @@ import {
   NODE_HTTP_HEADERS_TIMEOUT_MS,
 } from './http-client.js';
 import {
+  DatadogResourceName,
   ErrorType,
   getSpanKind,
   HttpRequestMethod,
@@ -446,6 +447,54 @@ export interface HttpClientSpanOptions {
  * is parented to this span rather than to the caller's, which is the contract
  * CLAUDE.md's trace-propagation rule describes.
  */
+/**
+ * Open the CLIENT span for one WS event frame and run `fn` inside it.
+ *
+ * Deliberately NOT `withHttpClientSpan`: a frame is not an HTTP request, and
+ * the two lies that made it look like one — a synthesized `url.full` naming a
+ * REST endpoint no request ever hit, and an `http.request.method` that made
+ * Datadog derive the resource as a bare `POST` — are exactly what this span
+ * omits. The resource is the socket route the frame actually travels through
+ * (`resource.name`, Datadog-reserved), the span name is `ws.events.post`, and
+ * the real wire destination lives in `workflow.events.ws.url` (passed by the
+ * caller in `attributes`). Everything HTTP-shaped that remains is true: the
+ * reply's status code is a real status the server produced.
+ *
+ * `fn` runs inside the active span, so anything it injects trace context into
+ * is parented to this span rather than to the caller's — same contract as
+ * `withHttpClientSpan`.
+ */
+export async function withWsFrameSpan<T>(
+  opts: {
+    /** The socket URL, for server.address/port. */
+    wsUrl: string;
+    /** Parameterized socket route, e.g. `/api/websockets/v1/runs/:runId`. */
+    resourceName: string;
+    /** Extra attributes (transport, event type, stso, …). */
+    attributes?: Record<string, string | number | string[]>;
+  },
+  fn: (span?: Span) => Promise<T>
+): Promise<T> {
+  const { wsUrl, resourceName, attributes } = opts;
+  return trace(
+    'ws.events.post',
+    { kind: await getSpanKind('CLIENT') },
+    async (span) => {
+      const { serverAddress, serverPort } = parseServer(wsUrl);
+      span?.setAttributes({
+        ...DatadogResourceName(resourceName),
+        ...(serverAddress ? ServerAddress(serverAddress) : {}),
+        ...(serverPort ? ServerPort(serverPort) : {}),
+        ...PeerService('workflow-server'),
+        ...RpcSystem('websocket'),
+        ...RpcService('workflow-server'),
+      });
+      if (attributes) span?.setAttributes(attributes);
+      return fn(span);
+    }
+  );
+}
+
 export async function withHttpClientSpan<T>(
   opts: HttpClientSpanOptions,
   fn: (span?: Span) => Promise<T>

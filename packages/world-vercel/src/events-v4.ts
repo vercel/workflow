@@ -62,7 +62,7 @@ import {
   instrumentedFetch,
   parseRetryAfter,
   recordClientSpanStatus,
-  withHttpClientSpan,
+  withWsFrameSpan,
 } from './http-core.js';
 import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
@@ -77,7 +77,7 @@ import {
   WorkflowWsRequestId,
   WorkflowWsUrl,
 } from './telemetry.js';
-import { type APIConfig, getHttpConfig, getHttpUrl } from './utils.js';
+import { type APIConfig, getHttpConfig } from './utils.js';
 import { version } from './version.js';
 import type { WsFrameReply } from './ws-transport.js';
 import {
@@ -1177,6 +1177,13 @@ function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
 }
 
 /**
+ * The frame span's Datadog resource: the socket route every event frame
+ * actually travels through, parameterized like an HTTP route. One resource
+ * for all frame writes; the per-event dimension is `workflow.event.type`.
+ */
+const WS_EVENTS_RESOURCE = '/api/websockets/v1/runs/:runId';
+
+/**
  * Synthesize the per-write client span the WS path would otherwise not have.
  *
  * On HTTP every event write goes through `fetchV4` → `instrumentedFetch`, which
@@ -1186,21 +1193,19 @@ function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
  * flipped, and with it the per-event view of a run's writes, which is the
  * thing a trace of a step execution is mostly made of.
  *
- * Nothing about the request/response *semantics* changed, though: one frame out,
- * one correlated reply back, one status. So the span is synthesized here with
- * the same name, kind and attributes the fetch path emits, over the v4 REST
- * endpoint the server forwards the frame into. Two consequences that are the
- * point rather than a side effect:
+ * Nothing about the request/response *semantics* changed: one frame out, one
+ * correlated reply back, one status. But the span does NOT wear HTTP shape —
+ * it is named `ws.events.post` with the socket route as its resource, carries
+ * no `http.request.method` and no `url.full` (an earlier version synthesized
+ * the REST URL the event would have been POSTed to, which made every frame
+ * render as a bare `POST` and invited misreading frames as HTTP requests).
+ * Cross-transport comparison keys on the attributes both paths share:
+ * `workflow.event.type` + `workflow.events.transport`, plus the status code,
+ * which is real on both.
  *
- *   - a trace looks the same either side of `WORKFLOW_EVENTS_TRANSPORT`, so the
- *     A/B the flag exists for compares like with like, and
- *   - dashboards keyed on `http POST` + `url.full` keep working unchanged.
- *
- * What is *not* elided: `workflow.events.transport: 'ws'`,
- * `network.protocol.name: 'websocket'` and `workflow.events.ws.url` say plainly
- * that no HTTP request was issued, and `workflow.events.ws.req_id` is the join
- * key to the server's log line for the same frame. A synthetic span that hid
- * which transport produced it would be a trap, not a convenience.
+ * `workflow.events.ws.url` names the actual wire destination, and
+ * `workflow.events.ws.req_id` is the join key to the server's log line for
+ * the same frame.
  *
  * Two things the HTTP envelope has that this one deliberately does not: the
  * cache-bust header (a frame is memoized by nothing) and a per-frame
@@ -1232,19 +1237,11 @@ async function postEventFrameOverWs(
   if (!resolved) return undefined;
   const { transport, wsUrl } = resolved;
   const endpoint = `${wsUrl}#runs/${encodeURIComponent(runId)}/events`;
-  // Same helper the HTTP path builds its URL with. `resolveWsTransport` already
-  // returned null for the proxy World, so this is always the direct
-  // workflow-server origin the socket itself points at.
-  const restUrl = eventsV4Url(
-    getHttpUrl(config).baseUrl,
-    runId,
-    input.eventType
-  );
 
-  return withHttpClientSpan(
+  return withWsFrameSpan(
     {
-      method: 'POST',
-      url: restUrl,
+      wsUrl,
+      resourceName: WS_EVENTS_RESOURCE,
       attributes: {
         ...WorkflowEventsTransport('ws'),
         ...WorkflowEventType(input.eventType),
