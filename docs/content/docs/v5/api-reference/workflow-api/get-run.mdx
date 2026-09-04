@@ -65,6 +65,20 @@ import type { WorkflowReadableStreamOptions } from "workflow/api";
 export default WorkflowReadableStreamOptions;`}
 />
 
+#### WorkflowRunWritableStreamOptions
+
+`run.getWritable()` returns a `WritableStream` that appends to the run's stream, letting one run contribute to a stream another run owns. See [Writing to another run's stream](/docs/foundations/streaming#writing-to-another-runs-stream).
+
+<TSDoc
+definition={`
+import type { WorkflowRunWritableStreamOptions } from "workflow/api";
+export default WorkflowRunWritableStreamOptions;`}
+/>
+
+<Callout type="warn">
+`getWritable()` grants append access, not read access: where the owning run publishes an encryption public key, writes are sealed to it and cannot be read back by the writer. Closing the returned writable closes the **shared** stream for every writer, so contributors should `releaseLock()` instead. The run must already exist; an unknown run rejects with `WorkflowRunNotFoundError`.
+</Callout>
+
 #### StopSleepOptions
 
 <TSDoc
@@ -188,6 +202,31 @@ export async function POST(req: Request) {
 ```
 
 The options object is optional: `await run.cancel()` cancels the run without recording a reason.
+
+### Write to a stream another run owns
+
+A holder run owns a session's stream for its whole lifetime, and short-lived
+runs append to it knowing only its ID:
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+type SessionEvent = { turn: number; text: string };
+
+async function contributeToSession(holderRunId: string, turn: number) {
+  "use step";
+
+  const writable = await getRun(holderRunId).getWritable<SessionEvent>(); // [!code highlight]
+  const writer = writable.getWriter();
+
+  await writer.write({ turn, text: "done" });
+
+  // Release rather than close: the stream belongs to the holder run. // [!code highlight]
+  writer.releaseLock(); // [!code highlight]
+}
+```
+
+Pass `{ namespace: "name" }` to target one of the owning run's namespaced streams. See [Writing to another run's stream](/docs/foundations/streaming#writing-to-another-runs-stream) for the full pattern and its caveats.
 
 ## Related functions
 

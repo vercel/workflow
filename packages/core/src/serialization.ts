@@ -2769,8 +2769,10 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
  * Tiers 2 and 3 import the key encrypt-only, which is an honor-system
  * restriction: the same bytes could decrypt. Tier 1 makes it a cryptographic
  * guarantee: a public key cannot read anything.
+ *
+ * @internal
  */
-async function getForwardedWritableEncryptionKey(
+export async function getForwardedWritableEncryptionKey(
   runId: string,
   deploymentId: string | undefined,
   encryptionPublicKey: string | undefined
@@ -2785,6 +2787,97 @@ async function getForwardedWritableEncryptionKey(
     ? await world.getEncryptionKeyForRun(runId, { deploymentId })
     : await world.getEncryptionKeyForRun(await world.runs.get(runId));
   return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
+}
+
+/**
+ * Open a writable against a run-scoped server stream and tag the handle so it
+ * can be forwarded again without losing the target.
+ *
+ * Two callers reach the same shape from opposite directions: the external
+ * reviver, hydrating a descriptor another run put on the wire, and
+ * `Run#getWritable()`, building the first handle from owner metadata. Both need
+ * the serialize transform, the group-commit sink, the flushable wiring, and the
+ * four forwarding symbols in exactly the same arrangement, and a drift between
+ * them shows up as an unreadable frame rather than a type error.
+ *
+ * `runId`/`name` address the *owner's* stream, and `key` must already be the
+ * write-only key for that owner (see {@link getForwardedWritableEncryptionKey}),
+ * not the calling run's. `encryptionPublicKey` is stamped only when the owner
+ * published one: advertising a key the owner cannot open would send every
+ * downstream contributor to an address nobody reads.
+ *
+ * @internal
+ */
+export function createForwardedWritable<W = any>({
+  global,
+  ops,
+  runId,
+  name,
+  key,
+  deploymentId,
+  encryptionPublicKey,
+  runReadyBarrier,
+}: {
+  global: Record<string, any>;
+  ops: Promise<any>[];
+  runId: string;
+  name: string;
+  key: EncryptionKeyParam;
+  deploymentId?: string;
+  encryptionPublicKey?: string;
+  runReadyBarrier?: Promise<unknown>;
+}): WritableStream<W> {
+  const serialize = getSerializeStream(
+    getExternalReducers(global, ops, runId, key),
+    key
+  );
+  const serverWritable = new WorkflowServerWritableStream(
+    runId,
+    name,
+    runReadyBarrier
+  );
+
+  // Flushable rather than a bare pipeTo: the ops promise has to settle when the
+  // caller releases its writer lock, not only when the stream is closed. A
+  // contributor to a shared stream never closes it, so a pipeTo here would keep
+  // the function alive until its timeout.
+  const state = createFlushableState();
+  ops.push(state.promise);
+
+  flushablePipe(serialize.readable, serverWritable, state).catch(() => {
+    // Errors are handled via state.reject
+  });
+
+  pollWritableLock(serialize.writable, state);
+
+  Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+    value: name,
+    writable: false,
+  });
+  Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+    value: runId,
+    writable: false,
+  });
+  if (typeof deploymentId === 'string') {
+    Object.defineProperty(
+      serialize.writable,
+      STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
+      {
+        value: deploymentId,
+        writable: false,
+      }
+    );
+  }
+  // Keep the owner's public key on the handle so a further forward stays on
+  // the zero-lookup sealed path.
+  if (typeof encryptionPublicKey === 'string') {
+    Object.defineProperty(serialize.writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
+      value: encryptionPublicKey,
+      writable: false,
+    });
+  }
+
+  return serialize.writable as WritableStream<W>;
 }
 
 /**
@@ -3014,59 +3107,15 @@ export function getExternalRevivers(
               value.encryptionPublicKey
             );
 
-      const serialize = getSerializeStream(
-        getExternalReducers(global, ops, targetRunId, targetKey),
-        targetKey
-      );
-      const serverWritable = new WorkflowServerWritableStream(
-        targetRunId,
-        value.name
-      );
-
-      // Create flushable state for this stream
-      const state = createFlushableState();
-      ops.push(state.promise);
-
-      // Start the flushable pipe in the background
-      flushablePipe(serialize.readable, serverWritable, state).catch(() => {
-        // Errors are handled via state.reject
+      return createForwardedWritable({
+        global,
+        ops,
+        runId: targetRunId,
+        name: value.name,
+        key: targetKey,
+        deploymentId: value.deploymentId,
+        encryptionPublicKey: value.encryptionPublicKey,
       });
-
-      // Start polling to detect when user releases lock
-      pollWritableLock(serialize.writable, state);
-
-      Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
-        value: value.name,
-        writable: false,
-      });
-      Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
-        value: targetRunId,
-        writable: false,
-      });
-      if (typeof value.deploymentId === 'string') {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
-          {
-            value: value.deploymentId,
-            writable: false,
-          }
-        );
-      }
-      // Keep the owner's public key on the handle so a further forward stays on
-      // the zero-lookup sealed path.
-      if (typeof value.encryptionPublicKey === 'string') {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
-          {
-            value: value.encryptionPublicKey,
-            writable: false,
-          }
-        );
-      }
-
-      return serialize.writable;
     },
 
     AbortController: (value) => reviveAbortController(value, ops, runId),

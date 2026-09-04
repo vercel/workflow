@@ -13,6 +13,8 @@ import {
   type PayloadKey,
 } from '../serialization/encryption.js';
 import {
+  createForwardedWritable,
+  getForwardedWritableEncryptionKey,
   getRunReadableStream,
   hydrateRunError,
   hydrateWorkflowReturnValue,
@@ -31,6 +33,18 @@ const PAYLOAD_TERMINAL_RUN_STATUSES = new Set<WorkflowRunStatus>([
   'completed',
   'failed',
 ]);
+
+/**
+ * Backoff for the "run does not exist yet" retry, used only by runs whose
+ * `run_created` event failed and that the resilient start path will create via
+ * `run_started`. 1s + 3s + 6s gives the queue 10s to deliver before the caller
+ * sees the 404.
+ *
+ * A `Run` from `getRun()` never uses this: for an ID a caller supplied, a
+ * missing run is a real error and reporting it immediately beats a ten-second
+ * pause on the way to the same answer.
+ */
+const NOT_FOUND_RETRY_DELAYS = [1_000, 3_000, 6_000];
 
 /** @internal */
 export function getReturnValuePollIntervalMs(): number {
@@ -148,6 +162,33 @@ export interface WorkflowReadableStreamOptions {
   ops?: Promise<any>[];
   /**
    * The global object to use for hydrating types from the global scope.
+   *
+   * Defaults to {@link [`globalThis`](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/globalThis)}.
+   */
+  global?: Record<string, any>;
+}
+
+/**
+ * Options for configuring a writable onto a workflow run's stream.
+ */
+export interface WorkflowRunWritableStreamOptions {
+  /**
+   * An optional namespace to distinguish between multiple streams associated
+   * with the same workflow run.
+   */
+  namespace?: string;
+  /**
+   * Any asynchronous operations to complete before pausing or terminating the
+   * execution environment
+   * (i.e. using [`waitUntil()`](https://developer.mozilla.org/docs/Web/API/ExtendableEvent/waitUntil) or similar).
+   *
+   * Writes are acknowledged on buffer entry, so a caller that needs them
+   * durable before the environment goes away should pass an array here and
+   * await it after releasing the writer lock.
+   */
+  ops?: Promise<any>[];
+  /**
+   * The global object to use for reducing types from the global scope.
    *
    * Defaults to {@link [`globalThis`](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/globalThis)}.
    */
@@ -394,6 +435,100 @@ export class Run<TResult> {
     });
   }
 
+  /**
+   * Retrieves a writable onto this run's stream, the one
+   * {@link Run.getReadable | getReadable()} reads and the run's own
+   * `getWritable()` writes.
+   *
+   * This is append access to a stream another run owns, reconstructed from the
+   * run ID alone. It exists for the holder pattern: a long-lived run owns a
+   * session's stream, and short-lived runs that know only its ID contribute to
+   * it without the owner having to hand a writable to each one. The handle can
+   * be forwarded onward through `start()` and into steps like any other.
+   *
+   * The run must already exist. A missing run rejects with
+   * {@link WorkflowRunNotFoundError} rather than creating anything, except on a
+   * `Run` from a resilient `start()`, which retries briefly while the run is
+   * still being created.
+   *
+   * Two things this deliberately does not give you:
+   *
+   * - **No read access.** Frames are sealed to the owner's public key where it
+   *   has one, so the writer cannot decrypt this stream, including its own
+   *   writes. Read it with `getReadable()` from somewhere holding the run's key.
+   * - **No authorization of its own.** Reaching the run through the World is
+   *   the authorization; this inherits whatever the caller already had.
+   *
+   * The owner keeps the stream's lifecycle: its region, retention, and terminal
+   * state follow the owning run, not the caller.
+   *
+   * @remarks
+   * `writer.close()` closes the **shared** stream for everyone, not just this
+   * handle, and a closed stream cannot be reopened. A contributor should write
+   * and then `releaseLock()`; releasing the lock drains pending writes, so
+   * closing is never needed merely to flush. Leave closing to the run that owns
+   * the stream.
+   *
+   * @param options - The options for the writable stream.
+   * @returns A `WritableStream` targeting this run's stream.
+   * @throws WorkflowRunNotFoundError if the run does not exist.
+   */
+  async getWritable<W = any>(
+    options: WorkflowRunWritableStreamOptions = {}
+  ): Promise<WritableStream<W>> {
+    'use step';
+    const { ops = [], global = globalThis, namespace } = options;
+    const run = await this.#getMetadata();
+    const name = getWorkflowRunStreamId(this.runId, namespace);
+
+    // Resolve before returning rather than handing the promise to the
+    // serializer: the sealed path costs no I/O, and on the fallback path a key
+    // that cannot be resolved is better reported here than on a write the
+    // caller has already been told was accepted.
+    const key = await getForwardedWritableEncryptionKey(
+      this.runId,
+      run.deploymentId,
+      run.encryptionPublicKey
+    );
+
+    return createForwardedWritable<W>({
+      global,
+      ops,
+      runId: this.runId,
+      name,
+      key,
+      deploymentId: run.deploymentId,
+      encryptionPublicKey: run.encryptionPublicKey,
+    });
+  }
+
+  /**
+   * Reads this run's metadata, absorbing the window in which a resiliently
+   * started run does not exist yet.
+   *
+   * `resolveData: 'none'` is deliberate: `deploymentId` and
+   * `encryptionPublicKey` both survive it, and resolving input/output payload
+   * refs to reach them would be work thrown away.
+   * @internal
+   */
+  async #getMetadata() {
+    const world = await this.#lazyWorldPromise;
+    const maxRetries = this.#resilientStart ? NOT_FOUND_RETRY_DELAYS.length : 0;
+    let attempt = 0;
+    while (true) {
+      try {
+        return await world.runs.get(this.runId, { resolveData: 'none' });
+      } catch (error) {
+        if (!WorkflowRunNotFoundError.is(error) || attempt >= maxRetries) {
+          throw error;
+        }
+        const delay = NOT_FOUND_RETRY_DELAYS[attempt]!;
+        attempt++;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+
   /** @internal */
   async #resolveTerminalReturnValue(run: WorkflowRun): Promise<TResult> {
     if (run.status === 'completed') {
@@ -451,8 +586,9 @@ export class Run<TResult> {
     // and the runtime to create the run via run_started.
     // When resilientStart is false, 404 is a real error: fail fast.
     let notFoundRetries = 0;
-    const NOT_FOUND_MAX_RETRIES = this.#resilientStart ? 3 : 0;
-    const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
+    const NOT_FOUND_MAX_RETRIES = this.#resilientStart
+      ? NOT_FOUND_RETRY_DELAYS.length
+      : 0;
 
     // Prefer the World's long poll: one read that the backend holds open
     // until the run finishes, instead of asking again every second and
@@ -531,7 +667,7 @@ export class Run<TResult> {
           WorkflowRunNotFoundError.is(error) &&
           notFoundRetries < NOT_FOUND_MAX_RETRIES
         ) {
-          const delay = NOT_FOUND_DELAYS[notFoundRetries]!;
+          const delay = NOT_FOUND_RETRY_DELAYS[notFoundRetries]!;
           notFoundRetries++;
           await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
