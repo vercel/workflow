@@ -107,8 +107,12 @@ function skipIfUnsupportedBackend(error: unknown): never {
     const createdRunId = CREATED_RUN_ID.exec(error.message)?.[1];
     if (createdRunId) {
       // Track it before skipping: the run was created and is inspectable,
-      // even though nothing can replay it.
-      trackRun(getRun(createdRunId));
+      // even though nothing can replay it. Labelled, because the sidecar
+      // otherwise shows two bare ids per test — the parent fixture's and this
+      // one — with nothing saying which is the dynamic run.
+      trackRun(getRun(createdRunId), {
+        testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+      });
     }
     getCurrentTest()?.context.skip(
       "this deployment's Workflow backend has no dynamic-source storage yet" +
@@ -152,14 +156,18 @@ async function readRunRecord(runId: string) {
  * dump and the run-ID sidecar alongside directly-started runs.
  */
 async function awaitChildRun(childRunId: string) {
-  const child = trackRun(getRun(childRunId));
+  const child = trackRun(getRun(childRunId), {
+    testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+  });
   const output = await child.returnValue;
   return { output, record: await readRunRecord(childRunId) };
 }
 
 /** As above, for a child expected to fail. */
 async function awaitChildRunFailure(childRunId: string, timeoutMs = 60_000) {
-  trackRun(getRun(childRunId));
+  trackRun(getRun(childRunId), {
+    testName: `${getCurrentTest()?.name ?? 'dynamic workflow'} [dynamic run]`,
+  });
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const record = await readRunRecord(childRunId);
