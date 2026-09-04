@@ -24,34 +24,34 @@
  * generation, which is the slow, network-bound part of the real command, so
  * it is cheap enough to run on every PR.
  *
- * The libraries are resolved from `@changesets/cli`'s own install rather than
- * declared as root dependencies. That keeps them at exactly the versions the
- * CLI uses, so this check cannot drift from what the Release job will do, and
- * it avoids adding five packages to the root manifest for a lint step.
+ * The libraries are the same ones `@changesets/cli` uses, declared as root
+ * devDependencies at the ranges the CLI itself declares, so this check cannot
+ * drift from what the Release job will do.
  */
 
-import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assembleReleasePlan } from '@changesets/assemble-release-plan';
+import { readConfig } from '@changesets/config';
+import { readPreState } from '@changesets/pre';
+import { readChangesets } from '@changesets/read';
+import { getPackages } from '@manypkg/get-packages';
 
 const cwd = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-// `require.resolve` returns the real path of the CLI's entry point inside
-// pnpm's virtual store, where its dependencies sit beside it. A `require`
-// created from there resolves them the same way the CLI itself does.
-const cliEntry = createRequire(import.meta.url).resolve('@changesets/cli');
-const cliRequire = createRequire(cliEntry);
-
-const assembleReleasePlan = cliRequire(
-  '@changesets/assemble-release-plan'
-).default;
-const { read: readConfig } = cliRequire('@changesets/config');
-const { readPreState } = cliRequire('@changesets/pre');
-const readChangesets = cliRequire('@changesets/read').default;
-const { getPackages } = cliRequire('@manypkg/get-packages');
-
 const packages = await getPackages(cwd);
-const config = await readConfig(cwd, packages);
+const {
+  config,
+  errors: configErrors,
+  warnings: configWarnings,
+} = await readConfig(cwd, packages);
+for (const warning of configWarnings ?? [])
+  console.warn(`! .changeset/config.json: ${warning}`);
+if (configErrors) {
+  console.error('✗ .changeset/config.json is invalid:');
+  for (const error of configErrors) console.error(`    ${error}`);
+  process.exit(1);
+}
 const [changesets, preState] = await Promise.all([
   readChangesets(cwd),
   readPreState(cwd),

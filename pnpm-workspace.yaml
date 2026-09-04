@@ -87,6 +87,3 @@ allowBuilds:
   protobufjs: false
   sharp: false
   ssh2: false
-
-patchedDependencies:
-  '@changesets/cli@2.29.8': patches/@changesets__cli@2.29.8.patch

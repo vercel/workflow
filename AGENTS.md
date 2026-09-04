@@ -463,6 +463,8 @@ When in doubt, AI is told to decline: a missed fix can be forced through later v
 
 The `main` branch uses changesets' [pre-release mode](https://github.com/changesets/changesets/blob/main/docs/prereleases.md) to publish beta versions.
 
+Changesets that a "Version Packages (beta)" merge has already turned into a beta live in `.changeset/pre/` (changesets v3 keeps them there instead of listing their ids in `pre.json`, which now holds only `mode` and `tag`). Only the `.md` files directly under `.changeset/` are pending. Do not edit or delete anything under `.changeset/pre/`: those files become the final stable release's changelog when pre mode exits.
+
 **Starting a new pre-release cycle:**
 1. Create a changeset with the desired base bump (e.g. `major` for a new major version)
 2. Enter pre-release mode: `pnpm changeset pre enter beta`
