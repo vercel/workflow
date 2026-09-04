@@ -72,6 +72,7 @@ runs:
           e2e-${{ inputs.results-name }}.json
           e2e-${{ inputs.results-name }}.flaky.json
           e2e-metadata-${{ inputs.app }}-vercel.json
+          e2e-dynamic-runs-${{ inputs.app }}-vercel.json
           e2e-failures-${{ inputs.app }}-vercel.json
           e2e-infra-${{ inputs.app }}-vercel.json
           e2e-diagnostics-${{ inputs.app }}-vercel.json
