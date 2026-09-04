@@ -1639,6 +1639,179 @@ describe.concurrent('e2e', () => {
     );
 
     test(
+      'handoffInboxWorkflow - late arrivals after the loop exits are handed to a new run; loss is bounded to the disposal window',
+      { timeout: 300_000 },
+      async () => {
+        const token = `inbox-handoff-${Math.random().toString(36).slice(2)}`;
+        const TURNS = 4;
+
+        const parent = await start(await e2e('handoffInboxWorkflow'), [
+          token,
+          TURNS,
+          [],
+          0,
+        ]);
+        await waitForHook(token, { runId: parent.runId });
+
+        // Send steadily until the parent run completes. A send that lands in
+        // the disposal window is rejected with HookNotFoundError; that is the
+        // contract (the sender knows, and can start or find the next run), so
+        // count it and retry the same seq against the successor's hook.
+        // Bounded so a starved lane cannot turn this sender into a load
+        // generator: the parent runs TURNS * 300 ms of steps, so the cap is
+        // far above what a healthy run can absorb before it completes.
+        const MAX_MESSAGES = 60 * SCALE;
+        const accepted: number[] = [];
+        let rejections = 0;
+        let parentDone = false;
+        const parentResult = parent.returnValue.then((r) => {
+          parentDone = true;
+          return r;
+        });
+        // Once the last turn has started, send a burst without pausing so
+        // some payloads land during that turn and there is something to hand
+        // off. Sends stay strictly sequential so log order is send order.
+        let lastTurnStarted = false;
+        void waitForRunEvents(
+          parent.runId,
+          (event) => event.eventType === 'step_completed',
+          { minCount: TURNS - 1, timeoutMs: 240_000 }
+        ).then(
+          () => {
+            lastTurnStarted = true;
+          },
+          () => {}
+        );
+        let burst = 0;
+        let seq = 0;
+        while (!parentDone && seq < MAX_MESSAGES) {
+          try {
+            await resumeHook(token, { seq });
+            accepted.push(seq++);
+          } catch (err) {
+            if (!HookNotFoundError.is(err)) throw err;
+            rejections++;
+          }
+          if (lastTurnStarted && burst < 5) {
+            burst++;
+            continue;
+          }
+          await sleep(40);
+        }
+
+        // Follow the chain of hand-offs. The sender stopped when the parent
+        // finished, so the chain is short, but every generation is checked.
+        const generations = [await parentResult];
+        let next = generations[0].childRunId;
+        while (next) {
+          const child = await getRun<(typeof generations)[0]>(next).returnValue;
+          generations.push(child);
+          next = child.childRunId;
+        }
+
+        // Always print the shape: on a failure this is what says which
+        // generation lost or duplicated a payload.
+        console.log(
+          `[handoff] accepted=${JSON.stringify(accepted)} rejectedInWindow=${rejections} generations=${JSON.stringify(
+            generations.map((g) => ({
+              generation: g.generation,
+              runTurns: g.turns.map((t) => t.steeringSeen),
+              late: g.late,
+            }))
+          )}`
+        );
+
+        // When there was something to hand off, the child started with
+        // exactly the parent's late drain. (Whether anything arrived in the
+        // last turn is timing; the burst above makes it the common case, and
+        // the log line records when it did not happen.)
+        if (generations[0].late.length > 0) {
+          expect(generations).toHaveLength(2);
+          expect(generations[1].turns[0].steeringSeen).toEqual(
+            generations[0].late
+          );
+        } else {
+          expect(generations).toHaveLength(1);
+          console.warn(
+            '[handoff] no late arrivals; hand-off path not exercised'
+          );
+        }
+
+        // Every generation: what the workflow observed at each turn matches
+        // what the log recorded as that turn's step arguments.
+        for (const g of generations) {
+          expect(g.turns).toHaveLength(TURNS);
+          for (const turn of g.turns) {
+            expect(
+              turn.steeringApplied,
+              `gen ${g.generation} turn ${turn.turn}`
+            ).toEqual(turn.steeringSeen);
+          }
+        }
+
+        // Accounting. Every processed payload was acknowledged, each exactly
+        // once, in send order, and nothing was left in the final run.
+        const processed = generations.flatMap((g) =>
+          g.turns.flatMap((t) => t.steeringSeen)
+        );
+        const last = generations[generations.length - 1];
+        expect(last.late).toEqual([]);
+        expect(new Set(processed).size).toBe(processed.length);
+        expect(processed).toEqual(
+          accepted.filter((seq) => processed.includes(seq))
+        );
+
+        // KNOWN GAP (runtime, not this pattern): `hook.dispose()` stops the
+        // in-memory iterator at once, but the world keeps accepting resumes
+        // until `hook_disposed` commits at the run's next suspension. A payload
+        // acknowledged in that window sits in the log before `hook_disposed`
+        // with no consumer left to claim it, and is lost. Until the runtime
+        // delivers pre-disposal payloads, the only payloads that may go missing
+        // are those, so bound the loss by counting them in the parent's log:
+        // `hook_received` events after the last turn's `step_completed` and
+        // before `hook_disposed`.
+        const parentEvents = await listAllRunEvents(parent.runId);
+        let turnsCompleted = 0;
+        let inWindow = 0;
+        for (const event of parentEvents) {
+          if (event.eventType === 'step_completed') turnsCompleted++;
+          else if (event.eventType === 'hook_disposed') break;
+          else if (
+            event.eventType === 'hook_received' &&
+            turnsCompleted === TURNS
+          ) {
+            inWindow++;
+          }
+        }
+        const dropped = accepted.filter((seq) => !processed.includes(seq));
+        console.log(
+          `[handoff] dropped=${JSON.stringify(dropped)} disposalWindowPayloads=${inWindow}`
+        );
+        expect(dropped.length).toBeLessThanOrEqual(inWindow);
+        // Anything dropped sits exactly at the hand-off seam: newer than
+        // everything the parent processed or handed off, older than everything
+        // the successor processed. Never a hole inside either generation.
+        const parentNewest = Math.max(
+          -1,
+          ...generations[0].turns.flatMap((t) => t.steeringSeen),
+          ...generations[0].late
+        );
+        // A successor's first turn is the carried set (the parent's late
+        // drain), so its own payloads start at turn 1.
+        const childOldest = Math.min(
+          Number.POSITIVE_INFINITY,
+          ...generations
+            .slice(1)
+            .flatMap((g) => g.turns.slice(1).flatMap((t) => t.steeringSeen))
+        );
+        for (const seq of dropped) {
+          expect(seq).toBeGreaterThan(parentNewest);
+          expect(seq).toBeLessThan(childOldest);
+        }
+      }
+    );
+
+    test(
       'mergedHooksWorkflow - merged iterator preserves event-log order across hooks',
       { timeout: 240_000 },
       async () => {

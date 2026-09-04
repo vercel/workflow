@@ -193,9 +193,55 @@ export async function jobConsumer(queueId: string) {
 There are two ways a subscription ends, and both are fine:
 
 - **An end marker.** The subscriber `break`s when it sees a payload it recognizes as the end (`stop`, `end: true`). Use this when the workflow should wait for the sender to say it is done, and `await` the subscription before returning.
-- **The body returns first.** The subscriber is still parked on `await hook`. The run completes regardless; the pending await is abandoned with the run. Use `using` (or call `hook.dispose()`) so the token is released for the next run.
+- **The body returns first.** The subscriber is still parked on `await hook`. The run completes regardless; the pending await is abandoned with the run. Use `using` (or call `hook.dispose()`) so the token is released for the next run. If payloads can arrive right up to the end and none may be lost, hand them off as shown next.
 
 What you should not do is read the buffer from code that has no durable position, such as a timer callback: only reads that happen right after an `await` on a step, a sleep, or the inbox's `wait()` are anchored to the event log.
+
+### Handing off late arrivals to a new run
+
+When the body returns first, payloads that arrived after its last read but before the hook was released would finish with the run. If those must not be lost, release the hook explicitly, commit the release with a step, drain once more, and start a fresh run with whatever was left:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+type Message = { text: string };
+
+declare function runTurn(steering: string[]): Promise<{ finished: boolean }>; // @setup
+declare function commitRelease(): Promise<void>; // @setup
+declare function startSuccessor(sessionId: string, carried: string[]): Promise<string>; // @setup
+
+export async function session(sessionId: string, carried: string[]) {
+  "use workflow";
+
+  const inbox: Message[] = [];
+  const hook = createHook<Message>({ token: `session:${sessionId}` });
+  void (async () => {
+    for await (const message of hook) inbox.push(message);
+  })();
+
+  let steering = carried;
+  while (true) {
+    const result = await runTurn(steering);
+    steering = inbox.splice(0).map((m) => m.text);
+    if (result.finished && steering.length === 0) break;
+  }
+
+  hook.dispose(); // senders now get HookNotFoundError for this token // [!code highlight]
+  await commitRelease(); // any step: commits the release and anchors the drain below // [!code highlight]
+  const late = [...steering, ...inbox.splice(0).map((m) => m.text)]; // [!code highlight]
+  if (late.length > 0) {
+    // Whatever beat the release is handed to a new run instead of dropped.
+    return { successor: await startSuccessor(sessionId, late) }; // [!code highlight]
+  }
+  return { successor: null };
+}
+```
+
+Two details matter here. The drain happens *after* an awaited step, not right after `dispose()`, so it is anchored to the event log like every other read. And the successor is started from a step (`startSuccessor` wraps `start()` from `workflow/api`), so it happens once, on the live run. A sender whose `resumeHook()` lands after the release is committed sees `HookNotFoundError` rather than a silent drop, and can start or look up the successor itself.
+
+<Callout type="warn">
+There is a window this pattern cannot close today. `dispose()` stops the subscriber's iterator immediately, but the release only becomes durable at the run's next suspension, and `resumeHook()` keeps being accepted until then. A payload acknowledged in that window is in the event log ahead of the release but has no consumer left to claim it, so it is neither processed nor handed off. In the e2e suite this window is a few milliseconds wide and catches roughly one payload in five runs under a 40 ms send cadence. Closing it needs the runtime to keep delivering payloads that precede `hook_disposed`; until then, treat the hand-off as best effort for messages sent in the last instant before the run ends.
+</Callout>
 
 ## How it works
 

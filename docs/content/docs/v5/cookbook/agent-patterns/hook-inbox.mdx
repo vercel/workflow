@@ -208,7 +208,6 @@ declare function mergeAsyncIterables<T>(
 ): AsyncIterable<{ index: number; value: T }> & {
   add: (source: AsyncIterable<T>) => number;
 }; // @setup
-// subscribeInbox() is defined in the Background Hook Subscriber recipe.
 declare function subscribeInbox<T>(
   source: AsyncIterable<T>,
   isEnd: (value: T) => boolean
@@ -262,6 +261,7 @@ export async function slackSession(sessionId: string, channel: string) {
 - **Coalescing**: if several steering messages arrive during one turn, combine them into one user message before the next model call.
 - **Idle timeout**: race the subscription against `sleep("30m")` and end the session when nothing arrives.
 - **Cancellation**: pair an `end` message with an `AbortController` so the in-flight turn stops early. See [Agent Cancellation](/cookbook/agent-patterns/agent-cancellation).
+- **Ending without dropping messages**: when the loop exits on its own, release the hook, commit the release with a step, drain once more, and hand anything left to a fresh run. See [Handing off late arrivals](/docs/cookbook/common-patterns/background-hook-subscriber#handing-off-late-arrivals-to-a-new-run).
 - **Deterministic tokens**: derive tokens from ids the sender already has (run ID, session ID, Slack thread ts) so senders never need a lookup. See [Token design](/docs/foundations/hooks#token-design).
 
 ## Key APIs
