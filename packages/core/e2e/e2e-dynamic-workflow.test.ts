@@ -14,11 +14,14 @@
  *   2. DEPLOYMENT_URL=http://localhost:3000 APP_NAME=nextjs-turbopack \
  *      pnpm vitest run packages/core/e2e/e2e-dynamic-workflow.test.ts
  */
+import fs from 'node:fs';
+import path from 'node:path';
 import { getCurrentTest } from '@vitest/runner';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Run, start as rawStart } from '../src/runtime';
 import { getWorld } from '../src/runtime';
 import {
+  getCollectedRunIds,
   getStepMetadata,
   isJsApp,
   setupRunTracking,
@@ -64,7 +67,39 @@ function skipIfUnsupportedBackend(error: unknown): never {
   throw error;
 }
 
+/**
+ * Write out the run IDs this file created, so a Vercel run can be opened in
+ * the dashboard afterwards.
+ *
+ * `e2e.test.ts` does the same for its own runs, but each e2e file runs in its
+ * own vitest worker with its own copy of the collector — so without this the
+ * dynamic runs are tracked in memory and then thrown away, which is exactly
+ * the thing someone asks for when they want to see what a dynamic run looks
+ * like in production. Distinct filename because that sidecar is per-app and
+ * the last writer would otherwise clobber it.
+ */
+function writeDynamicRunSidecar() {
+  if (!process.env.WORKFLOW_VERCEL_ENV) return;
+  const appName = process.env.APP_NAME || 'unknown';
+  fs.writeFileSync(
+    path.resolve(process.cwd(), `e2e-dynamic-runs-${appName}-vercel.json`),
+    JSON.stringify(
+      {
+        runIds: getCollectedRunIds(),
+        vercel: {
+          projectSlug: process.env.WORKFLOW_VERCEL_PROJECT_SLUG,
+          environment: process.env.WORKFLOW_VERCEL_ENV,
+          teamSlug: 'vercel-labs',
+        },
+      },
+      null,
+      2
+    )
+  );
+}
+
 afterAll(() => {
+  writeDynamicRunSidecar();
   writeInfraSidecar();
 });
 
