@@ -18,6 +18,10 @@ When `experimental_minRetention` is set, this function continues to return the H
 </Callout>
 
 <Callout type="info">
+`hook.metadata` is a getter that returns a Promise, so `await` it to read the value. Hydrating metadata decrypts it with the owning run's keys, which can cost a run fetch and a key round trip, so the work is deferred to first access and the lookup itself stays a single read. Awaiting it on a hook with no metadata resolves `undefined` and performs no extra work, and repeat reads are free. Like `run.returnValue`, the getter is non-enumerable: it does not appear in `{ ...hook }` or `JSON.stringify(hook)`, so forward the awaited value explicitly if you need to serialize it.
+</Callout>
+
+<Callout type="info">
 Looking up a deterministic hook token is useful in hook-based idempotency flows, but it is only an advisory check. If no hook exists yet, another request can still start the same workflow before your `start()` call registers its hook. Use the lookup to avoid obvious duplicate starts, and handle the race inside the workflow by checking `await hook.getConflict()` before duplicate-sensitive work. On a conflict it resolves with the run that owns the token, so the duplicate can route the caller to the active owner. If duplicates must be rejected before a workflow body runs, keep a durable request record until native atomic start-and-hook registration exists. See [Run idempotency](/docs/foundations/idempotency#run-idempotency).
 </Callout>
 
@@ -44,12 +48,12 @@ showSections={["parameters"]}
 
 ### Returns
 
-Returns a `Promise<Hook>` that resolves to:
+Returns a `Promise<HookWithLazyMetadata>` that resolves to:
 
 <TSDoc
 definition={`
-import type { Hook } from "@workflow/world";
-export default Hook;`}
+import type { HookWithLazyMetadata } from "workflow/api";
+export default HookWithLazyMetadata;`}
 showSections={["returns"]}
 />
 
@@ -70,7 +74,7 @@ export async function POST(request: Request) {
     const hook = await getHookByToken(token); // [!code highlight]
 
     console.log("Resuming workflow run:", hook.runId);
-    console.log("Hook metadata:", hook.metadata);
+    console.log("Hook metadata:", await hook.metadata); // [!code highlight]
 
     // Then resume the hook with the payload
     await resumeHook(token, data);
@@ -97,7 +101,8 @@ export async function POST(request: Request) {
 
   try {
     const hook = await getHookByToken(token); // [!code highlight]
-    const metadata = hook.metadata as { allowedUserId?: string } | undefined;
+    // `metadata` is a Promise, so awaiting it hydrates the stored value.
+    const metadata = (await hook.metadata) as { allowedUserId?: string } | undefined; // [!code highlight]
 
     // Validate that the hook metadata matches the user
     if (metadata?.allowedUserId !== userId) {
