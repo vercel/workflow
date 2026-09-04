@@ -48,6 +48,26 @@ describe('start() overload resolution', () => {
     expect(typeof _check).toBe('function');
   });
 
+  it('accepts an imported step function in dynamic.steps', () => {
+    function _check() {
+      // The documented call: real step imports, whose `.stepId` the
+      // build-time transform stamps at runtime and never adds to their type.
+      // A `{ stepId: string }`-only parameter type rejected this and accepted
+      // only the escape hatch below — which is exactly what app-side e2e
+      // fixtures caught, since the runner only ever used the escape hatch.
+      const add = async (a: number, b: number) => a + b;
+      expectTypeOf(
+        start(SOURCE, [], { dynamic: { steps: { add } } })
+      ).toEqualTypeOf<Promise<Run<unknown>>>();
+      expectTypeOf(
+        start(SOURCE, [], {
+          dynamic: { steps: { add: { stepId: 'step//./steps//add' } } },
+        })
+      ).toEqualTypeOf<Promise<Run<unknown>>>();
+    }
+    expect(typeof _check).toBe('function');
+  });
+
   it('requires `dynamic` when the first argument is source', () => {
     function _check() {
       // @ts-expect-error - source without dynamic options is not a valid call
