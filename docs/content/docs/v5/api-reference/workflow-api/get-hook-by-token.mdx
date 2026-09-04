@@ -124,7 +124,11 @@ import { getHookByToken, resumeHook } from "workflow/api";
 
 export async function POST(request: Request) {
   const { token, data } = await request.json();
-  const expectedEnv = process.env.VERCEL_ENV || "development";
+  // On Vercel the platform sets these: `VERCEL_TARGET_ENV` carries a custom
+  // environment's slug, where `VERCEL_ENV` reports `preview`. Running against
+  // the Local World, hooks are recorded as `local`.
+  const expectedEnv =
+    process.env.VERCEL_TARGET_ENV ?? process.env.VERCEL_ENV ?? "local";
 
   try {
     const hook = await getHookByToken(token); // [!code highlight]

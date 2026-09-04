@@ -28,7 +28,7 @@ That's it. Vercel automatically:
 - Selects the Vercel World backend
 - Configures authentication using OIDC tokens
 - Provisions storage and queuing infrastructure
-- Isolates data per environment (production, preview, development)
+- Isolates data per environment (production, preview, and any custom environments)
 
 <FluidComputeCallout />
 
@@ -134,12 +134,12 @@ Inside a Vercel deployment there is nothing to authenticate: the platform inject
 
 <Callout type="warn">
   Do not reuse the `VERCEL_OIDC_TOKEN` that `vercel env pull` writes into
-  `.env.local` as your Workflow credential. That token is scoped to your
-  project's **development** environment, and the backend attributes every
-  request to the environment in the token's claim — so it addresses
-  development data, not your `production` or `preview` runs, and it should not
-  be used to reach across that boundary. A pulled OIDC token is still the right
-  thing for [bypassing deployment
+  `.env.local` as your Workflow credential. It is a local artifact of your
+  linked project, not a credential for the Workflow API: requests made with it
+  are attributed to the environment carried in the token itself, not to the
+  `production` or `preview` data you mean to reach. Authenticate with a Vercel
+  auth token instead. A pulled OIDC token is still the right thing for
+  [bypassing deployment
   protection](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources)
   when your script has to fetch a protected preview URL; that is a separate
   credential from the one that talks to the Workflow API.
@@ -154,7 +154,7 @@ These four values are what an external client needs. The names are the conventio
 | `WORKFLOW_VERCEL_AUTH_TOKEN` | Vercel auth token | Keep it secret. Create one under [account settings → tokens](https://vercel.com/account/tokens), scoped to the team that owns the project. |
 | `WORKFLOW_VERCEL_TEAM` | Vercel team ID (`team_...`) | Required. Set it together with the token and the project ID. |
 | `WORKFLOW_VERCEL_PROJECT` | Vercel project ID (`prj_...`) | Required. Set it together with the token and the team ID. |
-| `WORKFLOW_VERCEL_ENV` | The environment to target | Defaults to `production`. See [`WORKFLOW_VERCEL_ENV`](#workflow_vercel_env) for the accepted values. |
+| `WORKFLOW_VERCEL_ENV` | `production`, `preview`, or a custom environment's slug | Defaults to `production`. See [`WORKFLOW_VERCEL_ENV`](#workflow_vercel_env). |
 
 Both IDs are in `.vercel/project.json` after `vercel link` — `projectId` is the project, `orgId` the team or user that owns it — or on the project's settings page.
 
