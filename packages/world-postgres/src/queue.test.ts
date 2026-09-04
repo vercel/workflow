@@ -11,6 +11,7 @@ import {
   type WorkerUtils,
 } from 'graphile-worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PostgresWorldRoleSchema } from './config.js';
 import { MessageData } from './message.js';
 import { createQueue } from './queue.js';
 
@@ -529,13 +530,49 @@ describe('postgres queue http execution', () => {
       })
     );
   });
+
+  it('never starts a runner in the producer role, even when a local executor is reachable', async () => {
+    const requests: Array<{
+      method: string | undefined;
+      url: string | undefined;
+      headers: Record<string, string | string[] | undefined>;
+      body: string;
+    }> = [];
+    const port = await getUnusedLoopbackPort();
+    await startWorkflowHttpServer(requests, port);
+    process.env.PORT = String(port);
+
+    const queue = buildQueue(
+      { connectionString: 'postgres://test' },
+      pool,
+      PostgresWorldRoleSchema.enum.producer
+    );
+    await queue.start();
+
+    expect(run).not.toHaveBeenCalled();
+    expect(workerUtilsMock.migrate).toHaveBeenCalledOnce();
+
+    await queue.queue('__wkf_workflow_test-step', {
+      runId: 'run_01ABC',
+      stepId: 'step_01ABC',
+      stepName: 'test-step',
+    });
+
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_flows',
+      expect.objectContaining({ id: 'test-step' }),
+      expect.anything()
+    );
+    expect(requests).toEqual([]);
+  });
 });
 
 function buildQueue(
   config: Parameters<typeof createQueue>[0],
-  pgPool: Parameters<typeof createQueue>[1]
+  pgPool: Parameters<typeof createQueue>[1],
+  role: Parameters<typeof createQueue>[2] = PostgresWorldRoleSchema.enum.worker
 ) {
-  const queue = createQueue(config, pgPool);
+  const queue = createQueue(config, pgPool, role);
   createdQueues.push(queue);
   return queue;
 }
