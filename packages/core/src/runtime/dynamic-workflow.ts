@@ -27,8 +27,24 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import type { StartOptions } from './start.js';
 
-/** A step exposed to dynamic source by its registered step id. */
-export type DynamicWorkflowStepReference = { readonly stepId: string };
+/**
+ * A step exposed to dynamic source.
+ *
+ * Either an imported step function, or an explicit `{ stepId }` for a step
+ * whose function is not importable from the calling context.
+ *
+ * The function arm is deliberately typed as "any function" rather than as
+ * something carrying `stepId`: the build-time transform stamps `.stepId` on
+ * step functions at *runtime*, and nothing adds it to their declared type. A
+ * type that demanded it would reject the documented call — `steps: { fetchUser,
+ * sendEmail }` with real imports — and only accept the escape hatch. The
+ * runtime check in `resolveStepId` is the real gate, and it fails with a
+ * message naming the alias when a value turns out to carry no step id.
+ */
+export type DynamicWorkflowStepReference =
+  | { readonly stepId: string }
+  // biome-ignore lint/suspicious/noExplicitAny: a step of any signature
+  | ((...args: any[]) => unknown);
 
 export interface DynamicWorkflowOptions {
   /**
