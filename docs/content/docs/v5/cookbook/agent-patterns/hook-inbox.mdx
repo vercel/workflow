@@ -115,6 +115,8 @@ export async function POST(
 
 A session may listen on more than one token: its own identity token, a Slack thread, an auth callback. Merging their async iterators gives the workflow one ordered stream to consume. The helper below is plain JavaScript and runs unchanged inside a workflow. Its `add()` lets you merge in a hook after consumption has started.
 
+One detail matters for ordering. The runtime resolves each hook's `await` in event-log order, so the helper records the order in which the sources' `next()` promises **resolve** and yields from that queue. A `Promise.race` over the pending promises would not preserve log order: while the consumer is busy in a step, several payloads settle, and a race over already-settled promises picks by the order the sources were listed, draining one hook before the next.
+
 ```typescript lineNumbers
 /** One item from the merged stream: the value plus which source produced it. */
 export type MergedItem<T> = { index: number; value: T };
@@ -125,35 +127,57 @@ export type MergedItem<T> = { index: number; value: T };
  * consumed.
  */
 export function mergeAsyncIterables<T>(initial: AsyncIterable<T>[] = []) {
-  type Slot = { index: number; result: IteratorResult<T> };
   const iterators = new Map<number, AsyncIterator<T>>();
-  const pending = new Map<number, Promise<Slot>>(); // [!code highlight]
+  // Items in the order their source's `next()` RESOLVED. Every source always
+  // has exactly one `next()` outstanding (see `pull`), so inside a workflow,
+  // where the runtime resolves pending hook awaits in event-log order, this
+  // queue fills in log order across hooks. Two things break that and are
+  // avoided here: `Promise.race` over the pending promises (while the consumer
+  // is away in a step several settle, and a race over settled promises picks
+  // by source order), and pulling a source only when its item is consumed (a
+  // payload buffered for hook A then cannot be ordered against hook B's until
+  // A's previous item is yielded, which degrades to round-robin).
+  const ready: { index: number; result: IteratorResult<T> }[] = []; // [!code highlight]
+  let active = 0;
   let nextIndex = 0;
-  // Resolved whenever a source is added, so a consumer blocked in
-  // `Promise.race` over the current sources re-races with the new one.
+  // Resolved whenever `ready` gains an item or a source is added, so a
+  // consumer waiting on an empty queue wakes up.
   let wake!: () => void;
-  let woken = new Promise<null>((resolve) => {
-    wake = () => resolve(null);
+  let woken = new Promise<void>((resolve) => {
+    wake = resolve;
   });
+  const signal = () => {
+    const previous = wake;
+    woken = new Promise<void>((resolve) => {
+      wake = resolve;
+    });
+    previous();
+  };
 
   const pull = (index: number) => {
     const iterator = iterators.get(index);
     if (!iterator) return;
-    pending.set( // [!code highlight]
-      index, // [!code highlight]
-      iterator.next().then((result) => ({ index, result })) // [!code highlight]
-    ); // [!code highlight]
+    iterator.next().then(
+      (result) => {
+        ready.push({ index, result }); // [!code highlight]
+        // Keep one `next()` outstanding per live source, whether or not the
+        // consumer has caught up: that is what lets the runtime order this
+        // source's next payload against the other sources' by log position.
+        if (!result.done) pull(index); // [!code highlight]
+        signal(); // [!code highlight]
+      },
+      (error) => {
+        ready.push({ index, result: Promise.reject(error) as never });
+        signal(); // [!code highlight]
+      }
+    );
   };
 
   const add = (source: AsyncIterable<T>): number => { // [!code highlight]
     const index = nextIndex++;
-    iterators.set(index, source[Symbol.asyncIterator]()); // [!code highlight]
+    iterators.set(index, source[Symbol.asyncIterator]());
+    active++;
     pull(index); // [!code highlight]
-    const previousWake = wake;
-    woken = new Promise<null>((resolve) => {
-      wake = () => resolve(null);
-    });
-    previousWake(); // [!code highlight]
     return index;
   };
 
@@ -165,21 +189,25 @@ export function mergeAsyncIterables<T>(initial: AsyncIterable<T>[] = []) {
     add,
     async *[Symbol.asyncIterator]() {
       try {
-        while (pending.size > 0) {
-          const winner = await Promise.race([...pending.values(), woken]); // [!code highlight]
-          if (winner === null) continue; // a source was added: re-race // [!code highlight]
-          const { index, result } = winner;
+        while (active > 0 || ready.length > 0) {
+          if (ready.length === 0) {
+            await woken;
+            continue;
+          }
+          const { index, result } = ready.shift()!; // [!code highlight]
+          if (result instanceof Promise) {
+            await result; // rethrows the source's error
+          }
           if (result.done) {
-            pending.delete(index);
+            active--;
             iterators.delete(index);
             continue;
           }
-          pull(index); // [!code highlight]
           yield { index, value: result.value }; // [!code highlight]
         }
       } finally {
-        // A disposed hook never settles its pending `next()`, so this is
-        // fire-and-forget cleanup.
+        // Let sources clean up. A disposed hook's iterator never settles a
+        // pending `next()`, so this is fire-and-forget.
         for (const iterator of iterators.values()) {
           void iterator.return?.().catch(() => {});
         }
@@ -252,7 +280,7 @@ export async function slackSession(sessionId: string, channel: string) {
 ## How it works
 
 1. **Steering is a buffer read at a turn boundary.** The subscriber pushes payloads as they arrive; the loop reads the buffer right after a step result. The runtime delivers hook payloads and step results in event-log order, so every replay reads the same buffer at the same turn. Passing the drained messages to the step records them as its arguments, so the recorded turn and the replayed inbox always agree. The general mechanics are in [Background Hook Subscriber](/docs/cookbook/common-patterns/background-hook-subscriber#how-it-works).
-2. **Merging is `Promise.race` over `hook.next()` calls.** Because each payload resolves in log order, the merged stream is the log order of all participating hooks. `add()` re-races with the new hook included, so a hook created after a step joins the same ordered stream.
+2. **Merging is a queue of resolutions.** Each source's `next()` pushes into a FIFO when it resolves, and the runtime resolves hook payloads in log order, so the merged stream is the log order of all participating hooks. `add()` starts pulling from the new hook into the same queue, so a hook created after a step joins the same ordered stream.
 3. **A pending subscriber does not block completion.** When the body returns, the run completes even if the subscriber is still awaiting the hook. Dispose hooks with `using` or `hook.dispose()` so the tokens are released for the next session.
 
 ## Adapting this

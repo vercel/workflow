@@ -1873,6 +1873,152 @@ describe.concurrent('e2e', () => {
       }
     );
 
+    /** Deterministic PRNG so a failing interleaving can be replayed from its seed. */
+    function seededRandom(seed: number) {
+      let state = seed >>> 0;
+      return () => {
+        state = (state * 1664525 + 1013904223) >>> 0;
+        return state / 0x1_0000_0000;
+      };
+    }
+
+    test(
+      'mergedHooksReplayCheckWorkflow - irregular cross-hook interleaving buffered under a slow step keeps log order on replay',
+      { timeout: 300_000 },
+      async () => {
+        const id = Math.random().toString(36).slice(2);
+        const tokens = range(3).map((i) => `merge-replay-${id}-${i}`);
+        const PER_HOOK = 12 * SCALE;
+        const STEP_DELAY_MS = 400;
+        // Bursty, irregular source order (A,A,A,B,C,C,A,...), reproducible
+        // from the seed printed on failure. Sends are strictly sequential so
+        // the event log records exactly this order.
+        const seed = Math.floor(Math.random() * 0xffff_ffff);
+        const random = seededRandom(seed);
+        const remaining = tokens.map(() => PER_HOOK);
+        const nextSeq = tokens.map(() => 0);
+        const order: { source: number; seq: number }[] = [];
+        while (remaining.some((n) => n > 0)) {
+          const candidates = remaining.flatMap((n, i) => (n > 0 ? [i] : []));
+          const source = candidates[Math.floor(random() * candidates.length)];
+          // Runs of the same source are what stress claim order.
+          const run = 1 + Math.floor(random() * Math.min(4, remaining[source]));
+          for (let k = 0; k < run; k++) {
+            order.push({ source, seq: nextSeq[source]++ });
+            remaining[source]--;
+          }
+        }
+
+        const run = await start(await e2e('mergedHooksReplayCheckWorkflow'), [
+          tokens,
+          STEP_DELAY_MS,
+        ]);
+        await Promise.all(
+          tokens.map((token) => waitForHook(token, { runId: run.runId }))
+        );
+
+        // Each merged item costs the run a 400 ms step, while a send takes a
+        // few ms, so the bulk of these land while the run is parked in a step
+        // and are consumed as buffered payloads by the next replay.
+        for (const { source, seq } of order) {
+          await resumeHook(tokens[source], { seq });
+        }
+        for (const token of tokens) {
+          await resumeHook(token, { seq: PER_HOOK, done: true });
+        }
+
+        const result = await run.returnValue;
+        const context = `seed=${seed}`;
+        const fmt = (xs: { source: number; seq: number }[]) =>
+          xs.map((x) => `${'ABC'[x.source]}${x.seq}`).join(' ');
+        console.log(
+          `[merge-replay] ${context}\n  sent:     ${fmt(order)}\n  observed: ${fmt(result.items.map((i) => i.observed))}\n  recorded: ${fmt(result.items.map((i) => i.recorded))}`
+        );
+        // The merge yielded exactly the log order, not the hook order it
+        // happened to poll in.
+        expect(
+          result.items.map((i) => i.observed),
+          context
+        ).toEqual(order);
+        // Replay agreement: the merge order the final replay observed is the
+        // order the live run recorded in each step's arguments.
+        for (const item of result.items) {
+          expect(item.recorded, context).toEqual(item.observed);
+        }
+        // Per-hook order is a consequence, but assert it explicitly too.
+        for (let source = 0; source < tokens.length; source++) {
+          expect(
+            result.items
+              .filter((i) => i.observed.source === source)
+              .map((i) => i.observed.seq),
+            `${context} hook ${source}`
+          ).toEqual(range(PER_HOOK));
+        }
+        await expectInboxEventLog(run.runId, {
+          hookReceived: tokens.length * (PER_HOOK + 1),
+          stepCompleted: tokens.length * PER_HOOK,
+        });
+      }
+    );
+
+    test(
+      'mergedHooksReplayCheckWorkflow - a silent hook and an early done do not disturb the other sources',
+      { timeout: 300_000 },
+      async () => {
+        const id = Math.random().toString(36).slice(2);
+        // Hook 3 never receives a payload, only its `done` at the very end.
+        const tokens = range(4).map((i) => `merge-silent-${id}-${i}`);
+        const PER_HOOK = 10 * SCALE;
+        const EARLY = 0; // closed after a third of its messages
+
+        const run = await start(await e2e('mergedHooksReplayCheckWorkflow'), [
+          tokens,
+          50,
+        ]);
+        await Promise.all(
+          tokens.map((token) => waitForHook(token, { runId: run.runId }))
+        );
+
+        const order: { source: number; seq: number }[] = [];
+        const earlyCount = Math.floor(PER_HOOK / 3);
+        for (let seq = 0; seq < PER_HOOK; seq++) {
+          for (const source of [0, 1, 2]) {
+            if (source === EARLY && seq >= earlyCount) continue;
+            await resumeHook(tokens[source], { seq });
+            order.push({ source, seq });
+          }
+          if (seq === earlyCount - 1) {
+            // Hook 0 closes while hooks 1 and 2 keep flowing.
+            await resumeHook(tokens[EARLY], { seq: earlyCount, done: true });
+          }
+        }
+        for (const source of [1, 2]) {
+          await resumeHook(tokens[source], { seq: PER_HOOK, done: true });
+        }
+        // The silent hook is closed last; the run cannot finish before this.
+        await resumeHook(tokens[3], { seq: 0, done: true });
+
+        const result = await run.returnValue;
+        const fmt = (xs: { source: number; seq: number }[]) =>
+          xs.map((x) => `${'ABCD'[x.source]}${x.seq}`).join(' ');
+        console.log(
+          `[merge-silent]\n  sent:     ${fmt(order)}\n  observed: ${fmt(result.items.map((i) => i.observed))}\n  recorded: ${fmt(result.items.map((i) => i.recorded))}\n  closed:   ${result.closedInOrder.join(',')}`
+        );
+        expect(result.items.map((i) => i.observed)).toEqual(order);
+        for (const item of result.items) {
+          expect(item.recorded).toEqual(item.observed);
+        }
+        // Closures arrive in log order: the early hook first, the silent one last.
+        expect(result.closedInOrder[0]).toBe(EARLY);
+        expect(result.closedInOrder[result.closedInOrder.length - 1]).toBe(3);
+        expect(result.closedInOrder).toHaveLength(tokens.length);
+        await expectInboxEventLog(run.runId, {
+          hookReceived: order.length + tokens.length,
+          stepCompleted: order.length,
+        });
+      }
+    );
+
     test(
       'dynamicInboxWorkflow - a hook added to a merged inbox mid-run joins the same ordered stream',
       { timeout: 240_000 },

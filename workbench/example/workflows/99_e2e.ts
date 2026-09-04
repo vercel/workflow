@@ -3914,39 +3914,62 @@ type MergedItem<T> = { index: number; value: T };
  *
  * This is plain JavaScript (no workflow primitives), so it runs unchanged in
  * the workflow sandbox. Inside a workflow, each source's `next()` is an `await
- * hook`, and the runtime delivers hook payloads in event-log order, so the
- * merged order is deterministic across replays.
+ * hook`, and the runtime resolves hook payloads in event-log order; the merge
+ * yields items in the order those awaits resolved, so the merged order is the
+ * log order and is deterministic across replays.
  */
 function mergeAsyncIterables<T>(initial: AsyncIterable<T>[] = []) {
-  type Slot = { index: number; result: IteratorResult<T> };
   const iterators = new Map<number, AsyncIterator<T>>();
-  const pending = new Map<number, Promise<Slot>>();
+  // Items in the order their source's `next()` RESOLVED. Every source always
+  // has exactly one `next()` outstanding (see `pull`), so inside a workflow,
+  // where the runtime resolves pending hook awaits in event-log order, this
+  // queue fills in log order across hooks. Two things break that and are
+  // avoided here: `Promise.race` over the pending promises (while the consumer
+  // is away in a step several settle, and a race over settled promises picks
+  // by source order), and pulling a source only when its item is consumed (a
+  // payload buffered for hook A then cannot be ordered against hook B's until
+  // A's previous item is yielded, which degrades to round-robin).
+  const ready: { index: number; result: IteratorResult<T> }[] = [];
+  let active = 0;
   let nextIndex = 0;
-  // Resolved whenever a source is added, so a consumer blocked in
-  // `Promise.race` over the current sources re-races with the new one.
+  // Resolved whenever `ready` gains an item or a source is added, so a
+  // consumer waiting on an empty queue wakes up.
   let wake!: () => void;
-  let woken = new Promise<null>((resolve) => {
-    wake = () => resolve(null);
+  let woken = new Promise<void>((resolve) => {
+    wake = resolve;
   });
+  const signal = () => {
+    const previous = wake;
+    woken = new Promise<void>((resolve) => {
+      wake = resolve;
+    });
+    previous();
+  };
 
   const pull = (index: number) => {
     const iterator = iterators.get(index);
     if (!iterator) return;
-    pending.set(
-      index,
-      iterator.next().then((result) => ({ index, result }))
+    iterator.next().then(
+      (result) => {
+        ready.push({ index, result });
+        // Keep one `next()` outstanding per live source, whether or not the
+        // consumer has caught up: that is what lets the runtime order this
+        // source's next payload against the other sources' by log position.
+        if (!result.done) pull(index);
+        signal();
+      },
+      (error) => {
+        ready.push({ index, result: Promise.reject(error) as never });
+        signal();
+      }
     );
   };
 
   const add = (source: AsyncIterable<T>): number => {
     const index = nextIndex++;
     iterators.set(index, source[Symbol.asyncIterator]());
+    active++;
     pull(index);
-    const previousWake = wake;
-    woken = new Promise<null>((resolve) => {
-      wake = () => resolve(null);
-    });
-    previousWake();
     return index;
   };
 
@@ -3958,16 +3981,20 @@ function mergeAsyncIterables<T>(initial: AsyncIterable<T>[] = []) {
     add,
     async *[Symbol.asyncIterator]() {
       try {
-        while (pending.size > 0) {
-          const winner = await Promise.race([...pending.values(), woken]);
-          if (winner === null) continue; // a source was added: re-race
-          const { index, result } = winner;
+        while (active > 0 || ready.length > 0) {
+          if (ready.length === 0) {
+            await woken;
+            continue;
+          }
+          const { index, result } = ready.shift()!;
+          if (result instanceof Promise) {
+            await result; // rethrows the source's error
+          }
           if (result.done) {
-            pending.delete(index);
+            active--;
             iterators.delete(index);
             continue;
           }
-          pull(index);
           yield { index, value: result.value };
         }
       } finally {
@@ -4188,6 +4215,61 @@ export async function mergedHooksWorkflow(
 
   for (const hook of hooks) hook.dispose();
   return received;
+}
+
+async function slowRecordMergedMessage(
+  source: number,
+  seq: number,
+  delayMs: number
+) {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+  return { source, seq };
+}
+
+/**
+ * Pattern 2 under buffering pressure, with a replay-agreement check. Every
+ * merged item goes through a step that sleeps `stepDelayMs`, so a sender that
+ * keeps going during the step piles payloads up across several hooks; the
+ * next replay consumes all of them as *buffered* payloads and the merge has to
+ * order them by log position at claim time, not by which hook it asked first.
+ * The step echoes its arguments, so `observed` (the replay's view of what the
+ * merge yielded) can be compared with `recorded` (what the live run passed to
+ * the step). Each hook is closed by its own `done` marker, whenever that
+ * arrives; the run returns once every hook is closed.
+ */
+export async function mergedHooksReplayCheckWorkflow(
+  tokens: string[],
+  stepDelayMs: number
+) {
+  'use workflow';
+
+  const hooks = tokens.map((token) => createHook<InboxMessage>({ token }));
+  const items: {
+    observed: { source: number; seq: number };
+    recorded: { source: number; seq: number };
+  }[] = [];
+  const closedInOrder: number[] = [];
+  let open = hooks.length;
+
+  for await (const { index, value } of mergeAsyncIterables(hooks)) {
+    if (value.done) {
+      closedInOrder.push(index);
+      open--;
+      if (open === 0) break;
+      continue;
+    }
+    const observed = { source: index, seq: value.seq };
+    const recorded = await slowRecordMergedMessage(
+      index,
+      value.seq,
+      stepDelayMs
+    );
+    items.push({ observed, recorded });
+  }
+
+  for (const hook of hooks) hook.dispose();
+  return { items, closedInOrder };
 }
 
 async function postFirstReplyStep(sessionId: string) {
