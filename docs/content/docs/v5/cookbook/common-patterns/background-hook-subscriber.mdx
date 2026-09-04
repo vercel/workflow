@@ -1,0 +1,265 @@
+---
+title: Background Hook Subscriber
+description: React to hook payloads as they arrive while the workflow keeps doing other work, by iterating the hook in a subscriber the workflow body never awaits.
+type: guide
+summary: Start a `for await` loop over a hook and do not await it. Payloads land in a local buffer as they arrive; the main flow reads the buffer at the points where it can act on them. Delivery follows event-log order relative to step results, so every replay observes the same buffer at the same points. A `subscribeInbox` wrapper adds `drain()` and a durable `wait()`.
+related:
+  - /docs/foundations/hooks
+  - /docs/api-reference/workflow/create-hook
+  - /docs/api-reference/workflow-api/resume-hook
+  - /cookbook/common-patterns/webhooks
+  - /docs/cookbook/agent-patterns/hook-inbox
+---
+
+<CopyPrompt
+  text="Let this workflow react to hook payloads while it keeps working. In the &quot;use workflow&quot; function, create the hook with `createHook()` from `workflow` and start a subscriber: an async IIFE that runs `for await (const payload of hook)` and pushes each payload into a local array. Do NOT await the subscriber before the main work. At each point where the main flow can act on new payloads (typically right after a step completes), read and clear the array, and pass what you read into the next &quot;use step&quot; call so it is recorded in the event log. End with an explicit end marker payload that the subscriber breaks on, or let the body return with the subscriber still pending; dispose the hook with `using` or `hook.dispose()`. If the flow needs to block until the next payload, wrap the subscriber so it exposes `drain()` and a `wait()` that resolves on the next push. Send payloads from a server route with `resumeHook(token, payload)` from `workflow/api`."
+/>
+
+Awaiting a hook pauses the workflow until a payload arrives. That is the right shape when the payload is the next thing the workflow needs. It is the wrong shape when the workflow has other work to do and payloads are side information: a pause request during a long import, a priority change while a queue drains, progress acknowledgements from an external system. For those, iterate the hook in the background and let the main flow read what has arrived whenever it reaches a point where it can act.
+
+## When to use this
+
+- **Control signals during long work**: pause, cancel, reprioritize, or reconfigure a loop that is busy running steps
+- **Collecting callbacks while continuing**: gather acknowledgements or partial results from an external system without stopping to wait for each one
+- **Steering an agent**: feed user messages into an agent loop at turn boundaries. See [Hook Inbox & Steering](/docs/cookbook/agent-patterns/hook-inbox) for that specialization
+
+## Pattern: subscribe, then read at safe points
+
+The subscriber is an async function that iterates the hook and pushes into an array. The body starts it and moves on. At each iteration of its own loop the body reads the array, acts on it, and hands what it read to the step so the decision is recorded.
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+type Control = { type: "skip"; ids: string[] } | { type: "stop" };
+
+declare function importBatch(
+  batch: string[],
+  skipped: string[]
+): Promise<{ imported: number }>; // @setup
+
+export async function importJob(jobId: string, batches: string[][]) {
+  "use workflow";
+
+  using control = createHook<Control>({ token: `import:${jobId}` }); // [!code highlight]
+
+  const pending: Control[] = [];
+  let stopped = false;
+
+  // Background subscriber. Intentionally NOT awaited: it keeps running while
+  // the batches import, so control messages land in `pending` as they arrive.
+  const subscription = (async () => { // [!code highlight]
+    for await (const message of control) { // [!code highlight]
+      if (message.type === "stop") { // [!code highlight]
+        stopped = true; // [!code highlight]
+        break; // [!code highlight]
+      } // [!code highlight]
+      pending.push(message); // [!code highlight]
+    } // [!code highlight]
+  })(); // [!code highlight]
+
+  let imported = 0;
+  const skipped = new Set<string>();
+
+  for (const batch of batches) {
+    // Read everything that arrived during the previous batch.
+    for (const message of pending.splice(0)) { // [!code highlight]
+      if (message.type === "skip") for (const id of message.ids) skipped.add(id);
+    }
+    if (stopped) break;
+
+    // Pass what the workflow read into the step so it is recorded with it.
+    const result = await importBatch(batch, [...skipped]); // [!code highlight]
+    imported += result.imported;
+  }
+
+  // `using` disposes the hook here. The subscriber may still be parked on
+  // `await hook`; the run completes anyway.
+  return { imported, stopped };
+}
+```
+
+### Sending a control message
+
+Any process that knows the job id can steer the import, because the token is deterministic.
+
+```typescript lineNumbers
+import { resumeHook } from "workflow/api";
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ jobId: string }> }
+) {
+  const { jobId } = await params;
+  const message = await request.json();
+  await resumeHook(`import:${jobId}`, message); // [!code highlight]
+  return Response.json({ ok: true });
+}
+```
+
+## Pattern: the subscriber as an inbox with `drain()` and `wait()`
+
+When the main flow sometimes has nothing to do until the next payload, it needs to block without spinning. Wrap the subscriber so it exposes `drain()` and `wait()`. While the buffer is empty, the only pending promise in the run is the subscriber's `await hook`, so `await inbox.wait()` suspends the workflow durably until a payload arrives.
+
+```typescript lineNumbers
+/**
+ * Subscribes to `source` in the background and buffers what it yields.
+ * `wait()` resolves once a message has been buffered or the source ended.
+ */
+export function subscribeInbox<T>(
+  source: AsyncIterable<T>,
+  isEnd: (value: T) => boolean
+) {
+  const buffered: T[] = []; // [!code highlight]
+  let ended = false;
+  let notify = () => {};
+  let changed = new Promise<void>((resolve) => {
+    notify = resolve;
+  });
+  const bump = () => { // [!code highlight]
+    const previous = notify;
+    changed = new Promise<void>((resolve) => {
+      notify = resolve;
+    });
+    previous();
+  };
+  const done = (async () => {
+    try {
+      for await (const value of source) { // [!code highlight]
+        if (isEnd(value)) break;
+        buffered.push(value); // [!code highlight]
+        bump(); // [!code highlight]
+      }
+    } finally { // [!code highlight]
+      // Runs on the end marker, when the source completes on its own, and
+      // when it throws, so `wait()` always unblocks once the source stops.
+      ended = true; // [!code highlight]
+      bump(); // [!code highlight]
+    }
+  })();
+  return {
+    done,
+    drain: () => buffered.splice(0), // [!code highlight]
+    get ended() {
+      return ended;
+    },
+    async wait() { // [!code highlight]
+      if (buffered.length === 0 && !ended) await changed; // [!code highlight]
+    },
+  };
+}
+```
+
+### A loop that blocks between payloads
+
+Drain before checking for the end, so payloads pushed between the last drain and the end marker are still processed.
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+type Job = { id: string; end?: boolean };
+
+declare function subscribeInbox<T>(
+  source: AsyncIterable<T>,
+  isEnd: (value: T) => boolean
+): {
+  done: Promise<void>;
+  drain: () => T[];
+  readonly ended: boolean;
+  wait: () => Promise<void>;
+}; // @setup
+declare function processJobs(jobs: Job[]): Promise<void>; // @setup
+
+export async function jobConsumer(queueId: string) {
+  "use workflow";
+
+  using hook = createHook<Job>({ token: `queue:${queueId}` });
+  const inbox = subscribeInbox(hook, (job) => job.end === true); // [!code highlight]
+
+  while (true) {
+    await inbox.wait(); // suspends durably while nothing is buffered // [!code highlight]
+    const jobs = inbox.drain(); // [!code highlight]
+    if (jobs.length === 0) { // [!code highlight]
+      if (inbox.ended) break; // [!code highlight]
+      continue;
+    }
+    // Everything that arrived since the last drain is processed together.
+    await processJobs(jobs); // [!code highlight]
+  }
+}
+```
+
+## Ending the subscription
+
+There are two ways a subscription ends, and both are fine:
+
+- **An end marker.** The subscriber `break`s when it sees a payload it recognizes as the end (`stop`, `end: true`). Use this when the workflow should wait for the sender to say it is done, and `await` the subscription before returning.
+- **The body returns first.** The subscriber is still parked on `await hook`. The run completes regardless; the pending await is abandoned with the run. Use `using` (or call `hook.dispose()`) so the token is released for the next run. If payloads can arrive right up to the end and none may be lost, hand them off as shown next.
+
+What you should not do is read the buffer from code that has no durable position, such as a timer callback: only reads that happen right after an `await` on a step, a sleep, or the inbox's `wait()` are anchored to the event log.
+
+### Handing off late arrivals to a new run
+
+When the body returns first, payloads that arrived after its last read but before the hook was released would finish with the run. If those must not be lost, release the hook explicitly, commit the release with a step, drain once more, and start a fresh run with whatever was left:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+type Message = { text: string };
+
+declare function runTurn(steering: string[]): Promise<{ finished: boolean }>; // @setup
+declare function commitRelease(): Promise<void>; // @setup
+declare function startSuccessor(sessionId: string, carried: string[]): Promise<string>; // @setup
+
+export async function session(sessionId: string, carried: string[]) {
+  "use workflow";
+
+  const inbox: Message[] = [];
+  const hook = createHook<Message>({ token: `session:${sessionId}` });
+  void (async () => {
+    for await (const message of hook) inbox.push(message);
+  })();
+
+  let steering = carried;
+  while (true) {
+    const result = await runTurn(steering);
+    steering = inbox.splice(0).map((m) => m.text);
+    if (result.finished && steering.length === 0) break;
+  }
+
+  hook.dispose(); // senders now get HookNotFoundError for this token // [!code highlight]
+  await commitRelease(); // any step: commits the release and anchors the drain below // [!code highlight]
+  const late = [...steering, ...inbox.splice(0).map((m) => m.text)]; // [!code highlight]
+  if (late.length > 0) {
+    // Whatever beat the release is handed to a new run instead of dropped.
+    return { successor: await startSuccessor(sessionId, late) }; // [!code highlight]
+  }
+  return { successor: null };
+}
+```
+
+Two details matter here. The drain happens *after* an awaited step, not right after `dispose()`, so it is anchored to the event log like every other read and sees every payload that preceded the release. And the successor is started from a step (`startSuccessor` wraps `start()` from `workflow/api`), so it happens once, on the live run. A sender whose `resumeHook()` lands after the release is committed sees `HookNotFoundError` rather than a silent drop, and can start or look up the successor itself.
+
+<Callout type="info">
+`dispose()` does not stop delivery on the spot. The release becomes durable at the run's next suspension, and `resumeHook()` keeps being accepted until then; every payload accepted before that is in the event log ahead of the release and is still delivered to the subscriber, whose `for await` ends only once the release is durable. That is why the drain after `commitRelease()` is complete: it holds everything that beat the release, on the live run and on every replay.
+</Callout>
+
+## How it works
+
+1. **The subscriber is ordinary workflow code.** `for await (const m of hook)` awaits the hook once per payload. The runtime does not treat it specially; it is a promise chain the body chose not to await.
+2. **Deliveries are ordered by the event log.** Each `resumeHook()` appends a `hook_received` event and each step result appends a `step_completed` event. The runtime hands a hook payload to the workflow before or after a step result according to their positions in the log, on the live run and on every replay. A buffer read right after a step therefore sees the same payloads on every replay.
+3. **What you read gets recorded.** Passing the read values to the step stores them in the log as that step's arguments. A replay rebuilds the buffer from the `hook_received` events and calls the step with the same arguments.
+4. **`wait()` suspends durably.** With the buffer empty, the subscriber's pending `await hook` is the only open work, so the runtime suspends the run until the next payload and replays it from the log when one arrives.
+
+## Adapting this
+
+- **Coalesce**: if many payloads can arrive between reads, reduce them to one decision (latest wins, or a set union as with `skip` above) before acting.
+- **Timeouts**: race `inbox.wait()` against `sleep()` to bound how long the flow blocks between payloads.
+- **Multiple sources**: merge several hooks into one async iterable and subscribe to the merged stream. [Hook Inbox & Steering](/docs/cookbook/agent-patterns/hook-inbox) shows a merge helper that supports adding hooks mid-run.
+- **Webhooks**: the same subscriber works over `createWebhook()`, whose iterator yields `Request` objects.
+
+## Key APIs
+
+- [`createHook()`](/docs/api-reference/workflow/create-hook): creates the hook; hooks are `AsyncIterable`, which is what the subscriber consumes.
+- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook): sends a payload to a hook by token from server-side code.
+- [`createWebhook()`](/docs/api-reference/workflow/create-webhook): the HTTP-callback variant of a hook, iterable the same way.
+- [Hooks](/docs/foundations/hooks): token design, iteration, and disposal semantics.

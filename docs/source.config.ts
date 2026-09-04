@@ -5,6 +5,7 @@ import {
 } from '@vercel/geistdocs/source-config';
 import { defineDocs } from 'fumadocs-mdx/config';
 import { z } from 'zod';
+import { remarkStripSetupLines } from './lib/remark-strip-setup-lines';
 
 // You can customise Zod schemas for frontmatter and `meta.json` here
 // see https://fumadocs.dev/docs/mdx/collections
@@ -71,4 +72,10 @@ export const worldsV5Docs = defineDocs({
   },
 });
 
-export default defineGeistdocsSourceConfig();
+export default defineGeistdocsSourceConfig({
+  mdxOptions: {
+    // Drop `// @setup` type-check-only lines from code samples before they
+    // are rendered or exported as markdown. See lib/remark-strip-setup-lines.ts.
+    remarkPlugins: [remarkStripSetupLines],
+  },
+});

@@ -1382,6 +1382,700 @@ describe.concurrent('e2e', () => {
     expect([...returnValue].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4]);
   });
 
+  // ==================== HOOK INBOX PATTERNS ====================
+  // Background hook subscribers and merged hook inboxes (see the matching
+  // section in workflows/99_e2e.ts). These stress two userland patterns:
+  //
+  //  1. A `for await` over a hook that the workflow body never awaits, pushing
+  //     payloads into a local inbox that the body drains at step boundaries
+  //     (steering an agent loop).
+  //  2. Several hooks merged into one async iterator, including a hook added
+  //     to the merge after the workflow has started.
+  //
+  // Both are plain JavaScript; what the tests establish is that hook delivery
+  // stays in event-log order relative to step results, so a replay observes
+  // the same inbox contents at every decision point as the live run did, even
+  // with dozens of payloads landing mid-step.
+  describe('hook inbox patterns', () => {
+    const range = (n: number) => Array.from({ length: n }, (_, i) => i);
+    // Soak knob: multiplies every per-hook message count. The default is a
+    // per-PR regression check; set e.g. `E2E_INBOX_SCALE=4` to push several
+    // hundred payloads through each pattern when hunting for ordering flakes.
+    const SCALE = Math.max(1, Number(process.env.E2E_INBOX_SCALE ?? 1) || 1);
+
+    /** Every event of `runId`, ascending, fetched as pages of EVENT_POLL_PAGE_SIZE. */
+    async function listAllRunEvents(runId: string): Promise<WorkflowEvent[]> {
+      const world = await getWorld();
+      const events: WorkflowEvent[] = [];
+      let cursor: string | undefined;
+      while (true) {
+        const page = await world.events.list({
+          runId,
+          resolveData: 'none',
+          pagination: { limit: EVENT_POLL_PAGE_SIZE, sortOrder: 'asc', cursor },
+        });
+        events.push(...page.data);
+        if (!page.hasMore || !page.cursor) break;
+        cursor = page.cursor ?? undefined;
+      }
+      return events;
+    }
+
+    /**
+     * Asserts the run's event log holds exactly the expected number of
+     * `hook_received` and `step_completed` events and no `hook_conflict`.
+     * Duplicated or dropped deliveries would already fail the return-value
+     * assertions; this pins the log itself so a run that happened to return
+     * the right answer over a wrong log still fails.
+     */
+    async function expectInboxEventLog(
+      runId: string,
+      expected: { hookReceived: number; stepCompleted: number }
+    ) {
+      const events = await listAllRunEvents(runId);
+      const count = (type: string) =>
+        events.filter((e) => e.eventType === type).length;
+      expect(count('hook_conflict')).toBe(0);
+      expect(count('hook_received')).toBe(expected.hookReceived);
+      expect(count('step_completed')).toBe(expected.stepCompleted);
+    }
+
+    test(
+      'backgroundInboxWorkflow - background subscriber steers turns deterministically under load',
+      { timeout: 240_000 },
+      async () => {
+        const token = `inbox-${Math.random().toString(36).slice(2)}`;
+        const TURNS = 10;
+        // Bursts are paced by the run's own progress (one burst per completed
+        // turn) so payloads land while a step is executing, i.e. between a
+        // turn's `step_created` and its `step_completed` in the log.
+        const BURSTS = TURNS - 2;
+        const BURST_SIZE = 8 * SCALE;
+        const MESSAGES = BURSTS * BURST_SIZE;
+
+        const run = await start(await e2e('backgroundInboxWorkflow'), [
+          token,
+          TURNS,
+        ]);
+        await waitForHook(token, { runId: run.runId });
+
+        let seq = 0;
+        for (let burst = 1; burst <= BURSTS; burst++) {
+          await waitForRunEvents(
+            run.runId,
+            (event) => event.eventType === 'step_completed',
+            {
+              minCount: burst,
+              timeoutMs: 120_000,
+              description: `step_completed #${burst} before burst ${burst}`,
+            }
+          );
+          for (let i = 0; i < BURST_SIZE; i++) {
+            await resumeHook(token, { seq: seq++ });
+          }
+        }
+        await resumeHook(token, { seq, done: true });
+
+        const result = await run.returnValue;
+        expect(result.turns).toHaveLength(TURNS);
+        expect(result.subscribed).toBe(MESSAGES);
+
+        // What the workflow observed in its inbox at each turn boundary must
+        // match what the event log recorded as that turn's step arguments.
+        // The live run wrote the arguments; the final replay produced
+        // `steeringSeen`. A replay that delivered a payload on the other side
+        // of a step boundary would make them disagree.
+        for (const turn of result.turns) {
+          expect(turn.steeringApplied, `turn ${turn.turn}`).toEqual(
+            turn.steeringSeen
+          );
+        }
+
+        // Every payload was delivered exactly once, in send order, across the
+        // turn boundaries and the final drain.
+        const delivered = [
+          ...result.turns.flatMap((t) => t.steeringSeen),
+          ...result.drained,
+        ];
+        expect(delivered).toEqual(range(MESSAGES));
+
+        // The subscriber really ran in the background: some payloads were
+        // drained at a turn boundary rather than all at the end. Bursts are
+        // sent after turn k completes and before turn k+2 completes, so at
+        // least the last burst is observed by a later turn.
+        expect(
+          result.turns.filter((t) => t.steeringSeen.length > 0).length
+        ).toBeGreaterThan(0);
+
+        await expectInboxEventLog(run.runId, {
+          hookReceived: MESSAGES + 1,
+          stepCompleted: TURNS,
+        });
+      }
+    );
+
+    test(
+      'backgroundInboxWorkflow - run completes while the subscriber is still awaiting the hook',
+      { timeout: 240_000 },
+      async () => {
+        const token = `inbox-open-${Math.random().toString(36).slice(2)}`;
+        const TURNS = 4;
+        const MESSAGES = 12 * SCALE;
+
+        // `minMessages` keeps the run turning until it has seen every message,
+        // so a slow lane cannot finish the run (and dispose the hook) while
+        // this test is still sending.
+        const run = await start(await e2e('backgroundInboxWorkflow'), [
+          token,
+          TURNS,
+          false,
+          MESSAGES,
+        ]);
+        await waitForHook(token, { runId: run.runId });
+        // Send everything after the first turn so at least one turn boundary
+        // sees a non-empty inbox, then never send an end marker: the workflow
+        // must complete with the subscriber still parked on the hook.
+        await waitForRunEvents(
+          run.runId,
+          (event) => event.eventType === 'step_completed',
+          { timeoutMs: 120_000, description: 'first step_completed' }
+        );
+        for (let seq = 0; seq < MESSAGES; seq++) {
+          await resumeHook(token, { seq });
+        }
+
+        const result = await run.returnValue;
+        expect(result.subscribed).toBeNull();
+        expect(result.turns.length).toBeGreaterThanOrEqual(TURNS);
+        for (const turn of result.turns) {
+          expect(turn.steeringApplied, `turn ${turn.turn}`).toEqual(
+            turn.steeringSeen
+          );
+        }
+        const delivered = [
+          ...result.turns.flatMap((t) => t.steeringSeen),
+          ...result.drained,
+        ];
+        expect(delivered).toEqual(range(MESSAGES));
+
+        // `using` released the token even though the subscriber never saw an
+        // end marker: a new hook on the same token must not conflict.
+        const { json } = await cliInspectJson(`runs ${run.runId}`);
+        expect(json.status).toBe('completed');
+        await expectInboxEventLog(run.runId, {
+          hookReceived: MESSAGES,
+          stepCompleted: result.turns.length,
+        });
+      }
+    );
+
+    test(
+      'inboxWaitLoopWorkflow - drain-then-wait loop groups payloads identically on replay',
+      { timeout: 240_000 },
+      async () => {
+        const token = `inbox-wait-${Math.random().toString(36).slice(2)}`;
+        const BURSTS = 6;
+        const BURST_SIZE = 5 * SCALE;
+        const MESSAGES = BURSTS * BURST_SIZE;
+
+        const run = await start(await e2e('inboxWaitLoopWorkflow'), [token]);
+        await waitForHook(token, { runId: run.runId });
+
+        // Each burst is sent after the previous burst's turn has completed, so
+        // the live run drains bursts as groups while the payloads inside a
+        // burst arrive back-to-back and are mostly buffered during the step.
+        let seq = 0;
+        for (let burst = 0; burst < BURSTS; burst++) {
+          if (burst > 0) {
+            await waitForRunEvents(
+              run.runId,
+              (event) => event.eventType === 'step_completed',
+              {
+                minCount: burst,
+                timeoutMs: 120_000,
+                description: `step_completed #${burst} before burst ${burst}`,
+              }
+            );
+          }
+          for (let i = 0; i < BURST_SIZE; i++) {
+            await resumeHook(token, { seq: seq++ });
+          }
+        }
+        await waitForRunEvents(
+          run.runId,
+          (event) => event.eventType === 'step_completed',
+          {
+            minCount: BURSTS,
+            timeoutMs: 120_000,
+            description: 'step_completed for the last burst',
+          }
+        );
+        await resumeHook(token, { seq, done: true });
+
+        const result = await run.returnValue;
+        // Every turn drained at least one message (the loop only runs a turn
+        // after `wait()` resolves), and each turn's step was called with
+        // exactly what the workflow drained.
+        expect(result.turns.length).toBeGreaterThanOrEqual(BURSTS);
+        expect(result.turns.length).toBeLessThanOrEqual(MESSAGES);
+        for (const turn of result.turns) {
+          expect(turn.steeringSeen.length).toBeGreaterThan(0);
+          expect(turn.steeringApplied, `turn ${turn.turn}`).toEqual(
+            turn.steeringSeen
+          );
+        }
+        const delivered = [
+          ...result.turns.flatMap((t) => t.steeringSeen),
+          ...result.drained,
+        ];
+        expect(delivered).toEqual(range(MESSAGES));
+        expect(result.drained).toEqual([]);
+
+        await expectInboxEventLog(run.runId, {
+          hookReceived: MESSAGES + 1,
+          stepCompleted: result.turns.length,
+        });
+      }
+    );
+
+    test(
+      'handoffInboxWorkflow - late arrivals after the loop exits are handed to a new run, none dropped',
+      { timeout: 300_000 },
+      async () => {
+        const token = `inbox-handoff-${Math.random().toString(36).slice(2)}`;
+        const TURNS = 4;
+
+        const parent = await start(await e2e('handoffInboxWorkflow'), [
+          token,
+          TURNS,
+          [],
+          0,
+        ]);
+        await waitForHook(token, { runId: parent.runId });
+
+        // Send steadily until the parent run completes. A send that lands in
+        // the disposal window is rejected with HookNotFoundError; that is the
+        // contract (the sender knows, and can start or find the next run), so
+        // count it and retry the same seq against the successor's hook.
+        // Bounded so a starved lane cannot turn this sender into a load
+        // generator: the parent runs TURNS * 300 ms of steps, so the cap is
+        // far above what a healthy run can absorb before it completes.
+        const MAX_MESSAGES = 60 * SCALE;
+        const accepted: number[] = [];
+        let rejections = 0;
+        let parentDone = false;
+        const parentResult = parent.returnValue.then((r) => {
+          parentDone = true;
+          return r;
+        });
+        // Once the last turn has started, send a burst without pausing so
+        // some payloads land during that turn and there is something to hand
+        // off. Sends stay strictly sequential so log order is send order.
+        let lastTurnStarted = false;
+        void waitForRunEvents(
+          parent.runId,
+          (event) => event.eventType === 'step_completed',
+          { minCount: TURNS - 1, timeoutMs: 240_000 }
+        ).then(
+          () => {
+            lastTurnStarted = true;
+          },
+          () => {}
+        );
+        let burst = 0;
+        let seq = 0;
+        while (!parentDone && seq < MAX_MESSAGES) {
+          try {
+            await resumeHook(token, { seq });
+            accepted.push(seq++);
+          } catch (err) {
+            if (!HookNotFoundError.is(err)) throw err;
+            rejections++;
+          }
+          if (lastTurnStarted && burst < 5) {
+            burst++;
+            continue;
+          }
+          await sleep(40);
+        }
+
+        // Follow the chain of hand-offs. The sender stopped when the parent
+        // finished, so the chain is short, but every generation is checked.
+        const generations = [await parentResult];
+        let next = generations[0].childRunId;
+        while (next) {
+          const child = await getRun<(typeof generations)[0]>(next).returnValue;
+          generations.push(child);
+          next = child.childRunId;
+        }
+
+        // Always print the shape: on a failure this is what says which
+        // generation lost or duplicated a payload.
+        console.log(
+          `[handoff] accepted=${JSON.stringify(accepted)} rejectedInWindow=${rejections} generations=${JSON.stringify(
+            generations.map((g) => ({
+              generation: g.generation,
+              runTurns: g.turns.map((t) => t.steeringSeen),
+              late: g.late,
+            }))
+          )}`
+        );
+
+        // Every generation: what the workflow observed at each turn matches
+        // what the log recorded as that turn's step arguments.
+        for (const g of generations) {
+          expect(g.turns).toHaveLength(TURNS);
+          for (const turn of g.turns) {
+            expect(
+              turn.steeringApplied,
+              `gen ${g.generation} turn ${turn.turn}`
+            ).toEqual(turn.steeringSeen);
+          }
+        }
+
+        // Chain continuity: a successor's first turn is exactly the set its
+        // parent handed off. The parent's returned `late` is what it passed to
+        // the step that started the successor, so the two agree on every
+        // replay.
+        for (let i = 0; i + 1 < generations.length; i++) {
+          expect(generations[i + 1].turns[0].steeringSeen).toEqual(
+            generations[i].late
+          );
+          expect(generations[i].late.length).toBeGreaterThan(0);
+        }
+        const last = generations[generations.length - 1];
+        expect(last.childRunId).toBeNull();
+        expect(last.late).toEqual([]);
+        if (generations.length === 1) {
+          console.warn(
+            '[handoff] no late arrivals; hand-off path not exercised'
+          );
+        }
+
+        // Accounting: every acknowledged payload was processed by exactly one
+        // generation, in send order. Payloads accepted between the last
+        // turn's `step_completed` and `hook_disposed` are the ones that used
+        // to be lost: `dispose()` now keeps delivering everything that
+        // precedes the disposal event, so they reach the late drain and the
+        // successor. The count of such payloads is logged so a run that
+        // exercised the window is recognizable.
+        const processed = generations.flatMap((g) =>
+          g.turns.flatMap((t) => t.steeringSeen)
+        );
+        let inWindow = 0;
+        const runIds = [
+          parent.runId,
+          ...generations.map((g) => g.childRunId).filter(Boolean),
+        ] as string[];
+        for (const runId of runIds) {
+          let turnsCompleted = 0;
+          for (const event of await listAllRunEvents(runId)) {
+            if (event.eventType === 'step_completed') turnsCompleted++;
+            else if (event.eventType === 'hook_disposed') break;
+            else if (
+              event.eventType === 'hook_received' &&
+              turnsCompleted === TURNS
+            ) {
+              inWindow++;
+            }
+          }
+        }
+        console.log(
+          `[handoff] disposalWindowPayloads=${inWindow} rejectedInWindow=${rejections}`
+        );
+        expect(processed).toEqual(accepted);
+      }
+    );
+
+    test(
+      'mergedHooksWorkflow - merged iterator preserves event-log order across hooks',
+      { timeout: 240_000 },
+      async () => {
+        const id = Math.random().toString(36).slice(2);
+        const tokens = range(3).map((i) => `merge-${id}-${i}`);
+        const PER_HOOK = 40 * SCALE;
+
+        const run = await start(await e2e('mergedHooksWorkflow'), [
+          tokens,
+          false,
+        ]);
+        await Promise.all(
+          tokens.map((token) => waitForHook(token, { runId: run.runId }))
+        );
+
+        // Round-robin, strictly sequential sends: each `hook_received` is
+        // committed before the next is sent, so the log order IS this order,
+        // and the merged iterator must reproduce it exactly, not just per
+        // hook.
+        const expected: { source: number; seq: number }[] = [];
+        for (let seq = 0; seq < PER_HOOK; seq++) {
+          for (let source = 0; source < tokens.length; source++) {
+            await resumeHook(tokens[source], { seq });
+            expected.push({ source, seq });
+          }
+        }
+        for (const token of tokens) {
+          await resumeHook(token, { seq: PER_HOOK, done: true });
+        }
+
+        const received = await run.returnValue;
+        expect(received).toEqual(expected);
+
+        await expectInboxEventLog(run.runId, {
+          hookReceived: tokens.length * (PER_HOOK + 1),
+          stepCompleted: 0,
+        });
+      }
+    );
+
+    test(
+      'mergedHooksWorkflow - concurrent senders with a step per message keep per-hook order',
+      { timeout: 300_000 },
+      async () => {
+        const id = Math.random().toString(36).slice(2);
+        const tokens = range(3).map((i) => `merge-step-${id}-${i}`);
+        const PER_HOOK = 25 * SCALE;
+
+        const run = await start(await e2e('mergedHooksWorkflow'), [
+          tokens,
+          true,
+        ]);
+        await Promise.all(
+          tokens.map((token) => waitForHook(token, { runId: run.runId }))
+        );
+
+        // Three independent senders race each other; only each sender's own
+        // order is defined. Every message is processed through a step, so
+        // each payload forces a replay over a log that grows by a hook
+        // payload and a step per message.
+        await Promise.all(
+          tokens.map(async (token) => {
+            for (let seq = 0; seq < PER_HOOK; seq++) {
+              await resumeHook(token, { seq });
+            }
+            await resumeHook(token, { seq: PER_HOOK, done: true });
+          })
+        );
+
+        const received = await run.returnValue;
+        expect(received).toHaveLength(tokens.length * PER_HOOK);
+        for (let source = 0; source < tokens.length; source++) {
+          expect(
+            received.filter((r) => r.source === source).map((r) => r.seq),
+            `hook ${source}`
+          ).toEqual(range(PER_HOOK));
+        }
+
+        await expectInboxEventLog(run.runId, {
+          hookReceived: tokens.length * (PER_HOOK + 1),
+          stepCompleted: tokens.length * PER_HOOK,
+        });
+      }
+    );
+
+    /** Deterministic PRNG so a failing interleaving can be replayed from its seed. */
+    function seededRandom(seed: number) {
+      let state = seed >>> 0;
+      return () => {
+        state = (state * 1664525 + 1013904223) >>> 0;
+        return state / 0x1_0000_0000;
+      };
+    }
+
+    test(
+      'mergedHooksReplayCheckWorkflow - irregular cross-hook interleaving buffered under a slow step keeps log order on replay',
+      { timeout: 300_000 },
+      async () => {
+        const id = Math.random().toString(36).slice(2);
+        const tokens = range(3).map((i) => `merge-replay-${id}-${i}`);
+        const PER_HOOK = 12 * SCALE;
+        const STEP_DELAY_MS = 400;
+        // Bursty, irregular source order (A,A,A,B,C,C,A,...), reproducible
+        // from the seed printed on failure. Sends are strictly sequential so
+        // the event log records exactly this order.
+        const seed = Math.floor(Math.random() * 0xffff_ffff);
+        const random = seededRandom(seed);
+        const remaining = tokens.map(() => PER_HOOK);
+        const nextSeq = tokens.map(() => 0);
+        const order: { source: number; seq: number }[] = [];
+        while (remaining.some((n) => n > 0)) {
+          const candidates = remaining.flatMap((n, i) => (n > 0 ? [i] : []));
+          const source = candidates[Math.floor(random() * candidates.length)];
+          // Runs of the same source are what stress claim order.
+          const run = 1 + Math.floor(random() * Math.min(4, remaining[source]));
+          for (let k = 0; k < run; k++) {
+            order.push({ source, seq: nextSeq[source]++ });
+            remaining[source]--;
+          }
+        }
+
+        const run = await start(await e2e('mergedHooksReplayCheckWorkflow'), [
+          tokens,
+          STEP_DELAY_MS,
+        ]);
+        await Promise.all(
+          tokens.map((token) => waitForHook(token, { runId: run.runId }))
+        );
+
+        // Each merged item costs the run a 400 ms step, while a send takes a
+        // few ms, so the bulk of these land while the run is parked in a step
+        // and are consumed as buffered payloads by the next replay.
+        for (const { source, seq } of order) {
+          await resumeHook(tokens[source], { seq });
+        }
+        for (const token of tokens) {
+          await resumeHook(token, { seq: PER_HOOK, done: true });
+        }
+
+        const result = await run.returnValue;
+        const context = `seed=${seed}`;
+        const fmt = (xs: { source: number; seq: number }[]) =>
+          xs.map((x) => `${'ABC'[x.source]}${x.seq}`).join(' ');
+        console.log(
+          `[merge-replay] ${context}\n  sent:     ${fmt(order)}\n  observed: ${fmt(result.items.map((i) => i.observed))}\n  recorded: ${fmt(result.items.map((i) => i.recorded))}`
+        );
+        // The merge yielded exactly the log order, not the hook order it
+        // happened to poll in.
+        expect(
+          result.items.map((i) => i.observed),
+          context
+        ).toEqual(order);
+        // Replay agreement: the merge order the final replay observed is the
+        // order the live run recorded in each step's arguments.
+        for (const item of result.items) {
+          expect(item.recorded, context).toEqual(item.observed);
+        }
+        // Per-hook order is a consequence, but assert it explicitly too.
+        for (let source = 0; source < tokens.length; source++) {
+          expect(
+            result.items
+              .filter((i) => i.observed.source === source)
+              .map((i) => i.observed.seq),
+            `${context} hook ${source}`
+          ).toEqual(range(PER_HOOK));
+        }
+        await expectInboxEventLog(run.runId, {
+          hookReceived: tokens.length * (PER_HOOK + 1),
+          stepCompleted: tokens.length * PER_HOOK,
+        });
+      }
+    );
+
+    test(
+      'mergedHooksReplayCheckWorkflow - a silent hook and an early done do not disturb the other sources',
+      { timeout: 300_000 },
+      async () => {
+        const id = Math.random().toString(36).slice(2);
+        // Hook 3 never receives a payload, only its `done` at the very end.
+        const tokens = range(4).map((i) => `merge-silent-${id}-${i}`);
+        const PER_HOOK = 10 * SCALE;
+        const EARLY = 0; // closed after a third of its messages
+
+        const run = await start(await e2e('mergedHooksReplayCheckWorkflow'), [
+          tokens,
+          50,
+        ]);
+        await Promise.all(
+          tokens.map((token) => waitForHook(token, { runId: run.runId }))
+        );
+
+        const order: { source: number; seq: number }[] = [];
+        const earlyCount = Math.floor(PER_HOOK / 3);
+        for (let seq = 0; seq < PER_HOOK; seq++) {
+          for (const source of [0, 1, 2]) {
+            if (source === EARLY && seq >= earlyCount) continue;
+            await resumeHook(tokens[source], { seq });
+            order.push({ source, seq });
+          }
+          if (seq === earlyCount - 1) {
+            // Hook 0 closes while hooks 1 and 2 keep flowing.
+            await resumeHook(tokens[EARLY], { seq: earlyCount, done: true });
+          }
+        }
+        for (const source of [1, 2]) {
+          await resumeHook(tokens[source], { seq: PER_HOOK, done: true });
+        }
+        // The silent hook is closed last; the run cannot finish before this.
+        await resumeHook(tokens[3], { seq: 0, done: true });
+
+        const result = await run.returnValue;
+        const fmt = (xs: { source: number; seq: number }[]) =>
+          xs.map((x) => `${'ABCD'[x.source]}${x.seq}`).join(' ');
+        console.log(
+          `[merge-silent]\n  sent:     ${fmt(order)}\n  observed: ${fmt(result.items.map((i) => i.observed))}\n  recorded: ${fmt(result.items.map((i) => i.recorded))}\n  closed:   ${result.closedInOrder.join(',')}`
+        );
+        expect(result.items.map((i) => i.observed)).toEqual(order);
+        for (const item of result.items) {
+          expect(item.recorded).toEqual(item.observed);
+        }
+        // Closures arrive in log order: the early hook first, the silent one last.
+        expect(result.closedInOrder[0]).toBe(EARLY);
+        expect(result.closedInOrder[result.closedInOrder.length - 1]).toBe(3);
+        expect(result.closedInOrder).toHaveLength(tokens.length);
+        await expectInboxEventLog(run.runId, {
+          hookReceived: order.length + tokens.length,
+          stepCompleted: order.length,
+        });
+      }
+    );
+
+    test(
+      'dynamicInboxWorkflow - a hook added to a merged inbox mid-run joins the same ordered stream',
+      { timeout: 240_000 },
+      async () => {
+        const sessionId = Math.random().toString(36).slice(2);
+        const identityToken = `identity-${sessionId}`;
+        const threadToken = `thread:thread-${sessionId}`;
+        const PHASE_ONE = 15 * SCALE;
+        const PHASE_TWO = 30 * SCALE;
+
+        const run = await start(await e2e('dynamicInboxWorkflow'), [
+          identityToken,
+          sessionId,
+        ]);
+        await waitForHook(identityToken, { runId: run.runId });
+
+        const expected: { source: number; seq: number }[] = [];
+        let seq = 0;
+
+        // Phase 1: only the identity hook exists.
+        for (let i = 0; i < PHASE_ONE; i++) {
+          await resumeHook(identityToken, { seq });
+          expected.push({ source: 0, seq: seq++ });
+        }
+
+        // Phase 2: the thread hook is added after the first reply is posted.
+        // Alternate between the two hooks; the merged inbox must interleave
+        // them in exactly this (log) order. Unlike the identity hook, this
+        // one only registers after the run's first replay has completed a
+        // step, so under suite load it gets the same budget as the event
+        // waits rather than waitForHook's default.
+        await waitForHook(threadToken, {
+          runId: run.runId,
+          timeoutMs: 120_000,
+        });
+        for (let i = 0; i < PHASE_TWO; i++) {
+          const source = i % 2;
+          await resumeHook(source === 0 ? identityToken : threadToken, {
+            seq,
+          });
+          expected.push({ source, seq: seq++ });
+        }
+        await resumeHook(identityToken, { seq, done: true });
+
+        const result = await run.returnValue;
+        expect(result.threadId).toBe(`thread-${sessionId}`);
+        expect(result.received).toEqual(expected);
+
+        await expectInboxEventLog(run.runId, {
+          hookReceived: PHASE_ONE + PHASE_TWO + 1,
+          stepCompleted: 1,
+        });
+      }
+    );
+  });
+  // ==================== END HOOK INBOX PATTERNS ====================
+
   // ==================== ERROR HANDLING TESTS ====================
   describe('error handling', () => {
     describe('error propagation', () => {

@@ -124,6 +124,17 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // Queue of promises that resolve to the next hook payload
     const promises: PromiseWithResolvers<T>[] = [];
 
+    // Iterator awaiters parked with no payload buffered. `resolvers` is the
+    // entry registered in `promises` for the next payload; `waiter` is what
+    // the iterator awaits. The `hook_disposed` event ends the waiters whose
+    // `resolvers` are still in `promises` (no payload committed to them);
+    // one already shifted out is receiving a payload and ends on its next
+    // pull instead.
+    const iteratorWaiters: {
+      resolvers: PromiseWithResolvers<T>;
+      waiter: PromiseWithResolvers<IteratorResult<T>>;
+    }[] = [];
+
     // Queue of promises that resolve once hook registration is confirmed
     // (with `null`) or a token conflict is detected (with the conflicting
     // `Run`). These back the `hook.getConflict()` getter.
@@ -452,6 +463,24 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         ctx.invocationsQueue.delete(correlationId);
         // Mark that the event log confirms disposal happened
         hasDisposedEvent = true;
+        // The disposal is durable: no payload can follow it in the log, so
+        // end iteration for every waiter with no payload committed to it. A
+        // waiter whose resolvers were already shifted out of `promises` is
+        // receiving an earlier-in-log payload and ends on its next pull.
+        // Settled through promiseQueue so the end is ordered after the
+        // deliveries queued before this event.
+        const ending = iteratorWaiters.filter((entry) =>
+          promises.includes(entry.resolvers)
+        );
+        for (const entry of ending) {
+          iteratorWaiters.splice(iteratorWaiters.indexOf(entry), 1);
+          promises.splice(promises.indexOf(entry.resolvers), 1);
+        }
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          for (const entry of ending) {
+            entry.waiter.resolve({ done: true, value: undefined });
+          }
+        });
         // We're done processing any more events for this hook
         return EventConsumerResult.Finished;
       }
@@ -545,7 +574,18 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       return resolvers.promise;
     }
 
-    // Helper function to dispose the hook
+    // Helper function to dispose the hook.
+    //
+    // Disposal is a durable event, not an in-memory switch. `resumeHook()`
+    // keeps being accepted until `hook_disposed` commits at the run's next
+    // suspension, and every payload accepted before that sits in the log
+    // ahead of the disposal. Those payloads are still delivered: awaiters and
+    // the async iterator keep receiving `hook_received` events until the
+    // `hook_disposed` event is observed, which is what ends iteration. Ending
+    // it here instead would orphan any payload in that window (buffered with
+    // no consumer left to claim it) on the retained-VM path while a fresh
+    // replay of the same log delivered it: a silent drop and a replay
+    // divergence from one call.
     function disposeHook(): void {
       if (isDisposed) {
         return; // Already disposed, nothing to do
@@ -563,16 +603,61 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         queueItem.disposed = true;
       }
 
-      // Drain any pending promises that are waiting for payloads.
-      // Without this, promises created by `await hook` or the async iterator's
-      // `yield await this` would hang forever since the event consumer will
-      // never deliver another hook_received after disposal.
-      if (promises.length > 0) {
-        promises.length = 0;
-        scheduleWorkflowSuspension(ctx);
-      }
+      // Awaiters parked on this hook are settled by the log, not by this
+      // call: a payload that beat the disposal resolves them, and the
+      // `hook_disposed` event ends the iterator. Both need the disposal
+      // written, which happens at the next suspension. No suspension is
+      // scheduled here: an awaiter still parked when the log runs out
+      // already schedules one (see the null-event branch of the consumer),
+      // and scheduling from here could fire before a `hook_disposed` that is
+      // in the log has been consumed.
 
       webhookLogger.debug('Hook disposed', { correlationId, token });
+    }
+
+    // Next iterator result: a buffered or future payload, or `done` once the
+    // disposal event has been observed and no payload precedes it. Fast paths
+    // settle through `ctx.promiseQueue` so resolution order matches log order.
+    function nextIteratorResult(): Promise<IteratorResult<T>> {
+      // A buffered payload or a conflict settles through the same path a
+      // plain `await hook` takes.
+      if (payloadsQueue.length > 0 || (hasConflict && conflictErrorRef)) {
+        return createHookPromise().then((value) => ({ done: false, value }));
+      }
+      if (hasDisposedEvent) {
+        const done = withResolvers<IteratorResult<T>>();
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          done.resolve({ done: true, value: undefined });
+        });
+        return done.promise;
+      }
+      // Park for the next payload, exactly as `createHookPromise` would,
+      // but keep hold of the resolvers so `hook_disposed` can tell an idle
+      // waiter from one already receiving a payload.
+      const entry = {
+        resolvers: withResolvers<T>(),
+        waiter: withResolvers<IteratorResult<T>>(),
+      };
+      iteratorWaiters.push(entry);
+      const drop = () => {
+        const index = iteratorWaiters.indexOf(entry);
+        if (index !== -1) iteratorWaiters.splice(index, 1);
+      };
+      entry.resolvers.promise.then(
+        (value) => {
+          drop();
+          entry.waiter.resolve({ done: false, value });
+        },
+        (error) => {
+          drop();
+          entry.waiter.reject(error);
+        }
+      );
+      if (eventLogEmpty) {
+        scheduleWorkflowSuspension(ctx);
+      }
+      promises.push(entry.resolvers);
+      return entry.waiter.promise;
     }
 
     const hook: Hook<T> = {
@@ -590,10 +675,14 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return createHookPromise().then(onfulfilled, onrejected);
       },
 
-      // Support `for await (const payload of hook) { … }` syntax
+      // Support `for await (const payload of hook) { … }` syntax. Iteration
+      // ends when the `hook_disposed` event is observed, after every payload
+      // that precedes it in the log has been yielded; see `disposeHook`.
       async *[Symbol.asyncIterator]() {
-        while (!isDisposed) {
-          yield await this;
+        while (true) {
+          const result = await nextIteratorResult();
+          if (result.done) return;
+          yield result.value;
         }
       },
 
