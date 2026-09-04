@@ -209,7 +209,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Environment variable: `WORKFLOW_VERCEL_ENV`
 - CLI flag: `--env` or `-e`
 - Default: `production`
-- Vercel environment targeted by tooling. Accepts `production` or `preview`.
+- Vercel environment targeted by tooling. Accepts `production`, `preview`, or a custom environment's slug — the proxy also accepts a custom environment's ID but attributes the write to its slug, so configure the slug.
 
 ### `projectConfig.projectId`
 

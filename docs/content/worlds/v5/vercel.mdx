@@ -154,7 +154,7 @@ These four values are what an external client needs. The names are the conventio
 | `WORKFLOW_VERCEL_AUTH_TOKEN` | Vercel auth token | Keep it secret. Create one under [account settings → tokens](https://vercel.com/account/tokens), scoped to the team that owns the project. |
 | `WORKFLOW_VERCEL_TEAM` | Vercel team ID (`team_...`) | Required — see [below](#why-both-ids-are-required). |
 | `WORKFLOW_VERCEL_PROJECT` | Vercel project ID (`prj_...`) | Required — see [below](#why-both-ids-are-required). |
-| `WORKFLOW_VERCEL_ENV` | `production`, `preview`, or a custom environment slug | Defaults to `production`. |
+| `WORKFLOW_VERCEL_ENV` | The environment to target | Defaults to `production`. See [`WORKFLOW_VERCEL_ENV`](#workflow_vercel_env) for the accepted values. |
 
 Both IDs are in `.vercel/project.json` after `vercel link` — `projectId` is the project, `orgId` the team or user that owns it — or on the project's settings page.
 
@@ -284,7 +284,7 @@ For the task-oriented version of this — which variables a local script or CI j
 
 ### `WORKFLOW_VERCEL_ENV`
 
-The Vercel environment to target. Options: `production`, `preview`. Default: `production`.
+The Vercel environment to target. Options: `production`, `preview`, or a custom environment's slug. Default: `production`. See [Environment variables](#environment-variables) for how a custom environment is resolved.
 
 ### `WORKFLOW_VERCEL_AUTH_TOKEN`
 
