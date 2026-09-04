@@ -79,12 +79,19 @@ const UNSUPPORTED_BACKEND = /did not store its dynamic workflow code/;
  * The run id `start()` names in that error.
  *
  * The dynamic run *is* created before the check runs — `start()` writes
- * `run_created` and only then reads back what the backend kept — so on this
- * path a real dynamic run exists in the world and only its replayability is
- * missing. Pulling the id out means the sidecar still reports it, which is
- * the whole reason to want a run id: to go look at one.
+ * `run_created` and enqueues the run, and only then reads back what the
+ * backend kept — so on this path a real dynamic run exists in the world, and
+ * a short one can even complete (turbo executes it from the queue message).
+ * Only its *replayability* is missing. Pulling the id out means the sidecar
+ * still reports it, which is the whole reason to want a run id: to go look at
+ * one.
+ *
+ * Anchored to the exact wording of that message, not to any `wrun_` in the
+ * string: the error reaches the runner wrapped in the parent fixture's own
+ * failure, which names the *parent*, and a loose match takes that instead.
  */
-const CREATED_RUN_ID = /\b(wrun_[0-9A-Za-z]+)\b/;
+const CREATED_RUN_ID =
+  /Workflow run (wrun_[0-9A-Za-z]+) was created, but this deployment's Workflow backend did not store its dynamic workflow code/;
 
 /**
  * Skip the running test when the deployment's backend has no dynamic-source
