@@ -35,13 +35,12 @@ enum WorkflowErrorKind {
         span: swc_core::common::Span,
         directive: &'static str,
     },
-    /// A class that needs generated module-level code (step method
-    /// registration or custom serialization registration) but that code has
-    /// no way to reference the class. Emitting a placeholder name would only
-    /// defer the failure to a `ReferenceError` when the module is evaluated.
-    UnreferenceableClass {
+    /// A class declared inside a function that uses step methods or custom
+    /// serialization. Its registration would only run when (and each time)
+    /// the enclosing function runs, not at module load, so its steps could
+    /// not be resolved by ID.
+    NestedClass {
         span: swc_core::common::Span,
-        class: UnreferenceableClass,
         feature: &'static str,
     },
 }
@@ -64,19 +63,14 @@ struct PendingClassExpr {
     /// `None` when the class already has an identifier, or when the name was
     /// derived from a property key and must not be introduced as a binding.
     ident_to_insert: Option<String>,
+    /// When the class expression is anonymous and its name came from a
+    /// property key (`exports.Foo = class {}`, `{ Foo: class {} }`), `.name`
+    /// is set at runtime inside the registration IIFE instead, preserving the
+    /// name the original position inferred without introducing a binding.
+    /// `None` for generated names, which leave `.name` as it was (`""`).
+    name_to_define: Option<String>,
     /// Whether the class defines `WORKFLOW_SERIALIZE`/`WORKFLOW_DESERIALIZE`.
     has_custom_serialization: bool,
-}
-
-/// Why generated module-level code cannot reference a class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UnreferenceableClass {
-    /// An anonymous class expression that is not directly assigned to a
-    /// variable, e.g. `foo(class { ... })` or `exports.Foo = class { ... }`.
-    Anonymous,
-    /// A class declared inside a function body; its binding is not in scope
-    /// at module level where registrations are emitted.
-    Nested,
 }
 
 /// Sanitize a string for use as part of a JavaScript identifier.
@@ -150,22 +144,12 @@ fn emit_error(error: WorkflowErrorKind) {
                 )
             },
         ),
-        WorkflowErrorKind::UnreferenceableClass {
+        WorkflowErrorKind::NestedClass { span, feature } => (
             span,
-            class,
-            feature,
-        } => (
-            span,
-            match class {
-                UnreferenceableClass::Anonymous => format!(
-                    "Anonymous class expressions cannot use {}. Assign the class to a variable (e.g. `const MyClass = class {{ ... }}`) or give it a name (`class MyClass {{ ... }}`) so the compiler can reference it when registering it at module level",
-                    feature
-                ),
-                UnreferenceableClass::Nested => format!(
-                    "Classes using {} must be declared at the top level of the module, not inside a function. The compiler registers the class at module level and cannot reference a class declared in an inner scope",
-                    feature
-                ),
-            },
+            format!(
+                "Classes using {} must be declared at the top level of the module, not inside a function. Registration runs at module load and cannot reach a class declared in an inner scope",
+                feature
+            ),
         ),
     };
 
@@ -465,13 +449,16 @@ pub struct StepTransform {
     // name resolved; consumed by `visit_mut_expr`, which owns the enclosing
     // `Expr` node and can replace it with the registration IIFE.
     pending_class_expr_registration: Option<PendingClassExpr>,
-    // Set while visiting a class whose generated registration code could not
-    // reference the class from module scope (see `UnreferenceableClass`).
-    // `current_class_name` is `None` for such classes so that step methods and
-    // custom serialization are reported as errors instead of emitting code
-    // that would throw a ReferenceError at runtime. Cleared after the first
-    // error so a class produces at most one diagnostic.
-    current_class_unreferenceable: Option<UnreferenceableClass>,
+    // Set while visiting a class declared inside a function (see
+    // `WorkflowErrorKind::NestedClass`). `current_class_name` is `None` for
+    // such classes so that step methods and custom serialization are reported
+    // as errors instead of registering a class that cannot be resolved at
+    // module load. Cleared after the first error so a class produces at most
+    // one diagnostic.
+    current_class_is_nested: bool,
+    // Counter for naming anonymous class expressions that have nothing to
+    // derive a name from (`foo(class { ... })`): `AnonymousClass1`, ...
+    anonymous_class_counter: usize,
     // Track static method steps that need registration after the class declaration
     // (class_name, method_name, step_id, span)
     static_method_step_registrations: Vec<(String, String, String, swc_core::common::Span)>,
@@ -513,6 +500,12 @@ pub struct StepTransform {
     require_namespace_identifiers: HashSet<String>,
     // Track class names for the manifest (preserved copy before drain)
     classes_for_manifest: HashSet<String>,
+    // Spans of class expressions that were wrapped in a registration IIFE.
+    // Dead-code elimination must keep any declaration whose initializer
+    // contains one of these: the registration is a side effect of evaluating
+    // the initializer, and the declared binding may be otherwise unused
+    // (`const registry = new Map([["point", class { ...serde... }]])`).
+    registered_class_expr_spans: HashSet<swc_core::common::Span>,
 }
 
 // Structure to track variable names and their access patterns
@@ -1918,7 +1911,8 @@ impl StepTransform {
             current_class_binding_name: None,
             current_class_binding_from_key: false,
             pending_class_expr_registration: None,
-            current_class_unreferenceable: None,
+            current_class_is_nested: false,
+            anonymous_class_counter: 0,
             static_method_step_registrations: Vec::new(),
             static_method_workflow_registrations: Vec::new(),
             static_step_methods_to_strip: Vec::new(),
@@ -1933,6 +1927,7 @@ impl StepTransform {
             serialization_symbol_identifiers: HashMap::new(),
             require_namespace_identifiers: HashSet::new(),
             classes_for_manifest: HashSet::new(),
+            registered_class_expr_spans: HashSet::new(),
         }
     }
 
@@ -3283,50 +3278,55 @@ impl StepTransform {
         has_serialize && has_deserialize
     }
 
-    /// Report that the class currently being visited needs module-level
-    /// registration code for `feature` but cannot be referenced from module
-    /// scope. Emits at most one error per class (the first offending member),
-    /// and never emits in `Detect` mode, which generates no code.
+    /// Report that the class currently being visited uses `feature` but is
+    /// declared inside a function. Emits at most one error per class (at the
+    /// first offending member), and never in `Detect` mode, which generates
+    /// no code.
     ///
-    /// Returns `true` if the class is unreferenceable (regardless of whether an
-    /// error was emitted), so callers can skip code generation.
-    fn report_unreferenceable_class(
-        &mut self,
-        span: swc_core::common::Span,
-        feature: &'static str,
-    ) -> bool {
-        let Some(class) = self.current_class_unreferenceable else {
+    /// Returns `true` if the class is nested (regardless of whether an error
+    /// was emitted), so callers can skip code generation.
+    fn report_nested_class(&mut self, span: swc_core::common::Span, feature: &'static str) -> bool {
+        if !self.current_class_is_nested {
             return false;
-        };
+        }
         if !matches!(self.mode, TransformMode::Detect) {
-            emit_error(WorkflowErrorKind::UnreferenceableClass {
-                span,
-                class,
-                feature,
-            });
+            emit_error(WorkflowErrorKind::NestedClass { span, feature });
         }
         // Only report once per class.
-        self.current_class_unreferenceable = None;
+        self.current_class_is_nested = false;
         true
     }
 
-    /// Resolve the name that generated module-level code should use to
-    /// reference a class expression, or the reason it cannot be referenced.
+    /// Resolve the name used for a module-level class expression's step and
+    /// class IDs.
     ///
     /// Prefers the binding the expression is assigned to (`Foo` in
     /// `var Foo = class _Foo {}`) over the expression's own identifier
-    /// (`_Foo`), which is only in scope inside the class body.
+    /// (`_Foo`), which is only in scope inside the class body. When neither
+    /// exists (`foo(class { ... })`) a deterministic `AnonymousClass<N>` name
+    /// is generated, counting only anonymous classes that have something to
+    /// register so unrelated anonymous classes do not shift the numbering.
+    /// Returns `None` for an anonymous class with nothing to register.
+    ///
+    /// Generated names are positional: adding another such class earlier in
+    /// the module renumbers the ones after it, and with them their step IDs.
     fn resolve_class_expr_name(
-        &self,
+        &mut self,
         class_expr: &ClassExpr,
         binding_name: Option<String>,
-    ) -> Result<String, UnreferenceableClass> {
-        if !self.in_module_level {
-            return Err(UnreferenceableClass::Nested);
-        }
+    ) -> Option<String> {
         binding_name
             .or_else(|| class_expr.ident.as_ref().map(|i| i.sym.to_string()))
-            .ok_or(UnreferenceableClass::Anonymous)
+            .or_else(|| {
+                if !self.class_needs_binding_rewrite(&class_expr.class) {
+                    return None;
+                }
+                self.anonymous_class_counter += 1;
+                Some(self.generate_unique_name(&format!(
+                    "AnonymousClass{}",
+                    self.anonymous_class_counter
+                )))
+            })
     }
 
     /// The static name of a member access (`obj.name` or `obj["name"]`), if any.
@@ -4374,6 +4374,34 @@ impl StepTransform {
     }
 
     // Remove dead code (unused functions, variables, statements, and imports) recursively
+    /// Whether any initializer in `var_decl` contains a class expression that
+    /// was wrapped in a registration IIFE.
+    fn contains_registered_class_expr(&self, var_decl: &VarDecl) -> bool {
+        if self.registered_class_expr_spans.is_empty() {
+            return false;
+        }
+        struct Finder<'a> {
+            spans: &'a HashSet<swc_core::common::Span>,
+            found: bool,
+        }
+        impl Visit for Finder<'_> {
+            noop_visit_type!();
+            fn visit_class(&mut self, class: &Class) {
+                if self.spans.contains(&class.span) {
+                    self.found = true;
+                } else {
+                    class.visit_children_with(self);
+                }
+            }
+        }
+        let mut finder = Finder {
+            spans: &self.registered_class_expr_spans,
+            found: false,
+        };
+        var_decl.visit_with(&mut finder);
+        finder.found
+    }
+
     fn remove_dead_code(&self, items: &mut Vec<ModuleItem>) {
         // Only runs in workflow and step mode
         if !matches!(self.mode, TransformMode::Workflow | TransformMode::Step) {
@@ -4406,8 +4434,13 @@ impl StepTransform {
                             && !self.step_function_names.contains(&fn_name)
                             && !self.workflow_function_names.contains(&fn_name)
                     }
-                    // Remove unused variable declarations
+                    // Remove unused variable declarations, unless evaluating an
+                    // initializer registers a class (see
+                    // `registered_class_expr_spans`).
                     ModuleItem::Stmt(Stmt::Decl(Decl::Var(var_decl))) => {
+                        if self.contains_registered_class_expr(var_decl) {
+                            continue;
+                        }
                         // Check if all variables in this declaration are unused
                         var_decl.decls.iter().all(|declarator| {
                             match &declarator.name {
@@ -5622,6 +5655,7 @@ impl StepTransform {
         let PendingClassExpr {
             name: class_name,
             ident_to_insert,
+            name_to_define,
             ..
         } = pending;
 
@@ -5635,26 +5669,26 @@ impl StepTransform {
         else {
             unreachable!("wrap_class_expr_with_registrations is only called on class expressions");
         };
+        self.registered_class_expr_spans
+            .insert(class_expr.class.span);
 
         let mut body = Vec::with_capacity(stmts.len() + 2);
 
         if class_expr.ident.is_none() {
-            match ident_to_insert {
-                // `var Foo = class {}` -> `var Foo = (...)(class Foo {})`.
-                // Passing the class as a call argument defeats the `.name`
-                // inference the original assignment provided, so make the
-                // name explicit. This mirrors `var Foo = class Foo {}`, which
-                // is behaviorally equivalent for typical class usage.
-                Some(name) => {
-                    class_expr.ident = Some(Self::ident(&name));
-                }
-                // The name came from a property key (`exports.Foo = class {}`,
-                // `{ Foo: class {} }`). Introducing `Foo` as the class's own
-                // binding could shadow an unrelated outer `Foo` referenced
-                // from the class body, so set `.name` at runtime instead.
-                None => {
-                    body.push(Self::define_name_stmt(CLASS_EXPR_IIFE_PARAM, &class_name));
-                }
+            // `var Foo = class {}` -> `var Foo = (...)(class Foo {})`.
+            // Passing the class as a call argument defeats the `.name`
+            // inference the original assignment provided, so make the name
+            // explicit. This mirrors `var Foo = class Foo {}`, which is
+            // behaviorally equivalent for typical class usage.
+            if let Some(name) = ident_to_insert {
+                class_expr.ident = Some(Self::ident(&name));
+            }
+            // The name came from a property key (`exports.Foo = class {}`,
+            // `{ Foo: class {} }`). Introducing `Foo` as the class's own
+            // binding could shadow an unrelated outer `Foo` referenced from
+            // the class body, so set `.name` at runtime instead.
+            if let Some(name) = name_to_define {
+                body.push(Self::define_name_stmt(CLASS_EXPR_IIFE_PARAM, &name));
             }
         }
 
@@ -8262,7 +8296,7 @@ impl VisitMut for StepTransform {
     fn visit_mut_class_decl(&mut self, class_decl: &mut ClassDecl) {
         let class_name = class_decl.ident.sym.to_string();
         let old_class_name = self.current_class_name.take();
-        let old_unreferenceable = self.current_class_unreferenceable.take();
+        let old_is_nested = std::mem::replace(&mut self.current_class_is_nested, false);
 
         if self.in_module_level {
             self.current_class_name = Some(class_name.clone());
@@ -8273,13 +8307,13 @@ impl VisitMut for StepTransform {
                     .insert(class_name.clone());
             }
         } else {
-            // A class declared inside a function is not in scope at module
-            // level, where registrations are emitted. Leave `current_class_name`
+            // A class declared inside a function would only be registered when
+            // that function runs, not at module load. Leave `current_class_name`
             // unset so step methods / serialization inside it are reported
-            // instead of generating code that throws a ReferenceError.
-            self.current_class_unreferenceable = Some(UnreferenceableClass::Nested);
+            // instead of generating a registration that cannot be resolved.
+            self.current_class_is_nested = true;
             if self.has_custom_serialization_methods(&class_decl.class) {
-                self.report_unreferenceable_class(
+                self.report_nested_class(
                     class_decl.class.span,
                     "custom serialization (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)",
                 );
@@ -8364,7 +8398,7 @@ impl VisitMut for StepTransform {
 
         // Restore previous class name
         self.current_class_name = old_class_name;
-        self.current_class_unreferenceable = old_unreferenceable;
+        self.current_class_is_nested = old_is_nested;
     }
 
     // Handle class expressions to track class name for static methods
@@ -8376,34 +8410,29 @@ impl VisitMut for StepTransform {
 
         // Compute the tracked class name: prefer the binding name (e.g. `Foo`
         // from `var Foo = class _Foo {}`) over the internal class expression
-        // name (`_Foo`). The name is used to derive step and class IDs, and to
-        // match the registrations recorded while visiting the body.
+        // name (`_Foo`), falling back to a generated `AnonymousClass<N>`. The
+        // name is used to derive step and class IDs, and to match the
+        // registrations recorded while visiting the body.
         //
         // Generated registration code never references a class expression by
         // name: `visit_mut_expr` wraps the expression in an IIFE that receives
         // the class as an argument (see `wrap_class_expr_with_registrations`),
-        // so the class does not need a module-scope binding at all. What it
-        // does need is a *name* for its IDs. When none can be derived (an
-        // anonymous class expression in a position with no key or binding,
-        // e.g. `foo(class { ... })`), or when the class is nested inside a
-        // function (its registration would only run when that function runs,
-        // not at module load), record the problem so that any step method or
-        // custom serialization found in the body is reported as a compile
-        // error instead of silently producing a broken registration.
+        // so the class does not need a module-scope binding at all, only a
+        // name for its IDs. A class nested inside a function is the exception:
+        // its registration would only run when that function runs, not at
+        // module load, so any step method or custom serialization found in
+        // its body is reported as a compile error instead.
         let old_class_name = self.current_class_name.take();
-        let old_unreferenceable = self.current_class_unreferenceable.take();
+        let old_is_nested = std::mem::replace(&mut self.current_class_is_nested, false);
 
-        let tracked_class_name =
-            match self.resolve_class_expr_name(class_expr, binding_name.clone()) {
-                Ok(name) => {
-                    self.current_class_name = Some(name.clone());
-                    Some(name)
-                }
-                Err(reason) => {
-                    self.current_class_unreferenceable = Some(reason);
-                    None
-                }
-            };
+        let tracked_class_name = if self.in_module_level {
+            let name = self.resolve_class_expr_name(class_expr, binding_name.clone());
+            self.current_class_name = name.clone();
+            name
+        } else {
+            self.current_class_is_nested = true;
+            None
+        };
 
         // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
         let has_serde = self.has_custom_serialization_methods(&class_expr.class);
@@ -8413,7 +8442,7 @@ impl VisitMut for StepTransform {
                     self.classes_needing_serialization.insert(name.clone());
                 }
                 None => {
-                    self.report_unreferenceable_class(
+                    self.report_nested_class(
                         class_expr.class.span,
                         "custom serialization (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)",
                     );
@@ -8428,10 +8457,14 @@ impl VisitMut for StepTransform {
         // `.name` survives the wrapping. Names derived from property keys are
         // not inserted: `exports.Foo = class { m() { Foo } }` may refer to an
         // unrelated outer `Foo`, which a class-scoped `Foo` would shadow.
-        let ident_to_insert = match (&binding_name, class_expr.ident.is_none(), binding_from_key) {
-            (Some(name), true, false) => Some(name.clone()),
-            _ => None,
-        };
+        // Generated names leave `.name` untouched: the original position
+        // inferred no name either.
+        let (ident_to_insert, name_to_define) =
+            match (&binding_name, class_expr.ident.is_none(), binding_from_key) {
+                (Some(name), true, false) => (Some(name.clone()), None),
+                (Some(name), true, true) => (None, Some(name.clone())),
+                _ => (None, None),
+            };
 
         // Visit the class body (this populates static_step_methods_to_strip)
         class_expr.class.visit_mut_with(self);
@@ -8506,12 +8539,13 @@ impl VisitMut for StepTransform {
         self.pending_class_expr_registration = tracked_class_name.map(|name| PendingClassExpr {
             name,
             ident_to_insert,
+            name_to_define,
             has_custom_serialization: has_serde,
         });
 
         // Restore previous class name
         self.current_class_name = old_class_name;
-        self.current_class_unreferenceable = old_unreferenceable;
+        self.current_class_is_nested = old_is_nested;
     }
 
     // Handle class methods
@@ -8549,10 +8583,10 @@ impl VisitMut for StepTransform {
                 let class_name = match &self.current_class_name {
                     Some(name) => name.clone(),
                     None => {
-                        // The enclosing class cannot be referenced from module
-                        // level (anonymous or nested), so the getter cannot be
+                        // The enclosing class is declared inside a function (or
+                        // has nothing to register), so the getter cannot be
                         // registered. Report it and leave the getter untouched.
-                        self.report_unreferenceable_class(method.span, "\"use step\" getters");
+                        self.report_nested_class(method.span, "\"use step\" getters");
                         method.visit_mut_children_with(self);
                         return;
                     }
@@ -8657,10 +8691,10 @@ impl VisitMut for StepTransform {
                 let class_name = match &self.current_class_name {
                     Some(name) => name.clone(),
                     None => {
-                        // The enclosing class cannot be referenced from module
-                        // level (anonymous or nested), so the method cannot be
-                        // registered. Report it and leave the method untouched.
-                        self.report_unreferenceable_class(method.span, "\"use step\" methods");
+                        // The enclosing class is declared inside a function, so
+                        // the method cannot be registered at module load.
+                        // Report it and leave the method untouched.
+                        self.report_nested_class(method.span, "\"use step\" methods");
                         method.visit_mut_children_with(self);
                         return;
                     }
@@ -8754,10 +8788,10 @@ impl VisitMut for StepTransform {
                 let class_name = match &self.current_class_name {
                     Some(name) => name.clone(),
                     None => {
-                        // The enclosing class cannot be referenced from module
-                        // level (anonymous or nested), so the method cannot be
-                        // registered. Report it and leave the method untouched.
-                        self.report_unreferenceable_class(
+                        // The enclosing class is declared inside a function, so
+                        // the method cannot be registered at module load.
+                        // Report it and leave the method untouched.
+                        self.report_nested_class(
                             method.span,
                             if has_workflow {
                                 "\"use workflow\" methods"

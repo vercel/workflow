@@ -1,8 +1,9 @@
-/**__internal_workflows{"steps":{"input.js":{"Alpha#run":{"stepId":"step//./input//Alpha#run"},"Beta#run":{"stepId":"step//./input//Beta#run"},"Delta#run":{"stepId":"step//./input//Delta#run"},"Epsilon.make":{"stepId":"step//./input//Epsilon.make"},"FileSystem#readFile":{"stepId":"step//./input//FileSystem#readFile"},"Gamma#run":{"stepId":"step//./input//Gamma#run"},"Job.execute":{"stepId":"step//./input//Job.execute"},"Plugin#run":{"stepId":"step//./input//Plugin#run"},"Zeta#run":{"stepId":"step//./input//Zeta#run"},"kebab-job#status":{"stepId":"step//./input//kebab-job#status"}}},"classes":{"input.js":{"Alpha":{"classId":"class//./input//Alpha"},"Beta":{"classId":"class//./input//Beta"},"Delta":{"classId":"class//./input//Delta"},"Epsilon":{"classId":"class//./input//Epsilon"},"FileSystem":{"classId":"class//./input//FileSystem"},"Gamma":{"classId":"class//./input//Gamma"},"Job":{"classId":"class//./input//Job"},"Plugin":{"classId":"class//./input//Plugin"},"Zeta":{"classId":"class//./input//Zeta"},"kebab-job":{"classId":"class//./input//kebab-job"}}}}*/;
 // Class expressions with "use step" methods must be registered through the
 // binding that is in scope at module level. Bundlers emit several shapes for
 // `class Foo {}` and all of them must resolve to the assigned binding rather
 // than falling back to a placeholder name that does not exist at runtime.
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
+/**__internal_workflows{"steps":{"input.js":{"Alpha#run":{"stepId":"step//./input//Alpha#run"},"Beta#run":{"stepId":"step//./input//Beta#run"},"Delta#run":{"stepId":"step//./input//Delta#run"},"Epsilon.make":{"stepId":"step//./input//Epsilon.make"},"FileSystem#readFile":{"stepId":"step//./input//FileSystem#readFile"},"Gamma#run":{"stepId":"step//./input//Gamma#run"},"Job.execute":{"stepId":"step//./input//Job.execute"},"Plugin#run":{"stepId":"step//./input//Plugin#run"},"Zeta#run":{"stepId":"step//./input//Zeta#run"},"kebab-job#status":{"stepId":"step//./input//kebab-job#status"}}},"classes":{"input.js":{"Alpha":{"classId":"class//./input//Alpha"},"Beta":{"classId":"class//./input//Beta"},"Delta":{"classId":"class//./input//Delta"},"Epsilon":{"classId":"class//./input//Epsilon"},"FileSystem":{"classId":"class//./input//FileSystem"},"Gamma":{"classId":"class//./input//Gamma"},"Job":{"classId":"class//./input//Job"},"Plugin":{"classId":"class//./input//Plugin"},"Unreferenced":{"classId":"class//./input//Unreferenced"},"Zeta":{"classId":"class//./input//Zeta"},"kebab-job":{"classId":"class//./input//kebab-job"}}}}*/;
 // tsdown/rolldown and esbuild emit this for classes that do not self-reference
 // (this is the shape shipped by @vercel/sandbox, see vercel/workflow#3929).
 var FileSystem = function(__wf_cls) {
@@ -237,6 +238,30 @@ export const handlers = {
         }
     })
 };
+// A binding that nothing else references is still kept: evaluating the
+// initializer is what registers the class.
+const Unreferenced = function(__wf_cls) {
+    var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
+    __wf_cls_reg.set("class//./input//Unreferenced", __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", {
+        value: "class//./input//Unreferenced",
+        writable: false,
+        enumerable: false,
+        configurable: false
+    });
+    return __wf_cls;
+}(class Unreferenced {
+    static [WORKFLOW_SERIALIZE](inst) {
+        return {
+            v: inst.v
+        };
+    }
+    static [WORKFLOW_DESERIALIZE](data) {
+        return {
+            v: data.v
+        };
+    }
+});
 // Named class expression in an arbitrary position: its own name is used.
 registerPlugin(function(__wf_cls) {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map()), __wf_fn;

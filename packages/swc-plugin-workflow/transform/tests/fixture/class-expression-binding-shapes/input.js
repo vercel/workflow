@@ -2,6 +2,7 @@
 // binding that is in scope at module level. Bundlers emit several shapes for
 // `class Foo {}` and all of them must resolve to the assigned binding rather
 // than falling back to a placeholder name that does not exist at runtime.
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
 
 // tsdown/rolldown and esbuild emit this for classes that do not self-reference
 // (this is the shape shipped by @vercel/sandbox, see vercel/workflow#3929).
@@ -78,6 +79,17 @@ export const handlers = {
       return 'ok';
     }
   },
+};
+
+// A binding that nothing else references is still kept: evaluating the
+// initializer is what registers the class.
+const Unreferenced = class {
+  static [WORKFLOW_SERIALIZE](inst) {
+    return { v: inst.v };
+  }
+  static [WORKFLOW_DESERIALIZE](data) {
+    return { v: data.v };
+  }
 };
 
 // Named class expression in an arbitrary position: its own name is used.

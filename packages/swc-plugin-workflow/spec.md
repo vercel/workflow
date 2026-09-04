@@ -778,26 +778,25 @@ The IIFE removes the need to *reference* the class by name, but step and class I
 1. The variable the expression is assigned to: `var Foo = class _Foo {}` uses `Foo`, not `_Foo`. This also covers `let Foo; Foo = class {}`, parenthesized initializers (`var Foo = (class {})`), and chained assignments (`var Foo = exports.Foo = class {}`). With multiple declarators (`var A = class {}, B = class {}`) each class resolves to its own binding.
 2. The class expression's own identifier: `foo(class Plugin {})` uses `Plugin`.
 3. The property the expression is assigned to or defined under: `exports.Foo = class {}` and `{ Foo: class {} }` use `Foo` (string keys such as `'kebab-job'` are accepted as-is).
+4. A generated `AnonymousClass<N>` when none of the above applies (`foo(class { ... })`, an array element, a conditional branch). `N` counts, in source order, only the anonymous class expressions that have something to register, so unrelated anonymous classes do not shift the numbering; if the module already declares `AnonymousClass<N>`, the name is suffixed (`AnonymousClass6$1`). Like the `_anonymousStep<N>` names used for anonymous step functions, these are positional: adding another such class earlier in the module renumbers the ones after it, and with them their step IDs. Name the class if its IDs need to be stable.
 
-Names from (1) and (2) are bindings that already refer to the class, so when the class expression is anonymous the binding name is inserted as the class's own identifier (`var Foo = class {}` becomes `(...)(class Foo {})`). Passing the class as a call argument would otherwise defeat the `.name` inference the original assignment provided. For typical usage this is behaviorally equivalent to `var Foo = class Foo {}`; an inner class-scoped `Foo` binding is introduced, which can differ in edge cases that assign to or shadow that name inside the class body. Names from (3) are *not* inserted as an identifier, since `exports.Foo = class { m() { return Foo; } }` may refer to an unrelated outer `Foo`; the IIFE instead sets `.name` at runtime with `Object.defineProperty(__wf_cls, "name", { value: "Foo", configurable: true })`.
+Names from (1) and (2) are bindings that already refer to the class, so when the class expression is anonymous the binding name is inserted as the class's own identifier (`var Foo = class {}` becomes `(...)(class Foo {})`). Passing the class as a call argument would otherwise defeat the `.name` inference the original assignment provided. For typical usage this is behaviorally equivalent to `var Foo = class Foo {}`; an inner class-scoped `Foo` binding is introduced, which can differ in edge cases that assign to or shadow that name inside the class body. Names from (3) are *not* inserted as an identifier, since `exports.Foo = class { m() { return Foo; } }` may refer to an unrelated outer `Foo`; the IIFE instead sets `.name` at runtime with `Object.defineProperty(__wf_cls, "name", { value: "Foo", configurable: true })`. Generated names (4) leave `.name` untouched, since the original position inferred no name either.
 
 Classes that already have an identifier (e.g. `class _Bash { ... }`) are never renamed.
 
-#### Unnameable and nested classes are errors
+#### Dead-code elimination
 
-If a class expression has `"use step"`/`"use workflow"` methods, `"use step"` getters, or custom serialization, and no name can be derived (e.g. `foo(class { ... })`, `[class { ... }]`, `cond ? class { ... } : null`), the plugin emits a compile error:
+Evaluating a wrapped class expression is what registers the class, so dead-code elimination keeps any module-level variable declaration whose initializer contains one, even when the declared binding is otherwise unreferenced (`const registry = new Map([["point", class { ...serde... }]])`).
 
-```
-Anonymous class expressions cannot use "use step" methods. Assign the class to a variable (e.g. `const MyClass = class { ... }`) or give it a name (`class MyClass { ... }`) so the compiler can reference it when registering it at module level
-```
+#### Nested classes are errors
 
-Likewise, a class (declaration or expression) that uses those features but is declared *inside a function* is an error:
+A class (declaration or expression) that has `"use step"`/`"use workflow"` methods, `"use step"` getters, or custom serialization but is declared *inside a function* is a compile error:
 
 ```
-Classes using "use step" methods must be declared at the top level of the module, not inside a function. The compiler registers the class at module level and cannot reference a class declared in an inner scope
+Classes using "use step" methods must be declared at the top level of the module, not inside a function. Registration runs at module load and cannot reach a class declared in an inner scope
 ```
 
-Step registration must happen at module load for the step to be resolvable by ID; a class inside a function would only be registered when (and each time) that function runs. Earlier versions of the plugin emitted a placeholder `AnonymousClass` name (or the inner class's name) in these situations, which produced module-level code that threw a `ReferenceError` as soon as the module was evaluated. At most one error is reported per class, at the first offending member; classes without steps or serialization are unaffected. No errors are emitted in `detect` mode, which generates no code.
+Step registration must happen at module load for the step to be resolvable by ID; a class inside a function would only be registered when (and each time) that function runs. Earlier versions of the plugin emitted module-level code referencing the inner class's name (or a placeholder `AnonymousClass`), which threw a `ReferenceError` as soon as the module was evaluated. At most one error is reported per class, at the first offending member; nested classes without steps or serialization are unaffected. No errors are emitted in `detect` mode, which generates no code.
 
 ### Anonymous default class export rewriting
 
@@ -906,7 +905,6 @@ The plugin emits errors for invalid usage:
 | Invalid exports (`"use workflow"`) | Module-level `"use workflow"` files can only export async functions |
 | Invalid exports (`"use step"`) | Module-level `"use step"` files can only export functions (sync or async) |
 | Misspelled directive | Detects typos like `"use steps"` or `"use workflows"` |
-| Unnameable class expression | An anonymous class expression with step/workflow methods, step getters, or custom serialization in a position that provides no name (e.g. `foo(class { ... })`) |
 | Nested class | A class with step/workflow methods, step getters, or custom serialization declared inside a function rather than at the module's top level |
 
 ---
