@@ -1522,10 +1522,14 @@ describe.concurrent('e2e', () => {
         const TURNS = 4;
         const MESSAGES = 12 * SCALE;
 
+        // `minMessages` keeps the run turning until it has seen every message,
+        // so a slow lane cannot finish the run (and dispose the hook) while
+        // this test is still sending.
         const run = await start(await e2e('backgroundInboxWorkflow'), [
           token,
           TURNS,
           false,
+          MESSAGES,
         ]);
         await waitForHook(token, { runId: run.runId });
         // Send everything after the first turn so at least one turn boundary
@@ -1542,7 +1546,7 @@ describe.concurrent('e2e', () => {
 
         const result = await run.returnValue;
         expect(result.subscribed).toBeNull();
-        expect(result.turns).toHaveLength(TURNS);
+        expect(result.turns.length).toBeGreaterThanOrEqual(TURNS);
         for (const turn of result.turns) {
           expect(turn.steeringApplied, `turn ${turn.turn}`).toEqual(
             turn.steeringSeen
@@ -1560,7 +1564,7 @@ describe.concurrent('e2e', () => {
         expect(json.status).toBe('completed');
         await expectInboxEventLog(run.runId, {
           hookReceived: MESSAGES,
-          stepCompleted: TURNS,
+          stepCompleted: result.turns.length,
         });
       }
     );
@@ -1747,8 +1751,14 @@ describe.concurrent('e2e', () => {
 
         // Phase 2: the thread hook is added after the first reply is posted.
         // Alternate between the two hooks; the merged inbox must interleave
-        // them in exactly this (log) order.
-        await waitForHook(threadToken, { runId: run.runId });
+        // them in exactly this (log) order. Unlike the identity hook, this
+        // one only registers after the run's first replay has completed a
+        // step, so under suite load it gets the same budget as the event
+        // waits rather than waitForHook's default.
+        await waitForHook(threadToken, {
+          runId: run.runId,
+          timeoutMs: 120_000,
+        });
         for (let i = 0; i < PHASE_TWO; i++) {
           const source = i % 2;
           await resumeHook(source === 0 ? identityToken : threadToken, {
