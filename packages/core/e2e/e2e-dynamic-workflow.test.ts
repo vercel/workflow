@@ -73,7 +73,18 @@ interface DynamicChild {
  * storage. It happens inside the fixture's step, so it reaches the runner
  * wrapped in the parent's failure.
  */
-const UNSUPPORTED_BACKEND = /did not store the dynamic workflow code/;
+const UNSUPPORTED_BACKEND = /did not store its dynamic workflow code/;
+
+/**
+ * The run id `start()` names in that error.
+ *
+ * The dynamic run *is* created before the check runs — `start()` writes
+ * `run_created` and only then reads back what the backend kept — so on this
+ * path a real dynamic run exists in the world and only its replayability is
+ * missing. Pulling the id out means the sidecar still reports it, which is
+ * the whole reason to want a run id: to go look at one.
+ */
+const CREATED_RUN_ID = /\b(wrun_[0-9A-Za-z]+)\b/;
 
 /**
  * Skip the running test when the deployment's backend has no dynamic-source
@@ -86,8 +97,15 @@ const UNSUPPORTED_BACKEND = /did not store the dynamic workflow code/;
  */
 function skipIfUnsupportedBackend(error: unknown): never {
   if (error instanceof Error && UNSUPPORTED_BACKEND.test(error.message)) {
+    const createdRunId = CREATED_RUN_ID.exec(error.message)?.[1];
+    if (createdRunId) {
+      // Track it before skipping: the run was created and is inspectable,
+      // even though nothing can replay it.
+      trackRun(getRun(createdRunId));
+    }
     getCurrentTest()?.context.skip(
-      "this deployment's Workflow backend has no dynamic-source storage yet"
+      "this deployment's Workflow backend has no dynamic-source storage yet" +
+        (createdRunId ? ` (created, unreplayable run: ${createdRunId})` : '')
     );
   }
   throw error;
