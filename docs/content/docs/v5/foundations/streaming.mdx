@@ -316,40 +316,12 @@ export async function POST(request: Request) {
 
 ## Writing to another run's stream
 
-`getWritable()` gives a run a writable onto its own stream. `getRun(runId).getWritable()` gives you a writable onto a *different* run's stream, reconstructed from that run's ID alone.
-
-This exists for the holder pattern: one long-lived run owns a session's stream, and short-lived runs contribute to it. Clients read one stream for the whole session, while the work that fills it is split across runs that start and finish independently. Because the writable is derived from the run ID, the holder never has to hand a handle to each contributor.
-
-```typescript title="workflows/session-holder.ts" lineNumbers
-import { sleep } from "workflow";
-
-// This run exists to own the session's stream. Its ID is the session's
-// identity: clients read from it, and every turn writes to it.
-export async function sessionHolder(sessionId: string) {
-  "use workflow";
-
-  await sleep("24h");
-  await archiveSession(sessionId);
-}
-
-async function archiveSession(sessionId: string) {
-  "use step";
-  // Clean up when the session's lifetime is over.
-}
-```
-
-Each turn is its own workflow. It knows only the holder's run ID:
+`getRun(runId).getWritable()` appends to a stream owned by another run. This lets short-lived runs contribute to a long-lived holder run's stream using only its ID.
 
 ```typescript title="workflows/turn.ts" lineNumbers
 import { getRun } from "workflow/api";
 
 type SessionEvent = { turn: number; text: string };
-
-export async function turnWorkflow(holderRunId: string, turn: number) {
-  "use workflow";
-
-  await runTurn(holderRunId, turn);
-}
 
 async function runTurn(holderRunId: string, turn: number) {
   "use step";
@@ -357,50 +329,18 @@ async function runTurn(holderRunId: string, turn: number) {
   const writable = await getRun(holderRunId).getWritable<SessionEvent>(); // [!code highlight]
   const writer = writable.getWriter();
 
-  await writer.write({ turn, text: "thinking" });
   await writer.write({ turn, text: "done" });
-
-  // Release, don't close: the stream outlives this turn. // [!code highlight]
   writer.releaseLock(); // [!code highlight]
 }
 ```
 
-The client reads the holder's stream once and sees every turn:
-
-```typescript title="app/api/session/[id]/route.ts" lineNumbers
-import { getRun } from "workflow/api";
-
-type SessionEvent = { turn: number; text: string };
-
-export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const { id } = await params;
-  const readable = getRun<void>(id).getReadable<SessionEvent>();
-
-  return new Response(readable, {
-    headers: { "Content-Type": "text/event-stream" }
-  });
-}
-```
-
-Pass `{ namespace: 'name' }` to target one of the holder's [namespaced streams](#namespaced-streams), exactly as with `getReadable()`.
-
-### What this does and does not grant
+Pass `{ namespace: "name" }` to target a [namespaced stream](#namespaced-streams). The writable can also be forwarded through `start()` and into steps.
 
 <Callout type="warn">
-**`writer.close()` closes the shared stream.**
-
-The handle is an ordinary `WritableStream`, so closing it ends the stream for *every* writer, and a closed stream cannot be reopened. Contributors should `releaseLock()` when they are done. Releasing the lock flushes pending writes, so there is never a need to close a stream just to get writes out. Leave closing to the run that owns the stream.
+Contributors should call `releaseLock()`, which flushes pending writes. Calling `close()` closes the shared stream for every writer.
 </Callout>
 
-- **Append access, not read access.** Where the owning run publishes an [encryption](/docs/how-it-works/encryption) public key, contributions are sealed to it. The writing run cannot decrypt the stream, including its own writes. Read the stream with `getReadable()` from somewhere that holds the owning run's key.
-- **No authorization of its own.** Reaching the run through your World is the authorization. This inherits whatever access the caller already had, so treat a run ID reaching untrusted code the same way you would treat any other capability.
-- **The owner keeps the lifecycle.** The stream's region, retention, and terminal state follow the owning run. When that run's stream is closed or expires, contributors' writes fail; nothing about holding a writable extends it.
-- **The run must already exist.** `getWritable()` rejects with `WorkflowRunNotFoundError` for an unknown run rather than creating one. When a holder and its first turn start together, start the holder first, or handle that rejection.
-
-The returned writable can be passed to `start()` and forwarded into steps like any other stream, and it keeps pointing at the owning run's stream wherever it travels.
+The API grants append access, not read access or additional authorization. The owning run controls the stream's lifecycle, and an unknown run rejects with `WorkflowRunNotFoundError`.
 
 ## Common patterns
 

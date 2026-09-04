@@ -2753,23 +2753,8 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 }
 
 /**
- * Resolve the write-only key a run needs when writing into another run's
- * forwarded stream.
- *
- * Three tiers, cheapest first:
- *
- * 1. The descriptor carries the owner's X25519 public key: seal to it with
- *    no I/O whatsoever. The owner published the key when it created the
- *    stream, so this is the zero-round-trip path.
- * 2. The descriptor carries the owner's deployment ID: resolve the owner's
- *    symmetric key, which cross-deployment means a key-API round trip.
- * 3. Neither (descriptors written by older SDKs): load the owning run first,
- *    then resolve its symmetric key.
- *
- * Tiers 2 and 3 import the key encrypt-only, which is an honor-system
- * restriction: the same bytes could decrypt. Tier 1 makes it a cryptographic
- * guarantee: a public key cannot read anything.
- *
+ * Resolves the owner's encryption key, preferring its public key, then its
+ * deployment, and finally its run record.
  * @internal
  */
 export async function getForwardedWritableEncryptionKey(
@@ -2789,25 +2774,7 @@ export async function getForwardedWritableEncryptionKey(
   return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
 }
 
-/**
- * Open a writable against a run-scoped server stream and tag the handle so it
- * can be forwarded again without losing the target.
- *
- * Two callers reach the same shape from opposite directions: the external
- * reviver, hydrating a descriptor another run put on the wire, and
- * `Run#getWritable()`, building the first handle from owner metadata. Both need
- * the serialize transform, the group-commit sink, the flushable wiring, and the
- * four forwarding symbols in exactly the same arrangement, and a drift between
- * them shows up as an unreadable frame rather than a type error.
- *
- * `runId`/`name` address the *owner's* stream, and `key` must already be the
- * write-only key for that owner (see {@link getForwardedWritableEncryptionKey}),
- * not the calling run's. `encryptionPublicKey` is stamped only when the owner
- * published one: advertising a key the owner cannot open would send every
- * downstream contributor to an address nobody reads.
- *
- * @internal
- */
+/** Creates and tags a forwarded writable targeting the owner run. @internal */
 export function createForwardedWritable<W = any>({
   global,
   ops,
@@ -2837,10 +2804,7 @@ export function createForwardedWritable<W = any>({
     runReadyBarrier
   );
 
-  // Flushable rather than a bare pipeTo: the ops promise has to settle when the
-  // caller releases its writer lock, not only when the stream is closed. A
-  // contributor to a shared stream never closes it, so a pipeTo here would keep
-  // the function alive until its timeout.
+  // Lock release must settle the flush promise; contributors do not close.
   const state = createFlushableState();
   ops.push(state.promise);
 
