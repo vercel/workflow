@@ -195,6 +195,44 @@ describe('workflowEntrypoint replay guards', () => {
     `;globalThis.__private_workflows = new Map();
     globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${workflowName});`;
 
+  it('records run_failed when workflow bundle evaluation throws', async () => {
+    const sharpLoadError =
+      'Could not load the "sharp" module using the linux-x64 runtime';
+    const workflowRun: WorkflowRun = {
+      runId: 'wrun_workflow_bundle_load_error',
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        'wrun_workflow_bundle_load_error',
+        undefined,
+        []
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    const createdEvents = await runWorkflowHandlerWithEvents(
+      `throw new Error(${JSON.stringify(sharpLoadError)});`,
+      workflowRun,
+      []
+    );
+
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'run_started' })
+    );
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({
+        eventType: 'run_failed',
+        eventData: expect.objectContaining({
+          errorCode: RUN_ERROR_CODES.USER_ERROR,
+        }),
+      })
+    );
+  });
+
   /** A run pinned to `dpl_origin`, for the deployment-affinity tests below. */
   const misroutedRun = async (): Promise<WorkflowRun> => ({
     runId: 'wrun_wrong_deployment',
