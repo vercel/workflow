@@ -796,7 +796,7 @@ export async function start<TArgs extends unknown[], TResult>(
             .dynamicWorkflowCode === undefined
         ) {
           throw new WorkflowRuntimeError(
-            "This deployment's Workflow backend did not store the dynamic workflow code, so the run could never be replayed. " +
+            `Workflow run ${runId} was created, but this deployment's Workflow backend did not store its dynamic workflow code, so the run can never be replayed. ` +
               'Dynamic workflows require a backend with encrypted dynamic-source storage; upgrade it, or start a workflow function from the build-time manifest instead.'
           );
         }
