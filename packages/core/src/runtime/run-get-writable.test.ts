@@ -15,15 +15,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { importKey } from '../encryption.js';
 import { bytesToBase64, deriveRunKeyPair } from '../sealed-box.js';
 import {
+  decrypt as decryptEnvelope,
+  runPayloadKeys,
+} from '../serialization/encryption.js';
+import {
   dehydrateStepArguments,
   dehydrateWorkflowArguments,
   hydrateStepArguments,
   hydrateWorkflowArguments,
 } from '../serialization.js';
-import {
-  decrypt as decryptEnvelope,
-  runPayloadKeys,
-} from '../serialization/encryption.js';
 import { hydrateData } from '../serialization-format.js';
 import {
   STREAM_NAME_SYMBOL,
