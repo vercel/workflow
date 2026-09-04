@@ -716,146 +716,92 @@ Destructured require also supports renaming (analogous to `import { WORKFLOW_SER
 const { WORKFLOW_SERIALIZE: WS, WORKFLOW_DESERIALIZE: WD } = require("@workflow/serde");
 ```
 
-### Class expressions with binding names
+### Class expressions
 
-When a class expression is assigned to a variable, the plugin uses the variable name (binding name) for registration, not the internal class name. This is important because the internal class name is only accessible inside the class body.
+Class *declarations* (`class Foo { ... }`, `export class Foo { ... }`) are registered by module-level statements appended to the module body that reference the class by name (see the examples above).
 
-Input:
+Class *expressions* are handled differently, because there is no guarantee that the class is reachable through a module-scope binding: bundlers routinely emit `var Foo = class { ... }` or `var Foo = class _Foo { ... }` (where `_Foo` is only in scope inside the class body), and a class expression can appear anywhere an expression can (`exports.Foo = class {}`, `{ Foo: class {} }`, `foo(class Named {})`, `var A = class {}, B = class {}`). Instead of emitting module-level code that refers to the class by name, the plugin wraps the class expression in an IIFE that receives the class as its argument, performs the registrations, and returns the class:
+
+Input (e.g., after tsdown/esbuild pre-bundling; this is the shape `@vercel/sandbox` ships):
 ```javascript
-import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
-
-var Bash = class _Bash {
-  constructor(command) {
-    this.command = command;
-  }
-
-  static [WORKFLOW_SERIALIZE](instance) {
-    return { command: instance.command };
-  }
-
-  static [WORKFLOW_DESERIALIZE](data) {
-    return new Bash(data.command);
-  }
+var FileSystem = class {
+  constructor(sandbox) { this.sandbox = sandbox; }
+  async readFile(path) { "use step"; return this.sandbox.read(path); }
 };
-```
-
-Output:
-```javascript
-import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
-/**__internal_workflows{"classes":{"input.js":{"Bash":{"classId":"class//./input//Bash"}}}}*/;
-var Bash = class _Bash {
-    constructor(command) {
-        this.command = command;
-    }
-    static [WORKFLOW_SERIALIZE](instance) {
-        return { command: instance.command };
-    }
-    static [WORKFLOW_DESERIALIZE](data) {
-        return new Bash(data.command);
-    }
-};
-(function(__wf_cls, __wf_id) {
-    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
-    __wf_reg.set(__wf_id, __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
-})(Bash, "class//./input//Bash");
-```
-
-Note that:
-- The registration uses `Bash` (the variable name), not `_Bash` (the internal class name)
-- The `classId` in the manifest also uses `Bash`
-- This ensures the registration call references a symbol that's actually in scope at module level
-
-This binding-name preference applies to **all** generated code that references the class at module scope, including:
-- Class serialization registration IIFEs
-- Step method registrations (inline IIFE calls)
-- Workflow method stub assignments
-
-For example, a class expression with step methods:
-
-Input:
-```javascript
-import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
-
-var LanguageModel = class _LanguageModel {
-  constructor(modelId) { this.modelId = modelId; }
-  static [WORKFLOW_SERIALIZE](inst) { return { modelId: inst.modelId }; }
-  static [WORKFLOW_DESERIALIZE](data) { return new _LanguageModel(data.modelId); }
-  async doStream(prompt) { "use step"; return { stream: prompt }; }
-  static async generate(input) { "use step"; return { result: input }; }
-};
+export { FileSystem };
 ```
 
 Output (step mode):
 ```javascript
-(function(__wf_fn, __wf_id) {
-    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
-    __wf_reg.set(__wf_id, __wf_fn);
-    __wf_fn.stepId = __wf_id;
-})(LanguageModel.generate, "step//./input//LanguageModel.generate");
-(function(__wf_fn, __wf_id) {
-    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
-    __wf_reg.set(__wf_id, __wf_fn);
-    __wf_fn.stepId = __wf_id;
-})(LanguageModel.prototype["doStream"], "step//./input//LanguageModel#doStream");
-(function(__wf_cls, __wf_id) { /* ... */ })(LanguageModel, "class//./input//LanguageModel");
+/**__internal_workflows{"steps":{"input.js":{"FileSystem#readFile":{"stepId":"step//./input//FileSystem#readFile"}}},"classes":{"input.js":{"FileSystem":{"classId":"class//./input//FileSystem"}}}}*/;
+var FileSystem = function(__wf_cls) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map()), __wf_fn;
+    __wf_fn = __wf_cls.prototype["readFile"];
+    __wf_reg.set("step//./input//FileSystem#readFile", __wf_fn);
+    __wf_fn.stepId = "step//./input//FileSystem#readFile";
+    Object.defineProperty(__wf_fn, "name", { value: "readFile", configurable: true });
+    var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
+    __wf_cls_reg.set("class//./input//FileSystem", __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: "class//./input//FileSystem", writable: false, enumerable: false, configurable: false });
+    return __wf_cls;
+}(class FileSystem {
+    constructor(sandbox) { this.sandbox = sandbox; }
+    async readFile(path) { return this.sandbox.read(path); }
+});
+export { FileSystem };
 ```
 
-All references use `LanguageModel` (the binding name), not `_LanguageModel` (the internal class expression name). Only a single class registration IIFE is emitted. The step IDs also use the binding name.
-
-### Anonymous class expression name re-insertion
-
-When a serializable class expression has no internal name (anonymous) but has a binding name from a variable declaration, the plugin re-inserts the binding name as the class expression's identifier. This handles the common case where upstream bundlers like esbuild/tsup transform `class Foo { ... }` into `var Foo = class { ... }` (stripping the class name).
-
-Without this fix, the anonymous class would have an empty `.name` property, which can break downstream bundlers that rely on the class name for serialization registration.
-
-Input (e.g., after tsup pre-bundling):
+Output (workflow mode):
 ```javascript
-var Shell = class {
-  constructor(cmd) {
-    this.cmd = cmd;
-  }
-
-  static [Symbol.for('workflow-serialize')](instance) {
-    return { cmd: instance.cmd };
-  }
-
-  static [Symbol.for('workflow-deserialize')](data) {
-    return new Shell(data.cmd);
-  }
-};
-```
-
-Output:
-```javascript
-/**__internal_workflows{"classes":{"input.js":{"Shell":{"classId":"class//./input//Shell"}}}}*/;
-var Shell = class Shell {
-    constructor(cmd) {
-        this.cmd = cmd;
-    }
-    static [Symbol.for('workflow-serialize')](instance) {
-        return { cmd: instance.cmd };
-    }
-    static [Symbol.for('workflow-deserialize')](data) {
-        return new Shell(data.cmd);
-    }
-};
-(function(__wf_cls, __wf_id) {
-    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
-    __wf_reg.set(__wf_id, __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
-})(Shell, "class//./input//Shell");
+var FileSystem = function(__wf_cls) {
+    __wf_cls.prototype["readFile"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//FileSystem#readFile");
+    var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
+    __wf_cls_reg.set("class//./input//FileSystem", __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { /* ... */ });
+    return __wf_cls;
+}(class FileSystem {
+    constructor(sandbox) { this.sandbox = sandbox; }
+});
 ```
 
 Note that:
-- The class expression `class { ... }` becomes `class Shell { ... }` with the binding name inserted
-- For typical usage, behavior is preserved while ensuring the `.name` property survives subsequent bundling (an inner class name binding is introduced, which can differ in edge cases that depend on assigning to or shadowing that name inside the class body)
-- Classes that already have an internal name (e.g., `class _Bash { ... }`) are not modified
-- Only classes with serialization methods (`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`) are affected
+- The IIFE closes over the class value itself (`__wf_cls`), so the registration does not depend on any name being in scope at module level. The same output shape is produced for every position a class expression can appear in.
+- Everything recorded for the class (step methods, getters, custom serialization, static workflow methods) is emitted inside the single IIFE, in the same order as the module-level emission for class declarations. The registry lookups are hoisted once per registry rather than repeated per registration.
+- A class expression with nothing to register is left untouched.
+- Registration runs when the class expression is evaluated, which for a module-level class expression is module load, the same as for class declarations.
+- `export default class { ... }` is a `ClassExpr` in the AST but not an expression position; it is handled by the rewrite described below rather than by the IIFE.
+
+#### Class names for IDs
+
+The IIFE removes the need to *reference* the class by name, but step and class IDs still need a name (`step//<module>//<ClassName>#<method>`). The name is resolved, in order of preference, from:
+
+1. The variable the expression is assigned to: `var Foo = class _Foo {}` uses `Foo`, not `_Foo`. This also covers `let Foo; Foo = class {}`, parenthesized initializers (`var Foo = (class {})`), and chained assignments (`var Foo = exports.Foo = class {}`). With multiple declarators (`var A = class {}, B = class {}`) each class resolves to its own binding.
+2. The class expression's own identifier: `foo(class Plugin {})` uses `Plugin`.
+3. The property the expression is assigned to or defined under: `exports.Foo = class {}` and `{ Foo: class {} }` use `Foo` (string keys such as `'kebab-job'` are accepted as-is).
+
+Names from (1) and (2) are bindings that already refer to the class, so when the class expression is anonymous the binding name is inserted as the class's own identifier (`var Foo = class {}` becomes `(...)(class Foo {})`). Passing the class as a call argument would otherwise defeat the `.name` inference the original assignment provided. For typical usage this is behaviorally equivalent to `var Foo = class Foo {}`; an inner class-scoped `Foo` binding is introduced, which can differ in edge cases that assign to or shadow that name inside the class body. Names from (3) are *not* inserted as an identifier, since `exports.Foo = class { m() { return Foo; } }` may refer to an unrelated outer `Foo`; the IIFE instead sets `.name` at runtime with `Object.defineProperty(__wf_cls, "name", { value: "Foo", configurable: true })`.
+
+Classes that already have an identifier (e.g. `class _Bash { ... }`) are never renamed.
+
+#### Unnameable and nested classes are errors
+
+If a class expression has `"use step"`/`"use workflow"` methods, `"use step"` getters, or custom serialization, and no name can be derived (e.g. `foo(class { ... })`, `[class { ... }]`, `cond ? class { ... } : null`), the plugin emits a compile error:
+
+```
+Anonymous class expressions cannot use "use step" methods. Assign the class to a variable (e.g. `const MyClass = class { ... }`) or give it a name (`class MyClass { ... }`) so the compiler can reference it when registering it at module level
+```
+
+Likewise, a class (declaration or expression) that uses those features but is declared *inside a function* is an error:
+
+```
+Classes using "use step" methods must be declared at the top level of the module, not inside a function. The compiler registers the class at module level and cannot reference a class declared in an inner scope
+```
+
+Step registration must happen at module load for the step to be resolvable by ID; a class inside a function would only be registered when (and each time) that function runs. Earlier versions of the plugin emitted a placeholder `AnonymousClass` name (or the inner class's name) in these situations, which produced module-level code that threw a `ReferenceError` as soon as the module was evaluated. At most one error is reported per class, at the first offending member; classes without steps or serialization are unaffected. No errors are emitted in `detect` mode, which generates no code.
 
 ### Anonymous default class export rewriting
 
-When an anonymous class with serialization methods or step methods is exported as the default export, the plugin rewrites it into a `const` declaration + re-export so that the class has a binding name accessible at module scope. Without this, the generated registration code would reference an undefined variable.
+When an anonymous class with serialization methods or step methods is exported as the default export, the plugin rewrites it into a `const` declaration + re-export so that the class has a binding name accessible at module scope. `export default class { ... }` is not an expression position, so the registration IIFE used for class expressions does not apply; the class is instead registered by module-level statements that reference the generated `const`.
 
 Input:
 ```javascript
@@ -960,6 +906,8 @@ The plugin emits errors for invalid usage:
 | Invalid exports (`"use workflow"`) | Module-level `"use workflow"` files can only export async functions |
 | Invalid exports (`"use step"`) | Module-level `"use step"` files can only export functions (sync or async) |
 | Misspelled directive | Detects typos like `"use steps"` or `"use workflows"` |
+| Unnameable class expression | An anonymous class expression with step/workflow methods, step getters, or custom serialization in a position that provides no name (e.g. `foo(class { ... })`) |
+| Nested class | A class with step/workflow methods, step getters, or custom serialization declared inside a function rather than at the module's top level |
 
 ---
 
