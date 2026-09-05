@@ -94,7 +94,7 @@ In v4 an event ID was a ULID your World minted however it liked. In v5 an event 
 
 There is no capability to declare and no fallback path. The runtime reads a position out of every ID it loads and fails the run when it cannot. A World whose IDs are not positions will pass a type check and start runs, but it cannot replay a single workflow. The first replay fails with `Event id is not slot-numbered`.
 
-The scheme exists for what a reader can conclude from a log it just fetched: positions are dense, so a truncated log is distinguishable from a complete one by its length alone. The runtime relies on that, and it fails a run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log) rather than replay across a hole, so three rules bind an implementation:
+The scheme exists for what a reader can conclude from a log it just fetched: positions are dense, so a truncated log is distinguishable from a complete one by its length alone. The runtime relies on that, and it fails a run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log) rather than replay across a hole, so four rules bind an implementation:
 
 - **Uniqueness.** Settle a race for a position where the store settles it, with a unique constraint on `(runId, eventId)` or a conditional write, not by reading the maximum in your own process and adding one.
 - **Density.** Positions run from 1 with no holes. A writer that loses a race re-derives its position from the store instead of incrementing a local number, which would leave a permanent hole.

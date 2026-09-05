@@ -513,8 +513,6 @@ globalThis.__private_workflows.set("workflow//./input//myWorkflow", myWorkflow);
 
 ---
 
----
-
 ## Detect mode
 
 Detect mode is a lightweight, non-transforming mode used during the build discovery phase. It walks the AST to find `"use workflow"` and `"use step"` directives and custom serialization classes, then emits the JSON manifest comment without modifying any code.
