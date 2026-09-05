@@ -313,6 +313,34 @@ export async function POST(request: Request) {
 }
 ```
 
+## Writing to another run's stream
+
+`getRun(runId).getWritable()` appends to a stream owned by another run. This lets short-lived runs contribute to a long-lived holder run's stream using only its ID.
+
+```typescript title="workflows/turn.ts" lineNumbers
+import { getRun } from "workflow/api";
+
+type SessionEvent = { turn: number; text: string };
+
+async function runTurn(holderRunId: string, turn: number) {
+  "use step";
+
+  const writable = await getRun(holderRunId).getWritable<SessionEvent>(); // [!code highlight]
+  const writer = writable.getWriter();
+
+  await writer.write({ turn, text: "done" });
+  writer.releaseLock(); // [!code highlight]
+}
+```
+
+Pass `{ namespace: "name" }` to target a [namespaced stream](#namespaced-streams). The writable can also be forwarded through `start()` and into steps.
+
+<Callout type="warn">
+Contributors should call `releaseLock()`, which flushes pending writes. Calling `close()` closes the shared stream for every writer.
+</Callout>
+
+The API grants append access, not read access or additional authorization. The owning run controls the stream's lifecycle, and an unknown run rejects with `WorkflowRunNotFoundError`.
+
 ## Common patterns
 
 ### Progress updates for long-running tasks

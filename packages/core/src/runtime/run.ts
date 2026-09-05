@@ -13,6 +13,8 @@ import {
   type PayloadKey,
 } from '../serialization/encryption.js';
 import {
+  createForwardedWritable,
+  getForwardedWritableEncryptionKey,
   getRunReadableStream,
   hydrateRunError,
   hydrateWorkflowReturnValue,
@@ -31,6 +33,9 @@ const PAYLOAD_TERMINAL_RUN_STATUSES = new Set<WorkflowRunStatus>([
   'completed',
   'failed',
 ]);
+
+// Give resilient starts up to 10 seconds to create the run.
+const NOT_FOUND_RETRY_DELAYS = [1_000, 3_000, 6_000];
 
 /** @internal */
 export function getReturnValuePollIntervalMs(): number {
@@ -148,6 +153,33 @@ export interface WorkflowReadableStreamOptions {
   ops?: Promise<any>[];
   /**
    * The global object to use for hydrating types from the global scope.
+   *
+   * Defaults to {@link [`globalThis`](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/globalThis)}.
+   */
+  global?: Record<string, any>;
+}
+
+/**
+ * Options for configuring a writable onto a workflow run's stream.
+ */
+export interface WorkflowRunWritableStreamOptions {
+  /**
+   * An optional namespace to distinguish between multiple streams associated
+   * with the same workflow run.
+   */
+  namespace?: string;
+  /**
+   * Any asynchronous operations to complete before pausing or terminating the
+   * execution environment
+   * (i.e. using [`waitUntil()`](https://developer.mozilla.org/docs/Web/API/ExtendableEvent/waitUntil) or similar).
+   *
+   * Writes are acknowledged on buffer entry, so a caller that needs them
+   * durable before the environment goes away should pass an array here and
+   * await it after releasing the writer lock.
+   */
+  ops?: Promise<any>[];
+  /**
+   * The global object to use for reducing types from the global scope.
    *
    * Defaults to {@link [`globalThis`](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/globalThis)}.
    */
@@ -394,6 +426,64 @@ export class Run<TResult> {
     });
   }
 
+  /**
+   * Returns a writable that appends to this run's stream.
+   *
+   * The run must already exist. The writable may be forwarded through `start()`
+   * and into steps, but grants no read access or additional authorization.
+   *
+   * @remarks
+   * `writer.close()` closes the shared stream. Contributors should call
+   * `releaseLock()`, which also drains pending writes.
+   *
+   * @param options - The writable stream options.
+   * @throws WorkflowRunNotFoundError if the run does not exist.
+   */
+  async getWritable<W = any>(
+    options: WorkflowRunWritableStreamOptions = {}
+  ): Promise<WritableStream<W>> {
+    'use step';
+    const { ops = [], global = globalThis, namespace } = options;
+    const run = await this.#getMetadata();
+    const name = getWorkflowRunStreamId(this.runId, namespace);
+
+    // Resolve before returning so key lookup failures precede accepted writes.
+    const key = await getForwardedWritableEncryptionKey(
+      this.runId,
+      run.deploymentId,
+      run.encryptionPublicKey
+    );
+
+    return createForwardedWritable<W>({
+      global,
+      ops,
+      runId: this.runId,
+      name,
+      key,
+      deploymentId: run.deploymentId,
+      encryptionPublicKey: run.encryptionPublicKey,
+    });
+  }
+
+  /** Reads metadata, briefly retrying resilient starts. @internal */
+  async #getMetadata() {
+    const world = await this.#lazyWorldPromise;
+    const maxRetries = this.#resilientStart ? NOT_FOUND_RETRY_DELAYS.length : 0;
+    let attempt = 0;
+    while (true) {
+      try {
+        return await world.runs.get(this.runId, { resolveData: 'none' });
+      } catch (error) {
+        if (!WorkflowRunNotFoundError.is(error) || attempt >= maxRetries) {
+          throw error;
+        }
+        const delay = NOT_FOUND_RETRY_DELAYS[attempt]!;
+        attempt++;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+
   /** @internal */
   async #resolveTerminalReturnValue(run: WorkflowRun): Promise<TResult> {
     if (run.status === 'completed') {
@@ -451,8 +541,9 @@ export class Run<TResult> {
     // and the runtime to create the run via run_started.
     // When resilientStart is false, 404 is a real error: fail fast.
     let notFoundRetries = 0;
-    const NOT_FOUND_MAX_RETRIES = this.#resilientStart ? 3 : 0;
-    const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
+    const NOT_FOUND_MAX_RETRIES = this.#resilientStart
+      ? NOT_FOUND_RETRY_DELAYS.length
+      : 0;
 
     // Prefer the World's long poll: one read that the backend holds open
     // until the run finishes, instead of asking again every second and
@@ -531,7 +622,7 @@ export class Run<TResult> {
           WorkflowRunNotFoundError.is(error) &&
           notFoundRetries < NOT_FOUND_MAX_RETRIES
         ) {
-          const delay = NOT_FOUND_DELAYS[notFoundRetries]!;
+          const delay = NOT_FOUND_RETRY_DELAYS[notFoundRetries]!;
           notFoundRetries++;
           await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
