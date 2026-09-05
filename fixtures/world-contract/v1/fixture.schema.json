@@ -8,6 +8,7 @@
   "required": [
     "fixtureVersion",
     "name",
+    "requires",
     "persistedSpecVersion",
     "given",
     "when",
@@ -23,6 +24,13 @@
     "name": {
       "type": "string",
       "minLength": 1
+    },
+    "requires": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": ["run-started-preload"]
+      }
     },
     "persistedSpecVersion": {
       "type": "integer",
@@ -75,30 +83,51 @@
           "required": ["eventType", "specVersion", "eventData"],
           "properties": {
             "eventType": {
-              "type": "string",
-              "minLength": 1
+              "const": "run_started"
             },
             "specVersion": {
               "type": "integer",
               "minimum": 1
             },
             "eventData": {
-              "type": "object",
-              "additionalProperties": true,
-              "required": ["deploymentId", "workflowName", "input"],
-              "properties": {
-                "deploymentId": {
-                  "type": "string"
-                },
-                "workflowName": {
-                  "type": "string"
-                },
-                "input": {
-                  "$ref": "#/$defs/bytes"
-                }
-              }
+              "$ref": "#/$defs/runCreatedEventData"
             }
           }
+        }
+      }
+    },
+    "runCreatedEventData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deploymentId", "workflowName", "input"],
+      "properties": {
+        "deploymentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workflowName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input": {
+          "$ref": "#/$defs/bytes"
+        },
+        "executionContext": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "attributes": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "allowReservedAttributes": {
+          "const": true
+        },
+        "encryptionPublicKey": {
+          "type": "string"
         }
       }
     },
@@ -113,6 +142,8 @@
         "specVersion",
         "input",
         "executionContext",
+        "attributes",
+        "encryptionPublicKey",
         "startedAtPresent"
       ],
       "properties": {
@@ -138,6 +169,15 @@
           "type": "object",
           "additionalProperties": true
         },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "encryptionPublicKey": {
+          "type": "string"
+        },
         "startedAtPresent": {
           "type": "boolean"
         }
@@ -154,8 +194,7 @@
           "maximum": 9007199254740991
         },
         "eventType": {
-          "type": "string",
-          "minLength": 1
+          "enum": ["run_created", "run_started"]
         },
         "specVersion": {
           "type": "integer",
@@ -165,15 +204,14 @@
           "type": "boolean"
         },
         "eventData": {
-          "type": "object",
-          "additionalProperties": true
+          "$ref": "#/$defs/runCreatedEventData"
         }
       }
     },
     "expectedState": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["run", "result", "events", "stepCount", "hookCount"],
+      "required": ["run", "result", "events"],
       "properties": {
         "run": {
           "$ref": "#/$defs/runProjection"
@@ -181,7 +219,14 @@
         "result": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["event", "preloadedSlots", "hasMore"],
+          "required": [
+            "event",
+            "preloadedSlots",
+            "preloadedEvents",
+            "cursorPresent",
+            "continuationCount",
+            "hasMore"
+          ],
           "properties": {
             "event": {
               "$ref": "#/$defs/eventProjection"
@@ -193,6 +238,19 @@
                 "minimum": 1
               }
             },
+            "preloadedEvents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/eventProjection"
+              }
+            },
+            "cursorPresent": {
+              "type": "boolean"
+            },
+            "continuationCount": {
+              "type": "integer",
+              "minimum": 0
+            },
             "hasMore": {
               "type": "boolean"
             }
@@ -203,14 +261,6 @@
           "items": {
             "$ref": "#/$defs/eventProjection"
           }
-        },
-        "stepCount": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "hookCount": {
-          "type": "integer",
-          "minimum": 0
         }
       }
     }

@@ -2,6 +2,7 @@
   "$schema": "./fixture.schema.json",
   "fixtureVersion": 1,
   "name": "resilient-run-start-synthesizes-created",
+  "requires": ["run-started-preload"],
   "persistedSpecVersion": 7,
   "given": {
     "storage": "empty"
@@ -20,7 +21,13 @@
         },
         "executionContext": {
           "fixture": "resilient-run-start"
-        }
+        },
+        "attributes": {
+          "$rootRunId": "wrun_fixture_root",
+          "fixture": "resilient-start"
+        },
+        "allowReservedAttributes": true,
+        "encryptionPublicKey": "fixture-public-key"
       }
     }
   },
@@ -37,6 +44,11 @@
       "executionContext": {
         "fixture": "resilient-run-start"
       },
+      "attributes": {
+        "$rootRunId": "wrun_fixture_root",
+        "fixture": "resilient-start"
+      },
+      "encryptionPublicKey": "fixture-public-key",
       "startedAtPresent": true
     },
     "result": {
@@ -47,6 +59,38 @@
         "eventDataPresent": false
       },
       "preloadedSlots": [1, 2],
+      "preloadedEvents": [
+        {
+          "slot": 1,
+          "eventType": "run_created",
+          "specVersion": 7,
+          "eventDataPresent": true,
+          "eventData": {
+            "deploymentId": "dpl_fixture",
+            "workflowName": "workflow//./fixtures//resilientRunStart",
+            "input": {
+              "$bytes": "AAEC/w=="
+            },
+            "executionContext": {
+              "fixture": "resilient-run-start"
+            },
+            "attributes": {
+              "$rootRunId": "wrun_fixture_root",
+              "fixture": "resilient-start"
+            },
+            "allowReservedAttributes": true,
+            "encryptionPublicKey": "fixture-public-key"
+          }
+        },
+        {
+          "slot": 2,
+          "eventType": "run_started",
+          "specVersion": 7,
+          "eventDataPresent": false
+        }
+      ],
+      "cursorPresent": true,
+      "continuationCount": 0,
       "hasMore": false
     },
     "events": [
@@ -63,7 +107,13 @@
           },
           "executionContext": {
             "fixture": "resilient-run-start"
-          }
+          },
+          "attributes": {
+            "$rootRunId": "wrun_fixture_root",
+            "fixture": "resilient-start"
+          },
+          "allowReservedAttributes": true,
+          "encryptionPublicKey": "fixture-public-key"
         }
       },
       {
@@ -72,8 +122,6 @@
         "specVersion": 7,
         "eventDataPresent": false
       }
-    ],
-    "stepCount": 0,
-    "hookCount": 0
+    ]
   }
 }

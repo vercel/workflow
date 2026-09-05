@@ -3,3 +3,5 @@
 packages/swc-plugin-workflow/transform/tests/**/*.js text eol=lf
 packages/swc-plugin-workflow/transform/tests/**/*.stderr text eol=lf
 
+# Migration checksums are compiled from source bytes and must be cross-platform.
+crates/**/migrations/*.sql text eol=lf

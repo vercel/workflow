@@ -1,5 +1,12 @@
 [workspace]
-members = ["packages/swc-plugin-workflow", "workbench/swc-playground/wasm"]
+members = [
+  "crates/workflow-protocol",
+  "crates/workflow-world-core",
+  "crates/workflow-world-sqlite",
+  "packages/swc-plugin-workflow",
+  "workbench/node-native-probe",
+  "workbench/swc-playground/wasm",
+]
 
 resolver = "2"
 
