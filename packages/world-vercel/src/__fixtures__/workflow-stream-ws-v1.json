@@ -1,0 +1,69 @@
+{
+  "protocol": "workflow-stream-ws/v1",
+  "version": 1,
+  "endpoint": "/api/websockets/v1/runs/:runId/streams/:streamId?writerId=:writerId",
+  "writerId": "wrtr_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "envelope": "u32_be(cbor_meta_length) || cbor_meta || u32_be(body_length) || body_bytes",
+  "chunkEncoding": "numChunks repetitions of u32_be(chunk_length) || chunk_bytes",
+  "frames": [
+    {
+      "direction": "client_to_server",
+      "meta": {
+        "type": "write",
+        "reqId": 7,
+        "chunkSeq": 0,
+        "numChunks": 1
+      },
+      "bodyHex": "000000026869",
+      "frameHex": "0000002ab90004647479706565777269746565726571496407686368756e6b53657100696e756d4368756e6b730100000006000000026869"
+    },
+    {
+      "direction": "server_to_client",
+      "meta": {
+        "type": "write_ack",
+        "reqId": 7
+      },
+      "bodyHex": "",
+      "frameHex": "00000019b9000264747970656977726974655f61636b6572657149640700000000"
+    },
+    {
+      "direction": "client_to_server",
+      "meta": {
+        "type": "close",
+        "reqId": 8
+      },
+      "bodyHex": "",
+      "frameHex": "00000015b90002647479706565636c6f73656572657149640800000000"
+    },
+    {
+      "direction": "server_to_client",
+      "meta": {
+        "type": "close_ack",
+        "reqId": 8
+      },
+      "bodyHex": "",
+      "frameHex": "00000019b90002647479706569636c6f73655f61636b6572657149640800000000"
+    },
+    {
+      "direction": "server_to_client",
+      "meta": {
+        "type": "error",
+        "reqId": 9,
+        "status": 429,
+        "message": "try later"
+      },
+      "bodyHex": "",
+      "frameHex": "00000031b900046474797065656572726f7265726571496409667374617475731901ad676d65737361676569747279206c6174657200000000"
+    },
+    {
+      "direction": "server_to_client",
+      "meta": {
+        "type": "error",
+        "status": 400,
+        "message": "bad frame"
+      },
+      "bodyHex": "",
+      "frameHex": "0000002ab900036474797065656572726f7266737461747573190190676d65737361676569626164206672616d6500000000"
+    }
+  ]
+}

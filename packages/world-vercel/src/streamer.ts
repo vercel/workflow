@@ -25,6 +25,7 @@ import {
   getVercelDiagnostics,
   instrumentedFetch,
 } from './http-core.js';
+import { encodeMultiChunks } from './stream-chunks.js';
 import {
   WorkflowRunId,
   WorkflowStreamName,
@@ -171,42 +172,7 @@ function createStreamRequestError(
   );
 }
 
-/**
- * Encode multiple chunks into a length-prefixed binary format.
- * Format: [4 bytes big-endian length][chunk bytes][4 bytes length][chunk bytes]...
- *
- * This preserves chunk boundaries so the server can store them as separate
- * chunks, maintaining correct startIndex semantics for readers.
- *
- * @internal Exported for testing purposes
- */
-export function encodeMultiChunks(chunks: (string | Uint8Array)[]): Uint8Array {
-  const encoder = new TextEncoder();
-
-  // Convert all chunks to Uint8Array and calculate total size
-  const binaryChunks: Uint8Array[] = [];
-  let totalSize = 0;
-
-  for (const chunk of chunks) {
-    const binary = typeof chunk === 'string' ? encoder.encode(chunk) : chunk;
-    binaryChunks.push(binary);
-    totalSize += 4 + binary.length; // 4 bytes for length prefix
-  }
-
-  // Allocate buffer and write length-prefixed chunks
-  const result = new Uint8Array(totalSize);
-  const view = new DataView(result.buffer);
-  let offset = 0;
-
-  for (const binary of binaryChunks) {
-    view.setUint32(offset, binary.length, false); // big-endian
-    offset += 4;
-    result.set(binary, offset);
-    offset += binary.length;
-  }
-
-  return result;
-}
+export { encodeMultiChunks } from './stream-chunks.js';
 
 const StreamInfoResponseSchema = z.object({
   tailIndex: z.number(),
