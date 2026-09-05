@@ -1442,9 +1442,6 @@ importers:
 
   packages/world-postgres:
     dependencies:
-      '@vercel/queue':
-        specifier: 'catalog:'
-        version: 0.5.0(@opentelemetry/api@1.9.1)
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1454,9 +1451,6 @@ importers:
       '@workflow/world':
         specifier: workspace:*
         version: link:../world
-      '@workflow/world-local':
-        specifier: workspace:*
-        version: link:../world-local
       cbor-x:
         specifier: 1.6.0
         version: 1.6.0
@@ -2403,6 +2397,9 @@ importers:
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
+      undici:
+        specifier: 'catalog:'
+        version: 7.29.0
       workflow:
         specifier: workspace:*
         version: link:../../packages/workflow

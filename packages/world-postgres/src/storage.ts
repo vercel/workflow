@@ -823,6 +823,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // committed: on a slot-numbered run the position is chosen inside the
       // INSERT, so there is nothing to read before it.
       let eventId: string | undefined;
+      let value: { createdAt: Date } | undefined;
       // Lazy, because on a legacy run this mints a ULID and on a slot run it
       // reads which of the two schemes applies. Every caller below awaits it
       // immediately before its insert. A caller that has already fixed the id
@@ -909,11 +910,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             allowReservedAttributes?: true;
             encryptionPublicKey?: string;
           };
-          if (
-            runInputData.deploymentId &&
-            runInputData.workflowName &&
-            runInputData.input !== undefined
-          ) {
+          const { deploymentId, input, workflowName } = runInputData;
+          if (deploymentId && workflowName && input !== undefined) {
             validateAttributeChanges(
               Object.entries(runInputData.attributes ?? {}).map(
                 ([key, value]) => ({ key, value })
@@ -926,42 +924,43 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             // Create run + run_created event atomically. The
             // transaction ensures we never have an orphaned run
             // without its run_created event.
-            const [inserted] = await drizzle
-              .insert(Schema.runs)
-              .values({
-                runId: effectiveRunId,
-                deploymentId: runInputData.deploymentId,
-                workflowName: runInputData.workflowName,
-                specVersion: effectiveSpecVersion,
-                input: runInputData.input as SerializedContent,
-                executionContext: runInputData.executionContext as
-                  | SerializedContent
-                  | undefined,
-                attributes: runInputData.attributes,
-                // Must be mirrored here too: this is the path that recreates a
-                // run from the queued message, which is exactly when the key
-                // would otherwise be lost for the rest of the run's life.
-                encryptionPublicKey: runInputData.encryptionPublicKey,
-                status: 'pending',
-              })
-              .onConflictDoNothing()
-              .returning();
+            const createdRun = await drizzle.transaction(async (tx) => {
+              const [inserted] = await tx
+                .insert(Schema.runs)
+                .values({
+                  runId: effectiveRunId,
+                  deploymentId,
+                  workflowName,
+                  specVersion: effectiveSpecVersion,
+                  input: input as SerializedContent,
+                  executionContext: runInputData.executionContext as
+                    | SerializedContent
+                    | undefined,
+                  attributes: runInputData.attributes,
+                  // Must be mirrored here too: this is the path that recreates a
+                  // run from the queued message, which is exactly when the key
+                  // would otherwise be lost for the rest of the run's life.
+                  encryptionPublicKey: runInputData.encryptionPublicKey,
+                  status: 'pending',
+                })
+                .onConflictDoNothing()
+                .returning();
+              if (!inserted) return;
 
-            if (inserted) {
               // This synthetic run_created is the run's first event, so it
               // opens the slot counter the rest of the run allocates from.
               const runCreatedEventId = await openEventSlots(
-                drizzle,
+                tx,
                 effectiveRunId
               );
-              await drizzle.insert(events).values({
+              await tx.insert(events).values({
                 runId: effectiveRunId,
                 eventId: runCreatedEventId,
                 eventType: 'run_created',
                 eventData: {
-                  deploymentId: runInputData.deploymentId,
-                  workflowName: runInputData.workflowName,
-                  input: runInputData.input,
+                  deploymentId,
+                  workflowName,
+                  input,
                   executionContext: runInputData.executionContext,
                   attributes: runInputData.attributes,
                   allowReservedAttributes: runInputData.allowReservedAttributes,
@@ -969,8 +968,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                 },
                 specVersion: effectiveSpecVersion,
               });
-            }
-            const createdRun = inserted;
+              return inserted;
+            }, SLOT_INSERT_TRANSACTION);
 
             if (createdRun) {
               currentRun = {
@@ -1219,39 +1218,53 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             allowReservedAttributes: eventData.allowReservedAttributes === true,
           }
         );
-        const [runValue] = await drizzle
-          .insert(Schema.runs)
-          .values({
-            runId: effectiveRunId,
-            deploymentId: eventData.deploymentId,
-            workflowName: eventData.workflowName,
-            // Propagate specVersion from the event to the run entity
-            specVersion: effectiveSpecVersion,
-            input: eventData.input as SerializedContent,
-            executionContext: eventData.executionContext as
-              | SerializedContent
-              | undefined,
-            attributes: eventData.attributes,
-            encryptionPublicKey: eventData.encryptionPublicKey,
-            status: 'pending',
-          })
-          .onConflictDoNothing()
-          .returning();
+        const created = await drizzle.transaction(async (tx) => {
+          const [runValue] = await tx
+            .insert(Schema.runs)
+            .values({
+              runId: effectiveRunId,
+              deploymentId: eventData.deploymentId,
+              workflowName: eventData.workflowName,
+              // Propagate specVersion from the event to the run entity
+              specVersion: effectiveSpecVersion,
+              input: eventData.input as SerializedContent,
+              executionContext: eventData.executionContext as
+                | SerializedContent
+                | undefined,
+              attributes: eventData.attributes,
+              encryptionPublicKey: eventData.encryptionPublicKey,
+              status: 'pending',
+            })
+            .onConflictDoNothing()
+            .returning();
+          if (!runValue) return;
+
+          const runCreatedEventId = await openEventSlots(tx, effectiveRunId);
+          const [eventValue] = await tx
+            .insert(events)
+            .values({
+              runId: effectiveRunId,
+              eventId: runCreatedEventId,
+              eventType: data.eventType,
+              eventData,
+              specVersion: effectiveSpecVersion,
+            })
+            .returning({ createdAt: events.createdAt });
+          return { eventId: runCreatedEventId, eventValue, runValue };
+        }, SLOT_INSERT_TRANSACTION);
         // No row back means the run already exists: the resilient start path
         // (run_started on a non-existent run) won a TOCTOU race and created
         // it. Surface the conflict rather than returning `{ run: undefined }`.
         // start() already treats EntityConflictError as benign, and falling
         // through would append a duplicate run_created event to the log.
-        if (!runValue) {
+        if (!created) {
           throw new EntityConflictError(
             `Workflow run "${effectiveRunId}" already exists`
           );
         }
-        // Open the run's slot counter. Doing it here, rather than lazily on
-        // first allocation, is what makes "no row" mean "created before slots
-        // existed" for the rest of the run's life.
-        eventId = await openEventSlots(drizzle, effectiveRunId);
-        run = deserializeRunError(compact(runValue));
+        eventId = created.eventId;
+        value = { createdAt: created.eventValue.createdAt };
+        run = deserializeRunError(compact(created.runValue));
       }
 
       // Handle run_started event: update run status
@@ -1525,8 +1538,6 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       } else {
         storedEventData = undefined;
       }
-
-      let value: { createdAt: Date } | undefined;
 
       // Handle step_started event: increment attempt and set the step to
       // running, then write the matching event log entry in the same

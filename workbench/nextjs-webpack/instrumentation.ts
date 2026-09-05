@@ -1,6 +1,6 @@
 import { registerOTel } from '@vercel/otel';
 
-export function register() {
+export async function register() {
   registerOTel({
     serviceName: 'nextjs-webpack',
     instrumentationConfig: {
@@ -17,4 +17,14 @@ export function register() {
       },
     },
   });
+
+  if (
+    process.env.NEXT_RUNTIME === 'nodejs' &&
+    process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres'
+  ) {
+    const { POST } = await import('./app/.well-known/workflow/v1/flow/route');
+    await POST.initialize();
+    const { getWorld } = await import('workflow/runtime');
+    await (await getWorld()).start?.();
+  }
 }

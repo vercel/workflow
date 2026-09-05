@@ -1854,6 +1854,86 @@ describe('Storage (Postgres integration)', () => {
       expect(result.data.map((e) => eventIdToSlot(e.eventId))).toEqual([1, 2]);
     });
 
+    it('does not expose a run before its first event', async () => {
+      const racePool = new Pool({
+        connectionString: container.getConnectionUri(),
+        max: 3,
+      });
+      const blocker = await racePool.connect();
+      const raceEvents = createEventsStorage(createClient(racePool));
+      const lock = 762_841;
+
+      try {
+        await racePool.query(`
+          CREATE OR REPLACE FUNCTION workflow.pause_event_slots()
+          RETURNS trigger AS $$
+          BEGIN
+            PERFORM pg_advisory_xact_lock(${lock});
+            RETURN NEW;
+          END;
+          $$ LANGUAGE plpgsql;
+          CREATE TRIGGER pause_event_slots
+          BEFORE INSERT ON workflow.workflow_event_slots
+          FOR EACH ROW EXECUTE FUNCTION workflow.pause_event_slots();
+        `);
+        await blocker.query('SELECT pg_advisory_lock($1)', [lock]);
+
+        const runId = `wrun_${ulid()}`;
+        const runData = {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        };
+        const created = raceEvents.create(runId, {
+          eventType: 'run_created',
+          eventData: runData,
+        });
+
+        await vi.waitFor(async () => {
+          const { rows } = await racePool.query<{ waiting: boolean }>(`
+            SELECT EXISTS (
+              SELECT 1 FROM pg_stat_activity
+              WHERE datname = current_database()
+                AND wait_event_type = 'Lock'
+                AND query LIKE 'insert into "workflow"."workflow_event_slots"%'
+            ) AS waiting
+          `);
+          expect(rows[0]?.waiting).toBe(true);
+        });
+
+        const { rows } = await racePool.query<{
+          eventVisible: boolean;
+          runVisible: boolean;
+        }>(
+          `
+            SELECT
+              EXISTS (
+                SELECT 1 FROM workflow.workflow_runs WHERE id = $1
+              ) AS "runVisible",
+              EXISTS (
+                SELECT 1 FROM workflow.workflow_events
+                WHERE run_id = $1
+              ) AS "eventVisible"
+          `,
+          [runId]
+        );
+        expect(rows).toEqual([{ eventVisible: false, runVisible: false }]);
+
+        await blocker.query('SELECT pg_advisory_unlock($1)', [lock]);
+        await created;
+      } finally {
+        await blocker.query('SELECT pg_advisory_unlock($1)', [lock]);
+        blocker.release();
+        await racePool.query(
+          'DROP TRIGGER IF EXISTS pause_event_slots ON workflow.workflow_event_slots'
+        );
+        await racePool.query(
+          'DROP FUNCTION IF EXISTS workflow.pause_event_slots()'
+        );
+        await racePool.end();
+      }
+    });
+
     it('gives concurrent writers distinct, dense slots', async () => {
       const writers = 8;
       // The suite's own pool is `max: 1`, which would serialize these writes
