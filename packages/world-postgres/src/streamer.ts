@@ -361,18 +361,34 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
             let lastChunkId = '';
             let offset = startIndex ?? 0;
             let buffer = [] as StreamChunkEvent[] | null;
+            // Set by the first EOF marker. A producer that retries a
+            // terminal write (lost ACK, overlapping attempts) can append
+            // data and EOF rows after it; `enqueue`/`close` on the already
+            // closed controller would throw out of `start()`, erroring the
+            // stream and discarding every chunk still queued, so rows past
+            // the first EOF are ignored instead.
+            let closed = false;
 
             function enqueue(msg: {
               id: string;
               data: Uint8Array;
               eof: boolean;
             }) {
+              if (closed) {
+                return;
+              }
+
               if (lastChunkId >= msg.id) {
                 // already sent or out of order
                 return;
               }
 
-              if (offset > 0) {
+              // The EOF marker is not a data chunk (`getInfo`'s tailIndex
+              // excludes it), so it never counts toward `offset`: a start
+              // index at or past the data count must still close the
+              // stream rather than consume the marker and then hang, or
+              // surface rows written after it.
+              if (offset > 0 && !msg.eof) {
                 offset--;
                 return;
               }
@@ -381,6 +397,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
                 controller.enqueue(new Uint8Array(msg.data));
               }
               if (msg.eof) {
+                closed = true;
                 controller.close();
               }
               lastChunkId = msg.id;
@@ -408,13 +425,13 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
               .where(and(eq(streams.streamId, name)))
               .orderBy(streams.chunkId);
 
-            // Resolve negative offset relative to the data chunk count
-            // (excluding the trailing EOF marker, if present)
+            // Resolve negative offset relative to the data chunk count: the
+            // rows before the first EOF marker. Rows after it (a retried
+            // terminal write) are ignored by `enqueue`, so they must not
+            // count here either.
             if (typeof offset === 'number' && offset < 0) {
-              const dataCount =
-                chunks.length > 0 && chunks[chunks.length - 1].eof
-                  ? chunks.length - 1
-                  : chunks.length;
+              const firstEof = chunks.findIndex((chunk) => chunk.eof);
+              const dataCount = firstEof === -1 ? chunks.length : firstEof;
               offset = Math.max(0, dataCount + offset);
             }
 
