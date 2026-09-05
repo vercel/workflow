@@ -14,6 +14,7 @@ Start with the architecture and execution model, then follow the links for the s
 - [[build-system]] documents directive compilation and framework integration.
 - [[worlds]] defines the persistence and queue abstraction and its concurrency contract.
 - [[data-and-compatibility]] covers serialization, encryption, protocol evolution, and deployment pinning.
+- [[rust-portability]] proposes a shared Rust implementation for portable Worlds and CLI tooling across language SDKs.
 - [[testing]] explains the repository's layered verification strategy.
 
 ## Architectural Priorities
