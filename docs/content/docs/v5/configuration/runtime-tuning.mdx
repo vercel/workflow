@@ -299,6 +299,11 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - Group-commit window for the *leading* chunk of an idle stream. `0` sends it at once; a positive value holds it up to that many milliseconds to collect a group. This opt-in setting trades first-chunk latency for larger batches and can benefit slow-but-steady producers. Chunks arriving while a request is already in flight always coalesce into the next group regardless of this setting.
 - Also available as `streamFlushIntervalMs` on Worlds that expose it (the env var, when set, takes precedence over the World option).
 
+### `WORKFLOW_STEP_STREAM_DRAIN_TIMEOUT_MS`
+
+- Default: `30000` (30 seconds)
+- Maximum time a step waits for writes queued by a released workflow stream writer to be acknowledged by the Workflow server before recording `step_completed`. A timeout fails the step instead of exposing a completion while released-writer data remains client-side. A writer intentionally kept locked does not trigger this durability wait.
+
 ### `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS`
 
 - Default: `1000`
