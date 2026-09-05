@@ -127,13 +127,11 @@ jobs:
         with:
           toolchain: 1.88.0
 
-      - name: Run SQLite Process Tests
+      - name: Run SQLite Tests
         run: >-
           cargo test
           -p workflow-world-sqlite
-          --lib
           --locked
-          process_tests::
           --
           --test-threads=1
 

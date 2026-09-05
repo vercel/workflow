@@ -1,22 +1,22 @@
 //! Experimental SQLite backend for the first Rust World contract slice.
 //!
 //! The schema is a pre-release prototype. It currently exercises resilient run
-//! start, atomic materialization, dense slots, explicit migration, process
-//! contention, and application-process recovery at instrumented transaction
-//! boundaries. It is not yet a complete local `World` implementation or a
-//! power-loss durability claim.
+//! start, atomic materialization, dense slots, ordered checksummed migrations,
+//! process contention, and application-process recovery at instrumented
+//! transaction boundaries. It is not yet a complete local `World`
+//! implementation or a power-loss durability claim.
 
 #![forbid(unsafe_code)]
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, ffi::ErrorCode,
     params,
 };
-use sha2::{Digest, Sha256};
 use workflow_protocol::{
     CreateEventResult, EventPage, EventType, RunCreatedEventData, RunStartedRequest, RunStatus,
     StoredEvent, WorkflowRun, WorldError, WorldErrorKind, WorldSnapshot, event_id_to_slot,
@@ -24,9 +24,15 @@ use workflow_protocol::{
 };
 use workflow_world_core::plan_run_started;
 
-const CURRENT_SCHEMA_VERSION: i64 = 1;
+use crate::migrations::{
+    AppliedMigration, MIGRATIONS, current_schema_version, execute_migration_sql,
+    validate_applied_history, validate_registry,
+};
+
 const PRELOAD_LIMIT: usize = 100;
-const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
+const MIGRATION_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
+mod migrations;
 
 #[must_use]
 pub fn sqlite_library_version() -> &'static str {
@@ -60,24 +66,56 @@ impl SqliteWorld {
     }
 
     pub fn migrate(&self) -> Result<(), WorldError> {
+        validate_registry()?;
         prepare_database_path(&self.path)?;
+        retry_with_busy_budget(
+            self.busy_timeout,
+            MIGRATION_RETRY_INTERVAL,
+            |attempt_timeout| self.migrate_once(attempt_timeout),
+        )
+    }
+
+    fn migrate_once(&self, attempt_timeout: Duration) -> Result<(), WorldError> {
+        let started_at = Instant::now();
         let mut connection =
             Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_WRITE)
                 .map_err(storage_error)?;
-        self.configure_connection(&connection)?;
-        let journal_mode = connection
-            .query_row("PRAGMA journal_mode = WAL", [], |row| {
-                row.get::<_, String>(0)
-            })
+        Self::configure_connection_with_timeout(&connection, attempt_timeout)?;
+        let current_journal_mode = connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
             .map_err(storage_error)?;
+        let journal_mode = if current_journal_mode.eq_ignore_ascii_case("wal") {
+            current_journal_mode
+        } else {
+            #[cfg(test)]
+            process_tests::pause_at_process_test_failpoint(
+                None,
+                "before_migration_wal_activation",
+            )?;
+            connection
+                .query_row("PRAGMA journal_mode = WAL", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(storage_error)?
+        };
         if !journal_mode.eq_ignore_ascii_case("wal") {
             return Err(WorldError::new(
                 WorldErrorKind::Storage,
                 format!("SQLite refused WAL journal mode and selected {journal_mode:?}"),
-            ));
+            )
+            .with_details(serde_json::json!({
+                "subsystem": "sqlite",
+                "reason": "journal_mode_not_wal",
+                "journalMode": journal_mode,
+            })));
         }
         harden_sqlite_file_permissions(&self.path)?;
+        #[cfg(test)]
+        process_tests::pause_at_process_test_failpoint(None, "before_migration_transaction")?;
 
+        connection
+            .busy_timeout(attempt_timeout.saturating_sub(started_at.elapsed()))
+            .map_err(storage_error)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
@@ -92,46 +130,53 @@ impl SqliteWorld {
                 "#,
             )
             .map_err(storage_error)?;
-        let applied_migration = transaction
-            .query_row(
-                "SELECT version, checksum FROM workflow_schema_migrations ORDER BY version DESC LIMIT 1",
-                [],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()
-            .map_err(storage_error)?;
-        let version = applied_migration
-            .as_ref()
-            .map_or(0, |(version, _)| *version);
+        #[cfg(test)]
+        process_tests::pause_at_process_test_failpoint(
+            Some(&transaction),
+            "after_migration_table_created",
+        )?;
 
-        if version > CURRENT_SCHEMA_VERSION {
-            return Err(WorldError::new(
-                WorldErrorKind::UnsupportedSchema,
-                format!(
-                    "SQLite World schema {version} is newer than supported schema {CURRENT_SCHEMA_VERSION}"
-                ),
-            ));
-        }
-        let checksum = initial_migration_checksum();
-        if let Some((_, applied_checksum)) = &applied_migration {
-            if applied_checksum != &checksum {
-                return Err(WorldError::new(
-                    WorldErrorKind::UnsupportedSchema,
-                    format!("SQLite World schema {version} checksum does not match this binary"),
-                ));
-            }
-        } else {
-            transaction
-                .execute_batch(INITIAL_MIGRATION)
-                .map_err(storage_error)?;
+        let applied = read_applied_migrations(&transaction)?;
+        let applied_count = validate_applied_history(&applied)?;
+        for migration in &MIGRATIONS[applied_count..] {
+            execute_migration_sql(&transaction, migration).map_err(storage_error)?;
+            #[cfg(test)]
+            process_tests::pause_at_process_test_failpoint(
+                Some(&transaction),
+                &format!("after_migration_sql_{}", migration.version),
+            )?;
             transaction
                 .execute(
                     "INSERT INTO workflow_schema_migrations (version, checksum, applied_at_ms) VALUES (?1, ?2, ?3)",
-                    params![CURRENT_SCHEMA_VERSION, checksum, now_ms()?],
+                    params![migration.version, migration.checksum, now_ms()?],
                 )
                 .map_err(storage_error)?;
+            #[cfg(test)]
+            process_tests::pause_at_process_test_failpoint(
+                Some(&transaction),
+                &format!("after_migration_record_{}", migration.version),
+            )?;
         }
-        transaction.commit().map_err(storage_error)
+        let final_applied = read_applied_migrations(&transaction)?;
+        let final_count = validate_applied_history(&final_applied)?;
+        if final_count != MIGRATIONS.len() {
+            return Err(WorldError::new(
+                WorldErrorKind::Storage,
+                format!(
+                    "SQLite migration runner stopped at history length {final_count}, expected {}",
+                    MIGRATIONS.len()
+                ),
+            ));
+        }
+        #[cfg(test)]
+        process_tests::pause_at_process_test_failpoint(
+            Some(&transaction),
+            "before_migration_commit",
+        )?;
+        transaction.commit().map_err(storage_error)?;
+        #[cfg(test)]
+        process_tests::pause_at_process_test_failpoint(None, "after_migration_commit")?;
+        Ok(())
     }
 
     pub fn create_resilient_run_started(
@@ -309,8 +354,15 @@ impl SqliteWorld {
     }
 
     fn configure_connection(&self, connection: &Connection) -> Result<(), WorldError> {
+        Self::configure_connection_with_timeout(connection, self.busy_timeout)
+    }
+
+    fn configure_connection_with_timeout(
+        connection: &Connection,
+        busy_timeout: Duration,
+    ) -> Result<(), WorldError> {
         connection
-            .busy_timeout(self.busy_timeout)
+            .busy_timeout(busy_timeout)
             .map_err(storage_error)?;
         connection
             .pragma_update(None, "foreign_keys", "ON")
@@ -331,36 +383,69 @@ impl SqliteWorld {
                 "SQLite World schema is not initialized; run migrate first",
             ));
         }
-        let (version, checksum) = connection
-            .query_row(
-                "SELECT version, checksum FROM workflow_schema_migrations ORDER BY version DESC LIMIT 1",
-                [],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()
-            .map_err(storage_error)?
-            .ok_or_else(|| {
-                WorldError::new(
-                    WorldErrorKind::NotMigrated,
-                    "SQLite World schema is not initialized; run migrate first",
-                )
-            })?;
-        if version != CURRENT_SCHEMA_VERSION {
+        let applied = read_applied_migrations(connection)?;
+        if applied.is_empty() {
             return Err(WorldError::new(
-                WorldErrorKind::UnsupportedSchema,
-                format!(
-                    "SQLite World schema {version} is incompatible with schema {CURRENT_SCHEMA_VERSION}"
-                ),
+                WorldErrorKind::NotMigrated,
+                "SQLite World schema is not initialized; run migrate first",
             ));
         }
-        if checksum != initial_migration_checksum() {
+        let applied_count = validate_applied_history(&applied)?;
+        if applied_count != MIGRATIONS.len() {
+            let version = applied.last().map_or(0, |migration| migration.version);
             return Err(WorldError::new(
-                WorldErrorKind::UnsupportedSchema,
-                format!("SQLite World schema {version} checksum does not match this binary"),
+                WorldErrorKind::NotMigrated,
+                format!(
+                    "SQLite World schema {version} is older than required schema {}; run migrate",
+                    current_schema_version()
+                ),
             ));
         }
         Ok(())
     }
+}
+
+fn retry_with_busy_budget<T>(
+    busy_timeout: Duration,
+    retry_interval: Duration,
+    mut attempt: impl FnMut(Duration) -> Result<T, WorldError>,
+) -> Result<T, WorldError> {
+    let started_at = Instant::now();
+    let mut attempt_timeout = busy_timeout;
+    loop {
+        match attempt(attempt_timeout) {
+            Err(error) if error.retryable() => {
+                // First-time DELETE-to-WAL activation can report BUSY immediately when
+                // another process is activating the same file. Drop that connection and
+                // retry the entire locked migration against newly committed state.
+                let remaining = busy_timeout.saturating_sub(started_at.elapsed());
+                if remaining.is_zero() {
+                    return Err(error);
+                }
+                thread::sleep(retry_interval.min(remaining));
+                attempt_timeout = busy_timeout.saturating_sub(started_at.elapsed());
+                if attempt_timeout.is_zero() {
+                    return Err(error);
+                }
+            }
+            result => return result,
+        }
+    }
+}
+
+fn read_applied_migrations(connection: &Connection) -> Result<Vec<AppliedMigration>, WorldError> {
+    let mut statement = connection
+        .prepare("SELECT version, checksum FROM workflow_schema_migrations ORDER BY version ASC")
+        .map_err(storage_error)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(AppliedMigration {
+                version: row.get(0)?,
+                checksum: row.get(1)?,
+            })
+        })
+        .map_err(storage_error)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(storage_error)
 }
 
 fn insert_run(transaction: &Transaction<'_>, run: &WorkflowRun) -> Result<(), WorldError> {
@@ -724,10 +809,6 @@ fn now_ms() -> Result<i64, WorldError> {
         .map_err(|_| WorldError::new(WorldErrorKind::Storage, "system clock overflow"))
 }
 
-fn initial_migration_checksum() -> String {
-    format!("sha256:{:x}", Sha256::digest(INITIAL_MIGRATION.as_bytes()))
-}
-
 fn prepare_database_path(path: &Path) -> Result<(), WorldError> {
     if let Some(parent) = path.parent().filter(|path| !path.as_os_str().is_empty()) {
         create_private_directories(parent)?;
@@ -819,6 +900,56 @@ where
 
 fn persisted_data_error(error: impl std::fmt::Display) -> WorldError {
     WorldError::persisted_data(error.to_string())
+}
+
+#[cfg(test)]
+mod migration_retry_tests {
+    use std::thread;
+    use std::time::Duration;
+
+    use workflow_protocol::{WorldError, WorldErrorKind};
+
+    use super::retry_with_busy_budget;
+
+    fn retryable_error() -> WorldError {
+        WorldError::new(WorldErrorKind::Storage, "synthetic busy").with_retryable(true)
+    }
+
+    #[test]
+    fn a_retry_never_receives_a_fresh_busy_timeout() {
+        let budget = Duration::from_millis(100);
+        let mut attempt_timeouts = Vec::new();
+        let result = retry_with_busy_budget(budget, Duration::from_millis(1), |timeout| {
+            attempt_timeouts.push(timeout);
+            if attempt_timeouts.len() == 1 {
+                Err(retryable_error())
+            } else {
+                Ok("migrated")
+            }
+        })
+        .expect("second attempt should succeed");
+
+        assert_eq!(result, "migrated");
+        assert_eq!(attempt_timeouts[0], budget);
+        assert!(attempt_timeouts[1] < budget);
+        assert!(!attempt_timeouts[1].is_zero());
+    }
+
+    #[test]
+    fn an_expired_budget_does_not_start_another_attempt() {
+        let budget = Duration::from_millis(10);
+        let mut attempts = 0;
+        let error = retry_with_busy_budget(budget, Duration::from_millis(1), |_| {
+            attempts += 1;
+            thread::sleep(budget + Duration::from_millis(5));
+            Err::<(), _>(retryable_error())
+        })
+        .expect_err("an exhausted retry budget should return the last error");
+
+        assert_eq!(error.kind(), WorldErrorKind::Storage);
+        assert!(error.retryable());
+        assert_eq!(attempts, 1);
+    }
 }
 
 #[cfg(test)]

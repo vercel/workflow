@@ -8,7 +8,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled", "hooks"] }
 serde_json.workspace = true
 sha2 = "0.10.9"
 workflow-protocol = { path = "../workflow-protocol" }

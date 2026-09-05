@@ -20,6 +20,7 @@ use workflow_protocol::{
     EventType, RunCreatedEventData, RunStartedRequest, RunStatus, WorldError, WorldErrorKind,
 };
 
+use super::migrations::MIGRATIONS;
 use super::{SqliteWorld, storage_error};
 
 const WORKER_FLAG: &str = "WORKFLOW_SQLITE_PROCESS_TEST_WORKER";
@@ -302,6 +303,71 @@ fn assert_complete_database(database_path: &Path) {
     );
 }
 
+fn managed_table_names(database_path: &Path) -> Vec<String> {
+    let connection = Connection::open(database_path).expect("inspector should open the database");
+    let mut statement = connection
+        .prepare(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'workflow_%' ORDER BY name ASC",
+        )
+        .expect("managed table query should prepare");
+    statement
+        .query_map([], |row| row.get(0))
+        .expect("managed table query should execute")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("managed table names should be readable")
+}
+
+fn migration_history(database_path: &Path) -> Vec<(i64, String, i64)> {
+    let connection = Connection::open(database_path).expect("inspector should open the database");
+    let mut statement = connection
+        .prepare(
+            "SELECT version, checksum, applied_at_ms FROM workflow_schema_migrations ORDER BY version ASC",
+        )
+        .expect("migration history query should prepare");
+    statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .expect("migration history query should execute")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("migration history should be readable")
+}
+
+fn assert_unmigrated_database(database_path: &Path) {
+    assert_database_integrity(database_path);
+    assert!(
+        managed_table_names(database_path).is_empty(),
+        "a precommit migration crash must not leave managed tables"
+    );
+    let error = SqliteWorld::new(database_path)
+        .snapshot("wrun_missing_after_migration_crash")
+        .expect_err("runtime open must reject an uninitialized database");
+    assert_eq!(error.kind(), WorldErrorKind::NotMigrated);
+}
+
+fn assert_migrated_database(database_path: &Path) -> Vec<(i64, String, i64)> {
+    assert_database_integrity(database_path);
+    assert_eq!(
+        managed_table_names(database_path),
+        vec![
+            "workflow_events",
+            "workflow_run_created_event_data",
+            "workflow_runs",
+            "workflow_schema_migrations",
+        ]
+    );
+    let history = migration_history(database_path);
+    assert_eq!(history.len(), MIGRATIONS.len());
+    for (actual, expected) in history.iter().zip(MIGRATIONS) {
+        assert_eq!(actual.0, expected.version);
+        assert_eq!(actual.1, expected.checksum);
+        assert!(actual.2 >= 0, "migration timestamp must be nonnegative");
+    }
+    let missing = SqliteWorld::new(database_path)
+        .snapshot("wrun_missing_after_migration")
+        .expect_err("current schema should reach the run lookup");
+    assert_eq!(missing.kind(), WorldErrorKind::RunNotFound);
+    history
+}
+
 fn write_release(path: &Path) {
     fs::write(path, b"release").expect("worker release gate should open");
 }
@@ -541,6 +607,211 @@ fn killing_after_commit_preserves_the_full_transaction_and_retry_is_idempotent()
 }
 
 #[test]
+fn concurrent_processes_apply_each_registered_migration_once() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let database_path = directory.path().join("world.sqlite");
+    let release_path = directory.path().join("migration-release");
+
+    let mut workers = (0..4)
+        .map(|index| {
+            let ready_path = directory.path().join(format!("migration-ready-{index}"));
+            let result_path = directory.path().join(format!("migration-result-{index}"));
+            let child = spawn_worker(
+                "migrate",
+                &database_path,
+                &ready_path,
+                Some("before_migration_wal_activation"),
+                Some(&release_path),
+                Some(&result_path),
+            );
+            (child, ready_path, result_path)
+        })
+        .collect::<Vec<_>>();
+
+    for (child, ready_path, _) in &mut workers {
+        wait_for_marker(child, ready_path, "before_migration_wal_activation");
+    }
+    write_release(&release_path);
+    for (index, (child, _, _)) in workers.iter_mut().enumerate() {
+        wait_for_success(child, &format!("concurrent migrator {index}"));
+    }
+    for (_, _, result_path) in &workers {
+        assert_eq!(
+            fs::read_to_string(result_path).expect("migration result should be written"),
+            "migrated"
+        );
+    }
+
+    let history = assert_migrated_database(&database_path);
+    SqliteWorld::new(&database_path)
+        .migrate()
+        .expect("repeated migration should be a no-op");
+    assert_eq!(migration_history(&database_path), history);
+}
+
+#[test]
+fn killing_before_wal_activation_leaves_an_uninitialized_database_that_can_converge() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let database_path = directory.path().join("world.sqlite");
+    let ready_path = directory.path().join("migration-pre-wal-ready");
+    let mut worker = spawn_worker(
+        "migrate",
+        &database_path,
+        &ready_path,
+        Some("before_migration_wal_activation"),
+        None,
+        None,
+    );
+    wait_for_marker(&mut worker, &ready_path, "before_migration_wal_activation");
+    let status = worker.kill_and_wait();
+    assert!(!status.success(), "pre-WAL migrator should be killed");
+
+    assert!(managed_table_names(&database_path).is_empty());
+    let connection = Connection::open(&database_path).expect("inspector should open the database");
+    let journal_mode = connection
+        .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+        .expect("journal mode should be readable");
+    assert_ne!(journal_mode.to_ascii_lowercase(), "wal");
+    let error = SqliteWorld::new(&database_path)
+        .snapshot("wrun_missing_before_wal")
+        .expect_err("runtime should reject a database with no migration history");
+    assert_eq!(error.kind(), WorldErrorKind::NotMigrated);
+    drop(connection);
+
+    SqliteWorld::new(&database_path)
+        .migrate()
+        .expect("a retry should activate WAL and apply the full registry");
+    assert_migrated_database(&database_path);
+}
+
+#[test]
+fn a_migration_contender_reports_retryable_busy_then_succeeds_after_release() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let database_path = directory.path().join("world.sqlite");
+    let holder_ready = directory.path().join("migration-holder-ready");
+    let holder_release = directory.path().join("migration-holder-release");
+    let holder_result = directory.path().join("migration-holder-result");
+    let mut holder = spawn_worker(
+        "migrate",
+        &database_path,
+        &holder_ready,
+        Some("after_migration_sql_1"),
+        Some(&holder_release),
+        Some(&holder_result),
+    );
+    wait_for_marker(&mut holder, &holder_ready, "after_migration_sql_1");
+
+    let contender_ready = directory.path().join("migration-contender-ready");
+    let contender_result = directory.path().join("migration-contender-result");
+    let mut contender = spawn_worker(
+        "expect-migration-busy",
+        &database_path,
+        &contender_ready,
+        None,
+        None,
+        Some(&contender_result),
+    );
+    wait_for_success(&mut contender, "migration contender");
+    assert_eq!(
+        fs::read_to_string(&contender_result).expect("migration busy result should be written"),
+        "busy-retryable"
+    );
+
+    write_release(&holder_release);
+    wait_for_success(&mut holder, "migration lock holder");
+    assert_eq!(
+        fs::read_to_string(&holder_result).expect("holder result should be written"),
+        "migrated"
+    );
+    SqliteWorld::new(&database_path)
+        .migrate()
+        .expect("migration retry after lock release should succeed");
+    assert_migrated_database(&database_path);
+}
+
+#[test]
+fn killing_a_migrator_before_commit_leaves_no_partial_schema_or_history() {
+    let mut precommit_failpoints = vec![
+        "before_migration_transaction".to_owned(),
+        "after_migration_table_created".to_owned(),
+    ];
+    for migration in MIGRATIONS {
+        precommit_failpoints.push(format!("after_migration_sql_{}", migration.version));
+        precommit_failpoints.push(format!("after_migration_record_{}", migration.version));
+    }
+    precommit_failpoints.push("before_migration_commit".to_owned());
+
+    for failpoint in &precommit_failpoints {
+        let directory = tempdir().expect("temporary directory should be created");
+        let database_path = directory.path().join("world.sqlite");
+        let ready_path = directory.path().join("migration-crash-ready");
+        let mut worker = spawn_worker(
+            "migrate",
+            &database_path,
+            &ready_path,
+            Some(failpoint.as_str()),
+            None,
+            None,
+        );
+        wait_for_marker(&mut worker, &ready_path, failpoint);
+        assert!(
+            managed_table_names(&database_path).is_empty(),
+            "uncommitted migration state at {failpoint} must remain invisible"
+        );
+        if failpoint.starts_with("after_migration_sql_") {
+            let wal_length = fs::metadata(wal_path(&database_path))
+                .expect("flushing migration SQL should create a WAL file")
+                .len();
+            assert!(
+                wal_length > 32,
+                "migration WAL must contain a frame, got {wal_length} bytes"
+            );
+        }
+
+        let status = worker.kill_and_wait();
+        assert!(
+            !status.success(),
+            "migrator paused at {failpoint} must be killed before commit"
+        );
+        assert_unmigrated_database(&database_path);
+
+        let world = SqliteWorld::new(&database_path);
+        world
+            .migrate()
+            .unwrap_or_else(|error| panic!("migration retry after {failpoint} failed: {error}"));
+        let history = assert_migrated_database(&database_path);
+        world
+            .migrate()
+            .expect("second migration retry should be a no-op");
+        assert_eq!(migration_history(&database_path), history);
+    }
+}
+
+#[test]
+fn killing_a_migrator_after_commit_preserves_history_and_retry_is_a_no_op() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let database_path = directory.path().join("world.sqlite");
+    let ready_path = directory.path().join("migration-postcommit-ready");
+    let mut worker = spawn_worker(
+        "migrate",
+        &database_path,
+        &ready_path,
+        Some("after_migration_commit"),
+        None,
+        None,
+    );
+    wait_for_marker(&mut worker, &ready_path, "after_migration_commit");
+    let status = worker.kill_and_wait();
+    assert!(!status.success(), "postcommit migrator should be killed");
+
+    let history = assert_migrated_database(&database_path);
+    SqliteWorld::new(&database_path)
+        .migrate()
+        .expect("lost migration response should be safe to retry");
+    assert_eq!(migration_history(&database_path), history);
+}
+
+#[test]
 #[ignore = "spawned by the multiprocess tests"]
 fn process_worker_entry() {
     if env::var_os(WORKER_FLAG).is_none() {
@@ -575,6 +846,23 @@ fn process_worker_entry() {
             assert!(error.retryable(), "SQLITE_BUSY must remain retryable");
             fs::write(env_path(RESULT_PATH), b"busy-retryable")
                 .expect("busy result should be persisted");
+        }
+        "migrate" => {
+            SqliteWorld::new(&database_path)
+                .migrate()
+                .expect("worker migration should succeed");
+            fs::write(env_path(RESULT_PATH), b"migrated")
+                .expect("migration result should be persisted");
+        }
+        "expect-migration-busy" => {
+            let error = SqliteWorld::new(&database_path)
+                .with_busy_timeout(Duration::from_millis(1))
+                .migrate()
+                .expect_err("migration lock holder should make contender busy");
+            assert_eq!(error.kind(), WorldErrorKind::Storage);
+            assert!(error.retryable(), "migration SQLITE_BUSY must be retryable");
+            fs::write(env_path(RESULT_PATH), b"busy-retryable")
+                .expect("migration busy result should be persisted");
         }
         other => panic!("unknown process-test worker mode: {other}"),
     }

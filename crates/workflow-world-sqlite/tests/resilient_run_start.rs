@@ -230,7 +230,7 @@ fn rejects_future_specs_without_mutating_storage() {
 }
 
 #[test]
-fn runtime_open_rejects_a_migration_checksum_mismatch() {
+fn migrator_and_runtime_reject_a_migration_checksum_mismatch() {
     let directory = tempdir().expect("temporary directory should be created");
     let database_path = directory.path().join("world.sqlite");
     let world = SqliteWorld::new(&database_path);
@@ -243,11 +243,48 @@ fn runtime_open_rejects_a_migration_checksum_mismatch() {
         )
         .expect("checksum should be tampered");
 
-    let error = world
+    let migration_error = world
+        .migrate()
+        .expect_err("migrator should reject schema drift");
+    assert_eq!(migration_error.kind(), WorldErrorKind::UnsupportedSchema);
+
+    let runtime_error = world
         .snapshot("wrun_missing")
         .expect_err("runtime open should reject schema drift");
 
-    assert_eq!(error.kind(), WorldErrorKind::UnsupportedSchema);
+    assert_eq!(runtime_error.kind(), WorldErrorKind::UnsupportedSchema);
+}
+
+#[test]
+fn migrator_and_runtime_distinguish_future_and_gapped_history() {
+    for (version, expected_message) in [
+        (2, "newer than supported"),
+        (3, "expected version 2, got 3"),
+    ] {
+        let directory = tempdir().expect("temporary directory should be created");
+        let database_path = directory.path().join(format!("world-{version}.sqlite"));
+        let world = SqliteWorld::new(&database_path);
+        world.migrate().expect("migration should succeed");
+        Connection::open(&database_path)
+            .expect("inspector should open the database")
+            .execute(
+                "INSERT INTO workflow_schema_migrations (version, checksum, applied_at_ms) VALUES (?1, 'sha256:future', 0)",
+                [version],
+            )
+            .expect("synthetic history row should be inserted");
+
+        let migration_error = world
+            .migrate()
+            .expect_err("migrator should reject invalid history");
+        assert_eq!(migration_error.kind(), WorldErrorKind::UnsupportedSchema);
+        assert!(migration_error.message().contains(expected_message));
+
+        let runtime_error = world
+            .snapshot("wrun_missing")
+            .expect_err("runtime should reject invalid history");
+        assert_eq!(runtime_error.kind(), WorldErrorKind::UnsupportedSchema);
+        assert!(runtime_error.message().contains(expected_message));
+    }
 }
 
 #[test]
