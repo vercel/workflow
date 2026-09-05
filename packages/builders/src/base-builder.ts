@@ -46,7 +46,11 @@ import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
-import type { SourcemapMode, WorkflowConfig } from './types.js';
+import type {
+  SourcemapMode,
+  WorkflowBundleArtifact,
+  WorkflowConfig,
+} from './types.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
 import { hasSameContent, writeFileIfChanged } from './write-if-changed.js';
 
@@ -218,6 +222,13 @@ export abstract class BaseBuilder {
   private warnedExternalPackages = new Set<string>();
   private workflowBuildStartTime: number | undefined;
   private manifestTransformCache = new Map<string, CachedManifestTransform>();
+  private completedBundleArtifacts = new Map<
+    string,
+    readonly [
+      WorkflowBundleArtifact<'steps'>,
+      WorkflowBundleArtifact<'workflows'>,
+    ]
+  >();
 
   constructor(config: WorkflowConfig) {
     this.config = config;
@@ -399,6 +410,26 @@ export abstract class BaseBuilder {
 
   public clearManifestTransformCache(): void {
     this.manifestTransformCache.clear();
+  }
+
+  private recordCompletedBundleArtifacts({
+    stepsPath,
+    workflowsPath,
+  }: {
+    stepsPath: string;
+    workflowsPath: string;
+  }): void {
+    const resolvedWorkflowsPath = resolve(
+      this.config.workingDir,
+      workflowsPath
+    );
+    this.completedBundleArtifacts.set(resolvedWorkflowsPath, [
+      {
+        kind: 'steps',
+        path: resolve(this.config.workingDir, stepsPath),
+      },
+      { kind: 'workflows', path: resolvedWorkflowsPath },
+    ]);
   }
 
   /**
@@ -1804,6 +1835,11 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       },
     };
 
+    this.recordCompletedBundleArtifacts({
+      stepsPath: stepsOutfile,
+      workflowsPath: flowOutfile,
+    });
+
     // Create a custom bundleFinal for watch mode that uses workflowEntrypoint
     const combinedBundleFinal = async (interimBundleText: string) => {
       const escaped = interimBundleText.replace(/[\\`$]/g, '\\$&');
@@ -2319,8 +2355,10 @@ export const OPTIONS = handler;`;
     manifest: WorkflowManifest;
   }): Promise<string | undefined> {
     const buildStart = Date.now();
+    const manifestPath = resolve(manifestDir, 'manifest.json');
     this.logCreateManifestInfo('Creating manifest...');
 
+    let manifestJson: string;
     try {
       const workflowGraphs = await extractWorkflowGraphs(workflowBundlePath);
 
@@ -2337,13 +2375,10 @@ export const OPTIONS = handler;`;
         workflows: sortManifestEntries(workflows),
         classes: sortManifestEntries(classes),
       };
-      const manifestJson = JSON.stringify(output, null, 2);
+      manifestJson = JSON.stringify(output, null, 2);
 
-      await mkdir(manifestDir, { recursive: true });
-      await writeFileIfChanged(
-        join(manifestDir, 'manifest.json'),
-        manifestJson
-      );
+      await mkdir(dirname(manifestPath), { recursive: true });
+      await writeFileIfChanged(manifestPath, manifestJson);
 
       const diagnosticsManifestPath = this.getDiagnosticsManifestPath();
       if (diagnosticsManifestPath) {
@@ -2378,8 +2413,6 @@ export const OPTIONS = handler;`;
         );
       }
       this.resetWorkflowBuildTimer();
-
-      return manifestJson;
     } catch (error) {
       console.warn(
         'Failed to create manifest:',
@@ -2388,6 +2421,30 @@ export const OPTIONS = handler;`;
       this.resetWorkflowBuildTimer();
       return undefined;
     }
+
+    const resolvedWorkflowBundlePath = resolve(
+      this.config.workingDir,
+      workflowBundlePath
+    );
+    const bundleArtifacts = this.completedBundleArtifacts.get(
+      resolvedWorkflowBundlePath
+    );
+    if (bundleArtifacts) {
+      await this.config.onAfterBundle?.({
+        buildTarget: this.config.buildTarget,
+        workingDir: this.config.workingDir,
+        workflowManifest: manifest,
+        artifacts: [
+          ...bundleArtifacts,
+          {
+            kind: 'manifest',
+            path: manifestPath,
+          },
+        ],
+      });
+    }
+
+    return manifestJson;
   }
 
   private convertStepsManifest(

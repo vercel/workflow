@@ -56,6 +56,36 @@ accepted. It cannot replace the generated code, and throwing aborts the build.
 A source file may be observed multiple times across transform modes, bundles,
 and watch rebuilds, so consumers should deduplicate results when necessary.
 
+### Observing completed bundles
+
+Builder configurations can also provide an `onAfterBundle` observer. It runs
+once after a combined workflow bundle and its manifest have been written
+successfully, and again after each successful watch rebuild:
+
+```typescript
+import type { WorkflowAfterBundleHook } from '@workflow/builders';
+
+// Pass as `onAfterBundle` in the builder configuration.
+const onAfterBundle: WorkflowAfterBundleHook = async ({
+  buildTarget,
+  workingDir,
+  workflowManifest,
+  artifacts,
+}) => {
+  // Publish or otherwise derive data from the completed bundle.
+};
+```
+
+Every invocation has exactly three artifact descriptors, ordered as `steps`,
+`workflows`, and `manifest`. Paths are absolute. These are the files that make
+up the completed combined workflow bundle boundary. Webhook, source-map,
+diagnostics, public-manifest copies, and optional client outputs do not produce
+separate invocations or artifact descriptors.
+
+The observer is awaited, and throwing rejects the build or rebuild. It is not
+called when bundle or manifest generation fails. Build systems can rebuild
+unchanged inputs, so consumers are expected to make side effects idempotent.
+
 ## Architecture
 
 The builder system uses:
