@@ -51,7 +51,7 @@ The project succeeds when a language SDK can consume one canonical self-hosted W
 - Support language-native installation and execution, such as a Python wheel plus an `uvx` or `pipx` entry point, without requiring a Rust toolchain on user machines.
 - Preserve the existing public World shape in JavaScript and expose an idiomatic equivalent in Python.
 - Keep existing runs and PostgreSQL deployments safe during rolling upgrades and rollback.
-- Make SQLite plus Python the first end-to-end vertical slice without obscuring the later Node.js, CLI, and PostgreSQL architecture.
+- Reach the Python plus SQLite goal through a Node.js-first vertical slice, so the Rust World is proven against this repository's existing tests before cross-repository integration.
 
 ## Non-Goals
 
@@ -183,9 +183,9 @@ The provisional responsibilities are:
 | `workflow-world` | Public Rust facade, backend selection, lifecycle composition, and stable configuration validation |
 | `workflow-cli` | Standalone binary, command/output compatibility, built-in backend clients, and language-driver discovery |
 
-Node.js and Python bindings build `cdylib` artifacts, but they are distribution adapters rather than public Rust abstraction layers. A binding stored here joins this Cargo workspace; one stored with an external SDK consumes a pinned native source revision and declares compatibility through the release manifest. The first slice adds only protocol, core, testkit, SQLite, a PyO3 binding deliverable, and a narrow maintenance CLI; the other crates appear when they have executable consumers.
+Node.js and Python bindings build `cdylib` artifacts, but they are distribution adapters rather than public Rust abstraction layers. A binding stored here joins this Cargo workspace; one stored with an external SDK consumes a pinned native source revision and declares compatibility through the release manifest. The first slice adds only protocol, core, testkit, SQLite, a napi-rs binding deliverable, and a narrow maintenance CLI; the other crates appear when they have executable consumers.
 
-Backend dependencies should be feature-gated so an SQLite-only Python wheel does not inherit PostgreSQL, TLS, or remote-client dependencies. The facade must not turn feature selection into runtime ambiguity: requesting an omitted backend returns a stable unsupported-backend error.
+Backend dependencies should be feature-gated so an SQLite-only native package does not inherit PostgreSQL, TLS, or remote-client dependencies. The facade must not turn feature selection into runtime ambiguity: requesting an omitted backend returns a stable unsupported-backend error.
 
 The facade selects an explicit `Sqlite` or `Postgres` backend configuration; it does not infer a database engine from a URL string. Existing JavaScript packages can preselect one backend while Python exposes idiomatic constructors over the same engine.
 
@@ -195,7 +195,7 @@ Two later extraction points are deliberate. A `workflow-client` crate can own `s
 
 The graph is logical rather than a final directory decision. Reusable native crates can live under `crates/`, while binding crates may be colocated with the packages that own their loaders and metadata. One Cargo workspace and lockfile is preferable for native code in this repository; it does not imply that separately maintained language SDK repositories move into this monorepo.
 
-The Python SDK currently lives outside this repository, so Phase 0 must decide where the PyO3 crate and wheel metadata live, who publishes them, how the Python SDK pins a compatible native artifact, and which cross-repository test gates block either release. That decision also covers rollback and how an isolated `uvx` process discovers the project SDK or Python language driver.
+The Python SDK currently lives outside this repository. Phase 0 still prototypes PyO3 async, byte, stream, and error boundaries and records viable packaging shapes, but final repository ownership, publishing, version pinning, cross-repository gates, rollback, and `uvx` driver discovery block Phase 3 rather than the Node.js walking skeleton.
 
 The existing Cargo workspace currently targets Rust 1.87 and uses a size-oriented release profile for the SWC/Wasm build. Phase 0 must choose a binding-toolchain version and native release profiles deliberately: [current napi-rs scaffolding](https://napi.rs/docs/introduction/getting-started) documents a newer Rust build requirement, and native database code should not accidentally inherit a Wasm-only optimization policy.
 
@@ -603,7 +603,7 @@ Differences in timestamps, generated IDs, physical schema, or pagination encodin
 
 ## Delivery Sequence
 
-The implementation proceeds as vertical slices, with Python plus SQLite first and replacement decisions delayed until interoperability is demonstrated.
+The implementation proves SQLite through Node.js in this repository, completes local E2E, then adds Python interoperability. Defaults change only after repository-local and cross-language evidence exists.
 
 ### Phase 0: Contract and Risk Prototypes
 
@@ -615,33 +615,33 @@ This phase creates the minimum shared vocabulary and resolves choices that could
 - Prototype Node-API and PyO3 async calls, byte transfer, errors, cancellation, and stream iteration.
 - Prototype a multi-process SQLite append, scoped leased queue claim, crash recovery, and active-run reconciliation without duplicate amplification.
 - Decide the structural source of truth, persisted SQLite codec, FFI representation, SQLite driver/linkage, tag storage model, queue delivery topology, and initial target matrix.
-- Decide ownership and release coordination for the native Python wheel and its external SDK consumer.
+- Record viable ownership and release shapes for the native Python wheel and its external SDK consumer without making that cross-repository decision block the Node.js slice.
 
 Exit requires a written decision for each prototype and one fixture executed by both TypeScript and Rust.
 
-### Phase 1: Python and SQLite Walking Skeleton
+### Phase 1: Node.js and SQLite Walking Skeleton
 
-This phase proves the original motivation with the narrowest useful end-to-end workflow.
+This phase proves the Rust World architecture inside the current repository before introducing a cross-repository integration variable.
 
-Implement protocol/core/SQLite crates, migrations, run/event/step storage, a minimal durable queue, the PyO3 adapter, and enough Python SDK integration to execute and inspect a simple workflow without Node.js. Add a narrow native maintenance CLI with `version`, `doctor`, explicit SQLite migration, and metadata-only inspection. The implementation is experimental and opt-in; it does not replace the current local default.
+Implement protocol/core/SQLite crates, migrations, run/event/step storage, a minimal durable queue, the napi-rs adapter, and an experimental JavaScript World package. Prove addon loading and a minimal durable operation through the JavaScript World surface, and add a narrow native maintenance CLI with `version`, `doctor`, explicit SQLite migration, and metadata-only inspection. The implementation is experimental and opt-in; it does not replace the current local default.
 
-Exit requires process-restart recovery, dense event-log tests, a Python end-to-end workflow, a clean wheel install with no Rust or Node.js toolchain, and read-only CLI inspection that neither migrates nor consumes work.
+Exit requires dense event-log and process-restart tests through the Node.js binding, a JavaScript contract smoke test, and read-only CLI inspection that neither migrates nor consumes work. Full workflow E2E and clean-install coverage belong to Phase 2.
 
 ### Phase 2: Complete Portable Local World
 
-This phase closes the semantic gaps that a demonstration can avoid but a default World cannot.
+This phase closes the semantic gaps that a walking skeleton can avoid and proves the Rust local World against this repository's real runtime.
 
-Add all events and optional capabilities intended for launch, durable streams, long polling, Hook retention and resume deduplication, delayed jobs, retries, lease recovery, concurrency limits, observability, cleanup, and the complete conformance suite. Close or explicitly defer the compatibility gaps for local `tag`, `clear()`, `registerHandler()`, and active-run recovery.
+Add all events and optional capabilities intended for launch, durable streams, long polling, Hook retention and resume deduplication, delayed jobs, retries, lease recovery, concurrency limits, observability, cleanup, and the complete conformance suite. Close or explicitly defer the compatibility gaps for local `tag`, `clear()`, `registerHandler()`, and active-run recovery, then inject the experimental package into the TypeScript workbench, compare it behaviorally with the filesystem World, and measure Node.js startup, bundle, memory, and queue costs.
 
-Exit requires the applicable core end-to-end corpus, crash tests, and a documented SQLite support policy.
+Exit requires the applicable local core E2E corpus, direct concurrency and crash tests, queue lease recovery, the event-log race harness, clean npm installation without a Rust toolchain, and a documented SQLite support policy, all runnable without a Python repository checkout.
 
-### Phase 3: Node.js Binding and Cross-Language Use
+### Phase 3: Python Binding and Cross-Language Use
 
-This phase proves that the Rust implementation is shared infrastructure rather than a Python-specific backend.
+This phase proves that the repository-local Rust implementation is genuinely portable infrastructure rather than a Node.js-specific backend.
 
-Add the napi-rs adapter and an experimental JavaScript package, then run TypeScript and Python against databases created by either binding. Compare the native SQLite World with the current local World at the behavioral boundary and measure startup, bundle, memory, and queue performance.
+Add the PyO3 adapter and Python SDK integration using the Phase 0 technical spike, then run TypeScript and Python against databases created by either binding and prove Python queue delivery across process restart. Establish cross-repository compatibility gates and measure Python packaging, startup, memory, queue, and stream behavior without weakening the Node.js baseline.
 
-Exit requires Node/Python interoperability plus metadata reads through the narrow CLI, clean native-package installs, and no unsupported fallback hidden by the test environment.
+Exit requires a Python end-to-end workflow, Node/Python/CLI interoperability, a clean wheel install with no Rust or Node.js toolchain, working cross-repository gates and rollback metadata, and no unsupported fallback hidden by the test environment.
 
 ### Phase 4: Native CLI and Distribution
 
@@ -682,8 +682,16 @@ These decisions must be resolved during Phase 0.
 7. Must local `tag` preserve its current untagged-plus-tagged overlay visibility, conflict precedence, scoped recovery, and scoped `clear()`; if so, does one database carry scope keys or does the layout use a designed base-plus-overlay arrangement?
 8. What durability, busy-timeout, connection-count, and checkpoint defaults are appropriate for the local profile?
 9. Where does the SQLite file live, and how does `WORKFLOW_LOCAL_DATA_DIR` map to it without colliding with legacy files?
-10. Where are the PyO3 crate and native wheel built and published, how does the external Python SDK pin them, and how do cross-repository CI, rollback, and `uvx` driver discovery work?
-11. What minimum Node.js, Python, OS, CPU, libc, and SQLite matrix is blocking in CI?
+10. What minimum Rust, Node.js, OS, CPU, libc, and SQLite matrix is blocking for the repository-local slice?
+
+### Blocking Python Integration
+
+Phase 0 must prove PyO3 feasibility, but these product and cross-repository choices need resolution only before Phase 3 begins.
+
+1. Where are the PyO3 crate and native wheel built and published, and how does the external Python SDK pin a compatible artifact?
+2. Which Python versions, ABI strategy, platforms, async runtime, stream mapping, and cancellation behavior form the supported binding contract?
+3. How do cross-repository CI, compatibility metadata, and rollback prevent either repository from publishing an unusable pair?
+4. What is the exact PyPI package and console-script spelling, and how does an isolated `uvx` process discover the project SDK or Python driver?
 
 ### Blocking CLI Compatibility
 
@@ -692,8 +700,7 @@ These decisions can wait until the SQLite World is operational but precede the n
 1. What project metadata selects a language driver, and how are monorepos or mixed-language projects handled?
 2. Which commands and flags are frozen from the oclif CLI before cleanup is allowed?
 3. Can `start` define a language-neutral client contract, including opaque binary payloads, serialization, compression, encryption, and deployment lookup?
-4. What is the exact PyPI package and console-script spelling needed for the desired `uvx` experience?
-5. How are native binaries and language packages versioned and published without a partially available release?
+4. How are native binaries and language packages versioned and published without a partially available release?
 
 ### Blocking PostgreSQL Replacement
 
@@ -706,7 +713,7 @@ These decisions should not constrain the SQLite design prematurely, but they mus
 
 ### Safe to Defer
 
-These options do not block the first useful Python/SQLite result.
+These options do not block the first useful Node.js/SQLite result or the later Python target.
 
 - A public stable Rust API or C ABI.
 - A required daemon/sidecar mode.
@@ -720,7 +727,7 @@ These options do not block the first useful Python/SQLite result.
 Several tempting approaches create early motion at the cost of the shared architecture.
 
 - A line-for-line port of `world-local` preserves the lock-file complexity the project is trying to remove.
-- A Python-only SQLite implementation immediately creates the next duplicated World.
+- A language-specific SQLite reimplementation immediately creates the next duplicated World.
 - A mandatory daemon exchanges binding work for supervision and IPC work in every local project.
 - One generic SQL repository for SQLite and PostgreSQL tends to hide engine-specific concurrency requirements and makes the weaker database dictate both designs.
 - A complete CLI rewrite before a driver boundary is proven either drops TypeScript build commands or pulls the whole JavaScript builder into the native binary design.
@@ -729,6 +736,6 @@ Several tempting approaches create early motion at the cost of the shared archit
 
 ## First Decision Package
 
-The next discussion should approve a small decision package that unlocks the Python/SQLite walking skeleton without pretending the full program is settled.
+The next discussion should approve a small decision package that unlocks the Node.js/SQLite walking skeleton without pretending the full program is settled.
 
-That package consists of the ownership boundary, the pure transition-plan model, the initial crate graph, SQLite as a new explicitly selected local format, a persistent SQLite queue direction, PyO3 as the first binding, TypeScript coexistence, and Phase 0 prototypes for the persisted codec, FFI representation, SQLite driver, queue routing, reconciliation, and delivery transport. Loopback HTTP is the baseline candidate, not yet an approved compatibility promise. Public package names, PostgreSQL queue design, and default replacement remain open.
+That package consists of the ownership boundary, the pure transition-plan model, the initial crate graph, SQLite as a new explicitly selected local format, a persistent SQLite queue direction, napi-rs as the first integrated binding, Phase 2 validation through the existing TypeScript E2E paths, TypeScript coexistence, and Phase 0 prototypes for both Node-API and PyO3 plus the persisted codec, FFI representation, SQLite driver, queue routing, reconciliation, and delivery transport. Loopback HTTP is the baseline candidate, not yet an approved compatibility promise. Python packaging, public package names, PostgreSQL queue design, and default replacement remain open.
