@@ -1,8 +1,10 @@
 //! Experimental SQLite backend for the first Rust World contract slice.
 //!
-//! The schema is a pre-release prototype. It currently proves resilient run
-//! start, atomic materialization, dense slots, explicit migration, and reopen;
-//! it is not yet a complete local `World` implementation.
+//! The schema is a pre-release prototype. It currently exercises resilient run
+//! start, atomic materialization, dense slots, explicit migration, process
+//! contention, and application-process recovery at instrumented transaction
+//! boundaries. It is not yet a complete local `World` implementation or a
+//! power-loss durability claim.
 
 #![forbid(unsafe_code)]
 
@@ -139,12 +141,19 @@ impl SqliteWorld {
         if let Some(result) = self.read_only_start_result(request)? {
             return self.with_preload(result);
         }
+        #[cfg(test)]
+        process_tests::pause_at_process_test_failpoint(None, "after_read_miss")?;
 
         let mut connection = self.open_runtime_connection()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
         self.require_current_schema(&transaction)?;
+        #[cfg(test)]
+        process_tests::pause_at_process_test_failpoint(
+            Some(&transaction),
+            "after_begin_immediate",
+        )?;
 
         let current_run = read_run(&transaction, &request.run_id)?;
         let plan = plan_run_started(current_run.as_ref(), request, now_ms()?)?;
@@ -154,10 +163,24 @@ impl SqliteWorld {
         } else if !plan.events.is_empty() {
             update_run(&transaction, &plan.run)?;
         }
+        #[cfg(test)]
+        process_tests::pause_at_process_test_failpoint(Some(&transaction), "after_run_write")?;
 
         let mut appended = Vec::with_capacity(plan.events.len());
         for event in &plan.events {
             appended.push(append_event(&transaction, &plan.run.run_id, event)?);
+            #[cfg(test)]
+            match appended.len() {
+                1 => process_tests::pause_at_process_test_failpoint(
+                    Some(&transaction),
+                    "after_first_event_append",
+                )?,
+                2 => process_tests::pause_at_process_test_failpoint(
+                    Some(&transaction),
+                    "after_second_event_append",
+                )?,
+                _ => {}
+            }
         }
 
         let result = CreateEventResult {
@@ -165,7 +188,11 @@ impl SqliteWorld {
             event: appended.last().cloned(),
             preload: None,
         };
+        #[cfg(test)]
+        process_tests::pause_at_process_test_failpoint(Some(&transaction), "before_commit")?;
         transaction.commit().map_err(storage_error)?;
+        #[cfg(test)]
+        process_tests::pause_at_process_test_failpoint(None, "after_commit_before_preload")?;
         self.with_preload(result)
     }
 
@@ -793,3 +820,6 @@ where
 fn persisted_data_error(error: impl std::fmt::Display) -> WorldError {
     WorldError::persisted_data(error.to_string())
 }
+
+#[cfg(test)]
+mod process_tests;

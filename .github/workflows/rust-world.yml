@@ -105,7 +105,7 @@ jobs:
           -D warnings
 
   node-native-probe:
-    name: Node Native Probe (${{ matrix.os }})
+    name: Native and SQLite Process Probes (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -126,6 +126,16 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
         with:
           toolchain: 1.88.0
+
+      - name: Run SQLite Process Tests
+        run: >-
+          cargo test
+          -p workflow-world-sqlite
+          --lib
+          --locked
+          process_tests::
+          --
+          --test-threads=1
 
       - name: Setup pnpm
         uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
