@@ -220,6 +220,12 @@ Maximum size of the internal `pg.Pool` used when `createWorld()` constructs the 
 
 For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` to `10` or `queueConcurrency + 2`, whichever is larger.
 
+### `WORKFLOW_POSTGRES_ROLE`
+
+Set to `producer` for a process that only enqueues work. Default: `worker`, which both enqueues and executes.
+
+A producer still ensures the schema on `start()`, so it can enqueue into a fresh database, and enqueueing is unchanged. It starts no graphile-worker runner and re-enqueues no active runs. Use it for a deployment unit that submits work it cannot execute — one that did not compile the `"use workflow"` and `"use step"` code, and so does not serve `.well-known/workflow/v1/*`. Otherwise its runner claims jobs only to fail their HTTP delivery, and every replica re-enqueues every active run on startup, including runs a live peer is executing. Set `role: 'producer'` instead in a programmatic World.
+
 ### `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN`
 
 Set to `1` when the application or framework coordinates shutdown and awaits `world.close()` before closing its workflow HTTP server and any caller-owned pool. Default: unset (`false`).

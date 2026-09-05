@@ -158,6 +158,14 @@ The Postgres World is a self-hosted durable backend for long-running server proc
 - Number of concurrent workers polling for jobs.
 - Also bounds concurrent parent-to-child workflow return-value polls.
 
+### `role`
+
+- Environment variable: `WORKFLOW_POSTGRES_ROLE` (`producer` selects it)
+- Default: `worker`
+- Whether this process both enqueues and executes messages (`worker`) or only enqueues them (`producer`).
+- A `producer` still ensures the schema on `start()`, so it can enqueue into a fresh database, and `queue()` is unchanged. It starts no Graphile Worker runner and runs no startup recovery.
+- Use it for a deployment unit that submits work it cannot execute, such as an API server that did not compile the workflow and step code. Otherwise its runner claims jobs only to fail their HTTP delivery, and every replica re-enqueues every active run on startup.
+
 ### `applicationManagedShutdown`
 
 - Environment variable: `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN` (`1` enables)
