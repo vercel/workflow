@@ -1,8 +1,13 @@
 import { WORKFLOW_QUEUE_TRIGGER } from '@workflow/builders';
-import { describe, expect, it, vi } from 'vitest';
+import { createServer } from 'vite';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LocalBuilder, VercelBuilder } from './builders.js';
 import nitroModule from './index.js';
 import { workflow as viteWorkflow } from './vite.js';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 type StubOptions = {
   routing: boolean;
@@ -50,6 +55,17 @@ function createNitroStub({
       hook() {},
     },
   } as any;
+}
+
+async function setupViteHarness() {
+  const nitro = createNitroStub({ routing: true, dev: true });
+  nitro.close = vi.fn(async () => {});
+  const plugins = viteWorkflow();
+  const workflowPlugin = plugins.find(
+    (candidate) => candidate.name === 'workflow:nitro'
+  ) as any;
+  await workflowPlugin.nitro.setup(nitro);
+  return { nitro, plugins };
 }
 
 describe('@workflow/nitro virtual handlers', () => {
@@ -149,6 +165,87 @@ describe('@workflow/nitro builder lifecycle', () => {
     await builder.build();
 
     expect(dispose).toHaveBeenCalledTimes(2);
+  });
+
+  it('awaits the initial workflow build after host plugins initialize', async () => {
+    const events: string[] = [];
+    const build = vi
+      .spyOn(LocalBuilder.prototype, 'build')
+      .mockImplementation(async () => {
+        events.push('workflow build');
+      });
+    const { nitro, plugins } = await setupViteHarness();
+
+    const server = await createServer({
+      configFile: false,
+      environments: { nitro: { consumer: 'server' } },
+      logLevel: 'silent',
+      root: nitro.options.rootDir,
+      server: {
+        middlewareMode: true,
+        perEnvironmentStartEndDuringDev: true,
+      },
+      plugins: [
+        {
+          name: 'stateful-host-plugin',
+          async buildStart() {
+            await Promise.resolve();
+            events.push('host buildStart');
+          },
+        },
+        ...plugins,
+      ],
+    });
+
+    expect(events.slice(0, 2)).toEqual(['host buildStart', 'workflow build']);
+    expect(build).toHaveBeenCalledOnce();
+    await server.close();
+  });
+
+  it('preserves modules the host marks as external', async () => {
+    vi.spyOn(LocalBuilder.prototype, 'build').mockResolvedValue();
+    const { nitro, plugins } = await setupViteHarness();
+    const server = await createServer({
+      configFile: false,
+      environments: { nitro: { consumer: 'server' } },
+      logLevel: 'silent',
+      root: nitro.options.rootDir,
+      server: { middlewareMode: true },
+      plugins: [
+        {
+          name: 'external-host-plugin',
+          resolveId(id) {
+            if (id === 'optional-native-module') {
+              return { id, external: true };
+            }
+          },
+        },
+        ...plugins,
+      ],
+    });
+
+    await expect(
+      nitro.options.workflow._hostResolver.resolveId('optional-native-module')
+    ).resolves.toEqual({ id: 'optional-native-module', external: true });
+    await server.close();
+  });
+
+  it('rejects Vite startup when the initial workflow build fails', async () => {
+    vi.spyOn(LocalBuilder.prototype, 'build').mockRejectedValue(
+      new Error('initial workflow build failed')
+    );
+    const { nitro, plugins } = await setupViteHarness();
+
+    await expect(
+      createServer({
+        configFile: false,
+        environments: { nitro: { consumer: 'server' } },
+        logLevel: 'silent',
+        root: nitro.options.rootDir,
+        server: { middlewareMode: true },
+        plugins,
+      })
+    ).rejects.toThrow('initial workflow build failed');
   });
 });
 

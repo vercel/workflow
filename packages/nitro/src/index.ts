@@ -228,6 +228,12 @@ export default {
       let isInitialBuild = true;
 
       nitro.hooks.hook('build:before', async () => {
+        // Vite invokes this hook from its `config` hook, before a plugin
+        // container exists. The Vite plugin runs the initial workflow build
+        // from its awaited `buildStart` hook instead.
+        if (nitro.options.dev && nitro.options.workflow?._hostResolver) {
+          return;
+        }
         await builder.build();
 
         // For prod: write the manifest handler file with inlined content
