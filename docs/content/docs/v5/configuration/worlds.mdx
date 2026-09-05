@@ -286,7 +286,7 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Factory option: none
 - CLI flag: none
 - Default: `http`
-- Experimental stream-write transport capability. Set to exactly `ws` to advertise support for [`workflow-stream-ws/v1`](#workflow_streams_transport) when it becomes available. The server authoritatively accepts or declines an upgrade; a decline uses HTTP directly. Stream reads remain HTTP and demand-driven.
+- Experimental stream-write transport capability. Set to exactly `ws` to attempt [`workflow-stream-ws/v1`](#workflow_streams_transport). The server authoritatively accepts or declines each upgrade; a decline uses HTTP directly for that writer lifetime. Stream reads remain HTTP and demand-driven.
 - This is not tenant rollout policy or a package-version check. HTTP remains the compatibility path. `/websockets/v1` is independent of REST v2/v4 and persisted workflow `specVersion` values.
 
 ### `WORKFLOW_DISABLE_ANALYTICS_READS`

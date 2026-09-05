@@ -26,6 +26,7 @@ import {
   instrumentedFetch,
 } from './http-core.js';
 import { encodeMultiChunks } from './stream-chunks.js';
+import { STREAM_WS_V1_MAX_CHUNKS_PER_WRITE } from './stream-ws-protocol-v1.js';
 import {
   WorkflowRunId,
   WorkflowStreamName,
@@ -38,6 +39,8 @@ import {
   type HttpConfig,
   makeRequest,
 } from './utils.js';
+import { createStreamWriteSession } from './ws-stream-session.js';
+import { isWsStreamsTransportEnabled } from './ws-transport-enabled.js';
 
 /**
  * Maximum number of chunks per request, matching the server-side
@@ -50,7 +53,7 @@ export const MAX_CHUNKS_PER_REQUEST = 1000;
  * `WORKFLOW_MAX_CHUNKS_PER_REQUEST`. Lower it (paired with the server's
  * `MAX_CHUNKS_PER_BATCH` override) to exercise the batch-splitting path.
  */
-const getMaxChunksPerRequest = (): number =>
+export const getMaxChunksPerRequest = (): number =>
   envNumber('WORKFLOW_MAX_CHUNKS_PER_REQUEST', MAX_CHUNKS_PER_REQUEST, {
     integer: true,
     min: 1,
@@ -196,10 +199,86 @@ const StreamChunksResponseSchema = z.object({
   done: z.boolean(),
 });
 
+export async function writeStreamSessionOverHttp(
+  runId: string,
+  name: string,
+  chunks: (string | Uint8Array)[],
+  config?: APIConfig
+): Promise<void> {
+  const httpConfig = await getHttpConfig(config);
+  httpConfig.headers.set('X-Stream-Multi', 'true');
+  const pageSize = Math.min(
+    getMaxChunksPerRequest(),
+    STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
+  );
+  for (let offset = 0; offset < chunks.length; offset += pageSize) {
+    const url = getStreamUrl(name, runId, httpConfig);
+    const response = await instrumentedFetch({
+      method: 'PUT',
+      url: url.toString(),
+      body: encodeMultiChunks(chunks.slice(offset, offset + pageSize)),
+      headers: httpConfig.headers,
+      dispatcher: getStreamDispatcher(config),
+      timeoutMs: null,
+      logLabel: url.pathname,
+      spanName: 'workflow.stream.write',
+      durationAttribute: 'workflow.stream.write.chunk_rtt',
+      attributes: streamSpanAttributes({
+        runId,
+        name,
+        operation: 'write_multi',
+      }),
+      buildError: async (res) =>
+        createStreamRequestError('write', url, res, await res.text()),
+    });
+    await response.text();
+  }
+}
+
+export async function closeStreamSessionOverHttp(
+  runId: string,
+  name: string,
+  config?: APIConfig
+): Promise<void> {
+  const httpConfig = await getHttpConfig(config);
+  httpConfig.headers.set('X-Stream-Done', 'true');
+  const url = getStreamUrl(name, runId, httpConfig);
+  const response = await instrumentedFetch({
+    method: 'PUT',
+    url: url.toString(),
+    headers: httpConfig.headers,
+    dispatcher: getStreamCloseDispatcher(config),
+    timeoutMs: null,
+    logLabel: url.pathname,
+    spanName: 'workflow.stream.write',
+    durationAttribute: 'workflow.stream.write.chunk_rtt',
+    attributes: streamSpanAttributes({ runId, name, operation: 'close' }),
+    buildError: async (res) =>
+      createStreamRequestError('close', url, res, await res.text()),
+  });
+  await response.text();
+}
+
 /** Creates the HTTP-backed streamer that talks to workflow-server. */
 export function createStreamer(config?: APIConfig): Streamer {
   return {
     streams: {
+      ...(isWsStreamsTransportEnabled()
+        ? {
+            createWriteSession(runId, name, { writerId }) {
+              return createStreamWriteSession(
+                runId,
+                name,
+                writerId,
+                config,
+                (chunks) =>
+                  writeStreamSessionOverHttp(runId, name, chunks, config),
+                () => closeStreamSessionOverHttp(runId, name, config)
+              );
+            },
+          }
+        : {}),
+
       async write(
         runId: string | Promise<string>,
         name: string,
