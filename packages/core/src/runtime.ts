@@ -118,7 +118,11 @@ import {
 } from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
-import { getWorld, type WorldHandlers } from './runtime/world.js';
+import {
+  getWorld,
+  getWorldGeneration,
+  type WorldHandlers,
+} from './runtime/world.js';
 import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
@@ -704,6 +708,11 @@ async function getMaxInlineDurationMs(
  * @param workflowCode - The workflow bundle code containing all workflow functions
  * @returns A function that can be used as a Vercel API route
  */
+export interface WorkflowEntrypoint {
+  (req: Request): Promise<Response>;
+  initialize(): Promise<void>;
+}
+
 export function workflowEntrypoint(
   workflowCode: string,
   options?: {
@@ -711,7 +720,7 @@ export function workflowEntrypoint(
     routeModuleBodyStartedAt?: number;
     basePath?: string;
   }
-): (req: Request) => Promise<Response> {
+): WorkflowEntrypoint {
   setWorkflowBasePath(options?.basePath);
 
   const namespace = resolveQueueNamespace(options?.namespace);
@@ -5018,7 +5027,13 @@ export function workflowEntrypoint(
       }
     );
 
-  let cachedHandler: ((req: Request) => Promise<Response>) | undefined;
+  type InitializedHandler = (req: Request) => Promise<Response>;
+  type HandlerCache = {
+    generation: number;
+    promise: Promise<InitializedHandler>;
+  };
+
+  let handlerCache: HandlerCache | undefined;
   let invocationCount = 0;
   const entrypointCreatedAt = Date.now();
   const routeModuleBodyInitMs =
@@ -5026,9 +5041,41 @@ export function workflowEntrypoint(
       ? entrypointCreatedAt - options.routeModuleBodyStartedAt
       : undefined;
 
-  return withHealthCheck(async (req) => {
+  async function initializeHandler(): Promise<InitializedHandler> {
+    const generation = getWorldGeneration();
+    let cache = handlerCache;
+    if (!cache || cache.generation !== generation) {
+      const promise = trace('workflow.route.init', async () => {
+        const worldHandlers = await trace(
+          'workflow.route.get_world_handlers',
+          async () => getWorld()
+        );
+        if (generation !== getWorldGeneration()) return initializeHandler();
+        const queueHandler = handler(worldHandlers);
+        return worldHandlers.capabilities?.directQueueDelivery === true
+          ? queueHandler
+          : withHealthCheck(queueHandler);
+      });
+      cache = { generation, promise };
+      handlerCache = cache;
+    }
+
+    try {
+      const initialized = await cache.promise;
+      if (cache.generation !== getWorldGeneration()) {
+        if (handlerCache === cache) handlerCache = undefined;
+        return initializeHandler();
+      }
+      return initialized;
+    } catch (error) {
+      if (handlerCache === cache) handlerCache = undefined;
+      throw error;
+    }
+  }
+
+  const invokeQueueHandler = async (req: Request): Promise<Response> => {
     invocationCount += 1;
-    const handlerCached = cachedHandler !== undefined;
+    const handlerCached = handlerCache?.generation === getWorldGeneration();
     const spanKind = await getSpanKind('SERVER');
 
     return trace(
@@ -5051,27 +5098,8 @@ export function workflowEntrypoint(
         },
       },
       async (span) => {
-        if (!cachedHandler) {
-          cachedHandler = await trace('workflow.route.init', async () => {
-            // The full runtime World, not `getWorldHandlers()`. That accessor
-            // owns a second, build-time-safe cache, so calling it here built a
-            // second World in the same process: duplicate connection pools and
-            // queue workers for a stateful World, plus a second copy of that
-            // world package's modules once it is bundled, which is what
-            // silently demoted the events WebSocket transport to HTTP. #3665.
-            //
-            // The span keeps its original name. It is a distinct span from the
-            // per-request `workflow.route.get_world` at the top of the flow
-            // route, and renaming it would collide with that one.
-            const worldHandlers = await trace(
-              'workflow.route.get_world_handlers',
-              async () => getWorld()
-            );
-            return handler(worldHandlers);
-          });
-        }
-
-        const response = await cachedHandler(req);
+        const initializedHandler = await initializeHandler();
+        const response = await initializedHandler(req);
         if (response instanceof Response) {
           span?.setAttributes(
             Attribute.HttpResponseStatusCode(response.status)
@@ -5080,5 +5108,11 @@ export function workflowEntrypoint(
         return response;
       }
     );
+  };
+  const entrypoint: WorkflowEntrypoint = Object.assign(invokeQueueHandler, {
+    initialize: async () => {
+      await initializeHandler();
+    },
   });
+  return entrypoint;
 }
