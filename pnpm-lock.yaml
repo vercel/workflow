@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@changesets/cli@2.29.8': 17871fd218965b410e1e3adad11e877d99c222c3cefb03773e353c2bb1c87d15
+
 catalogs:
   default:
     '@biomejs/biome':
@@ -81,7 +84,7 @@ importers:
         version: 0.5.2
       '@changesets/cli':
         specifier: ^2.29.8
-        version: 2.29.8(@types/node@24.6.2)
+        version: 2.29.8(patch_hash=17871fd218965b410e1e3adad11e877d99c222c3cefb03773e353c2bb1c87d15)(@types/node@24.6.2)
       '@vitest/coverage-v8':
         specifier: 'catalog:'
         version: 4.1.10(vitest@4.1.10)
@@ -18746,7 +18749,7 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@changesets/cli@2.29.8(@types/node@24.6.2)':
+  '@changesets/cli@2.29.8(patch_hash=17871fd218965b410e1e3adad11e877d99c222c3cefb03773e353c2bb1c87d15)(@types/node@24.6.2)':
     dependencies:
       '@changesets/apply-release-plan': 7.0.14
       '@changesets/assemble-release-plan': 6.0.9
