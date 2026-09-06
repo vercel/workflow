@@ -30,6 +30,7 @@
     "nextjs-turbopack",
     "nextjs-webpack",
     "workflow-sdk-compiler-playground",
+    "workflow-apm-trace-viewer",
     "@workflow/docs-typecheck",
     "@workflow/example-*",
     "@workflow/vitest-workbench",
