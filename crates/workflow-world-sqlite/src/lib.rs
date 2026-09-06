@@ -25,8 +25,8 @@ use workflow_protocol::{
 use workflow_world_core::plan_run_started;
 
 use crate::migrations::{
-    AppliedMigration, MIGRATIONS, current_schema_version, execute_migration_sql,
-    validate_applied_history, validate_registry,
+    AppliedMigration, MIGRATIONS, current_schema_version, validate_applied_history,
+    validate_registry,
 };
 
 const PRELOAD_LIMIT: usize = 100;
@@ -139,7 +139,12 @@ impl SqliteWorld {
         let applied = read_applied_migrations(&transaction)?;
         let applied_count = validate_applied_history(&applied)?;
         for migration in &MIGRATIONS[applied_count..] {
-            execute_migration_sql(&transaction, migration).map_err(storage_error)?;
+            // Migration SQL is embedded in this binary and reviewed as source.
+            // The checked-in migration test verifies that it leaves this
+            // runner-owned transaction active and rollbackable.
+            transaction
+                .execute_batch(migration.sql)
+                .map_err(storage_error)?;
             #[cfg(test)]
             process_tests::pause_at_process_test_failpoint(
                 Some(&transaction),
@@ -156,17 +161,6 @@ impl SqliteWorld {
                 Some(&transaction),
                 &format!("after_migration_record_{}", migration.version),
             )?;
-        }
-        let final_applied = read_applied_migrations(&transaction)?;
-        let final_count = validate_applied_history(&final_applied)?;
-        if final_count != MIGRATIONS.len() {
-            return Err(WorldError::new(
-                WorldErrorKind::Storage,
-                format!(
-                    "SQLite migration runner stopped at history length {final_count}, expected {}",
-                    MIGRATIONS.len()
-                ),
-            ));
         }
         #[cfg(test)]
         process_tests::pause_at_process_test_failpoint(

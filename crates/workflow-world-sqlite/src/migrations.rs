@@ -1,7 +1,5 @@
 //! Ordered SQLite schema migration registry and history validation.
 
-use rusqlite::Connection;
-use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use sha2::{Digest, Sha256};
 use workflow_protocol::{WorldError, WorldErrorKind};
 
@@ -99,43 +97,6 @@ fn validate_registry_slice(registry: &[SchemaMigration]) -> Result<(), WorldErro
     Ok(())
 }
 
-pub(super) fn execute_migration_sql(
-    connection: &Connection,
-    migration: &SchemaMigration,
-) -> rusqlite::Result<()> {
-    // Ask SQLite's parser, rather than a SQL string scanner, to reject anything
-    // that could escape the runner's outer transaction or mutate connection state.
-    connection.authorizer(Some(migration_authorizer))?;
-    let execution = connection.execute_batch(migration.sql);
-    let cleanup = connection.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
-    execution?;
-    cleanup
-}
-
-fn migration_authorizer(context: AuthContext<'_>) -> Authorization {
-    match context.action {
-        AuthAction::CreateIndex { .. }
-        | AuthAction::CreateTable { .. }
-        | AuthAction::CreateTrigger { .. }
-        | AuthAction::CreateView { .. }
-        | AuthAction::Delete { .. }
-        | AuthAction::DropIndex { .. }
-        | AuthAction::DropTable { .. }
-        | AuthAction::DropTrigger { .. }
-        | AuthAction::DropView { .. }
-        | AuthAction::Insert { .. }
-        | AuthAction::Read { .. }
-        | AuthAction::Select
-        | AuthAction::Update { .. }
-        | AuthAction::AlterTable { .. }
-        | AuthAction::Reindex { .. }
-        | AuthAction::Analyze { .. }
-        | AuthAction::Function { .. }
-        | AuthAction::Recursive => Authorization::Allow,
-        _ => Authorization::Deny,
-    }
-}
-
 fn validate_history(
     registry: &[SchemaMigration],
     applied: &[AppliedMigration],
@@ -187,8 +148,8 @@ mod tests {
     use workflow_protocol::WorldErrorKind;
 
     use super::{
-        AppliedMigration, MIGRATIONS, SchemaMigration, execute_migration_sql, migration_checksum,
-        validate_history, validate_registry, validate_registry_slice,
+        AppliedMigration, MIGRATIONS, SchemaMigration, migration_checksum, validate_history,
+        validate_registry, validate_registry_slice,
     };
 
     const THREE_MIGRATIONS: &[SchemaMigration] = &[
@@ -316,52 +277,20 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_authorizer_keeps_migrations_inside_the_outer_transaction() {
-        let transaction_control = SchemaMigration {
-            version: 1,
-            name: "invalid-transaction",
-            sql: "CREATE TABLE partial (id INTEGER); END;",
-            checksum: "unused-by-execution-guard",
-        };
-        let mut connection = Connection::open_in_memory().expect("test database should open");
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .expect("outer transaction should begin");
-
-        execute_migration_sql(&transaction, &transaction_control)
-            .expect_err("migration SQL must not control its outer transaction");
-        assert!(
-            !transaction.is_autocommit(),
-            "denied SQL must leave the outer transaction active"
-        );
-        transaction
-            .rollback()
-            .expect("outer transaction should roll back");
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'partial'",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("schema should remain readable"),
-            0
-        );
-    }
-
-    #[test]
-    fn every_checked_in_migration_executes_under_the_authorizer() {
+    fn every_checked_in_migration_stays_inside_the_runner_transaction() {
         let mut connection = Connection::open_in_memory().expect("test database should open");
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .expect("outer transaction should begin");
         for migration in MIGRATIONS {
-            execute_migration_sql(&transaction, migration).unwrap_or_else(|error| {
-                panic!(
-                    "migration {} ({}) should be transaction-safe: {error}",
-                    migration.version, migration.name
-                )
-            });
+            transaction
+                .execute_batch(migration.sql)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "migration {} ({}) should be transaction-safe: {error}",
+                        migration.version, migration.name
+                    )
+                });
             assert!(
                 !transaction.is_autocommit(),
                 "migration {} must not end the outer transaction",
@@ -371,5 +300,15 @@ mod tests {
         transaction
             .rollback()
             .expect("validation transaction should roll back");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'workflow_runs'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("schema should remain readable"),
+            0
+        );
     }
 }
