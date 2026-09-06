@@ -117,11 +117,21 @@ export async function applySwcTransform(
             }),
       },
       target: 'es2022',
-      experimental: mode
-        ? {
-            plugins: [[swcPluginPath, { mode, moduleSpecifier }]],
-          }
-        : undefined,
+      experimental: {
+        // Preserve `import ... with { type: 'json' }` attributes. Without
+        // this SWC silently drops them, so imports that end up externalized
+        // in the emitted bundle fail at runtime on Node's ESM loader with
+        // ERR_IMPORT_ATTRIBUTE_MISSING (see issue #3157).
+        keepImportAttributes: true,
+        ...(mode
+          ? {
+              plugins: [[swcPluginPath, { mode, moduleSpecifier }]] as [
+                string,
+                Record<string, unknown>,
+              ][],
+            }
+          : {}),
+      },
       transform: {
         react: {
           runtime: 'preserve',
