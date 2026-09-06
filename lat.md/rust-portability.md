@@ -24,12 +24,30 @@ The decision ledger keeps established boundaries separate from hypotheses that s
 | Node.js uses napi-rs and Python uses PyO3 with thin host adapters | Direction |
 | The native CLI delegates language-specific work to versioned drivers | Direction |
 | Shared transition logic is a pure, spec-aware plan executed inside backend transactions | Direction |
+| First-slice structural types are hand-mapped and checked by shared fixtures | Provisional |
+| Node.js and Python adapters exchange host primitives behind a versioned startup handshake | Provisional |
+| SQLite uses bundled `rusqlite`, explicit migrations, WAL, and checksummed migration history | Provisional |
+| The repository-local probe floor is Rust 1.88 on Linux, macOS, and Windows | Provisional |
 | One SQLite file also contains a leased durable local queue | Provisional |
 | Loopback HTTP is the semantic-baseline candidate for local queue delivery | Provisional |
-| FFI encoding, SQLite driver/linkage, durability defaults, and public package names | Open |
+| Persisted codec, final FFI encoding, durability defaults, and public package names | Open |
 | Native-wheel repository, publisher, and cross-repository release coordination | Open |
 | PostgreSQL schema coexistence and replacement for Graphile Worker | Open |
 | Legacy local-data importer and timing of default switches | Open |
+
+### Phase 0 Evidence
+
+The first contract slice records what the probes establish without promoting narrow implementation details into compatibility promises.
+
+The shared resilient-run-start fixture is validated against JSON Schema by TypeScript and decoded into independently declared Rust types. This supports hand-mapped structural types plus shared fixtures for the first slice; it does not decide whether a larger contract should later generate types from an IDL.
+
+The Node-API and PyO3 probes pass owned byte buffers and ordinary host scalars into Rust, serialize the small extensible object fields as JSON at the adapter edge, and check adapter protocol version 1 before the first durable call. Returning fixture-shaped JSON is probe instrumentation, not the selected final FFI representation. Cancellation, streams, large-payload measurements, and backpressure remain required before this choice becomes a direction.
+
+The SQLite probe uses `rusqlite` with its bundled SQLite build. Schema changes run only through an explicit migration call under one `BEGIN IMMEDIATE` transaction, enter WAL mode, and record ordered checksums. Concurrent migrators, process death before and after commit, history gaps, future versions, and checksum drift are tested. Runtime operations reject missing or incompatible migration history instead of migrating implicitly.
+
+The repository-local technical floor is Rust 1.88 for both native bindings. The dedicated CI matrix is configured to exercise Node.js 22 and Python 3.13 across Linux, macOS, and Windows; the Python extension selects `abi3-py39`, so Python 3.9 is the intended interpreter floor for the probe. This is evidence for the next packaging experiment, not yet the shipped OS, CPU, libc, or language-version support policy.
+
+The current SQLite schema stores opaque application inputs as blobs and limited metadata as checked JSON text for persisted spec 7. It has no legacy JSON/text or `cbor-x` vectors, so it does not close the persisted-codec decision. Queue storage, delivery transport, reconciliation identity, `tag`, database location, busy and checkpoint defaults, wheel ownership, and public package names also remain open.
 
 ## Motivation
 
