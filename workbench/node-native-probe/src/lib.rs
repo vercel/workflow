@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -14,7 +15,9 @@ use workflow_protocol::{
     CreateEventResult, RunCreatedEventData, RunStartedRequest, StoredEvent, WorkflowRun,
     WorldError, WorldSnapshot,
 };
-use workflow_world_sqlite::{SqliteWorld, sqlite_library_version};
+use workflow_world_sqlite::{
+    QueueWorker, QueueWorkerConfig, QueueWorkerReport, SqliteWorld, sqlite_library_version,
+};
 
 const ERROR_MARKER: &str = "WORKFLOW_NATIVE_ERROR:";
 
@@ -22,6 +25,8 @@ const ERROR_MARKER: &str = "WORKFLOW_NATIVE_ERROR:";
 pub struct NativeSqliteWorld {
     path: PathBuf,
     closed: Arc<AtomicBool>,
+    worker: Mutex<Option<QueueWorker>>,
+    worker_stopping: Arc<AtomicBool>,
 }
 
 #[napi]
@@ -43,6 +48,8 @@ impl NativeSqliteWorld {
         Self {
             path: PathBuf::from(path),
             closed: Arc::new(AtomicBool::new(false)),
+            worker: Mutex::new(None),
+            worker_stopping: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -107,8 +114,106 @@ impl NativeSqliteWorld {
     }
 
     #[napi(catch_unwind)]
-    pub fn close(&self) -> bool {
-        !self.closed.swap(true, Ordering::AcqRel)
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_queue_worker(
+        &self,
+        scope: String,
+        queue_name: String,
+        flow_url: String,
+        worker_id: String,
+        lease_duration_ms: u32,
+        poll_interval_ms: u32,
+        retry_delay_ms: u32,
+        request_timeout_ms: u32,
+    ) -> Result<()> {
+        self.ensure_open()?;
+        if self.worker_stopping.load(Ordering::Acquire) {
+            return Err(native_error(
+                "worker_stopping",
+                "SQLite World queue worker is still stopping",
+            ));
+        }
+        let mut worker = self.lock_worker()?;
+        if worker.is_some() {
+            return Err(native_error(
+                "invalid_request",
+                "SQLite World queue worker is already running",
+            ));
+        }
+        let config = QueueWorkerConfig {
+            scope,
+            queue_name,
+            flow_url,
+            worker_id,
+            lease_duration: Duration::from_millis(u64::from(lease_duration_ms)),
+            poll_interval: Duration::from_millis(u64::from(poll_interval_ms)),
+            retry_delay: Duration::from_millis(u64::from(retry_delay_ms)),
+            request_timeout: Duration::from_millis(u64::from(request_timeout_ms)),
+        };
+        *worker =
+            Some(QueueWorker::start(SqliteWorld::new(&self.path), config).map_err(world_error)?);
+        Ok(())
+    }
+
+    #[napi(catch_unwind)]
+    pub fn reconcile_active_runs(
+        &self,
+        scope: String,
+        deployment_id: String,
+        queue_prefix: String,
+    ) -> Result<AsyncTask<ReconcileActiveRunsTask>> {
+        self.ensure_open()?;
+        Ok(AsyncTask::new(ReconcileActiveRunsTask {
+            path: self.path.clone(),
+            scope,
+            deployment_id,
+            queue_prefix,
+        }))
+    }
+
+    #[napi(catch_unwind)]
+    pub fn queue_message_count(&self, scope: String) -> Result<AsyncTask<QueueMessageCountTask>> {
+        self.ensure_open()?;
+        Ok(AsyncTask::new(QueueMessageCountTask {
+            path: self.path.clone(),
+            scope,
+        }))
+    }
+
+    #[napi(catch_unwind)]
+    pub fn stop_queue_worker(&self) -> Result<AsyncTask<StopQueueWorkerTask>> {
+        self.ensure_open()?;
+        if self.worker_stopping.load(Ordering::Acquire) {
+            return Err(native_error(
+                "worker_stopping",
+                "SQLite World queue worker is already stopping",
+            ));
+        }
+        let worker = self.lock_worker()?.take();
+        if worker.is_some() {
+            self.worker_stopping.store(true, Ordering::Release);
+        }
+        Ok(AsyncTask::new(StopQueueWorkerTask {
+            worker,
+            worker_stopping: Arc::clone(&self.worker_stopping),
+        }))
+    }
+
+    #[napi(catch_unwind)]
+    pub fn close(&self) -> Result<bool> {
+        if self.worker_stopping.load(Ordering::Acquire) {
+            return Err(native_error(
+                "worker_stopping",
+                "wait for the SQLite World queue worker to stop before closing its handle",
+            ));
+        }
+        if self.lock_worker()?.is_some() {
+            return Err(native_error(
+                "worker_running",
+                "stop the SQLite World queue worker before closing its handle",
+            ));
+        }
+        Ok(!self.closed.swap(true, Ordering::AcqRel))
     }
 
     fn ensure_open(&self) -> Result<()> {
@@ -116,6 +221,12 @@ impl NativeSqliteWorld {
             return Err(native_error("closed", "SQLite World handle is closed"));
         }
         Ok(())
+    }
+
+    fn lock_worker(&self) -> Result<std::sync::MutexGuard<'_, Option<QueueWorker>>> {
+        self.worker
+            .lock()
+            .map_err(|_| native_error("binding", "SQLite World queue worker lock was poisoned"))
     }
 }
 
@@ -168,6 +279,23 @@ pub struct SnapshotTask {
     run_id: String,
 }
 
+pub struct ReconcileActiveRunsTask {
+    path: PathBuf,
+    scope: String,
+    deployment_id: String,
+    queue_prefix: String,
+}
+
+pub struct QueueMessageCountTask {
+    path: PathBuf,
+    scope: String,
+}
+
+pub struct StopQueueWorkerTask {
+    worker: Option<QueueWorker>,
+    worker_stopping: Arc<AtomicBool>,
+}
+
 pub struct PanicProbeTask;
 
 #[napi]
@@ -200,6 +328,83 @@ impl Task for SnapshotTask {
             }))
             .map_err(|error| native_error("binding", error.to_string()))
         })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[napi]
+impl Task for ReconcileActiveRunsTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        compute_safely(|| {
+            let result = SqliteWorld::new(&self.path)
+                .reconcile_active_runs(
+                    &self.scope,
+                    &self.deployment_id,
+                    &self.queue_prefix,
+                    current_time_ms()?,
+                )
+                .map_err(world_error)?;
+            serde_json::to_string(&json!({
+                "activeRunCount": result.active_run_count,
+                "createdMessageCount": result.created_message_count,
+                "messageIds": result.message_ids,
+            }))
+            .map_err(|error| native_error("binding", error.to_string()))
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[napi]
+impl Task for QueueMessageCountTask {
+    type Output = u32;
+    type JsValue = u32;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        compute_safely(|| {
+            let count = SqliteWorld::new(&self.path)
+                .queue_message_count(&self.scope)
+                .map_err(world_error)?;
+            u32::try_from(count).map_err(|_| native_error("binding", "queue count overflow"))
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+#[napi]
+impl Task for StopQueueWorkerTask {
+    type Output = String;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let result = compute_safely(|| {
+            let report = match self.worker.take() {
+                Some(worker) => worker.stop().map_err(world_error)?,
+                None => QueueWorkerReport::default(),
+            };
+            serde_json::to_string(&json!({
+                "claims": report.claims,
+                "acknowledgements": report.acknowledgements,
+                "reschedules": report.reschedules,
+                "deliveryFailures": report.delivery_failures,
+                "storageFailures": report.storage_failures,
+            }))
+            .map_err(|error| native_error("binding", error.to_string()))
+        });
+        self.worker_stopping.store(false, Ordering::Release);
+        result
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
@@ -299,6 +504,14 @@ fn project_event(event: &StoredEvent) -> Value {
         projection["eventData"] = event_data;
     }
     projection
+}
+
+fn current_time_ms() -> Result<i64> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| native_error("clock", "system clock is before Unix epoch"))?
+        .as_millis();
+    i64::try_from(millis).map_err(|_| native_error("clock", "system clock overflow"))
 }
 
 fn world_error(error: WorldError) -> Error {

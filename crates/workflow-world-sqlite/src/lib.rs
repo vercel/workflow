@@ -4,8 +4,8 @@
 //! start, atomic materialization, dense slots, ordered checksummed migrations,
 //! leased queue claims and active-run reconciliation, process contention, and
 //! application-process recovery at instrumented transaction boundaries. It is
-//! not yet a complete local `World`, delivery worker, or a power-loss durability
-//! claim.
+//! not yet a complete local `World` or a power-loss durability claim. The
+//! delivery worker is a deliberately narrow loopback-HTTP prototype.
 
 #![forbid(unsafe_code)]
 
@@ -35,6 +35,9 @@ const PRELOAD_LIMIT: usize = 100;
 const MIGRATION_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 mod migrations;
+mod worker;
+
+pub use worker::{QueueWorker, QueueWorkerConfig, QueueWorkerReport};
 
 #[must_use]
 pub fn sqlite_library_version() -> &'static str {

@@ -86,6 +86,48 @@ export class SqliteWorldProbe {
     );
   }
 
+  startQueueWorker({
+    scope,
+    queueName,
+    flowUrl,
+    workerId = 'node-probe-worker',
+    leaseDurationMs = 1_000,
+    pollIntervalMs = 10,
+    retryDelayMs = 10,
+    requestTimeoutMs = 250,
+  }) {
+    return this.#run(() =>
+      this.#native.startQueueWorker(
+        scope,
+        queueName,
+        flowUrl,
+        workerId,
+        leaseDurationMs,
+        pollIntervalMs,
+        retryDelayMs,
+        requestTimeoutMs
+      )
+    );
+  }
+
+  reconcileActiveRuns({ scope, deploymentId, queuePrefix }) {
+    return this.#run(async () =>
+      JSON.parse(
+        await this.#native.reconcileActiveRuns(scope, deploymentId, queuePrefix)
+      )
+    );
+  }
+
+  queueMessageCount(scope) {
+    return this.#run(() => this.#native.queueMessageCount(scope));
+  }
+
+  stopQueueWorker() {
+    return this.#run(async () =>
+      JSON.parse(await this.#native.stopQueueWorker())
+    );
+  }
+
   async close() {
     if (this.#closed) {
       await this.#closePromise;
@@ -94,6 +136,7 @@ export class SqliteWorldProbe {
     this.#closed = true;
     this.#closePromise = (async () => {
       await Promise.allSettled([...this.#inFlight]);
+      await callNative(() => this.#native.stopQueueWorker());
       return this.#native.close();
     })();
     return this.#closePromise;

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
@@ -21,6 +23,7 @@ const fixturePath = new URL(
 const fixture = JSON.parse(await fs.readFile(fixturePath, 'utf8'));
 const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'world-native-'));
 const databasePath = path.join(directory, 'world.sqlite');
+const servers = [];
 
 try {
   assert.equal(fixture.fixtureVersion, 1);
@@ -97,6 +100,80 @@ try {
   assert.equal(retry.result.event, null);
   assert.equal(retry.events.length, 2);
 
+  const queueScope = `node-probe:${fixture.when.event.eventData.deploymentId}`;
+  const queuePrefix = '__wkf_workflow_';
+  const queueName = `${queuePrefix}${fixture.when.event.eventData.workflowName}`;
+  const deliveries = [];
+  const callbackServer = await listen(async (request, response) => {
+    const body = await readRequestBody(request);
+    deliveries.push({
+      attempt: Number(request.headers['x-vqs-message-attempt']),
+      body: JSON.parse(body.toString()),
+      messageId: request.headers['x-vqs-message-id'],
+      queueName: request.headers['x-vqs-queue-name'],
+      url: request.url,
+    });
+    if (deliveries.length === 1) {
+      const inCallbackReconciliation = await world.reconcileActiveRuns({
+        scope: queueScope,
+        deploymentId: fixture.when.event.eventData.deploymentId,
+        queuePrefix,
+      });
+      assert.equal(inCallbackReconciliation.createdMessageCount, 0);
+      sendJson(response, 500, { error: 'retry this delivery' });
+    } else if (deliveries.length === 2) {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ timeoutSeconds: 0.02 }));
+    } else {
+      sendJson(response, 200, {});
+    }
+  });
+  servers.push(callbackServer);
+
+  await world.startQueueWorker({
+    scope: queueScope,
+    queueName,
+    flowUrl: `${callbackServer.url}/.well-known/workflow/v1/flow?source=native`,
+    leaseDurationMs: 1_000,
+    pollIntervalMs: 5,
+    retryDelayMs: 10,
+    requestTimeoutMs: 250,
+  });
+  const reconciliation = await world.reconcileActiveRuns({
+    scope: queueScope,
+    deploymentId: fixture.when.event.eventData.deploymentId,
+    queuePrefix,
+  });
+  assert.equal(reconciliation.activeRunCount, 1);
+  assert.equal(reconciliation.createdMessageCount, 1);
+  await eventually(
+    async () => (await world.queueMessageCount(queueScope)) === 0
+  );
+  assert.deepEqual(
+    deliveries.map(({ attempt }) => attempt),
+    [1, 2, 3]
+  );
+  assert.equal(new Set(deliveries.map(({ messageId }) => messageId)).size, 1);
+  assert.deepEqual(
+    deliveries.map(({ body }) => body),
+    Array(3).fill({ runId: fixture.when.runId })
+  );
+  assert.ok(deliveries.every((delivery) => delivery.queueName === queueName));
+  assert.ok(
+    deliveries.every(
+      (delivery) =>
+        delivery.url === '/.well-known/workflow/v1/flow?source=native'
+    )
+  );
+  const workerReport = await world.stopQueueWorker();
+  assert.deepEqual(workerReport, {
+    claims: 3,
+    acknowledgements: 1,
+    reschedules: 2,
+    deliveryFailures: 1,
+    storageFailures: 0,
+  });
+
   assert.equal(await world.close(), true);
   assert.equal(await world.close(), false);
   await assert.rejects(
@@ -147,11 +224,105 @@ try {
   await pendingMigration;
   assert.equal(await fileExists(drainingDatabasePath), true);
 
+  const cancellationDatabasePath = path.join(directory, 'cancellation.sqlite');
+  const cancellation = new SqliteWorldProbe(cancellationDatabasePath);
+  await cancellation.migrate();
+  await cancellation.createResilientRunStarted({
+    runId: fixture.when.runId,
+    specVersion: fixture.when.event.specVersion,
+    deploymentId: fixture.when.event.eventData.deploymentId,
+    workflowName: fixture.when.event.eventData.workflowName,
+    input: Buffer.from(fixture.when.event.eventData.input.$bytes, 'base64'),
+    executionContext: fixture.when.event.eventData.executionContext,
+    attributes: fixture.when.event.eventData.attributes,
+    allowReservedAttributes:
+      fixture.when.event.eventData.allowReservedAttributes,
+    encryptionPublicKey: fixture.when.event.eventData.encryptionPublicKey,
+  });
+  let markCallbackStarted;
+  const callbackStarted = new Promise((resolve) => {
+    markCallbackStarted = resolve;
+  });
+  const stalledServer = await listen(async (request, response) => {
+    await readRequestBody(request);
+    markCallbackStarted();
+    await delay(2_000);
+    if (!response.destroyed) sendJson(response, 200, {});
+  });
+  servers.push(stalledServer);
+  await cancellation.startQueueWorker({
+    scope: queueScope,
+    queueName,
+    flowUrl: `${stalledServer.url}/flow`,
+    leaseDurationMs: 1_000,
+    pollIntervalMs: 5,
+    retryDelayMs: 10,
+    requestTimeoutMs: 100,
+  });
+  await cancellation.reconcileActiveRuns({
+    scope: queueScope,
+    deploymentId: fixture.when.event.eventData.deploymentId,
+    queuePrefix,
+  });
+  await callbackStarted;
+  const closeStartedAt = performance.now();
+  assert.equal(await cancellation.close(), true);
+  assert.ok(performance.now() - closeStartedAt < 500);
+  const cancellationReopened = new SqliteWorldProbe(cancellationDatabasePath);
+  assert.equal(await cancellationReopened.queueMessageCount(queueScope), 1);
+  await cancellationReopened.close();
+
   process.stdout.write(
     `Node native probe passed (SQLite ${nativeInfo.sqliteVersion})\n`
   );
 } finally {
+  for (const server of servers) server.server.closeAllConnections();
+  await Promise.all(servers.map(({ server }) => closeServer(server)));
   await fs.rm(directory, { recursive: true, force: true });
+}
+
+async function listen(handler) {
+  const server = createServer((request, response) => {
+    Promise.resolve(handler(request, response)).catch((error) => {
+      response.destroy(error);
+    });
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  return { server, url: `http://127.0.0.1:${address.port}` };
+}
+
+async function readRequestBody(request) {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
+function sendJson(response, status, value) {
+  const body = Buffer.from(JSON.stringify(value));
+  response.writeHead(status, {
+    'content-length': body.length,
+    'content-type': 'application/json',
+  });
+  response.end(body);
+}
+
+async function eventually(predicate, timeoutMs = 2_000) {
+  const deadline = performance.now() + timeoutMs;
+  while (performance.now() < deadline) {
+    if (await predicate()) return;
+    await delay(10);
+  }
+  assert.fail(`condition was not met within ${timeoutMs}ms`);
+}
+
+async function closeServer(server) {
+  if (!server.listening) return;
+  await new Promise((resolve) => server.close(resolve));
 }
 
 async function fileExists(filePath) {

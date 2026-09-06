@@ -29,7 +29,7 @@ The decision ledger keeps established boundaries separate from hypotheses that s
 | SQLite uses bundled `rusqlite`, explicit migrations, WAL, and checksummed migration history | Provisional |
 | The repository-local probe floor is Rust 1.88 on Linux, macOS, and Windows | Provisional |
 | One SQLite file also contains a leased durable local queue | Provisional |
-| Loopback HTTP is the semantic-baseline candidate for local queue delivery | Provisional |
+| A Rust-owned worker with loopback HTTP is the tested semantic-baseline candidate for local queue delivery | Provisional |
 | Persisted codec, final FFI encoding, durability defaults, and public package names | Open |
 | Native-wheel repository, publisher, and cross-repository release coordination | Open |
 | PostgreSQL schema coexistence and replacement for Graphile Worker | Open |
@@ -45,11 +45,13 @@ The Node-API and PyO3 probes pass owned byte buffers and ordinary host scalars i
 
 The SQLite probe uses `rusqlite` with its bundled SQLite build. Schema changes run only through an explicit migration call under one `BEGIN IMMEDIATE` transaction, enter WAL mode, and record ordered checksums. Concurrent migrators, process death before and after commit, history gaps, future versions, and checksum drift are tested. Runtime operations reject missing or incompatible migration history instead of migrating implicitly.
 
-The leased-queue storage prototype keeps messages in the same SQLite file and scopes claims by an explicit application/deployment identity and queue name. Active-run reconciliation filters by deployment and derives one deterministic message ID per scoped run. Claims use distinct capability tokens, retain the message ID across lease expiry and timeout rescheduling, and are tested across competing and killed processes. This establishes the storage baseline without choosing loopback HTTP or direct binding delivery.
+The leased-queue storage prototype keeps messages in the same SQLite file and scopes claims by an explicit application/deployment identity and queue name. Active-run reconciliation filters by deployment and derives one deterministic message ID per scoped run. Claims use distinct capability tokens, retain the message ID across lease expiry and timeout rescheduling, and are tested across competing and killed processes.
+
+The Node-API probe now starts a Rust-owned single-concurrency supervisor with an explicit full flow URL. It proves claim-then-callback ordering, stable message identity and increasing attempts across an HTTP failure and handler-requested `timeoutSeconds`, final acknowledgement, and bounded close during a stalled callback. The callback URL is process configuration and is not persisted. The prototype accepts only loopback HTTP, uses one blocking delivery thread with a request timeout, and reports counters on shutdown; it validates the boundary, not the final concurrency, HTTP client, authentication, or observability design.
 
 The repository-local technical floor is Rust 1.88 for both native bindings. The dedicated CI matrix is configured to exercise Node.js 22 and Python 3.13 across Linux, macOS, and Windows; the Python extension selects `abi3-py39`, so Python 3.9 is the intended interpreter floor for the probe. This is evidence for the next packaging experiment, not yet the shipped OS, CPU, libc, or language-version support policy.
 
-The current SQLite schema stores opaque application inputs as blobs and limited metadata as checked JSON text for persisted spec 7. It has no legacy JSON/text or `cbor-x` vectors, so it does not close the persisted-codec decision. Queue delivery transport, endpoint resolution, `tag`, database location, busy and checkpoint defaults, wheel ownership, and public package names also remain open.
+The current SQLite schema stores opaque application inputs as blobs and limited metadata as checked JSON text for persisted spec 7. It has no legacy JSON/text or `cbor-x` vectors, so it does not close the persisted-codec decision. Production endpoint discovery and authentication, direct delivery, queue concurrency, `tag`, database location, busy and checkpoint defaults, wheel ownership, and public package names also remain open.
 
 ## Motivation
 
@@ -382,6 +384,8 @@ Claims are scoped to the logical deployment, queue namespace, and handler prefix
 
 Delayed delivery, handler-requested `timeoutSeconds`, retry backoff, idempotency windows, queue namespaces, concurrency limits, and graceful shutdown all live in Rust. The provisional baseline transport is loopback HTTP to the language host's generated flow route because it keeps the Rust queue independent of Node.js and Python callback ABIs; Phase 0 still validates it against direct delivery.
 
+The Phase 0 worker resolves the host's complete loopback flow URL once when the binding starts it, then claims only the supplied scope and queue name. The endpoint never enters a queue row, so restarting a development server on another port cannot leave a durable stale destination. The probe adapter's explicit worker start and draining close model the eventual World lifecycle: construction and inspection do not launch a worker, while close stops claims and joins the supervisor off the host event loop. This is evidence for the encapsulation boundary; the prototype's one thread, concurrency of one, HTTP-only parser, and short shutdown timeout are not compatibility commitments.
+
 A durable queue does not remove the boundary between event creation and publication exposed by the current `World` interface. Queue success with event failure continues to rely on the resilient payload rebuilding missing state; event success with queue failure requires active-run reconciliation. Recovery must use a durable, deterministic idempotency identity and account for ready, delayed, and leased rows so repeated startup scans converge instead of creating a delivery storm.
 
 A future SQLite-specific combined operation may insert an event and message in one transaction, but mixed-version callers and other replay wake paths still require reconciliation. Phase 0 must define which component performs the scan, the identity of a missing wake, and how it coexists with the current `reenqueueActiveRuns` behavior.
@@ -697,8 +701,8 @@ These decisions must be resolved during Phase 0.
 2. What persisted codec represents new SQLite event/entity metadata, and which fixed vectors define legacy JSON/text and `cbor-x` compatibility while application payload bytes remain opaque?
 3. Does the native adapter use mapped host structs or a versioned envelope, and what handshake detects a wrapper/addon mismatch before a write?
 4. Which Rust SQLite driver and linkage mode provide the required async behavior, patched SQLite version, build portability, and test hooks?
-5. Does the initial worker deliver over loopback HTTP, a direct binding callback, or both, and which path is the semantic baseline?
-6. What stable application/deployment identity scopes queue claims, how does a worker resolve its current endpoint, and what deterministic identity makes active-run reconciliation converge?
+5. Does a direct binding callback justify its extra ABI and reentrancy complexity after loopback HTTP has established the Phase 0 semantic baseline?
+6. What stable application/deployment identity scopes queue claims in shipped packages, and how should production hosts authenticate or advertise the explicit endpoint validated by the prototype?
 7. Must local `tag` preserve its current untagged-plus-tagged overlay visibility, conflict precedence, scoped recovery, and scoped `clear()`; if so, does one database carry scope keys or does the layout use a designed base-plus-overlay arrangement?
 8. What durability, busy-timeout, connection-count, and checkpoint defaults are appropriate for the local profile?
 9. Where does the SQLite file live, and how does `WORKFLOW_LOCAL_DATA_DIR` map to it without colliding with legacy files?
@@ -758,4 +762,4 @@ Several tempting approaches create early motion at the cost of the shared archit
 
 The next discussion should approve a small decision package that unlocks the Node.js/SQLite walking skeleton without pretending the full program is settled.
 
-That package consists of the ownership boundary, the pure transition-plan model, the initial crate graph, SQLite as a new explicitly selected local format, a persistent SQLite queue direction, napi-rs as the first integrated binding, Phase 2 validation through the existing TypeScript E2E paths, TypeScript coexistence, and Phase 0 prototypes for both Node-API and PyO3 plus the persisted codec, FFI representation, SQLite driver, queue routing, reconciliation, and delivery transport. Loopback HTTP is the baseline candidate, not yet an approved compatibility promise. Python packaging, public package names, PostgreSQL queue design, and default replacement remain open.
+That package consists of the ownership boundary, the pure transition-plan model, the initial crate graph, SQLite as a new explicitly selected local format, a persistent SQLite queue direction, napi-rs as the first integrated binding, Phase 2 validation through the existing TypeScript E2E paths, TypeScript coexistence, and Phase 0 prototypes for both Node-API and PyO3 plus the persisted codec, FFI representation, SQLite driver, queue routing, reconciliation, and delivery transport. The Node-API worker probe now supports loopback HTTP as the semantic-baseline candidate, but does not make it an approved compatibility promise. Python packaging, public package names, PostgreSQL queue design, and default replacement remain open.
