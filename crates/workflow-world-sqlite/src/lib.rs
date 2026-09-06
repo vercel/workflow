@@ -2,9 +2,10 @@
 //!
 //! The schema is a pre-release prototype. It currently exercises resilient run
 //! start, atomic materialization, dense slots, ordered checksummed migrations,
-//! process contention, and application-process recovery at instrumented
-//! transaction boundaries. It is not yet a complete local `World`
-//! implementation or a power-loss durability claim.
+//! leased queue claims and active-run reconciliation, process contention, and
+//! application-process recovery at instrumented transaction boundaries. It is
+//! not yet a complete local `World`, delivery worker, or a power-loss durability
+//! claim.
 
 #![forbid(unsafe_code)]
 
@@ -17,10 +18,11 @@ use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, ffi::ErrorCode,
     params,
 };
+use sha2::{Digest, Sha256};
 use workflow_protocol::{
-    CreateEventResult, EventPage, EventType, RunCreatedEventData, RunStartedRequest, RunStatus,
-    StoredEvent, WorkflowRun, WorldError, WorldErrorKind, WorldSnapshot, event_id_to_slot,
-    slot_to_event_id,
+    CreateEventResult, EventPage, EventType, QueueClaim, QueueEnqueueResult, QueueMessageRequest,
+    QueueReconcileResult, RunCreatedEventData, RunStartedRequest, RunStatus, StoredEvent,
+    WorkflowRun, WorldError, WorldErrorKind, WorldSnapshot, event_id_to_slot, slot_to_event_id,
 };
 use workflow_world_core::plan_run_started;
 
@@ -262,6 +264,284 @@ impl SqliteWorld {
         self.read_event_page(run_id, after_slot, limit)
     }
 
+    pub fn enqueue_queue_message(
+        &self,
+        request: &QueueMessageRequest,
+    ) -> Result<QueueEnqueueResult, WorldError> {
+        validate_queue_message(request)?;
+        let mut connection = self.open_runtime_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        self.require_current_schema(&transaction)?;
+        let result = enqueue_queue_message(&transaction, request)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(result)
+    }
+
+    pub fn claim_queue_message(
+        &self,
+        scope: &str,
+        queue_name: &str,
+        lease_owner: &str,
+        now_ms: i64,
+        lease_duration_ms: i64,
+    ) -> Result<Option<QueueClaim>, WorldError> {
+        validate_queue_routing(scope, queue_name)?;
+        if lease_owner.is_empty() {
+            return Err(WorldError::invalid_request(
+                "queue lease owner must not be empty",
+            ));
+        }
+        if now_ms < 0 {
+            return Err(WorldError::invalid_request(
+                "queue claim time must not be negative",
+            ));
+        }
+        if lease_duration_ms <= 0 {
+            return Err(WorldError::invalid_request(
+                "queue lease duration must be greater than zero",
+            ));
+        }
+        let lease_expires_at_ms = now_ms.checked_add(lease_duration_ms).ok_or_else(|| {
+            WorldError::invalid_request("queue lease expiration exceeds the timestamp range")
+        })?;
+        #[cfg(test)]
+        process_tests::pause_at_process_test_failpoint(None, "before_queue_claim")?;
+
+        let mut connection = self.open_runtime_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        self.require_current_schema(&transaction)?;
+        let message_id = transaction
+            .query_row(
+                r#"
+                SELECT message_id
+                FROM workflow_queue_messages
+                WHERE scope = ?1
+                  AND queue_name = ?2
+                  AND available_at_ms <= ?3
+                  AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?3)
+                ORDER BY available_at_ms ASC, created_at_ms ASC, message_id ASC
+                LIMIT 1
+                "#,
+                params![scope, queue_name, now_ms],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(storage_error)?;
+        let Some(message_id) = message_id else {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(None);
+        };
+
+        let changed = transaction
+            .execute(
+                r#"
+                UPDATE workflow_queue_messages
+                SET attempt = attempt + 1,
+                    lease_token = lower(hex(randomblob(16))),
+                    lease_owner = ?2,
+                    lease_expires_at_ms = ?3,
+                    updated_at_ms = ?4
+                WHERE message_id = ?1
+                  AND available_at_ms <= ?4
+                  AND (lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?4)
+                "#,
+                params![message_id, lease_owner, lease_expires_at_ms, now_ms],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(WorldError::new(
+                WorldErrorKind::Storage,
+                format!("queue message {message_id:?} lost its transaction owner"),
+            ));
+        }
+        let claim = read_queue_claim(&transaction, &message_id)?;
+        transaction.commit().map_err(storage_error)?;
+        #[cfg(test)]
+        process_tests::pause_at_process_test_failpoint(None, "after_queue_claim_commit")?;
+        Ok(Some(claim))
+    }
+
+    pub fn reschedule_queue_message(
+        &self,
+        lease_token: &str,
+        now_ms: i64,
+        available_at_ms: i64,
+    ) -> Result<String, WorldError> {
+        if lease_token.is_empty() {
+            return Err(WorldError::invalid_request(
+                "queue lease token must not be empty",
+            ));
+        }
+        if now_ms < 0 || available_at_ms < 0 {
+            return Err(WorldError::invalid_request(
+                "queue reschedule times must not be negative",
+            ));
+        }
+        let mut connection = self.open_runtime_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        self.require_current_schema(&transaction)?;
+        let message_id = transaction
+            .query_row(
+                "SELECT message_id FROM workflow_queue_messages WHERE lease_token = ?1 AND lease_expires_at_ms > ?2",
+                params![lease_token, now_ms],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or_else(|| queue_claim_lost(lease_token))?;
+        transaction
+            .execute(
+                r#"
+                UPDATE workflow_queue_messages
+                SET available_at_ms = ?3,
+                    lease_token = NULL,
+                    lease_owner = NULL,
+                    lease_expires_at_ms = NULL,
+                    updated_at_ms = ?2
+                WHERE message_id = ?1 AND lease_token = ?4 AND lease_expires_at_ms > ?2
+                "#,
+                params![message_id, now_ms, available_at_ms, lease_token],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(message_id)
+    }
+
+    pub fn acknowledge_queue_message(
+        &self,
+        lease_token: &str,
+        now_ms: i64,
+    ) -> Result<String, WorldError> {
+        if lease_token.is_empty() {
+            return Err(WorldError::invalid_request(
+                "queue lease token must not be empty",
+            ));
+        }
+        if now_ms < 0 {
+            return Err(WorldError::invalid_request(
+                "queue acknowledgement time must not be negative",
+            ));
+        }
+        let mut connection = self.open_runtime_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        self.require_current_schema(&transaction)?;
+        let message_id = transaction
+            .query_row(
+                "SELECT message_id FROM workflow_queue_messages WHERE lease_token = ?1 AND lease_expires_at_ms > ?2",
+                params![lease_token, now_ms],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or_else(|| queue_claim_lost(lease_token))?;
+        let changed = transaction
+            .execute(
+                "DELETE FROM workflow_queue_messages WHERE message_id = ?1 AND lease_token = ?2 AND lease_expires_at_ms > ?3",
+                params![message_id, lease_token, now_ms],
+            )
+            .map_err(storage_error)?;
+        if changed != 1 {
+            return Err(queue_claim_lost(lease_token));
+        }
+        transaction.commit().map_err(storage_error)?;
+        Ok(message_id)
+    }
+
+    pub fn reconcile_active_runs(
+        &self,
+        scope: &str,
+        deployment_id: &str,
+        queue_prefix: &str,
+        now_ms: i64,
+    ) -> Result<QueueReconcileResult, WorldError> {
+        if scope.is_empty() {
+            return Err(WorldError::invalid_request("queue scope must not be empty"));
+        }
+        if queue_prefix.is_empty() {
+            return Err(WorldError::invalid_request(
+                "queue prefix must not be empty",
+            ));
+        }
+        if deployment_id.is_empty() {
+            return Err(WorldError::invalid_request(
+                "reconciliation deployment ID must not be empty",
+            ));
+        }
+        if now_ms < 0 {
+            return Err(WorldError::invalid_request(
+                "queue reconciliation time must not be negative",
+            ));
+        }
+        #[cfg(test)]
+        process_tests::pause_at_process_test_failpoint(None, "before_queue_reconcile")?;
+
+        let mut connection = self.open_runtime_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        self.require_current_schema(&transaction)?;
+        let active_runs = {
+            let mut statement = transaction
+                .prepare(
+                    r#"
+                    SELECT run_id, workflow_name
+                    FROM workflow_runs
+                    WHERE deployment_id = ?1
+                      AND status IN ('pending', 'running')
+                    ORDER BY run_id ASC
+                    "#,
+                )
+                .map_err(storage_error)?;
+            statement
+                .query_map([deployment_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(storage_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?
+        };
+        let mut created_message_count = 0;
+        let mut message_ids = Vec::with_capacity(active_runs.len());
+        for (run_id, workflow_name) in &active_runs {
+            let request =
+                active_run_queue_message(scope, queue_prefix, run_id, workflow_name, now_ms)?;
+            let result = enqueue_queue_message(&transaction, &request)?;
+            created_message_count += usize::from(result.created);
+            message_ids.push(result.message_id);
+        }
+        transaction.commit().map_err(storage_error)?;
+        Ok(QueueReconcileResult {
+            active_run_count: active_runs.len(),
+            created_message_count,
+            message_ids,
+        })
+    }
+
+    pub fn queue_message_count(&self, scope: &str) -> Result<usize, WorldError> {
+        if scope.is_empty() {
+            return Err(WorldError::invalid_request("queue scope must not be empty"));
+        }
+        let connection = self.open_runtime_connection()?;
+        self.require_current_schema(&connection)?;
+        let count = connection
+            .query_row(
+                "SELECT count(*) FROM workflow_queue_messages WHERE scope = ?1",
+                [scope],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(storage_error)?;
+        usize::try_from(count)
+            .map_err(|_| WorldError::persisted_data(format!("invalid queue row count: {count}")))
+    }
+
     fn read_only_start_result(
         &self,
         request: &RunStartedRequest,
@@ -397,6 +677,241 @@ impl SqliteWorld {
         }
         Ok(())
     }
+}
+
+#[derive(Debug)]
+struct StoredQueueMessage {
+    message_id: String,
+    scope: String,
+    queue_name: String,
+    idempotency_key: String,
+    body: Vec<u8>,
+}
+
+fn validate_queue_routing(scope: &str, queue_name: &str) -> Result<(), WorldError> {
+    if scope.is_empty() {
+        return Err(WorldError::invalid_request("queue scope must not be empty"));
+    }
+    if queue_name.is_empty() {
+        return Err(WorldError::invalid_request("queue name must not be empty"));
+    }
+    Ok(())
+}
+
+fn validate_queue_message(request: &QueueMessageRequest) -> Result<(), WorldError> {
+    validate_queue_routing(&request.scope, &request.queue_name)?;
+    if request.message_id.is_empty() {
+        return Err(WorldError::invalid_request(
+            "queue message ID must not be empty",
+        ));
+    }
+    if request.idempotency_key.is_empty() {
+        return Err(WorldError::invalid_request(
+            "queue idempotency key must not be empty",
+        ));
+    }
+    if request.available_at_ms < 0 {
+        return Err(WorldError::invalid_request(
+            "queue availability time must not be negative",
+        ));
+    }
+    Ok(())
+}
+
+fn active_run_queue_message(
+    scope: &str,
+    queue_prefix: &str,
+    run_id: &str,
+    workflow_name: &str,
+    now_ms: i64,
+) -> Result<QueueMessageRequest, WorldError> {
+    let mut identity = Sha256::new();
+    identity.update(b"workflow-active-run\0");
+    identity.update(scope.as_bytes());
+    identity.update(b"\0");
+    identity.update(run_id.as_bytes());
+    let message_id = format!("msg_reconcile_{:x}", identity.finalize());
+    let body = serde_json::to_vec(&serde_json::json!({ "runId": run_id }))
+        .map_err(persisted_data_error)?;
+    let request = QueueMessageRequest {
+        message_id,
+        scope: scope.to_owned(),
+        queue_name: format!("{queue_prefix}{workflow_name}"),
+        idempotency_key: format!("active-run:{run_id}"),
+        body,
+        available_at_ms: now_ms,
+    };
+    validate_queue_message(&request)?;
+    Ok(request)
+}
+
+fn enqueue_queue_message(
+    transaction: &Transaction<'_>,
+    request: &QueueMessageRequest,
+) -> Result<QueueEnqueueResult, WorldError> {
+    let by_message_id = read_queue_message_by_id(transaction, &request.message_id)?;
+    let by_identity = read_queue_message_by_identity(
+        transaction,
+        &request.scope,
+        &request.queue_name,
+        &request.idempotency_key,
+    )?;
+    let existing = match (by_message_id, by_identity) {
+        (Some(by_id), Some(by_key)) if by_id.message_id != by_key.message_id => {
+            return Err(WorldError::invalid_request(format!(
+                "queue message ID {:?} and idempotency key {:?} identify different messages",
+                request.message_id, request.idempotency_key
+            )));
+        }
+        (Some(existing), _) | (_, Some(existing)) => Some(existing),
+        (None, None) => None,
+    };
+    if let Some(existing) = existing {
+        if existing.message_id != request.message_id
+            || existing.scope != request.scope
+            || existing.queue_name != request.queue_name
+            || existing.idempotency_key != request.idempotency_key
+            || existing.body != request.body
+        {
+            return Err(WorldError::invalid_request(format!(
+                "queue idempotency identity {:?} was reused with different message data",
+                request.idempotency_key
+            )));
+        }
+        return Ok(QueueEnqueueResult {
+            message_id: existing.message_id,
+            created: false,
+        });
+    }
+
+    transaction
+        .execute(
+            r#"
+            INSERT INTO workflow_queue_messages (
+              message_id, scope, queue_name, idempotency_key, body,
+              available_at_ms, created_at_ms, updated_at_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?6)
+            "#,
+            params![
+                request.message_id,
+                request.scope,
+                request.queue_name,
+                request.idempotency_key,
+                request.body,
+                request.available_at_ms,
+            ],
+        )
+        .map_err(storage_error)?;
+    Ok(QueueEnqueueResult {
+        message_id: request.message_id.clone(),
+        created: true,
+    })
+}
+
+fn read_queue_message_by_id(
+    connection: &Connection,
+    message_id: &str,
+) -> Result<Option<StoredQueueMessage>, WorldError> {
+    connection
+        .query_row(
+            r#"
+            SELECT message_id, scope, queue_name, idempotency_key, body
+            FROM workflow_queue_messages
+            WHERE message_id = ?1
+            "#,
+            [message_id],
+            read_stored_queue_message,
+        )
+        .optional()
+        .map_err(storage_error)
+}
+
+fn read_queue_message_by_identity(
+    connection: &Connection,
+    scope: &str,
+    queue_name: &str,
+    idempotency_key: &str,
+) -> Result<Option<StoredQueueMessage>, WorldError> {
+    connection
+        .query_row(
+            r#"
+            SELECT message_id, scope, queue_name, idempotency_key, body
+            FROM workflow_queue_messages
+            WHERE scope = ?1 AND queue_name = ?2 AND idempotency_key = ?3
+            "#,
+            params![scope, queue_name, idempotency_key],
+            read_stored_queue_message,
+        )
+        .optional()
+        .map_err(storage_error)
+}
+
+fn read_stored_queue_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredQueueMessage> {
+    Ok(StoredQueueMessage {
+        message_id: row.get(0)?,
+        scope: row.get(1)?,
+        queue_name: row.get(2)?,
+        idempotency_key: row.get(3)?,
+        body: row.get(4)?,
+    })
+}
+
+fn read_queue_claim(connection: &Connection, message_id: &str) -> Result<QueueClaim, WorldError> {
+    let (
+        message_id,
+        scope,
+        queue_name,
+        body,
+        attempt,
+        lease_token,
+        lease_owner,
+        lease_expires_at_ms,
+    ) = connection
+        .query_row(
+            r#"
+            SELECT message_id, scope, queue_name, body, attempt,
+                   lease_token, lease_owner, lease_expires_at_ms
+            FROM workflow_queue_messages
+            WHERE message_id = ?1
+            "#,
+            [message_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                ))
+            },
+        )
+        .map_err(storage_error)?;
+    Ok(QueueClaim {
+        message_id,
+        scope,
+        queue_name,
+        body,
+        attempt: to_u32(attempt, "queue attempt")?,
+        lease_token: lease_token.ok_or_else(|| {
+            WorldError::persisted_data("claimed queue message is missing its lease token")
+        })?,
+        lease_owner: lease_owner.ok_or_else(|| {
+            WorldError::persisted_data("claimed queue message is missing its lease owner")
+        })?,
+        lease_expires_at_ms: lease_expires_at_ms.ok_or_else(|| {
+            WorldError::persisted_data("claimed queue message is missing its lease expiration")
+        })?,
+    })
+}
+
+fn queue_claim_lost(_lease_token: &str) -> WorldError {
+    WorldError::new(
+        WorldErrorKind::QueueClaimLost,
+        "queue lease is no longer current",
+    )
 }
 
 fn retry_with_busy_budget<T>(

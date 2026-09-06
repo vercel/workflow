@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -69,6 +70,55 @@ type ResilientRunStartFixture = {
   };
 };
 
+type LeasedQueueFixture = {
+  fixtureVersion: 1;
+  name: 'leased-queue-recovers-and-reconciles';
+  requires: ['leased-queue', 'active-run-reconciliation'];
+  persistedSpecVersion: number;
+  given: {
+    activeRun: {
+      runId: string;
+      deploymentId: string;
+      workflowName: string;
+      input: FixtureBytes;
+    };
+  };
+  when: {
+    scope: string;
+    deploymentId: string;
+    queuePrefix: string;
+    queueName: string;
+    leaseDurationMs: number;
+    operations: Array<
+      | { operation: 'reconcile'; atMs: number; expect: unknown }
+      | { operation: 'claim'; workerId: string; atMs: number; expect: unknown }
+      | {
+          operation: 'reschedule';
+          atMs: number;
+          availableAtMs: number;
+          expect: unknown;
+        }
+      | { operation: 'acknowledge'; atMs: number; expect: unknown }
+    >;
+  };
+  then: {
+    queuedMessageCount: number;
+    messageIds: string[];
+  };
+};
+
+type ReferenceQueueMessage = {
+  messageId: string;
+  scope: string;
+  queueName: string;
+  body: Uint8Array;
+  availableAtMs: number;
+  attempt: number;
+  leaseToken?: string;
+  leaseOwner?: string;
+  leaseExpiresAtMs?: number;
+};
+
 const fixturePath = fileURLToPath(
   new URL(
     '../../../../fixtures/world-contract/v1/resilient-run-start.json',
@@ -78,6 +128,18 @@ const fixturePath = fileURLToPath(
 const fixtureSchemaPath = fileURLToPath(
   new URL(
     '../../../../fixtures/world-contract/v1/fixture.schema.json',
+    import.meta.url
+  )
+);
+const leasedQueueFixturePath = fileURLToPath(
+  new URL(
+    '../../../../fixtures/world-contract/v1/leased-queue.json',
+    import.meta.url
+  )
+);
+const leasedQueueSchemaPath = fileURLToPath(
+  new URL(
+    '../../../../fixtures/world-contract/v1/leased-queue.schema.json',
     import.meta.url
   )
 );
@@ -142,15 +204,26 @@ function projectEvent(event: Event): EventProjection {
   };
 }
 
-async function loadFixture(): Promise<ResilientRunStartFixture> {
+async function loadAndValidateFixture(
+  dataPath: string,
+  schemaPath: string
+): Promise<unknown> {
   const [fixture, schema] = await Promise.all(
-    [fixturePath, fixtureSchemaPath].map(async (filePath) =>
+    [dataPath, schemaPath].map(async (filePath) =>
       JSON.parse(await fs.readFile(filePath, 'utf8'))
     )
   );
   const ajv = new Ajv2020({ strict: true });
   const validate = ajv.compile(schema);
   assert(validate(fixture), ajv.errorsText(validate.errors));
+  return fixture;
+}
+
+async function loadFixture(): Promise<ResilientRunStartFixture> {
+  const fixture = (await loadAndValidateFixture(
+    fixturePath,
+    fixtureSchemaPath
+  )) as ResilientRunStartFixture;
   assert.equal(fixture.fixtureVersion, 1);
   assert.equal(fixture.name, 'resilient-run-start-synthesizes-created');
   assert.equal(fixture.given.storage, 'empty');
@@ -158,7 +231,153 @@ async function loadFixture(): Promise<ResilientRunStartFixture> {
   assert.equal(fixture.when.event.eventType, 'run_started');
   assert.deepEqual(fixture.requires, ['run-started-preload']);
   assert.equal(fixture.persistedSpecVersion, fixture.when.event.specVersion);
-  return fixture as ResilientRunStartFixture;
+  return fixture;
+}
+
+async function loadLeasedQueueFixture(): Promise<LeasedQueueFixture> {
+  const fixture = (await loadAndValidateFixture(
+    leasedQueueFixturePath,
+    leasedQueueSchemaPath
+  )) as LeasedQueueFixture;
+  assert.equal(fixture.fixtureVersion, 1);
+  assert.equal(fixture.name, 'leased-queue-recovers-and-reconciles');
+  assert.deepEqual(fixture.requires, [
+    'leased-queue',
+    'active-run-reconciliation',
+  ]);
+  return fixture;
+}
+
+class LeasedQueueReferenceModel {
+  readonly #messages = new Map<string, ReferenceQueueMessage>();
+
+  constructor(
+    private readonly activeRun: LeasedQueueFixture['given']['activeRun']
+  ) {}
+
+  reconcile(
+    scope: string,
+    deploymentId: string,
+    queuePrefix: string,
+    atMs: number
+  ) {
+    assert.equal(this.activeRun.deploymentId, deploymentId);
+    const messageId = this.activeRunMessageId(scope);
+    let createdMessageCount = 0;
+    if (!this.#messages.has(messageId)) {
+      this.#messages.set(messageId, {
+        messageId,
+        scope,
+        queueName: `${queuePrefix}${this.activeRun.workflowName}`,
+        body: new TextEncoder().encode(
+          JSON.stringify({ runId: this.activeRun.runId })
+        ),
+        availableAtMs: atMs,
+        attempt: 0,
+      });
+      createdMessageCount = 1;
+    }
+    return {
+      activeRunCount: 1,
+      createdMessageCount,
+      messageIds: [messageId],
+      queuedMessageCount: this.#messages.size,
+    };
+  }
+
+  claim(
+    scope: string,
+    queueName: string,
+    workerId: string,
+    atMs: number,
+    leaseDurationMs: number
+  ) {
+    const message = [...this.#messages.values()]
+      .filter(
+        (candidate) =>
+          candidate.scope === scope &&
+          candidate.queueName === queueName &&
+          candidate.availableAtMs <= atMs &&
+          (candidate.leaseExpiresAtMs === undefined ||
+            candidate.leaseExpiresAtMs <= atMs)
+      )
+      .sort((left, right) => left.messageId.localeCompare(right.messageId))[0];
+    if (!message) return null;
+    message.attempt++;
+    message.leaseOwner = workerId;
+    message.leaseExpiresAtMs = atMs + leaseDurationMs;
+    message.leaseToken = `${message.messageId}:${message.attempt}:${workerId}`;
+    return {
+      messageId: message.messageId,
+      attempt: message.attempt,
+      leaseOwner: message.leaseOwner,
+      leaseExpiresAtMs: message.leaseExpiresAtMs,
+      body: toFixtureValue(message.body),
+    };
+  }
+
+  reschedule(leaseToken: string, atMs: number, availableAtMs: number) {
+    const message = this.messageForLease(leaseToken);
+    assert(
+      message.leaseExpiresAtMs !== undefined && message.leaseExpiresAtMs > atMs,
+      'only a live lease may reschedule a message'
+    );
+    message.availableAtMs = availableAtMs;
+    delete message.leaseToken;
+    delete message.leaseOwner;
+    delete message.leaseExpiresAtMs;
+    return {
+      messageId: message.messageId,
+      queuedMessageCount: this.#messages.size,
+    };
+  }
+
+  acknowledge(leaseToken: string, atMs: number) {
+    const message = this.messageForLease(leaseToken);
+    assert(
+      message.leaseExpiresAtMs !== undefined && message.leaseExpiresAtMs > atMs,
+      'only a live lease may acknowledge a message'
+    );
+    this.#messages.delete(message.messageId);
+    return {
+      messageId: message.messageId,
+      queuedMessageCount: this.#messages.size,
+    };
+  }
+
+  get messageIds(): string[] {
+    return [...this.#messages.keys()].sort();
+  }
+
+  get size(): number {
+    return this.#messages.size;
+  }
+
+  currentLeaseToken(): string {
+    const claimed = [...this.#messages.values()].find(
+      ({ leaseToken }) => leaseToken !== undefined
+    );
+    assert(claimed?.leaseToken);
+    return claimed.leaseToken;
+  }
+
+  private activeRunMessageId(scope: string): string {
+    const digest = createHash('sha256')
+      .update('workflow-active-run\0')
+      .update(scope)
+      .update('\0')
+      .update(this.activeRun.runId)
+      .digest('hex');
+    return `msg_reconcile_${digest}`;
+  }
+
+  private messageForLease(leaseToken: string): ReferenceQueueMessage {
+    const message = [...this.#messages.values()].find(
+      (candidate) => candidate.leaseToken === leaseToken
+    );
+    assert(message, 'queue lease must still identify a message');
+    return message;
+  }
 }
 
 // @lat: [[rust-portability#Verification Strategy#Contract Fixtures]]
@@ -223,5 +442,47 @@ describe('language-neutral World contract fixtures', () => {
 
     expect(projectRun(durableRun)).toEqual(fixture.then.run);
     expect(durableEvents.data.map(projectEvent)).toEqual(fixture.then.events);
+  });
+
+  it('runs leased-queue-recovers-and-reconciles', async () => {
+    const fixture = await loadLeasedQueueFixture();
+    const model = new LeasedQueueReferenceModel(fixture.given.activeRun);
+
+    for (const operation of fixture.when.operations) {
+      let actual: unknown;
+      switch (operation.operation) {
+        case 'reconcile':
+          actual = model.reconcile(
+            fixture.when.scope,
+            fixture.when.deploymentId,
+            fixture.when.queuePrefix,
+            operation.atMs
+          );
+          break;
+        case 'claim':
+          actual = model.claim(
+            fixture.when.scope,
+            fixture.when.queueName,
+            operation.workerId,
+            operation.atMs,
+            fixture.when.leaseDurationMs
+          );
+          break;
+        case 'reschedule':
+          actual = model.reschedule(
+            model.currentLeaseToken(),
+            operation.atMs,
+            operation.availableAtMs
+          );
+          break;
+        case 'acknowledge':
+          actual = model.acknowledge(model.currentLeaseToken(), operation.atMs);
+          break;
+      }
+      expect(actual).toEqual(operation.expect);
+    }
+
+    expect(model.size).toBe(fixture.then.queuedMessageCount);
+    expect(model.messageIds).toEqual(fixture.then.messageIds);
   });
 });

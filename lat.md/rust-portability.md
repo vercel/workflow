@@ -45,9 +45,11 @@ The Node-API and PyO3 probes pass owned byte buffers and ordinary host scalars i
 
 The SQLite probe uses `rusqlite` with its bundled SQLite build. Schema changes run only through an explicit migration call under one `BEGIN IMMEDIATE` transaction, enter WAL mode, and record ordered checksums. Concurrent migrators, process death before and after commit, history gaps, future versions, and checksum drift are tested. Runtime operations reject missing or incompatible migration history instead of migrating implicitly.
 
+The leased-queue storage prototype keeps messages in the same SQLite file and scopes claims by an explicit application/deployment identity and queue name. Active-run reconciliation filters by deployment and derives one deterministic message ID per scoped run. Claims use distinct capability tokens, retain the message ID across lease expiry and timeout rescheduling, and are tested across competing and killed processes. This establishes the storage baseline without choosing loopback HTTP or direct binding delivery.
+
 The repository-local technical floor is Rust 1.88 for both native bindings. The dedicated CI matrix is configured to exercise Node.js 22 and Python 3.13 across Linux, macOS, and Windows; the Python extension selects `abi3-py39`, so Python 3.9 is the intended interpreter floor for the probe. This is evidence for the next packaging experiment, not yet the shipped OS, CPU, libc, or language-version support policy.
 
-The current SQLite schema stores opaque application inputs as blobs and limited metadata as checked JSON text for persisted spec 7. It has no legacy JSON/text or `cbor-x` vectors, so it does not close the persisted-codec decision. Queue storage, delivery transport, reconciliation identity, `tag`, database location, busy and checkpoint defaults, wheel ownership, and public package names also remain open.
+The current SQLite schema stores opaque application inputs as blobs and limited metadata as checked JSON text for persisted spec 7. It has no legacy JSON/text or `cbor-x` vectors, so it does not close the persisted-codec decision. Queue delivery transport, endpoint resolution, `tag`, database location, busy and checkpoint defaults, wheel ownership, and public package names also remain open.
 
 ## Motivation
 

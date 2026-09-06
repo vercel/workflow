@@ -17,12 +17,20 @@ pub(super) struct AppliedMigration {
     pub checksum: String,
 }
 
-pub(super) const MIGRATIONS: &[SchemaMigration] = &[SchemaMigration {
-    version: 1,
-    name: "initial",
-    sql: include_str!("../migrations/0001_initial.sql"),
-    checksum: "sha256:c25aea3a7eeeb28d9b621f25f4a25d1775a27918dfa9a7489d2fd4bc531a95e8",
-}];
+pub(super) const MIGRATIONS: &[SchemaMigration] = &[
+    SchemaMigration {
+        version: 1,
+        name: "initial",
+        sql: include_str!("../migrations/0001_initial.sql"),
+        checksum: "sha256:c25aea3a7eeeb28d9b621f25f4a25d1775a27918dfa9a7489d2fd4bc531a95e8",
+    },
+    SchemaMigration {
+        version: 2,
+        name: "leased-queue",
+        sql: include_str!("../migrations/0002_leased_queue.sql"),
+        checksum: "sha256:e8e887f52c1f6c0c5485f208026326d9bce280c18e6e1e5cd6e0ca9841017128",
+    },
+];
 
 pub(super) fn current_schema_version() -> i64 {
     MIGRATIONS.last().map_or(0, |migration| migration.version)
@@ -184,7 +192,9 @@ mod tests {
     fn checked_in_registry_is_contiguous_and_nonempty() {
         validate_registry().expect("checked-in migrations should form a valid registry");
         assert_eq!(MIGRATIONS[0].version, 1);
-        assert_eq!(migration_checksum(&MIGRATIONS[0]), MIGRATIONS[0].checksum);
+        for migration in MIGRATIONS {
+            assert_eq!(migration_checksum(migration), migration.checksum);
+        }
     }
 
     #[test]

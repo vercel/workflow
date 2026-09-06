@@ -33,6 +33,12 @@ const RESULT_PATH: &str = "WORKFLOW_SQLITE_PROCESS_TEST_RESULT";
 const WORKER_TEST_NAME: &str = "process_tests::process_worker_entry";
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
 const WORKER_RELEASE_TIMEOUT: Duration = Duration::from_secs(60);
+const QUEUE_SCOPE: &str = "app_process_test:dpl_process_crash_fixture";
+const QUEUE_PREFIX: &str = "__wkf_workflow_";
+const QUEUE_NAME: &str = "__wkf_workflow_workflow//process-crash-fixture";
+const QUEUE_AVAILABLE_AT_MS: i64 = 1_000;
+const QUEUE_CLAIM_AT_MS: i64 = 1_010;
+const QUEUE_LEASE_MS: i64 = 100;
 
 struct WorkerProcess {
     child: Option<Child>,
@@ -180,7 +186,10 @@ fn table_count(database_path: &Path, table: &str) -> i64 {
     assert!(
         matches!(
             table,
-            "workflow_runs" | "workflow_events" | "workflow_run_created_event_data"
+            "workflow_runs"
+                | "workflow_events"
+                | "workflow_run_created_event_data"
+                | "workflow_queue_messages"
         ),
         "test helper must only query known tables"
     );
@@ -231,6 +240,7 @@ fn assert_empty_database(database_path: &Path) {
         table_count(database_path, "workflow_run_created_event_data"),
         0
     );
+    assert_eq!(table_count(database_path, "workflow_queue_messages"), 0);
     let missing = SqliteWorld::new(database_path)
         .snapshot(&request().run_id)
         .expect_err("an aborted transaction must not leave a visible run");
@@ -301,6 +311,7 @@ fn assert_complete_database(database_path: &Path) {
         table_count(database_path, "workflow_run_created_event_data"),
         1
     );
+    assert_eq!(table_count(database_path, "workflow_queue_messages"), 0);
 }
 
 fn managed_table_names(database_path: &Path) -> Vec<String> {
@@ -349,6 +360,7 @@ fn assert_migrated_database(database_path: &Path) -> Vec<(i64, String, i64)> {
         managed_table_names(database_path),
         vec![
             "workflow_events",
+            "workflow_queue_messages",
             "workflow_run_created_event_data",
             "workflow_runs",
             "workflow_schema_migrations",
@@ -370,6 +382,26 @@ fn assert_migrated_database(database_path: &Path) -> Vec<(i64, String, i64)> {
 
 fn write_release(path: &Path) {
     fs::write(path, b"release").expect("worker release gate should open");
+}
+
+fn prepare_active_queue(database_path: &Path) -> String {
+    let world = SqliteWorld::new(database_path);
+    world.migrate().expect("migration should succeed");
+    world
+        .create_resilient_run_started(&request())
+        .expect("active run should be created");
+    let reconciliation = world
+        .reconcile_active_runs(
+            QUEUE_SCOPE,
+            &request().event_data.deployment_id,
+            QUEUE_PREFIX,
+            QUEUE_AVAILABLE_AT_MS,
+        )
+        .expect("active run should be reconciled");
+    assert_eq!(reconciliation.active_run_count, 1);
+    assert_eq!(reconciliation.created_message_count, 1);
+    assert_eq!(reconciliation.message_ids.len(), 1);
+    reconciliation.message_ids[0].clone()
 }
 
 pub(super) fn pause_at_process_test_failpoint(
@@ -604,6 +636,225 @@ fn killing_after_commit_preserves_the_full_transaction_and_retry_is_idempotent()
         vec![1, 2]
     );
     assert_complete_database(&database_path);
+}
+
+#[test]
+fn processes_competing_for_one_queue_message_linearize_one_claim() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let database_path = directory.path().join("world.sqlite");
+    let message_id = prepare_active_queue(&database_path);
+    let release_path = directory.path().join("claim-release");
+
+    let mut workers = (0..2)
+        .map(|index| {
+            let ready_path = directory.path().join(format!("claim-ready-{index}"));
+            let result_path = directory.path().join(format!("claim-result-{index}"));
+            let child = spawn_worker(
+                "claim",
+                &database_path,
+                &ready_path,
+                Some("before_queue_claim"),
+                Some(&release_path),
+                Some(&result_path),
+            );
+            (child, ready_path, result_path)
+        })
+        .collect::<Vec<_>>();
+
+    for (child, ready_path, _) in &mut workers {
+        wait_for_marker(child, ready_path, "before_queue_claim");
+    }
+    write_release(&release_path);
+    for (index, (child, _, _)) in workers.iter_mut().enumerate() {
+        wait_for_success(child, &format!("queue claimant {index}"));
+    }
+
+    let outcomes = workers
+        .iter()
+        .map(|(_, _, result_path)| {
+            fs::read_to_string(result_path).expect("claim result should be written")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        outcomes.iter().filter(|outcome| *outcome == "none").count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| *outcome == &format!("claimed:{message_id}:1"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        SqliteWorld::new(&database_path)
+            .queue_message_count(QUEUE_SCOPE)
+            .expect("queue count should be readable"),
+        1
+    );
+}
+
+#[test]
+fn killing_a_claimant_after_commit_redelivers_the_same_message_after_lease_expiry() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let database_path = directory.path().join("world.sqlite");
+    let message_id = prepare_active_queue(&database_path);
+    let ready_path = directory.path().join("claimed-before-crash");
+    let result_path = directory.path().join("claim-result");
+    let mut worker = spawn_worker(
+        "claim",
+        &database_path,
+        &ready_path,
+        Some("after_queue_claim_commit"),
+        None,
+        Some(&result_path),
+    );
+    wait_for_marker(&mut worker, &ready_path, "after_queue_claim_commit");
+    let status = worker.kill_and_wait();
+    assert!(!status.success(), "the claimed worker should be killed");
+    assert!(
+        !result_path.exists(),
+        "the worker must lose its response after the durable claim"
+    );
+
+    let world = SqliteWorld::new(&database_path);
+    assert!(
+        world
+            .claim_queue_message(
+                QUEUE_SCOPE,
+                QUEUE_NAME,
+                "worker-before-expiry",
+                QUEUE_CLAIM_AT_MS + QUEUE_LEASE_MS - 1,
+                QUEUE_LEASE_MS,
+            )
+            .expect("pre-expiry claim should be readable")
+            .is_none()
+    );
+    let recovered = world
+        .claim_queue_message(
+            QUEUE_SCOPE,
+            QUEUE_NAME,
+            "worker-after-crash",
+            QUEUE_CLAIM_AT_MS + QUEUE_LEASE_MS,
+            QUEUE_LEASE_MS,
+        )
+        .expect("expired lease should be claimable")
+        .expect("the crashed message should be redelivered");
+    assert_eq!(recovered.message_id, message_id);
+    assert_eq!(recovered.attempt, 2);
+
+    let stale_lease = recovered.lease_token.clone();
+    assert_eq!(
+        world
+            .reschedule_queue_message(&recovered.lease_token, 1_120, 1_300)
+            .expect("handler timeout should reschedule the claim"),
+        message_id
+    );
+    let stale_error = world
+        .acknowledge_queue_message(&stale_lease, 1_121)
+        .expect_err("rescheduling must invalidate the previous lease token");
+    assert_eq!(stale_error.kind(), WorldErrorKind::QueueClaimLost);
+    assert!(
+        world
+            .claim_queue_message(
+                QUEUE_SCOPE,
+                QUEUE_NAME,
+                "worker-early",
+                1_299,
+                QUEUE_LEASE_MS
+            )
+            .expect("early timeout claim should be readable")
+            .is_none()
+    );
+    let timeout_delivery = world
+        .claim_queue_message(
+            QUEUE_SCOPE,
+            QUEUE_NAME,
+            "worker-timeout",
+            1_300,
+            QUEUE_LEASE_MS,
+        )
+        .expect("timeout delivery should be claimable")
+        .expect("timeout delivery should exist");
+    assert_eq!(timeout_delivery.message_id, message_id);
+    assert_eq!(timeout_delivery.attempt, 3);
+    world
+        .acknowledge_queue_message(&timeout_delivery.lease_token, 1_310)
+        .expect("latest lease should acknowledge the message");
+    assert_eq!(
+        world
+            .queue_message_count(QUEUE_SCOPE)
+            .expect("queue count should be readable"),
+        0
+    );
+}
+
+#[test]
+fn concurrent_reconciliation_converges_on_one_deterministic_wake() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let database_path = directory.path().join("world.sqlite");
+    let world = SqliteWorld::new(&database_path);
+    world.migrate().expect("migration should succeed");
+    world
+        .create_resilient_run_started(&request())
+        .expect("active run should be created");
+    let release_path = directory.path().join("reconcile-release");
+
+    let mut workers = (0..2)
+        .map(|index| {
+            let ready_path = directory.path().join(format!("reconcile-ready-{index}"));
+            let result_path = directory.path().join(format!("reconcile-result-{index}"));
+            let child = spawn_worker(
+                "reconcile",
+                &database_path,
+                &ready_path,
+                Some("before_queue_reconcile"),
+                Some(&release_path),
+                Some(&result_path),
+            );
+            (child, ready_path, result_path)
+        })
+        .collect::<Vec<_>>();
+
+    for (child, ready_path, _) in &mut workers {
+        wait_for_marker(child, ready_path, "before_queue_reconcile");
+    }
+    write_release(&release_path);
+    for (index, (child, _, _)) in workers.iter_mut().enumerate() {
+        wait_for_success(child, &format!("queue reconciler {index}"));
+    }
+
+    let outcomes = workers
+        .iter()
+        .map(|(_, _, result_path)| {
+            fs::read_to_string(result_path).expect("reconciliation result should be written")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| outcome.starts_with("created:1:"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| outcome.starts_with("created:0:"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes[0].split(':').next_back(),
+        outcomes[1].split(':').next_back(),
+        "both reconcilers must report the same deterministic message ID"
+    );
+    assert_eq!(
+        world
+            .queue_message_count(QUEUE_SCOPE)
+            .expect("queue count should be readable"),
+        1
+    );
 }
 
 #[test]
@@ -863,6 +1114,42 @@ fn process_worker_entry() {
             assert!(error.retryable(), "migration SQLITE_BUSY must be retryable");
             fs::write(env_path(RESULT_PATH), b"busy-retryable")
                 .expect("migration busy result should be persisted");
+        }
+        "claim" => {
+            let claim = SqliteWorld::new(&database_path)
+                .claim_queue_message(
+                    QUEUE_SCOPE,
+                    QUEUE_NAME,
+                    "process-worker",
+                    QUEUE_CLAIM_AT_MS,
+                    QUEUE_LEASE_MS,
+                )
+                .expect("worker claim should succeed");
+            let outcome = claim.map_or_else(
+                || "none".to_owned(),
+                |claim| format!("claimed:{}:{}", claim.message_id, claim.attempt),
+            );
+            fs::write(env_path(RESULT_PATH), outcome)
+                .expect("worker claim result should be persisted");
+        }
+        "reconcile" => {
+            let result = SqliteWorld::new(&database_path)
+                .reconcile_active_runs(
+                    QUEUE_SCOPE,
+                    &request().event_data.deployment_id,
+                    QUEUE_PREFIX,
+                    QUEUE_AVAILABLE_AT_MS,
+                )
+                .expect("worker reconciliation should succeed");
+            assert_eq!(result.message_ids.len(), 1);
+            fs::write(
+                env_path(RESULT_PATH),
+                format!(
+                    "created:{}:{}",
+                    result.created_message_count, result.message_ids[0]
+                ),
+            )
+            .expect("worker reconciliation result should be persisted");
         }
         other => panic!("unknown process-test worker mode: {other}"),
     }

@@ -258,8 +258,8 @@ fn migrator_and_runtime_reject_a_migration_checksum_mismatch() {
 #[test]
 fn migrator_and_runtime_distinguish_future_and_gapped_history() {
     for (version, expected_message) in [
-        (2, "newer than supported"),
-        (3, "expected version 2, got 3"),
+        (3, "newer than supported"),
+        (4, "expected version 3, got 4"),
     ] {
         let directory = tempdir().expect("temporary directory should be created");
         let database_path = directory.path().join(format!("world-{version}.sqlite"));

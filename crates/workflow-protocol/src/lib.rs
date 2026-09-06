@@ -177,6 +177,42 @@ pub struct WorldSnapshot {
     pub events: Vec<StoredEvent>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct QueueMessageRequest {
+    pub message_id: String,
+    pub scope: String,
+    pub queue_name: String,
+    pub idempotency_key: String,
+    pub body: Vec<u8>,
+    pub available_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueueEnqueueResult {
+    pub message_id: String,
+    pub created: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueueClaim {
+    pub message_id: String,
+    pub scope: String,
+    pub queue_name: String,
+    pub body: Vec<u8>,
+    pub attempt: u32,
+    pub lease_token: String,
+    pub lease_owner: String,
+    pub lease_expires_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueueReconcileResult {
+    pub active_run_count: usize,
+    pub created_message_count: usize,
+    pub message_ids: Vec<String>,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorldErrorKind {
@@ -187,6 +223,7 @@ pub enum WorldErrorKind {
     NotMigrated,
     UnsupportedSchema,
     PersistedData,
+    QueueClaimLost,
     Storage,
 }
 
