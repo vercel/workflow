@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.11'
+  version: '1.12'
 ---
 
 ## *Critical*: Always use correct `workflow` documentation
@@ -282,11 +282,11 @@ Use `FatalError` for permanent failures (no retry), `RetryableError` for transie
 ```typescript
 import { FatalError, RetryableError } from "workflow";
 
-if (res.status >= 400 && res.status < 500) {
-  throw new FatalError(`Client error: ${res.status}`);
-}
 if (res.status === 429) {
   throw new RetryableError("Rate limited", { retryAfter: "5m" });
+}
+if (res.status >= 400 && res.status < 500) {
+  throw new FatalError(`Client error: ${res.status}`);
 }
 ```
 
