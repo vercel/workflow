@@ -5,6 +5,7 @@ members = [
   "crates/workflow-world-sqlite",
   "packages/swc-plugin-workflow",
   "workbench/node-native-probe",
+  "workbench/python-native-probe",
   "workbench/swc-playground/wasm",
 ]
 

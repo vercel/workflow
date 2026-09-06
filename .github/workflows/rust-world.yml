@@ -19,6 +19,7 @@ on:
       - "packages/world-local/src/storage/contract-fixtures.test.ts"
       - "pnpm-workspace.yaml"
       - "workbench/node-native-probe/**"
+      - "workbench/python-native-probe/**"
   pull_request:
     types:
       - opened
@@ -37,6 +38,7 @@ on:
       - "packages/world-local/src/storage/contract-fixtures.test.ts"
       - "pnpm-workspace.yaml"
       - "workbench/node-native-probe/**"
+      - "workbench/python-native-probe/**"
   workflow_dispatch:
 
 concurrency:
@@ -99,6 +101,7 @@ jobs:
           -p workflow-world-core
           -p workflow-world-sqlite
           -p workflow_node_native_probe
+          -p workflow_python_native_probe
           --all-targets
           --locked
           --
@@ -144,3 +147,44 @@ jobs:
 
       - name: Build and Load Native Addon
         run: pnpm --filter @workflow/example-node-native-probe probe
+
+  python-native-probe:
+    name: Python Native Probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          toolchain: 1.88.0
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
+
+      - name: Setup Python
+        run: uv python install 3.13
+
+      - name: Build and Load Native Extension
+        run: >-
+          uv run --no-project --python 3.13 python
+          workbench/python-native-probe/build_native.py
+
+      - name: Run Python Native Probe
+        run: >-
+          uv run --no-project --python 3.13 python
+          workbench/python-native-probe/probe.py

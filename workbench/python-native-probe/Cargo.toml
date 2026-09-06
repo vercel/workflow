@@ -1,0 +1,24 @@
+[package]
+name = "workflow_python_native_probe"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version = "1.88"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib"]
+doctest = false
+test = false
+
+[dependencies]
+base64 = "0.22"
+pyo3 = { version = "0.27.2", features = ["abi3-py39", "extension-module"] }
+serde_json.workspace = true
+workflow-protocol = { path = "../../crates/workflow-protocol" }
+workflow-world-sqlite = { path = "../../crates/workflow-world-sqlite" }
+
+[build-dependencies]
+pyo3-build-config = "0.27.2"
