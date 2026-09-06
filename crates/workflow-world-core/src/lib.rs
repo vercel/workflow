@@ -188,7 +188,11 @@ mod tests {
                 deployment_id: "dpl_fixture".to_owned(),
                 workflow_name: "workflow//fixture".to_owned(),
                 input: vec![0, 1, 2, 255],
-                execution_context: Some(json!({ "fixture": true })),
+                execution_context: Some(
+                    json!({ "fixture": true })
+                        .try_into()
+                        .expect("fixture context"),
+                ),
                 attributes: Some(BTreeMap::from([
                     ("$rootRunId".to_owned(), "wrun_root".to_owned()),
                     ("fixture".to_owned(), "resilient-start".to_owned()),

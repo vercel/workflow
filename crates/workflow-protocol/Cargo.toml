@@ -8,5 +8,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+base64 = "0.22"
+minicbor = { version = "2.3.0", features = ["alloc", "half"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

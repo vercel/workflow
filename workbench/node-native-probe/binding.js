@@ -8,3 +8,4 @@ export const NativeSqliteWorld = native.NativeSqliteWorld;
 export const NativeTypeTagSentinel = native.NativeTypeTagSentinel;
 export const nativeInfo = native.nativeInfo;
 export const nativePanicProbe = native.nativePanicProbe;
+export const roundTripContext = native.roundTripContext;

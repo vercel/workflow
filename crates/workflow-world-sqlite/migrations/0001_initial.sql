@@ -7,12 +7,7 @@ CREATE TABLE workflow_runs (
   workflow_name TEXT NOT NULL,
   spec_version INTEGER NOT NULL CHECK (spec_version = 7),
   input BLOB NOT NULL,
-  execution_context_json TEXT CHECK (
-    execution_context_json IS NULL OR (
-      json_valid(execution_context_json) AND
-      json_type(execution_context_json) = 'object'
-    )
-  ),
+  execution_context_cbor BLOB,
   attributes_json TEXT NOT NULL CHECK (
     json_valid(attributes_json) AND json_type(attributes_json) = 'object'
   ),
@@ -44,12 +39,7 @@ CREATE TABLE workflow_run_created_event_data (
   deployment_id TEXT NOT NULL,
   workflow_name TEXT NOT NULL,
   input BLOB NOT NULL,
-  execution_context_json TEXT CHECK (
-    execution_context_json IS NULL OR (
-      json_valid(execution_context_json) AND
-      json_type(execution_context_json) = 'object'
-    )
-  ),
+  execution_context_cbor BLOB,
   attributes_json TEXT CHECK (
     attributes_json IS NULL OR (
       json_valid(attributes_json) AND json_type(attributes_json) = 'object'

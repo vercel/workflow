@@ -47,6 +47,7 @@
     "@types/proper-lockfile": "4.1.4",
     "@workflow/tsconfig": "workspace:*",
     "ajv": "8.18.0",
+    "cbor-x": "1.6.0",
     "ms": "2.1.3",
     "typescript": "catalog:",
     "vitest": "catalog:"

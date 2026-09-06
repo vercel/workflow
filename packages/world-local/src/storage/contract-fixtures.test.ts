@@ -7,10 +7,24 @@ import { fileURLToPath } from 'node:url';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { eventIdToSlot } from '@workflow/world';
 import Ajv2020 from 'ajv/dist/2020.js';
+import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { jsonReplacer, jsonReviver } from '../fs.js';
 import { createStorage } from '../storage.js';
 
 type FixtureBytes = { $bytes: string };
+type FixtureUndefined = { $undefined: true };
+type FixtureTimestamp = { $timestampMs: number };
+type FixtureValue =
+  | null
+  | boolean
+  | number
+  | string
+  | FixtureBytes
+  | FixtureUndefined
+  | FixtureTimestamp
+  | FixtureValue[]
+  | { [key: string]: FixtureValue };
 
 type RunProjection = {
   runId: string;
@@ -107,6 +121,32 @@ type LeasedQueueFixture = {
   };
 };
 
+type PersistedCodecFixture = {
+  fixtureVersion: 1;
+  name: 'persisted-codec-compatibility';
+  newSqlite: {
+    format: 'workflow-cbor-v1';
+    value: FixtureValue;
+    encoded: FixtureBytes;
+  };
+  legacyJsonText: {
+    format: 'json-text-v1';
+    vectors: Array<{
+      name: string;
+      value: FixtureValue;
+      encodedText: string;
+    }>;
+  };
+  legacyCborX: {
+    format: 'cbor-x-v1';
+    vectors: Array<{
+      name: string;
+      value: FixtureValue;
+      encoded: FixtureBytes;
+    }>;
+  };
+};
+
 type ReferenceQueueMessage = {
   messageId: string;
   scope: string;
@@ -143,9 +183,44 @@ const leasedQueueSchemaPath = fileURLToPath(
     import.meta.url
   )
 );
+const persistedCodecFixturePath = fileURLToPath(
+  new URL(
+    '../../../../fixtures/world-contract/v1/persisted-codec.json',
+    import.meta.url
+  )
+);
+const persistedCodecSchemaPath = fileURLToPath(
+  new URL(
+    '../../../../fixtures/world-contract/v1/persisted-codec.schema.json',
+    import.meta.url
+  )
+);
 
 function decodeBytes(value: FixtureBytes): Uint8Array {
   return new Uint8Array(Buffer.from(value.$bytes, 'base64'));
+}
+
+function materializeFixtureValue(value: FixtureValue): unknown {
+  if (Array.isArray(value)) return value.map(materializeFixtureValue);
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value);
+    if (keys.length === 1 && '$bytes' in value) {
+      return decodeBytes(value);
+    }
+    if (keys.length === 1 && '$undefined' in value) {
+      return undefined;
+    }
+    if (keys.length === 1 && '$timestampMs' in value) {
+      return new Date(value.$timestampMs);
+    }
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        materializeFixtureValue(item),
+      ])
+    );
+  }
+  return value;
 }
 
 function toFixtureValue(value: unknown): unknown {
@@ -245,6 +320,19 @@ async function loadLeasedQueueFixture(): Promise<LeasedQueueFixture> {
     'leased-queue',
     'active-run-reconciliation',
   ]);
+  return fixture;
+}
+
+async function loadPersistedCodecFixture(): Promise<PersistedCodecFixture> {
+  const fixture = (await loadAndValidateFixture(
+    persistedCodecFixturePath,
+    persistedCodecSchemaPath
+  )) as PersistedCodecFixture;
+  assert.equal(fixture.fixtureVersion, 1);
+  assert.equal(fixture.name, 'persisted-codec-compatibility');
+  assert.equal(fixture.newSqlite.format, 'workflow-cbor-v1');
+  assert.equal(fixture.legacyJsonText.format, 'json-text-v1');
+  assert.equal(fixture.legacyCborX.format, 'cbor-x-v1');
   return fixture;
 }
 
@@ -484,5 +572,34 @@ describe('language-neutral World contract fixtures', () => {
 
     expect(model.size).toBe(fixture.then.queuedMessageCount);
     expect(model.messageIds).toEqual(fixture.then.messageIds);
+  });
+
+  it('validates persisted codec compatibility vectors', async () => {
+    const fixture = await loadPersistedCodecFixture();
+
+    const sqliteValue = materializeFixtureValue(fixture.newSqlite.value);
+    expect(cborDecode(decodeBytes(fixture.newSqlite.encoded))).toEqual(
+      sqliteValue
+    );
+
+    for (const vector of fixture.legacyJsonText.vectors) {
+      const value = materializeFixtureValue(vector.value);
+      const encoded = vector.name.startsWith('world-local-')
+        ? JSON.stringify(value, jsonReplacer, 2)
+        : JSON.stringify(value);
+      expect(encoded, vector.name).toBe(vector.encodedText);
+      expect(JSON.parse(vector.encodedText, jsonReviver), vector.name).toEqual(
+        value
+      );
+    }
+
+    for (const vector of fixture.legacyCborX.vectors) {
+      const value = materializeFixtureValue(vector.value);
+      const encoded = decodeBytes(vector.encoded);
+      expect(Buffer.from(cborEncode(value)), vector.name).toEqual(
+        Buffer.from(encoded)
+      );
+      expect(cborDecode(encoded), vector.name).toEqual(value);
+    }
   });
 });

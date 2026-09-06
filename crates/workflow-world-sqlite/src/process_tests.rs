@@ -91,7 +91,11 @@ fn request() -> RunStartedRequest {
             deployment_id: "dpl_process_crash_fixture".to_owned(),
             workflow_name: "workflow//process-crash-fixture".to_owned(),
             input: vec![0, 1, 2, 255],
-            execution_context: Some(json!({ "source": "process-test" })),
+            execution_context: Some(
+                json!({ "source": "process-test" })
+                    .try_into()
+                    .expect("fixture context"),
+            ),
             attributes: Some(BTreeMap::from([(
                 "fixture".to_owned(),
                 "process-crash".to_owned(),

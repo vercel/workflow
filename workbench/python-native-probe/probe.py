@@ -15,6 +15,7 @@ from workflow_python_native_probe import (
     WorkflowNativeError,
     native_delay_probe,
     native_info,
+    round_trip_context,
 )
 
 
@@ -72,8 +73,26 @@ async def main() -> None:
 
     delay_task = asyncio.create_task(native_delay_probe(200))
     await asyncio.sleep(0.05)
-    assert not delay_task.done(), "native call blocked the event loop or retained the GIL"
+    assert not delay_task.done(), (
+        "native call blocked the event loop or retained the GIL"
+    )
     await delay_task
+
+    shared_context_part = {"bytes": bytes([0, 1, 255])}
+    portable_context = round_trip_context(
+        {"left": shared_context_part, "right": shared_context_part}
+    )
+    assert portable_context["left"]["bytes"] == bytes([0, 1, 255])
+    assert portable_context["right"]["bytes"] == bytes([0, 1, 255])
+    assert portable_context["left"] is not portable_context["right"]
+    cyclic_context: dict[str, object] = {}
+    cyclic_context["self"] = cyclic_context
+    try:
+        round_trip_context(cyclic_context)
+    except Exception as error:
+        assert "cyclic references are not supported" in str(error)
+    else:
+        raise AssertionError("cyclic context must be rejected")
 
     with tempfile.TemporaryDirectory(prefix="world-native-") as directory:
         database_path = Path(directory) / "world.sqlite"
@@ -138,20 +157,25 @@ async def main() -> None:
         direct_database_path = Path(directory) / "direct.sqlite"
         direct = NativeSqliteWorld(str(direct_database_path))
         direct.migrate()
+        direct_context = {
+            **event_data["executionContext"],
+            "binary": bytes([0, 1, 255]),
+        }
         direct_actual = json.loads(
             direct.create_resilient_run_started(
-                f'{fixture["when"]["runId"][:-1]}B',
+                f"{fixture['when']['runId'][:-1]}B",
                 event["specVersion"],
                 event_data["deploymentId"],
                 event_data["workflowName"],
                 base64.b64decode(event_data["input"]["$bytes"]),
-                json.dumps(event_data["executionContext"]),
+                direct_context,
                 json.dumps(event_data["attributes"]),
                 event_data["allowReservedAttributes"],
                 event_data["encryptionPublicKey"],
             )
         )
         assert direct_actual["run"]["input"] == fixture["then"]["run"]["input"]
+        assert direct_actual["run"]["executionContext"]["binary"] == [0, 1, 255]
         assert direct.close() is True
 
         draining_database_path = Path(directory) / "draining.sqlite"
@@ -169,7 +193,7 @@ async def main() -> None:
         await pending_migration
         assert draining_database_path.exists()
 
-    print(f'Python native probe passed (SQLite {native_info["sqliteVersion"]})')
+    print(f"Python native probe passed (SQLite {native_info['sqliteVersion']})")
 
 
 asyncio.run(main())

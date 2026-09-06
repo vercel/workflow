@@ -11,9 +11,8 @@ import { promisify } from 'node:util';
 const { SqliteWorldProbe, WorkflowNativeError, nativeInfo } = await import(
   './index.mjs'
 );
-const { NativeSqliteWorld, NativeTypeTagSentinel } = await import(
-  './binding.js'
-);
+const { NativeSqliteWorld, NativeTypeTagSentinel, roundTripContext } =
+  await import('./binding.js');
 const execFileAsync = promisify(execFile);
 
 const fixturePath = new URL(
@@ -47,6 +46,21 @@ try {
   );
   assert.match(panicProbe.stdout, /native panic became a Promise rejection/);
   assert.match(panicProbe.stderr, /intentional native task panic probe/);
+
+  const sharedContextPart = { bytes: new Uint8Array([0, 1, 255]) };
+  const portableContext = roundTripContext({
+    left: sharedContextPart,
+    right: sharedContextPart,
+  });
+  assert.deepEqual(portableContext.left.bytes, Buffer.from([0, 1, 255]));
+  assert.deepEqual(portableContext.right.bytes, Buffer.from([0, 1, 255]));
+  assert.notStrictEqual(portableContext.left, portableContext.right);
+  const cyclicContext = {};
+  cyclicContext.self = cyclicContext;
+  assert.throws(
+    () => roundTripContext(cyclicContext),
+    /cyclic references are not supported/
+  );
 
   const unmigrated = new SqliteWorldProbe(databasePath);
   assert.equal(await fileExists(databasePath), false);
@@ -196,13 +210,17 @@ try {
     fixture.when.event.eventData.input.$bytes,
     'base64'
   );
+  const directContext = {
+    ...fixture.when.event.eventData.executionContext,
+    binary: new Uint8Array([0, 1, 255]),
+  };
   const directOperation = direct.createResilientRunStarted(
     `${fixture.when.runId.slice(0, -1)}B`,
     fixture.when.event.specVersion,
     fixture.when.event.eventData.deploymentId,
     fixture.when.event.eventData.workflowName,
     directInput,
-    JSON.stringify(fixture.when.event.eventData.executionContext),
+    directContext,
     JSON.stringify(fixture.when.event.eventData.attributes),
     fixture.when.event.eventData.allowReservedAttributes,
     fixture.when.event.eventData.encryptionPublicKey
@@ -210,6 +228,7 @@ try {
   directInput.fill(42);
   const directActual = JSON.parse(await directOperation);
   assert.deepEqual(directActual.run.input, fixture.then.run.input);
+  assert.deepEqual(directActual.run.executionContext.binary, [0, 1, 255]);
   direct.close();
 
   const drainingDatabasePath = path.join(directory, 'draining.sqlite');

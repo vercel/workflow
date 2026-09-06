@@ -82,11 +82,6 @@ class SqliteWorldProbe:
         encryption_public_key: str | None = None,
     ) -> Awaitable[dict[str, Any]]:
         owned_input = bytes(input)
-        execution_context_json = (
-            None
-            if execution_context is None
-            else json.dumps(execution_context, separators=(",", ":"))
-        )
         attributes_json = (
             None
             if attributes is None
@@ -100,7 +95,7 @@ class SqliteWorldProbe:
                     deployment_id,
                     workflow_name,
                     owned_input,
-                    execution_context_json,
+                    execution_context,
                     attributes_json,
                     allow_reserved_attributes,
                     encryption_public_key,
@@ -138,6 +133,7 @@ class SqliteWorldProbe:
 
     def _run(self, operation: Callable[[], T]) -> asyncio.Task[T]:
         if self._closed:
+
             async def reject_closed() -> T:
                 raise WorkflowNativeError(
                     code="closed",
@@ -170,13 +166,14 @@ native_info: dict[str, Any] = json.loads(_native.native_info())
 if native_info["adapterProtocolVersion"] != EXPECTED_ADAPTER_PROTOCOL_VERSION:
     raise RuntimeError(
         "Native adapter protocol "
-        f'{native_info["adapterProtocolVersion"]} is incompatible with Python '
+        f"{native_info['adapterProtocolVersion']} is incompatible with Python "
         f"adapter protocol {EXPECTED_ADAPTER_PROTOCOL_VERSION}"
     )
 
 
 NativeSqliteWorld = _native.NativeSqliteWorld
 NativeTypeTagSentinel = _native.NativeTypeTagSentinel
+round_trip_context = _native.round_trip_context
 
 __all__ = [
     "NativeSqliteWorld",
@@ -186,4 +183,5 @@ __all__ = [
     "native_delay_probe",
     "native_info",
     "native_panic_probe",
+    "round_trip_context",
 ]

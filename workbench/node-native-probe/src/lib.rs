@@ -7,19 +7,34 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use napi::bindgen_prelude::{AsyncTask, Buffer};
-use napi::{Env, Error, Result, Status, Task};
+use napi::bindgen_prelude::{
+    Array, AsyncTask, Buffer, JsObjectValue, KeyCollectionMode, KeyConversion, KeyFilter, Object,
+    Uint8Array, Unknown,
+};
+use napi::{Env, Error, JsValue, Result, Status, Task, ValueType};
 use napi_derive::napi;
 use serde_json::{Value, json};
 use workflow_protocol::{
-    CreateEventResult, RunCreatedEventData, RunStartedRequest, StoredEvent, WorkflowRun,
-    WorldError, WorldSnapshot,
+    ContextValue, CreateEventResult, MAX_SAFE_CONTEXT_INTEGER, MIN_SAFE_CONTEXT_INTEGER,
+    RunCreatedEventData, RunStartedRequest, StoredEvent, WorkflowRun, WorldError, WorldSnapshot,
 };
 use workflow_world_sqlite::{
     QueueWorker, QueueWorkerConfig, QueueWorkerReport, SqliteWorld, sqlite_library_version,
 };
 
 const ERROR_MARKER: &str = "WORKFLOW_NATIVE_ERROR:";
+const MAX_CONTEXT_DEPTH: usize = 128;
+
+#[napi(catch_unwind)]
+pub fn round_trip_context(env: Env, value: Unknown<'_>) -> Result<Unknown<'static>> {
+    let context = context_from_js(&env, value).map_err(|error| {
+        native_error(
+            "invalid_request",
+            format!("executionContext is not portable: {error}"),
+        )
+    })?;
+    env.to_js_value(&context)
+}
 
 #[napi]
 pub struct NativeSqliteWorld {
@@ -39,6 +54,159 @@ impl NativeTypeTagSentinel {
     pub const fn new() -> Self {
         Self
     }
+}
+
+fn context_from_js(env: &Env, value: Unknown<'_>) -> Result<ContextValue> {
+    context_from_js_at_depth(env, value, &mut Vec::new(), 0)
+}
+
+fn context_from_js_at_depth<'env>(
+    env: &Env,
+    value: Unknown<'env>,
+    stack: &mut Vec<Unknown<'env>>,
+    depth: usize,
+) -> Result<ContextValue> {
+    if depth > MAX_CONTEXT_DEPTH {
+        return Err(context_conversion_error(format!(
+            "nesting exceeds {MAX_CONTEXT_DEPTH} levels"
+        )));
+    }
+    match value.get_type()? {
+        ValueType::Null => Ok(ContextValue::Null),
+        ValueType::Boolean => {
+            let value = unsafe { value.cast::<bool>()? };
+            Ok(ContextValue::Bool(value))
+        }
+        ValueType::Number => {
+            let value = unsafe { value.cast::<f64>()? };
+            if !value.is_finite() {
+                return Err(context_conversion_error(
+                    "floating-point values must be finite",
+                ));
+            }
+            if value.fract() == 0.0 && !(value == 0.0 && value.is_sign_negative()) {
+                if !(MIN_SAFE_CONTEXT_INTEGER as f64..=MAX_SAFE_CONTEXT_INTEGER as f64)
+                    .contains(&value)
+                {
+                    return Err(context_conversion_error(
+                        "integer exceeds JavaScript's safe integer range",
+                    ));
+                }
+                Ok(ContextValue::Integer(value as i64))
+            } else {
+                Ok(ContextValue::Float(value))
+            }
+        }
+        ValueType::String => {
+            let value = unsafe { value.cast::<String>()? };
+            Ok(ContextValue::String(value))
+        }
+        ValueType::Object => context_object_from_js(env, value, stack, depth),
+        ValueType::Undefined => Err(context_conversion_error("undefined is not supported")),
+        ValueType::BigInt => Err(context_conversion_error("BigInt is not supported")),
+        ValueType::Function => Err(context_conversion_error("functions are not supported")),
+        ValueType::Symbol => Err(context_conversion_error("symbols are not supported")),
+        ValueType::External => Err(context_conversion_error(
+            "external values are not supported",
+        )),
+        ValueType::Unknown => Err(context_conversion_error("unknown JavaScript value type")),
+    }
+}
+
+fn context_object_from_js<'env>(
+    env: &Env,
+    value: Unknown<'env>,
+    stack: &mut Vec<Unknown<'env>>,
+    depth: usize,
+) -> Result<ContextValue> {
+    if value.is_buffer()? {
+        let bytes = unsafe { value.cast::<Buffer>()? };
+        return Ok(ContextValue::Bytes(bytes.to_vec()));
+    }
+    if value.is_typedarray()? {
+        let bytes = unsafe { value.cast::<Uint8Array>()? };
+        return Ok(ContextValue::Bytes(bytes.to_vec()));
+    }
+    if value.is_arraybuffer()? {
+        return Err(context_conversion_error(
+            "ArrayBuffer is not supported; pass a Uint8Array",
+        ));
+    }
+    enter_context_container(env, value, stack)?;
+    let result = (|| {
+        if value.is_array()? {
+            let array = unsafe { value.cast::<Array<'_>>()? };
+            let mut values = Vec::with_capacity(array.len() as usize);
+            for index in 0..array.len() {
+                let item = array
+                    .get::<Unknown<'_>>(index)?
+                    .ok_or_else(|| context_conversion_error("array element disappeared"))?;
+                values.push(context_from_js_at_depth(env, item, stack, depth + 1)?);
+            }
+            Ok(ContextValue::Array(values))
+        } else {
+            let object = unsafe { value.cast::<Object<'_>>()? };
+            require_plain_object(&object)?;
+            let keys = object.get_all_property_names(
+                KeyCollectionMode::OwnOnly,
+                KeyFilter::Enumerable,
+                KeyConversion::NumbersToStrings,
+            )?;
+            let mut values = BTreeMap::new();
+            for index in 0..keys.get_array_length()? {
+                let key_value = keys.get_element::<Unknown<'_>>(index)?;
+                if key_value.get_type()? != ValueType::String {
+                    return Err(context_conversion_error(
+                        "object keys must be enumerable strings",
+                    ));
+                }
+                let key = unsafe { key_value.cast::<String>()? };
+                let item = object
+                    .get::<Unknown<'_>>(&key)?
+                    .ok_or_else(|| context_conversion_error("object property disappeared"))?;
+                values.insert(key, context_from_js_at_depth(env, item, stack, depth + 1)?);
+            }
+            Ok(ContextValue::Object(values))
+        }
+    })();
+    stack.pop();
+    result
+}
+
+fn enter_context_container<'env>(
+    env: &Env,
+    value: Unknown<'env>,
+    stack: &mut Vec<Unknown<'env>>,
+) -> Result<()> {
+    for ancestor in stack.iter().copied() {
+        if env.strict_equals(ancestor, value)? {
+            return Err(context_conversion_error(
+                "cyclic references are not supported",
+            ));
+        }
+    }
+    stack.push(value);
+    Ok(())
+}
+
+fn require_plain_object(object: &Object<'_>) -> Result<()> {
+    let prototype = object.get_prototype()?;
+    match prototype.get_type()? {
+        ValueType::Null => Ok(()),
+        ValueType::Object => {
+            let prototype = unsafe { prototype.cast::<Object<'_>>()? };
+            if prototype.get_prototype()?.get_type()? == ValueType::Null {
+                Ok(())
+            } else {
+                Err(context_conversion_error("only plain objects are supported"))
+            }
+        }
+        _ => Err(context_conversion_error("only plain objects are supported")),
+    }
+}
+
+fn context_conversion_error(message: impl Into<String>) -> Error {
+    Error::new(Status::InvalidArg, message.into())
 }
 
 #[napi]
@@ -65,22 +233,28 @@ impl NativeSqliteWorld {
     #[allow(clippy::too_many_arguments)]
     pub fn create_resilient_run_started(
         &self,
+        env: Env,
         run_id: String,
         spec_version: u32,
         deployment_id: String,
         workflow_name: String,
         input: Buffer,
-        execution_context_json: Option<String>,
+        execution_context: Unknown<'_>,
         attributes_json: Option<String>,
         allow_reserved_attributes: bool,
         encryption_public_key: Option<String>,
     ) -> Result<AsyncTask<CreateRunStartedTask>> {
         self.ensure_open()?;
-        let execution_context = execution_context_json
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(|_| native_error("invalid_request", "executionContext is not valid JSON"))?;
+        let execution_context = if execution_context.get_type()? == ValueType::Undefined {
+            None
+        } else {
+            Some(context_from_js(&env, execution_context).map_err(|error| {
+                native_error(
+                    "invalid_request",
+                    format!("executionContext is not portable: {error}"),
+                )
+            })?)
+        };
         let attributes = attributes_json
             .as_deref()
             .map(serde_json::from_str::<BTreeMap<String, String>>)
@@ -490,7 +664,8 @@ fn project_event(event: &StoredEvent) -> Value {
             "input": { "$bytes": STANDARD.encode(&data.input) },
         });
         if let Some(execution_context) = &data.execution_context {
-            event_data["executionContext"] = execution_context.clone();
+            event_data["executionContext"] =
+                serde_json::to_value(execution_context).expect("context value serializes");
         }
         if let Some(attributes) = &data.attributes {
             event_data["attributes"] = json!(attributes);

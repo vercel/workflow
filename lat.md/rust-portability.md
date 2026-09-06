@@ -30,7 +30,8 @@ The decision ledger keeps established boundaries separate from hypotheses that s
 | The repository-local probe floor is Rust 1.88 on Linux, macOS, and Windows | Provisional |
 | One SQLite file also contains a leased durable local queue | Provisional |
 | A Rust-owned worker with loopback HTTP is the tested semantic-baseline candidate for local queue delivery | Provisional |
-| Persisted codec, final FFI encoding, durability defaults, and public package names | Open |
+| Context-bearing fields use a portable `ContextValue` tree, direct binding conversion, and schema-selected standard CBOR BLOBs | Direction |
+| Remaining FFI shapes, durability defaults, and public package names | Open |
 | Native-wheel repository, publisher, and cross-repository release coordination | Open |
 | PostgreSQL schema coexistence and replacement for Graphile Worker | Open |
 | Legacy local-data importer and timing of default switches | Open |
@@ -41,7 +42,7 @@ The first contract slice records what the probes establish without promoting nar
 
 The shared resilient-run-start fixture is validated against JSON Schema by TypeScript and decoded into independently declared Rust types. This supports hand-mapped structural types plus shared fixtures for the first slice; it does not decide whether a larger contract should later generate types from an IDL.
 
-The Node-API and PyO3 probes pass owned byte buffers and ordinary host scalars into Rust, serialize the small extensible object fields as JSON at the adapter edge, and check adapter protocol version 1 before the first durable call. Returning fixture-shaped JSON is probe instrumentation, not the selected final FFI representation. Cancellation, streams, large-payload measurements, and backpressure remain required before this choice becomes a direction.
+The Node-API and PyO3 probes pass owned byte buffers and ordinary host values into Rust, recursively convert execution context directly into an owned `ContextValue`, and check adapter protocol version 1 before the first durable call. The conversion rejects cycles and unsupported host objects; repeated references become equal, independent subtrees. Returning fixture-shaped JSON is probe instrumentation, not the selected final result representation. Cancellation, streams, large-payload measurements, and backpressure remain required before their FFI shapes become directions.
 
 The SQLite probe uses `rusqlite` with its bundled SQLite build. Schema changes run only through an explicit migration call under one `BEGIN IMMEDIATE` transaction, enter WAL mode, and record ordered checksums. Concurrent migrators, process death before and after commit, history gaps, future versions, and checksum drift are tested. Runtime operations reject missing or incompatible migration history instead of migrating implicitly.
 
@@ -51,7 +52,7 @@ The Node-API probe now starts a Rust-owned single-concurrency supervisor with an
 
 The repository-local technical floor is Rust 1.88 for both native bindings. The dedicated CI matrix is configured to exercise Node.js 22 and Python 3.13 across Linux, macOS, and Windows; the Python extension selects `abi3-py39`, so Python 3.9 is the intended interpreter floor for the probe. This is evidence for the next packaging experiment, not yet the shipped OS, CPU, libc, or language-version support policy.
 
-The current SQLite schema stores opaque application inputs as blobs and limited metadata as checked JSON text for persisted spec 7. It has no legacy JSON/text or `cbor-x` vectors, so it does not close the persisted-codec decision. Production endpoint discovery and authentication, direct delivery, queue concurrency, `tag`, database location, busy and checkpoint defaults, wheel ownership, and public package names also remain open.
+The persisted-codec fixture fixes three boundaries. New SQLite execution context uses `workflow-cbor-v1`; Rust verifies exact writer bytes and both Rust and the installed `cbor-x` reader verify the same value, including bytes. Legacy JSON/JSONB/text vectors cover PostgreSQL values, JSON-stringified errors, and world-local's byte sentinel. Independently generated `cbor-x` vectors cover extensible objects, byte arrays, `undefined`, `null`, and dates, and the Rust compatibility reader rejects trailing data, non-string object keys, and unknown tags. Production endpoint discovery and authentication, direct delivery, queue concurrency, `tag`, database location, busy and checkpoint defaults, wheel ownership, and public package names remain open.
 
 ## Motivation
 
@@ -140,7 +141,7 @@ Each layer has one primary reason to change, and dependencies point from languag
 | Layer | Owns | Does not own |
 | --- | --- | --- |
 | Language SDK | Replay, workflow/step APIs, compiler or discovery, user-value serialization, framework routes | Database schema, event transition SQL, queue leases |
-| Language binding | Dates/bytes/objects, async integration, stream adaptation, native error mapping | Durable validation, retries, migrations, materialization |
+| Language binding | Host-value-to-`ContextValue` conversion, async integration, stream adaptation, native error mapping | Durable validation, retries, migrations, materialization |
 | Rust protocol | IDs, event/entity envelopes, queue payloads, pagination, capability and error vocabulary | A language's custom classes or VM |
 | Rust World core | Pure, persisted-spec-aware transition planning, shared validation, lifecycle rules, and backend traits | Locks, uniqueness claims, collision retries, or backend-specific transaction syntax |
 | Backend crate | Locked reads, linearization, uniqueness, collision retries, connections, transactions, schema, queue, streams, migrations, and notifications | Language-specific objects |
@@ -249,17 +250,29 @@ Rust models should remove host-language accidents while round-tripping all store
 - Identifiers are validated UTF-8 strings with typed newtypes and unchanged external spelling.
 - Timestamps use one documented UTC integer unit internally and convert to JavaScript `Date` or timezone-aware Python `datetime` at the binding edge.
 - Serialized application data is an opaque byte buffer plus its existing self-describing prefix; legacy structured JSON remains a versioned compatibility variant.
-- Extensible context and metadata use a lossless JSON-like value with explicit byte handling where the current contract permits bytes.
+- Extensible context uses `ContextValue`: null, booleans, JavaScript-safe integers, finite floats, UTF-8 strings, bytes, arrays, and string-keyed objects.
 - Event variants are a tagged union. Unknown required variants fail with a newer-protocol error rather than being dropped.
 - Pagination cursors are opaque outside the backend that minted them.
 - Optional World methods become explicit capabilities internally; a binding exposes or omits the public method according to the language SDK's existing convention.
 - Analytics remains an optional read capability. A backend that omits it uses canonical storage reads; it must not advertise synthetic analytics merely to simplify CLI dispatch.
 
-The exact FFI encoding is open. Direct generated structs minimize copies, while a versioned CBOR envelope minimizes duplicated mapping code. A prototype must measure both and exercise bytes, optional fields, large payloads, errors, and stream backpressure before this becomes a direction.
+Context-bearing FFI fields use direct binding conversion rather than a JSON or CBOR envelope. Each adapter traverses the live host graph synchronously, rejects cycles and unsupported values, and produces an owned `ContextValue` before Rust work leaves the JavaScript thread or Python GIL. Shared-reference identity is not portable data, so aliases are copied into equal subtrees. Result envelopes, streams, cancellation, and backpressure still need their own FFI decisions.
 
-An FFI CBOR envelope, if selected, is not the database codec and must never be confused with existing `cbor-x`-encoded PostgreSQL columns. Likewise, the CLI driver protocol is a process boundary with different evolution and trust properties from an in-process native addon.
+The direct FFI representation is not the database codec and must never be confused with existing `cbor-x`-encoded PostgreSQL columns. Likewise, the CLI driver protocol is a process boundary with different evolution and trust properties from an in-process native addon.
 
 Bindings expose a concrete engine with stable data-transfer operations, not a Rust trait object or backend driver's raw SQL API. This keeps Rust dispatch, language ABI, and public SDK interfaces independently evolvable.
+
+### Persisted Codec
+
+New SQLite context values have one schema-selected CBOR profile, while legacy readers preserve installed JSON/text and `cbor-x` values through explicit compatibility variants.
+
+`workflow-cbor-v1` encodes `ContextValue` as standard CBOR. Object keys are emitted in sorted order for reproducible bytes; byte values use tag 64 around a byte string so current `cbor-x` readers recover a `Uint8Array`. Integers are limited to JavaScript's safe range and floats must be finite. `undefined`, dates, tuples, sets, maps with non-string keys, custom classes, and reference identity are not part of the profile.
+
+Protocol payloads such as workflow input, output, errors, Hook payloads, and stream chunks remain opaque bytes in BLOB columns and do not pass through `ContextValue`. Execution context uses `_cbor` BLOB columns; strongly typed attributes remain JSON text. The schema selects the codec, so individual context values need no magic prefix. Future Hook metadata or resume context may reuse this profile only after their protocol types adopt `ContextValue`.
+
+Compatibility reads use separate entry points. Legacy PostgreSQL JSONB and JSON-stringified text retain ordinary JSON semantics, while the world-local `{"__type":"Uint8Array","data":"..."}` shape recovers bytes exactly as its existing reviver does. Existing PostgreSQL CBOR accepts the standard forms emitted by the pinned `cbor-x` helper: string-keyed maps, arrays, primitives, `undefined`, tag-1 dates, raw byte strings, and tag-64 `Uint8Array`. Unknown tags, duplicate or non-string map keys, excessive nesting, malformed values, and trailing bytes fail as persisted-data errors instead of being guessed.
+
+The shared fixture stores both the source value and exact encoded bytes or text. TypeScript decodes the new Rust-writer vector with installed `cbor-x`; Rust checks exact writer bytes and independently decodes it. Legacy vectors retain their existing TypeScript encoders and Rust compatibility readers. These vectors define value compatibility, not byte-for-byte preservation when a legacy value is later rewritten into a new schema.
 
 ### Behavioral Invariants
 
@@ -330,6 +343,7 @@ Both bindings obey the same lifetime and concurrency rules even though their hos
 - Backpressure crosses the binding rather than accumulating unbounded chunks or queue deliveries.
 - Panics are caught at the FFI boundary and reported as internal errors; they never unwind into the host runtime.
 - A binding reports its native protocol and supported persisted-spec range before the first durable write.
+- Context graphs are converted while still attached to the host runtime: cycles fail, while repeated references are traversed again and become separate `ContextValue` subtrees.
 
 ## SQLite Local World
 
@@ -635,7 +649,7 @@ This phase creates the minimum shared vocabulary and resolves choices that could
 
 - Inventory the current World API, local extensions, persisted spec versions, event transitions, queue contract, and relevant TypeScript tests.
 - Add language-neutral fixtures around run creation, event slots, steps, Hooks, waits, and terminal transitions across the minimum and current supported specs.
-- Add fixed vectors for legacy PostgreSQL JSON/text and `cbor-x` metadata before SQLite choices harden the shared protocol or transition planner.
+- Maintain shared fixed vectors for new SQLite context CBOR and legacy PostgreSQL JSON/text, world-local JSON, and `cbor-x` metadata.
 - Prototype Node-API and PyO3 async calls, byte transfer, errors, cancellation, and stream iteration.
 - Prototype a multi-process SQLite append, scoped leased queue claim, crash recovery, and active-run reconciliation without duplicate amplification.
 - Decide the structural source of truth, persisted SQLite codec, FFI representation, SQLite driver/linkage, tag storage model, queue delivery topology, and initial target matrix.
@@ -698,15 +712,14 @@ The remaining questions are ordered by when they can block useful work.
 These decisions must be resolved during Phase 0.
 
 1. What is the structural source of truth: an IDL with generated host types or hand-mapped types checked by shared fixtures?
-2. What persisted codec represents new SQLite event/entity metadata, and which fixed vectors define legacy JSON/text and `cbor-x` compatibility while application payload bytes remain opaque?
-3. Does the native adapter use mapped host structs or a versioned envelope, and what handshake detects a wrapper/addon mismatch before a write?
-4. Which Rust SQLite driver and linkage mode provide the required async behavior, patched SQLite version, build portability, and test hooks?
-5. Does a direct binding callback justify its extra ABI and reentrancy complexity after loopback HTTP has established the Phase 0 semantic baseline?
-6. What stable application/deployment identity scopes queue claims in shipped packages, and how should production hosts authenticate or advertise the explicit endpoint validated by the prototype?
-7. Must local `tag` preserve its current untagged-plus-tagged overlay visibility, conflict precedence, scoped recovery, and scoped `clear()`; if so, does one database carry scope keys or does the layout use a designed base-plus-overlay arrangement?
-8. What durability, busy-timeout, connection-count, and checkpoint defaults are appropriate for the local profile?
-9. Where does the SQLite file live, and how does `WORKFLOW_LOCAL_DATA_DIR` map to it without colliding with legacy files?
-10. What minimum Rust, Node.js, OS, CPU, libc, and SQLite matrix is blocking for the repository-local slice?
+2. Does the native adapter use mapped host structs or a versioned envelope, and what handshake detects a wrapper/addon mismatch before a write?
+3. Which Rust SQLite driver and linkage mode provide the required async behavior, patched SQLite version, build portability, and test hooks?
+4. Does a direct binding callback justify its extra ABI and reentrancy complexity after loopback HTTP has established the Phase 0 semantic baseline?
+5. What stable application/deployment identity scopes queue claims in shipped packages, and how should production hosts authenticate or advertise the explicit endpoint validated by the prototype?
+6. Must local `tag` preserve its current untagged-plus-tagged overlay visibility, conflict precedence, scoped recovery, and scoped `clear()`; if so, does one database carry scope keys or does the layout use a designed base-plus-overlay arrangement?
+7. What durability, busy-timeout, connection-count, and checkpoint defaults are appropriate for the local profile?
+8. Where does the SQLite file live, and how does `WORKFLOW_LOCAL_DATA_DIR` map to it without colliding with legacy files?
+9. What minimum Rust, Node.js, OS, CPU, libc, and SQLite matrix is blocking for the repository-local slice?
 
 ### Blocking Python Integration
 

@@ -22,7 +22,7 @@ pub(super) const MIGRATIONS: &[SchemaMigration] = &[
         version: 1,
         name: "initial",
         sql: include_str!("../migrations/0001_initial.sql"),
-        checksum: "sha256:c25aea3a7eeeb28d9b621f25f4a25d1775a27918dfa9a7489d2fd4bc531a95e8",
+        checksum: "sha256:d17b42237f57d684c310e992e140096613476aa589317d99e1d5f8228e000b13",
     },
     SchemaMigration {
         version: 2,

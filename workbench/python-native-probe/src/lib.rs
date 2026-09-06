@@ -7,17 +7,23 @@ use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use pyo3::IntoPyObjectExt;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
+use pyo3::types::{
+    PyBool, PyByteArray, PyByteArrayMethods, PyBytes, PyBytesMethods, PyDict, PyDictMethods,
+    PyFloat, PyInt, PyList, PyListMethods, PyString,
+};
 use serde_json::{Value, json};
 use workflow_protocol::{
-    CreateEventResult, RunCreatedEventData, RunStartedRequest, StoredEvent, WorkflowRun,
-    WorldError, WorldSnapshot,
+    ContextValue, CreateEventResult, MAX_SAFE_CONTEXT_INTEGER, MIN_SAFE_CONTEXT_INTEGER,
+    RunCreatedEventData, RunStartedRequest, StoredEvent, WorkflowRun, WorldError, WorldSnapshot,
 };
 use workflow_world_sqlite::{SqliteWorld, sqlite_library_version};
 
 const ERROR_MARKER: &str = "WORKFLOW_NATIVE_ERROR:";
+const MAX_CONTEXT_DEPTH: usize = 128;
 
 create_exception!(_native, NativeWorkflowError, PyException);
 
@@ -64,17 +70,22 @@ impl NativeSqliteWorld {
         deployment_id: String,
         workflow_name: String,
         input: Vec<u8>,
-        execution_context_json: Option<String>,
+        execution_context: Option<Bound<'_, PyAny>>,
         attributes_json: Option<String>,
         allow_reserved_attributes: bool,
         encryption_public_key: Option<String>,
     ) -> PyResult<String> {
         self.ensure_open()?;
-        let execution_context = execution_context_json
-            .as_deref()
-            .map(serde_json::from_str)
+        let execution_context = execution_context
+            .as_ref()
+            .map(context_from_python)
             .transpose()
-            .map_err(|_| native_error("invalid_request", "executionContext is not valid JSON"))?;
+            .map_err(|error| {
+                native_error(
+                    "invalid_request",
+                    format!("executionContext is not portable: {error}"),
+                )
+            })?;
         let attributes = attributes_json
             .as_deref()
             .map(serde_json::from_str::<BTreeMap<String, String>>)
@@ -142,6 +153,17 @@ fn native_info() -> String {
         "sqliteVersion": sqlite_library_version(),
     })
     .to_string()
+}
+
+#[pyfunction]
+fn round_trip_context(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    let context = context_from_python(value).map_err(|error| {
+        native_error(
+            "invalid_request",
+            format!("executionContext is not portable: {error}"),
+        )
+    })?;
+    context_to_python(py, &context)
 }
 
 #[pyfunction]
@@ -221,7 +243,8 @@ fn project_event(event: &StoredEvent) -> Value {
             "input": { "$bytes": STANDARD.encode(&data.input) },
         });
         if let Some(execution_context) = &data.execution_context {
-            event_data["executionContext"] = execution_context.clone();
+            event_data["executionContext"] =
+                serde_json::to_value(execution_context).expect("context value serializes");
         }
         if let Some(attributes) = &data.attributes {
             event_data["attributes"] = json!(attributes);
@@ -235,6 +258,138 @@ fn project_event(event: &StoredEvent) -> Value {
         projection["eventData"] = event_data;
     }
     projection
+}
+
+fn context_from_python(value: &Bound<'_, PyAny>) -> PyResult<ContextValue> {
+    context_from_python_at_depth(value, &mut Vec::new(), 0)
+}
+
+fn context_from_python_at_depth(
+    value: &Bound<'_, PyAny>,
+    stack: &mut Vec<*mut pyo3::ffi::PyObject>,
+    depth: usize,
+) -> PyResult<ContextValue> {
+    if depth > MAX_CONTEXT_DEPTH {
+        return Err(context_conversion_error(format!(
+            "nesting exceeds {MAX_CONTEXT_DEPTH} levels"
+        )));
+    }
+    if value.is_none() {
+        return Ok(ContextValue::Null);
+    }
+    if value.is_exact_instance_of::<PyBool>() {
+        return value.extract().map(ContextValue::Bool);
+    }
+    if value.is_exact_instance_of::<PyInt>() {
+        let integer = value
+            .extract::<i64>()
+            .map_err(|_| context_conversion_error("integer exceeds the interoperable range"))?;
+        if !(MIN_SAFE_CONTEXT_INTEGER..=MAX_SAFE_CONTEXT_INTEGER).contains(&integer) {
+            return Err(context_conversion_error(
+                "integer exceeds JavaScript's safe integer range",
+            ));
+        }
+        return Ok(ContextValue::Integer(integer));
+    }
+    if value.is_exact_instance_of::<PyFloat>() {
+        let number = value.extract::<f64>()?;
+        if !number.is_finite() {
+            return Err(context_conversion_error(
+                "floating-point values must be finite",
+            ));
+        }
+        return Ok(ContextValue::Float(number));
+    }
+    if value.is_exact_instance_of::<PyString>() {
+        return value.extract().map(ContextValue::String);
+    }
+    if value.is_exact_instance_of::<PyBytes>() {
+        return Ok(ContextValue::Bytes(
+            value.cast::<PyBytes>()?.as_bytes().to_vec(),
+        ));
+    }
+    if value.is_exact_instance_of::<PyByteArray>() {
+        let byte_array = value.cast::<PyByteArray>()?;
+        // SAFETY: the slice is copied immediately without invoking Python.
+        return Ok(ContextValue::Bytes(
+            unsafe { byte_array.as_bytes() }.to_vec(),
+        ));
+    }
+    if value.is_exact_instance_of::<PyList>() {
+        return with_python_container(value, stack, |stack| {
+            let list = value.cast::<PyList>()?;
+            let mut values = Vec::with_capacity(list.len());
+            for item in list.iter() {
+                values.push(context_from_python_at_depth(&item, stack, depth + 1)?);
+            }
+            Ok(ContextValue::Array(values))
+        });
+    }
+    if value.is_exact_instance_of::<PyDict>() {
+        return with_python_container(value, stack, |stack| {
+            let dictionary = value.cast::<PyDict>()?;
+            let mut values = BTreeMap::new();
+            for (key, item) in dictionary.iter() {
+                if !key.is_exact_instance_of::<PyString>() {
+                    return Err(context_conversion_error("dictionary keys must be strings"));
+                }
+                values.insert(
+                    key.extract::<String>()?,
+                    context_from_python_at_depth(&item, stack, depth + 1)?,
+                );
+            }
+            Ok(ContextValue::Object(values))
+        });
+    }
+    Err(context_conversion_error(
+        "only None, bool, safe int, finite float, str, bytes, bytearray, list, and dict are supported",
+    ))
+}
+
+fn with_python_container<T>(
+    value: &Bound<'_, PyAny>,
+    stack: &mut Vec<*mut pyo3::ffi::PyObject>,
+    operation: impl FnOnce(&mut Vec<*mut pyo3::ffi::PyObject>) -> PyResult<T>,
+) -> PyResult<T> {
+    let identity = value.as_ptr();
+    if stack.contains(&identity) {
+        return Err(context_conversion_error(
+            "cyclic references are not supported",
+        ));
+    }
+    stack.push(identity);
+    let result = operation(stack);
+    stack.pop();
+    result
+}
+
+fn context_to_python(py: Python<'_>, value: &ContextValue) -> PyResult<Py<PyAny>> {
+    match value {
+        ContextValue::Null => Ok(py.None()),
+        ContextValue::Bool(value) => value.into_py_any(py),
+        ContextValue::Integer(value) => value.into_py_any(py),
+        ContextValue::Float(value) => value.into_py_any(py),
+        ContextValue::String(value) => value.into_py_any(py),
+        ContextValue::Bytes(value) => Ok(PyBytes::new(py, value).into_any().unbind()),
+        ContextValue::Array(values) => {
+            let values = values
+                .iter()
+                .map(|value| context_to_python(py, value))
+                .collect::<PyResult<Vec<_>>>()?;
+            Ok(PyList::new(py, values)?.into_any().unbind())
+        }
+        ContextValue::Object(values) => {
+            let dictionary = PyDict::new(py);
+            for (key, value) in values {
+                dictionary.set_item(key, context_to_python(py, value)?)?;
+            }
+            Ok(dictionary.into_any().unbind())
+        }
+    }
+}
+
+fn context_conversion_error(message: impl Into<String>) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(message.into())
 }
 
 fn native_error(kind: &str, message: impl Into<String>) -> PyErr {
@@ -293,6 +448,7 @@ fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<NativeSqliteWorld>()?;
     module.add_class::<NativeTypeTagSentinel>()?;
     module.add_function(wrap_pyfunction!(native_info, module)?)?;
+    module.add_function(wrap_pyfunction!(round_trip_context, module)?)?;
     module.add_function(wrap_pyfunction!(native_delay_probe, module)?)?;
     module.add_function(wrap_pyfunction!(native_panic_probe, module)?)?;
     module.add(

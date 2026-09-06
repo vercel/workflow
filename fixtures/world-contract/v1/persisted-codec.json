@@ -1,0 +1,135 @@
+{
+  "$schema": "./persisted-codec.schema.json",
+  "fixtureVersion": 1,
+  "name": "persisted-codec-compatibility",
+  "newSqlite": {
+    "format": "workflow-cbor-v1",
+    "value": {
+      "zeta": "last",
+      "alpha": {
+        "unicode": "héllo",
+        "items": [null, true, 7, -2, 1.5]
+      },
+      "bytes": {
+        "$bytes": "AAEC/w=="
+      },
+      "empty": {},
+      "😀": "emoji",
+      "é": "accent"
+    },
+    "encoded": {
+      "$bytes": "pmVhbHBoYaJlaXRlbXOF9vUHIfs/+AAAAAAAAGd1bmljb2RlZmjDqWxsb2VieXRlc9hARAABAv9lZW1wdHmgZHpldGFkbGFzdGLDqWZhY2NlbnRk8J+YgGVlbW9qaQ=="
+    }
+  },
+  "legacyJsonText": {
+    "format": "json-text-v1",
+    "vectors": [
+      {
+        "name": "postgres-jsonb",
+        "value": {
+          "input": ["legacy", 7, null],
+          "executionContext": {
+            "region": "iad1"
+          }
+        },
+        "encodedText": "{\"input\":[\"legacy\",7,null],\"executionContext\":{\"region\":\"iad1\"}}"
+      },
+      {
+        "name": "postgres-error-text",
+        "value": {
+          "name": "Error",
+          "message": "legacy failure",
+          "stack": "Error: legacy failure\n    at fixture"
+        },
+        "encodedText": "{\"name\":\"Error\",\"message\":\"legacy failure\",\"stack\":\"Error: legacy failure\\n    at fixture\"}"
+      },
+      {
+        "name": "world-local-uint8array",
+        "value": {
+          "bytes": {
+            "$bytes": "AAEC/w=="
+          },
+          "dateText": "2024-01-02T03:04:05.678Z",
+          "nested": {
+            "enabled": true,
+            "nullable": null
+          },
+          "text": "héllo"
+        },
+        "encodedText": "{\n  \"bytes\": {\n    \"__type\": \"Uint8Array\",\n    \"data\": \"AAEC/w==\"\n  },\n  \"dateText\": \"2024-01-02T03:04:05.678Z\",\n  \"nested\": {\n    \"enabled\": true,\n    \"nullable\": null\n  },\n  \"text\": \"héllo\"\n}"
+      }
+    ]
+  },
+  "legacyCborX": {
+    "format": "cbor-x-v1",
+    "vectors": [
+      {
+        "name": "extensible-object",
+        "value": {
+          "plain": {
+            "enabled": true,
+            "count": 7,
+            "text": "héllo",
+            "nested": [null, { "x": "y" }]
+          }
+        },
+        "encoded": {
+          "$bytes": "uQABZXBsYWluuQAEZ2VuYWJsZWT1ZWNvdW50B2R0ZXh0ZmjDqWxsb2ZuZXN0ZWSC9rkAAWF4YXk="
+        }
+      },
+      {
+        "name": "uint8array",
+        "value": {
+          "bytes": {
+            "$bytes": "AAEC/w=="
+          }
+        },
+        "encoded": {
+          "$bytes": "uQABZWJ5dGVz2EBEAAEC/w=="
+        }
+      },
+      {
+        "name": "undefined-and-null",
+        "value": {
+          "missing": {
+            "$undefined": true
+          },
+          "present": null
+        },
+        "encoded": {
+          "$bytes": "uQACZ21pc3Npbmf3Z3ByZXNlbnT2"
+        }
+      },
+      {
+        "name": "date",
+        "value": {
+          "date": {
+            "$timestampMs": 1704164645678
+          }
+        },
+        "encoded": {
+          "$bytes": "uQABZGRhdGXB+0HZZN9Ja2Ra"
+        }
+      },
+      {
+        "name": "mixed",
+        "value": {
+          "mixed": {
+            "bytes": {
+              "$bytes": "AP8="
+            },
+            "missing": {
+              "$undefined": true
+            },
+            "date": {
+              "$timestampMs": 1704164645678
+            }
+          }
+        },
+        "encoded": {
+          "$bytes": "uQABZW1peGVkuQADZWJ5dGVz2EBCAP9nbWlzc2luZ/dkZGF0ZcH7Qdlk30lrZFo="
+        }
+      }
+    ]
+  }
+}

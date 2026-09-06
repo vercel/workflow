@@ -69,9 +69,7 @@ export class SqliteWorldProbe {
           deploymentId,
           workflowName,
           input,
-          executionContext === undefined
-            ? undefined
-            : JSON.stringify(executionContext),
+          executionContext,
           attributes === undefined ? undefined : JSON.stringify(attributes),
           allowReservedAttributes === true,
           encryptionPublicKey

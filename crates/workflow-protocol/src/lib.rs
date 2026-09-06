@@ -6,6 +6,14 @@
 
 #![forbid(unsafe_code)]
 
+mod persisted_codec;
+
+pub use persisted_codec::{
+    ContextValue, MAX_SAFE_CONTEXT_INTEGER, MIN_SAFE_CONTEXT_INTEGER, PersistedValue,
+    SQLITE_CONTEXT_CODEC, decode_context_value, decode_legacy_cbor_x, decode_legacy_json_text,
+    encode_context_value,
+};
+
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
@@ -96,7 +104,7 @@ pub struct RunCreatedEventData {
     pub workflow_name: String,
     pub input: Vec<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution_context: Option<Value>,
+    pub execution_context: Option<ContextValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attributes: Option<BTreeMap<String, String>>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -122,7 +130,7 @@ pub struct WorkflowRun {
     pub workflow_name: String,
     pub spec_version: u32,
     pub input: Vec<u8>,
-    pub execution_context: Option<Value>,
+    pub execution_context: Option<ContextValue>,
     pub attributes: BTreeMap<String, String>,
     pub encryption_public_key: Option<String>,
     pub created_at_ms: i64,

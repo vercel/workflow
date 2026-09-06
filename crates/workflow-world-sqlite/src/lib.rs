@@ -22,7 +22,8 @@ use sha2::{Digest, Sha256};
 use workflow_protocol::{
     CreateEventResult, EventPage, EventType, QueueClaim, QueueEnqueueResult, QueueMessageRequest,
     QueueReconcileResult, RunCreatedEventData, RunStartedRequest, RunStatus, StoredEvent,
-    WorkflowRun, WorldError, WorldErrorKind, WorldSnapshot, event_id_to_slot, slot_to_event_id,
+    WorkflowRun, WorldError, WorldErrorKind, WorldSnapshot, decode_context_value,
+    encode_context_value, event_id_to_slot, slot_to_event_id,
 };
 use workflow_world_core::plan_run_started;
 
@@ -966,7 +967,7 @@ fn insert_run(transaction: &Transaction<'_>, run: &WorkflowRun) -> Result<(), Wo
             r#"
             INSERT INTO workflow_runs (
               run_id, status, deployment_id, workflow_name, spec_version, input,
-              execution_context_json, attributes_json, encryption_public_key,
+              execution_context_cbor, attributes_json, encryption_public_key,
               next_event_slot, created_at_ms, started_at_ms, updated_at_ms
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11, ?12)
             "#,
@@ -979,10 +980,9 @@ fn insert_run(transaction: &Transaction<'_>, run: &WorkflowRun) -> Result<(), Wo
                 run.input,
                 run.execution_context
                     .as_ref()
-                    .map(serde_json::to_string)
-                    .transpose()
-                    .map_err(persisted_data_error)?,
-                serde_json::to_string(&run.attributes).map_err(persisted_data_error)?,
+                    .map(encode_context_value)
+                    .transpose()?,
+                encode_attributes(&run.attributes)?,
                 run.encryption_public_key,
                 run.created_at_ms,
                 run.started_at_ms,
@@ -1054,7 +1054,7 @@ fn append_event(
             .execute(
                 r#"
                 INSERT INTO workflow_run_created_event_data (
-                  run_id, slot, deployment_id, workflow_name, input, execution_context_json,
+                  run_id, slot, deployment_id, workflow_name, input, execution_context_cbor,
                   attributes_json, allow_reserved_attributes, encryption_public_key
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 "#,
@@ -1066,14 +1066,12 @@ fn append_event(
                     data.input,
                     data.execution_context
                         .as_ref()
-                        .map(serde_json::to_string)
-                        .transpose()
-                        .map_err(persisted_data_error)?,
+                        .map(encode_context_value)
+                        .transpose()?,
                     data.attributes
                         .as_ref()
-                        .map(serde_json::to_string)
-                        .transpose()
-                        .map_err(persisted_data_error)?,
+                        .map(encode_attributes)
+                        .transpose()?,
                     i64::from(data.allow_reserved_attributes),
                     data.encryption_public_key,
                 ],
@@ -1113,7 +1111,7 @@ fn read_run(connection: &Connection, run_id: &str) -> Result<Option<WorkflowRun>
         .query_row(
             r#"
             SELECT run_id, status, deployment_id, workflow_name, spec_version, input,
-                   execution_context_json, attributes_json, encryption_public_key,
+                   execution_context_cbor, attributes_json, encryption_public_key,
                    created_at_ms, started_at_ms, updated_at_ms
             FROM workflow_runs
             WHERE run_id = ?1
@@ -1127,7 +1125,7 @@ fn read_run(connection: &Connection, run_id: &str) -> Result<Option<WorkflowRun>
                     row.get::<_, String>(3)?,
                     row.get::<_, i64>(4)?,
                     row.get::<_, Vec<u8>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<Vec<u8>>>(6)?,
                     row.get::<_, String>(7)?,
                     row.get::<_, Option<String>>(8)?,
                     row.get::<_, i64>(9)?,
@@ -1146,7 +1144,7 @@ fn read_run(connection: &Connection, run_id: &str) -> Result<Option<WorkflowRun>
                 workflow_name,
                 spec_version,
                 input,
-                execution_context_json,
+                execution_context_cbor,
                 attributes_json,
                 encryption_public_key,
                 created_at_ms,
@@ -1160,13 +1158,11 @@ fn read_run(connection: &Connection, run_id: &str) -> Result<Option<WorkflowRun>
                     workflow_name,
                     spec_version: to_u32(spec_version, "run spec version")?,
                     input,
-                    execution_context: execution_context_json
+                    execution_context: execution_context_cbor
                         .as_deref()
-                        .map(serde_json::from_str)
-                        .transpose()
-                        .map_err(persisted_data_error)?,
-                    attributes: serde_json::from_str(&attributes_json)
-                        .map_err(persisted_data_error)?,
+                        .map(decode_context_value)
+                        .transpose()?,
+                    attributes: decode_attributes(&attributes_json)?,
                     encryption_public_key,
                     created_at_ms,
                     started_at_ms,
@@ -1187,7 +1183,7 @@ fn list_events_after_slot(
         .prepare(
             r#"
             SELECT e.slot, e.event_type, e.spec_version, e.event_data_present, e.created_at_ms,
-                   d.deployment_id, d.workflow_name, d.input, d.execution_context_json,
+                   d.deployment_id, d.workflow_name, d.input, d.execution_context_cbor,
                    d.attributes_json, d.allow_reserved_attributes, d.encryption_public_key
             FROM workflow_events e
             LEFT JOIN workflow_run_created_event_data d
@@ -1209,7 +1205,7 @@ fn list_events_after_slot(
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, Option<String>>(6)?,
                 row.get::<_, Option<Vec<u8>>>(7)?,
-                row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<Vec<u8>>>(8)?,
                 row.get::<_, Option<String>>(9)?,
                 row.get::<_, Option<i64>>(10)?,
                 row.get::<_, Option<String>>(11)?,
@@ -1228,7 +1224,7 @@ fn list_events_after_slot(
             deployment_id,
             workflow_name,
             input,
-            execution_context_json,
+            execution_context_cbor,
             attributes_json,
             allow_reserved_attributes,
             encryption_public_key,
@@ -1238,7 +1234,7 @@ fn list_events_after_slot(
                 if deployment_id.is_some()
                     || workflow_name.is_some()
                     || input.is_some()
-                    || execution_context_json.is_some()
+                    || execution_context_cbor.is_some()
                     || attributes_json.is_some()
                     || allow_reserved_attributes.is_some()
                     || encryption_public_key.is_some()
@@ -1255,16 +1251,14 @@ fn list_events_after_slot(
                 workflow_name: workflow_name
                     .ok_or_else(|| missing_event_data(run_id, slot, "workflow_name"))?,
                 input: input.ok_or_else(|| missing_event_data(run_id, slot, "input"))?,
-                execution_context: execution_context_json
+                execution_context: execution_context_cbor
                     .as_deref()
-                    .map(serde_json::from_str)
-                    .transpose()
-                    .map_err(persisted_data_error)?,
+                    .map(decode_context_value)
+                    .transpose()?,
                 attributes: attributes_json
                     .as_deref()
-                    .map(serde_json::from_str)
-                    .transpose()
-                    .map_err(persisted_data_error)?,
+                    .map(decode_attributes)
+                    .transpose()?,
                 allow_reserved_attributes: match allow_reserved_attributes
                     .ok_or_else(|| missing_event_data(run_id, slot, "allow_reserved_attributes"))?
                 {
@@ -1412,6 +1406,16 @@ where
 
 fn persisted_data_error(error: impl std::fmt::Display) -> WorldError {
     WorldError::persisted_data(error.to_string())
+}
+
+fn encode_attributes(
+    attributes: &std::collections::BTreeMap<String, String>,
+) -> Result<String, WorldError> {
+    serde_json::to_string(attributes).map_err(persisted_data_error)
+}
+
+fn decode_attributes(text: &str) -> Result<std::collections::BTreeMap<String, String>, WorldError> {
+    serde_json::from_str(text).map_err(persisted_data_error)
 }
 
 #[cfg(test)]

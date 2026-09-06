@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tempfile::tempdir;
 use workflow_protocol::{
-    RunCreatedEventData, RunStartedRequest, StoredEvent, WorkflowRun, WorldErrorKind,
+    ContextValue, RunCreatedEventData, RunStartedRequest, StoredEvent, WorkflowRun, WorldErrorKind,
 };
 use workflow_world_sqlite::SqliteWorld;
 
@@ -58,7 +58,7 @@ struct FixtureEventData {
     deployment_id: String,
     workflow_name: String,
     input: FixtureBytes,
-    execution_context: Value,
+    execution_context: ContextValue,
     attributes: BTreeMap<String, String>,
     allow_reserved_attributes: bool,
     encryption_public_key: String,
@@ -141,7 +141,8 @@ fn project_event(event: &StoredEvent) -> Value {
             "input": { "$bytes": STANDARD.encode(&data.input) },
         });
         if let Some(execution_context) = &data.execution_context {
-            event_data["executionContext"] = execution_context.clone();
+            event_data["executionContext"] =
+                serde_json::to_value(execution_context).expect("context value serializes");
         }
         if let Some(attributes) = &data.attributes {
             event_data["attributes"] = json!(attributes);
@@ -400,6 +401,62 @@ fn concurrent_retries_use_separate_connections_without_duplicate_events() {
             .filter(|result| result.event.is_some())
             .count(),
         1
+    );
+}
+
+#[test]
+fn execution_context_round_trips_bytes_through_cbor_blob_columns() {
+    let fixture = load_fixture();
+    let mut request = request_from_fixture(&fixture);
+    request.event_data.execution_context = Some(ContextValue::Object(BTreeMap::from([
+        ("binary".to_owned(), ContextValue::Bytes(vec![0, 1, 2, 255])),
+        (
+            "nested".to_owned(),
+            ContextValue::Array(vec![ContextValue::Bool(true), ContextValue::Null]),
+        ),
+    ])));
+    let directory = tempdir().expect("temporary directory should be created");
+    let database_path = directory.path().join("world.sqlite");
+    let world = SqliteWorld::new(&database_path);
+    world.migrate().expect("migration should succeed");
+    world
+        .create_resilient_run_started(&request)
+        .expect("run start should succeed");
+
+    let snapshot = world
+        .snapshot(&request.run_id)
+        .expect("snapshot should succeed");
+    assert_eq!(
+        snapshot.run.execution_context,
+        request.event_data.execution_context
+    );
+    assert_eq!(
+        snapshot.events[0]
+            .event_data
+            .as_ref()
+            .and_then(|data| data.execution_context.as_ref()),
+        request.event_data.execution_context.as_ref()
+    );
+    let connection = Connection::open(&database_path).expect("database should open");
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT typeof(execution_context_cbor) FROM workflow_runs WHERE run_id = ?1",
+                [&request.run_id],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("run context storage type"),
+        "blob"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT typeof(execution_context_cbor) FROM workflow_run_created_event_data WHERE run_id = ?1",
+                [&request.run_id],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("event context storage type"),
+        "blob"
     );
 }
 
