@@ -7,6 +7,9 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const packageDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(packageDirectory, '../..');
+const targetDirectory = process.env.CARGO_TARGET_DIR
+  ? path.resolve(repositoryRoot, process.env.CARGO_TARGET_DIR)
+  : path.join(repositoryRoot, 'target');
 const artifactName =
   process.platform === 'win32'
     ? 'workflow_node_native_probe.dll'
@@ -23,6 +26,6 @@ await execFileAsync(
   }
 );
 await fs.copyFile(
-  path.join(repositoryRoot, 'target', 'debug', artifactName),
+  path.join(targetDirectory, 'debug', artifactName),
   path.join(packageDirectory, 'workflow-node-native-probe.node')
 );

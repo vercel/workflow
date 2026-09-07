@@ -61,6 +61,14 @@ try {
     () => roundTripContext(cyclicContext),
     /cyclic references are not supported/
   );
+  assert.throws(
+    () => roundTripContext({ bytes: new Int32Array([1]) }),
+    /only Uint8Array byte views are supported/
+  );
+  assert.throws(
+    () => roundTripContext({ bytes: new DataView(new ArrayBuffer(1)) }),
+    /DataView is not supported; pass a Uint8Array/
+  );
 
   const unmigrated = new SqliteWorldProbe(databasePath);
   assert.equal(await fileExists(databasePath), false);
@@ -78,6 +86,23 @@ try {
   assert.equal(await fileExists(databasePath), false);
   await world.migrate();
   assert.equal(await fileExists(databasePath), true);
+
+  await assert.rejects(
+    world.createResilientRunStarted({
+      runId: fixture.when.runId,
+      specVersion: 7.5,
+      deploymentId: fixture.when.event.eventData.deploymentId,
+      workflowName: fixture.when.event.eventData.workflowName,
+      input: Buffer.from(fixture.when.event.eventData.input.$bytes, 'base64'),
+      executionContext: fixture.when.event.eventData.executionContext,
+      attributes: fixture.when.event.eventData.attributes,
+      allowReservedAttributes:
+        fixture.when.event.eventData.allowReservedAttributes,
+      encryptionPublicKey: fixture.when.event.eventData.encryptionPublicKey,
+    }),
+    (error) =>
+      error instanceof WorkflowNativeError && error.kind === 'invalid_request'
+  );
 
   const input = Buffer.from(
     fixture.when.event.eventData.input.$bytes,

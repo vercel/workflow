@@ -3,7 +3,12 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "env": ["CARGO_HOME", "MACOSX_DEPLOYMENT_TARGET", "RUSTUP_HOME"],
+      "env": [
+        "CARGO_HOME",
+        "CARGO_TARGET_DIR",
+        "MACOSX_DEPLOYMENT_TARGET",
+        "RUSTUP_HOME"
+      ],
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/Cargo.lock",

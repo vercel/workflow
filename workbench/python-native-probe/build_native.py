@@ -10,8 +10,11 @@ from pathlib import Path
 
 PACKAGE_DIRECTORY = Path(__file__).resolve().parent
 REPOSITORY_ROOT = PACKAGE_DIRECTORY.parents[1]
-TARGET_DIRECTORY = Path(
-    os.environ.get("CARGO_TARGET_DIR", REPOSITORY_ROOT / "target")
+CONFIGURED_TARGET_DIRECTORY = os.environ.get("CARGO_TARGET_DIR")
+TARGET_DIRECTORY = (
+    Path(CONFIGURED_TARGET_DIRECTORY)
+    if CONFIGURED_TARGET_DIRECTORY and Path(CONFIGURED_TARGET_DIRECTORY).is_absolute()
+    else REPOSITORY_ROOT / (CONFIGURED_TARGET_DIRECTORY or "target")
 ).resolve()
 
 

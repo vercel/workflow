@@ -260,11 +260,7 @@ impl LoopbackHttpEndpoint {
         if authority.is_empty() || authority.contains('@') || url.contains('#') {
             return Err(WorldError::invalid_request("invalid queue worker flow URL"));
         }
-        let socket_authority = if authority.contains(':') {
-            authority.to_owned()
-        } else {
-            format!("{authority}:80")
-        };
+        let socket_authority = socket_authority(authority)?;
         let addresses = socket_authority
             .to_socket_addrs()
             .map_err(|error| {
@@ -288,13 +284,10 @@ impl LoopbackHttpEndpoint {
     fn deliver(&self, claim: &QueueClaim, timeout: Duration) -> Result<DeliveryOutcome, String> {
         validate_header_value(&claim.queue_name)?;
         validate_header_value(&claim.message_id)?;
-        let mut stream = connect(&self.addresses, timeout)?;
-        stream
-            .set_read_timeout(Some(timeout))
-            .map_err(|error| error.to_string())?;
-        stream
-            .set_write_timeout(Some(timeout))
-            .map_err(|error| error.to_string())?;
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or_else(|| "queue callback timeout is too large".to_owned())?;
+        let mut stream = connect(&self.addresses, deadline)?;
         let request = format!(
             "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nx-vqs-queue-name: {}\r\nx-vqs-message-id: {}\r\nx-vqs-message-attempt: {}\r\n\r\n",
             self.path_and_query,
@@ -304,15 +297,42 @@ impl LoopbackHttpEndpoint {
             claim.message_id,
             claim.attempt,
         );
+        write_all_before_deadline(&mut stream, request.as_bytes(), deadline)?;
+        write_all_before_deadline(&mut stream, &claim.body, deadline)?;
         stream
-            .write_all(request.as_bytes())
-            .and_then(|()| stream.write_all(&claim.body))
+            .set_write_timeout(Some(remaining_before(deadline)?))
             .and_then(|()| stream.flush())
             .map_err(|error| error.to_string())?;
 
-        let response = read_response(&mut stream, timeout)?;
+        let response = read_response(&mut stream, deadline)?;
         parse_response(&response)
     }
+}
+
+fn socket_authority(authority: &str) -> Result<String, WorldError> {
+    if authority.starts_with('[') {
+        let closing_bracket = authority.find(']').ok_or_else(|| {
+            WorldError::invalid_request("invalid bracketed IPv6 queue worker flow URL")
+        })?;
+        let suffix = &authority[closing_bracket + 1..];
+        return match suffix {
+            "" => Ok(format!("{authority}:80")),
+            value if value.starts_with(':') && value.len() > 1 => Ok(authority.to_owned()),
+            _ => Err(WorldError::invalid_request(
+                "invalid bracketed IPv6 queue worker flow URL",
+            )),
+        };
+    }
+    if authority.matches(':').count() > 1 {
+        return Err(WorldError::invalid_request(
+            "IPv6 queue worker flow URLs must use brackets",
+        ));
+    }
+    Ok(if authority.contains(':') {
+        authority.to_owned()
+    } else {
+        format!("{authority}:80")
+    })
 }
 
 fn validate_header_value(value: &str) -> Result<(), String> {
@@ -325,19 +345,39 @@ fn validate_header_value(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn read_response(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u8>, String> {
-    let deadline = Instant::now()
-        .checked_add(timeout)
-        .ok_or_else(|| "queue callback timeout is too large".to_owned())?;
+fn remaining_before(deadline: Instant) -> Result<Duration, String> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err("queue callback request timed out".to_owned());
+    }
+    Ok(remaining)
+}
+
+fn write_all_before_deadline(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> Result<(), String> {
+    while !bytes.is_empty() {
+        stream
+            .set_write_timeout(Some(remaining_before(deadline)?))
+            .map_err(|error| error.to_string())?;
+        match stream.write(bytes) {
+            Ok(0) => return Err("queue callback connection closed while writing".to_owned()),
+            Ok(written) => bytes = &bytes[written..],
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(())
+}
+
+fn read_response(stream: &mut TcpStream, deadline: Instant) -> Result<Vec<u8>, String> {
     let mut response = Vec::new();
     let mut buffer = [0_u8; 4096];
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err("queue callback response timed out".to_owned());
-        }
         stream
-            .set_read_timeout(Some(remaining))
+            .set_read_timeout(Some(remaining_before(deadline)?))
             .map_err(|error| error.to_string())?;
         match stream.read(&mut buffer) {
             Ok(0) => return Ok(response),
@@ -352,10 +392,10 @@ fn read_response(stream: &mut TcpStream, timeout: Duration) -> Result<Vec<u8>, S
     }
 }
 
-fn connect(addresses: &[SocketAddr], timeout: Duration) -> Result<TcpStream, String> {
+fn connect(addresses: &[SocketAddr], deadline: Instant) -> Result<TcpStream, String> {
     let mut last_error = None;
     for address in addresses {
-        match TcpStream::connect_timeout(address, timeout) {
+        match TcpStream::connect_timeout(address, remaining_before(deadline)?) {
             Ok(stream) => return Ok(stream),
             Err(error) => last_error = Some(error),
         }
@@ -480,5 +520,22 @@ mod tests {
             IpAddr::V4(_) | IpAddr::V6(_)
         ) && address.ip().is_loopback()));
         assert_eq!(endpoint.path_and_query, "/flow?x=1");
+    }
+
+    #[test]
+    fn supplies_the_default_port_for_bracketed_ipv6() {
+        let endpoint = LoopbackHttpEndpoint::parse("http://[::1]/flow").expect("IPv6 loopback URL");
+        assert!(
+            endpoint
+                .addresses
+                .iter()
+                .all(|address| address.ip().is_loopback() && address.port() == 80)
+        );
+        assert_eq!(endpoint.authority, "[::1]");
+    }
+
+    #[test]
+    fn rejects_an_expired_request_deadline() {
+        assert!(remaining_before(Instant::now()).is_err());
     }
 }

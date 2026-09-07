@@ -9,7 +9,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use napi::bindgen_prelude::{
     Array, AsyncTask, Buffer, JsObjectValue, KeyCollectionMode, KeyConversion, KeyFilter, Object,
-    Uint8Array, Unknown,
+    TypedArray, TypedArrayType, Unknown,
 };
 use napi::{Env, Error, JsValue, Result, Status, Task, ValueType};
 use napi_derive::napi;
@@ -119,12 +119,22 @@ fn context_object_from_js<'env>(
     stack: &mut Vec<Unknown<'env>>,
     depth: usize,
 ) -> Result<ContextValue> {
-    if value.is_buffer()? {
-        let bytes = unsafe { value.cast::<Buffer>()? };
-        return Ok(ContextValue::Bytes(bytes.to_vec()));
+    if value.is_dataview()? {
+        return Err(context_conversion_error(
+            "DataView is not supported; pass a Uint8Array",
+        ));
     }
     if value.is_typedarray()? {
-        let bytes = unsafe { value.cast::<Uint8Array>()? };
+        let typed_array = unsafe { value.cast::<TypedArray<'_>>()? };
+        if typed_array.typed_array_type != TypedArrayType::Uint8 {
+            return Err(context_conversion_error(
+                "only Uint8Array byte views are supported",
+            ));
+        }
+        return Ok(ContextValue::Bytes(typed_array.arraybuffer.to_vec()));
+    }
+    if value.is_buffer()? {
+        let bytes = unsafe { value.cast::<Buffer>()? };
         return Ok(ContextValue::Bytes(bytes.to_vec()));
     }
     if value.is_arraybuffer()? {
@@ -235,7 +245,7 @@ impl NativeSqliteWorld {
         &self,
         env: Env,
         run_id: String,
-        spec_version: u32,
+        spec_version: f64,
         deployment_id: String,
         workflow_name: String,
         input: Buffer,
@@ -260,6 +270,7 @@ impl NativeSqliteWorld {
             .map(serde_json::from_str::<BTreeMap<String, String>>)
             .transpose()
             .map_err(|_| native_error("invalid_request", "attributes are not valid JSON"))?;
+        let spec_version = number_to_u32(spec_version, "specVersion")?;
         Ok(AsyncTask::new(CreateRunStartedTask {
             path: self.path.clone(),
             request: RunStartedRequest {
@@ -687,6 +698,16 @@ fn current_time_ms() -> Result<i64> {
         .map_err(|_| native_error("clock", "system clock is before Unix epoch"))?
         .as_millis();
     i64::try_from(millis).map_err(|_| native_error("clock", "system clock overflow"))
+}
+
+fn number_to_u32(value: f64, label: &str) -> Result<u32> {
+    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=f64::from(u32::MAX)).contains(&value) {
+        return Err(native_error(
+            "invalid_request",
+            format!("{label} must be an integer between 0 and {}", u32::MAX),
+        ));
+    }
+    Ok(value as u32)
 }
 
 fn world_error(error: WorldError) -> Error {

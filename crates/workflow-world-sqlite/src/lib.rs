@@ -458,7 +458,7 @@ impl SqliteWorld {
         validate_page_limit(limit)?;
         let cursor_slot = cursor.map(event_id_to_slot).transpose()?.unwrap_or({
             if descending {
-                workflow_protocol::MAX_EVENT_SLOT
+                workflow_protocol::MAX_EVENT_SLOT + 1
             } else {
                 0
             }
@@ -1145,11 +1145,7 @@ fn list_runs(
             WorldError::persisted_data(format!("listed run {run_id:?} disappeared"))
         })?);
     }
-    let cursor = if has_more {
-        data.last().map(|run| run.run_id.clone())
-    } else {
-        None
-    };
+    let cursor = data.last().map(|run| run.run_id.clone());
     Ok(WorkflowRunPage {
         data,
         cursor,
@@ -1192,11 +1188,7 @@ fn list_steps(
             WorldError::persisted_data(format!("listed step {run_id:?}/{step_id:?} disappeared"))
         })?);
     }
-    let cursor = if has_more {
-        data.last().map(|step| step.step_id.clone())
-    } else {
-        None
-    };
+    let cursor = data.last().map(|step| step.step_id.clone());
     Ok(WorkflowStepPage {
         data,
         cursor,
@@ -1273,8 +1265,7 @@ fn enqueue_queue_message(
         (None, None) => None,
     };
     if let Some(existing) = existing {
-        if existing.message_id != request.message_id
-            || existing.scope != request.scope
+        if existing.scope != request.scope
             || existing.queue_name != request.queue_name
             || existing.idempotency_key != request.idempotency_key
             || existing.body != request.body

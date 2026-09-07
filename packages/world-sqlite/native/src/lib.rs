@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use napi::bindgen_prelude::{
     Array, AsyncTask, Buffer, JsObjectValue, KeyCollectionMode, KeyConversion, KeyFilter, Object,
-    Uint8Array, Unknown,
+    TypedArray, TypedArrayType, Unknown,
 };
 use napi::{Env, Error, JsValue, Result, Status, Task, ValueType};
 use napi_derive::napi;
@@ -66,7 +66,7 @@ impl NativeSqliteWorld {
         env: Env,
         run_id: String,
         event_type: String,
-        spec_version: u32,
+        spec_version: f64,
         event_count: Option<f64>,
         occurred_at_ms: Option<f64>,
         correlation_id: Option<String>,
@@ -78,7 +78,7 @@ impl NativeSqliteWorld {
         allow_reserved_attributes: bool,
         encryption_public_key: Option<String>,
         step_name: Option<String>,
-        attempt: Option<u32>,
+        attempt: Option<f64>,
         retry_after_ms: Option<f64>,
         owner_message_id: Option<String>,
         error_code: Option<String>,
@@ -98,11 +98,15 @@ impl NativeSqliteWorld {
         let event_count = event_count
             .map(|value| number_to_u64(value, "eventCount"))
             .transpose()?;
+        let spec_version = number_to_u32(spec_version, "specVersion")?;
         let occurred_at_ms = occurred_at_ms
             .map(|value| number_to_i64(value, "occurredAt"))
             .transpose()?;
         let retry_after_ms = retry_after_ms
             .map(|value| number_to_i64(value, "retryAfter"))
+            .transpose()?;
+        let attempt = attempt
+            .map(|value| number_to_u32(value, "attempt"))
             .transpose()?;
         let payload = payload.map(|value| value.to_vec());
         let event = parse_event_data(
@@ -1074,14 +1078,25 @@ fn context_object_from_js<'env>(
     stack: &mut Vec<Unknown<'env>>,
     depth: usize,
 ) -> Result<ContextValue> {
-    if value.is_buffer()? {
-        return Ok(ContextValue::Bytes(
-            unsafe { value.cast::<Buffer>()? }.to_vec(),
+    if value.is_dataview()? {
+        return Err(Error::new(
+            Status::InvalidArg,
+            "DataView is not supported; pass a Uint8Array",
         ));
     }
     if value.is_typedarray()? {
+        let typed_array = unsafe { value.cast::<TypedArray<'_>>()? };
+        if typed_array.typed_array_type != TypedArrayType::Uint8 {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "only Uint8Array byte views are supported",
+            ));
+        }
+        return Ok(ContextValue::Bytes(typed_array.arraybuffer.to_vec()));
+    }
+    if value.is_buffer()? {
         return Ok(ContextValue::Bytes(
-            unsafe { value.cast::<Uint8Array>()? }.to_vec(),
+            unsafe { value.cast::<Buffer>()? }.to_vec(),
         ));
     }
     if value.is_arraybuffer()? {
@@ -1179,6 +1194,16 @@ fn number_to_u64(value: f64, label: &str) -> Result<u64> {
     let value = number_to_i64(value, label)?;
     u64::try_from(value)
         .map_err(|_| native_error("invalid_request", format!("{label} must not be negative")))
+}
+
+fn number_to_u32(value: f64, label: &str) -> Result<u32> {
+    let value = number_to_u64(value, label)?;
+    u32::try_from(value).map_err(|_| {
+        native_error(
+            "invalid_request",
+            format!("{label} must be between 0 and {}", u32::MAX),
+        )
+    })
 }
 
 fn world_error(error: WorldError) -> Error {

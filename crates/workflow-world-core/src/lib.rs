@@ -254,6 +254,7 @@ pub fn plan_world_event(
             if run.status == RunStatus::Cancelled {
                 return Ok(WorldMutationPlan {
                     run: Some(run),
+                    events: vec![make_event(request.event.clone())],
                     ..empty_plan()
                 });
             }
@@ -376,10 +377,16 @@ pub fn plan_world_event(
                 .retry_after_ms
                 .is_some_and(|retry_after| retry_after > now_ms)
             {
+                let remaining_ms = step
+                    .retry_after_ms
+                    .expect("retryAfter was checked as present")
+                    .saturating_sub(now_ms);
+                let retry_after = remaining_ms / 1_000 + i64::from(remaining_ms % 1_000 != 0);
                 return Err(WorldError::new(
                     WorldErrorKind::TooEarly,
                     format!("step {step_id:?} cannot start before retryAfter"),
-                ));
+                )
+                .with_details(serde_json::json!({ "retryAfter": retry_after })));
             }
             step.status = StepStatus::Running;
             step.started_at_ms.get_or_insert(created_at_ms);
@@ -446,16 +453,8 @@ pub fn plan_world_event(
             retry_after_ms,
         } => {
             let run = require_run(current_run, &request.run_id)?;
-            if run.status.is_terminal() {
-                return Err(WorldError::new(
-                    WorldErrorKind::RunExpired,
-                    format!(
-                        "cannot retry step {step_id:?} on terminal run {:?}",
-                        request.run_id
-                    ),
-                ));
-            }
             let mut step = require_mutable_step(current_step, &request.run_id, step_id)?;
+            require_terminal_step_transition_allowed(run, &step)?;
             step.status = StepStatus::Pending;
             step.error = Some(error.clone());
             step.retry_after_ms = *retry_after_ms;

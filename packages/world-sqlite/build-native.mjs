@@ -7,6 +7,9 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const packageDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(packageDirectory, '../..');
+const targetDirectory = process.env.CARGO_TARGET_DIR
+  ? path.resolve(repositoryRoot, process.env.CARGO_TARGET_DIR)
+  : path.join(repositoryRoot, 'target');
 const supportedTargets = new Set(['darwin/arm64', 'linux/x64', 'win32/x64']);
 const currentTarget = `${process.platform}/${process.arch}`;
 if (!supportedTargets.has(currentTarget)) {
@@ -45,6 +48,6 @@ await execFileAsync(
   { cwd: repositoryRoot, encoding: 'utf8' }
 );
 await fs.copyFile(
-  path.join(repositoryRoot, 'target', 'debug', artifactName),
+  path.join(targetDirectory, 'debug', artifactName),
   path.join(packageDirectory, 'workflow-world-sqlite.node')
 );

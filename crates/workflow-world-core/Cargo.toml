@@ -8,7 +8,5 @@ license.workspace = true
 rust-version = "1.88"
 
 [dependencies]
-workflow-protocol = { path = "../workflow-protocol" }
-
-[dev-dependencies]
 serde_json.workspace = true
+workflow-protocol = { path = "../workflow-protocol" }

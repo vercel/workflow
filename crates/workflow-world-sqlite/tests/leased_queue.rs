@@ -6,7 +6,9 @@ use base64::engine::general_purpose::STANDARD;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tempfile::tempdir;
-use workflow_protocol::{RunCreatedEventData, RunStartedRequest, WorldErrorKind};
+use workflow_protocol::{
+    QueueMessageRequest, RunCreatedEventData, RunStartedRequest, WorldErrorKind,
+};
 use workflow_world_sqlite::SqliteWorld;
 
 #[derive(Debug, Deserialize)]
@@ -295,4 +297,45 @@ fn reconciliation_filters_deployments_and_expired_claims_lose_authority() {
         .expect("expired message should remain queued");
     assert_eq!(recovered.message_id, claim.message_id);
     assert_eq!(recovered.attempt, 2);
+}
+
+#[test]
+fn an_idempotency_key_reuses_the_first_message_id() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let world = SqliteWorld::new(directory.path().join("world.sqlite"));
+    world.migrate().expect("migration should succeed");
+    let first = QueueMessageRequest {
+        message_id: "msg_first".to_owned(),
+        scope: "local-js".to_owned(),
+        queue_name: "__wkf_workflow_idempotent".to_owned(),
+        idempotency_key: "same-operation".to_owned(),
+        body: br#"{"runId":"wrun_idempotent"}"#.to_vec(),
+        available_at_ms: 1,
+    };
+    let created = world
+        .enqueue_queue_message(&first)
+        .expect("first enqueue should succeed");
+    assert!(created.created);
+
+    let duplicate = QueueMessageRequest {
+        message_id: "msg_second-proposal".to_owned(),
+        ..first.clone()
+    };
+    let reused = world
+        .enqueue_queue_message(&duplicate)
+        .expect("idempotent enqueue should reuse durable state");
+    assert!(!reused.created);
+    assert_eq!(reused.message_id, first.message_id);
+
+    let conflicting = QueueMessageRequest {
+        body: br#"{"runId":"wrun_different"}"#.to_vec(),
+        ..duplicate
+    };
+    assert_eq!(
+        world
+            .enqueue_queue_message(&conflicting)
+            .expect_err("an idempotency key cannot change its payload")
+            .kind(),
+        WorldErrorKind::InvalidRequest
+    );
 }

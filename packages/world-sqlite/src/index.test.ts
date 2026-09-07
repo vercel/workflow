@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
+  TooEarlyError,
   WorkflowRunNotFoundError,
   type WorkflowWorldError,
 } from '@workflow/errors';
@@ -75,6 +76,7 @@ describe('@workflow/world-sqlite Phase 1', () => {
     await world.migrate();
 
     const input = new Uint8Array([1, 2]);
+    const contextBacking = new Uint8Array([0, 3, 4, 0]);
     const createPromise = world.events.create(null, {
       eventType: 'run_created',
       specVersion: 7,
@@ -83,7 +85,7 @@ describe('@workflow/world-sqlite Phase 1', () => {
         workflowName: 'workflow//phase1//dense',
         input,
         executionContext: {
-          bytes: new Uint8Array([3, 4]),
+          bytes: contextBacking.subarray(1, 3),
           nested: [true, 2.5, null],
         },
         attributes: {
@@ -94,6 +96,7 @@ describe('@workflow/world-sqlite Phase 1', () => {
       },
     });
     input.fill(9);
+    contextBacking.fill(9);
     const created = await createPromise;
     const runId = created.run.runId;
     await world.events.create(
@@ -155,6 +158,117 @@ describe('@workflow/world-sqlite Phase 1', () => {
     await world.close();
   });
 
+  it('rejects non-Uint8Array views in portable execution context', async () => {
+    const databaseDir = await temporaryDirectory();
+    const world = createWorld({ databaseDir });
+    await world.migrate();
+
+    for (const bytes of [
+      new Int32Array([1]),
+      new Uint8ClampedArray([1]),
+      new DataView(new ArrayBuffer(1)),
+    ]) {
+      await expect(
+        world.events.create(null, {
+          eventType: 'run_created',
+          specVersion: 7,
+          eventData: {
+            deploymentId: 'local-js',
+            workflowName: 'workflow//phase1//invalid-context-view',
+            input: new Uint8Array(),
+            executionContext: { bytes },
+          },
+        })
+      ).rejects.toThrow(/Uint8Array/);
+    }
+
+    await world.close();
+  });
+
+  it('rejects numeric values that Node-API would otherwise coerce', async () => {
+    const databaseDir = await temporaryDirectory();
+    const world = createWorld({ databaseDir });
+    await world.migrate();
+
+    for (const specVersion of [7.5, 2 ** 32 + 7, -(2 ** 32) + 7]) {
+      await expect(
+        world.events.create(null, {
+          eventType: 'run_created',
+          specVersion,
+          eventData: {
+            deploymentId: 'local-js',
+            workflowName: 'workflow//phase1//invalid-spec',
+            input: new Uint8Array(),
+          },
+        })
+      ).rejects.toThrow(/specVersion/);
+    }
+    await expect(
+      world.events.create('wrun_missing', {
+        eventType: 'step_started',
+        specVersion: 7,
+        correlationId: 'step_invalid_attempt',
+        eventData: { attempt: -1 },
+      })
+    ).rejects.toThrow(/attempt/);
+
+    await world.close();
+  });
+
+  it('preserves retry-after metadata on early step starts', async () => {
+    const databaseDir = await temporaryDirectory();
+    const world = createWorld({ databaseDir });
+    await world.migrate();
+
+    const created = await world.events.create(null, {
+      eventType: 'run_created',
+      specVersion: 7,
+      eventData: {
+        deploymentId: 'local-js',
+        workflowName: 'workflow//phase1//retry-after',
+        input: new Uint8Array(),
+      },
+    });
+    const runId = created.run.runId;
+    await world.events.create(runId, {
+      eventType: 'run_started',
+      specVersion: 7,
+    });
+    await world.events.create(runId, {
+      eventType: 'step_started',
+      specVersion: 7,
+      correlationId: 'step_retry_after',
+      eventData: {
+        stepName: 'step//phase1//retry-after',
+        input: new Uint8Array(),
+      },
+    });
+    await world.events.create(runId, {
+      eventType: 'step_retrying',
+      specVersion: 7,
+      correlationId: 'step_retry_after',
+      eventData: {
+        error: new Uint8Array([1]),
+        retryAfter: new Date(Date.now() + 60_000),
+      },
+    });
+
+    const earlyStart = world.events.create(runId, {
+      eventType: 'step_started',
+      specVersion: 7,
+      correlationId: 'step_retry_after',
+    });
+    await expect(earlyStart).rejects.toBeInstanceOf(TooEarlyError);
+    await expect(earlyStart).rejects.toMatchObject({
+      retryAfter: expect.any(Number),
+    });
+    await earlyStart.catch((error: TooEarlyError) => {
+      expect(error.retryAfter).toBeGreaterThan(0);
+    });
+
+    await world.close();
+  });
+
   it('drains accepted native work before closing and maps stable errors', async () => {
     const databaseDir = await temporaryDirectory();
     const world = createWorld({ databaseDir });
@@ -184,6 +298,40 @@ describe('@workflow/world-sqlite Phase 1', () => {
       name: 'WorkflowWorldError',
       code: 'UNSUPPORTED_OPERATION',
     } satisfies Partial<WorkflowWorldError>);
+    await reopened.close();
+  });
+
+  it('durably reuses message IDs for idempotent queue calls', async () => {
+    const databaseDir = await temporaryDirectory();
+    const world = createWorld({ databaseDir });
+    await world.migrate();
+    const queueName = '__wkf_workflow_idempotent';
+    const message = { runId: 'wrun_idempotent' };
+
+    const first = await world.queue(queueName, message, {
+      idempotencyKey: 'same-operation',
+    });
+    const duplicate = await world.queue(queueName, message, {
+      idempotencyKey: 'same-operation',
+    });
+    expect(duplicate.messageId).toBe(first.messageId);
+    await world.close();
+
+    const reopened = createWorld({ databaseDir });
+    await expect(
+      reopened.queue(queueName, message, {
+        idempotencyKey: 'same-operation',
+      })
+    ).resolves.toEqual(first);
+    await expect(
+      reopened.queue(
+        queueName,
+        { runId: 'wrun_different' },
+        {
+          idempotencyKey: 'same-operation',
+        }
+      )
+    ).rejects.toThrow(/reused with different message data/);
     await reopened.close();
   });
 
