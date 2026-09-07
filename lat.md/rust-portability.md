@@ -24,14 +24,20 @@ The decision ledger keeps established boundaries separate from hypotheses that s
 | Node.js uses napi-rs and Python uses PyO3 with thin host adapters | Direction |
 | The native CLI delegates language-specific work to versioned drivers | Direction |
 | Shared transition logic is a pure, spec-aware plan executed inside backend transactions | Direction |
-| First-slice structural types are hand-mapped and checked by shared fixtures | Provisional |
-| Node.js and Python adapters exchange host primitives behind a versioned startup handshake | Provisional |
-| SQLite uses bundled `rusqlite`, explicit migrations, WAL, and checksummed migration history | Provisional |
-| The repository-local probe floor is Rust 1.88 on Linux, macOS, and Windows | Provisional |
+| First-slice structural types are hand-mapped and checked by a backend-neutral conformance suite and shared fixtures | Direction |
+| Node.js and Python adapters use direct host-type mappings, and each wrapper ships atomically with its native artifact | Direction |
+| SQLite uses bundled `rusqlite`, explicit migrations, WAL, checksummed migration history, and bounded blocking execution | Direction |
+| The Phase 1 native gate is Rust 1.88, Node.js 22/24, Linux x64 glibc, macOS arm64, Windows x64, and bundled SQLite 3.53.2 | Direction |
 | One SQLite file also contains a leased durable local queue | Provisional |
-| A Rust-owned worker with loopback HTTP is the tested semantic-baseline candidate for local queue delivery | Provisional |
+| One SQLite file is one application boundary, while stable local deployment IDs identify compatible worker groups | Direction |
+| A Rust-owned worker delivers the initial SQLite queue exclusively through loopback HTTP; direct binding callbacks are deferred | Direction |
+| Language hosts explicitly register a complete loopback flow URL in process memory before a SQLite worker claims messages | Direction |
+| Initial SQLite HTTP callback validation matches existing self-hosted Worlds; per-claim authorization is deferred and recorded as hardening | Direction |
+| Local `tag` selects a separate SQLite database per Vitest pool in the host; it is not an overlay or schema scope | Direction |
+| SQLite local defaults to `synchronous=NORMAL`, a five-second contention budget, one writer plus three readers, and 1000-page passive auto-checkpoints | Direction |
+| SQLite databases live in `WORKFLOW_LOCAL_DATABASE_DIR`, default `.workflow-database`; the legacy data directory is not an alias | Direction |
 | Context-bearing fields use a portable `ContextValue` tree, direct binding conversion, and schema-selected standard CBOR BLOBs | Direction |
-| Remaining FFI shapes, durability defaults, and public package names | Open |
+| Stream and cancellation FFI shapes and public package names | Open |
 | Native-wheel repository, publisher, and cross-repository release coordination | Open |
 | PostgreSQL schema coexistence and replacement for Graphile Worker | Open |
 | Legacy local-data importer and timing of default switches | Open |
@@ -40,19 +46,19 @@ The decision ledger keeps established boundaries separate from hypotheses that s
 
 The first contract slice records what the probes establish without promoting narrow implementation details into compatibility promises.
 
-The shared resilient-run-start fixture is validated against JSON Schema by TypeScript and decoded into independently declared Rust types. This supports hand-mapped structural types plus shared fixtures for the first slice; it does not decide whether a larger contract should later generate types from an IDL.
+The shared resilient-run-start fixture is validated against JSON Schema by TypeScript and decoded into independently declared Rust types. First-slice structural types remain hand-mapped and are checked by an expanded backend-neutral conformance suite and shared fixtures. Moving a larger contract to an IDL requires separate evidence that manual synchronization has become the limiting cost; an IDL would not replace behavioral tests.
 
-The Node-API and PyO3 probes pass owned byte buffers and ordinary host values into Rust, recursively convert execution context directly into an owned `ContextValue`, and check adapter protocol version 1 before the first durable call. The conversion rejects cycles and unsupported host objects; repeated references become equal, independent subtrees. Returning fixture-shaped JSON is probe instrumentation, not the selected final result representation. Cancellation, streams, large-payload measurements, and backpressure remain required before their FFI shapes become directions.
+The Node-API and PyO3 probes pass owned byte buffers and ordinary host values into Rust and recursively convert execution context directly into an owned `ContextValue`. The conversion rejects cycles and unsupported host objects; repeated references become equal, independent subtrees. Ordinary requests and results use direct binding mappings rather than a general JSON or CBOR envelope. Each language wrapper and its native addon form one atomic release unit; build identity and native metadata are diagnostic, not an independently versioned adapter protocol. Returning fixture-shaped JSON and checking protocol version 1 are probe instrumentation rather than selected interfaces. Cancellation, streams, large-payload measurements, and backpressure remain validation work for their specialized binding shapes.
 
-The SQLite probe uses `rusqlite` with its bundled SQLite build. Schema changes run only through an explicit migration call under one `BEGIN IMMEDIATE` transaction, enter WAL mode, and record ordered checksums. Concurrent migrators, process death before and after commit, history gaps, future versions, and checksum drift are tested. Runtime operations reject missing or incompatible migration history instead of migrating implicitly.
+The SQLite backend uses synchronous `rusqlite` with its bundled SQLite build and runs database work on bounded blocking executors so it never blocks a host event loop or holds the Python GIL. This avoids making an async runtime part of the shared embedded layer while retaining direct transaction, error-code, and fault-injection control. Schema changes run only through an explicit migration call under one `BEGIN IMMEDIATE` transaction, enter WAL mode, and record ordered checksums. Concurrent migrators, process death before and after commit, history gaps, future versions, and checksum drift are tested. Runtime operations reject missing or incompatible migration history instead of migrating implicitly. The local profile explicitly uses `synchronous=NORMAL`, a total five-second contention budget, one serialized writer plus at most three readers per process and database, and 1000-page passive auto-checkpoints.
 
-The leased-queue storage prototype keeps messages in the same SQLite file and scopes claims by an explicit application/deployment identity and queue name. Active-run reconciliation filters by deployment and derives one deterministic message ID per scoped run. Claims use distinct capability tokens, retain the message ID across lease expiry and timeout rescheduling, and are tested across competing and killed processes.
+The leased-queue storage prototype keeps messages in the same SQLite file and scopes claims by an explicit target and queue name. The shipped SQLite profile treats the file itself as the application boundary rather than adding a queue-only application ID that would falsely suggest tenant isolation. Its existing `deploymentId` becomes a stable compatible-worker-group target: JavaScript and Python default to distinct `local-js` and `local-python` targets, callers may override the target deliberately, and SDK, native build, process, port, and path identities never enter it. A worker claims only its configured target and exact advertised queue names; workers sharing both are replicas. Local targets do not enable immutable deployment affinity. Active-run reconciliation filters by deployment and derives one deterministic message ID per run within that database. Claims use distinct lease capability tokens, retain the message ID across lease expiry and timeout rescheduling, and are tested across competing and killed processes. The current fixture's opaque application/deployment `scope` is probe input, not a public string callers will construct or a `tag` column the shipped schema must retain.
 
-The Node-API probe now starts a Rust-owned single-concurrency supervisor with an explicit full flow URL. It proves claim-then-callback ordering, stable message identity and increasing attempts across an HTTP failure and handler-requested `timeoutSeconds`, final acknowledgement, and bounded close during a stalled callback. The callback URL is process configuration and is not persisted. The prototype accepts only loopback HTTP, uses one blocking delivery thread with a request timeout, and reports counters on shutdown; it validates the boundary, not the final concurrency, HTTP client, authentication, or observability design.
+The Node-API probe now starts a Rust-owned single-concurrency supervisor with an explicit full flow URL. It proves claim-then-delivery ordering, stable message identity and increasing attempts across an HTTP failure and handler-requested `timeoutSeconds`, final acknowledgement, and bounded close during a stalled response. Loopback HTTP is the initial SQLite queue's only delivery transport; direct Node-API or PyO3 callbacks are deferred unless later benchmarks establish a need. Shipped hosts likewise resolve and explicitly register the complete URL before worker activation; Rust does not scan ports, issue discovery health probes, or guess a listening socket. Programmatic configuration, `WORKFLOW_LOCAL_BASE_URL`, a framework-provided address, or an explicit `PORT` may supply it. An unresolved or conflicting registration fails before any claim. The registration is process state shared across bundled World copies and is not persisted. Initial HTTP callback validation deliberately matches the existing TypeScript local and PostgreSQL Worlds rather than adding authorization in this slice. The prototype uses one blocking delivery thread and a minimal HTTP client with a request timeout; it validates the boundary, not the final concurrency, production HTTP client, or observability design.
 
-The repository-local technical floor is Rust 1.88 for both native bindings. The dedicated CI matrix is configured to exercise Node.js 22 and Python 3.13 across Linux, macOS, and Windows; the Python extension selects `abi3-py39`, so Python 3.9 is the intended interpreter floor for the probe. This is evidence for the next packaging experiment, not yet the shipped OS, CPU, libc, or language-version support policy.
+The repository-local technical floor is Rust 1.88 for both native bindings; the native dependency graph does not compile under the workspace's older Rust 1.87 floor. The existing probe CI exercises Node.js 22 and Python 3.13 across Linux x64, macOS arm64, and Windows x64. The Python extension selects `abi3-py39`, so Python 3.9 is the intended interpreter floor for that probe. This evidence informs the Phase 1 gate in [[rust-portability#Native CLI#Initial Native Validation Matrix]], but neither the probe nor that gate is a public support promise.
 
-The persisted-codec fixture fixes three boundaries. New SQLite execution context uses `workflow-cbor-v1`; Rust verifies exact writer bytes and both Rust and the installed `cbor-x` reader verify the same value, including bytes. Legacy JSON/JSONB/text vectors cover PostgreSQL values, JSON-stringified errors, and world-local's byte sentinel. Independently generated `cbor-x` vectors cover extensible objects, byte arrays, `undefined`, `null`, and dates, and the Rust compatibility reader rejects trailing data, non-string object keys, and unknown tags. Production endpoint discovery and authentication, direct delivery, queue concurrency, `tag`, database location, busy and checkpoint defaults, wheel ownership, and public package names remain open.
+The persisted-codec fixture fixes three boundaries. New SQLite execution context uses `workflow-cbor-v1`; Rust verifies exact writer bytes and both Rust and the installed `cbor-x` reader verify the same value, including bytes. Legacy JSON/JSONB/text vectors cover PostgreSQL values, JSON-stringified errors, and world-local's byte sentinel. Independently generated `cbor-x` vectors cover extensible objects, byte arrays, `undefined`, `null`, and dates, and the Rust compatibility reader rejects trailing data, non-string object keys, and unknown tags. Queue concurrency, wheel ownership, and public package names remain open.
 
 ## Motivation
 
@@ -94,7 +100,7 @@ The migration is governed by a small set of rules that keep language portability
 
 1. Rust owns durable semantics; bindings own type and runtime adaptation only.
 2. User payloads remain opaque bytes to a World, preserving the encryption boundary in [[worlds#Encryption Responsibility]].
-3. The persisted run spec, native binding protocol, package version, and database schema version are separate version axes.
+3. The persisted run spec, persisted codec, package/build identity, and database schema version are separate version axes.
 4. SQLite and PostgreSQL share a state machine and conformance suite, not necessarily query text or the lowest common SQL abstraction.
 5. A native implementation ships beside the TypeScript implementation before it replaces any default.
 6. No language callback runs while a database transaction, SQLite writer lock, or internal queue lease mutation is held.
@@ -132,7 +138,7 @@ flowchart TB
   HOSTHTTP --> PY
 ```
 
-The HTTP arrows represent queue delivery to the generated flow endpoint described in [[architecture#Request and Queue Boundary]]. A direct in-process delivery path may be added as an optimization, but it must preserve the same envelope, retry, and acknowledgement behavior.
+The HTTP arrows represent queue delivery to the generated flow endpoint described in [[architecture#Request and Queue Boundary]]. Loopback HTTP is the initial SQLite transport as well as the semantic baseline. A direct in-process path is not part of the initial contract and may be reconsidered only if benchmarks justify its additional binding and lifecycle surface.
 
 ### Ownership Boundaries
 
@@ -160,7 +166,7 @@ The existing JavaScript `World` surface crosses several layers, so compatibility
 | --- | --- | --- |
 | `runs`, `steps`, `events`, and `hooks` storage | Rust backend, with transition plans from Rust core | Binding maps values and errors; optional read methods remain fail-closed |
 | Stream read/write/info/close | Rust backend | Binding adapts native cursors to Web streams or Python async iteration |
-| `getDeploymentId()` and `queue()` | Rust backend and configuration | Required in every binding; payload bytes and message identity are preserved |
+| `getDeploymentId()` and `queue()` | Rust backend and configuration | Required in every binding; SQLite returns a stable compatible-worker-group target and persists the requested target without deriving it from a package, process, port, or path |
 | `createQueueHandler()` | Rust delivery engine plus host adapter | Rust owns attempts, leases, and envelopes; the Node wrapper owns `Request`/`Response`, and Python exposes an idiomatic equivalent |
 | `specVersion` and `capabilities` | Rust protocol/backend | Binding reports them without inferring support from method presence or environment variables |
 | World `start()` and `close()` lifecycle | Rust engine | Binding delegates explicitly; construction remains side-effect free |
@@ -168,7 +174,9 @@ The existing JavaScript `World` surface crosses several layers, so compatibility
 | Deployment availability, latest-deployment resolution, environment, run-ID creation, and run description | Backend-specific extension | Implement only where meaningful; pure metadata methods stay side-effect free |
 | `getEncryptionKeyForRun()` | Backend-specific key resolution | Binding returns opaque key bytes; language SDK performs payload encryption/decryption |
 | Analytics | Optional backend read surface | Omitted initially; CLI falls back to canonical storage reads |
-| Local `tag`, `clear()`, `registerHandler()`, and active-run recovery controls | SQLite profile plus host adapter | May be absent from an experimental package, but each is a compatibility gate before replacing `@workflow/world-local` |
+| Local `clear()` and active-run recovery controls | SQLite profile plus host adapter | Operate only on the selected database and remain compatibility gates before replacing `@workflow/world-local` |
+| Local `tag` selection and cross-database test visibility | Host test and tooling integration | `@workflow/vitest` selects one database per pool; observability aggregates explicitly without adding tag scope to the Rust schema |
+| Local `registerHandler()` extension | Host test integration | Not implemented as a native callback; `@workflow/vitest` uses a private ephemeral loopback server before the native profile replaces `@workflow/world-local` |
 
 ### Library Instead of Required Daemon
 
@@ -230,14 +238,14 @@ The migration must extract a language-neutral contract without creating a second
 
 ### Contract Layers
 
-Six related contracts evolve independently and must be named explicitly in errors, manifests, and release notes.
+Six related compatibility boundaries evolve independently and must be named explicitly in errors, manifests, and release notes.
 
 | Contract | Scope | Compatibility rule |
 | --- | --- | --- |
 | Persisted run spec | Event and queue meaning, state transitions, replay semantics | Stored per run; readers support a range as in [[data-and-compatibility#Protocol Versions]] |
 | Persisted codec | Physical encoding of structured event/entity metadata and legacy fallback | Selected by persisted spec or schema state; compatibility is proven with fixed vectors, including existing `cbor-x` data |
 | Database schema | Tables, columns, indices, migration state | Backend-specific monotonic migrations with rollback policy |
-| Native adapter protocol | Values and operations exchanged between a host wrapper and a Node-API/PyO3 module | Wrapper and native artifact ship in lockstep; handshake before the first durable operation |
+| Binding release identity | Host wrapper, Node-API/PyO3 module, and platform artifact provenance | Wrapper and native artifact are one atomic release unit; exact package/build identity is enforced by packaging and exposed for diagnostics, not evolved as a separate protocol |
 | CLI driver protocol | Commands, progress, results, cancellation, and diagnostics exchanged over the driver transport | Independently versioned capability handshake; kernel and driver may come from different packages or repositories |
 | Package/CLI version | User-facing features and command behavior | SemVer plus channel policy; never used to infer a run's persisted semantics |
 
@@ -256,7 +264,7 @@ Rust models should remove host-language accidents while round-tripping all store
 - Optional World methods become explicit capabilities internally; a binding exposes or omits the public method according to the language SDK's existing convention.
 - Analytics remains an optional read capability. A backend that omits it uses canonical storage reads; it must not advertise synthetic analytics merely to simplify CLI dispatch.
 
-Context-bearing FFI fields use direct binding conversion rather than a JSON or CBOR envelope. Each adapter traverses the live host graph synchronously, rejects cycles and unsupported values, and produces an owned `ContextValue` before Rust work leaves the JavaScript thread or Python GIL. Shared-reference identity is not portable data, so aliases are copied into equal subtrees. Result envelopes, streams, cancellation, and backpressure still need their own FFI decisions.
+Ordinary FFI requests and results use direct binding conversion rather than a JSON or CBOR envelope. Opaque application payloads cross as byte buffers, typed fields map to binding structs, and each adapter converts extensible context into an owned `ContextValue` before Rust work leaves the JavaScript thread or Python GIL. Context traversal rejects cycles and unsupported values; shared-reference identity is not portable data, so aliases become equal subtrees. Streams and cancellation use specialized native handles or async adapters whose exact shapes still require prototypes; they do not introduce a general envelope.
 
 The direct FFI representation is not the database codec and must never be confused with existing `cbor-x`-encoded PostgreSQL columns. Likewise, the CLI driver protocol is a process boundary with different evolution and trust properties from an in-process native addon.
 
@@ -342,7 +350,7 @@ Both bindings obey the same lifetime and concurrency rules even though their hos
 - Rust never invokes a host callback while holding a transaction or internal mutex needed by another World operation.
 - Backpressure crosses the binding rather than accumulating unbounded chunks or queue deliveries.
 - Panics are caught at the FFI boundary and reported as internal errors; they never unwind into the host runtime.
-- A binding reports its native protocol and supported persisted-spec range before the first durable write.
+- Packaging keeps each wrapper and native artifact at one exact build identity; diagnostic metadata reports that identity, enabled features, SQLite version, and supported persisted-spec range without creating a separately versioned adapter protocol.
 - Context graphs are converted while still attached to the host runtime: cycles fail, while repeated references are traversed again and become separate `ContextValue` subtrees.
 
 ## SQLite Local World
@@ -353,14 +361,13 @@ SQLite supplies a documented cross-platform file format, transactions, uniquenes
 
 ### Storage Shape
 
-SQLite databases replace per-entity files as the durable unit, but the physical layout for the current tagged overlay remains a Phase 0 decision. The implementation never shards into one database per run.
+SQLite databases replace per-entity files as the durable unit. Each operational World uses one database, and the implementation never shards an application's data into one database per run.
 
 SQLite manages the journal and shared-memory sidecars when WAL mode is active.
 
 The conceptual schema contains:
 
 - schema metadata and migration history;
-- tag/overlay identity if the existing local visibility contract is retained;
 - runs and their persisted protocol and storage metadata;
 - an append-only event table keyed by `(run_id, position)` with unique event IDs;
 - materialized steps, Hooks, and waits;
@@ -372,9 +379,35 @@ This list records responsibilities, not final table or column names. SQL names b
 
 The chosen layout must preserve transactional cross-run queries, Hook-token rules, migrations, and queue recovery for the data visible to one World instance. Per-run databases would recreate cross-shard consistency problems without giving a local single-writer SQLite workload useful isolation.
 
-The existing local `tag` option is an overlay rather than an isolated tenant: a tagged World can read untagged and same-tag data while its writes, recovery, and `clear()` are tag-scoped. Phase 0 must first decide whether to preserve that behavior and characterize conflict precedence with fixtures. Compatible layouts include a scope discriminator carried through every relevant key/query/claim or a deliberately designed base-plus-overlay database arrangement; an isolated per-tag database alone is not equivalent. Dropping overlay visibility is an explicit compatibility change.
-
 Application payload fields use SQLite `BLOB` values without hydration. Filterable routing and lifecycle fields remain typed columns. Extensible execution context remains encoded data so adding a context key does not require a schema migration.
+
+### Vitest Database Selection
+
+The SQLite profile preserves Vitest isolation and observability without carrying the filesystem World's `tag` overlay into the canonical schema.
+
+The filesystem implementation's `tag` is not a consistent tenant boundary: point reads prefer the selected tag and fall back to untagged files, writes use only the selected tag, lists expose all tags, recovery and `clear()` select one tag, and some uniqueness sidecars are global. Freezing that asymmetry would require scope in nearly every SQLite key, fallback queries, cross-layer event rules, and ambiguous duplicate run IDs.
+
+The Rust SQLite World therefore has no tag or overlay column. The host maps each `@workflow/vitest` pool to its own SQLite database, and all point reads, writes, recovery, queue claims, and `clear()` operations stay within that database. A test that intentionally shares state must select the same database or import an explicit fixture; a test database never falls back to development data.
+
+CLI and local observability tooling explicitly aggregate `workflow.sqlite` and schema-validated `vitest-<pool>.sqlite` files in the selected database directory and identify each result's source. This preserves the reason tagged files were introduced without making cross-database listing a World storage operation.
+
+The existing filesystem World retains its current behavior during coexistence. Replacing it treats removal of overlay fallback as an intentional compatibility change and requires tests for per-pool isolation, scoped clearing and recovery, and visibility through the aggregation layer.
+
+### Database Directory
+
+SQLite uses an independently named database directory so a legacy filesystem World cannot recursively clear native data.
+
+The host option is `databaseDir`, the environment variable is `WORKFLOW_LOCAL_DATABASE_DIR`, and the zero-configuration default is `.workflow-database` relative to the effective workflow project directory. Hosts resolve it once to an absolute path and canonicalize its existing parent before Rust uses the resulting file paths or process registries.
+
+The normal World opens `<databaseDir>/workflow.sqlite`. `@workflow/vitest` defaults to the same directory under its resolved `rootDir` and maps each safe pool identifier to `<databaseDir>/vitest-<pool>.sqlite`; its explicit test option is likewise named `databaseDir`. SQLite's `-wal` and `-shm` files remain beside their owning database.
+
+Programmatic `databaseDir` overrides `WORKFLOW_LOCAL_DATABASE_DIR`, which overrides the `.workflow-database` default. The Rust layer receives a resolved database file and does not reinterpret a host working directory. JavaScript, Python, and CLI adapters must therefore resolve the same project-relative directory before cross-language access.
+
+The filesystem option `dataDir` and `WORKFLOW_LOCAL_DATA_DIR` continue to configure only the legacy JSON World. They do not derive, override, or alias the SQLite directory. This explicit separation avoids the old untagged `clear()`, including in already published packages, deleting a database placed anywhere under its managed directory. Selecting the SQLite profile with only the legacy variable set uses `.workflow-database` and reports that the legacy setting was not consumed.
+
+CLI discovery recognizes `.workflow-database` independently from legacy data directories, validates a database's application/schema metadata before opening it, and never chooses an engine merely because one format exists. If both formats are present, the selected World profile determines which is operational; diagnostics may report both, but there is no implicit import or fallback.
+
+The implementation adds `.workflow-database` and its database sidecars to repository ignores and builder input exclusions. `clear()` deletes rows only from its selected database, and a Vitest pool clears only its own file's contents; neither operation recursively deletes the database directory or another profile's data.
 
 ### Event Transactions
 
@@ -394,17 +427,31 @@ The SQLite profile should use a persistent database queue rather than rebuilding
 
 Enqueue stores the message before returning. Workers atomically claim ready rows with a renewable lease, preserve one stable message ID across redeliveries, increment attempts according to the public queue contract, and acknowledge only after the flow handler succeeds. Process death leaves an expiring lease that another worker can reclaim.
 
-Claims are scoped to the logical deployment, queue namespace, and handler prefixes a worker can actually serve. Replicas for the same target may compete, but a Node.js worker must not consume a Python-targeted job merely because both processes opened the same database. The row stores a logical target and the live worker resolves its current endpoint, avoiding a stale development port after restart.
+The SQLite file is one application's World and queue boundary. Pointing unrelated applications at it is a configuration error, not supported multi-tenancy; inventing an application field only for queue rows would not isolate the run and event tables and would provide false safety. A database instance identifier may aid diagnostics, but it is not a routing or authorization credential. Vitest pool isolation selects another database rather than adding a queue scope.
 
-Delayed delivery, handler-requested `timeoutSeconds`, retry backoff, idempotency windows, queue namespaces, concurrency limits, and graceful shutdown all live in Rust. The provisional baseline transport is loopback HTTP to the language host's generated flow route because it keeps the Rust queue independent of Node.js and Python callback ABIs; Phase 0 still validates it against direct delivery.
+Claims use the existing persisted `deploymentId` as a logical compatible-worker-group target, not as an immutable local build identifier. JavaScript defaults to `local-js` and Python to `local-python`; these values remain stable across SDK/native upgrades, process restarts, port changes, and directory moves. The binding permits an explicit target so replicas can share work and a deliberately compatible cross-language implementation can opt into the same group. The SQLite profile does not advertise deployment affinity: local code may evolve while retaining responsibility for its durable runs.
 
-The Phase 0 worker resolves the host's complete loopback flow URL once when the binding starts it, then claims only the supplied scope and queue name. The endpoint never enters a queue row, so restarting a development server on another port cannot leave a durable stale destination. The probe adapter's explicit worker start and draining close model the eventual World lifecycle: construction and inspection do not launch a worker, while close stops claims and joins the supervisor off the host event loop. This is evidence for the encapsulation boundary; the prototype's one thread, concurrency of one, HTTP-only parser, and short shutdown timeout are not compatibility commitments.
+Each live worker claims only rows whose target matches its configured deployment ID and whose concrete queue name appears in the handler set supplied by its host manifest. Queue namespaces are already part of that name. Matching the target but claiming an arbitrary workflow prefix is insufficient because a partial or different host may not contain that workflow. Workers matching both fields are replicas and may compete; an explicitly targeted message remains durable while no matching worker is online.
+
+The durable claim scope is therefore the selected SQLite database, deployment ID, and concrete queue name. The current prototype's opaque `scope` string proves isolated claim and reconciliation behavior but is not a public concatenation contract or persisted application/tag field. Active-run reconciliation scans only runs in that database for the worker's target and recreates wakes under the same target. The row stores no live endpoint, avoiding a stale development port after restart.
+
+Delayed delivery, handler-requested `timeoutSeconds`, retry backoff, idempotency windows, queue namespaces, concurrency limits, and graceful shutdown all live in Rust. The initial transport is exclusively loopback HTTP to the language host's generated flow route because it keeps the Rust queue independent of Node.js and Python callback ABIs and exercises the same Request/Response contract used by hosted delivery.
+
+The language host resolves and registers its complete loopback flow URL before activating the Phase 0 worker, which then claims only the supplied target and concrete queue names. Rust neither scans listening ports nor probes health endpoints for discovery. Programmatic configuration and `WORKFLOW_LOCAL_BASE_URL` take precedence over a framework-provided address or explicit `PORT`; if none yields one unambiguous URL, consumer `start()` fails before claiming anything. This deliberately does not inherit the TypeScript local World's fallback from a failed health probe to the process's first listening socket.
+
+The endpoint registration and supervisor are process state shared across bundler-created World copies through a `globalThis` registry keyed by resolved database identity and deployment target. Repeating the same registration is idempotent, while conflicting URLs fail instead of silently replacing a live worker. The complete URL must use HTTP and resolve only to loopback; a wildcard listen address is converted by the host to a connectable loopback address. Construction, migration, and inspection do not register or launch a consumer. The endpoint never enters a queue row, so restart on a new port and database copying cannot retain a stale destination.
+
+Claim scope is routing rather than authentication. The initial SQLite handler matches existing `@workflow/world-local` and `@workflow/world-postgres`: it validates the queue metadata and payload shape but does not require a delivery credential or prove that the HTTP body corresponds to a claimed row. This is an explicit Phase 0 scope limit, not a claim that the public flow route is authenticated.
+
+The recommended later hardening is a per-claim capability rather than a long-lived application or process secret. A handler would use the current random lease token to verify, before decoding or executing, that the lease is live and that its message ID, target, queue name, attempt, and raw body match the SQLite row; acknowledgement or rescheduling would invalidate it, and redelivery would rotate it. That change should be reviewed as a separate security feature, including how equivalent protection applies to other self-hosted Worlds, rather than becoming an unannounced SQLite-only requirement in the first slice.
+
+The probe adapter's explicit worker start and draining close model the eventual World lifecycle: close stops claims and joins the supervisor off the host event loop. This is evidence for the encapsulation boundary; the prototype's one thread, concurrency of one, minimal HTTP parser, and short shutdown timeout are not compatibility commitments.
 
 A durable queue does not remove the boundary between event creation and publication exposed by the current `World` interface. Queue success with event failure continues to rely on the resilient payload rebuilding missing state; event success with queue failure requires active-run reconciliation. Recovery must use a durable, deterministic idempotency identity and account for ready, delayed, and leased rows so repeated startup scans converge instead of creating a delivery storm.
 
 A future SQLite-specific combined operation may insert an event and message in one transaction, but mixed-version callers and other replay wake paths still require reconciliation. Phase 0 must define which component performs the scan, the identity of a missing wake, and how it coexists with the current `reenqueueActiveRuns` behavior.
 
-A direct in-process handler can be investigated alongside the HTTP baseline. It must use the same serialized envelope and state transitions, and a configuration change between transports must not create two semantic queues. The current public `registerHandler()` optimization may be omitted from an experimental package, but replacing `@workflow/world-local` requires either compatible behavior or a documented removal decision.
+A direct Node-API or PyO3 callback is not part of the initial SQLite profile. Crossing from a Rust worker thread into a JavaScript Promise or Python coroutine would add per-language scheduling, backpressure, cancellation, reentrancy, and shutdown contracts while bypassing the generated route exercised in deployment. `@workflow/vitest`, the current non-test consumer of local `registerHandler()`, should instead host its combined handler on a private ephemeral loopback server before the native profile replaces `@workflow/world-local`. Direct delivery may be reconsidered later only with a benchmark that demonstrates material cost; it cannot become an automatic per-message fallback or create a second queue semantics.
 
 ### Streams and Long Polls
 
@@ -416,15 +463,21 @@ Readers combine a cursor query with bounded polling so another process's writes 
 
 The supported profile is a local file on one host, with configuration chosen for predictable recovery rather than surprising benchmark wins.
 
-- Enable foreign keys and verify required SQLite features at startup.
-- Use WAL where the VFS supports it, with a bounded busy timeout and an explicit checkpoint policy.
+- Enable foreign keys, activate WAL, and read required settings back on every connection instead of relying on bundled-library compile defaults.
 - Reject or clearly downgrade unsupported VFS behavior instead of assuming WAL was enabled.
 - Do not claim support for network filesystems; SQLite's WAL design requires same-host shared memory.
 - Bundle or otherwise pin a SQLite build containing the fixes required by the multi-process WAL workload instead of trusting an arbitrary system library.
-- Make any reduced-synchronization durability mode an explicit opt-in with documented power-loss behavior.
 - Restrict new database and sidecar permissions according to the containing directory and never log secrets or payload bytes.
 
-SQLite's [WAL documentation](https://www.sqlite.org/wal.html) is the reference for same-host concurrency, checkpointing, sidecar handling, and VFS limits. The exact driver, bundled-versus-dynamic linkage, pool size, synchronous mode, and checkpoint thresholds remain benchmark-and-fault-test decisions.
+The local default is `synchronous=NORMAL`. It preserves atomicity and consistency and recovers committed transactions after an application-process crash, but a machine crash or power loss may roll back recent acknowledged commits. This matches the existing filesystem World's lack of an fsync guarantee without selecting `OFF`, which could allow database corruption. A future profile intended for production-grade single-host storage should use explicit `FULL`; Phase 0 adds no public durability switch.
+
+Each process shares one runtime engine per resolved database identity, so constructing or bundling another World wrapper does not multiply its connection budget. The engine serializes writes through one connection and permits at most three concurrent short read connections. Read transactions end before polling or host work, and queue delivery never occupies a database connection while making HTTP requests.
+
+Connection acquisition, waiting for the local writer lane, and SQLite lock contention share one five-second operation budget. Writes begin with `BEGIN IMMEDIATE` so cross-process contention is acquired before mutation; exhaustion returns a retryable storage-busy error with its wait stage and elapsed time rather than waiting forever. A maintenance command may expose a separately explicit budget later, but runtime callers do not silently reset the five-second budget on each retry.
+
+The writer explicitly enables a 1000-page WAL auto-checkpoint, whose mode is `PASSIVE`. Routine World shutdown closes its connections but does not request `FULL`, `RESTART`, or `TRUNCATE`, because another language process may still be reading or writing the same database. Long-lived reader detection and checkpoint progress are observable; an aggressive truncate checkpoint belongs to explicit offline maintenance if it is later needed.
+
+SQLite's [WAL documentation](https://www.sqlite.org/wal.html) is the reference for these guarantees, same-host concurrency, checkpointing, sidecar handling, and VFS limits. The backend uses `rusqlite` with a Cargo-locked bundled SQLite build, and synchronous calls run on bounded blocking executors rather than introducing an async runtime into the shared embedded layer.
 
 At the time of this proposal, SQLite identifies 3.51.3 and the 3.44.6/3.50.7 backports as containing its multi-connection WAL-reset fix. Release automation should assert a fixed build rather than preserve these particular version numbers as a permanent architectural constant.
 
@@ -533,13 +586,34 @@ One native source revision feeds several platform artifacts while preserving fam
 
 Node-API reduces Node.js ABI churn but does not remove the OS, CPU, and libc artifact matrix. Python wheels add interpreter/ABI and platform tags. The CLI executable, Node native module, and Python module are separate artifacts built from one identified Rust commit and tested independently, even if their package tags and repositories differ.
 
-The first supported target matrix should be intentionally small and evidence-based. macOS arm64/x64, Linux x64/arm64 with declared glibc or musl coverage, and Windows x64 are candidates, not promises until clean-install and runtime tests exist.
+The Phase 1 blocking matrix is defined in [[rust-portability#Native CLI#Initial Native Validation Matrix]]. It is repository-local integration evidence, not advertised platform support. Support begins only after Phase 2 proves clean installation without a compiler and runtime behavior from the artifacts users will receive.
+
+### Initial Native Validation Matrix
+
+The first native gate is deliberately narrow: it must cover the repository's Node.js contract and three already-probed host families without presenting an experimental source build as a shipped support promise.
+
+| Dimension | Phase 1 blocking floor |
+| --- | --- |
+| Rust | Native World and binding crates declare MSRV 1.88.0 and compile in CI with both exactly 1.88.0 and the current stable toolchain. This does not silently raise an unrelated SWC/Wasm crate's floor. |
+| Node.js | Node.js 22 and 24 use one Node-API 8 binding ABI. Both declared SDK engine lines are tested; there is no per-Node native artifact. |
+| Linux | `x86_64-unknown-linux-gnu`, kernel 4.18 or newer, and glibc 2.28 or newer. The artifact is built or checked in a glibc 2.28 baseline environment rather than inferring compatibility from a newer Ubuntu runner. |
+| macOS | `aarch64-apple-darwin` with deployment target macOS 13.5 or newer. |
+| Windows | `x86_64-pc-windows-msvc` targeting Windows 10 or Windows Server 2016 or newer. |
+| SQLite | Link only the bundled SQLite, initially exactly 3.53.2. CI also rejects any future pin below 3.51.3, the upstream safety floor containing the relevant WAL-reset corruption fix. System SQLite is not an alternative in this slice. |
+
+The OS floors follow the current [Node.js platform table](https://github.com/nodejs/node/blob/main/BUILDING.md), which is stricter than Rust on the relevant Linux and macOS targets. Node-API 8 remains usable by later Node.js lines according to the [Node-API version matrix](https://nodejs.org/api/n-api.html), so Node.js 22 and 24 share one ABI without widening the host matrix.
+
+Every OS and Node.js pair must load the addon and complete a small durable sequence: create a database, close it, reopen it, enqueue a message, claim it, and complete it. Rust storage/process tests also run on every host family. The fuller backend-neutral World conformance suite may stay on Linux for Phase 1; Phase 2 expands cross-platform end-to-end and clean-install evidence before support is advertised.
+
+CI pins explicit runner versions and asserts the observed CPU architecture instead of relying on mutable `*-latest` labels; the available labels and architectures come from the [GitHub-hosted runner table](https://docs.github.com/en/actions/reference/runners/github-hosted-runners). Unsupported targets fail with an actionable platform error and never fall back to an install-time native compilation.
+
+Intel macOS, Linux arm64, Linux musl/Alpine, Windows arm64, later Node.js majors, and system SQLite are outside this gate. A target string already present in probe metadata, including Intel macOS, is not a promise without its own runner and runtime evidence. Python's interpreter, ABI, OS, and wheel matrix remains a separate Phase 3 decision; its Phase 0 probe is feasibility evidence only.
 
 ### Release Coordination
 
 Native artifacts make partial publication a first-class release failure mode.
 
-CI builds and tests every advertised target before publishing npm launchers or a native Python wheel. Consumer packages refer to exact compatible artifact versions. Published artifacts include their Rust commit, native protocol version, persisted-spec range, SQLite version, and enabled backends so support incidents can identify the actual binary.
+CI builds and tests every advertised target before publishing npm launchers or a native Python wheel. Consumer packages refer to exact compatible artifact versions. Published artifacts include their package/build identity, Rust commit, persisted-spec range, SQLite version, and enabled backends so support incidents can identify the actual binary.
 
 The existing changeset-driven npm release, Cargo workspace versions, externally maintained Python SDK version, native wheel, and standalone release tag need one machine-readable compatibility manifest and cross-repository gates. A package may advance without advancing the persisted run spec; these operations must remain separate in automation.
 
@@ -551,7 +625,7 @@ Programmatic options override environment variables, which override config files
 
 The current npm launcher loads `.env`, then loads `.env.local` with override enabled, so `.env.local` can even replace an inherited process variable. Characterization tests must freeze this fact before the project decides whether the native CLI preserves it or introduces an intentional compatibility break.
 
-Existing environment variables remain supported through the compatibility period. New SQLite or native settings need explicit names, documentation, and secret-redaction tests. The design should converge on a language-neutral project file, but it must not strand framework build-time settings that currently require JavaScript configuration.
+Existing environment variables remain supported by the implementation that owns them through the compatibility period; they are not silently reinterpreted by another storage engine. SQLite adds the documented `WORKFLOW_LOCAL_DATABASE_DIR`, while `WORKFLOW_LOCAL_DATA_DIR` remains the filesystem profile's directory. The design should converge on a language-neutral project file, but it must not strand framework build-time settings that currently require JavaScript configuration.
 
 Paths are normalized once, resolved relative to a documented base, and displayed before destructive or long-running migration work. CLI commands never infer a database target from an unresolved environment variable for deletion, clearing, or import.
 
@@ -569,7 +643,7 @@ Initially, users explicitly select the native implementation. After conformance,
 
 Compatibility requirements differ between disposable local state and installed PostgreSQL state.
 
-The SQLite profile starts with a new schema and never mistakes a legacy filesystem directory for a database. If both formats exist beneath one configured data root, the user or project configuration selects an explicit profile; ambiguous implicit selection fails before mutation to avoid split-brain runs. PostgreSQL must read all persisted spec versions supported by the matching TypeScript release and must mint the same default spec version. Unknown future runs fail before mutation.
+The SQLite profile starts with a new schema in `.workflow-database` and never mistakes a legacy filesystem directory for a database. If both independent directories exist, the user or project configuration selects an explicit profile; storage presence never triggers implicit fallback or migration. PostgreSQL must read all persisted spec versions supported by the matching TypeScript release and must mint the same default spec version. Unknown future runs fail before mutation.
 
 Payload bytes, encryption context, event IDs, correlation IDs, Hook tokens, queue envelopes, and cursors are tested byte-for-byte or semantically as appropriate. The Rust backend may not hydrate and reserialize user data during a storage migration.
 
@@ -600,6 +674,7 @@ The program has several cross-cutting risks whose mitigations must exist before 
 | TypeScript, Python, and Rust protocol drift | One persisted-spec vocabulary, shared fixtures, exhaustive event handling, and startup range checks |
 | Async runtime, GIL, Node event-loop, or shutdown leaks | Thin adapters, instance-owned tasks, explicit cancellation/close, and binding-level tests |
 | SQLite corruption, contention, or stuck leased work | Fixed SQLite build, short transactions, durable leases, bounded busy handling, multiprocess crash tests |
+| An untrusted caller forges a self-hosted flow delivery | The first SQLite slice retains existing callback-validation parity and makes no authentication claim; before stronger exposure, add the recorded per-claim capability or a coordinated self-hosted authorization design |
 | Native artifact missing or loading on the wrong platform | Small advertised matrix, platform packages/wheels, clean-install tests, actionable capability errors |
 | CLI behavior differs by installation channel | Native/driver capability handshake and one black-box command/output suite across every launcher |
 | PostgreSQL cannot roll back after mixed deployment | Single migration authority, old/new coexistence tests, persisted per-run behavior, explicit queue drain plan |
@@ -652,7 +727,8 @@ This phase creates the minimum shared vocabulary and resolves choices that could
 - Maintain shared fixed vectors for new SQLite context CBOR and legacy PostgreSQL JSON/text, world-local JSON, and `cbor-x` metadata.
 - Prototype Node-API and PyO3 async calls, byte transfer, errors, cancellation, and stream iteration.
 - Prototype a multi-process SQLite append, scoped leased queue claim, crash recovery, and active-run reconciliation without duplicate amplification.
-- Decide the structural source of truth, persisted SQLite codec, FFI representation, SQLite driver/linkage, tag storage model, queue delivery topology, and initial target matrix.
+- Keep first-slice types hand-mapped behind the backend-neutral conformance suite and shared fixtures; use direct host-type FFI mappings with atomic wrapper/native releases; use bundled `rusqlite` on bounded blocking executors; deliver the initial SQLite queue exclusively through loopback HTTP; route it by stable local deployment targets plus concrete advertised queue names; require explicit in-process host endpoint registration without port discovery; match existing self-hosted callback validation while recording per-claim authorization as later hardening; and map each Vitest pool to a host-selected database instead of a schema-level tag overlay.
+- Gate the first native slice on Rust 1.88, Node.js 22/24, Linux x64 glibc 2.28, macOS arm64 13.5, Windows x64, and bundled SQLite 3.53.2 as specified in [[rust-portability#Native CLI#Initial Native Validation Matrix]].
 - Record viable ownership and release shapes for the native Python wheel and its external SDK consumer without making that cross-repository decision block the Node.js slice.
 
 Exit requires a written decision for each prototype and one fixture executed by both TypeScript and Rust.
@@ -669,7 +745,7 @@ Exit requires dense event-log and process-restart tests through the Node.js bind
 
 This phase closes the semantic gaps that a walking skeleton can avoid and proves the Rust local World against this repository's real runtime.
 
-Add all events and optional capabilities intended for launch, durable streams, long polling, Hook retention and resume deduplication, delayed jobs, retries, lease recovery, concurrency limits, observability, cleanup, and the complete conformance suite. Close or explicitly defer the compatibility gaps for local `tag`, `clear()`, `registerHandler()`, and active-run recovery, then inject the experimental package into the TypeScript workbench, compare it behaviorally with the filesystem World, and measure Node.js startup, bundle, memory, and queue costs.
+Add all events and optional capabilities intended for launch, durable streams, long polling, Hook retention and resume deduplication, delayed jobs, retries, lease recovery, concurrency limits, observability, cleanup, and the complete conformance suite. Implement database-local `clear()` and active-run recovery, map each `@workflow/vitest` pool to a separate database, aggregate those databases for local observability, and adapt Vitest to a private ephemeral loopback server. Then inject the experimental package into the TypeScript workbench, compare it behaviorally with the filesystem World, and measure Node.js startup, bundle, memory, and queue costs.
 
 Exit requires the applicable local core E2E corpus, direct concurrency and crash tests, queue lease recovery, the event-log race harness, clean npm installation without a Rust toolchain, and a documented SQLite support policy, all runnable without a Python repository checkout.
 
@@ -705,21 +781,7 @@ Promote the native facades, preserve an announced legacy-profile window, documen
 
 ## Open Decisions
 
-The remaining questions are ordered by when they can block useful work.
-
-### Blocking the First Slice
-
-These decisions must be resolved during Phase 0.
-
-1. What is the structural source of truth: an IDL with generated host types or hand-mapped types checked by shared fixtures?
-2. Does the native adapter use mapped host structs or a versioned envelope, and what handshake detects a wrapper/addon mismatch before a write?
-3. Which Rust SQLite driver and linkage mode provide the required async behavior, patched SQLite version, build portability, and test hooks?
-4. Does a direct binding callback justify its extra ABI and reentrancy complexity after loopback HTTP has established the Phase 0 semantic baseline?
-5. What stable application/deployment identity scopes queue claims in shipped packages, and how should production hosts authenticate or advertise the explicit endpoint validated by the prototype?
-6. Must local `tag` preserve its current untagged-plus-tagged overlay visibility, conflict precedence, scoped recovery, and scoped `clear()`; if so, does one database carry scope keys or does the layout use a designed base-plus-overlay arrangement?
-7. What durability, busy-timeout, connection-count, and checkpoint defaults are appropriate for the local profile?
-8. Where does the SQLite file live, and how does `WORKFLOW_LOCAL_DATA_DIR` map to it without colliding with legacy files?
-9. What minimum Rust, Node.js, OS, CPU, libc, and SQLite matrix is blocking for the repository-local slice?
+Phase 0 has no remaining architecture decision. The unresolved product and compatibility questions below are ordered by the later phase they can block.
 
 ### Blocking Python Integration
 
@@ -775,4 +837,4 @@ Several tempting approaches create early motion at the cost of the shared archit
 
 The next discussion should approve a small decision package that unlocks the Node.js/SQLite walking skeleton without pretending the full program is settled.
 
-That package consists of the ownership boundary, the pure transition-plan model, the initial crate graph, SQLite as a new explicitly selected local format, a persistent SQLite queue direction, napi-rs as the first integrated binding, Phase 2 validation through the existing TypeScript E2E paths, TypeScript coexistence, and Phase 0 prototypes for both Node-API and PyO3 plus the persisted codec, FFI representation, SQLite driver, queue routing, reconciliation, and delivery transport. The Node-API worker probe now supports loopback HTTP as the semantic-baseline candidate, but does not make it an approved compatibility promise. Python packaging, public package names, PostgreSQL queue design, and default replacement remain open.
+That package consists of the ownership boundary, the pure transition-plan model, the initial crate graph, SQLite as a new explicitly selected local format and application boundary, a persistent SQLite queue direction, stable compatible-worker-group deployment targets with distinct JavaScript/Python defaults, explicit process-local host endpoint registration, napi-rs as the first integrated binding, the minimum native validation matrix, Phase 2 validation through the existing TypeScript E2E paths, TypeScript coexistence, and Phase 0 prototypes for both Node-API and PyO3 plus the persisted codec, FFI representation, SQLite driver, queue routing, reconciliation, and delivery transport. Loopback HTTP is the approved initial SQLite delivery transport; direct binding callbacks are deferred unless later benchmarks justify them. Initial callback validation stays at existing self-hosted parity, with per-claim authorization recorded as later hardening. Python packaging, public package names, PostgreSQL queue design, and default replacement remain open.
