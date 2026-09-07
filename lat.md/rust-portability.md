@@ -4,7 +4,7 @@ Rust becomes the shared implementation layer for portable tooling and self-hoste
 
 ## Design Status
 
-This document is an exploratory architecture proposal: it fixes the intended boundaries and sequencing, but leaves implementation choices open where a focused prototype or benchmark is still needed.
+This document fixes the intended boundaries and sequencing. Phases 0 and 1 now have executable evidence, while later-phase choices remain open where a focused prototype or benchmark is still needed.
 
 The status words used below have precise meanings:
 
@@ -59,6 +59,20 @@ The Node-API probe now starts a Rust-owned single-concurrency supervisor with an
 The repository-local technical floor is Rust 1.88 for both native bindings; the native dependency graph does not compile under the workspace's older Rust 1.87 floor. The existing probe CI exercises Node.js 22 and Python 3.13 across Linux x64, macOS arm64, and Windows x64. The Python extension selects `abi3-py39`, so Python 3.9 is the intended interpreter floor for that probe. This evidence informs the Phase 1 gate in [[rust-portability#Native CLI#Initial Native Validation Matrix]], but neither the probe nor that gate is a public support promise.
 
 The persisted-codec fixture fixes three boundaries. New SQLite execution context uses `workflow-cbor-v1`; Rust verifies exact writer bytes and both Rust and the installed `cbor-x` reader verify the same value, including bytes. Legacy JSON/JSONB/text vectors cover PostgreSQL values, JSON-stringified errors, and world-local's byte sentinel. Independently generated `cbor-x` vectors cover extensible objects, byte arrays, `undefined`, `null`, and dates, and the Rust compatibility reader rejects trailing data, non-string object keys, and unknown tags. Queue concurrency, wheel ownership, and public package names remain open.
+
+### Phase 1 Evidence
+
+Phase 1 is implemented as an opt-in Node.js and SQLite walking skeleton. It proves the ownership boundaries without changing the current local default or claiming Phase 2 completeness.
+
+`workflow-protocol` now defines the Phase 1 run, step, and event vocabulary, while `workflow-world-core` owns the pure transition planner. The dev-only `workflow-world-testkit` supplies a backend-neutral lifecycle trace consumed by SQLite tests. `workflow-world-sqlite` applies each plan, reserves the next dense event slot, appends the event, and materializes run or step state inside one SQLite write transaction. Schema version 3 is installed only by an explicit, checksummed migration. Rust tests also cover concurrent dense appends, incompatible expected counts, and reopening persisted state.
+
+The private `@workflow/world-sqlite` package loads its co-versioned napi-rs artifact, checks Node-API 8 and bundled SQLite 3.53.2 identity, and exposes the repository's JavaScript `World` shape through direct host-type mappings. Construction performs no filesystem writes, engines are shared per canonical database path and deployment target through `globalSingleton`, and `close()` drains accepted native work. Unsupported Phase 2 capabilities fail with stable errors instead of silently weakening their contract.
+
+The minimal queue persists in the same database and consumes only its configured deployment target and exact queue names. A fresh-process test creates a run and queue message through JavaScript, reopens the database in another Node.js process, reads the dense log, delivers the typed payload over the registered loopback flow URL, and acknowledges the same durable message.
+
+The `workflow-cli` crate provides `version`, `doctor`, explicit `sqlite migrate`, and metadata-only `sqlite inspect`. Inspection opens the database read-only: tests prove that it neither creates or migrates storage nor starts the worker or consumes queued work. JSON output includes the native, SQLite, schema, and persisted-spec identity needed for diagnostics.
+
+CI gates this slice on Rust 1.88 and stable plus Node.js 22 and 24 across Linux x64 with glibc 2.28, macOS arm64 with a 13.5 deployment target, and Windows x64. Binding tests assert the compiled architecture and bundled SQLite version. Full workflow E2E, clean installation without a Rust toolchain, streams, Hooks, and the remaining optional capabilities stay in Phase 2.
 
 ## Motivation
 
@@ -437,7 +451,7 @@ The durable claim scope is therefore the selected SQLite database, deployment ID
 
 Delayed delivery, handler-requested `timeoutSeconds`, retry backoff, idempotency windows, queue namespaces, concurrency limits, and graceful shutdown all live in Rust. The initial transport is exclusively loopback HTTP to the language host's generated flow route because it keeps the Rust queue independent of Node.js and Python callback ABIs and exercises the same Request/Response contract used by hosted delivery.
 
-The language host resolves and registers its complete loopback flow URL before activating the Phase 0 worker, which then claims only the supplied target and concrete queue names. Rust neither scans listening ports nor probes health endpoints for discovery. Programmatic configuration and `WORKFLOW_LOCAL_BASE_URL` take precedence over a framework-provided address or explicit `PORT`; if none yields one unambiguous URL, consumer `start()` fails before claiming anything. This deliberately does not inherit the TypeScript local World's fallback from a failed health probe to the process's first listening socket.
+The language host resolves and registers its complete loopback flow URL before activating the Phase 1 worker, which then claims only the supplied target and concrete queue names. Rust neither scans listening ports nor probes health endpoints for discovery. Programmatic configuration and `WORKFLOW_LOCAL_BASE_URL` take precedence over a framework-provided address or explicit `PORT`; if none yields one unambiguous URL, consumer `start()` fails before claiming anything. This deliberately does not inherit the TypeScript local World's fallback from a failed health probe to the process's first listening socket.
 
 The endpoint registration and supervisor are process state shared across bundler-created World copies through a `globalThis` registry keyed by resolved database identity and deployment target. Repeating the same registration is idempotent, while conflicting URLs fail instead of silently replacing a live worker. The complete URL must use HTTP and resolve only to loopback; a wildcard listen address is converted by the host to a connectable loopback address. Construction, migration, and inspection do not register or launch a consumer. The endpoint never enters a queue row, so restart on a new port and database copying cannot retain a stale destination.
 

@@ -5,7 +5,7 @@ edition.workspace = true
 publish.workspace = true
 authors.workspace = true
 license.workspace = true
-rust-version.workspace = true
+rust-version = "1.88"
 
 [dependencies]
 base64 = "0.22"

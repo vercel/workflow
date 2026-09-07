@@ -1,5 +1,5 @@
 [package]
-name = "workflow-world-core"
+name = "workflow-world-testkit"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -9,6 +9,3 @@ rust-version = "1.88"
 
 [dependencies]
 workflow-protocol = { path = "../workflow-protocol" }
-
-[dev-dependencies]
-serde_json.workspace = true

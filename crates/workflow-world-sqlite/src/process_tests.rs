@@ -363,11 +363,14 @@ fn assert_migrated_database(database_path: &Path) -> Vec<(i64, String, i64)> {
     assert_eq!(
         managed_table_names(database_path),
         vec![
+            "workflow_database_metadata",
+            "workflow_event_data",
             "workflow_events",
             "workflow_queue_messages",
             "workflow_run_created_event_data",
             "workflow_runs",
             "workflow_schema_migrations",
+            "workflow_steps",
         ]
     );
     let history = migration_history(database_path);

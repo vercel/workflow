@@ -26,6 +26,14 @@ use serde_json::Value;
 pub enum EventType {
     RunCreated,
     RunStarted,
+    RunCompleted,
+    RunFailed,
+    RunCancelled,
+    StepCreated,
+    StepStarted,
+    StepCompleted,
+    StepFailed,
+    StepRetrying,
 }
 
 impl EventType {
@@ -34,6 +42,14 @@ impl EventType {
         match self {
             Self::RunCreated => "run_created",
             Self::RunStarted => "run_started",
+            Self::RunCompleted => "run_completed",
+            Self::RunFailed => "run_failed",
+            Self::RunCancelled => "run_cancelled",
+            Self::StepCreated => "step_created",
+            Self::StepStarted => "step_started",
+            Self::StepCompleted => "step_completed",
+            Self::StepFailed => "step_failed",
+            Self::StepRetrying => "step_retrying",
         }
     }
 }
@@ -45,6 +61,14 @@ impl TryFrom<&str> for EventType {
         match value {
             "run_created" => Ok(Self::RunCreated),
             "run_started" => Ok(Self::RunStarted),
+            "run_completed" => Ok(Self::RunCompleted),
+            "run_failed" => Ok(Self::RunFailed),
+            "run_cancelled" => Ok(Self::RunCancelled),
+            "step_created" => Ok(Self::StepCreated),
+            "step_started" => Ok(Self::StepStarted),
+            "step_completed" => Ok(Self::StepCompleted),
+            "step_failed" => Ok(Self::StepFailed),
+            "step_retrying" => Ok(Self::StepRetrying),
             other => Err(WorldError::persisted_data(format!(
                 "unsupported event type in persisted storage: {other}"
             ))),
@@ -60,6 +84,51 @@ pub enum RunStatus {
     Completed,
     Failed,
     Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepStatus {
+    Pending,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl StepStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+impl TryFrom<&str> for StepStatus {
+    type Error = WorldError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "running" => Ok(Self::Running),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            other => Err(WorldError::persisted_data(format!(
+                "unsupported step status in SQLite storage: {other}"
+            ))),
+        }
+    }
 }
 
 impl RunStatus {
@@ -130,12 +199,204 @@ pub struct WorkflowRun {
     pub workflow_name: String,
     pub spec_version: u32,
     pub input: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
     pub execution_context: Option<ContextValue>,
     pub attributes: BTreeMap<String, String>,
     pub encryption_public_key: Option<String>,
     pub created_at_ms: i64,
     pub started_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<i64>,
     pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowStep {
+    pub run_id: String,
+    pub step_id: String,
+    pub step_name: String,
+    pub status: StepStatus,
+    pub input: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Vec<u8>>,
+    pub attempt: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<i64>,
+    pub spec_version: u32,
+}
+
+/// Host-normalized event request for the Phase 1 run/step storage slice.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateWorldEventRequest {
+    pub run_id: String,
+    pub spec_version: u32,
+    pub event_count: Option<u64>,
+    pub occurred_at_ms: Option<i64>,
+    pub event: WorldEventData,
+}
+
+/// Event data after host values have been converted and payloads made opaque.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorldEventData {
+    RunCreated(RunCreatedEventData),
+    RunStarted(Option<RunCreatedEventData>),
+    RunCompleted {
+        output: Option<Vec<u8>>,
+    },
+    RunFailed {
+        error: Vec<u8>,
+        error_code: Option<String>,
+    },
+    RunCancelled {
+        cancel_reason: Option<String>,
+    },
+    StepCreated {
+        step_id: String,
+        step_name: String,
+        input: Vec<u8>,
+    },
+    StepStarted {
+        step_id: String,
+        step_name: Option<String>,
+        input: Option<Vec<u8>>,
+        attempt: Option<u32>,
+        owner_message_id: Option<String>,
+    },
+    StepCompleted {
+        step_id: String,
+        step_name: Option<String>,
+        result: Vec<u8>,
+    },
+    StepFailed {
+        step_id: String,
+        step_name: Option<String>,
+        error: Vec<u8>,
+    },
+    StepRetrying {
+        step_id: String,
+        step_name: Option<String>,
+        error: Vec<u8>,
+        retry_after_ms: Option<i64>,
+    },
+}
+
+impl WorldEventData {
+    #[must_use]
+    pub const fn event_type(&self) -> EventType {
+        match self {
+            Self::RunCreated(_) => EventType::RunCreated,
+            Self::RunStarted(_) => EventType::RunStarted,
+            Self::RunCompleted { .. } => EventType::RunCompleted,
+            Self::RunFailed { .. } => EventType::RunFailed,
+            Self::RunCancelled { .. } => EventType::RunCancelled,
+            Self::StepCreated { .. } => EventType::StepCreated,
+            Self::StepStarted { .. } => EventType::StepStarted,
+            Self::StepCompleted { .. } => EventType::StepCompleted,
+            Self::StepFailed { .. } => EventType::StepFailed,
+            Self::StepRetrying { .. } => EventType::StepRetrying,
+        }
+    }
+
+    #[must_use]
+    pub fn correlation_id(&self) -> Option<&str> {
+        match self {
+            Self::StepCreated { step_id, .. }
+            | Self::StepStarted { step_id, .. }
+            | Self::StepCompleted { step_id, .. }
+            | Self::StepFailed { step_id, .. }
+            | Self::StepRetrying { step_id, .. } => Some(step_id),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_present(&self) -> bool {
+        !matches!(
+            self,
+            Self::RunStarted(None)
+                | Self::RunCancelled {
+                    cancel_reason: None
+                }
+                | Self::StepStarted {
+                    step_name: None,
+                    attempt: None,
+                    owner_message_id: None,
+                    ..
+                }
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnpositionedWorldEvent {
+    pub event: WorldEventData,
+    pub spec_version: u32,
+    pub created_at_ms: i64,
+    pub occurred_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldEvent {
+    pub run_id: String,
+    pub slot: u64,
+    pub event: WorldEventData,
+    pub spec_version: u32,
+    pub created_at_ms: i64,
+    pub occurred_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldEventPage {
+    pub data: Vec<WorldEvent>,
+    pub cursor: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkflowRunPage {
+    pub data: Vec<WorkflowRun>,
+    pub cursor: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkflowStepPage {
+    pub data: Vec<WorkflowStep>,
+    pub cursor: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldEventResult {
+    pub event: Option<WorldEvent>,
+    pub run: Option<WorkflowRun>,
+    pub step: Option<WorkflowStep>,
+    pub step_created: bool,
+    pub skipped_events: Option<WorldEventPage>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldMutationPlan {
+    pub run: Option<WorkflowRun>,
+    pub insert_run: bool,
+    pub step: Option<WorkflowStep>,
+    pub insert_step: bool,
+    pub step_created: bool,
+    pub events: Vec<UnpositionedWorldEvent>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -228,11 +489,38 @@ pub enum WorldErrorKind {
     UnsupportedSpec,
     RunExpired,
     RunNotFound,
+    StepNotFound,
+    EntityConflict,
+    TooEarly,
+    UnsupportedOperation,
+    Closed,
     NotMigrated,
     UnsupportedSchema,
     PersistedData,
     QueueClaimLost,
     Storage,
+}
+
+impl WorldErrorKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidRequest => "invalid_request",
+            Self::UnsupportedSpec => "unsupported_spec",
+            Self::RunExpired => "run_expired",
+            Self::RunNotFound => "run_not_found",
+            Self::StepNotFound => "step_not_found",
+            Self::EntityConflict => "entity_conflict",
+            Self::TooEarly => "too_early",
+            Self::UnsupportedOperation => "unsupported_operation",
+            Self::Closed => "closed",
+            Self::NotMigrated => "not_migrated",
+            Self::UnsupportedSchema => "unsupported_schema",
+            Self::PersistedData => "persisted_data",
+            Self::QueueClaimLost => "queue_claim_lost",
+            Self::Storage => "storage",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

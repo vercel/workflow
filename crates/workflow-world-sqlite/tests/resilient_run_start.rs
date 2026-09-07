@@ -14,7 +14,7 @@ use tempfile::tempdir;
 use workflow_protocol::{
     ContextValue, RunCreatedEventData, RunStartedRequest, StoredEvent, WorkflowRun, WorldErrorKind,
 };
-use workflow_world_sqlite::SqliteWorld;
+use workflow_world_sqlite::{SqliteWorld, sqlite_schema_version};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -258,9 +258,13 @@ fn migrator_and_runtime_reject_a_migration_checksum_mismatch() {
 
 #[test]
 fn migrator_and_runtime_distinguish_future_and_gapped_history() {
+    let next_version = sqlite_schema_version() + 1;
     for (version, expected_message) in [
-        (3, "newer than supported"),
-        (4, "expected version 3, got 4"),
+        (next_version, "newer than supported".to_owned()),
+        (
+            next_version + 1,
+            format!("expected version {next_version}, got {}", next_version + 1),
+        ),
     ] {
         let directory = tempdir().expect("temporary directory should be created");
         let database_path = directory.path().join(format!("world-{version}.sqlite"));
@@ -278,13 +282,13 @@ fn migrator_and_runtime_distinguish_future_and_gapped_history() {
             .migrate()
             .expect_err("migrator should reject invalid history");
         assert_eq!(migration_error.kind(), WorldErrorKind::UnsupportedSchema);
-        assert!(migration_error.message().contains(expected_message));
+        assert!(migration_error.message().contains(&expected_message));
 
         let runtime_error = world
             .snapshot("wrun_missing")
             .expect_err("runtime should reject invalid history");
         assert_eq!(runtime_error.kind(), WorldErrorKind::UnsupportedSchema);
-        assert!(runtime_error.message().contains(expected_message));
+        assert!(runtime_error.message().contains(&expected_message));
     }
 }
 

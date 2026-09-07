@@ -366,13 +366,13 @@ fn project_legacy_json(value: Value, depth: usize) -> Result<PersistedValue, Wor
             .collect::<Result<Vec<_>, _>>()
             .map(PersistedValue::Array),
         Value::Object(values) => {
-            if matches!(values.get("__type"), Some(Value::String(kind)) if kind == "Uint8Array") {
-                if let Some(Value::String(data)) = values.get("data") {
-                    return BASE64
-                        .decode(data)
-                        .map(PersistedValue::Bytes)
-                        .map_err(codec_error("decode legacy local Uint8Array"));
-                }
+            if matches!(values.get("__type"), Some(Value::String(kind)) if kind == "Uint8Array")
+                && let Some(Value::String(data)) = values.get("data")
+            {
+                return BASE64
+                    .decode(data)
+                    .map(PersistedValue::Bytes)
+                    .map_err(codec_error("decode legacy local Uint8Array"));
             }
             values
                 .into_iter()

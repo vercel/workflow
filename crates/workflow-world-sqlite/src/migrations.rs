@@ -30,6 +30,12 @@ pub(super) const MIGRATIONS: &[SchemaMigration] = &[
         sql: include_str!("../migrations/0002_leased_queue.sql"),
         checksum: "sha256:e8e887f52c1f6c0c5485f208026326d9bce280c18e6e1e5cd6e0ca9841017128",
     },
+    SchemaMigration {
+        version: 3,
+        name: "phase1-run-step-storage",
+        sql: include_str!("../migrations/0003_phase1_run_step_storage.sql"),
+        checksum: "sha256:3c64d7d88d9a8d0c2ec5228c241ca5550ecb7daae1d42b55ac8b5f5e247c046a",
+    },
 ];
 
 pub(super) fn current_schema_version() -> i64 {
@@ -125,16 +131,16 @@ fn validate_history(
                 ),
             ));
         }
-        if let Some(expected) = registry.get(index) {
-            if actual.checksum != expected.checksum {
-                return Err(WorldError::new(
-                    WorldErrorKind::UnsupportedSchema,
-                    format!(
-                        "SQLite World migration {} ({}) checksum does not match this binary",
-                        expected.version, expected.name
-                    ),
-                ));
-            }
+        if let Some(expected) = registry.get(index)
+            && actual.checksum != expected.checksum
+        {
+            return Err(WorldError::new(
+                WorldErrorKind::UnsupportedSchema,
+                format!(
+                    "SQLite World migration {} ({}) checksum does not match this binary",
+                    expected.version, expected.name
+                ),
+            ));
         }
     }
     if applied.len() > registry.len() {

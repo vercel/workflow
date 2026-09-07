@@ -316,7 +316,7 @@ impl NativeSqliteWorld {
         }
         let config = QueueWorkerConfig {
             scope,
-            queue_name,
+            queue_names: vec![queue_name],
             flow_url,
             worker_id,
             lease_duration: Duration::from_millis(u64::from(lease_duration_ms)),

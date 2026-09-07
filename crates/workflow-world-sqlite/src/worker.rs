@@ -13,11 +13,11 @@ use crate::{SqliteWorld, now_ms};
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_DELAY_MS: u64 = 2_147_483_647;
 
-/// Configuration for the loopback HTTP queue-worker prototype.
+/// Configuration for the Phase 1 loopback HTTP queue worker.
 #[derive(Clone, Debug)]
 pub struct QueueWorkerConfig {
     pub scope: String,
-    pub queue_name: String,
+    pub queue_names: Vec<String>,
     pub flow_url: String,
     pub worker_id: String,
     pub lease_duration: Duration,
@@ -36,12 +36,13 @@ pub struct QueueWorkerReport {
     pub storage_failures: u64,
 }
 
-/// One background supervisor for one durable queue.
+/// One background supervisor for an exact set of durable queue names.
 ///
-/// This Phase 0 prototype intentionally has concurrency one. It proves that
+/// This Phase 1 worker intentionally has concurrency one. It proves that
 /// callback execution happens after a SQLite claim transaction commits and
 /// that lifecycle ownership can live below a language binding. A bounded async
 /// delivery pool remains a later performance/topology decision.
+// @lat: [[rust-portability#SQLite Local World#Queue]]
 pub struct QueueWorker {
     control: Arc<WorkerControl>,
     thread: Option<JoinHandle<Result<QueueWorkerReport, WorldError>>>,
@@ -114,9 +115,13 @@ impl WorkerControl {
 }
 
 fn validate_config(config: &QueueWorkerConfig) -> Result<(), WorldError> {
-    if config.scope.is_empty() || config.queue_name.is_empty() || config.worker_id.is_empty() {
+    if config.scope.is_empty()
+        || config.queue_names.is_empty()
+        || config.queue_names.iter().any(String::is_empty)
+        || config.worker_id.is_empty()
+    {
         return Err(WorldError::invalid_request(
-            "queue worker scope, queue name, and worker ID must not be empty",
+            "queue worker scope, queue names, and worker ID must not be empty",
         ));
     }
     if config.lease_duration.is_zero()
@@ -142,23 +147,38 @@ fn run_worker(
     control: &WorkerControl,
 ) -> Result<QueueWorkerReport, WorldError> {
     let mut report = QueueWorkerReport::default();
+    let mut next_queue = 0_usize;
     while !control.is_stopped() {
         let claimed_at_ms = now_ms()?;
         let lease_duration_ms = duration_ms_i64(config.lease_duration, "lease duration")?;
-        let claim = match world.claim_queue_message(
-            &config.scope,
-            &config.queue_name,
-            &config.worker_id,
-            claimed_at_ms,
-            lease_duration_ms,
-        ) {
-            Ok(claim) => claim,
-            Err(_) => {
-                report.storage_failures += 1;
-                control.wait(config.poll_interval);
-                continue;
+        let mut claim = None;
+        let mut storage_failed = false;
+        for offset in 0..config.queue_names.len() {
+            let queue_index = (next_queue + offset) % config.queue_names.len();
+            match world.claim_queue_message(
+                &config.scope,
+                &config.queue_names[queue_index],
+                &config.worker_id,
+                claimed_at_ms,
+                lease_duration_ms,
+            ) {
+                Ok(Some(candidate)) => {
+                    claim = Some(candidate);
+                    next_queue = (queue_index + 1) % config.queue_names.len();
+                    break;
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    report.storage_failures += 1;
+                    storage_failed = true;
+                    break;
+                }
             }
-        };
+        }
+        if storage_failed {
+            control.wait(config.poll_interval);
+            continue;
+        }
         let Some(claim) = claim else {
             control.wait(config.poll_interval);
             continue;
@@ -166,9 +186,9 @@ fn run_worker(
         report.claims += 1;
 
         let outcome = endpoint.deliver(&claim, config.request_timeout);
-        if control.is_stopped() {
-            break;
-        }
+        // A stop request prevents the next claim, but this lease is already
+        // owned. Settle it before joining so a successful handler response is
+        // not turned into a spurious redelivery during graceful shutdown.
         let completed_at_ms = now_ms()?;
         let result = match outcome {
             Ok(DeliveryOutcome::Acknowledge) => world
