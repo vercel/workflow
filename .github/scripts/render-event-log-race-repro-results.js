@@ -313,6 +313,9 @@ function renderConfigTiming(config) {
       ? `step ${config.stepDelayMs}±${config.stepDelayJitterMs ?? 0}ms`
       : '',
     config.hookResumeStaggerMs ? `stagger ${config.hookResumeStaggerMs}ms` : '',
+    config.wakeLoopAttempts && config.wakeLoopHeartbeatMs
+      ? `heartbeat ${config.wakeLoopHeartbeatMs}ms`
+      : '',
     config.resumeBurstOffsetMs && config.blockedBranchAttempts
       ? `burst ${config.resumeBurstOffsetMs}+${config.resumeBurstJitterMs ?? 0}ms`
       : '',
@@ -343,6 +346,7 @@ function compactConfig(config = {}) {
     stepStormAttempts: config.stepStormAttempts,
     hookStormAttempts: config.hookStormAttempts,
     blockedBranchAttempts: config.blockedBranchAttempts,
+    wakeLoopAttempts: config.wakeLoopAttempts,
     hookSleepAttempts: config.hookSleepAttempts,
     concurrency: config.concurrency,
     rounds: config.rounds,
@@ -358,6 +362,7 @@ function compactConfig(config = {}) {
     hookResumeStaggerMs: config.hookResumeStaggerMs,
     launchStaggerMs: config.launchStaggerMs,
     resumeBurstOffsetMs: config.resumeBurstOffsetMs,
+    wakeLoopHeartbeatMs: config.wakeLoopHeartbeatMs,
     resumeBurstJitterMs: config.resumeBurstJitterMs,
     blockedBranchWatchdogMs: config.blockedBranchWatchdogMs,
     runTimeoutMs: config.runTimeoutMs,
