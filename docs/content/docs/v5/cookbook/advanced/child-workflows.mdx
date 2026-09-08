@@ -21,8 +21,19 @@ Child workflows are the right choice when:
 - **You need isolated failure boundaries**: A failing child should not abort unrelated work. The parent decides how to handle failures.
 - **You want large fan-out**: Spawning 50 or 500 children is practical because each runs on its own infrastructure.
 - **You need per-item observability**: Each child workflow has its own run ID, status, and event log for monitoring.
+- **One run would otherwise get too big**: A run's event log is capped — 25,000 events on the [Vercel World](/worlds/vercel#per-run-event-limit) — and replay cost grows with it long before the cap. Splitting is how you keep each log short.
 
 For simpler cases where steps share a single event log, use [direct await composition](/cookbook/common-patterns/workflow-composition#direct-await-flattening) instead.
+
+<Callout type="warn">
+  Split *well before* the ceiling rather than sizing a run to just fit under it.
+  A successful step records about three events, retries and hooks add more, and
+  a run that exceeds its limit fails with `MAX_EVENTS_EXCEEDED` and cannot be
+  continued. As a working rule, once a workflow's step count scales with its
+  input — or a single fan-out approaches ~100 steps — move the per-item work
+  into children. See
+  [How much work fits in one run](/docs/foundations/workflows-and-steps#how-much-work-fits-in-one-run).
+</Callout>
 
 ## Basic pattern: spawn and wait via hook
 
@@ -305,7 +316,8 @@ async function startAndWaitWithRetries(
 - **Call `defineHook().resume()` from a step**: The wrapped child's `finally` block calls a step that resumes the parent hook.
 - **Export wrapped children at module scope**: The SDK registers `"use workflow"` functions statically, so a runtime higher-order function returned from `withChildCompletionHook()` cannot be passed to `start()`.
 - **Use stable hook keys**: Document IDs, job IDs, or indexes prevent token collisions between parallel children in one parent run.
-- **Use chunked spawning for large batches**: Starting 500 children at once can create a large burst of work. Break the work into chunks of 10–50.
+- **Use chunked spawning for large batches**: Starting 500 children at once can create a large burst of work, and it puts 500 concurrent steps in the *parent's* event log — the same fan-out cost the ~100-step guidance is about. Break the work into chunks of 10–50.
+- **Watch the parent's log too**: Splitting work into children bounds each child's log, but the parent still records the spawn and completion of every child. A parent that fans out tens of thousands of children needs its own layer of children, not a wider loop.
 - **Account for each child's retry semantics**: Steps inside child workflows retry independently. The parent sees the final `{ status, value | error }` payload from the hook.
 - **Use `deploymentId: "latest"` when children should run on the most recent deployment**: See [Versioning](/docs/foundations/versioning) for the full model and the [`start()` API reference](/docs/api-reference/workflow-api/start#using-deploymentid-latest) for compatibility considerations.
 

@@ -10,7 +10,7 @@ related:
 ---
 
 <CopyPrompt
-  text="Compose these workflow steps with standard async/await patterns. In the exported &quot;use workflow&quot; function, chain dependent &quot;use step&quot; calls with sequential `await`; run independent steps concurrently by starting them without `await` and awaiting `Promise.all([...])`; and use `Promise.race([...])` to act on whichever promise settles first. These compose with durable primitives: race a step or a webhook from `createWebhook()` against `sleep()` from `workflow` for deadlines. Keep every step input and output serializable, and remember `Promise.race` does not cancel the losing branch (it keeps running), so side-effectful losers need idempotency keys. Verify sequential ordering, parallel execution, and both race outcomes."
+  text="Compose these workflow steps with standard async/await patterns. In the exported &quot;use workflow&quot; function, chain dependent &quot;use step&quot; calls with sequential `await`; run independent steps concurrently by starting them without `await` and awaiting `Promise.all([...])`; and use `Promise.race([...])` to act on whichever promise settles first. These compose with durable primitives: race a step or a webhook from `createWebhook()` against `sleep()` from `workflow` for deadlines. Keep every step input and output serializable, and remember `Promise.race` does not cancel the losing branch (it keeps running), so side-effectful losers need idempotency keys. Keep the fan-out bounded: past roughly 100 steps in a single run the growing event log makes each step boundary slower, so chunk the work into batches or spawn child workflows instead of one wide `Promise.all`. Verify sequential ordering, parallel execution, and both race outcomes."
 />
 
 Workflows are written in plain async/await: there's no new control-flow API to learn. Sequential awaits chain steps that depend on each other, `Promise.all` runs independent steps in parallel, and `Promise.race` returns whichever finishes first. These compose with workflow primitives like [`sleep()`](/docs/api-reference/workflow/sleep) and [`createWebhook()`](/docs/api-reference/workflow/create-webhook) since those are also promises.
@@ -65,6 +65,15 @@ export async function fetchUserData(userId: string) {
   return { user, orders, preferences };
 }
 ```
+
+<Callout type="warn">
+  Every step in a `Promise.all` lands in the same run's event log, and replay
+  cost grows with that log. Past roughly **100 steps in a single run**, a wider
+  fan-out starts adding latency instead of removing it. Fan-outs approaching
+  that size belong in [batches](/cookbook/common-patterns/batching) or
+  [child workflows](/cookbook/advanced/child-workflows). See
+  [How much work fits in one run](/docs/foundations/workflows-and-steps#how-much-work-fits-in-one-run).
+</Callout>
 
 ### Race with `Promise.race`
 
@@ -144,7 +153,7 @@ export async function birthdayWorkflow(
 ## Adapting to your use case
 
 - **Replace `Promise.all` with `Promise.allSettled`**: Use this option when partial failures shouldn't abort the remaining operations. You'll get an array of `{ status, value | reason }` instead of an error on the first rejection.
-- **Bound the parallelism**: `Promise.all` over 1,000 items will fan out 1,000 concurrent steps. If your downstream APIs can't handle that, batch the array into chunks (see [Batching](/cookbook/common-patterns/batching)).
+- **Bound the parallelism**: `Promise.all` over 1,000 items will fan out 1,000 concurrent steps into one run. Both your downstream APIs and the run's own event log have a limit here: past roughly 100 steps in a run, the extra parallelism costs more than it saves. Batch the array into chunks (see [Batching](/cookbook/common-patterns/batching)), or hand each item to a [child workflow](/cookbook/advanced/child-workflows) so each log stays bounded.
 - **Add a deadline to any race**: Pair the operation with `sleep("30s").then(() => "timeout" as const)` and check the discriminated result. See [Timeouts](/cookbook/common-patterns/timeouts).
 - **Mix steps and hooks in a race**: Wait for an external signal, a deadline, or a step result in the same `Promise.race`. The first promise to resolve wins.
 

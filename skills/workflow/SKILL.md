@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.11'
+  version: '1.12'
 ---
 
 ## *Critical*: Always use correct `workflow` documentation
@@ -218,6 +218,49 @@ export async function parentWorkflow() {
 ```
 
 `start()` returns immediately and doesn't wait for the workflow to complete. Use `run.returnValue` to await completion.
+
+## Run size & parallelism: know when to split
+
+A run's event log is bounded, and replay cost grows with it. Both push the same way: keep a single run small and move per-item work into child workflows.
+
+| Limit | Number | What to do |
+|-------|--------|------------|
+| Events per run (Vercel World) | **25,000**; the run fails with `MAX_EVENTS_EXCEEDED` and cannot be continued | Split into child workflows *well before* the ceiling; don't size a run to just fit under it |
+| Steps in one parallel fan-out | **~100**; beyond this, extra parallelism costs more than it saves | Process in batches, or give each item a child workflow |
+
+**Events are not steps.** A step that succeeds on the first try records three events (`step_created`, `step_started`, `step_completed`). Retries add `step_retrying`/`step_failed`, and hooks, sleeps, and webhooks each record their own. So a run made only of successful steps hits the ceiling at roughly 8,000 steps, much sooner if it retries. Never read the event limit as a step budget.
+
+**Do not try to raise the limit.** `WORKFLOW_MAX_EVENTS_OVERRIDE` can only clamp a limit *down*, and on the Vercel World the ceiling is owned by the service. A run that needs more events needs to be split, not reconfigured.
+
+```typescript
+// ❌ One run, one step per item. The log grows with the input, and a large
+//    fan-out slows every later step boundary in the same run.
+export async function processAll(items: string[]) {
+  "use workflow";
+  await Promise.all(items.map((item) => processItem(item)));  // 1000 steps in one log
+}
+
+// ✅ Bounded batches. Only `BATCH` steps are in flight at a time.
+const BATCH = 25;
+export async function processBatched(items: string[]) {
+  "use workflow";
+  for (let i = 0; i < items.length; i += BATCH) {
+    await Promise.allSettled(items.slice(i, i + BATCH).map((item) => processItem(item)));
+  }
+}
+
+// ✅ Child workflows. Each item gets its own event log and failure boundary.
+//    Use this when the item count scales with the input.
+async function spawnChild(item: string) {
+  "use step";
+  const run = await start(itemWorkflow, [item]);
+  return run.runId;
+}
+```
+
+Batching bounds *concurrency*, not the run's total size, since every batch still appends to the same log. When the item count scales with the input, use child workflows.
+
+Full guidance: `node_modules/workflow/docs/foundations/workflows-and-steps.mdx` ("How much work fits in one run").
 
 ## Hooks: pause & resume with external events
 
