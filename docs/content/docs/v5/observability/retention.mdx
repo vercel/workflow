@@ -87,9 +87,7 @@ missing and you get `WorkflowRunNotFoundError` instead.
 
 The SDK records your preference; it does not enforce it. `start()` writes the
 value onto the run as the reserved `$retention` attribute, and the World
-decides what to do when the run ends. This means the option requires a World
-implementing spec version 4 or later, and that the guarantee you get is the
-World's guarantee, not the SDK's.
+decides what to do when the run ends.
 
 All three first-party Worlds implement it:
 
