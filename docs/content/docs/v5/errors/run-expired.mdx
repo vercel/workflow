@@ -42,8 +42,8 @@ Two ways to reach it:
 
 ## How to respond
 
-`RunExpiredError` is terminal. Retrying will not bring the data back, so catch
-Catch the error and use the run's metadata to decide what you want to do.
+`RunExpiredError` is terminal. Retrying will not bring the data back. Catch it
+and use the run's metadata to decide what you want to do.
 
 ```typescript lineNumbers
 import { getRun } from "workflow/api"
@@ -73,10 +73,10 @@ them.
 ### If you need the result of a zero-retention run
 
 Do not read it back off the run. Send it somewhere you control while the run
-is still executing — a step that writes it to your own store. That is the intended pattern
-for `experimental_retention: 0`: the point of the option is that the platform
-does not keep your data, so the platform cannot also be where you fetch it
-from afterwards.
+is still executing — a step that writes it to your own store. That is the
+intended pattern for `experimental_retention: 0`: the point of the option is
+that the platform does not keep your data, so the platform cannot also be where
+you fetch it from afterwards.
 
 ## Related
 
