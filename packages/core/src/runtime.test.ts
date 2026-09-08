@@ -2586,6 +2586,14 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
        * claim after an out-of-band event bumped the run's marker.
        */
       rejectClaimOnce?: { stepName: string; error: Error };
+      /** `replayDivergence` carried on the incoming queue message. */
+      replayDivergence?: { eventId: string; count: number };
+      /**
+       * Called after each event lands in the durable log, with a recorder for
+       * appending further events; simulates an out-of-band writer that lands
+       * between this invocation's write and its next replay.
+       */
+      afterRecord?: (event: Event, record: (data: any) => Event) => void;
     } = {}
   ) {
     const workflowRun: WorkflowRun = {
@@ -2600,7 +2608,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     };
 
     const durableEvents: Event[] = [];
-    const recordEvent = (data: any): Event => {
+    const appendEvent = (data: any): Event => {
       // Slot-numbered event ids, so the runtime's snapshot (the highest slot
       // its loaded log occupies) is computable. This is the only kind of run
       // that reaches a fencing backend.
@@ -2611,6 +2619,11 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
         ...data,
       } as Event;
       durableEvents.push(created);
+      return created;
+    };
+    const recordEvent = (data: any): Event => {
+      const created = appendEvent(data);
+      opts.afterRecord?.(created, appendEvent);
       return created;
     };
 
@@ -2678,6 +2691,7 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
               {
                 runId,
                 requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+                replayDivergence: opts.replayDivergence,
               },
               {
                 requestId: 'req_delta_gate',
@@ -2816,6 +2830,79 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     );
     expect(res.status).toBe(204);
     expect(deltaGateBodyRuns).toEqual(['B']);
+    expect(eventsCreate.mock.calls).not.toContainEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ eventType: 'run_failed' }),
+      ])
+    );
+  });
+
+  // One inline step, then a sleep. The step gives the recovery invocation a
+  // clean replay pass that commits progress; the sleep is where a later pass
+  // in the same invocation can be made to diverge.
+  const stepThenSleepWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+    const a = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("deltaGateStep");
+    async function workflow() {
+      await a();
+      await sleep('5s');
+      return 'done';
+    };globalThis.__private_workflows = new Map();
+    globalThis.__private_workflows.set("workflow", workflow);`;
+
+  // Lands a wait_created with a foreign correlation id right after the inline
+  // step's terminal write, so the next replay pass (which reloads the log)
+  // finds it where its own sleep expects to be recorded and diverges.
+  const divergeAfterStepCompleted = (
+    event: Event,
+    record: (data: any) => Event
+  ) => {
+    if (event.eventType !== 'step_completed') return;
+    record({
+      eventType: 'wait_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: 'wait_01HK153X00VFKAJV9XFN9JXXRS',
+      eventData: { resumeAt: new Date('2024-01-01T00:00:05.000Z') },
+    });
+  };
+
+  it('restarts the divergence budget when a recovery invocation commits progress before a later pass diverges', async () => {
+    // The incoming message has already spent the whole budget. Without the
+    // reset, the divergence below would count as MAX + 1 and fail the run
+    // with CORRUPTED_EVENT_LOG, even though this invocation's first pass
+    // replayed cleanly and committed the step: proof the incoming episode was
+    // not reproducible against this log.
+    const { res, eventsCreate, queueMock } = await driveDeltaGate(
+      'wrun_divergence_budget_reset',
+      {
+        source: stepThenSleepWorkflow,
+        replayDivergence: {
+          eventId: 'prior-episode-event',
+          count: REPLAY_DIVERGENCE_MAX_RETRIES,
+        },
+        afterRecord: divergeAfterStepCompleted,
+      }
+    );
+    expect(res.status).toBe(204);
+
+    // The first pass recovered the incoming episode and said so on its first
+    // natural write, with the incoming count.
+    const stepStarted = eventsCreate.mock.calls.find(
+      (c) => (c[1] as any).eventType === 'step_started'
+    );
+    expect(stepStarted?.[2]).toEqual(
+      expect.objectContaining({
+        replayDivergenceCount: REPLAY_DIVERGENCE_MAX_RETRIES,
+      })
+    );
+
+    // The later divergence opens a new episode: a recovery replay at count 1,
+    // and no run_failed.
+    expect(queueMock).toHaveBeenCalledTimes(1);
+    expect(queueMock.mock.calls[0][1]).toEqual(
+      expect.objectContaining({
+        replayDivergence: expect.objectContaining({ count: 1 }),
+      })
+    );
     expect(eventsCreate.mock.calls).not.toContainEqual(
       expect.arrayContaining([
         expect.objectContaining({ eventType: 'run_failed' }),
