@@ -63,6 +63,7 @@
     "writableForwardedFromWorkflowWorkflow"
   ],
   "unsupported": {
+    "experimental_retention: 0 purges the run payloads once the run finishes": "The test pads its input past the inline-ref cutoff on purpose, so the World writes a real blob for the purge to delete. Any payload that large also crosses the JS client's compression threshold, and the Python SDK cannot read the resulting `zstd` payload, so the run fails during input deserialization instead of completing.",
     "fire-and-forget: void setAttributes lands without awaiting": "`set_attributes()` is now an `async def`: scheduling it can reproduce the unawaited writes before a later suspension, but the final scheduled coroutine does not start before the workflow body returns, so there is no final `attr_set` to drain. The run completes with `phase: mid` instead of `phase: done`.",
     "validation DX: invalid writes throw catchable FatalErrors naming rule and limit": "The new `set_attributes()` validator still raises a catchable `FatalError` for a reserved key, but its message ends at `starts with reserved prefix '$'` and no longer names the `allow_reserved_attributes=True` escape hatch that this test requires. The other six validation cases and the valid write afterwards pass."
   }
