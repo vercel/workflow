@@ -41,7 +41,7 @@ import { version } from './version.js';
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
 // biome-ignore format: External CI replaces only this line with a deployment URL that may exceed the formatter width.
-export const WORKFLOW_SERVER_URL_OVERRIDE = '';
+export const WORKFLOW_SERVER_URL_OVERRIDE = 'https://workflow-server-4zi9f5k79.vercel.sh';
 
 /**
  * HTTP methods that are safe to transparently re-issue inside the adapter.
