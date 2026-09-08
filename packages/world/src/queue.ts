@@ -270,11 +270,23 @@ export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
   traceCarrier: TraceCarrierSchema.optional(),
   requestedAt: z.coerce.date().optional(),
-  /** Consecutive replay divergences in this recovery chain and latest position. */
+  /**
+   * Consecutive replay divergences in this recovery chain and latest position.
+   *
+   * `eventIds` is every divergent event id in the chain, oldest first, so the
+   * terminal failure can say whether each recovery replay diverged at the same
+   * event or wandered. The producer bounds it to the recovery budget plus one.
+   * `.catch(undefined)` on the field for the reason `hookResumeTiming` has it:
+   * a malformed history must degrade to "no history" rather than fail the
+   * parse of every delivery of this message. A consumer that predates the
+   * field ignores it; a producer that predates it sends none, and the consumer
+   * restarts the history from `eventId`.
+   */
   replayDivergence: z
     .object({
       eventId: z.string(),
       count: z.number().int().positive(),
+      eventIds: z.array(z.string()).optional().catch(undefined),
     })
     .optional(),
   /**

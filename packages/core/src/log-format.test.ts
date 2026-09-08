@@ -156,7 +156,46 @@ describe('composeLogLine', () => {
         user error · Error
         run    wrun_01ABC · myWorkflow (./workflows/x)
         step   step_01XYZ · add (./workflows/x)
-        retry  4 attempts · 3 max retries"
+        retry  4 attempts · 3 max retries
+        error  Transient failure"
     `);
+  });
+
+  // A WARN whose framing is a fixed sentence and whose message has no stack
+  // body carries the underlying error's text only in `errorMessage`. It used
+  // to be dropped because the key was well-known but never rendered, which is
+  // how a production divergence WARN lost the text saying what diverged.
+  test('renders errorMessage when neither framing nor body carries it', () => {
+    const out = composeLogLine(
+      PREFIX,
+      'Workflow replay diverged; queueing a recovery replay before declaring the event log corrupted',
+      {
+        errorCode: 'REPLAY_DIVERGENCE',
+        divergenceEventId: 'evnt_3',
+        divergenceCount: 1,
+        loopIteration: 2,
+        servedByRetainedSession: false,
+        errorMessage:
+          'Replay could not consume event: eventType=wait_created, correlationId=wait_01K, eventId=evnt_3. pending at this id: step drainStep (step_01K).',
+      }
+    );
+    expect(out).toMatchInlineSnapshot(`
+      "[workflow-sdk] Workflow replay diverged; queueing a recovery replay before declaring the event log corrupted
+        code   REPLAY_DIVERGENCE
+        error  Replay could not consume event: eventType=wait_created, correlationId=wait_01K, eventId=evnt_3. pending at this id: step drainStep (step_01K).
+        divergenceCount 1
+        divergenceEventId evnt_3
+        loopIteration 2
+        servedByRetainedSession false"
+    `);
+  });
+
+  test('drops errorMessage when the stack body already carries it', () => {
+    const out = composeLogLine(
+      PREFIX,
+      'Workflow failed\nError: boom\n    at x (./workflows/x.ts:1:1)',
+      { errorName: 'Error', errorMessage: 'boom' }
+    );
+    expect(out).not.toMatch(/^\s+error\s+boom/m);
   });
 });
