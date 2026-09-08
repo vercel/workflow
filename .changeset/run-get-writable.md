@@ -3,4 +3,4 @@
 'workflow': minor
 ---
 
-Add `Run#getWritable()` to append to an existing run's stream.
+Add `Run#getWritable()` and `run.writable` to append to an existing run's stream.

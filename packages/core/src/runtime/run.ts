@@ -427,6 +427,11 @@ export class Run<TResult> {
     });
   }
 
+  /** The writable stream of the workflow run. */
+  get writable(): WritableStream {
+    return this.getWritable();
+  }
+
   /**
    * Returns a writable that appends to this run's stream.
    *

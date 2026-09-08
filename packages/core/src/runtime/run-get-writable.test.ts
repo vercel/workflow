@@ -64,6 +64,18 @@ afterEach(() => {
 });
 
 describe('Run#getWritable', () => {
+  it('exposes the default stream as run.writable', async () => {
+    const world = mockWorld();
+
+    const writer = getRun(OWNER_RUN_ID).writable.getWriter();
+    await writer.write('through-alias');
+    writer.releaseLock();
+
+    await vi.waitFor(() => expect(world.streams.write).toHaveBeenCalled());
+    expect(world.streams.write.mock.calls[0][0]).toBe(OWNER_RUN_ID);
+    expect(world.streams.write.mock.calls[0][1]).toBe(OWNER_STREAM);
+  });
+
   it('targets the owner run default stream', async () => {
     const world = mockWorld();
 
