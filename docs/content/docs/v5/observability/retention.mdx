@@ -2,7 +2,7 @@
 title: Data retention
 description: Control how long a run's data is kept after it finishes.
 type: reference
-summary: Ask the World to delete a run's user data as soon as the run ends.
+summary: Control how long a run's data is kept after the run ends.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -16,7 +16,7 @@ streams. How long that data is kept is decided by the World you are running
 on, not by the SDK.
 
 `experimental_retention` on [`start()`](/docs/api-reference/workflow-api/start)
-lets a run ask for something shorter than the World's default.
+lets a run ask for a specific retention period, rather than the World's default.
 
 ## Deleting a run's data as soon as it ends
 
@@ -39,7 +39,7 @@ Two values are accepted today:
 
 <Callout type="warn">
   The option is prefixed `experimental_` because both its name and the set of
-  values it accepts are expected to change. Expect a rename.
+  values it accepts are expected to change.
 </Callout>
 
 ## What is deleted, and what is not
@@ -49,7 +49,7 @@ error; the payloads on the event log; and stream contents.
 
 **Kept:** the run, step and event records themselves — their ids, timestamps,
 status, step names, and any [attributes](/docs/observability/attributes) you
-set. They are kept for the World's normal period so the run stays visible in
+set. They are kept for the World's default period so the run stays visible in
 the CLI and web UI. A purged run is still listed and still traceable; its
 payloads simply read back as expired.
 
@@ -72,8 +72,7 @@ only in how the absence is labelled.
   [`RunExpiredError`](/docs/errors/run-expired) instead of resolving.
 
   This is a known limitation. If you need the result, send it somewhere you
-  control — a step that writes it to your own store, or a
-  [hook](/docs/foundations/hooks) — rather than reading it back off the run.
+  control, e.g. a step that writes it to your own store, rather than reading it back off the run.
 </Callout>
 
 `RunExpiredError` is not specific to `experimental_retention: 0`. Any run read
@@ -88,21 +87,7 @@ missing and you get `WorkflowRunNotFoundError` instead.
 The SDK records your preference; it does not enforce it. `start()` writes the
 value onto the run as the reserved `$retention` attribute, and the World
 decides what to do when the run ends.
-
-All three first-party Worlds implement it:
-
-| World | Behavior at `experimental_retention: 0` |
-| --- | --- |
-| [Vercel](/worlds/vercel) | Deletes payload blobs and stream contents, and scrubs payloads stored inline. Run, step and event metadata is kept for your plan's default period. |
-| Local | Drops the payloads from the run's on-disk records and empties its streams. |
-| Postgres | Clears the payload columns on the run's rows and empties its stream chunks, in one transaction. |
-
-A World that does not implement retention — including a third-party one —
-**keeps the data**. That is the deliberate fallback: a World that does not
-understand the value must not act on it, because keeping data you meant to
-delete is recoverable and deleting data you meant to keep is not. The same
-rule applies to any value other than `0` and `'default'`.
-
-If you need certainty that a specific World deletes your data, confirm it
-against that World's own documentation rather than the presence of this
+A World that does not implement retention
+**keeps the data**. If you need certainty that a specific World deletes your data,
+confirm it against that World's own documentation rather than the presence of this
 option.

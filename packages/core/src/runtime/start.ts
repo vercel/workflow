@@ -160,9 +160,8 @@ export interface StartOptionsBase {
   /**
    * Set a preference for data retention after run completion.
    *
-   * **Experimental.** Prefixed rather than named `retention` because both the
-   * unit and the set of accepted values are expected to change; treat the
-   * name as unstable and expect a rename when it settles.
+   * **Experimental.** Both the unit and the set of accepted values are expected
+   * to change.
    *
    * Worlds control the retention of user data (event payloads and stream
    * chunks), the event log, and any analytics data. Options are:
@@ -172,19 +171,13 @@ export interface StartOptionsBase {
    *   Vercel, user data is deleted, but metadata may persist for your plan's
    *   default retention period.
    *
-   * The value is a duration, and zero is the only one implemented. The unit
-   * durations will be measured in has not been decided yet, and zero is the
-   * one value that means the same thing whichever unit wins — so it can ship
-   * ahead of that decision. Other durations are rejected rather than
-   * accepted and quietly ignored, which is why the type is the literal `0`
-   * and not `number`.
+   * The value is a duration, with zero being the only valid option currently.
    *
    * **Known limitation at `0`.** The purge races your own read of the run's
    * result and generally wins, so `await run.returnValue` on a
    * `experimental_retention: 0` run usually throws `RunExpiredError` rather
    * than resolving. If you need the result, return it through a channel you
-   * control — a step that writes it somewhere, or a hook — rather than
-   * reading it back off the run.
+   * control, e.g. a step that writes it to external storage.
    *
    * Recorded on the run as the reserved `$retention` attribute, so it
    * requires a World implementing spec version 4 or later. `'default'` is
