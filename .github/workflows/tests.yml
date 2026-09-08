@@ -24,6 +24,7 @@ jobs:
     outputs:
       fast-path: ${{ steps.scope.outputs.runtime-fast-path }}
       validation-fast-path: ${{ steps.scope.outputs.validation-fast-path }}
+      e2e-vercel-slot: ${{ steps.e2e-slot.outputs.slot }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -35,6 +36,37 @@ jobs:
         uses: ./.github/actions/detect-ci-scope
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Slot index for the Vercel e2e lanes' concurrency groups (see the
+      # `concurrency` block on e2e-vercel-prod for what the groups do). The
+      # slot count is how many runs' worth of Vercel e2e traffic may be in
+      # flight repo-wide at once; everything past that queues.
+      #
+      # The modulo happens here because GitHub expressions have no arithmetic
+      # operators, so the lanes can only read a precomputed value through
+      # `needs`. Keying on run_id rather than something random keeps a re-run
+      # of a run in the same slot it had, so a re-run queues behind the run it
+      # replaces instead of contending with a third one.
+      #
+      # Tunable without a code change: set the repository variable
+      # E2E_VERCEL_CONCURRENCY_SLOTS (Settings > Secrets and variables >
+      # Actions > Variables). Raise it if PRs are waiting too long, lower it
+      # to 1 to serialize the Vercel lanes across the whole repo.
+      - name: Pick Vercel e2e concurrency slot
+        id: e2e-slot
+        env:
+          SLOTS: ${{ vars.E2E_VERCEL_CONCURRENCY_SLOTS }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          slots="${SLOTS:-2}"
+          case "$slots" in
+            '' | *[!0-9]*) slots=2 ;;
+          esac
+          if [ "$slots" -lt 1 ]; then
+            slots=1
+          fi
+          echo "slot=$((RUN_ID % slots))" >> "$GITHUB_OUTPUT"
+          echo "Vercel e2e lanes use slot $((RUN_ID % slots)) of $slots"
 
   # Phase 0: Update PR comment to show tests are running
   pr-comment-start:
@@ -319,6 +351,27 @@ jobs:
     continue-on-error: ${{ matrix.app.name == 'python' }}
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    # Repo-wide cap on how much traffic CI can point at world-vercel at once.
+    #
+    # The group is per (lane, matrix cell, slot), not per run, so a single
+    # PR still fans its whole matrix out in parallel: within one run every
+    # cell is a distinct group. What collides is the *same* cell from a
+    # *different* run, which waits instead of doubling the load on the
+    # backend and on the shared Vercel project this cell deploys to. With
+    # the default two slots that leaves at most two runs' worth of Vercel
+    # e2e in flight repo-wide, however many PRs are pushed at once.
+    #
+    # `queue: max` is what makes this safe to apply to a required check.
+    # The default (`queue: single`) keeps one pending entry per group and
+    # cancels the rest, which would turn a burst of PRs into cancelled
+    # jobs and a red E2E Required Check; `max` queues up to 100 instead.
+    # It cannot be combined with `cancel-in-progress: true`: GitHub
+    # rejects the workflow. Superseded runs are still cancelled by the
+    # workflow-level concurrency at the top of this file, which releases
+    # their queued jobs too.
+    concurrency:
+      group: e2e-vercel-prod-${{ matrix.app.name }}-${{ matrix.vm }}-${{ needs.ci-scope.outputs.e2e-vercel-slot }}
+      queue: max
     permissions:
       id-token: write
       contents: read
@@ -528,6 +581,10 @@ jobs:
     timeout-minutes: 35
     needs: ci-scope
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    # One cell, so one group per slot. See e2e-vercel-prod's block above.
+    concurrency:
+      group: e2e-vercel-multi-region-${{ needs.ci-scope.outputs.e2e-vercel-slot }}
+      queue: max
     permissions:
       id-token: write
       contents: read
@@ -659,6 +716,12 @@ jobs:
     # *asserts* the socket carried the events, since e2e-vercel-prod inherits
     # the default but checks nothing.
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    # See e2e-vercel-prod's block above. This lane's cells are worth capping
+    # for a second reason: each one is a full remote `vercel deploy`, so a
+    # burst of PRs also queues builds on the shared project.
+    concurrency:
+      group: e2e-vercel-ws-transport-${{ matrix.app.name }}-${{ needs.ci-scope.outputs.e2e-vercel-slot }}
+      queue: max
     permissions:
       id-token: write
       contents: read
@@ -856,6 +919,10 @@ jobs:
     # Mirrors e2e-vercel-prod's condition exactly, so this lane runs in
     # every case that one does, including under `workflow-server-test`.
     if: ${{ needs.ci-scope.outputs.fast-path != 'true' }}
+    # See e2e-vercel-prod and e2e-vercel-ws-transport above.
+    concurrency:
+      group: e2e-vercel-http-transport-${{ matrix.app.name }}-${{ needs.ci-scope.outputs.e2e-vercel-slot }}
+      queue: max
     permissions:
       id-token: write
       contents: read
