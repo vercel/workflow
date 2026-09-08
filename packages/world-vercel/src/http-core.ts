@@ -332,6 +332,13 @@ export interface InstrumentedFetchOptions {
    * connections stop delivering (see noteEventsTransportOutcome).
    */
   onTransportOutcome?: (error?: unknown) => void;
+  /**
+   * Delay the successful transport outcome until the caller consumes the body.
+   * Streamed responses can fail after their headers arrive, so treating
+   * `fetch()` resolution as success would hide those failures from a caller's
+   * connection-pool recycler.
+   */
+  deferTransportSuccessUntilBody?: boolean;
 }
 
 /**
@@ -362,6 +369,7 @@ export async function instrumentedFetch(
     logLabel,
     buildError,
     onTransportOutcome,
+    deferTransportSuccessUntilBody = false,
   } = opts;
   const label = logLabel ?? url;
 
@@ -447,7 +455,7 @@ export async function instrumentedFetch(
         throw error;
       }
       const ms = Date.now() - start;
-      onTransportOutcome?.();
+      if (!deferTransportSuccessUntilBody) onTransportOutcome?.();
 
       httpLog(method, label, response, ms);
       span?.setAttributes({ ...HttpResponseStatusCode(response.status) });
@@ -456,11 +464,21 @@ export async function instrumentedFetch(
         span?.setAttributes({ ...ErrorType(`HTTP ${response.status}`) });
         logCurlRepro(method, url, headers);
         if (buildError) {
-          const error = await buildError(response);
+          let error: Error;
+          try {
+            error = await buildError(response);
+          } catch (cause) {
+            if (deferTransportSuccessUntilBody) {
+              onTransportOutcome?.(cause);
+            }
+            throw cause;
+          }
+          if (deferTransportSuccessUntilBody) onTransportOutcome?.();
           span?.recordException?.(error);
           throw error;
         }
         const text = await response.text().catch(() => '');
+        if (deferTransportSuccessUntilBody) onTransportOutcome?.();
         const error = errorForResponse(
           response.status,
           `${method} ${label} -> HTTP ${response.status}: ${response.statusText}${
