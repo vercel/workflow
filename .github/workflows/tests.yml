@@ -37,10 +37,37 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Slot index for the Vercel e2e lanes' concurrency groups (see the
+      # Slot token for the Vercel e2e lanes' concurrency groups (see the
       # `concurrency` block on e2e-vercel-prod for what the groups do). The
       # slot count is how many runs' worth of Vercel e2e traffic may be in
       # flight repo-wide at once; everything past that queues.
+      #
+      # Sizing comes from INC-7881 (api-workflow HPA in sfo1 pinned at its
+      # 64-replica ceiling 20:57-21:28 UTC on 2026-09-08). Correlating this
+      # file's Vercel lanes against `cluster_monitor_production
+      # .hpa_desired_replicas{hpa_name:api-workflow,env:sfo1}` over that
+      # afternoon, per minute:
+      #
+      #     concurrent Vercel e2e jobs   minutes at the 64-replica ceiling
+      #     0 (CI idle)                  41%
+      #     1-50                         41%
+      #     51-150                       62%
+      #     151-250                      94%
+      #     251+                         100%
+      #
+      # Two things follow. The ceiling is reached with CI idle 41% of the
+      # time, so CI is an aggravating load and not the whole story; and CI's
+      # own contribution stops being marginal somewhere above 150 concurrent
+      # jobs. The tiers below hold the worst case to 114.
+      #
+      # Tiering exists because of what the incident's peak was made of: at
+      # 20:59 all 379 concurrent Vercel e2e jobs came from ten
+      # `test/server-pr-*` branches, the companion PRs a workflow-server PR
+      # opens here, each running the full 38-cell fan-out. Zero were human
+      # PRs. Machine-opened branches arrive in batches and nobody is waiting
+      # on their feedback, so they get one slot; human PRs keep two. The
+      # tiers use separate group names so a person's PR never queues behind
+      # a companion batch.
       #
       # The modulo happens here because GitHub expressions have no arithmetic
       # operators, so the lanes can only read a precomputed value through
@@ -48,25 +75,35 @@ jobs:
       # of a run in the same slot it had, so a re-run queues behind the run it
       # replaces instead of contending with a third one.
       #
-      # Tunable without a code change: set the repository variable
-      # E2E_VERCEL_CONCURRENCY_SLOTS (Settings > Secrets and variables >
-      # Actions > Variables). Raise it if PRs are waiting too long, lower it
-      # to 1 to serialize the Vercel lanes across the whole repo.
+      # Tunable without a code change: E2E_VERCEL_CONCURRENCY_SLOTS and
+      # E2E_VERCEL_CONCURRENCY_SLOTS_AUTOMATED (Settings > Secrets and
+      # variables > Actions > Variables).
       - name: Pick Vercel e2e concurrency slot
         id: e2e-slot
         env:
           SLOTS: ${{ vars.E2E_VERCEL_CONCURRENCY_SLOTS }}
+          SLOTS_AUTOMATED: ${{ vars.E2E_VERCEL_CONCURRENCY_SLOTS_AUTOMATED }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          slots="${SLOTS:-2}"
+          case "$BRANCH" in
+            test/server-pr-* | changeset-release/*)
+              tier=a
+              slots="${SLOTS_AUTOMATED:-1}"
+              ;;
+            *)
+              tier=h
+              slots="${SLOTS:-2}"
+              ;;
+          esac
           case "$slots" in
-            '' | *[!0-9]*) slots=2 ;;
+            '' | *[!0-9]*) slots=1 ;;
           esac
           if [ "$slots" -lt 1 ]; then
             slots=1
           fi
-          echo "slot=$((RUN_ID % slots))" >> "$GITHUB_OUTPUT"
-          echo "Vercel e2e lanes use slot $((RUN_ID % slots)) of $slots"
+          echo "slot=${tier}$((RUN_ID % slots))" >> "$GITHUB_OUTPUT"
+          echo "branch '$BRANCH' -> tier '$tier', slot $((RUN_ID % slots)) of $slots"
 
   # Phase 0: Update PR comment to show tests are running
   pr-comment-start:
@@ -357,9 +394,12 @@ jobs:
     # PR still fans its whole matrix out in parallel: within one run every
     # cell is a distinct group. What collides is the *same* cell from a
     # *different* run, which waits instead of doubling the load on the
-    # backend and on the shared Vercel project this cell deploys to. With
-    # the default two slots that leaves at most two runs' worth of Vercel
-    # e2e in flight repo-wide, however many PRs are pushed at once.
+    # backend and on the shared Vercel project this cell deploys to.
+    #
+    # The slot token carries both the tier and the index (`h0`, `h1`, `a0`
+    # by default), so the ceiling is 38 cells x 3 tokens = 114 concurrent
+    # Vercel e2e jobs repo-wide, however many PRs are pushed at once. See
+    # the slot step in ci-scope for where 114 comes from.
     #
     # `queue: max` is what makes this safe to apply to a required check.
     # The default (`queue: single`) keeps one pending entry per group and
