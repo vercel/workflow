@@ -205,7 +205,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 
 ### How fast a log grows
 
-Counting the events above is how you estimate a run against its ceiling. A step that succeeds on the first attempt contributes three events; a retry adds a `step_retrying` and another `step_started`; a sleep contributes two, and a hook at least two. The [Vercel World](/worlds/vercel#per-run-event-limit) caps a run at **25,000 events** and fails anything past it with `MAX_EVENTS_EXCEEDED`, so a run made only of successful steps runs out at roughly 8,000 steps, not 25,000.
+Counting the events above is how you estimate a run against its ceiling. A step that succeeds on the first attempt contributes three events; a retry adds a `step_retrying` and another `step_started`; a sleep contributes two, and a hook at least two. The [Vercel World](/worlds/vercel#per-run-event-limit) caps the max events in a run and fails anything past it with `MAX_EVENTS_EXCEEDED`.
 
 Replay reads the log, so its cost tracks the log's length — a run does not have to reach the ceiling to feel it. See [How much work fits in one run](/docs/foundations/workflows-and-steps#how-much-work-fits-in-one-run) for when to split into child workflows.
 

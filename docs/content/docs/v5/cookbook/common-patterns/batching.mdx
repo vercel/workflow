@@ -99,7 +99,7 @@ async function processRecord(record: Record): Promise<string> {
 
 - **Use `Promise.allSettled` instead of `Promise.all`**: Use this pattern when you want to continue even if some items fail. `Promise.all` rejects on the first failure, while `allSettled` waits for everything and identifies failures.
 - **Tune batch size to your downstream API limits**: If the API allows 10 concurrent requests, use `batchSize: 10`.
-- **Batching bounds concurrency, not the run's total size**: Every batch still appends to the same event log — roughly three events per successful step — so a long enough list will walk a single run toward the [25,000-event ceiling](/docs/foundations/workflows-and-steps#how-much-work-fits-in-one-run) no matter how small the batches are. When the item count scales with your input, spawn a [child workflow](/cookbook/advanced/child-workflows) per batch instead, so each run's log stays bounded.
+- **Batching bounds concurrency, not the run's total size**: Every batch still appends to the same event log — roughly three events per successful step — so a long enough list will walk a single run toward the [event ceiling](/docs/foundations/workflows-and-steps#how-much-work-fits-in-one-run) no matter how small the batches are. When the item count scales with your input, spawn a [child workflow](/cookbook/advanced/child-workflows) per batch instead, so each run's log stays bounded.
 - **Add pacing with `sleep()`**: Add a delay between batches to respect rate limits. The sleep is durable and survives cold starts.
 - **Treat each `processRecord` call as an independent step**: If one call fails, it retries up to three times without affecting other items in the batch.
 

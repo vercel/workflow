@@ -73,9 +73,8 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: `25000`
 - Positive-integer event limit reported by the Local World and enforced by the runtime as `MAX_EVENTS_EXCEEDED`.
 - The Local and Postgres Worlds also use it as the maximum number of events returned when `events.list()` is called without a limit. If more events exist, the response includes `hasMore: true` and a continuation cursor.
-- The Vercel World receives its event limit from the service; this environment variable does not override that service-owned value. The service default is also `25000`. See [Vercel World](/worlds/vercel#per-run-event-limit).
+- The Vercel World receives its event limit from the service; this environment variable does not override that service-owned value. See [Vercel World limits](/worlds/vercel#per-run-event-limit).
 - Invalid or non-positive values fall back to the default.
-- Raising the limit is not the fix for a run that keeps hitting it. Replay cost grows with the event log well before the ceiling, so a run that needs more than 25,000 events should be split into [child workflows](/cookbook/advanced/child-workflows). See [How much work fits in one run](/docs/foundations/workflows-and-steps#how-much-work-fits-in-one-run).
 
 ### `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`
 

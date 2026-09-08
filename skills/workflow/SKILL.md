@@ -221,14 +221,14 @@ export async function parentWorkflow() {
 
 ## Run size & parallelism: know when to split
 
-A run's event log is bounded, and replay cost grows with it. Both push the same way: keep a single run small and move per-item work into child workflows.
+A run's event log is bounded, and replay cost grows with it. Both push the same way: keep a single run small and move per-item work into child workflows. Do NOT take the limits below as authoritative, double check https://vercel.com/docs/workflows/pricing#workflow-run-limits
 
 | Limit | Number | What to do |
 |-------|--------|------------|
 | Events per run (Vercel World) | **25,000**; the run fails with `MAX_EVENTS_EXCEEDED` and cannot be continued | Split into child workflows *well before* the ceiling; don't size a run to just fit under it |
 | Steps in one parallel fan-out | **~100**; beyond this, extra parallelism costs more than it saves | Process in batches, or give each item a child workflow |
 
-**Events are not steps.** A step that succeeds on the first try records three events (`step_created`, `step_started`, `step_completed`). Retries add `step_retrying`/`step_failed`, and hooks, sleeps, and webhooks each record their own. So a run made only of successful steps hits the ceiling at roughly 8,000 steps, much sooner if it retries. Never read the event limit as a step budget.
+**Events are not steps.** A step that succeeds on the first try records three events (`step_created`, `step_started`, `step_completed`). Retries add `step_retrying`/`step_failed`, and hooks, sleeps, and webhooks each record their own. So a run made only of successful steps hits the ceiling at roughly 8,000 steps, or earlier with retries.
 
 **Do not try to raise the limit.** `WORKFLOW_MAX_EVENTS_OVERRIDE` can only clamp a limit *down*, and on the Vercel World the ceiling is owned by the service. A run that needs more events needs to be split, not reconfigured.
 

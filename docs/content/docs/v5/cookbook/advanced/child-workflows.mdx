@@ -21,7 +21,7 @@ Child workflows are the right choice when:
 - **You need isolated failure boundaries**: A failing child should not abort unrelated work. The parent decides how to handle failures.
 - **You want large fan-out**: Spawning 50 or 500 children is practical because each runs on its own infrastructure.
 - **You need per-item observability**: Each child workflow has its own run ID, status, and event log for monitoring.
-- **One run would otherwise get too big**: A run's event log is capped — 25,000 events on the [Vercel World](/worlds/vercel#per-run-event-limit) — and replay cost grows with it long before the cap. Splitting is how you keep each log short.
+- **One run would otherwise get too big**: A run's event log is capped, see e.g. [Vercel World limits](/worlds/vercel#per-run-event-limit), and replay cost grows with it long before the cap. Split workflows to keep each event log short.
 
 For simpler cases where steps share a single event log, use [direct await composition](/cookbook/common-patterns/workflow-composition#direct-await-flattening) instead.
 
