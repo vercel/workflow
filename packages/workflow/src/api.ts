@@ -25,6 +25,7 @@ export {
   Run,
   type WorkflowReadableStream,
   type WorkflowReadableStreamOptions,
+  type WorkflowRunWritableStreamOptions,
 } from '@workflow/core/runtime/run';
 export {
   type StartOptions,
