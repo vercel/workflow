@@ -44,10 +44,9 @@ For self-hosted deployments, use the [Postgres World](/worlds/postgres). For loc
 
 ## Per-run event limit
 
-The Vercel World caps a single run's [event log](/docs/how-it-works/event-sourcing), see [limits page](https://vercel.com/docs/workflows/pricing#workflow-run-limits). A run that reaches the ceiling fails with `MAX_EVENTS_EXCEEDED` and cannot be continued.
+The Vercel World caps a single run's [event log](/docs/how-it-works/event-sourcing); see [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits) for the current ceiling. A run that reaches it fails with `MAX_EVENTS_EXCEEDED` and cannot be continued.
 
-
-Design for the ceiling as a backstop rather than a budget: replay work grows with the log, so a run with tens of thousands of events is already paying for its size in per-step latency, even before the limit. Split workloads whose step count scales with their input into [child workflows](/cookbook/advanced/child-workflows). See [How much work fits in one run](/docs/foundations/workflows-and-steps#how-much-work-fits-in-one-run) for the fan-out and batching guidance that goes with it.
+Treat the cap as a backstop, not a budget. If you expect a run to accumulate tens of thousands of events, split the work into [child workflows](/cookbook/advanced/child-workflows) so each run's log stays small.
 
 ## Multi-region
 

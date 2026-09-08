@@ -150,14 +150,6 @@ export async function documentReviewProcess(userId: string) {
 }
 ```
 
-### How much work fits in one run
-
-A run's [event log](/docs/how-it-works/event-sourcing) is bounded, and replay cost grows with the length of that log. Keep any single run's log small. If you expect any run to grow to above tens of thousands of events, split the workflow into child workflows.
-
-If a workflow's step count scales with its input, e.g. one step per row, per document, per file — split the work into [child workflows](/cookbook/advanced/child-workflows) while the parent's log is still small, rather than sizing a single run to just fit under the limit.
-
-**Parallel fan-out.** `Promise.all` over a large array creates every step in one run, so a wide fan-out is the fastest way to grow that log. Past roughly 100 steps in a single run, the growing log makes each step boundary progressively more expensive, and additional parallelism starts costing more than it saves. When a fan-out approaches that size, either process the items in [batches](/cookbook/common-patterns/batching) so only a chunk is in flight at a time, or give each unit of work its own child workflow so every log stays bounded.
-
 ## Writing workflows
 
 ### Basic structure

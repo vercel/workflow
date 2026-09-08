@@ -1,4 +1,4 @@
 ---
 ---
 
-Document the 25,000-event per-run ceiling and the ~100-step parallel fan-out guidance, and point both at batching and child workflows.
+Point run-limit guidance at the published Workflow run limits, and recommend child workflows for very large event logs and batching for high concurrency.

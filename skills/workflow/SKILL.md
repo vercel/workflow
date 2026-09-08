@@ -219,29 +219,23 @@ export async function parentWorkflow() {
 
 `start()` returns immediately and doesn't wait for the workflow to complete. Use `run.returnValue` to await completion.
 
-## Run size & parallelism: know when to split
+## Run size & concurrency: know when to split
 
-A run's event log is bounded, and replay cost grows with it. Both push the same way: keep a single run small and move per-item work into child workflows. Do NOT take the limits below as authoritative, double check https://vercel.com/docs/workflows/pricing#workflow-run-limits
+Two independent things to size. Deep runs are fine — a long sequential chain of steps is not itself a problem.
 
-| Limit | Number | What to do |
-|-------|--------|------------|
-| Events per run (Vercel World) | **25,000**; the run fails with `MAX_EVENTS_EXCEEDED` and cannot be continued | Split into child workflows *well before* the ceiling; don't size a run to just fit under it |
-| Steps in one parallel fan-out | **~100**; beyond this, extra parallelism costs more than it saves | Process in batches, or give each item a child workflow |
+**Events per run.** A run's event log is capped, and the run fails with `MAX_EVENTS_EXCEEDED` past the ceiling. Do NOT treat any number you remember as authoritative — check https://vercel.com/docs/workflows/pricing#workflow-run-limits. Events are not steps: a step that succeeds on the first try records three (`step_created`, `step_started`, `step_completed`), retries add more, and hooks, sleeps, and webhooks each record their own. When you expect a run to accumulate **tens of thousands of events**, split the work into child workflows. Raising the limit is not an option — `WORKFLOW_MAX_EVENTS_OVERRIDE` only clamps *down*, and on the Vercel World the ceiling is service-owned.
 
-**Events are not steps.** A step that succeeds on the first try records three events (`step_created`, `step_started`, `step_completed`). Retries add `step_retrying`/`step_failed`, and hooks, sleeps, and webhooks each record their own. So a run made only of successful steps hits the ceiling at roughly 8,000 steps, or earlier with retries.
-
-**Do not try to raise the limit.** `WORKFLOW_MAX_EVENTS_OVERRIDE` can only clamp a limit *down*, and on the Vercel World the ceiling is owned by the service. A run that needs more events needs to be split, not reconfigured.
+**Concurrency.** When a fan-out would put more than **~1000 steps** in flight at once, batch or bundle the work: process the list in chunks, or handle several items per step, so fewer and larger units run concurrently. Note that spawning one child run per item is the *same* fan-out width — it bounds each log, it does not reduce concurrency.
 
 ```typescript
-// ❌ One run, one step per item. The log grows with the input, and a large
-//    fan-out slows every later step boundary in the same run.
+// ❌ One step per item, all in flight at once
 export async function processAll(items: string[]) {
   "use workflow";
-  await Promise.all(items.map((item) => processItem(item)));  // 1000 steps in one log
+  await Promise.all(items.map((item) => processItem(item)));
 }
 
-// ✅ Bounded batches. Only `BATCH` steps are in flight at a time.
-const BATCH = 25;
+// ✅ Chunked, so only BATCH steps are in flight at a time
+const BATCH = 100;
 export async function processBatched(items: string[]) {
   "use workflow";
   for (let i = 0; i < items.length; i += BATCH) {
@@ -249,18 +243,12 @@ export async function processBatched(items: string[]) {
   }
 }
 
-// ✅ Child workflows. Each item gets its own event log and failure boundary.
-//    Use this when the item count scales with the input.
-async function spawnChild(item: string) {
+// ✅ Bundled, so one step covers many items and the log stays short
+async function processChunk(chunk: string[]) {
   "use step";
-  const run = await start(itemWorkflow, [item]);
-  return run.runId;
+  return Promise.all(chunk.map((item) => handle(item)));
 }
 ```
-
-Batching bounds *concurrency*, not the run's total size, since every batch still appends to the same log. When the item count scales with the input, use child workflows.
-
-Full guidance: `node_modules/workflow/docs/foundations/workflows-and-steps.mdx` ("How much work fits in one run").
 
 ## Hooks: pause & resume with external events
 
