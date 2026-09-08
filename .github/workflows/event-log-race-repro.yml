@@ -58,6 +58,27 @@ on:
       blocked_branch_watchdog_ms:
         description: 'blocked-branch: hook-race watchdog. Size it to normally lose to the burst; it exists to enter a wait into the race'
         required: false
+      wake_loop_attempts:
+        description: 'Number of wake-loop runs (one sequential loop racing a reusable hook read against a heartbeat sleep; concurrency comes from the driver resumes)'
+        required: false
+      wake_loop_wakes:
+        description: 'wake-loop: fresh wakes per run before it returns (each is a four-step cycle)'
+        required: false
+      wake_loop_heartbeat_ms:
+        description: 'wake-loop: heartbeat sleep raced against the hook read; part of the wakes are aimed at this deadline'
+        required: false
+      wake_loop_step_delay_ms:
+        description: 'wake-loop: base duration of the drain step, inside which heartbeat completions and wake bursts land'
+        required: false
+      wake_loop_fresh_ratio:
+        description: 'wake-loop: share of wakes that carry work (a stale wake emits no step, a fresh one emits four)'
+        required: false
+      wake_loop_burst_ratio:
+        description: 'wake-loop: share of driver sends that are a burst of near-simultaneous resumes'
+        required: false
+      wake_loop_idle_ratio:
+        description: 'wake-loop: share of driver gaps that idle for about one heartbeat so the next wake meets the deadline'
+        required: false
       poke_interval_ms:
         description: 'step-storm: cadence of out-of-band resumes to the never-read poke hook'
         required: false
@@ -156,6 +177,13 @@ jobs:
           EVENT_LOG_RACE_REPRO_RESUME_BURST_OFFSET_MS: ${{ inputs.resume_burst_offset_ms }}
           EVENT_LOG_RACE_REPRO_RESUME_BURST_JITTER_MS: ${{ inputs.resume_burst_jitter_ms }}
           EVENT_LOG_RACE_REPRO_BLOCKED_BRANCH_WATCHDOG_MS: ${{ inputs.blocked_branch_watchdog_ms }}
+          EVENT_LOG_RACE_REPRO_WAKE_LOOP_ATTEMPTS: ${{ inputs.wake_loop_attempts }}
+          EVENT_LOG_RACE_REPRO_WAKE_LOOP_WAKES: ${{ inputs.wake_loop_wakes }}
+          EVENT_LOG_RACE_REPRO_WAKE_LOOP_HEARTBEAT_MS: ${{ inputs.wake_loop_heartbeat_ms }}
+          EVENT_LOG_RACE_REPRO_WAKE_LOOP_STEP_DELAY_MS: ${{ inputs.wake_loop_step_delay_ms }}
+          EVENT_LOG_RACE_REPRO_WAKE_LOOP_FRESH_RATIO: ${{ inputs.wake_loop_fresh_ratio }}
+          EVENT_LOG_RACE_REPRO_WAKE_LOOP_BURST_RATIO: ${{ inputs.wake_loop_burst_ratio }}
+          EVENT_LOG_RACE_REPRO_WAKE_LOOP_IDLE_RATIO: ${{ inputs.wake_loop_idle_ratio }}
           EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS: ${{ inputs.poke_interval_ms }}
           EVENT_LOG_RACE_REPRO_POKE_MAX: ${{ inputs.poke_max }}
           EVENT_LOG_RACE_REPRO_POKE_DECAY_FACTOR: ${{ inputs.poke_decay_factor }}
@@ -264,6 +292,13 @@ jobs:
           EVENT_LOG_RACE_REPRO_RESUME_BURST_OFFSET_MS: ${{ inputs.resume_burst_offset_ms }}
           EVENT_LOG_RACE_REPRO_RESUME_BURST_JITTER_MS: ${{ inputs.resume_burst_jitter_ms }}
           EVENT_LOG_RACE_REPRO_BLOCKED_BRANCH_WATCHDOG_MS: ${{ inputs.blocked_branch_watchdog_ms }}
+          EVENT_LOG_RACE_REPRO_WAKE_LOOP_ATTEMPTS: ${{ inputs.wake_loop_attempts }}
+          EVENT_LOG_RACE_REPRO_WAKE_LOOP_WAKES: ${{ inputs.wake_loop_wakes }}
+          EVENT_LOG_RACE_REPRO_WAKE_LOOP_HEARTBEAT_MS: ${{ inputs.wake_loop_heartbeat_ms }}
+          EVENT_LOG_RACE_REPRO_WAKE_LOOP_STEP_DELAY_MS: ${{ inputs.wake_loop_step_delay_ms }}
+          EVENT_LOG_RACE_REPRO_WAKE_LOOP_FRESH_RATIO: ${{ inputs.wake_loop_fresh_ratio }}
+          EVENT_LOG_RACE_REPRO_WAKE_LOOP_BURST_RATIO: ${{ inputs.wake_loop_burst_ratio }}
+          EVENT_LOG_RACE_REPRO_WAKE_LOOP_IDLE_RATIO: ${{ inputs.wake_loop_idle_ratio }}
           EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS: ${{ inputs.poke_interval_ms }}
           EVENT_LOG_RACE_REPRO_POKE_MAX: ${{ inputs.poke_max }}
           EVENT_LOG_RACE_REPRO_POKE_DECAY_FACTOR: ${{ inputs.poke_decay_factor }}
