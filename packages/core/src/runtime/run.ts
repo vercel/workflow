@@ -18,6 +18,7 @@ import {
   getRunReadableStream,
   hydrateRunError,
   hydrateWorkflowReturnValue,
+  tagForwardedWritableTarget,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
 import { getWorldLazy } from './get-world-lazy.js';
@@ -429,40 +430,56 @@ export class Run<TResult> {
   /**
    * Returns a writable that appends to this run's stream.
    *
-   * The run must already exist. The writable may be forwarded through `start()`
-   * and into steps, but grants no read access or additional authorization.
+   * Initialization is deferred until the first write. The run must already
+   * exist. The writable may be forwarded through `start()` and into steps, but
+   * grants no read access or additional authorization.
    *
    * @remarks
    * `writer.close()` closes the shared stream. Contributors should call
    * `releaseLock()`, which also drains pending writes.
    *
    * @param options - The writable stream options.
-   * @throws WorkflowRunNotFoundError if the run does not exist.
    */
-  async getWritable<W = any>(
+  getWritable<W = any>(
     options: WorkflowRunWritableStreamOptions = {}
-  ): Promise<WritableStream<W>> {
+  ): WritableStream<W> {
     'use step';
     const { ops = [], global = globalThis, namespace } = options;
-    const run = await this.#getMetadata();
     const name = getWorkflowRunStreamId(this.runId, namespace);
+    let targetPromise:
+      | Promise<{
+          key: PayloadKey | undefined;
+          deploymentId?: string;
+          encryptionPublicKey?: string;
+        }>
+      | undefined;
+    let writable: WritableStream<W>;
 
-    // Resolve before returning so key lookup failures precede accepted writes.
-    const key = await getForwardedWritableEncryptionKey(
-      this.runId,
-      run.deploymentId,
-      run.encryptionPublicKey
-    );
+    const resolveTarget = () => {
+      targetPromise ??= this.#getMetadata().then(async (run) => {
+        const target = {
+          key: await getForwardedWritableEncryptionKey(
+            this.runId,
+            run.deploymentId,
+            run.encryptionPublicKey
+          ),
+          deploymentId: run.deploymentId,
+          encryptionPublicKey: run.encryptionPublicKey,
+        };
+        tagForwardedWritableTarget(writable, target);
+        return target;
+      });
+      return targetPromise;
+    };
 
-    return createForwardedWritable<W>({
+    writable = createForwardedWritable<W>({
       global,
       ops,
       runId: this.runId,
       name,
-      key,
-      deploymentId: run.deploymentId,
-      encryptionPublicKey: run.encryptionPublicKey,
+      key: () => resolveTarget().then(({ key }) => key),
     });
+    return writable;
   }
 
   /** Reads metadata, briefly retrying resilient starts. @internal */

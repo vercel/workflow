@@ -2774,6 +2774,28 @@ export async function getForwardedWritableEncryptionKey(
   return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
 }
 
+/** Tags a forwarded writable with its owner's metadata. @internal */
+export function tagForwardedWritableTarget(
+  writable: WritableStream,
+  {
+    deploymentId,
+    encryptionPublicKey,
+  }: { deploymentId?: string; encryptionPublicKey?: string }
+): void {
+  if (typeof deploymentId === 'string') {
+    Object.defineProperty(writable, STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, {
+      value: deploymentId,
+      writable: false,
+    });
+  }
+  if (typeof encryptionPublicKey === 'string') {
+    Object.defineProperty(writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
+      value: encryptionPublicKey,
+      writable: false,
+    });
+  }
+}
+
 /** Creates and tags a forwarded writable targeting the owner run. @internal */
 export function createForwardedWritable<W = any>({
   global,
@@ -2822,24 +2844,10 @@ export function createForwardedWritable<W = any>({
     value: runId,
     writable: false,
   });
-  if (typeof deploymentId === 'string') {
-    Object.defineProperty(
-      serialize.writable,
-      STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
-      {
-        value: deploymentId,
-        writable: false,
-      }
-    );
-  }
-  // Keep the owner's public key on the handle so a further forward stays on
-  // the zero-lookup sealed path.
-  if (typeof encryptionPublicKey === 'string') {
-    Object.defineProperty(serialize.writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
-      value: encryptionPublicKey,
-      writable: false,
-    });
-  }
+  tagForwardedWritableTarget(serialize.writable, {
+    deploymentId,
+    encryptionPublicKey,
+  });
 
   return serialize.writable as WritableStream<W>;
 }

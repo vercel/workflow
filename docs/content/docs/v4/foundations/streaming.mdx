@@ -325,7 +325,7 @@ type SessionEvent = { turn: number; text: string };
 async function runTurn(holderRunId: string, turn: number) {
   "use step";
 
-  const writable = await getRun(holderRunId).getWritable<SessionEvent>(); // [!code highlight]
+  const writable = getRun(holderRunId).getWritable<SessionEvent>(); // [!code highlight]
   const writer = writable.getWriter();
 
   await writer.write({ turn, text: "done" });
@@ -339,7 +339,7 @@ Pass `{ namespace: "name" }` to target a [namespaced stream](#namespaced-streams
 Contributors should call `releaseLock()`, which flushes pending writes. Calling `close()` closes the shared stream for every writer.
 </Callout>
 
-The API grants append access, not read access or additional authorization. The owning run controls the stream's lifecycle, and an unknown run rejects with `WorkflowRunNotFoundError`.
+The API grants append access, not read access or additional authorization. The owning run controls the stream's lifecycle, and writes to an unknown run fail.
 
 ## Common patterns
 

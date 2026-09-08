@@ -68,7 +68,7 @@ describe('Run#getWritable', () => {
     const world = mockWorld();
 
     const ops: Promise<any>[] = [];
-    const writable = await getRun(OWNER_RUN_ID).getWritable<string>({ ops });
+    const writable = getRun(OWNER_RUN_ID).getWritable<string>({ ops });
     const writer = writable.getWriter();
     await writer.write('from-a-contributor');
     writer.releaseLock();
@@ -88,7 +88,7 @@ describe('Run#getWritable', () => {
     const world = mockWorld();
 
     const ops: Promise<any>[] = [];
-    const writable = await getRun(OWNER_RUN_ID).getWritable<string>({
+    const writable = getRun(OWNER_RUN_ID).getWritable<string>({
       namespace: 'session-events',
       ops,
     });
@@ -103,7 +103,7 @@ describe('Run#getWritable', () => {
     expect((writable as any)[STREAM_NAME_SYMBOL]).toBe(expected);
   });
 
-  it('rejects for a run that does not exist', async () => {
+  it('defers a missing-run error until the first write', async () => {
     const world = mockWorld({
       runs: {
         get: vi
@@ -112,9 +112,16 @@ describe('Run#getWritable', () => {
       },
     });
 
-    await expect(getRun('wrun_ghost').getWritable()).rejects.toThrow(
-      WorkflowRunNotFoundError
-    );
+    const ops: Promise<any>[] = [];
+    const writable = getRun('wrun_ghost').getWritable({ ops });
+    expect(world.runs.get).not.toHaveBeenCalled();
+
+    const writer = writable.getWriter();
+    await writer.write('chunk');
+    writer.releaseLock();
+    await expect(Promise.all(ops)).rejects.toMatchObject({
+      cause: expect.any(WorkflowRunNotFoundError),
+    });
     expect(world.streams.write).not.toHaveBeenCalled();
     expect(world.runs.get).toHaveBeenCalledTimes(1);
   });
@@ -134,7 +141,7 @@ describe('Run#getWritable', () => {
     });
 
     const ops: Promise<any>[] = [];
-    const writable = await getRun(OWNER_RUN_ID).getWritable<string>({ ops });
+    const writable = getRun(OWNER_RUN_ID).getWritable<string>({ ops });
     const writer = writable.getWriter();
     await writer.write('sealed-to-owner');
     writer.releaseLock();
@@ -160,7 +167,7 @@ describe('Run#getWritable', () => {
     const world = mockWorld({ getEncryptionKeyForRun });
 
     const ops: Promise<any>[] = [];
-    const writable = await getRun(OWNER_RUN_ID).getWritable<string>({ ops });
+    const writable = getRun(OWNER_RUN_ID).getWritable<string>({ ops });
     const writer = writable.getWriter();
     await writer.write('legacy-owner');
     writer.releaseLock();
@@ -175,7 +182,7 @@ describe('Run#getWritable', () => {
     expect(new TextDecoder().decode(frames[0].subarray(4, 8))).toBe('encr');
   });
 
-  it('carries every forwarding symbol on the returned handle', async () => {
+  it('adds resolved forwarding metadata on first use', async () => {
     const ownerKeyPair = await deriveRunKeyPair(OWNER_MATERIAL);
     const ownerPublicKey = bytesToBase64(ownerKeyPair.publicKey);
     mockWorld({
@@ -186,10 +193,19 @@ describe('Run#getWritable', () => {
       },
     });
 
-    const writable = await getRun(OWNER_RUN_ID).getWritable();
-
+    const ops: Promise<any>[] = [];
+    const writable = getRun(OWNER_RUN_ID).getWritable({ ops });
     expect((writable as any)[STREAM_NAME_SYMBOL]).toBe(OWNER_STREAM);
     expect((writable as any)[STREAM_SERVER_RUN_ID_SYMBOL]).toBe(OWNER_RUN_ID);
+    expect(
+      (writable as any)[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL]
+    ).toBeUndefined();
+
+    const writer = writable.getWriter();
+    await writer.write('chunk');
+    writer.releaseLock();
+    await Promise.all(ops);
+
     expect((writable as any)[STREAM_SERVER_DEPLOYMENT_ID_SYMBOL]).toBe(
       'dpl_owner'
     );
@@ -201,7 +217,7 @@ describe('Run#getWritable', () => {
   it('does not advertise a public key the owner never published', async () => {
     mockWorld({ getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined) });
 
-    const writable = await getRun(OWNER_RUN_ID).getWritable();
+    const writable = getRun(OWNER_RUN_ID).getWritable();
 
     expect((writable as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL]).toBeUndefined();
   });
@@ -215,10 +231,10 @@ describe('Run#getWritable', () => {
           .fn()
           .mockResolvedValue(ownerRun({ encryptionPublicKey: ownerPublicKey })),
       },
-      getEncryptionKeyForRun: vi.fn(),
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(OWNER_MATERIAL),
     });
 
-    const writable = await getRun(OWNER_RUN_ID).getWritable<string>();
+    const writable = getRun(OWNER_RUN_ID).getWritable<string>();
 
     // Hop 1: start() dehydrates into the turn workflow's arguments.
     const forwarded = await dehydrateWorkflowArguments(
@@ -232,9 +248,9 @@ describe('Run#getWritable', () => {
       undefined
     )) as WritableStream<string>;
     expect((inWorkflow as any)[STREAM_SERVER_RUN_ID_SYMBOL]).toBe(OWNER_RUN_ID);
-    expect((inWorkflow as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL]).toBe(
-      ownerPublicKey
-    );
+    expect(
+      (inWorkflow as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL]
+    ).toBeUndefined();
 
     // Hop 2: the workflow passes it into the step that writes.
     const toStep = await dehydrateStepArguments(
@@ -258,7 +274,7 @@ describe('Run#getWritable', () => {
     writer.releaseLock();
     await Promise.all(ops);
 
-    expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalled();
     const ownerFrames = world.streams.write.mock.calls.filter(
       (c: any[]) => c[0] === OWNER_RUN_ID && c[1] === OWNER_STREAM
     );
@@ -277,7 +293,7 @@ describe('Run#getWritable', () => {
     const world = mockWorld();
 
     const ops: Promise<any>[] = [];
-    const writable = await getRun(OWNER_RUN_ID).getWritable<string>({ ops });
+    const writable = getRun(OWNER_RUN_ID).getWritable<string>({ ops });
     const writer = writable.getWriter();
     await writer.write('flushed-without-close');
     writer.releaseLock();
@@ -292,7 +308,7 @@ describe('Run#getWritable', () => {
     const world = mockWorld();
 
     const ops: Promise<any>[] = [];
-    const writable = await getRun(OWNER_RUN_ID).getWritable<string>({ ops });
+    const writable = getRun(OWNER_RUN_ID).getWritable<string>({ ops });
     const writer = writable.getWriter();
     await writer.write('last-chunk');
     await writer.close();
@@ -312,12 +328,14 @@ describe('Run#getWritable', () => {
       .mockResolvedValue(ownerRun());
     mockWorld({ runs: { get: runsGet } });
 
-    const pending = new Run(OWNER_RUN_ID, {
+    const ops: Promise<any>[] = [];
+    const writable = new Run(OWNER_RUN_ID, {
       resilientStart: true,
-    }).getWritable();
+    }).getWritable<string>({ ops });
+    const write = writable.getWriter().write('chunk');
 
     await vi.advanceTimersByTimeAsync(1_000);
-    const writable = await pending;
+    await write;
 
     expect(runsGet).toHaveBeenCalledTimes(2);
     expect((writable as any)[STREAM_SERVER_RUN_ID_SYMBOL]).toBe(OWNER_RUN_ID);
