@@ -1,5 +1,11 @@
 # @workflow/world-local
 
+## 4.4.1
+
+### Patch Changes
+
+- [#3824](https://github.com/vercel/workflow/pull/3824) [`41abe2d`](https://github.com/vercel/workflow/commit/41abe2dda3a8e191c8ad8f91e0bf9b7b28449d6a) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Abort active local queue deliveries when the World closes, including when transport timeouts are disabled.
+
 ## 4.4.0
 
 ### Minor Changes
