@@ -1007,10 +1007,10 @@ export function EventRow({
   }, []);
 
   // When encryption key changes and this event was previously loaded,
-  // re-load to get decrypted data
+  // re-load to get decrypted data. Keep the encrypted value visible until the
+  // refreshed data arrives so the payload does not flash empty while decrypting.
   useEffect(() => {
     if (encryptionKey && hasAttemptedLoad && onLoadEventData) {
-      setLoadedEventData(null);
       setHasAttemptedLoad(false);
       onLoadEventData(event)
         .then((data) => {

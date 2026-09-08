@@ -557,6 +557,40 @@ describe('queue transport timeouts', () => {
     });
   });
 
+  it('aborts an in-flight delivery when the queue closes', async () => {
+    let requestReceived = false;
+    server = createServer(() => {
+      requestReceived = true;
+    });
+    await new Promise<void>((resolve) => {
+      server?.listen(0, '127.0.0.1', resolve);
+    });
+    const { port } = server.address() as AddressInfo;
+
+    process.env.WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS = '0';
+    process.env.WORKFLOW_LOCAL_BODY_TIMEOUT_MS = '0';
+    const localQueue = createQueue({
+      baseUrl: `http://127.0.0.1:${port}`,
+    });
+
+    await localQueue.queue('__wkf_workflow_test' as any, workflowPayload);
+    await vi.waitFor(() => expect(requestReceived).toBe(true));
+    const closePromise = localQueue.close();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      closePromise.then(() => 'closed' as const),
+      new Promise<'timed-out'>((resolve) => {
+        timeout = setTimeout(() => resolve('timed-out'), 1_000);
+      }),
+    ]);
+    clearTimeout(timeout);
+    if (outcome === 'timed-out') {
+      server.closeAllConnections();
+      await closePromise;
+    }
+    expect(outcome).toBe('closed');
+  });
+
   it('redelivers when a handler accepts a request but never responds', async () => {
     let requests = 0;
     server = createServer((_request, response) => {

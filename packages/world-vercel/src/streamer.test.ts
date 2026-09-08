@@ -1,4 +1,8 @@
-import { StreamExpiredError } from '@workflow/errors';
+import {
+  StreamError,
+  StreamExpiredError,
+  ThrottleError,
+} from '@workflow/errors';
 import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeMultiChunks, MAX_CHUNKS_PER_REQUEST } from './streamer.js';
@@ -187,6 +191,7 @@ describe('encodeMultiChunks', () => {
 // makes the intent clear. The encodeMultiChunks tests above are pure
 // functions and are unaffected.
 vi.mock('./utils.js', () => ({
+  makeRequest: vi.fn(),
   getHttpConfig: vi.fn().mockResolvedValue({
     baseUrl: 'https://test.example.com',
     headers: new Headers(),
@@ -290,6 +295,22 @@ describe('streams.get', () => {
   });
 });
 
+describe('stream snapshot errors', () => {
+  it('preserves typed World errors from snapshot requests', async () => {
+    const { makeRequest } = await import('./utils.js');
+    const throttled = new ThrottleError('rate limited', { retryAfter: 5 });
+    vi.mocked(makeRequest).mockRejectedValueOnce(throttled);
+    const { createStreamer } = await import('./streamer.js');
+
+    const error = await createStreamer()
+      .streams.getInfo('wrun_test', 'stream-test')
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBe(throttled);
+    expect(error).toMatchObject({ name: 'ThrottleError', retryAfter: 5 });
+  });
+});
+
 describe('streams.write error diagnostics', () => {
   async function getStreamer() {
     const { createStreamer } = await import('./streamer.js');
@@ -314,9 +335,14 @@ describe('streams.write error diagnostics', () => {
 
     const streamer = await getStreamer();
 
-    await expect(
-      streamer.streams.write('wrun_test', 'user', 'chunk')
-    ).rejects.toThrow(
+    const error = await streamer.streams
+      .write('wrun_test', 'user', 'chunk')
+      .catch((cause: unknown) => cause);
+
+    expect(StreamError.is(error)).toBe(true);
+    expect(error).toMatchObject({ status: 500, code: 'STREAM_ERROR' });
+    expect(error).toHaveProperty(
+      'message',
       'Stream write failed: HTTP 500 (PUT https://test.example.com/v2/runs/wrun_test/stream/user; x-vercel-id=sfo1::abc; x-vercel-error=FUNCTION_INVOCATION_FAILED): Internal Server Error\nrequest-token'
     );
   });

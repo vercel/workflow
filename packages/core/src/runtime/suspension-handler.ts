@@ -34,7 +34,11 @@ import type {
   WorkflowSuspension,
 } from '../global.js';
 import { runtimeLogger } from '../logger.js';
-import type { GuestCodeStats } from '../serialization/hardened.js';
+import {
+  GUEST_CODE_EXECUTION_SAMPLE_LIMIT,
+  type GuestCodeExecution,
+  type GuestCodeStats,
+} from '../serialization/hardened.js';
 import {
   dehydrateStepArguments,
   dehydrateStepError,
@@ -51,6 +55,7 @@ import {
 } from './constants.js';
 import {
   absorbSkippedSlotReport,
+  appendEventLog,
   type EventCreator,
   type LoadedEventLog,
   maxEventSlot,
@@ -77,6 +82,11 @@ export interface SuspensionHandlerParams {
    * seeded sequence, so re-committing it against a corrected log would persist
    * an event no correct replay produces. The caller restarts the replay
    * instead.
+   *
+   * Extended in place by what those writes report back — the events on slots
+   * they skipped over, and (on the hook create) the inline delta since its
+   * cursor. Whether the log is complete afterwards is answered by
+   * {@link SuspensionHandlerResult.eventLogCarriedForward}.
    */
   eventLog?: LoadedEventLog;
   /**
@@ -263,10 +273,58 @@ export interface SuspensionHandlerResult {
    * pending wait collapse into a single delayed continuation.
    */
   waitTimeout?: { seconds: number; correlationId: string };
-  /** Whether a hook conflict was detected (should re-invoke immediately) */
+  /**
+   * Whether a hook create committed a `hook_conflict` — the token was already
+   * claimed, so this run's hook was never created and the workflow must
+   * observe the conflict before anything else this suspension scheduled runs.
+   * The caller answers it by advancing the workflow over the committed event.
+   */
   hasHookConflict: boolean;
   /** Whether a `hook.getConflict()` awaiter needs the workflow to continue immediately */
   hasAwaitedHookCreation: boolean;
+  /**
+   * Correlation ids of the hooks this suspension committed a `hook_created`
+   * for while a `hook.getConflict()` awaiter was waiting on it — the events
+   * that resolve those awaiters on the next pass. Empty exactly when
+   * {@link hasAwaitedHookCreation} is false.
+   *
+   * Reported by id, not just counted, so a caller that continues in this
+   * process can tell a continuation that got somewhere from one that is
+   * repeating: a workflow may create one awaited hook after another, and each
+   * new id is a pass that made progress, while the same id coming back means
+   * the pass ran over a log that still did not hold its event and continuing
+   * again cannot change that.
+   */
+  awaitedHookCorrelationIds: string[];
+  /**
+   * Correlation ids of the hooks whose create committed a `hook_conflict`.
+   * Empty exactly when {@link hasHookConflict} is false.
+   *
+   * By id for the same reason as {@link awaitedHookCorrelationIds}, and
+   * against the same hazard: a conflict is resolved by the `hook_conflict`
+   * this suspension committed, and until the workflow observes it the hook
+   * stays in the invocations queue and the next pass writes the create again.
+   * A fresh id is progress; the same id coming back is a pass that ran over a
+   * log which still did not hold the event, so continuing again cannot change
+   * that.
+   */
+  hookConflictCorrelationIds: string[];
+  /**
+   * Whether the caller's `eventLog` now holds every event this suspension
+   * committed, so a caller that continues in this process can replay — or
+   * resume a retained VM — straight off it with no read.
+   *
+   * True only when the hook create's inline delta came back complete and was
+   * folded in (see `hookDeltaCursor` below), and nothing else in this
+   * suspension wrote an event. False whenever a read is needed first: no
+   * delta was asked for or returned, it was truncated, or a step / wait /
+   * attribute / abort write landed above it and is therefore not in it.
+   *
+   * Indifferent to which event the create committed: the delta is the slice
+   * of the log after the caller's cursor either way, so it carries a
+   * `hook_conflict` exactly as it carries a `hook_created`.
+   */
+  eventLogCarriedForward: boolean;
   /** Whether native workflow attribute events were written for replay. */
   hasAttributeEvents: boolean;
   /**
@@ -284,13 +342,15 @@ export interface SuspensionHandlerResult {
    * durably creating the user's hooks doesn't count as runtime overhead.
    */
   hookCreationMs: number;
-  /**
-   * Whether serializing this suspension's new step inputs was passive (did
-   * not execute workflow-owned code such as getters, proxy traps, or custom
-   * serializers). `false` means the retained VM may have diverged from what
-   * a cold replay would compute, so the caller must demote to replay.
-   */
-  retainedStepInputsSafe: boolean;
+  /** Exact number of workflow-code executions observed during serialization. */
+  serializationBlockerCount: number;
+  /** Bounded sample used only for retention diagnostics. */
+  serializationBlockers: SuspensionSerializationBlocker[];
+}
+
+export interface SuspensionSerializationBlocker extends GuestCodeExecution {
+  source: 'step_input' | 'hook_metadata' | 'hook_abort';
+  correlationId: string;
 }
 
 async function createHookEvent({
@@ -298,12 +358,19 @@ async function createHookEvent({
   hookEvent,
   queueItem,
   requestId,
+  sinceCursor,
   createEvent,
 }: {
   runId: string;
   hookEvent: CreateEventRequest;
   queueItem: HookInvocationQueueItem;
   requestId?: string;
+  /**
+   * Cursor to ask the World for the event-log delta against, or undefined to
+   * not ask. See `hookDeltaCursor` in {@link handleSuspension} for when it is
+   * set and why it is at most one write per suspension.
+   */
+  sinceCursor?: string;
   createEvent: (
     data: CreateEventRequest,
     params?: CreateEventParams
@@ -315,11 +382,15 @@ async function createHookEvent({
   try {
     const result = await createEvent(hookEvent, {
       requestId,
+      ...(sinceCursor === undefined ? {} : { sinceCursor }),
     });
 
     // Check if the world returned a hook_conflict event instead of hook_created.
-    // The hook_conflict event is stored in the event log and will be replayed
-    // on the next workflow invocation, causing the hook's promise to reject.
+    // The hook_conflict event is stored in the event log and is what the next
+    // pass consumes to settle the hook's awaiters — rejecting a payload await,
+    // resolving a `hook.getConflict()` with the conflicting run. An inline
+    // delta asked for above carries it just as it would have carried the
+    // hook_created, so the caller can advance over it without a re-invocation.
     if (result.event?.eventType === 'hook_conflict') {
       return {
         hasHookConflict: true,
@@ -454,7 +525,15 @@ export async function handleSuspension({
   // sequence, so re-committing it against a corrected log would persist an
   // event no correct replay produces.
   let reportedEvents = 0;
+  // Writes this suspension issued, and whether one of them handed back a
+  // complete inline delta that was folded into the caller's log. Together they
+  // answer `eventLogCarriedForward`: the delta covers the log up to the write
+  // that returned it, so it accounts for every event this suspension committed
+  // only if that write was the only one.
+  let guardedWrites = 0;
+  let deltaAbsorbed = false;
   const createGuarded: EventCreator = async (data, params) => {
+    guardedWrites++;
     if (!eventLog) {
       return createEvent(data, params);
     }
@@ -463,6 +542,29 @@ export async function handleSuspension({
       ...params,
       ...slotSnapshotParams(log.events),
     });
+    // An inline delta this call asked for (`sinceCursor`) is everything the
+    // log gained since that cursor, this write included, so it is folded onto
+    // the tail and carries the cursor with it — unlike a skipped-slot report,
+    // which is a window strictly below the write and has to be sorted back
+    // into place. A World returns one or the other, never both (the delta is a
+    // strict superset), so the two are handled apart rather than merged.
+    //
+    // Declining is always safe — an unabsorbed delta is one the next read
+    // returns — so the guards match the replay loop's `absorbCreateDelta`: a
+    // truncated page (`hasMore`) is dropped whole rather than advancing the
+    // cursor past events it did not carry, and the log must still be where the
+    // request was computed from, since appending does not re-sort.
+    if (typeof params?.sinceCursor === 'string') {
+      if (
+        log.cursor === params.sinceCursor &&
+        result.events !== undefined &&
+        result.hasMore !== true
+      ) {
+        appendEventLog(log, { events: result.events, cursor: result.cursor });
+        deltaAbsorbed = true;
+      }
+      return result;
+    }
     // Bump-and-report: the write landed above the slot it asked for, so the
     // report holds the events it was decided without. Absorbing here rather
     // than at each call site means the rest of this phase's writes (which read
@@ -488,16 +590,16 @@ export async function handleSuspension({
     return result;
   };
   // Separate queue items by type
-  const stepItems = suspension.steps.filter(
+  const stepItems = suspension.items.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
   );
-  const allHookItems = suspension.steps.filter(
+  const allHookItems = suspension.items.filter(
     (item): item is HookInvocationQueueItem => item.type === 'hook'
   );
-  const waitItems = suspension.steps.filter(
+  const waitItems = suspension.items.filter(
     (item): item is WaitInvocationQueueItem => item.type === 'wait'
   );
-  const attributeItems = suspension.steps.filter(
+  const attributeItems = suspension.items.filter(
     (item): item is AttributeInvocationQueueItem => item.type === 'attribute'
   );
 
@@ -533,6 +635,37 @@ export async function handleSuspension({
   // Gate payload compression on the run's specVersion.
   const compression =
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
+
+  let serializationBlockerCount = 0;
+  const serializationBlockers: SuspensionSerializationBlocker[] = [];
+  async function dehydrateInput(
+    value: unknown,
+    context: Pick<SuspensionSerializationBlocker, 'source' | 'correlationId'>
+  ): Promise<SerializedData> {
+    const stats: GuestCodeStats = { executions: [] };
+    try {
+      return (await dehydrateStepArguments(
+        value,
+        runId,
+        encryptionKey,
+        suspension.globalThis,
+        false,
+        compression,
+        stats
+      )) as SerializedData;
+    } finally {
+      serializationBlockerCount +=
+        stats.totalExecutions ?? stats.executions.length;
+      serializationBlockers.push(
+        ...stats.executions
+          .slice(
+            0,
+            GUEST_CODE_EXECUTION_SAMPLE_LIMIT - serializationBlockers.length
+          )
+          .map((execution) => ({ ...context, ...execution }))
+      );
+    }
+  }
 
   async function disposeHook(
     queueItem: HookInvocationQueueItem
@@ -581,11 +714,31 @@ export async function handleSuspension({
   }
 
   // Process hooks first to prevent race conditions with webhook receivers.
-  // Track any hook conflicts that occur: these are returned to the caller
-  // so the V2 handler can re-invoke immediately.
-  let hasHookConflict = false;
-  let hasAwaitedHookCreation = false;
+  // Track any hook conflicts that occur — these are returned to the caller so
+  // it can advance the workflow over the committed `hook_conflict` before
+  // anything else this suspension scheduled runs.
+  const hookConflictCorrelationIds: string[] = [];
+  const awaitedHookCorrelationIds: string[] = [];
   let hookCreationMs = 0;
+
+  // Ask the hook create for the event-log delta since the cursor the caller's
+  // log was read at. The hook's awaiters are settled by the event this write
+  // commits and by nothing else — a `hook_created` for a clean registration,
+  // a `hook_conflict` when the token was already claimed — so the caller can
+  // continue the workflow in its own process on either outcome, but only over
+  // a log that holds that event, and this write is the one request that can
+  // hand it back together with anything another writer landed in the meantime.
+  // Optional by contract: a World that ignores `sinceCursor` returns no delta
+  // and the caller reads instead.
+  //
+  // Asked for on the single-hook suspension only. Two creates issued from one
+  // snapshot each diff against the same cursor, and only the first delta back
+  // can be folded in (the cursor moves with it), so the log would end up short
+  // of the other's event with nothing to say so.
+  const hookDeltaCursor =
+    hooksNeedingCreation.length === 1 && typeof eventLog?.cursor === 'string'
+      ? eventLog.cursor
+      : undefined;
 
   if (hookItemsByToken.size > 0) {
     const hookPhaseStart = Date.now();
@@ -596,17 +749,13 @@ export async function handleSuspension({
           let creationConflicted = false;
 
           if (!queueItem.hasCreatedEvent) {
-            const hookMetadata: SerializedData | undefined =
+            const hookMetadata =
               typeof queueItem.metadata === 'undefined'
                 ? undefined
-                : ((await dehydrateStepArguments(
-                    queueItem.metadata,
-                    runId,
-                    encryptionKey,
-                    suspension.globalThis,
-                    false,
-                    compression
-                  )) as SerializedData);
+                : await dehydrateInput(queueItem.metadata, {
+                    source: 'hook_metadata',
+                    correlationId: queueItem.correlationId,
+                  });
             const hookEvent: CreateEventRequest = {
               eventType: 'hook_created' as const,
               specVersion: SPEC_VERSION_CURRENT,
@@ -624,10 +773,15 @@ export async function handleSuspension({
               hookEvent,
               queueItem,
               requestId,
+              sinceCursor: hookDeltaCursor,
               createEvent: createGuarded,
             });
-            hasHookConflict ||= result.hasHookConflict;
-            hasAwaitedHookCreation ||= result.hasAwaitedHookCreation;
+            if (result.hasHookConflict) {
+              hookConflictCorrelationIds.push(queueItem.correlationId);
+            }
+            if (result.hasAwaitedHookCreation) {
+              awaitedHookCorrelationIds.push(queueItem.correlationId);
+            }
             creationConflicted = result.hasHookConflict;
           }
 
@@ -654,13 +808,15 @@ export async function handleSuspension({
       hooksNeedingAbort.map(async (queueItem) => {
         try {
           // Dehydrate the abort payload for storage
-          const abortPayload = await dehydrateStepArguments(
-            { aborted: true, reason: queueItem.abortReason },
-            runId,
-            encryptionKey,
-            suspension.globalThis,
-            false,
-            compression
+          const abortPayload = await dehydrateInput(
+            {
+              aborted: true,
+              reason: queueItem.abortReason,
+            },
+            {
+              source: 'hook_abort',
+              correlationId: queueItem.correlationId,
+            }
           );
 
           // Create hook_received event with abort payload
@@ -862,29 +1018,17 @@ export async function handleSuspension({
     lazyInlineCorrelationIds.delete(queueItem.correlationId);
   };
 
-  // Serialization always runs through the one ordinary path below, so the
-  // durable bytes cannot depend on retention. What retention needs to know is
-  // whether that serialization *executed* workflow code (getters, proxy
-  // traps, custom serializers): side effects a cold replay would not
-  // repeat, since a replay skips dehydration for already-recorded steps.
-  // The hardened serializer records exactly that into this sink (see
-  // ../serialization/hardened.ts); when any input in the batch records an
-  // execution, the caller demotes the session so the side effects land in a
-  // VM that is about to be discarded, exactly like the pre-retention
-  // runtime.
-  const guestCodeStats: GuestCodeStats = { executions: [] };
-
   // Lazy inline start: defer the step_created write for up to
   // `getMaxInlineSteps()` steps the caller will run inline (in parallel). Each
   // step is created on the fly by the lazy `step_started` executeStep sends
   // (saving a round-trip per step). We never defer when a `hook.getConflict()`
   // awaiter is present, because in that case the caller executes nothing inline
-  // (it re-invokes immediately to resolve the awaiter), so deferring would
-  // leave the steps uncreated and unqueued. We pick the first N uncreated
-  // steps (matching the caller's inline-candidate selection) and dehydrate
+  // (it continues the workflow to resolve the awaiter instead), so deferring
+  // would leave the steps uncreated and unqueued. We pick the first N uncreated
+  // steps — matching the caller's inline-candidate selection — and dehydrate
   // their input here so executeStep can ship it as the step_started payload.
   const lazyInlineCorrelationIds = new Set<string>(
-    hasAwaitedHookCreation === false
+    awaitedHookCorrelationIds.length === 0
       ? stepItems
           .filter((item) => stepsNeedingCreation.has(item.correlationId))
           .slice(0, getMaxInlineSteps())
@@ -1020,29 +1164,20 @@ export async function handleSuspension({
       const stepOrder = batchOrderCounter;
       batchOrderCounter += pairFolded ? 2 : 1;
       const stepOp = (async () => {
-        // Per-step sink, merged below: the dehydrate wrapper emits span
-        // attributes from the sink it is handed, so sharing one across
-        // steps would re-emit (and misattribute) earlier steps' entries.
-        const stepGuestCode: GuestCodeStats = { executions: [] };
-        let dehydratedInput: Uint8Array | unknown;
+        let dehydratedInput: SerializedData;
         try {
-          dehydratedInput = await dehydrateStepArguments(
+          dehydratedInput = await dehydrateInput(
             {
               args: queueItem.args,
               closureVars: queueItem.closureVars,
               thisVal: queueItem.thisVal,
             },
-            runId,
-            encryptionKey,
-            suspension.globalThis,
-            false,
-            compression,
-            stepGuestCode
+            {
+              source: 'step_input',
+              correlationId: queueItem.correlationId,
+            }
           );
         } catch (err) {
-          // The sink records executions as they happen, so guest code that
-          // ran before the failure still counts against retention.
-          guestCodeStats.executions.push(...stepGuestCode.executions);
           if (!SerializationError.is(err)) {
             // e.g. RuntimeDecryptionError: an SDK fault, not a user value
             // problem. Keep its identity (RUNTIME_ERROR) and current
@@ -1063,8 +1198,7 @@ export async function handleSuspension({
           await finalizeUnserializableStep(queueItem, err);
           return;
         }
-        guestCodeStats.executions.push(...stepGuestCode.executions);
-        // Deferred (lazy) inline step: skip the step_created write; the
+        // Deferred (lazy) inline step: skip the step_created write — the
         // caller's inline executeStep will send a lazy step_started carrying
         // this input, and the world creates the step (entity + synthetic
         // step_created event) atomically. We do NOT add it to
@@ -1074,7 +1208,7 @@ export async function handleSuspension({
           lazyInlineByCorrelationId.set(queueItem.correlationId, {
             correlationId: queueItem.correlationId,
             stepName: queueItem.stepName,
-            dehydratedInput: dehydratedInput as SerializedData,
+            dehydratedInput,
           });
           if (pairFolded) {
             // Enqueue the pair the deferral would otherwise leave to the
@@ -1777,20 +1911,6 @@ export async function handleSuspension({
   // step_created and re-dispatches, and recovers the run instead of orphaning it.
   await settlePhase(ops);
 
-  // The step-input dehydrations above have settled, so the sink is final.
-  const retainedStepInputsSafe = guestCodeStats.executions.length === 0;
-  if (!retainedStepInputsSafe) {
-    runtimeLogger.debug(
-      'Serializing step inputs executed workflow code; falling back to replay instead of retaining the VM',
-      {
-        workflowRunId: runId,
-        executions: guestCodeStats.executions
-          .slice(0, 5)
-          .map((e) => (e.detail ? `${e.kind}(${e.detail})` : e.kind)),
-      }
-    );
-  }
-
   // Rebuild the inline batch in deterministic order. `lazyInlineCorrelationIds`
   // is a Set seeded from the ordered first-N slice, so iterating it preserves
   // stepItems order; every id in it was set by the lazy branch above.
@@ -1839,15 +1959,24 @@ export async function handleSuspension({
     inlineClaims,
     batchCommittedSlotCeiling,
     deferredBatchWork,
-    // On hook conflict the caller re-invokes immediately and never reads
-    // the wait timeout, so don't report one.
-    waitTimeout: hasHookConflict ? undefined : soonestWait,
-    hasHookConflict,
-    hasAwaitedHookCreation,
+    // On hook conflict the caller advances the workflow over the conflict
+    // before scheduling anything and never reads the wait timeout, so don't
+    // report one. The next pass, which sees the conflict settled, reports it.
+    waitTimeout:
+      hookConflictCorrelationIds.length > 0 ? undefined : soonestWait,
+    hasHookConflict: hookConflictCorrelationIds.length > 0,
+    hookConflictCorrelationIds,
+    hasAwaitedHookCreation: awaitedHookCorrelationIds.length > 0,
+    awaitedHookCorrelationIds,
+    // The delta accounts for the whole log only if the write that returned it
+    // was this suspension's only one — anything written after it landed above
+    // the delta and is missing from the caller's log.
+    eventLogCarriedForward: deltaAbsorbed && guardedWrites === 1,
     hasAttributeEvents: attributeItems.length > 0,
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
-    retainedStepInputsSafe,
+    serializationBlockerCount,
+    serializationBlockers,
     reportedEventCount: reportedEvents,
   };
 }

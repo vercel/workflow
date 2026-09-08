@@ -1,12 +1,12 @@
 import { FatalError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { EventConsumerResult } from './events-consumer.js';
-import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
+import type { StepInvocationQueueItem } from './global.js';
 import { stepLogger } from './logger.js';
 import {
   awaitEarlierDeliveries,
   registerDeliveryBarrier,
-  scheduleWhenIdle,
+  scheduleWorkflowSuspension,
   type WorkflowOrchestratorContext,
 } from './private.js';
 import type { Serializable } from './schemas.js';
@@ -59,15 +59,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // Crucially, if we got here, then this step Promise does
           // not resolve so that the user workflow code does not proceed any further.
           // Notify the workflow handler that this step has not been run / has not completed yet.
-          const generation = ctx.suspensionGeneration;
-          scheduleWhenIdle(ctx, () => {
-            // A retained session may have resumed past this boundary while
-            // the timer was queued; a stale signal must not fire.
-            if (generation !== ctx.suspensionGeneration) return;
-            ctx.onWorkflowError(
-              new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
-            );
-          });
+          scheduleWorkflowSuspension(ctx);
           return EventConsumerResult.NotConsumed;
         }
 

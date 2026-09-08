@@ -82,6 +82,20 @@ export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
   'workflow.execution.mode'
 );
 
+/** Whether the compiled application workflow bundle was cached. */
+export const WorkflowBundleCompileCacheHit = SemanticConvention<boolean>(
+  'workflow.bundle.compile.cache_hit'
+);
+
+/** Operation that supplied events to the current replay. */
+export type WorkflowReplayLoadSource =
+  | 'run_started'
+  | 'hook_preload'
+  | 'events_list'
+  | 'events_list_incremental';
+export const WorkflowReplayLoadSource =
+  SemanticConvention<WorkflowReplayLoadSource>('workflow.replay.load.source');
+
 /**
  * Events the replay walked past that no consumer claimed, still held when the
  * replay stopped.
@@ -430,18 +444,50 @@ export const HookFound = SemanticConvention<boolean>('workflow.hook.found');
  * `hook_received` write failed transiently but the queue dispatch succeeded, so
  * the resume is recovered via the consumer's re-ensure. Corresponds to
  * `ResumedHook.resilientResume === true`.
+ *
+ * No longer emitted: current producers require the durable event write to
+ * succeed. Retained so dashboards and queries built on the attribute keep
+ * resolving while older producers are still deployed.
  */
 export const HookResilientResume = SemanticConvention<boolean>(
   'workflow.hook.resilient_resume'
 );
 
 /**
+ * Producer-side signal (on the `hook.resume` span) that the durable
+ * `hook_received` write COMMITTED. Stamped after the write resolves, so it
+ * distinguishes a committed resume from an attempted one — an entry-time
+ * attribute cannot, because a span that later records an exception may have
+ * failed either before or after the commit.
+ */
+export const HookResumeCommitted = SemanticConvention<boolean>(
+  'workflow.hook.resume_committed'
+);
+
+/**
+ * Producer-side signal (on the `hook.resume` span) that the workflow wake was
+ * ACCEPTED by the queue, stamped after the publish resolves.
+ *
+ * Together with {@link HookResumeCommitted} this makes stranded resumes
+ * queryable: `resume_committed=true` with `wake_published` absent is a resume
+ * whose durable event exists but whose wake publish failed (the caller was
+ * told, but nothing re-drives it), and `resume_committed=true` +
+ * `wake_published=true` with no subsequent workflow execution for the run is
+ * a wake the queue accepted but never delivered. Both are detection-only
+ * signals — nothing recovers such a run automatically today beyond a later
+ * wake from any other source.
+ */
+export const HookWakePublished = SemanticConvention<boolean>(
+  'workflow.hook.wake_published'
+);
+
+/**
  * Consumer-side signal (on the workflow execution span) that this replay
  * materialized the `hook_received` event from the queue message's `hookInput`
- * because the producer's direct write had not landed, which completes the
- * recovery path {@link HookResilientResume} began.
+ * because no committed event was found, which completes the recovery path
+ * {@link HookResilientResume} began.
  *
- * Legacy / non-atomic re-ensure signal only. Atomic lazy resumes
+ * Legacy / non-atomic re-ensure signal only. Legacy atomic lazy resumes
  * (resumeId + digest) go through the hoisted preload write instead, whose
  * response cannot tell whether the producer or the consumer won the
  * `(runId, resumeId)` claim, so this attribute is deliberately NOT emitted
@@ -568,10 +614,14 @@ export const ResumeTrigger = SemanticConvention<'hook'>(
   'workflow.resume.trigger'
 );
 
-/** Which `resumeHook()` dispatch path produced this resume. */
-export const ResumeStrategy = SemanticConvention<'parallel' | 'sequential'>(
-  'workflow.resume.strategy'
-);
+/**
+ * Which `resumeHook()` dispatch path produced this resume. `parallel` only
+ * appears for messages published by an older producer, which wrote
+ * `hook_received` itself in parallel with the publish.
+ */
+export const ResumeStrategy = SemanticConvention<
+  'lazy' | 'parallel' | 'sequential'
+>('workflow.resume.strategy');
 
 /**
  * How the consuming invocation initialized replay state. Distinct from the
