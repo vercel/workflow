@@ -802,14 +802,18 @@ export interface CreateEventParams {
    * point there is to keep the first invocation's writes as cheap as
    * possible, and it has no loaded log to extend.
    *
-   * The suspension handler sets it too, on the hook create of a single-hook
-   * suspension. That write is the whole continuation for the hook's own
-   * awaiter — the event it commits is what settles it — so a delta lets the
-   * runtime advance the workflow in the same process instead of enqueueing a
-   * message whose only job is to read back the event it just wrote. It is
-   * asked for on one hook create per suspension because two creates issued
-   * from the same cursor each diff against it, and only one of the returned
-   * deltas can be folded into the log.
+   * The suspension handler sets it too, on every guarded write of a
+   * suspension that creates a hook. The hook create is the whole continuation
+   * for the hook's own awaiter — the event it commits is what settles it — so
+   * a delta lets the runtime advance the workflow in the same process instead
+   * of enqueueing a message whose only job is to read back the event it just
+   * wrote. Every write in that suspension diffs against the same cursor, so
+   * the returned deltas are snapshots of one suffix taken at different
+   * moments; the runtime folds in the longest, and only once it has verified
+   * that it holds every event the suspension committed (a World may compute a
+   * write's delta before a concurrent sibling's commit is visible to it, and
+   * a World may answer on some event types and not others). Anything short of
+   * that falls back to the read.
    *
    * A World that answers it on `hook_created` MUST answer it on the
    * `hook_conflict` a create whose token is already claimed commits instead.

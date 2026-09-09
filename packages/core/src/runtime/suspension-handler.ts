@@ -12,6 +12,7 @@ import {
   AttributeValidationError,
   type CreateEventParams,
   type CreateEventRequest,
+  type Event,
   type EventResult,
   type SerializedData,
   SPEC_VERSION_CURRENT,
@@ -314,14 +315,15 @@ export interface SuspensionHandlerResult {
    * committed, so a caller that continues in this process can replay — or
    * resume a retained VM — straight off it with no read.
    *
-   * True only when the hook create's inline delta came back complete and was
-   * folded in (see `hookDeltaCursor` below), and nothing else in this
-   * suspension wrote an event. False whenever a read is needed first: no
-   * delta was asked for or returned, it was truncated, or a step / wait /
-   * attribute / abort write landed above it and is therefore not in it.
+   * True only when one of this suspension's writes handed back a complete
+   * inline delta that holds every event the suspension committed, and that
+   * delta was folded in (see `suspensionDeltaCursor` below). False whenever a
+   * read is needed first: no delta was asked for or returned, one came back
+   * truncated, a write failed, or no returned delta accounts for every event
+   * this suspension wrote.
    *
-   * Indifferent to which event the create committed: the delta is the slice
-   * of the log after the caller's cursor either way, so it carries a
+   * Indifferent to which event a create committed: the delta is the slice of
+   * the log after the caller's cursor either way, so it carries a
    * `hook_conflict` exactly as it carries a `hook_created`.
    */
   eventLogCarriedForward: boolean;
@@ -358,19 +360,12 @@ async function createHookEvent({
   hookEvent,
   queueItem,
   requestId,
-  sinceCursor,
   createEvent,
 }: {
   runId: string;
   hookEvent: CreateEventRequest;
   queueItem: HookInvocationQueueItem;
   requestId?: string;
-  /**
-   * Cursor to ask the World for the event-log delta against, or undefined to
-   * not ask. See `hookDeltaCursor` in {@link handleSuspension} for when it is
-   * set and why it is at most one write per suspension.
-   */
-  sinceCursor?: string;
   createEvent: (
     data: CreateEventRequest,
     params?: CreateEventParams
@@ -380,17 +375,15 @@ async function createHookEvent({
   hasAwaitedHookCreation: boolean;
 }> {
   try {
-    const result = await createEvent(hookEvent, {
-      requestId,
-      ...(sinceCursor === undefined ? {} : { sinceCursor }),
-    });
+    const result = await createEvent(hookEvent, { requestId });
 
     // Check if the world returned a hook_conflict event instead of hook_created.
     // The hook_conflict event is stored in the event log and is what the next
     // pass consumes to settle the hook's awaiters — rejecting a payload await,
-    // resolving a `hook.getConflict()` with the conflicting run. An inline
-    // delta asked for above carries it just as it would have carried the
-    // hook_created, so the caller can advance over it without a re-invocation.
+    // resolving a `hook.getConflict()` with the conflicting run. The inline
+    // delta `createGuarded` asks for carries it just as it would have carried
+    // the hook_created, so the caller can advance over it without a
+    // re-invocation.
     if (result.event?.eventType === 'hook_conflict') {
       return {
         hasHookConflict: true,
@@ -525,13 +518,55 @@ export async function handleSuspension({
   // sequence, so re-committing it against a corrected log would persist an
   // event no correct replay produces.
   let reportedEvents = 0;
-  // Writes this suspension issued, and whether one of them handed back a
-  // complete inline delta that was folded into the caller's log. Together they
-  // answer `eventLogCarriedForward`: the delta covers the log up to the write
-  // that returned it, so it accounts for every event this suspension committed
-  // only if that write was the only one.
+
+  // Separate queue items by type
+  const stepItems = suspension.items.filter(
+    (item): item is StepInvocationQueueItem => item.type === 'step'
+  );
+  const allHookItems = suspension.items.filter(
+    (item): item is HookInvocationQueueItem => item.type === 'hook'
+  );
+  const waitItems = suspension.items.filter(
+    (item): item is WaitInvocationQueueItem => item.type === 'wait'
+  );
+  const attributeItems = suspension.items.filter(
+    (item): item is AttributeInvocationQueueItem => item.type === 'attribute'
+  );
+
+  const hooksNeedingCreation = allHookItems.filter(
+    (item) => !item.hasCreatedEvent
+  );
+
+  // Ask every guarded write of a hook-creating suspension for the event-log
+  // delta since the cursor the caller's log was read at. A hook's awaiters are
+  // settled by the event its create commits and by nothing else — a
+  // `hook_created` for a clean registration, a `hook_conflict` when the token
+  // was already claimed — so the caller can continue the workflow in its own
+  // process on either outcome, but only over a log that holds that event and
+  // everything else this suspension wrote. Every write here diffs against the
+  // same cursor, so each returned delta is a snapshot of the same suffix taken
+  // at a different moment; the longest one taken after the last write
+  // committed holds them all, and `absorbSuspensionDelta` below folds that
+  // one in once the suspension's write set is final.
+  //
+  // Optional by contract: a World that ignores `sinceCursor` on some or all
+  // of these writes returns no delta there, and the caller reads instead.
+  // Not asked for on a suspension that creates no hook: nothing continues
+  // in-process over such a suspension, so the delta would be paid for and
+  // never consumed, and those writes keep their bump-and-report.
+  const suspensionDeltaCursor =
+    hooksNeedingCreation.length > 0 && typeof eventLog?.cursor === 'string'
+      ? eventLog.cursor
+      : undefined;
+  // What answers `eventLogCarriedForward` once every write has settled: how
+  // many guarded writes were issued, the id of the event each one committed,
+  // the longest complete delta any of them returned, and whether one of them
+  // came back in a shape that rules the fast path out.
   let guardedWrites = 0;
-  let deltaAbsorbed = false;
+  const committedEventIds: string[] = [];
+  let longestDelta: { events: Event[]; cursor: string | null } | undefined;
+  let deltaDisqualified = false;
+
   const createGuarded: EventCreator = async (data, params) => {
     guardedWrites++;
     if (!eventLog) {
@@ -541,7 +576,13 @@ export async function handleSuspension({
     const result = await createEvent(data, {
       ...params,
       ...slotSnapshotParams(log.events),
+      ...(suspensionDeltaCursor === undefined
+        ? {}
+        : { sinceCursor: suspensionDeltaCursor }),
     });
+    if (result.event) {
+      committedEventIds.push(result.event.eventId);
+    }
     // An inline delta this call asked for (`sinceCursor`) is everything the
     // log gained since that cursor, this write included, so it is folded onto
     // the tail and carries the cursor with it — unlike a skipped-slot report,
@@ -549,19 +590,23 @@ export async function handleSuspension({
     // into place. A World returns one or the other, never both (the delta is a
     // strict superset), so the two are handled apart rather than merged.
     //
-    // Declining is always safe — an unabsorbed delta is one the next read
-    // returns — so the guards match the replay loop's `absorbCreateDelta`: a
-    // truncated page (`hasMore`) is dropped whole rather than advancing the
-    // cursor past events it did not carry, and the log must still be where the
-    // request was computed from, since appending does not re-sort.
-    if (typeof params?.sinceCursor === 'string') {
-      if (
-        log.cursor === params.sinceCursor &&
+    // The delta is not folded in here. Sibling writes diff against the same
+    // cursor, and appending does not re-sort, so only one of the deltas can
+    // ever be taken: the longest, once all of them are back. Declining is
+    // always safe — an unabsorbed delta is one the next read returns — so the
+    // guards match the replay loop's `absorbCreateDelta`: a truncated page
+    // (`hasMore`) rules the fast path out rather than advancing the cursor
+    // past events it did not carry, and so does a log that moved from where
+    // the request was computed.
+    if (suspensionDeltaCursor !== undefined) {
+      if (log.cursor !== suspensionDeltaCursor || result.hasMore === true) {
+        deltaDisqualified = true;
+      } else if (
         result.events !== undefined &&
-        result.hasMore !== true
+        (longestDelta === undefined ||
+          result.events.length > longestDelta.events.length)
       ) {
-        appendEventLog(log, { events: result.events, cursor: result.cursor });
-        deltaAbsorbed = true;
+        longestDelta = { events: result.events, cursor: result.cursor };
       }
       return result;
     }
@@ -589,23 +634,45 @@ export async function handleSuspension({
     }
     return result;
   };
-  // Separate queue items by type
-  const stepItems = suspension.items.filter(
-    (item): item is StepInvocationQueueItem => item.type === 'step'
-  );
-  const allHookItems = suspension.items.filter(
-    (item): item is HookInvocationQueueItem => item.type === 'hook'
-  );
-  const waitItems = suspension.items.filter(
-    (item): item is WaitInvocationQueueItem => item.type === 'wait'
-  );
-  const attributeItems = suspension.items.filter(
-    (item): item is AttributeInvocationQueueItem => item.type === 'attribute'
-  );
 
-  const hooksNeedingCreation = allHookItems.filter(
-    (item) => !item.hasCreatedEvent
-  );
+  /**
+   * Fold the longest delta this suspension's writes returned into the
+   * caller's log, and say whether the log now holds every event the
+   * suspension committed. Called once, after the last write has settled.
+   *
+   * Every delta is the slice of the log after the same cursor as of the
+   * moment its write's World computed it, so the longest is the latest view
+   * — and a view taken after the final commit holds every event this
+   * suspension wrote. That is checked rather than assumed: a World that
+   * computes a write's delta before a sibling's commit is visible to it hands
+   * back a suffix short of that sibling, and taking it would move the cursor
+   * past an event the log does not hold. The check is by event id, against
+   * what each write reported committing, so a write that failed or committed
+   * nothing it could name leaves the fast path closed and the caller reads
+   * from its unchanged cursor, exactly as it did before the delta existed.
+   */
+  const absorbSuspensionDelta = (): boolean => {
+    if (!eventLog || longestDelta === undefined || deltaDisqualified) {
+      return false;
+    }
+    if (committedEventIds.length !== guardedWrites) {
+      return false;
+    }
+    const deltaIds = new Set(longestDelta.events.map((e) => e.eventId));
+    if (!committedEventIds.every((id) => deltaIds.has(id))) {
+      runtimeLogger.debug(
+        'No suspension delta holds every committed event; reading instead',
+        {
+          workflowRunId: runId,
+          guardedWrites,
+          deltaEvents: longestDelta.events.length,
+        }
+      );
+      return false;
+    }
+    appendEventLog(eventLog, longestDelta);
+    return true;
+  };
 
   // Group hook items that need work by token, preserving queue-insertion
   // (workflow code) order within each token. Operations on one token must
@@ -721,25 +788,6 @@ export async function handleSuspension({
   const awaitedHookCorrelationIds: string[] = [];
   let hookCreationMs = 0;
 
-  // Ask the hook create for the event-log delta since the cursor the caller's
-  // log was read at. The hook's awaiters are settled by the event this write
-  // commits and by nothing else — a `hook_created` for a clean registration,
-  // a `hook_conflict` when the token was already claimed — so the caller can
-  // continue the workflow in its own process on either outcome, but only over
-  // a log that holds that event, and this write is the one request that can
-  // hand it back together with anything another writer landed in the meantime.
-  // Optional by contract: a World that ignores `sinceCursor` returns no delta
-  // and the caller reads instead.
-  //
-  // Asked for on the single-hook suspension only. Two creates issued from one
-  // snapshot each diff against the same cursor, and only the first delta back
-  // can be folded in (the cursor moves with it), so the log would end up short
-  // of the other's event with nothing to say so.
-  const hookDeltaCursor =
-    hooksNeedingCreation.length === 1 && typeof eventLog?.cursor === 'string'
-      ? eventLog.cursor
-      : undefined;
-
   if (hookItemsByToken.size > 0) {
     const hookPhaseStart = Date.now();
     await ensureRunReady();
@@ -773,7 +821,6 @@ export async function handleSuspension({
               hookEvent,
               queueItem,
               requestId,
-              sinceCursor: hookDeltaCursor,
               createEvent: createGuarded,
             });
             if (result.hasHookConflict) {
@@ -1911,6 +1958,10 @@ export async function handleSuspension({
   // step_created and re-dispatches, and recovers the run instead of orphaning it.
   await settlePhase(ops);
 
+  // The suspension's write set is final: fold the delta that covers it, if
+  // one does, before the caller decides whether it needs to read.
+  const eventLogCarriedForward = absorbSuspensionDelta();
+
   // Rebuild the inline batch in deterministic order. `lazyInlineCorrelationIds`
   // is a Set seeded from the ordered first-N slice, so iterating it preserves
   // stepItems order; every id in it was set by the lazy branch above.
@@ -1968,10 +2019,7 @@ export async function handleSuspension({
     hookConflictCorrelationIds,
     hasAwaitedHookCreation: awaitedHookCorrelationIds.length > 0,
     awaitedHookCorrelationIds,
-    // The delta accounts for the whole log only if the write that returned it
-    // was this suspension's only one — anything written after it landed above
-    // the delta and is missing from the caller's log.
-    eventLogCarriedForward: deltaAbsorbed && guardedWrites === 1,
+    eventLogCarriedForward,
     hasAttributeEvents: attributeItems.length > 0,
     hasHookEvents: hooksNeedingCreation.length > 0,
     hookCreationMs,
