@@ -2040,12 +2040,13 @@ fn parse_page_cursor(cursor: &str) -> Result<PageCursor, WorldError> {
         )));
     }
 
-    let mut payload = Vec::with_capacity(encoded.len() / 2);
-    for pair in encoded.as_bytes().chunks_exact(2) {
-        let high = decode_hex_nibble(pair[0]).ok_or_else(|| {
+    let bytes = encoded.as_bytes();
+    let mut payload = Vec::with_capacity(bytes.len() / 2);
+    for offset in (0..bytes.len()).step_by(2) {
+        let high = decode_hex_nibble(bytes[offset]).ok_or_else(|| {
             WorldError::invalid_request(format!("invalid page cursor: {cursor:?}"))
         })?;
-        let low = decode_hex_nibble(pair[1]).ok_or_else(|| {
+        let low = decode_hex_nibble(bytes[offset + 1]).ok_or_else(|| {
             WorldError::invalid_request(format!("invalid page cursor: {cursor:?}"))
         })?;
         payload.push((high << 4) | low);
