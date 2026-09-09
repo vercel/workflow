@@ -594,12 +594,15 @@ export async function handleSuspension({
     // cursor, and appending does not re-sort, so only one of the deltas can
     // ever be taken: the longest, once all of them are back. Declining is
     // always safe — an unabsorbed delta is one the next read returns — so the
-    // guards match the replay loop's `absorbCreateDelta`: a truncated page
+    // guard matches the replay loop's `absorbCreateDelta`: a truncated page
     // (`hasMore`) rules the fast path out rather than advancing the cursor
-    // past events it did not carry, and so does a log that moved from where
-    // the request was computed.
+    // past events it did not carry. There is no "log moved" guard to match:
+    // nothing here moves the cursor until `absorbSuspensionDelta` folds the
+    // one chosen delta in, after the last write has settled, so every delta
+    // this suspension collects was computed from the cursor the log still
+    // holds.
     if (suspensionDeltaCursor !== undefined) {
-      if (log.cursor !== suspensionDeltaCursor || result.hasMore === true) {
+      if (result.hasMore === true) {
         deltaDisqualified = true;
       } else if (
         result.events !== undefined &&
