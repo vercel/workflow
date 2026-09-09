@@ -247,19 +247,37 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     await writing;
   });
 
-  it('poisons a synchronous frame-build failure without stale pending work', async () => {
+  it('falls back to HTTP when frame construction fails before send', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
-    const { session } = makeSession();
+    const { session, writeHttp } = makeSession();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     sockets[0].open();
 
-    await expect(
-      session.write(0, [new Uint8Array(10 * 1024 * 1024 + 1)])
-    ).rejects.toThrow('maximum is 10485760');
-    await expect(session.write(0, ['later'])).rejects.toThrow(
-      'maximum is 10485760'
-    );
+    const oversized = new Uint8Array(10 * 1024 * 1024 + 1);
+    await session.write(0, [oversized]);
+    await session.write(1, ['later']);
+
+    expect(writeHttp.mock.calls).toEqual([[[oversized]], [['later']]]);
     expect(sockets[0].sent).toHaveLength(0);
+    expect(sockets[0].closed).toContainEqual([
+      1000,
+      'HTTP fallback before send',
+    ]);
+  });
+
+  it('falls back to HTTP when the socket is not open before send', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const { session, writeHttp } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    socket.readyState = 3;
+
+    await session.write(0, ['one']);
+    await session.write(1, ['two']);
+
+    expect(writeHttp.mock.calls).toEqual([[['one']], [['two']]]);
+    expect(socket.sent).toHaveLength(0);
   });
 
   it('poisons a synchronous socket send failure without stale pending work', async () => {
@@ -273,6 +291,33 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     await expect(session.write(0, ['later'])).rejects.toThrow(
       'sync send failed'
     );
+  });
+
+  it('surfaces an uncorrelated server error before poisoning', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const { session, writeHttp, closeHttp } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    socket.reply(
+      encodeFrame(
+        { type: 'error', status: 401, message: 'token expiring' },
+        new Uint8Array()
+      )
+    );
+    await vi.waitFor(() =>
+      expect(socket.closed).toContainEqual([
+        1011,
+        'unknown stream write outcome',
+      ])
+    );
+
+    await expect(session.write(0, ['later'])).rejects.toThrow(
+      'stream WebSocket connection failed (401): token expiring'
+    );
+    await expect(session.close()).rejects.toThrow('token expiring');
+    expect(writeHttp).not.toHaveBeenCalled();
+    expect(closeHttp).not.toHaveBeenCalled();
   });
 
   it('poisons a correlated server error and prevents queued work', async () => {

@@ -27,6 +27,15 @@ import { isWsStreamsTransportEnabled } from './ws-transport-enabled.js';
 type Mode = 'connecting' | 'ws' | 'http' | 'closed' | 'poisoned';
 const MAX_IDLE_RECONNECTS = 3;
 
+class StreamWsRequestNotSentError extends Error {
+  constructor(error: unknown) {
+    super(error instanceof Error ? error.message : String(error), {
+      cause: error,
+    });
+    this.name = 'StreamWsRequestNotSentError';
+  }
+}
+
 async function decodeOne(raw: Uint8Array): Promise<DecodedFrame> {
   let frame: DecodedFrame | undefined;
   for await (const candidate of decodeFrames(
@@ -95,6 +104,9 @@ class VercelStreamWriteSession implements StreamWriteSession {
         await this.writeHttp(chunks);
         return;
       }
+      // Core's default group cap equals the wire cap, so splitting is normally
+      // dormant. Keep it here as a guard against configured or future cap drift;
+      // v1 deliberately defines no separate whole-message byte budget.
       for (
         let offset = 0;
         offset < chunks.length;
@@ -104,17 +116,25 @@ class VercelStreamWriteSession implements StreamWriteSession {
           offset,
           offset + STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
         );
-        const reply = await this.request((reqId) =>
-          encodeStreamWsWriteRequest(
-            {
-              type: 'write',
-              reqId,
-              chunkSeq: chunkSeq + offset,
-              numChunks: batch.length,
-            },
-            batch
-          )
-        );
+        let reply: Record<string, unknown>;
+        try {
+          reply = await this.request((reqId) =>
+            encodeStreamWsWriteRequest(
+              {
+                type: 'write',
+                reqId,
+                chunkSeq: chunkSeq + offset,
+                numChunks: batch.length,
+              },
+              batch
+            )
+          );
+        } catch (error) {
+          if (!(error instanceof StreamWsRequestNotSentError)) throw error;
+          this.fallbackToHttpBeforeSend();
+          await this.writeHttp(chunks.slice(offset));
+          return;
+        }
         if (reply.type !== 'write_ack') {
           throw this.poison(
             new Error(`stream WebSocket write received ${reply.type}`)
@@ -145,9 +165,18 @@ class VercelStreamWriteSession implements StreamWriteSession {
         this.mode = 'closed';
         return;
       }
-      const reply = await this.request((reqId) =>
-        encodeStreamWsCloseRequest({ type: 'close', reqId })
-      );
+      let reply: Record<string, unknown>;
+      try {
+        reply = await this.request((reqId) =>
+          encodeStreamWsCloseRequest({ type: 'close', reqId })
+        );
+      } catch (error) {
+        if (!(error instanceof StreamWsRequestNotSentError)) throw error;
+        this.fallbackToHttpBeforeSend();
+        await this.closeHttp();
+        this.mode = 'closed';
+        return;
+      }
       if (reply.type !== 'close_ack') {
         throw this.poison(
           new Error(`stream WebSocket close received ${reply.type}`)
@@ -302,12 +331,21 @@ class VercelStreamWriteSession implements StreamWriteSession {
         reply.reqId === undefined ||
         reply.reqId !== pending.reqId
       ) {
+        if (reply.type === 'error') {
+          throw new Error(
+            `stream WebSocket connection failed (${reply.status}): ${reply.message ?? 'unknown error'}`
+          );
+        }
         throw new Error('stream WebSocket reply cannot be correlated');
       }
       this.pending = undefined;
       clearTimeout(pending.timer);
       if (reply.type === 'close_ack') this.closeAcknowledged = true;
       if (reply.type === 'error') {
+        // v1 is fail-stop and provides no machine-readable retry class. HTTP
+        // status alone cannot prove whether a rejected write was appended, so
+        // every correlated error remains terminal until the protocol can state
+        // that retrying (or continuing this connection) is safe.
         pending.reject(
           this.poison(
             new Error(
@@ -340,6 +378,9 @@ class VercelStreamWriteSession implements StreamWriteSession {
     // Clean idle infrastructure close: reconnect with the same writer identity
     // and next writer-local sequence, but cap eager attempts so a draining
     // server cannot create an open/close hot loop for the invocation lifetime.
+    // Do not proactively recycle an accepted v1 connection: without a drain
+    // control frame, the client cannot fence a concurrent server-side teardown
+    // from a newly opened socket. A future protocol may add that handshake.
     if (this.idleReconnects >= MAX_IDLE_RECONNECTS) {
       this.mode = 'http';
       this.socket = undefined;
@@ -358,14 +399,16 @@ class VercelStreamWriteSession implements StreamWriteSession {
     this.assertUsable();
     const ws = this.socket;
     if (this.mode !== 'ws' || !ws || ws.readyState !== 1) {
-      throw this.poison(new Error('stream WebSocket is not open'));
+      throw new StreamWsRequestNotSentError(
+        new Error('stream WebSocket is not open before send')
+      );
     }
     const reqId = this.nextReqId++;
     let frame: Uint8Array;
     try {
       frame = buildFrame(reqId);
     } catch (error) {
-      throw this.poison(error);
+      throw new StreamWsRequestNotSentError(error);
     }
     return withHttpClientSpan(
       {
@@ -379,6 +422,9 @@ class VercelStreamWriteSession implements StreamWriteSession {
       },
       async () =>
         new Promise<Record<string, unknown>>((resolve, reject) => {
+          // With no v1 progress/control reply, silence cannot distinguish a
+          // slow accepted request from a dead socket. Expiry is therefore an
+          // unknown outcome and must poison rather than replay.
           const timer = setTimeout(() => {
             this.failUnknown(
               new Error(
@@ -398,6 +444,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
           }
         })
     );
+  }
+
+  private fallbackToHttpBeforeSend(): void {
+    this.mode = 'http';
+    this.socket?.close(1000, 'HTTP fallback before send');
+    this.socket = undefined;
   }
 
   private failUnknown(error: unknown): void {
