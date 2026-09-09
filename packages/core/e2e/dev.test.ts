@@ -780,7 +780,7 @@ export async function myNewStep() {
       { timeout: 70_000 },
       async () => {
         assert(deploymentUrl);
-        setupWorld(deploymentUrl);
+        await setupWorld(deploymentUrl);
 
         const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
         const content = await fs.readFile(workflowFile, 'utf8');
@@ -1003,7 +1003,7 @@ ${apiFileContent}`
       { timeout: flowRouteHmrFuzzTimeoutMs },
       async () => {
         assert(deploymentUrl);
-        setupWorld(deploymentUrl);
+        await setupWorld(deploymentUrl);
 
         const apiFile = path.join(appPath, finalConfig.apiFilePath);
         const apiFileContent = await fs.readFile(apiFile, 'utf8');

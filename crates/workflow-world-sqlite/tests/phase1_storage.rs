@@ -51,6 +51,8 @@ fn request(run_id: &str, event_count: u64, event: WorldEventData) -> CreateWorld
         spec_version: 7,
         event_count: Some(event_count),
         occurred_at_ms: None,
+        resume_id: None,
+        resume_payload_digest: None,
         event,
     }
 }
@@ -184,14 +186,21 @@ fn stores_a_dense_phase_one_lifecycle_across_concurrent_writers_and_reopen() {
         .list_runs(None, None, None, 10, false)
         .expect("run page should be readable");
     assert!(!run_page.has_more);
-    assert_eq!(run_page.cursor.as_deref(), Some(run_id));
+    assert!(
+        run_page
+            .cursor
+            .as_deref()
+            .is_some_and(|cursor| cursor.starts_with("page:v1:"))
+    );
     let step_page = world
         .list_steps(run_id, None, 10, false)
         .expect("step page should be readable");
     assert!(!step_page.has_more);
-    assert_eq!(
-        step_page.cursor.as_deref(),
-        step_page.data.last().map(|step| step.step_id.as_str())
+    assert!(
+        step_page
+            .cursor
+            .as_deref()
+            .is_some_and(|cursor| cursor.starts_with("page:v1:"))
     );
 
     world

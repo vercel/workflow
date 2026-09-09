@@ -2,6 +2,7 @@
   "extends": ["//"],
   "tasks": {
     "build": {
+      "cache": false,
       "dependsOn": ["^build"],
       "env": [
         "CARGO_HOME",

@@ -146,6 +146,7 @@ credentials are required:
 ```bash
 pnpm run test:e2e:event-log-race-repro:local              # world-postgres
 pnpm run test:e2e:event-log-race-repro:local --world local # world-local
+pnpm run test:e2e:event-log-race-repro:local --world sqlite # world-sqlite
 ```
 
 The script (`scripts/event-log-race-repro-local.sh`, `--help` for flags) builds
@@ -154,16 +155,19 @@ and starts `workbench/nextjs-turbopack` with `WORKFLOW_TARGET_WORLD` and
 missing either silently yields a default-world app or a 404 manifest), runs the
 harness, prints the same summary table CI posts, and tears the server down. For
 world-postgres it first brings up the container and applies migrations, and
-leaves Postgres running for the next iteration unless `--teardown` is passed;
-the container flags (`--skip-db-setup`, `--no-docker`, `--teardown`) do nothing
-under `--world local`, whose only state is a data directory the script clears
-before each run.
+leaves Postgres running for the next iteration unless `--teardown` is passed.
+world-sqlite receives a fresh temporary database on every invocation, an
+absolute `WORKFLOW_LOCAL_DATABASE_DIR`, the app's loopback
+`WORKFLOW_LOCAL_BASE_URL`, and an explicit migration through the built package;
+the database is removed on exit unless `--keep-queue` is passed. The container
+flags (`--skip-db-setup`, `--no-docker`, `--teardown`) do nothing under
+`--world local` or `--world sqlite`.
 
-Run both worlds because neither subsumes the other: world-postgres
-arbitrates event slots inside one SQL statement, while world-local arbitrates
-them with an exclusive `link(2)` against a directory that two processes (the app
-and the harness) both write to. A slot race a transaction closes is not
-automatically closed by a filesystem.
+Run all three worlds because none subsumes the others: world-postgres and
+world-sqlite have separate transactional implementations, while world-local
+arbitrates event slots with an exclusive `link(2)` against a directory that two
+processes (the app and the harness) both write to. A slot race one
+implementation closes is not automatically closed by another.
 
 Scale is controlled entirely by `EVENT_LOG_RACE_REPRO_*` environment variables.
 Their defaults live only in `event-log-race-repro.test.ts`; neither the CI
@@ -245,7 +249,8 @@ world-local saturates the same single process from its own in-process queue,
 which defaults to 1,000 deliveries in flight, so the script holds it at the same
 number via `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`.
 
-What the local lanes are *not* is a throughput bug in the two Worlds. Under
+What the two established local lanes are *not* is a throughput bug in their
+Worlds. Under
 saturation world-local logged zero failed deliveries, zero handler errors and
 zero exhausted messages across three 14-run passes: its semaphore parks a
 message *before* the delivery fetch, so queue waiting never consumes the
@@ -273,13 +278,13 @@ In CI the same harness runs from `.github/workflows/event-log-race-repro.yml`,
 triggered by adding the `event-log-race-repro` label to a PR or by
 `workflow_dispatch`, whose inputs are the soak dial. Raise `timeout-minutes` in
 that dispatch's branch if you raise `budget_ms`. Alongside the Vercel lane, the
-workflow runs the local script against world-local and world-postgres as
-parallel lanes. Those two lanes are report-only because the local storms have red
-baselines at the default scale (see above), so they publish numbers rather than a
-verdict and fail only when the harness produced no result file at all; the Vercel
-lane remains the gate.
+workflow runs the local script against world-local, world-postgres, and
+world-sqlite as parallel lanes. Those three lanes are report-only because the
+local storms have red baselines at the default scale (see above), so they publish
+numbers rather than a verdict and fail only when the harness produced no result
+file at all; the Vercel lane remains the gate.
 
-All three lanes land in one sticky PR comment, rendered from their artifacts by
+All four lanes land in one sticky PR comment, rendered from their artifacts by
 the `event-log-race-repro-comment` job: a verdict line per lane, then a history
 table of one row per lane per run (total / complete / corrupt / stuck / other),
 then the latest run's non-completed runs with links. Each lane's own job summary

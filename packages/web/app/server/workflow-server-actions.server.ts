@@ -18,6 +18,10 @@ import { resumeHook as resumeHookRuntime } from '@workflow/core/runtime/resume-h
 
 import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
+import {
+  discoverWorkflowSqliteDatabases,
+  resolveWorkflowSqliteDatabaseDir,
+} from '@workflow/utils/sqlite-database-dir';
 import type {
   BulkCancelWorkflowRunsResult,
   Event,
@@ -27,9 +31,14 @@ import type {
   WorkflowRunStatus,
   World,
 } from '@workflow/world';
+import { createAggregatedObservabilityWorld } from '@workflow/world/observability';
 import { createWorld as createLocalWorld } from '@workflow/world-local';
 import { createWorld as createVercelBackendWorld } from '@workflow/world-vercel';
-import type { HookListItem, HookTokenResult } from '~/lib/types';
+import type {
+  HookListItem,
+  HookTokenResult,
+  ObservabilityWorkflowRun,
+} from '~/lib/types';
 
 /**
  * Environment variable map for world configuration.
@@ -83,6 +92,9 @@ function getBackendDisplayName(targetWorld: string | undefined): string {
       return 'Local';
     case 'vercel':
       return 'Vercel';
+    case 'sqlite':
+    case '@workflow/world-sqlite':
+      return 'SQLite';
     case '@workflow/world-postgres':
     case 'postgres':
       return 'PostgreSQL';
@@ -181,6 +193,18 @@ const WORLD_ENV_ALLOWLIST_BY_TARGET_WORLD: Record<string, string[]> = {
     'WORKFLOW_MANIFEST_PATH',
     'WORKFLOW_OBSERVABILITY_CWD',
     'PORT',
+  ],
+  sqlite: [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_LOCAL_DATABASE_DIR',
+    'WORKFLOW_MANIFEST_PATH',
+    'WORKFLOW_OBSERVABILITY_CWD',
+  ],
+  '@workflow/world-sqlite': [
+    'WORKFLOW_TARGET_WORLD',
+    'WORKFLOW_LOCAL_DATABASE_DIR',
+    'WORKFLOW_MANIFEST_PATH',
+    'WORKFLOW_OBSERVABILITY_CWD',
   ],
   postgres: ['WORKFLOW_TARGET_WORLD', 'WORKFLOW_POSTGRES_URL'],
   '@workflow/world-postgres': [
@@ -288,6 +312,15 @@ async function getLocalDisplayInfo(): Promise<Record<string, string>> {
   return out;
 }
 
+async function getSqliteDisplayInfo(): Promise<Record<string, string>> {
+  const databaseDir = resolveWorkflowSqliteDatabaseDir(getObservabilityCwd());
+  const databases = await discoverWorkflowSqliteDatabases(databaseDir);
+  return {
+    'sqlite.databaseDirPath': databaseDir,
+    'sqlite.databaseSources': databases.map(({ source }) => source).join(', '),
+  };
+}
+
 function collectAllowedEnv(allowedKeys: string[]): {
   publicEnv: Record<string, string>;
   sensitiveEnvKeys: string[];
@@ -335,6 +368,8 @@ export async function getPublicServerConfig(): Promise<PublicServerConfig> {
   const displayInfo: Record<string, string> = { ...derivedDisplayInfo };
   if (backendId === 'local' || backendId === '@workflow/world-local') {
     Object.assign(displayInfo, await getLocalDisplayInfo());
+  } else if (backendId === 'sqlite' || backendId === '@workflow/world-sqlite') {
+    Object.assign(displayInfo, await getSqliteDisplayInfo());
   }
 
   const config: PublicServerConfig = {
@@ -414,10 +449,15 @@ function getPageInfo(result: unknown): AnalyticsPageInfo | undefined {
  * Cache for World instances.
  *
  * IMPORTANT:
- * - We only cache non-vercel worlds.
+ * - We do not cache Vercel worlds (multi-tenant configuration) or SQLite
+ *   observability worlds (the discovered database set is dynamic).
  * - Cache keys are derived from **server-side** WORKFLOW_* env vars only.
  */
 const worldCache = new Map<string, World>();
+
+function isSqliteBackend(backendId: string): boolean {
+  return backendId === 'sqlite' || backendId === '@workflow/world-sqlite';
+}
 
 /**
  * Get or create a World instance based on configuration.
@@ -462,6 +502,14 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
     await ensureLocalWorldDataDirEnv();
   }
 
+  // The directory is a live set: Vitest workers can add and remove databases
+  // while the observability server remains running. A cached aggregate would
+  // permanently retain the set found by its first request, so SQLite worlds
+  // are request-scoped and disposed by `withWorldFromEnv` below.
+  if (isSqliteBackend(backendId)) {
+    return createWorldForBackend(backendId);
+  }
+
   // Cache key derived ONLY from WORKFLOW_* env vars.
   const workflowEnvEntries = Object.entries(process.env).filter(([key]) =>
     key.startsWith('WORKFLOW_')
@@ -480,6 +528,80 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
 }
 
 /**
+ * Run one server action against a World.
+ *
+ * Static backends retain their existing module cache. SQLite discovery is
+ * intentionally request-scoped so every refresh sees the current application
+ * and Vitest databases; all native read-only handles are closed afterwards.
+ */
+async function withWorldFromEnv<T>(
+  userEnvMap: EnvMap,
+  operation: (world: World) => Promise<T>
+): Promise<T> {
+  const sqlite = isSqliteBackend(getEffectiveBackendId());
+  const world = await getWorldFromEnv(userEnvMap);
+  let result: T;
+  try {
+    result = await operation(world);
+  } catch (error) {
+    if (sqlite) {
+      try {
+        await world.close?.();
+      } catch (closeError) {
+        console.warn(
+          `[workflow] Failed to close SQLite observability world: ${closeError instanceof Error ? closeError.message : String(closeError)}`
+        );
+      }
+    }
+    throw error;
+  }
+  if (sqlite) await world.close?.();
+  return result;
+}
+
+function closeWorldWithStream(
+  stream: ReadableStream<Uint8Array>,
+  world: World
+): ReadableStream<Uint8Array> {
+  const reader = stream.getReader();
+  let closePromise: Promise<void> | undefined;
+  const close = () => {
+    closePromise ??= Promise.resolve(world.close?.()).then(() => undefined);
+    return closePromise;
+  };
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          await close();
+          controller.close();
+        } else {
+          controller.enqueue(chunk.value);
+        }
+      } catch (error) {
+        try {
+          await close();
+        } catch (closeError) {
+          console.warn(
+            `[workflow] Failed to close SQLite observability world: ${closeError instanceof Error ? closeError.message : String(closeError)}`
+          );
+        }
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason);
+      } finally {
+        await close();
+      }
+    },
+  });
+}
+
+/**
  * Construct the world for the configured backend explicitly.
  *
  * `createWorld()` from `@workflow/core/runtime` is a static-injection stub:
@@ -493,6 +615,10 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
 async function createWorldForBackend(backendId: string): Promise<World> {
   if (backendId === 'local' || backendId === '@workflow/world-local') {
     return createLocalWorld();
+  }
+
+  if (backendId === 'sqlite' || backendId === '@workflow/world-sqlite') {
+    return createSqliteObservabilityWorld(backendId);
   }
 
   const cwd = getObservabilityCwd();
@@ -522,6 +648,74 @@ async function createWorldForBackend(backendId: string): Promise<World> {
   }
   return createWorldFn();
 }
+
+async function createSqliteObservabilityWorld(
+  backendId: string
+): Promise<World> {
+  const cwd = getObservabilityCwd();
+  const packageId =
+    backendId === 'sqlite' ? '@workflow/world-sqlite' : backendId;
+  let worldPath: string;
+  try {
+    worldPath = createRequire(path.join(cwd, 'package.json')).resolve(
+      packageId,
+      { paths: [cwd] }
+    );
+  } catch {
+    throw new Error(
+      `Could not resolve workflow backend package "${packageId}" from "${cwd}". ` +
+        'Make sure the package is installed in the inspected project.'
+    );
+  }
+  const mod = (await import(pathToFileURL(worldPath).href)) as {
+    createWorld?: (config?: Record<string, unknown>) => SqliteInspectionWorld;
+    default?: {
+      createWorld?: (config?: Record<string, unknown>) => SqliteInspectionWorld;
+    };
+  };
+  const createWorld = mod.createWorld ?? mod.default?.createWorld;
+  if (typeof createWorld !== 'function') {
+    throw new Error(
+      `Workflow backend package "${packageId}" does not expose the SQLite observability API.`
+    );
+  }
+
+  const databaseDir = resolveWorkflowSqliteDatabaseDir(cwd);
+  const candidates = await discoverWorkflowSqliteDatabases(databaseDir);
+  const valid: { source: string; world: World }[] = [];
+  try {
+    for (const candidate of candidates) {
+      const candidateWorld = createWorld({
+        databaseFile: candidate.databasePath,
+        readOnly: true,
+        recoverActiveRuns: false,
+      });
+      try {
+        await candidateWorld.validate();
+        valid.push({ source: candidate.source, world: candidateWorld });
+      } catch (error) {
+        await candidateWorld.close?.();
+        console.warn(
+          `[workflow] Ignoring ${candidate.source}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+    if (valid.length === 0) {
+      throw new Error(
+        `No schema-compatible Workflow SQLite databases found in "${databaseDir}".`
+      );
+    }
+
+    return createAggregatedObservabilityWorld(valid);
+  } catch (error) {
+    await Promise.allSettled(valid.map(({ world }) => world.close?.()));
+    throw error;
+  }
+}
+
+type SqliteInspectionWorld = World & {
+  validate(): Promise<void>;
+};
 
 /**
  * Creates a structured error object from a caught error
@@ -628,28 +822,66 @@ function createResponse<T>(data: T): ServerActionResult<T> {
   };
 }
 
+export async function withObservabilitySource(
+  world: World,
+  resource: WorkflowRun
+): Promise<ObservabilityWorkflowRun> {
+  try {
+    const fields = await world.describeRun?.(resource);
+    const source = fields?.observabilitySource;
+    return typeof source === 'string'
+      ? { ...resource, observabilitySource: source }
+      : resource;
+  } catch {
+    return resource;
+  }
+}
+
+interface FetchRunsParams {
+  cursor?: string;
+  sortOrder?: 'asc' | 'desc';
+  limit?: number;
+  workflowName?: string;
+  status?: WorkflowRunStatus;
+  /**
+   * Optional listing window (ISO timestamps, both required together).
+   * Honored by the analytics read path, where it bounds the backend scan;
+   * the runtime storage APIs have no time filter, so the fallback path ignores
+   * it. Windows outside the plan's observability lookback surface as a 402
+   * `observability-upgrade-required` error.
+   */
+  startTime?: string;
+  endTime?: string;
+}
+
+async function listRunsFromWorld(
+  world: World,
+  params: Required<Pick<FetchRunsParams, 'sortOrder' | 'limit'>> &
+    Omit<FetchRunsParams, 'sortOrder' | 'limit'>
+) {
+  const { cursor, sortOrder, limit, workflowName, status, startTime, endTime } =
+    params;
+  const filters = {
+    ...(workflowName ? { workflowName } : {}),
+    ...(status ? { status } : {}),
+    pagination: { cursor, limit, sortOrder },
+  };
+  if (world.analytics) {
+    return world.analytics.runs.list({
+      ...filters,
+      ...(startTime && endTime ? { startTime, endTime } : {}),
+    });
+  }
+  return world.runs.list({ ...filters, resolveData: 'none' });
+}
+
 /**
  * Fetch paginated list of workflow runs
  */
 export async function fetchRuns(
   worldEnv: EnvMap,
-  params: {
-    cursor?: string;
-    sortOrder?: 'asc' | 'desc';
-    limit?: number;
-    workflowName?: string;
-    status?: WorkflowRunStatus;
-    /**
-     * Optional listing window (ISO timestamps, both required together).
-     * Honored by the analytics read path, where it bounds the backend scan;
-     * the runtime storage APIs have no time filter, so the fallback path
-     * ignores it. Windows outside the plan's observability lookback surface
-     * as a 402 `observability-upgrade-required` error.
-     */
-    startTime?: string;
-    endTime?: string;
-  }
-): Promise<ServerActionResult<PaginatedResult<WorkflowRun>>> {
+  params: FetchRunsParams
+): Promise<ServerActionResult<PaginatedResult<ObservabilityWorkflowRun>>> {
   const {
     cursor,
     sortOrder = 'desc',
@@ -660,30 +892,32 @@ export async function fetchRuns(
     endTime,
   } = params;
   try {
-    const world = await getWorldFromEnv(worldEnv);
-    // Prefer the metadata-only analytics read path when the backend provides
-    // one; fall back to the runtime storage API otherwise.
-    const result = world.analytics
-      ? await world.analytics.runs.list({
-          ...(workflowName ? { workflowName } : {}),
-          ...(status ? { status } : {}),
-          ...(startTime && endTime ? { startTime, endTime } : {}),
-          pagination: { cursor, limit, sortOrder },
-        })
-      : await world.runs.list({
-          ...(workflowName ? { workflowName } : {}),
-          ...(status ? { status } : {}),
-          pagination: { cursor, limit, sortOrder },
-          resolveData: 'none',
-        });
-    return createResponse({
-      data: result.data as unknown as WorkflowRun[],
-      cursor: result.cursor ?? undefined,
-      hasMore: result.hasMore,
-      pageInfo: getPageInfo(result),
+    return await withWorldFromEnv(worldEnv, async (world) => {
+      // Prefer the metadata-only analytics read path when the backend provides
+      // one; fall back to the runtime storage API otherwise.
+      const result = await listRunsFromWorld(world, {
+        cursor,
+        sortOrder,
+        limit,
+        workflowName,
+        status,
+        startTime,
+        endTime,
+      });
+      const runs = await Promise.all(
+        (result.data as unknown as WorkflowRun[]).map((run) =>
+          withObservabilitySource(world, run)
+        )
+      );
+      return createResponse({
+        data: runs,
+        cursor: result.cursor ?? undefined,
+        hasMore: result.hasMore,
+        pageInfo: getPageInfo(result),
+      });
     });
   } catch (error) {
-    return createServerActionError<PaginatedResult<WorkflowRun>>(
+    return createServerActionError<PaginatedResult<ObservabilityWorkflowRun>>(
       error,
       'world.runs.list',
       params
@@ -698,16 +932,20 @@ export async function fetchRun(
   worldEnv: EnvMap,
   runId: string,
   resolveData: 'none' | 'all' = 'all'
-): Promise<ServerActionResult<WorkflowRun>> {
+): Promise<ServerActionResult<ObservabilityWorkflowRun>> {
   try {
-    const world = await getWorldFromEnv(worldEnv);
-    const run = await world.runs.get(runId, { resolveData });
-    return createResponse(run as WorkflowRun);
-  } catch (error) {
-    return createServerActionError<WorkflowRun>(error, 'world.runs.get', {
-      runId,
-      resolveData,
+    return await withWorldFromEnv(worldEnv, async (world) => {
+      const run = await world.runs.get(runId, { resolveData });
+      return createResponse(
+        await withObservabilitySource(world, run as WorkflowRun)
+      );
     });
+  } catch (error) {
+    return createServerActionError<ObservabilityWorkflowRun>(
+      error,
+      'world.runs.get',
+      { runId, resolveData }
+    );
   }
 }
 
@@ -721,9 +959,10 @@ export async function fetchStep(
   resolveData: 'none' | 'all' = 'all'
 ): Promise<ServerActionResult<Step>> {
   try {
-    const world = await getWorldFromEnv(worldEnv);
-    const step = await world.steps.get(runId, stepId, { resolveData });
-    return createResponse(step as Step);
+    return await withWorldFromEnv(worldEnv, async (world) => {
+      const step = await world.steps.get(runId, stepId, { resolveData });
+      return createResponse(step as Step);
+    });
   } catch (error) {
     return createServerActionError<Step>(error, 'world.steps.get', {
       runId,
@@ -748,22 +987,23 @@ export async function fetchEvents(
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
   const { cursor, sortOrder = 'asc', limit = 1000, withData = false } = params;
   try {
-    const world = await getWorldFromEnv(worldEnv);
-    // Run-scoped, so it reads storage rather than analytics. The analytics
-    // namespace is a metadata mirror with a shorter retention window and
-    // asynchronous ingestion, so it returned an empty list for a run older
-    // than that window and could trail a run still executing. This listing
-    // backs both the trace viewer and the events tab.
-    const result = await world.events.list({
-      runId,
-      pagination: { cursor, limit, sortOrder },
-      resolveData: withData ? 'all' : 'none',
-    });
-    return createResponse({
-      data: result.data as unknown as Event[],
-      cursor: result.cursor ?? undefined,
-      hasMore: result.hasMore,
-      pageInfo: getPageInfo(result),
+    return await withWorldFromEnv(worldEnv, async (world) => {
+      // Run-scoped, so it reads storage rather than analytics. The analytics
+      // namespace is a metadata mirror with a shorter retention window and
+      // asynchronous ingestion, so it returned an empty list for a run older
+      // than that window and could trail a run still executing. This listing
+      // backs both the trace viewer and the events tab.
+      const result = await world.events.list({
+        runId,
+        pagination: { cursor, limit, sortOrder },
+        resolveData: withData ? 'all' : 'none',
+      });
+      return createResponse({
+        data: result.data as unknown as Event[],
+        cursor: result.cursor ?? undefined,
+        hasMore: result.hasMore,
+        pageInfo: getPageInfo(result),
+      });
     });
   } catch (error) {
     return createServerActionError<PaginatedResult<Event>>(
@@ -787,9 +1027,10 @@ export async function fetchEvent(
   resolveData: 'none' | 'all' = 'all'
 ): Promise<ServerActionResult<Event>> {
   try {
-    const world = await getWorldFromEnv(worldEnv);
-    const event = await world.events.get(runId, eventId, { resolveData });
-    return createResponse(event as Event);
+    return await withWorldFromEnv(worldEnv, async (world) => {
+      const event = await world.events.get(runId, eventId, { resolveData });
+      return createResponse(event as Event);
+    });
   } catch (error) {
     return createServerActionError<Event>(error, 'world.events.get', {
       runId,
@@ -826,22 +1067,23 @@ export async function fetchEventsByCorrelationId(
     runId,
   } = params;
   try {
-    const world = await getWorldFromEnv(worldEnv);
-    // Run-scoped, so it reads storage — see `fetchEvents` for why the
-    // analytics path was withdrawn. `runId` is required, which keeps the
-    // answer scoped to one run: a correlation id is unique within its run,
-    // not across runs.
-    const result = await world.events.listByCorrelationId({
-      correlationId,
-      runId,
-      pagination: { cursor, limit, sortOrder },
-      resolveData: withData ? 'all' : 'none',
-    });
-    return createResponse({
-      data: result.data as unknown as Event[],
-      cursor: result.cursor ?? undefined,
-      hasMore: result.hasMore,
-      pageInfo: getPageInfo(result),
+    return await withWorldFromEnv(worldEnv, async (world) => {
+      // Run-scoped, so it reads storage — see `fetchEvents` for why the
+      // analytics path was withdrawn. `runId` is required, which keeps the
+      // answer scoped to one run: a correlation id is unique within its run,
+      // not across runs.
+      const result = await world.events.listByCorrelationId({
+        correlationId,
+        runId,
+        pagination: { cursor, limit, sortOrder },
+        resolveData: withData ? 'all' : 'none',
+      });
+      return createResponse({
+        data: result.data as unknown as Event[],
+        cursor: result.cursor ?? undefined,
+        hasMore: result.hasMore,
+        pageInfo: getPageInfo(result),
+      });
     });
   } catch (error) {
     return createServerActionError<PaginatedResult<Event>>(
@@ -874,34 +1116,35 @@ export async function fetchHooks(
 ): Promise<ServerActionResult<PaginatedResult<HookListItem>>> {
   const { runId, cursor, sortOrder = 'desc', limit = 10 } = params;
   try {
-    const world = await getWorldFromEnv(worldEnv);
-    // Prefer the metadata-only analytics read path when the backend provides
-    // one and the run scope required by analytics is present. The hook list is
-    // metadata only — the secret `token` is fetched on demand per hook via
-    // `fetchHookToken` for the copy-token and resume affordances — so the list
-    // never carries it.
-    if (world.analytics && runId) {
-      const result = await world.analytics.hooks.list({
-        runId,
+    return await withWorldFromEnv(worldEnv, async (world) => {
+      // Prefer the metadata-only analytics read path when the backend provides
+      // one and the run scope required by analytics is present. The hook list is
+      // metadata only — the secret `token` is fetched on demand per hook via
+      // `fetchHookToken` for the copy-token and resume affordances — so the list
+      // never carries it.
+      if (world.analytics && runId) {
+        const result = await world.analytics.hooks.list({
+          runId,
+          pagination: { cursor, limit, sortOrder },
+        });
+        return createResponse({
+          data: result.data as unknown as HookListItem[],
+          cursor: result.cursor ?? undefined,
+          hasMore: result.hasMore,
+          pageInfo: getPageInfo(result),
+        });
+      }
+      const result = await world.hooks.list({
+        ...(runId ? { runId } : {}),
         pagination: { cursor, limit, sortOrder },
+        resolveData: 'none',
       });
       return createResponse({
-        data: result.data as unknown as HookListItem[],
+        data: result.data.map(hookToListItem),
         cursor: result.cursor ?? undefined,
         hasMore: result.hasMore,
         pageInfo: getPageInfo(result),
       });
-    }
-    const result = await world.hooks.list({
-      ...(runId ? { runId } : {}),
-      pagination: { cursor, limit, sortOrder },
-      resolveData: 'none',
-    });
-    return createResponse({
-      data: result.data.map(hookToListItem),
-      cursor: result.cursor ?? undefined,
-      hasMore: result.hasMore,
-      pageInfo: getPageInfo(result),
     });
   } catch (error) {
     return createServerActionError<PaginatedResult<HookListItem>>(
@@ -925,9 +1168,10 @@ export async function fetchHookToken(
   hookId: string
 ): Promise<ServerActionResult<HookTokenResult>> {
   try {
-    const world = await getWorldFromEnv(worldEnv);
-    const hook = await world.hooks.get(hookId, { resolveData: 'none' });
-    return createResponse({ token: hook.token });
+    return await withWorldFromEnv(worldEnv, async (world) => {
+      const hook = await world.hooks.get(hookId, { resolveData: 'none' });
+      return createResponse({ token: hook.token });
+    });
   } catch (error) {
     return createServerActionError<HookTokenResult>(error, 'world.hooks.get', {
       runId,
@@ -945,9 +1189,10 @@ export async function fetchHook(
   resolveData: 'none' | 'all' = 'all'
 ): Promise<ServerActionResult<Hook>> {
   try {
-    const world = await getWorldFromEnv(worldEnv);
-    const hook = await world.hooks.get(hookId, { resolveData });
-    return createResponse(hook as Hook);
+    return await withWorldFromEnv(worldEnv, async (world) => {
+      const hook = await world.hooks.get(hookId, { resolveData });
+      return createResponse(hook as Hook);
+    });
   } catch (error) {
     return createServerActionError<Hook>(error, 'world.hooks.get', {
       hookId,
@@ -964,9 +1209,10 @@ export async function cancelRun(
   runId: string
 ): Promise<ServerActionResult<void>> {
   try {
-    const world = await getWorldFromEnv(worldEnv);
-    await workflowRunHelpers.cancelRun(world, runId);
-    return createResponse(undefined);
+    return await withWorldFromEnv(worldEnv, async (world) => {
+      await workflowRunHelpers.cancelRun(world, runId);
+      return createResponse(undefined);
+    });
   } catch (error) {
     return createServerActionError<void>(error, 'world.events.create', {
       runId,
@@ -987,9 +1233,10 @@ export async function bulkCancelRuns(
   runIds: string[]
 ): Promise<ServerActionResult<BulkCancelWorkflowRunsResult>> {
   try {
-    const world = await getWorldFromEnv(worldEnv);
-    const result = await workflowRunHelpers.cancelRuns(world, runIds);
-    return createResponse(result);
+    return await withWorldFromEnv(worldEnv, async (world) => {
+      const result = await workflowRunHelpers.cancelRuns(world, runIds);
+      return createResponse(result);
+    });
   } catch (error) {
     return createServerActionError<BulkCancelWorkflowRunsResult>(
       error,
@@ -1010,15 +1257,16 @@ export async function recreateRun(
   deploymentId?: string
 ): Promise<ServerActionResult<string>> {
   try {
-    const world = await getWorldFromEnv({ ...worldEnv });
-    const newRunId = await workflowRunHelpers.recreateRunFromExisting(
-      world,
-      runId,
-      {
-        deploymentId,
-      }
-    );
-    return createResponse(newRunId);
+    return await withWorldFromEnv({ ...worldEnv }, async (world) => {
+      const newRunId = await workflowRunHelpers.recreateRunFromExisting(
+        world,
+        runId,
+        {
+          deploymentId,
+        }
+      );
+      return createResponse(newRunId);
+    });
   } catch (error) {
     return createServerActionError<string>(error, 'recreateRun', { runId });
   }
@@ -1035,9 +1283,10 @@ export async function reenqueueRun(
   runId: string
 ): Promise<ServerActionResult<void>> {
   try {
-    const world = await getWorldFromEnv({ ...worldEnv });
-    await workflowRunHelpers.reenqueueRun(world, runId);
-    return createResponse(undefined);
+    return await withWorldFromEnv({ ...worldEnv }, async (world) => {
+      await workflowRunHelpers.reenqueueRun(world, runId);
+      return createResponse(undefined);
+    });
   } catch (error) {
     return createServerActionError<void>(error, 'reenqueueRun', { runId });
   }
@@ -1073,9 +1322,10 @@ export async function wakeUpRun(
   options?: StopSleepOptions
 ): Promise<ServerActionResult<StopSleepResult>> {
   try {
-    const world = await getWorldFromEnv({ ...worldEnv });
-    const result = await workflowRunHelpers.wakeUpRun(world, runId, options);
-    return createResponse(result);
+    return await withWorldFromEnv({ ...worldEnv }, async (world) => {
+      const result = await workflowRunHelpers.wakeUpRun(world, runId, options);
+      return createResponse(result);
+    });
   } catch (error) {
     return createServerActionError<StopSleepResult>(error, 'wakeUpRun', {
       runId,
@@ -1108,14 +1358,13 @@ export async function resumeHook(
   payload: unknown
 ): Promise<ServerActionResult<ResumeHookResult>> {
   try {
-    // Initialize the world so resumeHookRuntime can access it
-    await getWorldFromEnv({ ...worldEnv });
+    return await withWorldFromEnv({ ...worldEnv }, async () => {
+      const hook = await resumeHookRuntime(token, payload);
 
-    const hook = await resumeHookRuntime(token, payload);
-
-    return createResponse({
-      hookId: hook.hookId,
-      runId: hook.runId,
+      return createResponse({
+        hookId: hook.hookId,
+        runId: hook.runId,
+      });
     });
   } catch (error) {
     return createServerActionError<ResumeHookResult>(error, 'resumeHook', {
@@ -1130,12 +1379,24 @@ export async function readStreamServerAction(
   startIndex: number | undefined,
   runId: string
 ): Promise<ReadableStream<Uint8Array> | ServerActionError> {
+  const sqlite = isSqliteBackend(getEffectiveBackendId());
+  let world: World | undefined;
   try {
-    const world = await getWorldFromEnv(env);
+    world = await getWorldFromEnv(env);
     // Return the raw binary stream — deserialization and decryption
     // happen entirely client-side.
-    return await world.streams.get(runId, streamId, startIndex);
+    const stream = await world.streams.get(runId, streamId, startIndex);
+    return sqlite ? closeWorldWithStream(stream, world) : stream;
   } catch (error) {
+    if (sqlite && world) {
+      try {
+        await world.close?.();
+      } catch (closeError) {
+        console.warn(
+          `[workflow] Failed to close SQLite observability world: ${closeError instanceof Error ? closeError.message : String(closeError)}`
+        );
+      }
+    }
     const actionError = createServerActionError(error, 'world.streams.get', {
       streamId,
       startIndex,
@@ -1173,46 +1434,47 @@ export async function readStreamChunksServerAction(
   startCursor?: string
 ): Promise<StreamChunksResult | ServerActionError> {
   try {
-    const world = await getWorldFromEnv(env);
-    const allChunks: Uint8Array[] = [];
-    let pageCursor: string | undefined = startCursor;
-    let streamDone = false;
-    // Track the last non-null cursor so we can resume from the start of
-    // the final page on the next poll. When getChunks returns
-    // cursor=null we've exhausted all pages, but this saved cursor lets
-    // the client re-fetch only the last page + any new chunks.
-    let resumeCursor: string | null = startCursor ?? null;
+    return await withWorldFromEnv(env, async (world) => {
+      const allChunks: Uint8Array[] = [];
+      let pageCursor: string | undefined = startCursor;
+      let streamDone = false;
+      // Track the last non-null cursor so we can resume from the start of
+      // the final page on the next poll. When getChunks returns
+      // cursor=null we've exhausted all pages, but this saved cursor lets
+      // the client re-fetch only the last page + any new chunks.
+      let resumeCursor: string | null = startCursor ?? null;
 
-    do {
-      const result = await world.streams.getChunks(runId, streamId, {
-        limit: CHUNKS_PAGE_SIZE,
-        cursor: pageCursor,
-      });
+      do {
+        const result = await world.streams.getChunks(runId, streamId, {
+          limit: CHUNKS_PAGE_SIZE,
+          cursor: pageCursor,
+        });
 
-      for (const chunk of result.data) {
-        allChunks.push(chunk.data);
+        for (const chunk of result.data) {
+          allChunks.push(chunk.data);
+        }
+
+        streamDone = result.done;
+        if (result.cursor) {
+          resumeCursor = result.cursor;
+        }
+        pageCursor = result.cursor ?? undefined;
+      } while (pageCursor);
+
+      let totalSize = 0;
+      for (const chunk of allChunks) {
+        totalSize += chunk.length;
       }
 
-      streamDone = result.done;
-      if (result.cursor) {
-        resumeCursor = result.cursor;
+      const body = new Uint8Array(totalSize);
+      let offset = 0;
+      for (const chunk of allChunks) {
+        body.set(chunk, offset);
+        offset += chunk.length;
       }
-      pageCursor = result.cursor ?? undefined;
-    } while (pageCursor);
 
-    let totalSize = 0;
-    for (const chunk of allChunks) {
-      totalSize += chunk.length;
-    }
-
-    const body = new Uint8Array(totalSize);
-    let offset = 0;
-    for (const chunk of allChunks) {
-      body.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    return { buffer: body, cursor: resumeCursor, done: streamDone };
+      return { buffer: body, cursor: resumeCursor, done: streamDone };
+    });
   } catch (error) {
     const actionError = createServerActionError(
       error,
@@ -1234,9 +1496,10 @@ export async function fetchStreams(
   runId: string
 ): Promise<ServerActionResult<string[]>> {
   try {
-    const world = await getWorldFromEnv(env);
-    const streams = await world.streams.list(runId);
-    return createResponse(streams);
+    return await withWorldFromEnv(env, async (world) => {
+      const streams = await world.streams.list(runId);
+      return createResponse(streams);
+    });
   } catch (error) {
     return createServerActionError<string[]>(error, 'world.streams.list', {
       runId,
@@ -1346,10 +1609,11 @@ export async function runHealthCheck(
   options?: { timeout?: number }
 ): Promise<ServerActionResult<HealthCheckResult>> {
   try {
-    const world = await getWorldFromEnv(worldEnv);
-    const result = await healthCheck(world, options);
-    return createResponse({
-      ...result,
+    return await withWorldFromEnv(worldEnv, async (world) => {
+      const result = await healthCheck(world, options);
+      return createResponse({
+        ...result,
+      });
     });
   } catch (error) {
     // For health check failures, we want to return success=true with healthy=false
@@ -1381,14 +1645,15 @@ export async function getEncryptionKeyForRun(
   runId: string
 ): Promise<ServerActionResult<Uint8Array | null>> {
   try {
-    const world = await getWorldFromEnv(worldEnv);
-    if (!world.getEncryptionKeyForRun) {
-      return createResponse(null);
-    }
-    // Fetch the full run so the World can inspect deploymentId etc.
-    const run = await world.runs.get(runId);
-    const key = await world.getEncryptionKeyForRun(run);
-    return createResponse(key ?? null);
+    return await withWorldFromEnv(worldEnv, async (world) => {
+      if (!world.getEncryptionKeyForRun) {
+        return createResponse(null);
+      }
+      // Fetch the full run so the World can inspect deploymentId etc.
+      const run = await world.runs.get(runId);
+      const key = await world.getEncryptionKeyForRun(run);
+      return createResponse(key ?? null);
+    });
   } catch (error) {
     return createServerActionError<Uint8Array | null>(
       error,

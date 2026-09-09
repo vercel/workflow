@@ -163,7 +163,7 @@ jobs:
           EVENT_LOG_RACE_REPRO_BUDGET_MS: ${{ inputs.budget_ms }}
 
       # This lane's own numbers, for the job summary. The PR comment covering
-      # all three lanes is rendered once, from the artifacts, by
+      # all four lanes is rendered once, from the artifacts, by
       # `event-log-race-repro-comment`.
       - name: Render repro summary
         if: always()
@@ -195,8 +195,9 @@ jobs:
   # `scripts/event-log-race-repro-local.sh` owns the whole lifecycle: it builds
   # the packages and the workbench app with WORKFLOW_TARGET_WORLD and
   # WORKFLOW_PUBLIC_MANIFEST=1 set at *build* time (both are build-time inputs),
-  # brings up Postgres and applies migrations for `--world postgres`, starts the
-  # app, runs the harness, and tears the server down.
+  # brings up Postgres for `--world postgres`, allocates a fresh database for
+  # `--world sqlite`, explicitly migrates either database-backed World, starts
+  # the app, runs the harness, and tears the server down.
   #
   # Unlike the Vercel lane above, these lanes publish numbers instead of a
   # verdict. The local storms bite much harder than the Vercel preview does —
@@ -219,7 +220,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        world: [local, postgres]
+        world: [local, postgres, sqlite]
     # No comment-writing scopes: see the Vercel lane's permissions.
     permissions:
       contents: read
@@ -237,8 +238,10 @@ jobs:
         uses: ./.github/actions/setup-workflow-dev
         with:
           # The script runs its own `pnpm build` so the packages are built in
-          # the same environment as the app.
+          # the same environment as the app. Every matrix entry builds the
+          # native SQLite package as part of that workspace build.
           build-packages: 'false'
+          setup-rust: 'true'
 
       - name: Run event log race repro (world-${{ matrix.world }})
         id: repro
@@ -301,11 +304,11 @@ jobs:
         if: always()
         run: test -f event-log-race-repro-results.json
 
-  # One PR comment for all three lanes. They run as parallel jobs and each
+  # One PR comment for all four lanes. They run as parallel jobs and each
   # uploads its own results file, so the comment is rendered here, from the
   # artifacts, once every lane has finished. One comment means one stored
-  # history, which is the point: the three worlds' numbers sit on the same rows
-  # of one table, and a push adds three rows rather than editing three comments.
+  # history, which is the point: the four worlds' numbers sit on the same rows
+  # of one table, and a push adds four rows rather than editing four comments.
   event-log-race-repro-comment:
     name: Event Log Race Repro (comment)
     runs-on: ubuntu-latest
@@ -355,11 +358,12 @@ jobs:
           fi
 
           # Lane order here is the row order in the comment: the gating lane
-          # first, then the two report-only worlds.
+          # first, then the three report-only worlds.
           node .github/scripts/render-event-log-race-repro-results.js \
             --lane vercel=lane-results/event-log-race-repro-results/event-log-race-repro-results.json \
             --lane local=lane-results/event-log-race-repro-results-world-local/event-log-race-repro-results.json \
             --lane postgres=lane-results/event-log-race-repro-results-world-postgres/event-log-race-repro-results.json \
+            --lane sqlite=lane-results/event-log-race-repro-results-world-sqlite/event-log-race-repro-results.json \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --run-attempt "${{ github.run_attempt }}" \
             --timestamp "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \

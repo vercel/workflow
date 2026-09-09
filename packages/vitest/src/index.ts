@@ -1,16 +1,25 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createServer, type IncomingMessage, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BaseBuilder, createBaseBuilderConfig } from '@workflow/builders';
 import type { Run } from '@workflow/core/runtime';
 import { setWorld } from '@workflow/core/runtime';
+import { getWorkflowQueueName } from '@workflow/core/runtime/helpers';
 import { workflowTransformPlugin } from '@workflow/rollup';
-import type { Event, Hook } from '@workflow/world';
+import {
+  type Event,
+  type Hook,
+  ValidQueueName,
+  type World,
+} from '@workflow/world';
 import {
   createWorld,
   initDataDir,
   type LocalWorld,
 } from '@workflow/world-local';
+import type { SqliteWorld } from '@workflow/world-sqlite';
 import type { Plugin } from 'vite';
 import type { VitestPluginContext } from 'vitest/node';
 import {
@@ -18,8 +27,16 @@ import {
   WORKFLOW_VITEST_OPTIONS_KEY,
 } from './options.js';
 
+const HOST_MANIFEST_FILENAME = 'host.json';
+const SQLITE_POOL_ID_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
+
+interface WorkflowTestHostManifest {
+  queueNames: string[];
+}
+
 class VitestBuilder extends BaseBuilder {
   #outDir: string;
+  #queueNames: string[] = [];
 
   constructor(workingDir: string, outDir: string) {
     super({
@@ -43,7 +60,7 @@ class VitestBuilder extends BaseBuilder {
 
     // V2: Build combined bundle that includes both step registrations
     // and workflow entrypoint in a single handler.
-    await this.createCombinedBundle({
+    const { manifest } = await this.createCombinedBundle({
       inputFiles,
       stepsOutfile: join(this.#outDir, '__step_registrations.mjs'),
       flowOutfile: join(this.#outDir, 'combined.mjs'),
@@ -57,10 +74,32 @@ class VitestBuilder extends BaseBuilder {
       // type stripping (and not at all on older Node versions).
       bundleTransitiveLocalStepDependencies: true,
     });
+
+    this.#queueNames = [
+      ...new Set(
+        Object.values(manifest.workflows ?? {})
+          .flatMap((workflows) => Object.values(workflows))
+          .map(({ workflowId }) =>
+            getWorkflowQueueName(
+              workflowId,
+              process.env.WORKFLOW_QUEUE_NAMESPACE
+            )
+          )
+      ),
+    ].sort();
+  }
+
+  get queueNames(): readonly string[] {
+    return this.#queueNames;
   }
 }
 
 export interface WorkflowTestOptions {
+  /**
+   * World implementation used by the test workers. Defaults to `local`.
+   * SQLite is experimental and must be selected explicitly.
+   */
+  world?: 'local' | 'sqlite';
   /**
    * The working directory of the project (where workflows/ lives).
    * Defaults to the resolved Vitest project root.
@@ -77,6 +116,12 @@ export interface WorkflowTestOptions {
    * Defaults to `<rootDir>/.workflow-data`.
    */
   dataDir?: string;
+  /**
+   * Directory for SQLite test databases. Each Vitest pool gets a separate
+   * `vitest-<pool>.sqlite` file. Defaults to
+   * `WORKFLOW_LOCAL_DATABASE_DIR`, then `<rootDir>/.workflow-database`.
+   */
+  databaseDir?: string;
   /**
    * Directory for generated workflow and step bundles.
    * Defaults to `<rootDir>/.workflow-vitest`.
@@ -138,17 +183,171 @@ export function workflow(options?: WorkflowTestOptions): Plugin[] {
 export async function buildWorkflowTests(
   options?: WorkflowTestOptions
 ): Promise<void> {
-  const { cwd, dataDir, outDir } = resolveWorkflowTestOptions(
-    options,
-    process.cwd()
-  );
+  const { cwd, world, dataDir, databaseDir, outDir } =
+    resolveWorkflowTestOptions(options, process.cwd());
   const builder = new VitestBuilder(cwd, outDir);
   await builder.build();
-  // Pre-create the shared data directory so workers don't race on mkdir
-  await initDataDir(dataDir);
+  await writeFile(
+    join(outDir, HOST_MANIFEST_FILENAME),
+    `${JSON.stringify({ queueNames: builder.queueNames }, null, 2)}\n`
+  );
+
+  if (world === 'sqlite') {
+    // Pre-create the shared parent so workers only create their own database
+    // file and SQLite-owned WAL sidecars beneath it.
+    await mkdir(databaseDir, { recursive: true });
+  } else {
+    // Pre-create the shared data directory so workers don't race on mkdir.
+    await initDataDir(dataDir);
+  }
 }
 
-let world: LocalWorld | undefined;
+type WorkflowTestWorld = LocalWorld | SqliteWorld;
+
+let world: WorkflowTestWorld | undefined;
+let loopbackServer: Server | undefined;
+
+function createLazyHandler(
+  bundlePath: string
+): (req: Request) => Promise<Response> {
+  let handler: ((req: Request) => Promise<Response>) | undefined;
+  let loading: Promise<(req: Request) => Promise<Response>> | undefined;
+
+  return async (req: Request) => {
+    if (!handler) {
+      // If the import rejects (e.g. missing bundle), the rejected promise is
+      // cached so all subsequent calls fail fast with the same error.
+      loading ??= import(
+        /* @vite-ignore */ pathToFileURL(bundlePath).href
+      ).then((mod) => mod.POST as (req: Request) => Promise<Response>);
+      handler = await loading;
+    }
+    return handler(req);
+  };
+}
+
+async function readRequestBody(request: IncomingMessage): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of request) {
+    chunks.push(
+      typeof chunk === 'string' ? Buffer.from(chunk) : new Uint8Array(chunk)
+    );
+  }
+  return Buffer.concat(chunks);
+}
+
+function requestHeaders(request: IncomingMessage): Headers {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(request.headers)) {
+    if (Array.isArray(value)) {
+      for (const item of value) headers.append(name, item);
+    } else if (value !== undefined) {
+      headers.set(name, value);
+    }
+  }
+  return headers;
+}
+
+async function startLoopbackServer(
+  handler: (request: Request) => Promise<Response>
+): Promise<{ server: Server; flowUrl: string }> {
+  const server = createServer(async (incoming, outgoing) => {
+    try {
+      const method = incoming.method ?? 'POST';
+      const body =
+        method === 'GET' || method === 'HEAD'
+          ? undefined
+          : await readRequestBody(incoming);
+      const request = new Request(
+        `http://${incoming.headers.host ?? '127.0.0.1'}${incoming.url ?? '/'}`,
+        {
+          method,
+          headers: requestHeaders(incoming),
+          ...(body !== undefined && { body }),
+        }
+      );
+      const response = await handler(request);
+      outgoing.statusCode = response.status;
+      for (const [name, value] of response.headers) {
+        outgoing.setHeader(name, value);
+      }
+      outgoing.end(Buffer.from(await response.arrayBuffer()));
+    } catch (error) {
+      outgoing.statusCode = 500;
+      outgoing.end(String(error));
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+  server.unref();
+  const address = server.address() as AddressInfo;
+  return {
+    server,
+    flowUrl: `http://127.0.0.1:${address.port}/.well-known/workflow/v1/flow`,
+  };
+}
+
+async function closeLoopbackServer(server: Server | undefined): Promise<void> {
+  if (!server) return;
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+    server.closeAllConnections?.();
+  });
+}
+
+function sqlitePoolId(): string {
+  const poolId = process.env.VITEST_POOL_ID ?? '0';
+  if (!SQLITE_POOL_ID_PATTERN.test(poolId)) {
+    throw new Error(
+      `Invalid VITEST_POOL_ID ${JSON.stringify(poolId)}: expected 1-64 alphanumeric, underscore, or hyphen characters`
+    );
+  }
+  return poolId;
+}
+
+async function readHostManifest(
+  outDir: string
+): Promise<WorkflowTestHostManifest> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(
+      await readFile(join(outDir, HOST_MANIFEST_FILENAME), 'utf8')
+    );
+  } catch (cause) {
+    throw new Error(
+      'Workflow test host manifest is missing or invalid. Run buildWorkflowTests() before setupWorkflowTests().',
+      { cause }
+    );
+  }
+  const queueNames = (parsed as { queueNames?: unknown })?.queueNames;
+  if (!Array.isArray(queueNames)) {
+    throw new Error('Workflow test host manifest has invalid queueNames');
+  }
+  return {
+    queueNames: [
+      ...new Set(queueNames.map((name) => ValidQueueName.parse(name))),
+    ],
+  };
+}
+
+async function resetWorkflowTestWorld(): Promise<void> {
+  setWorld(undefined);
+  const currentWorld = world;
+  const currentServer = loopbackServer;
+  world = undefined;
+  loopbackServer = undefined;
+  try {
+    await currentWorld?.close?.();
+  } finally {
+    await closeLoopbackServer(currentServer);
+  }
+}
 
 /**
  * Set up in-process handler routing for workflow tests.
@@ -161,74 +360,63 @@ export async function setupWorkflowTests(
   options?: WorkflowTestOptions
 ): Promise<void> {
   // Clean up previous world if re-initialized (e.g. across test files)
-  if (world) {
-    setWorld(undefined);
-    await world.close?.();
-    world = undefined;
+  if (world || loopbackServer) await resetWorkflowTestWorld();
+
+  const resolvedOptions = resolveWorkflowTestOptions(options, process.cwd());
+  const { dataDir, databaseDir, outDir } = resolvedOptions;
+  const handler = createLazyHandler(join(outDir, 'combined.mjs'));
+
+  try {
+    if (resolvedOptions.world === 'sqlite') {
+      const [{ createWorld: createSqliteWorld }, host] = await Promise.all([
+        import('@workflow/world-sqlite'),
+        readHostManifest(outDir),
+      ]);
+      const poolId = sqlitePoolId();
+      await mkdir(databaseDir, { recursive: true });
+      const loopback = await startLoopbackServer(handler);
+      loopbackServer = loopback.server;
+      world = createSqliteWorld({
+        databaseFile: join(databaseDir, `vitest-${poolId}.sqlite`),
+        queueNames: host.queueNames,
+        flowUrl: loopback.flowUrl,
+        recoverActiveRuns: false,
+      });
+      // Migrations are explicit: setup never relies on construction or the
+      // first operation to mutate the database schema.
+      await world.migrate();
+      await world.clear();
+    } else {
+      // Each filesystem-world worker uses a unique tag to isolate its test
+      // data. Preserve the legacy overlay behavior while SQLite coexists.
+      const poolId = process.env.VITEST_POOL_ID ?? '0';
+      world = createWorld({
+        dataDir,
+        recoverActiveRuns: false,
+        tag: `vitest-${poolId}`,
+      });
+      await world.clear();
+
+      // The filesystem World supports direct callbacks. SQLite deliberately
+      // uses the private loopback server above instead.
+      world.registerHandler('__wkf_workflow_', handler);
+    }
+
+    // Routing is installed before start(): even with recovery disabled, this
+    // keeps future recovery changes from racing worker activation.
+    await world.start?.();
+    setWorld(world);
+  } catch (error) {
+    await resetWorkflowTestWorld().catch(() => undefined);
+    throw error;
   }
-
-  const { dataDir, outDir } = resolveWorkflowTestOptions(
-    options,
-    process.cwd()
-  );
-
-  // Lazy-load bundles on first dispatch instead of eagerly at setup time.
-  // Eager native import() during setupFiles loads step dependencies into
-  // the module cache before vi.mock() can intercept them, breaking mocks
-  // in unit tests that never execute workflows.
-  function createLazyHandler(
-    bundlePath: string
-  ): (req: Request) => Promise<Response> {
-    let handler: ((req: Request) => Promise<Response>) | undefined;
-    let loading: Promise<(req: Request) => Promise<Response>> | undefined;
-
-    return async (req: Request) => {
-      if (!handler) {
-        // If the import rejects (e.g. missing bundle), the rejected promise is
-        // cached so all subsequent calls fail fast with the same error.
-        loading ??= import(
-          /* @vite-ignore */ pathToFileURL(bundlePath).href
-        ).then((mod) => mod.POST as (req: Request) => Promise<Response>);
-        handler = await loading;
-      }
-      return handler(req);
-    };
-  }
-
-  // Each vitest worker uses a unique tag to isolate its test data.
-  // All workers write to the shared .workflow-data directory so runs
-  // are visible to the observability dashboard, but clear() only
-  // deletes files matching the worker's tag. Recovery stays disabled because
-  // tests expect a clean world and register direct handlers after setup begins.
-  const poolId = process.env.VITEST_POOL_ID ?? '0';
-  world = createWorld({
-    dataDir,
-    recoverActiveRuns: false,
-    tag: `vitest-${poolId}`,
-  });
-  await world.clear();
-
-  // V2: Single combined handler for both workflow and step execution.
-  world.registerHandler(
-    '__wkf_workflow_',
-    createLazyHandler(join(outDir, 'combined.mjs'))
-  );
-
-  // Handlers must be registered before start(): if recoverActiveRuns is ever
-  // re-enabled here (or plumbed through from a caller), start() re-enqueues
-  // pending runs and the queue begins dispatching. Registering after start
-  // would race handler installation against that dispatch.
-  await world.start?.();
-  setWorld(world);
 }
 
 /**
  * Tear down the workflow test world. Call this in afterAll or vitest teardown.
  */
 export async function teardownWorkflowTests(): Promise<void> {
-  setWorld(undefined);
-  await world?.close?.();
-  world = undefined;
+  await resetWorkflowTestWorld();
 }
 
 export interface WaitOptions {
@@ -238,7 +426,7 @@ export interface WaitOptions {
   pollInterval?: number;
 }
 
-function getWorldOrThrow(): LocalWorld {
+function getWorldOrThrow(): World {
   if (!world) {
     throw new Error(
       'Workflow test world is not initialized. Call setupWorkflowTests() first.'
@@ -247,7 +435,7 @@ function getWorldOrThrow(): LocalWorld {
   return world;
 }
 
-async function fetchAllEvents(w: LocalWorld, runId: string): Promise<Event[]> {
+async function fetchAllEvents(w: World, runId: string): Promise<Event[]> {
   const allEvents: Event[] = [];
   let cursor: string | null = null;
   do {

@@ -30,6 +30,10 @@
       "types": "./dist/check-data-dir.d.ts",
       "default": "./dist/check-data-dir.js"
     },
+    "./sqlite-database-dir": {
+      "types": "./dist/sqlite-database-dir.d.ts",
+      "default": "./dist/sqlite-database-dir.js"
+    },
     "./parse-name": {
       "types": "./dist/parse-name.d.ts",
       "default": "./dist/parse-name.js"

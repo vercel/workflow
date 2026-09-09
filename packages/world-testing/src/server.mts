@@ -1,5 +1,8 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { serve } from '@hono/node-server';
+import { getQueueTopicPrefix, resolveQueueNamespace } from '@workflow/world';
 import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { getWorld } from 'workflow/runtime';
@@ -46,6 +49,48 @@ const Invoke = z
 // below), so it runs as its own process with one module instance. There is no
 // host bundler to compile it into several layers.
 const flowInvocationCounts = new Map<string, number>();
+
+function sqliteQueueNames(): string[] {
+  const prefix = getQueueTopicPrefix('workflow', resolveQueueNamespace());
+  const names = new Set<string>([`${prefix}health_check`]);
+  for (const workflows of Object.values(manifest.workflows)) {
+    for (const workflow of Object.values(workflows)) {
+      const workflowId = (workflow as { workflowId?: unknown }).workflowId;
+      if (typeof workflowId === 'string') names.add(`${prefix}${workflowId}`);
+    }
+  }
+  return [...names].sort();
+}
+
+async function prepareSqliteTestWorld(baseUrl: string): Promise<void> {
+  if (process.env.WORKFLOW_TEST_SQLITE_WORLD !== '1') return;
+  const target = process.env.WORKFLOW_TARGET_WORLD;
+  if (!target) throw new Error('WORKFLOW_TARGET_WORLD is required');
+  const moduleSpecifier =
+    target.startsWith('.') || path.isAbsolute(target)
+      ? pathToFileURL(path.resolve(target)).href
+      : target;
+  const selected = (await import(moduleSpecifier)) as {
+    createWorld?: () => {
+      migrate(): Promise<void>;
+      close(): Promise<void>;
+    };
+    registerHost?: (registration: {
+      queueNames: string[];
+      baseUrl: string;
+    }) => void;
+  };
+  if (!selected.createWorld || !selected.registerHost) {
+    throw new Error('SQLite conformance target does not expose its host API');
+  }
+  selected.registerHost({ queueNames: sqliteQueueNames(), baseUrl });
+  const migrationWorld = selected.createWorld();
+  try {
+    await migrationWorld.migrate();
+  } finally {
+    await migrationWorld.close();
+  }
+}
 
 const app = new Hono()
   .post('/.well-known/workflow/v1/flow', async (ctx) => {
@@ -155,6 +200,9 @@ serve(
     console.log('');
 
     process.env.PORT = info.port.toString();
+    const baseUrl = `http://127.0.0.1:${info.port}`;
+    process.env.WORKFLOW_LOCAL_BASE_URL = baseUrl;
+    await prepareSqliteTestWorld(baseUrl);
 
     for (const [filename, workflows] of Object.entries(manifest.workflows)) {
       for (const workflowName of Object.keys(

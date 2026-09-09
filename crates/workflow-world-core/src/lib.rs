@@ -7,11 +7,13 @@
 
 #![forbid(unsafe_code)]
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use workflow_protocol::{
-    CreateWorldEventRequest, EventType, RunCreatedEventData, RunStartPlan, RunStartedRequest,
-    RunStatus, SUPPORTED_PERSISTED_SPEC_VERSION, StepStatus, UnpositionedEvent,
-    UnpositionedWorldEvent, WorkflowRun, WorkflowStep, WorldError, WorldErrorKind, WorldEventData,
-    WorldMutationPlan,
+    AttributeChange, AttributeWriter, CreateWorldEventRequest, EventType, RunCreatedEventData,
+    RunStartPlan, RunStartedRequest, RunStatus, SUPPORTED_PERSISTED_SPEC_VERSION, StepStatus,
+    UnpositionedEvent, UnpositionedWorldEvent, WaitStatus, WorkflowHook, WorkflowRun, WorkflowStep,
+    WorkflowWait, WorldError, WorldErrorKind, WorldEventData, WorldMutationPlan,
 };
 
 const ATTRIBUTE_KEY_MAX_LENGTH: usize = 256;
@@ -99,18 +101,61 @@ pub fn plan_run_started(
     }
 }
 
+/// Transactional entity state used to plan one World event.
+///
+/// `hook_with_id` is the live Hook that currently owns a requested
+/// `hook_created` ID, even when it belongs to another run. `hook_with_token` is
+/// the live Hook (including one retained by minimum retention) that currently
+/// owns a requested `hook_created` token. Backends must read both under the same
+/// transaction that applies the returned plan.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WorldEventState<'a> {
+    pub run: Option<&'a WorkflowRun>,
+    pub step: Option<&'a WorkflowStep>,
+    pub hook: Option<&'a WorkflowHook>,
+    pub hook_with_id: Option<&'a WorkflowHook>,
+    pub hook_with_token: Option<&'a WorkflowHook>,
+    pub wait: Option<&'a WorkflowWait>,
+}
+
 // @lat: [[rust-portability#Proposed System Shape#Ownership Boundaries]]
-/// Plan one Phase 1 run/step event without performing I/O or allocating a slot.
+/// Plan one World event without performing I/O or allocating a slot.
 ///
 /// A backend must obtain `current_run` and `current_step` while holding its
 /// write transaction, call this function, and apply the returned plan before
-/// committing that same transaction.
+/// committing that same transaction. This compatibility entry point supplies
+/// no Hook or wait state; Phase 2 backends use [`plan_world_event_with_state`].
 pub fn plan_world_event(
     current_run: Option<&WorkflowRun>,
     current_step: Option<&WorkflowStep>,
     request: &CreateWorldEventRequest,
     now_ms: i64,
 ) -> Result<WorldMutationPlan, WorldError> {
+    plan_world_event_with_state(
+        WorldEventState {
+            run: current_run,
+            step: current_step,
+            ..WorldEventState::default()
+        },
+        request,
+        now_ms,
+    )
+}
+
+/// Plan one World event from a complete transactional entity snapshot.
+pub fn plan_world_event_with_state(
+    state: WorldEventState<'_>,
+    request: &CreateWorldEventRequest,
+    now_ms: i64,
+) -> Result<WorldMutationPlan, WorldError> {
+    let WorldEventState {
+        run: current_run,
+        step: current_step,
+        hook: current_hook,
+        hook_with_id,
+        hook_with_token,
+        wait: current_wait,
+    } = state;
     validate_world_event_request(request, now_ms)?;
     if let Some(run) = current_run {
         validate_persisted_spec(run.spec_version)?;
@@ -128,6 +173,28 @@ pub fn plan_world_event(
             ));
         }
     }
+    if let Some(hook) = current_hook {
+        validate_persisted_spec(hook.spec_version)?;
+        if hook.run_id != request.run_id {
+            return Err(WorldError::invalid_request(
+                "the locked Hook does not belong to the event request run",
+            ));
+        }
+    }
+    if let Some(hook) = hook_with_id {
+        validate_persisted_spec(hook.spec_version)?;
+    }
+    if let Some(hook) = hook_with_token {
+        validate_persisted_spec(hook.spec_version)?;
+    }
+    if let Some(wait) = current_wait {
+        validate_persisted_spec(wait.spec_version)?;
+        if wait.run_id != request.run_id {
+            return Err(WorldError::invalid_request(
+                "the locked wait does not belong to the event request run",
+            ));
+        }
+    }
 
     // `created_at_ms` is the backend acceptance time. The caller's logical
     // clock is retained independently as `occurred_at_ms` on the event.
@@ -137,15 +204,9 @@ pub fn plan_world_event(
         spec_version: request.spec_version,
         created_at_ms,
         occurred_at_ms: request.occurred_at_ms,
+        resume_id: request.resume_id.clone(),
     };
-    let empty_plan = || WorldMutationPlan {
-        run: None,
-        insert_run: false,
-        step: None,
-        insert_step: false,
-        step_created: false,
-        events: Vec::new(),
-    };
+    let empty_plan = WorldMutationPlan::default;
 
     match &request.event {
         WorldEventData::RunCreated(data) => {
@@ -209,6 +270,7 @@ pub fn plan_world_event(
                         spec_version: request.spec_version,
                         created_at_ms,
                         occurred_at_ms: request.occurred_at_ms,
+                        resume_id: request.resume_id.clone(),
                     }
                 })
                 .collect();
@@ -230,6 +292,8 @@ pub fn plan_world_event(
             run.updated_at_ms = created_at_ms;
             Ok(WorldMutationPlan {
                 run: Some(run),
+                cleanup_hooks_for_run: true,
+                delete_waits_for_run: true,
                 events: vec![make_event(request.event.clone())],
                 ..empty_plan()
             })
@@ -245,6 +309,8 @@ pub fn plan_world_event(
             run.updated_at_ms = created_at_ms;
             Ok(WorldMutationPlan {
                 run: Some(run),
+                cleanup_hooks_for_run: true,
+                delete_waits_for_run: true,
                 events: vec![make_event(request.event.clone())],
                 ..empty_plan()
             })
@@ -254,6 +320,8 @@ pub fn plan_world_event(
             if run.status == RunStatus::Cancelled {
                 return Ok(WorldMutationPlan {
                     run: Some(run),
+                    cleanup_hooks_for_run: true,
+                    delete_waits_for_run: true,
                     events: vec![make_event(request.event.clone())],
                     ..empty_plan()
                 });
@@ -264,6 +332,44 @@ pub fn plan_world_event(
             run.error = None;
             run.error_code = None;
             run.completed_at_ms = Some(created_at_ms);
+            run.updated_at_ms = created_at_ms;
+            Ok(WorldMutationPlan {
+                run: Some(run),
+                cleanup_hooks_for_run: true,
+                delete_waits_for_run: true,
+                events: vec![make_event(request.event.clone())],
+                ..empty_plan()
+            })
+        }
+        WorldEventData::AttrSet {
+            correlation_id,
+            changes,
+            writer,
+            allow_reserved_attributes,
+        } => {
+            let mut run = require_run(current_run, &request.run_id)?.clone();
+            require_active_run(&run)?;
+            if correlation_id.as_ref().is_some_and(String::is_empty) {
+                return Err(WorldError::invalid_request(
+                    "attribute correlationId must not be empty",
+                ));
+            }
+            validate_attribute_changes(
+                changes,
+                writer,
+                &run.attributes,
+                *allow_reserved_attributes,
+            )?;
+            for change in changes {
+                match &change.value {
+                    Some(value) => {
+                        run.attributes.insert(change.key.clone(), value.clone());
+                    }
+                    None => {
+                        run.attributes.remove(&change.key);
+                    }
+                }
+            }
             run.updated_at_ms = created_at_ms;
             Ok(WorldMutationPlan {
                 run: Some(run),
@@ -465,6 +571,169 @@ pub fn plan_world_event(
                 ..empty_plan()
             })
         }
+        WorldEventData::HookCreated {
+            hook_id,
+            token,
+            metadata,
+            token_retention_until_ms,
+            is_webhook,
+            is_system,
+        } => {
+            let run = require_run(current_run, &request.run_id)?;
+            require_entity_creation_allowed(run, "Hook")?;
+            validate_hook_creation(hook_id, token, *token_retention_until_ms)?;
+            if current_hook.is_some() {
+                return Err(entity_conflict(format!(
+                    "Hook {hook_id:?} already exists in run {:?}",
+                    request.run_id
+                )));
+            }
+            if let Some(owner) = hook_with_token {
+                if owner.token != *token {
+                    return Err(WorldError::invalid_request(
+                        "the locked Hook token owner does not match the requested token",
+                    ));
+                }
+                if owner.run_id == request.run_id && owner.hook_id == *hook_id {
+                    return Err(entity_conflict(format!(
+                        "Hook {hook_id:?} already exists in run {:?}",
+                        request.run_id
+                    )));
+                }
+                return Ok(WorldMutationPlan {
+                    events: vec![make_event(WorldEventData::HookConflict {
+                        hook_id: hook_id.clone(),
+                        token: token.clone(),
+                        conflicting_run_id: Some(owner.run_id.clone()),
+                    })],
+                    ..empty_plan()
+                });
+            }
+            if let Some(owner) = hook_with_id {
+                if owner.hook_id != *hook_id {
+                    return Err(WorldError::invalid_request(
+                        "the locked Hook ID owner does not match the requested Hook ID",
+                    ));
+                }
+                return Err(entity_conflict(format!(
+                    "Hook {hook_id:?} already exists in run {:?}",
+                    owner.run_id
+                )));
+            }
+            let hook = WorkflowHook {
+                run_id: request.run_id.clone(),
+                hook_id: hook_id.clone(),
+                token: token.clone(),
+                metadata: metadata.clone(),
+                created_at_ms,
+                spec_version: request.spec_version,
+                // Missing isWebhook is the legacy webhook form. Current
+                // runtimes always send false explicitly for createHook().
+                is_webhook: is_webhook.unwrap_or(true),
+                is_system: is_system.unwrap_or(false),
+                token_retention_until_ms: *token_retention_until_ms,
+            };
+            Ok(WorldMutationPlan {
+                hook: Some(hook),
+                insert_hook: true,
+                events: vec![make_event(request.event.clone())],
+                ..empty_plan()
+            })
+        }
+        WorldEventData::HookReceived { hook_id, token, .. } => {
+            let run = require_run(current_run, &request.run_id)?;
+            if run.status.is_terminal() {
+                return Err(WorldError::new(
+                    WorldErrorKind::RunExpired,
+                    format!(
+                        "cannot receive Hook {hook_id:?} on terminal run {:?}",
+                        request.run_id
+                    ),
+                ));
+            }
+            let hook = require_hook(current_hook, &request.run_id, hook_id)?;
+            if token.as_ref().is_some_and(|token| token != &hook.token) {
+                return Err(WorldError::invalid_request(
+                    "eventData.token does not match the durable Hook token",
+                ));
+            }
+            Ok(WorldMutationPlan {
+                events: vec![make_event(request.event.clone())],
+                ..empty_plan()
+            })
+        }
+        WorldEventData::HookDisposed { hook_id, .. } => {
+            require_run(current_run, &request.run_id)?;
+            let hook = require_hook(current_hook, &request.run_id, hook_id)?.clone();
+            Ok(WorldMutationPlan {
+                hook: Some(hook),
+                delete_hook: true,
+                events: vec![make_event(request.event.clone())],
+                ..empty_plan()
+            })
+        }
+        WorldEventData::WaitCreated {
+            wait_id,
+            resume_at_ms,
+        } => {
+            let run = require_run(current_run, &request.run_id)?;
+            require_entity_creation_allowed(run, "wait")?;
+            validate_wait_id(wait_id)?;
+            validate_nonnegative_timestamp(*resume_at_ms, "eventData.resumeAt")?;
+            if current_wait.is_some() {
+                return Err(entity_conflict(format!(
+                    "wait {wait_id:?} already exists in run {:?}",
+                    request.run_id
+                )));
+            }
+            let wait = WorkflowWait {
+                wait_id: workflow_wait_id(&request.run_id, wait_id),
+                run_id: request.run_id.clone(),
+                status: WaitStatus::Waiting,
+                resume_at_ms: Some(*resume_at_ms),
+                completed_at_ms: None,
+                created_at_ms,
+                updated_at_ms: created_at_ms,
+                spec_version: request.spec_version,
+            };
+            Ok(WorldMutationPlan {
+                wait: Some(wait),
+                insert_wait: true,
+                events: vec![make_event(request.event.clone())],
+                ..empty_plan()
+            })
+        }
+        WorldEventData::WaitCompleted {
+            wait_id,
+            resume_at_ms,
+        } => {
+            require_run(current_run, &request.run_id)?;
+            validate_wait_id(wait_id)?;
+            if let Some(resume_at_ms) = resume_at_ms {
+                validate_nonnegative_timestamp(*resume_at_ms, "eventData.resumeAt")?;
+            }
+            let mut wait = require_wait(current_wait, &request.run_id, wait_id)?.clone();
+            if wait.status == WaitStatus::Completed {
+                return Err(entity_conflict(format!(
+                    "wait {wait_id:?} is already completed in run {:?}",
+                    request.run_id
+                )));
+            }
+            wait.status = WaitStatus::Completed;
+            wait.completed_at_ms = Some(created_at_ms);
+            wait.updated_at_ms = created_at_ms;
+            Ok(WorldMutationPlan {
+                wait: Some(wait),
+                events: vec![make_event(request.event.clone())],
+                ..empty_plan()
+            })
+        }
+        WorldEventData::HookConflict { .. } | WorldEventData::Noop { .. } => {
+            Err(WorldError::invalid_request(format!(
+                "{} is produced only by a World backend",
+                request.event.event_type().as_str()
+            )))
+        }
     }
 }
 
@@ -487,6 +756,30 @@ fn validate_world_event_request(
     {
         return Err(WorldError::invalid_request(
             "eventCount exceeds the maximum event slot",
+        ));
+    }
+    if request.resume_id.as_ref().is_some_and(String::is_empty) {
+        return Err(WorldError::invalid_request("resumeId must not be empty"));
+    }
+    if request
+        .resume_payload_digest
+        .as_ref()
+        .is_some_and(String::is_empty)
+    {
+        return Err(WorldError::invalid_request(
+            "resumePayloadDigest must not be empty",
+        ));
+    }
+    if request.resume_payload_digest.is_some() && request.resume_id.is_none() {
+        return Err(WorldError::invalid_request(
+            "resumePayloadDigest requires resumeId",
+        ));
+    }
+    if (request.resume_id.is_some() || request.resume_payload_digest.is_some())
+        && !matches!(&request.event, WorldEventData::HookReceived { .. })
+    {
+        return Err(WorldError::invalid_request(
+            "resume idempotency fields are valid only for hook_received",
         ));
     }
     Ok(())
@@ -537,10 +830,95 @@ fn require_active_run(run: &WorkflowRun) -> Result<(), WorldError> {
 }
 
 fn require_child_creation_allowed(run: &WorkflowRun) -> Result<(), WorldError> {
+    require_entity_creation_allowed(run, "step")
+}
+
+fn require_entity_creation_allowed(run: &WorkflowRun, entity: &str) -> Result<(), WorldError> {
     if run.status.is_terminal() {
         return Err(entity_conflict(format!(
-            "cannot create a step on run {:?} in terminal state {:?}",
+            "cannot create a {entity} on run {:?} in terminal state {:?}",
             run.run_id, run.status
+        )));
+    }
+    Ok(())
+}
+
+fn validate_hook_creation(
+    hook_id: &str,
+    token: &str,
+    token_retention_until_ms: Option<i64>,
+) -> Result<(), WorldError> {
+    if hook_id.is_empty() {
+        return Err(WorldError::invalid_request(
+            "Hook correlationId must not be empty",
+        ));
+    }
+    if token.is_empty() {
+        return Err(WorldError::invalid_request("Hook token must not be empty"));
+    }
+    if let Some(token_retention_until_ms) = token_retention_until_ms {
+        validate_nonnegative_timestamp(token_retention_until_ms, "eventData.tokenRetentionUntil")?;
+    }
+    Ok(())
+}
+
+fn require_hook<'a>(
+    current_hook: Option<&'a WorkflowHook>,
+    run_id: &str,
+    hook_id: &str,
+) -> Result<&'a WorkflowHook, WorldError> {
+    let hook = current_hook.ok_or_else(|| {
+        WorldError::new(
+            WorldErrorKind::HookNotFound,
+            format!("Hook {hook_id:?} was not found in run {run_id:?}"),
+        )
+    })?;
+    if hook.hook_id != hook_id {
+        return Err(WorldError::invalid_request(
+            "the locked Hook does not match the event correlationId",
+        ));
+    }
+    Ok(hook)
+}
+
+fn validate_wait_id(wait_id: &str) -> Result<(), WorldError> {
+    if wait_id.is_empty() {
+        return Err(WorldError::invalid_request(
+            "wait correlationId must not be empty",
+        ));
+    }
+    Ok(())
+}
+
+/// Build the public materialized wait identifier from an event correlation ID.
+#[must_use]
+pub fn workflow_wait_id(run_id: &str, correlation_id: &str) -> String {
+    format!("{run_id}-{correlation_id}")
+}
+
+fn require_wait<'a>(
+    current_wait: Option<&'a WorkflowWait>,
+    run_id: &str,
+    wait_id: &str,
+) -> Result<&'a WorkflowWait, WorldError> {
+    let wait = current_wait.ok_or_else(|| {
+        WorldError::new(
+            WorldErrorKind::WaitNotFound,
+            format!("wait {wait_id:?} was not found in run {run_id:?}"),
+        )
+    })?;
+    if wait.wait_id != workflow_wait_id(run_id, wait_id) {
+        return Err(WorldError::invalid_request(
+            "the locked wait does not match the event correlationId",
+        ));
+    }
+    Ok(wait)
+}
+
+fn validate_nonnegative_timestamp(value: i64, field: &str) -> Result<(), WorldError> {
+    if value < 0 {
+        return Err(WorldError::invalid_request(format!(
+            "{field} must not be negative"
         )));
     }
     Ok(())
@@ -647,6 +1025,70 @@ fn validate_persisted_spec(spec_version: u32) -> Result<(), WorldError> {
     ))
 }
 
+fn validate_attribute_changes(
+    changes: &[AttributeChange],
+    writer: &AttributeWriter,
+    existing: &BTreeMap<String, String>,
+    allow_reserved_attributes: bool,
+) -> Result<(), WorldError> {
+    if let AttributeWriter::Step { step_id, .. } = writer
+        && step_id.is_empty()
+    {
+        return Err(WorldError::invalid_request(
+            "attribute writer stepId must not be empty",
+        ));
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut next_keys = existing.keys().cloned().collect::<BTreeSet<_>>();
+    for change in changes {
+        let key_length = change.key.encode_utf16().count();
+        if key_length == 0 {
+            return Err(WorldError::invalid_request(
+                "attribute key must not be empty",
+            ));
+        }
+        if key_length > ATTRIBUTE_KEY_MAX_LENGTH {
+            return Err(WorldError::invalid_request(format!(
+                "attribute key length {key_length} exceeds limit {ATTRIBUTE_KEY_MAX_LENGTH}"
+            )));
+        }
+        if change.key.starts_with('$') && !allow_reserved_attributes {
+            return Err(WorldError::invalid_request(format!(
+                "attribute key {:?} uses the reserved $ prefix",
+                change.key
+            )));
+        }
+        if !seen.insert(change.key.as_str()) {
+            return Err(WorldError::invalid_request(format!(
+                "attribute key {:?} appears more than once in the same batch",
+                change.key
+            )));
+        }
+        match &change.value {
+            Some(value) => {
+                if value.len() > ATTRIBUTE_VALUE_MAX_BYTES {
+                    return Err(WorldError::invalid_request(format!(
+                        "attribute value byte length {} exceeds limit {ATTRIBUTE_VALUE_MAX_BYTES}",
+                        value.len()
+                    )));
+                }
+                next_keys.insert(change.key.clone());
+            }
+            None => {
+                next_keys.remove(&change.key);
+            }
+        }
+    }
+    if next_keys.len() > ATTRIBUTE_MAX_PER_RUN {
+        return Err(WorldError::invalid_request(format!(
+            "run attribute count would exceed limit {ATTRIBUTE_MAX_PER_RUN} (post-merge {})",
+            next_keys.len()
+        )));
+    }
+    Ok(())
+}
+
 fn validate_attributes(request: &RunStartedRequest) -> Result<(), WorldError> {
     let Some(attributes) = &request.event_data.attributes else {
         return Ok(());
@@ -690,11 +1132,15 @@ mod tests {
 
     use serde_json::json;
     use workflow_protocol::{
-        CreateWorldEventRequest, EventType, RunCreatedEventData, RunStartedRequest, RunStatus,
-        StepStatus, WorldErrorKind, WorldEventData,
+        AttributeChange, AttributeWriter, CreateWorldEventRequest, EventType, RunCreatedEventData,
+        RunStartedRequest, RunStatus, StepStatus, WaitStatus, WorkflowHook, WorkflowRun,
+        WorldErrorKind, WorldEventData,
     };
 
-    use super::{plan_run_started, plan_world_event};
+    use super::{
+        WorldEventState, plan_run_started, plan_world_event, plan_world_event_with_state,
+        workflow_wait_id,
+    };
 
     fn request() -> RunStartedRequest {
         RunStartedRequest {
@@ -716,6 +1162,26 @@ mod tests {
                 allow_reserved_attributes: true,
                 encryption_public_key: Some("fixture-public-key".to_owned()),
             },
+        }
+    }
+
+    fn running_run(run_id: &str) -> WorkflowRun {
+        let mut request = request();
+        request.run_id = run_id.to_owned();
+        plan_run_started(None, &request, 100)
+            .expect("run should start")
+            .run
+    }
+
+    fn event_request(run_id: &str, event: WorldEventData) -> CreateWorldEventRequest {
+        CreateWorldEventRequest {
+            run_id: run_id.to_owned(),
+            spec_version: 7,
+            event_count: None,
+            occurred_at_ms: None,
+            resume_id: None,
+            resume_payload_digest: None,
+            event,
         }
     }
 
@@ -778,6 +1244,8 @@ mod tests {
             spec_version: 7,
             event_count: Some(0),
             occurred_at_ms: Some(100),
+            resume_id: None,
+            resume_payload_digest: None,
             event: WorldEventData::RunCreated(request().event_data),
         };
         let create = plan_world_event(None, None, &create_request, 200)
@@ -793,6 +1261,8 @@ mod tests {
             spec_version: 7,
             event_count: Some(1),
             occurred_at_ms: None,
+            resume_id: None,
+            resume_payload_digest: None,
             event: WorldEventData::RunStarted(None),
         };
         let start = plan_world_event(Some(&pending_run), None, &start_request, 300)
@@ -806,6 +1276,8 @@ mod tests {
             spec_version: 7,
             event_count: Some(2),
             occurred_at_ms: None,
+            resume_id: None,
+            resume_payload_digest: None,
             event: WorldEventData::StepStarted {
                 step_id: "step_phase1".to_owned(),
                 step_name: Some("step//phase1".to_owned()),
@@ -836,6 +1308,8 @@ mod tests {
             spec_version: 7,
             event_count: Some(4),
             occurred_at_ms: None,
+            resume_id: None,
+            resume_payload_digest: None,
             event: WorldEventData::StepCompleted {
                 step_id: running_step.step_id.clone(),
                 step_name: Some(running_step.step_name.clone()),
@@ -861,5 +1335,402 @@ mod tests {
         )
         .expect_err("terminal steps must reject further writes");
         assert_eq!(duplicate.kind(), WorldErrorKind::EntityConflict);
+    }
+
+    #[test]
+    fn plans_attribute_set_merge_and_removal() {
+        let mut run = running_run("wrun_attributes");
+        run.attributes = BTreeMap::from([
+            ("keep".to_owned(), "before".to_owned()),
+            ("remove".to_owned(), "present".to_owned()),
+        ]);
+        let request = event_request(
+            &run.run_id,
+            WorldEventData::AttrSet {
+                correlation_id: Some("attr_1".to_owned()),
+                changes: vec![
+                    AttributeChange {
+                        key: "keep".to_owned(),
+                        value: Some("after".to_owned()),
+                    },
+                    AttributeChange {
+                        key: "remove".to_owned(),
+                        value: None,
+                    },
+                    AttributeChange {
+                        key: "added".to_owned(),
+                        value: Some("new".to_owned()),
+                    },
+                ],
+                writer: AttributeWriter::Workflow,
+                allow_reserved_attributes: false,
+            },
+        );
+
+        let plan = plan_world_event(Some(&run), None, &request, 250)
+            .expect("attribute update should be planned");
+        let updated = plan.run.expect("run should be updated");
+        assert_eq!(
+            updated.attributes,
+            BTreeMap::from([
+                ("added".to_owned(), "new".to_owned()),
+                ("keep".to_owned(), "after".to_owned()),
+            ])
+        );
+        assert_eq!(updated.updated_at_ms, 250);
+        assert_eq!(plan.events.len(), 1);
+        assert_eq!(plan.events[0].event.event_type(), EventType::AttrSet);
+    }
+
+    #[test]
+    fn rejects_invalid_attribute_batches_before_mutating_the_run() {
+        let mut run = running_run("wrun_attribute_limits");
+        run.attributes = (0..64)
+            .map(|index| (format!("key_{index}"), "value".to_owned()))
+            .collect();
+        let too_many = event_request(
+            &run.run_id,
+            WorldEventData::AttrSet {
+                correlation_id: None,
+                changes: vec![AttributeChange {
+                    key: "one_too_many".to_owned(),
+                    value: Some("value".to_owned()),
+                }],
+                writer: AttributeWriter::Workflow,
+                allow_reserved_attributes: false,
+            },
+        );
+        let error = plan_world_event(Some(&run), None, &too_many, 250)
+            .expect_err("post-merge count must be validated");
+        assert_eq!(error.kind(), WorldErrorKind::InvalidRequest);
+
+        let duplicate = event_request(
+            &run.run_id,
+            WorldEventData::AttrSet {
+                correlation_id: None,
+                changes: vec![
+                    AttributeChange {
+                        key: "key_0".to_owned(),
+                        value: None,
+                    },
+                    AttributeChange {
+                        key: "key_0".to_owned(),
+                        value: Some("replacement".to_owned()),
+                    },
+                ],
+                writer: AttributeWriter::Workflow,
+                allow_reserved_attributes: false,
+            },
+        );
+        let error = plan_world_event(Some(&run), None, &duplicate, 250)
+            .expect_err("duplicate keys must be rejected");
+        assert_eq!(error.kind(), WorldErrorKind::InvalidRequest);
+
+        let reserved = event_request(
+            &run.run_id,
+            WorldEventData::AttrSet {
+                correlation_id: None,
+                changes: vec![AttributeChange {
+                    key: "$private".to_owned(),
+                    value: Some("value".to_owned()),
+                }],
+                writer: AttributeWriter::Workflow,
+                allow_reserved_attributes: false,
+            },
+        );
+        let error = plan_world_event(Some(&run), None, &reserved, 250)
+            .expect_err("reserved keys require an explicit opt-in");
+        assert_eq!(error.kind(), WorldErrorKind::InvalidRequest);
+    }
+
+    #[test]
+    fn plans_the_basic_hook_lifecycle() {
+        let run = running_run("wrun_hooks");
+        let create_request = event_request(
+            &run.run_id,
+            WorldEventData::HookCreated {
+                hook_id: "hook_1".to_owned(),
+                token: "token_1".to_owned(),
+                metadata: Some(vec![1, 2, 3]),
+                token_retention_until_ms: Some(5_000),
+                is_webhook: None,
+                is_system: Some(true),
+            },
+        );
+        let created = plan_world_event_with_state(
+            WorldEventState {
+                run: Some(&run),
+                ..WorldEventState::default()
+            },
+            &create_request,
+            200,
+        )
+        .expect("Hook creation should be planned");
+        assert!(created.insert_hook);
+        let hook = created.hook.expect("Hook should be materialized");
+        assert_eq!(hook.run_id, run.run_id);
+        assert_eq!(hook.hook_id, "hook_1");
+        assert_eq!(hook.token, "token_1");
+        assert!(hook.is_webhook);
+        assert!(hook.is_system);
+        assert_eq!(hook.token_retention_until_ms, Some(5_000));
+
+        let mut received_request = event_request(
+            &run.run_id,
+            WorldEventData::HookReceived {
+                hook_id: hook.hook_id.clone(),
+                token: Some(hook.token.clone()),
+                payload: vec![9, 8],
+            },
+        );
+        received_request.resume_id = Some("resume_1".to_owned());
+        received_request.resume_payload_digest = Some("digest_1".to_owned());
+        let received = plan_world_event_with_state(
+            WorldEventState {
+                run: Some(&run),
+                hook: Some(&hook),
+                ..WorldEventState::default()
+            },
+            &received_request,
+            300,
+        )
+        .expect("Hook receipt should be journaled");
+        assert!(received.hook.is_none());
+        assert_eq!(
+            received.events[0].event.event_type(),
+            EventType::HookReceived
+        );
+        assert_eq!(received.events[0].resume_id.as_deref(), Some("resume_1"));
+
+        let disposed_request = event_request(
+            &run.run_id,
+            WorldEventData::HookDisposed {
+                hook_id: hook.hook_id.clone(),
+                token: None,
+            },
+        );
+        let disposed = plan_world_event_with_state(
+            WorldEventState {
+                run: Some(&run),
+                hook: Some(&hook),
+                ..WorldEventState::default()
+            },
+            &disposed_request,
+            400,
+        )
+        .expect("Hook disposal should be planned");
+        assert!(disposed.delete_hook);
+        assert_eq!(disposed.hook, Some(hook));
+    }
+
+    #[test]
+    fn rejects_a_hook_received_token_that_disagrees_with_the_entity() {
+        let run = running_run("wrun_hook_token");
+        let hook = WorkflowHook {
+            run_id: run.run_id.clone(),
+            hook_id: "hook_1".to_owned(),
+            token: "expected".to_owned(),
+            metadata: None,
+            created_at_ms: 100,
+            spec_version: 7,
+            is_webhook: false,
+            is_system: false,
+            token_retention_until_ms: None,
+        };
+        let request = event_request(
+            &run.run_id,
+            WorldEventData::HookReceived {
+                hook_id: hook.hook_id.clone(),
+                token: Some("different".to_owned()),
+                payload: vec![],
+            },
+        );
+        let error = plan_world_event_with_state(
+            WorldEventState {
+                run: Some(&run),
+                hook: Some(&hook),
+                ..WorldEventState::default()
+            },
+            &request,
+            200,
+        )
+        .expect_err("the event token must match the durable Hook");
+        assert_eq!(error.kind(), WorldErrorKind::InvalidRequest);
+    }
+
+    #[test]
+    fn represents_hook_token_conflicts_as_backend_events() {
+        let run = running_run("wrun_hook_conflict");
+        let owner = WorkflowHook {
+            run_id: "wrun_owner".to_owned(),
+            hook_id: "hook_owner".to_owned(),
+            token: "shared_token".to_owned(),
+            metadata: None,
+            created_at_ms: 100,
+            spec_version: 7,
+            is_webhook: false,
+            is_system: false,
+            token_retention_until_ms: None,
+        };
+        let request = event_request(
+            &run.run_id,
+            WorldEventData::HookCreated {
+                hook_id: "hook_new".to_owned(),
+                token: "shared_token".to_owned(),
+                metadata: None,
+                token_retention_until_ms: None,
+                is_webhook: None,
+                is_system: None,
+            },
+        );
+
+        let plan = plan_world_event_with_state(
+            WorldEventState {
+                run: Some(&run),
+                hook_with_token: Some(&owner),
+                ..WorldEventState::default()
+            },
+            &request,
+            200,
+        )
+        .expect("a token collision should become a Hook conflict event");
+        assert!(!plan.insert_hook);
+        assert!(plan.hook.is_none());
+        assert!(matches!(
+            &plan.events[0].event,
+            WorldEventData::HookConflict {
+                hook_id,
+                token,
+                conflicting_run_id: Some(run_id),
+            } if hook_id == "hook_new" && token == "shared_token" && run_id == "wrun_owner"
+        ));
+    }
+
+    #[test]
+    fn rejects_a_hook_id_owned_by_another_run_when_the_token_is_distinct() {
+        let run = running_run("wrun_hook_id_conflict");
+        let owner = WorkflowHook {
+            run_id: "wrun_owner".to_owned(),
+            hook_id: "hook_shared_id".to_owned(),
+            token: "owner_token".to_owned(),
+            metadata: None,
+            created_at_ms: 100,
+            spec_version: 7,
+            is_webhook: false,
+            is_system: false,
+            token_retention_until_ms: None,
+        };
+        let request = event_request(
+            &run.run_id,
+            WorldEventData::HookCreated {
+                hook_id: owner.hook_id.clone(),
+                token: "distinct_token".to_owned(),
+                metadata: None,
+                token_retention_until_ms: None,
+                is_webhook: None,
+                is_system: None,
+            },
+        );
+
+        let error = plan_world_event_with_state(
+            WorldEventState {
+                run: Some(&run),
+                hook_with_id: Some(&owner),
+                ..WorldEventState::default()
+            },
+            &request,
+            200,
+        )
+        .expect_err("a globally owned Hook ID must not be inserted again");
+
+        assert_eq!(error.kind(), WorldErrorKind::EntityConflict);
+        assert!(error.message().contains("wrun_owner"));
+    }
+
+    #[test]
+    fn plans_wait_creation_and_completion() {
+        let run = running_run("wrun_waits");
+        let create_request = event_request(
+            &run.run_id,
+            WorldEventData::WaitCreated {
+                wait_id: "wait_1".to_owned(),
+                resume_at_ms: 500,
+            },
+        );
+        let created = plan_world_event_with_state(
+            WorldEventState {
+                run: Some(&run),
+                ..WorldEventState::default()
+            },
+            &create_request,
+            200,
+        )
+        .expect("wait creation should be planned");
+        assert!(created.insert_wait);
+        let wait = created.wait.expect("wait should be materialized");
+        assert_eq!(wait.wait_id, workflow_wait_id(&run.run_id, "wait_1"));
+        assert_eq!(wait.status, WaitStatus::Waiting);
+        assert_eq!(wait.resume_at_ms, Some(500));
+
+        let complete_request = event_request(
+            &run.run_id,
+            WorldEventData::WaitCompleted {
+                wait_id: "wait_1".to_owned(),
+                resume_at_ms: Some(550),
+            },
+        );
+        let completed = plan_world_event_with_state(
+            WorldEventState {
+                run: Some(&run),
+                wait: Some(&wait),
+                ..WorldEventState::default()
+            },
+            &complete_request,
+            600,
+        )
+        .expect("wait completion should be planned");
+        let completed_wait = completed.wait.expect("wait should be updated");
+        assert_eq!(completed_wait.status, WaitStatus::Completed);
+        assert_eq!(completed_wait.resume_at_ms, Some(500));
+        assert_eq!(completed_wait.completed_at_ms, Some(600));
+        assert!(matches!(
+            completed.events[0].event,
+            WorldEventData::WaitCompleted {
+                resume_at_ms: Some(550),
+                ..
+            }
+        ));
+
+        let error = plan_world_event_with_state(
+            WorldEventState {
+                run: Some(&run),
+                wait: Some(&completed_wait),
+                ..WorldEventState::default()
+            },
+            &complete_request,
+            700,
+        )
+        .expect_err("a completed wait must reject another completion");
+        assert_eq!(error.kind(), WorldErrorKind::EntityConflict);
+    }
+
+    #[test]
+    fn terminal_run_plans_request_child_cleanup() {
+        let run = running_run("wrun_terminal_cleanup");
+        let request = event_request(
+            &run.run_id,
+            WorldEventData::RunCompleted {
+                output: Some(vec![4, 2]),
+            },
+        );
+        let plan = plan_world_event(Some(&run), None, &request, 200)
+            .expect("run completion should be planned");
+
+        assert!(plan.cleanup_hooks_for_run);
+        assert!(plan.delete_waits_for_run);
+        assert_eq!(
+            plan.run.expect("run should be updated").status,
+            RunStatus::Completed
+        );
     }
 }

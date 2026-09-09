@@ -53,7 +53,7 @@ import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
 import { useStreamReader } from '~/lib/hooks/use-stream-reader';
 import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
-import type { EnvMap } from '~/lib/types';
+import type { EnvMap, ObservabilityWorkflowRun } from '~/lib/types';
 import {
   cancelRun,
   fetchSpanDetailResource,
@@ -332,7 +332,7 @@ export function RunDetailView({
     isLoadingMoreTraceData,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
 
-  const run = runData ?? ({} as WorkflowRun);
+  const run = runData ?? ({} as ObservabilityWorkflowRun);
 
   // Encryption key persisted for the lifetime of this run page.
   // Once fetched (via Decrypt button), it's used automatically for all
@@ -650,6 +650,14 @@ export function RunDetailView({
                   <Skeleton className="w-[280px] h-[20px]" />
                 )}
               </div>
+              {run.observabilitySource && (
+                <div className="flex flex-col gap-1">
+                  <div className="text-xs text-muted-foreground">Source</div>
+                  <div className="text-xs mt-0.5 font-mono">
+                    {run.observabilitySource}
+                  </div>
+                </div>
+              )}
               <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Queued</div>
                 {run.createdAt ? (

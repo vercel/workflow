@@ -6,7 +6,9 @@ export const WORKFLOW_VITEST_OPTIONS_KEY = '__workflowVitestOptions';
 export type ResolvedWorkflowTestOptions = {
   cwd: string;
   rootDir: string;
+  world: 'local' | 'sqlite';
   dataDir: string;
+  databaseDir: string;
   outDir: string;
 };
 
@@ -31,13 +33,25 @@ export function resolveWorkflowTestOptions(
   const rootDir = mergedOptions.rootDir
     ? resolve(cwd, mergedOptions.rootDir)
     : cwd;
+  const world = mergedOptions.world ?? 'local';
+  if (world !== 'local' && world !== 'sqlite') {
+    throw new Error(
+      `Invalid workflow test world ${JSON.stringify(world)}: expected "local" or "sqlite"`
+    );
+  }
 
   return {
     cwd,
     rootDir,
+    world,
     dataDir: mergedOptions.dataDir
       ? resolve(cwd, mergedOptions.dataDir)
       : join(rootDir, '.workflow-data'),
+    databaseDir: mergedOptions.databaseDir
+      ? resolve(cwd, mergedOptions.databaseDir)
+      : process.env.WORKFLOW_LOCAL_DATABASE_DIR
+        ? resolve(cwd, process.env.WORKFLOW_LOCAL_DATABASE_DIR)
+        : join(rootDir, '.workflow-database'),
     outDir: mergedOptions.outDir
       ? resolve(cwd, mergedOptions.outDir)
       : join(rootDir, '.workflow-vitest'),

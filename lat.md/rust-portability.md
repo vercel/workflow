@@ -4,7 +4,7 @@ Rust becomes the shared implementation layer for portable tooling and self-hoste
 
 ## Design Status
 
-This document fixes the intended boundaries and sequencing. Phases 0 and 1 now have executable evidence, while later-phase choices remain open where a focused prototype or benchmark is still needed.
+This document fixes the intended boundaries and sequencing. Phases 0 through 2 now have executable evidence, while later-phase choices remain open where a focused prototype or benchmark is still needed.
 
 The status words used below have precise meanings:
 
@@ -27,8 +27,8 @@ The decision ledger keeps established boundaries separate from hypotheses that s
 | First-slice structural types are hand-mapped and checked by a backend-neutral conformance suite and shared fixtures | Direction |
 | Node.js and Python adapters use direct host-type mappings, and each wrapper ships atomically with its native artifact | Direction |
 | SQLite uses bundled `rusqlite`, explicit migrations, WAL, checksummed migration history, and bounded blocking execution | Direction |
-| The Phase 1 native gate is Rust 1.88, Node.js 22/24, Linux x64 glibc, macOS arm64, Windows x64, and bundled SQLite 3.53.2 | Direction |
-| One SQLite file also contains a leased durable local queue | Provisional |
+| The portable-local native gate is Rust 1.88, Node.js 22/24, Linux x64 glibc, macOS arm64, Windows x64, and bundled SQLite 3.53.2 | Direction |
+| One SQLite file also contains a leased durable local queue | Direction |
 | One SQLite file is one application boundary, while stable local deployment IDs identify compatible worker groups | Direction |
 | A Rust-owned worker delivers the initial SQLite queue exclusively through loopback HTTP; direct binding callbacks are deferred | Direction |
 | Language hosts explicitly register a complete loopback flow URL in process memory before a SQLite worker claims messages | Direction |
@@ -37,7 +37,8 @@ The decision ledger keeps established boundaries separate from hypotheses that s
 | SQLite local defaults to `synchronous=NORMAL`, a five-second contention budget, one writer plus three readers, and 1000-page passive auto-checkpoints | Direction |
 | SQLite databases live in `WORKFLOW_LOCAL_DATABASE_DIR`, default `.workflow-database`; the legacy data directory is not an alias | Direction |
 | Context-bearing fields use a portable `ContextValue` tree, direct binding conversion, and schema-selected standard CBOR BLOBs | Direction |
-| Stream and cancellation FFI shapes and public package names | Open |
+| Durable stream FFI uses owned byte chunks, explicit cursors, bounded polling, and host-native cancellation | Direction |
+| Final public package names and platform artifact layout | Open |
 | Native-wheel repository, publisher, and cross-repository release coordination | Open |
 | PostgreSQL schema coexistence and replacement for Graphile Worker | Open |
 | Legacy local-data importer and timing of default switches | Open |
@@ -58,7 +59,7 @@ The Node-API probe now starts a Rust-owned single-concurrency supervisor with an
 
 The repository-local technical floor is Rust 1.88 for both native bindings; the native dependency graph does not compile under the workspace's older Rust 1.87 floor. The existing probe CI exercises Node.js 22 and Python 3.13 across Linux x64, macOS arm64, and Windows x64. The Python extension selects `abi3-py39`, so Python 3.9 is the intended interpreter floor for that probe. This evidence informs the Phase 1 gate in [[rust-portability#Native CLI#Initial Native Validation Matrix]], but neither the probe nor that gate is a public support promise.
 
-The persisted-codec fixture fixes three boundaries. New SQLite execution context uses `workflow-cbor-v1`; Rust verifies exact writer bytes and both Rust and the installed `cbor-x` reader verify the same value, including bytes. Legacy JSON/JSONB/text vectors cover PostgreSQL values, JSON-stringified errors, and world-local's byte sentinel. Independently generated `cbor-x` vectors cover extensible objects, byte arrays, `undefined`, `null`, and dates, and the Rust compatibility reader rejects trailing data, non-string object keys, and unknown tags. Queue concurrency, wheel ownership, and public package names remain open.
+The persisted-codec fixture fixes three boundaries. New SQLite execution context uses `workflow-cbor-v1`; Rust verifies exact writer bytes and both Rust and the installed `cbor-x` reader verify the same value, including bytes. Legacy JSON/JSONB/text vectors cover PostgreSQL values, JSON-stringified errors, and world-local's byte sentinel. Independently generated `cbor-x` vectors cover extensible objects, byte arrays, `undefined`, `null`, and dates, and the Rust compatibility reader rejects trailing data, non-string object keys, and unknown tags. Phase 2 validates bounded queue concurrency; native-wheel ownership and final public package names remain open.
 
 ### Phase 1 Evidence
 
@@ -73,6 +74,26 @@ The minimal queue persists in the same database and consumes only its configured
 The `workflow-cli` crate provides `version`, `doctor`, explicit `sqlite migrate`, and metadata-only `sqlite inspect`. Inspection opens the database read-only: tests prove that it neither creates or migrates storage nor starts the worker or consumes queued work. JSON output includes the native, SQLite, schema, and persisted-spec identity needed for diagnostics.
 
 CI gates this slice on Rust 1.88 and stable plus Node.js 22 and 24 across Linux x64 with glibc 2.28, macOS arm64 with a 13.5 deployment target, and Windows x64. Binding tests assert the compiled architecture and bundled SQLite version. Full workflow E2E, clean installation without a Rust toolchain, streams, Hooks, and the remaining optional capabilities stay in Phase 2.
+
+### Phase 2 Evidence
+
+Phase 2 completes the experimental Node.js portable-local profile without changing the default World.
+
+The shared protocol and transition planner now cover the complete current event vocabulary, attribute writers, Hooks, waits, Hook conflicts, resume IDs and payload digests, retained tokens, and terminal cleanup. SQLite schema version 5 materializes those entities and enforces dense event slots, correlated-creation uniqueness, Hook-ID and Hook-token ownership, and resume deduplication in the same write transaction as the journal append. Direct planner and storage tests cover rejected mutations, divergent replays, cross-run ID and token conflicts, retained and disposed Hooks, wait completion, and reopen persistence.
+
+Every wrapper for one canonical database resolves to a shared Rust runtime engine, including wrappers separated by deployment target. Missing path components are resolved from the nearest existing canonical ancestor, so aliases through a symlink cannot split the engine before the database directory exists. The current conservative implementation reuses one connection and serializes all in-process access, which stays below the three-reader ceiling. N-API tasks and queue workers retain that same engine rather than reconstructing a backend per call. Connection acquisition, the local lane, and SQLite lock waiting consume one five-second budget; retryable exhaustion reports the wait stage and elapsed time. Entity lists select and hydrate each page within one read transaction, so a concurrent process cannot turn a valid page into mixed state or a false corruption error. Closing the final native owner releases the cached connection even while the closed JavaScript wrapper remains reachable.
+
+Streams are durable SQLite rows with atomic batch allocation, canonical opaque cursors, idempotent close, process-independent polling, and run-scoped cleanup. A closed stream remains readable through every page, while the synthetic queue-health stream is deliberately permitted without a materialized run. The JavaScript adapter also provides bounded terminal-status polling and maps every native byte result, including nested execution-context values, back to ordinary `Uint8Array` instances rather than leaking Node.js `Buffer` behavior.
+
+The queue now runs a configurable bounded worker set, renews leases during slow HTTP handlers, delays and reschedules durable messages, and reconciles active runs by deployment target during startup. Lease claims and handler-visible delivery attempts are separate: connection failures rotate leases without exhausting runtime delivery attempts, while any received HTTP response advances the durable attempt before acknowledgement or rescheduling. Host registrations are process-wide but keyed by canonical database identity and deployment target; identical registration is idempotent, while only a conflict within that scope fails. Programmatic and environment base URLs take precedence over an explicit `PORT` fallback, and wildcard listen addresses normalize to loopback. Tests exercise competing workers, expired leases, monotonic renewal, transport failures followed by recovery, bounded shutdown, process death around commits, and deterministic recovery without duplicate amplification. Shutdown closes native state and surfaces accumulated background storage failures through a stable `QUEUE_STORAGE_FAILURE` error.
+
+`@workflow/world-sqlite` exposes the complete current World surface intended for this profile, database-local `clear()`, explicit migration, host registration, recovery controls, Hook-retention limits, and diagnostic native identity. The repository's full `@workflow/world-testing` runtime suite runs against the built package and covers addition, event positions, idempotency, Hooks, null bytes, retries, inline execution, sleeps, streams, abort signals, and parent/root lineage. The wrapper packs its co-versioned native addon; the build injects the wrapper package version separately from the Cargo crate version and the loader requires an exact package match. Native Turbo caching is disabled while one filename serves several OS-specific artifacts. A clean temporary npm consumer installed that tarball and migrated a schema-version-5 database with `cargo` absent from `PATH`.
+
+`@workflow/vitest` can select `world: 'sqlite'`. Each worker maps to one exact `vitest-<pool>.sqlite` file, explicitly migrates and clears only that database, and serves generated exact queue names through a private ephemeral loopback host. Read-only CLI and web observability discover only `workflow.sqlite` and safe Vitest filenames in the selected directory, validate exact Rust-pinned migration checksums and Workflow metadata through a read-only native handle without migration, merge creation-time-and-ID pages through composite cursors, and re-probe every database before returning or routing a run so duplicate IDs are rejected even after a short cached page. A source that cannot participate makes that uniqueness check fail closed; unambiguous reads route to the owning database, and the UI displays the source filename without adding a storage-level tag. Web requests rediscover the live database set and close their read-only handles after the operation or stream, so adding or removing a Vitest pool does not leave a stale aggregate.
+
+The Next.js Turbopack workbench consumes the packed addon through its staged dependency graph, registers its exact generated queues before worker startup, and shares one absolute database directory with the E2E driver. The advisory `e2e-local-sqlite` CI lane puts failing `cargo` and `rustc` shims ahead of the runner toolchain before staging, builds and starts that production fixture, runs the applicable core and agent corpus, publishes structured failures and the server log, and participates in the aggregate summary without becoming a required check yet. The definitive local production run passed 158 of 160 tests in 238.05 seconds; the two report-only failures are deliberately unadvertised queue names (`.well-known/agent` and the nonexistent-workflow negative case), and no SQLite busy or connection-budget error occurred. The event-log race workflow likewise has a report-only SQLite lane with a fresh explicitly migrated database; a minimized local Hook/resume run completed and cleaned up successfully. The package README records the experimental platform, filesystem, durability, and non-production support boundary.
+
+The same 2026-09-08 Apple M4 Pro/Node.js 24 snapshot measured a 6.2-second optimized Next.js compile, 96 MiB `.next` output (79.6 MiB under `.next/server`), a 7.6 MiB addon, 127 ms production readiness, and 607 MiB server RSS observed after the corpus. The checked-in queue benchmark makes its inputs explicit; at 1,000 one-byte messages and concurrency four, one sample enqueued at 11,383 messages/s and drained loopback delivery at 3,337 messages/s with 88.1 MiB process RSS and no failed delivery or storage operation. These are regression reference points, not support or throughput promises.
 
 ## Motivation
 
@@ -403,7 +424,7 @@ The filesystem implementation's `tag` is not a consistent tenant boundary: point
 
 The Rust SQLite World therefore has no tag or overlay column. The host maps each `@workflow/vitest` pool to its own SQLite database, and all point reads, writes, recovery, queue claims, and `clear()` operations stay within that database. A test that intentionally shares state must select the same database or import an explicit fixture; a test database never falls back to development data.
 
-CLI and local observability tooling explicitly aggregate `workflow.sqlite` and schema-validated `vitest-<pool>.sqlite` files in the selected database directory and identify each result's source. This preserves the reason tagged files were introduced without making cross-database listing a World storage operation.
+CLI and local observability tooling explicitly aggregate `workflow.sqlite` and schema-validated `vitest-<pool>.sqlite` files in the selected database directory and identify each result's source. Web requests rediscover this set and release their read-only database handles after each operation or stream. This preserves the reason tagged files were introduced without making cross-database listing a World storage operation.
 
 The existing filesystem World retains its current behavior during coexistence. Replacing it treats removal of overlay fallback as an intentional compatibility change and requires tests for per-pool isolation, scoped clearing and recovery, and visibility through the aggregation layer.
 
@@ -677,7 +698,7 @@ Database URLs, auth tokens, encryption material, application payloads, and SQL p
 
 Rust emits tracing spans and metrics for transaction latency, busy/serialization retries, queue depth and lease recovery, delivery attempts, stream polling, migration duration, and binding-call latency. Bindings connect those signals to the host SDK's OpenTelemetry context where possible, without making observability a prerequisite for correctness.
 
-A panic, poisoned worker, migration mismatch, or incompatible native module fails closed with enough version metadata to diagnose it. Background-task failures are surfaced through health and shutdown APIs rather than printed and forgotten.
+A panic, poisoned worker, migration mismatch, or incompatible native module fails closed with enough version metadata to diagnose it. Background-task failures are surfaced through a lifecycle health API where the World contract provides one and, at minimum, through shutdown rather than being printed and forgotten.
 
 ## Primary Risks
 

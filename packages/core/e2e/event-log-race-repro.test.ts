@@ -1219,8 +1219,8 @@ const testTimeoutMs = config.budgetMs + config.runTimeoutMs + 60_000;
 // pass runs for the whole configured budget — never let the CI-wide e2e
 // retry (vitest.config.ts) re-run it.
 describe('event log race repro', { retry: 0 }, () => {
-  beforeAll(() => {
-    setupWorld(deploymentUrl);
+  beforeAll(async () => {
+    await setupWorld(deploymentUrl);
 
     // The storms only produce the step-count divergence they exist for when
     // branches land on both sides of the watchdog deadline. If the step delay

@@ -1,10 +1,10 @@
 import { hasEncryptedFields, hydrateResourceIO } from '@workflow/web-shared';
-import type { Event, WorkflowRun } from '@workflow/world';
+import type { Event } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { unwrapServerActionResult } from '~/lib/client/workflow-errors';
 import { mergeById, pollResource } from '~/lib/client/workflow-primitives';
 import { fetchEvents, fetchRun } from '~/lib/rpc-client';
-import type { EnvMap } from '~/lib/types';
+import type { EnvMap, ObservabilityWorkflowRun } from '~/lib/types';
 
 const LIVE_POLL_LIMIT = 100;
 const INITIAL_PAGE_SIZE = 500;
@@ -24,7 +24,7 @@ export function useWorkflowTraceViewerData(
 ) {
   const { live = false } = options;
 
-  const [run, setRun] = useState<WorkflowRun | null>(null);
+  const [run, setRun] = useState<ObservabilityWorkflowRun | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
@@ -264,7 +264,7 @@ export function useWorkflowTraceViewerData(
   }, [live, initialLoadCompleted, update, run?.completedAt]);
 
   return {
-    run: run ?? ({} as WorkflowRun),
+    run: run ?? ({} as ObservabilityWorkflowRun),
     events,
     loading,
     error,

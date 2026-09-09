@@ -7,6 +7,9 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const packageDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(packageDirectory, '../..');
+const packageMetadata = JSON.parse(
+  await fs.readFile(path.join(packageDirectory, 'package.json'), 'utf8')
+);
 const targetDirectory = process.env.CARGO_TARGET_DIR
   ? path.resolve(repositoryRoot, process.env.CARGO_TARGET_DIR)
   : path.join(repositoryRoot, 'target');
@@ -14,7 +17,7 @@ const supportedTargets = new Set(['darwin/arm64', 'linux/x64', 'win32/x64']);
 const currentTarget = `${process.platform}/${process.arch}`;
 if (!supportedTargets.has(currentTarget)) {
   throw new Error(
-    `@workflow/world-sqlite Phase 1 does not build for ${currentTarget}; ` +
+    `@workflow/world-sqlite does not build for ${currentTarget}; ` +
       'supported targets are Linux x64 glibc, macOS arm64, and Windows x64.'
   );
 }
@@ -31,7 +34,7 @@ if (process.platform === 'linux') {
     (major === 2 && minor < 28)
   ) {
     throw new Error(
-      '@workflow/world-sqlite Phase 1 requires glibc 2.28 or newer; musl is not supported.'
+      '@workflow/world-sqlite requires glibc 2.28 or newer; musl is not supported.'
     );
   }
 }
@@ -45,7 +48,14 @@ const artifactName =
 await execFileAsync(
   'cargo',
   ['build', '-p', 'workflow-world-sqlite-node', '--locked'],
-  { cwd: repositoryRoot, encoding: 'utf8' }
+  {
+    cwd: repositoryRoot,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      WORKFLOW_WORLD_SQLITE_PACKAGE_VERSION: packageMetadata.version,
+    },
+  }
 );
 await fs.copyFile(
   path.join(targetDirectory, 'debug', artifactName),

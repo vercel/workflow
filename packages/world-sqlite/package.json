@@ -11,7 +11,13 @@
       "default": "./dist/index.js"
     }
   },
+  "files": [
+    "dist",
+    "workflow-world-sqlite.node",
+    "README.md"
+  ],
   "scripts": {
+    "benchmark:queue": "pnpm build && node benchmark-queue.mjs",
     "build": "node build-native.mjs && tsc",
     "clean": "tsc --build --clean && rm -rf dist workflow-world-sqlite.node",
     "test": "pnpm build && vitest run src",
@@ -26,6 +32,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
+    "@workflow/world-testing": "workspace:*",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

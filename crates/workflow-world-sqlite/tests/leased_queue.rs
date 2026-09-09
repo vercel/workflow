@@ -339,3 +339,89 @@ fn an_idempotency_key_reuses_the_first_message_id() {
         WorldErrorKind::InvalidRequest
     );
 }
+
+#[test]
+fn renewal_extends_only_a_live_lease_and_never_shortens_it() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let world = SqliteWorld::new(directory.path().join("world.sqlite"));
+    world.migrate().expect("migration should succeed");
+    world
+        .enqueue_queue_message(&QueueMessageRequest {
+            message_id: "msg_renewable".to_owned(),
+            scope: "local-js".to_owned(),
+            queue_name: "__wkf_workflow_renewable".to_owned(),
+            idempotency_key: "renewable-operation".to_owned(),
+            body: br#"{"runId":"wrun_renewable"}"#.to_vec(),
+            available_at_ms: 1_000,
+        })
+        .expect("message should be enqueued");
+    let claim = world
+        .claim_queue_message(
+            "local-js",
+            "__wkf_workflow_renewable",
+            "first-worker",
+            1_000,
+            100,
+        )
+        .expect("claim should succeed")
+        .expect("message should be claimable");
+
+    assert_eq!(
+        world
+            .renew_queue_message(&claim.lease_token, 1_050, 200)
+            .expect("live claim should renew"),
+        1_250
+    );
+    assert_eq!(
+        world
+            .renew_queue_message(&claim.lease_token, 1_060, 50)
+            .expect("an early renewal should remain valid"),
+        1_250,
+        "renewal must not shorten an existing lease"
+    );
+    assert!(
+        world
+            .claim_queue_message(
+                "local-js",
+                "__wkf_workflow_renewable",
+                "competing-worker",
+                1_249,
+                100,
+            )
+            .expect("competing claim should be readable")
+            .is_none()
+    );
+
+    let expired = world
+        .renew_queue_message(&claim.lease_token, 1_250, 100)
+        .expect_err("a lease must lose renewal authority at its expiry boundary");
+    assert_eq!(expired.kind(), WorldErrorKind::QueueClaimLost);
+    assert_eq!(
+        world
+            .renew_queue_message("", 1_000, 100)
+            .expect_err("an empty token must be rejected")
+            .kind(),
+        WorldErrorKind::InvalidRequest
+    );
+    assert_eq!(
+        world
+            .renew_queue_message(&claim.lease_token, -1, 100)
+            .expect_err("a negative renewal time must be rejected")
+            .kind(),
+        WorldErrorKind::InvalidRequest
+    );
+    assert_eq!(
+        world
+            .renew_queue_message(&claim.lease_token, 1_000, 0)
+            .expect_err("a zero lease duration must be rejected")
+            .kind(),
+        WorldErrorKind::InvalidRequest
+    );
+    assert_eq!(
+        world
+            .renew_queue_message(&claim.lease_token, i64::MAX, 1)
+            .expect_err("an overflowing lease expiration must be rejected")
+            .kind(),
+        WorldErrorKind::InvalidRequest
+    );
+}

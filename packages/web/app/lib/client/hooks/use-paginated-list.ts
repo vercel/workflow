@@ -1,4 +1,4 @@
-import type { WorkflowRun, WorkflowRunStatus } from '@workflow/world';
+import type { WorkflowRunStatus } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   unwrapOrThrow,
@@ -9,6 +9,7 @@ import type {
   AnalyticsPageInfo,
   EnvMap,
   HookListItem,
+  ObservabilityWorkflowRun,
   PaginatedResult,
 } from '~/lib/types';
 import { getPaginationDisplay } from '~/lib/utils';
@@ -266,7 +267,7 @@ export function useWorkflowRuns(
     limit?: number;
     sortOrder?: 'asc' | 'desc';
   }
-): PaginatedList<WorkflowRun> {
+): PaginatedList<ObservabilityWorkflowRun> {
   const { workflowName, status, limit = 10, sortOrder = 'desc' } = params;
 
   const fetchFn = useCallback(

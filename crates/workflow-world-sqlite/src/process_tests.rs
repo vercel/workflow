@@ -17,7 +17,8 @@ use rusqlite::Connection;
 use serde_json::json;
 use tempfile::tempdir;
 use workflow_protocol::{
-    EventType, RunCreatedEventData, RunStartedRequest, RunStatus, WorldError, WorldErrorKind,
+    CreateWorldEventRequest, EventType, RunCreatedEventData, RunStartedRequest, RunStatus,
+    WorldError, WorldErrorKind, WorldEventData,
 };
 
 use super::migrations::MIGRATIONS;
@@ -104,6 +105,27 @@ fn request() -> RunStartedRequest {
             encryption_public_key: Some("process-test-public-key".to_owned()),
         },
     }
+}
+
+fn event_request(event: WorldEventData) -> CreateWorldEventRequest {
+    CreateWorldEventRequest {
+        run_id: request().run_id,
+        spec_version: 7,
+        event_count: None,
+        occurred_at_ms: None,
+        resume_id: None,
+        resume_payload_digest: None,
+        event,
+    }
+}
+
+fn prepare_running_world(database_path: &Path) -> SqliteWorld {
+    let world = SqliteWorld::new(database_path);
+    world.migrate().expect("migration should succeed");
+    world
+        .create_resilient_run_started(&request())
+        .expect("running fixture should be created");
+    world
 }
 
 fn env_path(name: &str) -> PathBuf {
@@ -366,11 +388,16 @@ fn assert_migrated_database(database_path: &Path) -> Vec<(i64, String, i64)> {
             "workflow_database_metadata",
             "workflow_event_data",
             "workflow_events",
+            "workflow_hooks",
+            "workflow_phase2_event_data",
             "workflow_queue_messages",
             "workflow_run_created_event_data",
             "workflow_runs",
             "workflow_schema_migrations",
             "workflow_steps",
+            "workflow_stream_chunks",
+            "workflow_streams",
+            "workflow_waits",
         ]
     );
     let history = migration_history(database_path);
@@ -439,6 +466,98 @@ pub(super) fn pause_at_process_test_failpoint(
 
     thread::sleep(Duration::from_secs(30));
     std::process::abort();
+}
+
+#[test]
+fn run_list_hydration_uses_the_same_snapshot_as_id_selection() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let database_path = directory.path().join("world.sqlite");
+    let world = prepare_running_world(&database_path);
+    let ready_path = directory.path().join("list-runs-ready");
+    let release_path = directory.path().join("list-runs-release");
+    let result_path = directory.path().join("list-runs-result");
+    let mut reader = spawn_worker(
+        "list-runs",
+        &database_path,
+        &ready_path,
+        Some("after_list_run_ids"),
+        Some(&release_path),
+        Some(&result_path),
+    );
+    wait_for_marker(&mut reader, &ready_path, "after_list_run_ids");
+
+    world
+        .create_event(&event_request(WorldEventData::RunCompleted {
+            output: None,
+        }))
+        .expect("concurrent writer should complete the run");
+    assert_eq!(
+        world
+            .get_run(&request().run_id)
+            .expect("run should exist")
+            .status,
+        RunStatus::Completed
+    );
+
+    write_release(&release_path);
+    wait_for_success(&mut reader, "run list snapshot reader");
+    assert_eq!(
+        fs::read_to_string(&result_path).expect("run list result should be written"),
+        RunStatus::Running.as_str(),
+        "the listed row must be hydrated from the snapshot that selected it"
+    );
+}
+
+#[test]
+fn hook_list_hydration_survives_concurrent_terminal_cleanup() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let database_path = directory.path().join("world.sqlite");
+    let world = prepare_running_world(&database_path);
+    let hook_id = "hook_process_list_snapshot";
+    world
+        .create_event(&event_request(WorldEventData::HookCreated {
+            hook_id: hook_id.to_owned(),
+            token: "token-process-list-snapshot".to_owned(),
+            metadata: None,
+            token_retention_until_ms: None,
+            is_webhook: Some(false),
+            is_system: Some(false),
+        }))
+        .expect("Hook should be created");
+
+    let ready_path = directory.path().join("list-hooks-ready");
+    let release_path = directory.path().join("list-hooks-release");
+    let result_path = directory.path().join("list-hooks-result");
+    let mut reader = spawn_worker(
+        "list-hooks",
+        &database_path,
+        &ready_path,
+        Some("after_list_hook_ids"),
+        Some(&release_path),
+        Some(&result_path),
+    );
+    wait_for_marker(&mut reader, &ready_path, "after_list_hook_ids");
+
+    world
+        .create_event(&event_request(WorldEventData::RunCompleted {
+            output: None,
+        }))
+        .expect("concurrent writer should complete the run and clean up its Hook");
+    assert_eq!(
+        world
+            .get_hook(hook_id)
+            .expect_err("the committed terminal cleanup should remove the Hook")
+            .kind(),
+        WorldErrorKind::HookNotFound
+    );
+
+    write_release(&release_path);
+    wait_for_success(&mut reader, "Hook list snapshot reader");
+    assert_eq!(
+        fs::read_to_string(&result_path).expect("Hook list result should be written"),
+        hook_id,
+        "the reader must hydrate the Hook from its pre-cleanup snapshot"
+    );
 }
 
 #[test]
@@ -1157,6 +1276,22 @@ fn process_worker_entry() {
                 ),
             )
             .expect("worker reconciliation result should be persisted");
+        }
+        "list-runs" => {
+            let page = SqliteWorld::new_read_only(&database_path)
+                .list_runs(None, None, None, 10, false)
+                .expect("worker run list should succeed");
+            assert_eq!(page.data.len(), 1);
+            fs::write(env_path(RESULT_PATH), page.data[0].status.as_str())
+                .expect("run list result should be persisted");
+        }
+        "list-hooks" => {
+            let page = SqliteWorld::new_read_only(&database_path)
+                .list_hooks(Some(&request().run_id), None, 10, false)
+                .expect("worker Hook list should succeed");
+            assert_eq!(page.data.len(), 1);
+            fs::write(env_path(RESULT_PATH), &page.data[0].hook_id)
+                .expect("Hook list result should be persisted");
         }
         other => panic!("unknown process-test worker mode: {other}"),
     }

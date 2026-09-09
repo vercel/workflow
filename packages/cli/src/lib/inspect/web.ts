@@ -336,7 +336,7 @@ export async function printDeepLink(
   // Force JSON logging mode during setup so the startup box and any info/debug
   // logs go to stderr, keeping stdout clean for the URL. We print the URL
   // ourselves below, respecting the user's actual `--json` choice.
-  await setupCliWorld({ ...flags, json: true } as any, version, true);
+  await setupCliWorld({ ...flags, json: true } as any, version, true, true);
 
   const url = buildDeepLinkUrl(resource, id, flags);
 

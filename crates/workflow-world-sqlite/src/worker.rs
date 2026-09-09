@@ -12,8 +12,9 @@ use crate::{SqliteWorld, now_ms};
 
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const MAX_DELAY_MS: u64 = 2_147_483_647;
+const MAX_WORKER_CONCURRENCY: usize = 256;
 
-/// Configuration for the Phase 1 loopback HTTP queue worker.
+/// Configuration for the loopback HTTP queue worker.
 #[derive(Clone, Debug)]
 pub struct QueueWorkerConfig {
     pub scope: String,
@@ -24,6 +25,8 @@ pub struct QueueWorkerConfig {
     pub poll_interval: Duration,
     pub retry_delay: Duration,
     pub request_timeout: Duration,
+    /// Maximum number of messages delivered concurrently by this worker.
+    pub concurrency: usize,
 }
 
 /// Delivery counters returned when a worker is stopped and joined.
@@ -36,16 +39,23 @@ pub struct QueueWorkerReport {
     pub storage_failures: u64,
 }
 
+impl QueueWorkerReport {
+    fn merge(&mut self, other: Self) {
+        self.claims = self.claims.saturating_add(other.claims);
+        self.acknowledgements = self.acknowledgements.saturating_add(other.acknowledgements);
+        self.reschedules = self.reschedules.saturating_add(other.reschedules);
+        self.delivery_failures = self
+            .delivery_failures
+            .saturating_add(other.delivery_failures);
+        self.storage_failures = self.storage_failures.saturating_add(other.storage_failures);
+    }
+}
+
 /// One background supervisor for an exact set of durable queue names.
-///
-/// This Phase 1 worker intentionally has concurrency one. It proves that
-/// callback execution happens after a SQLite claim transaction commits and
-/// that lifecycle ownership can live below a language binding. A bounded async
-/// delivery pool remains a later performance/topology decision.
 // @lat: [[rust-portability#SQLite Local World#Queue]]
 pub struct QueueWorker {
     control: Arc<WorkerControl>,
-    thread: Option<JoinHandle<Result<QueueWorkerReport, WorldError>>>,
+    threads: Vec<JoinHandle<Result<QueueWorkerReport, WorldError>>>,
 }
 
 impl QueueWorker {
@@ -53,35 +63,63 @@ impl QueueWorker {
         let endpoint = LoopbackHttpEndpoint::parse(&config.flow_url)?;
         validate_config(&config)?;
         let control = Arc::new(WorkerControl::default());
-        let worker_control = Arc::clone(&control);
-        let thread = thread::Builder::new()
-            .name(format!("workflow-queue-{}", config.worker_id))
-            .spawn(move || run_worker(&world, &config, &endpoint, &worker_control))
-            .map_err(|error| {
-                WorldError::new(
-                    WorldErrorKind::Storage,
-                    format!("failed to start queue worker thread: {error}"),
+        let mut threads = Vec::with_capacity(config.concurrency);
+        for worker_index in 0..config.concurrency {
+            let worker_world = world.clone();
+            let worker_config = config.clone();
+            let worker_endpoint = endpoint.clone();
+            let worker_control = Arc::clone(&control);
+            let thread_name = if config.concurrency == 1 {
+                format!("workflow-queue-{}", config.worker_id)
+            } else {
+                format!("workflow-queue-{}-{worker_index}", config.worker_id)
+            };
+            match thread::Builder::new().name(thread_name).spawn(move || {
+                run_worker(
+                    &worker_world,
+                    &worker_config,
+                    &worker_endpoint,
+                    &worker_control,
                 )
-            })?;
-        Ok(Self {
-            control,
-            thread: Some(thread),
-        })
+            }) {
+                Ok(thread) => threads.push(thread),
+                Err(error) => {
+                    control.stop();
+                    for thread in threads {
+                        let _ = thread.join();
+                    }
+                    return Err(WorldError::new(
+                        WorldErrorKind::Storage,
+                        format!("failed to start queue worker thread: {error}"),
+                    ));
+                }
+            }
+        }
+        Ok(Self { control, threads })
     }
 
     pub fn stop(mut self) -> Result<QueueWorkerReport, WorldError> {
         self.request_stop();
-        let Some(thread) = self.thread.take() else {
-            return Ok(QueueWorkerReport::default());
-        };
-        thread
-            .join()
-            .map_err(|_| WorldError::new(WorldErrorKind::Storage, "queue worker thread panicked"))?
+        let mut aggregate = QueueWorkerReport::default();
+        let mut first_error = None;
+        for thread in self.threads.drain(..) {
+            match thread.join() {
+                Ok(Ok(report)) => aggregate.merge(report),
+                Ok(Err(error)) => {
+                    first_error.get_or_insert(error);
+                }
+                Err(_) => {
+                    first_error.get_or_insert_with(|| {
+                        WorldError::new(WorldErrorKind::Storage, "queue worker thread panicked")
+                    });
+                }
+            }
+        }
+        first_error.map_or(Ok(aggregate), Err)
     }
 
     fn request_stop(&self) {
-        self.control.stopped.store(true, Ordering::Release);
-        self.control.wake.notify_all();
+        self.control.stop();
     }
 }
 
@@ -108,9 +146,91 @@ impl WorkerControl {
             .wait_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !self.is_stopped() {
-            let _ = self.wake.wait_timeout(guard, duration);
-        }
+        let _ = self
+            .wake
+            .wait_timeout_while(guard, duration, |_| !self.is_stopped());
+    }
+
+    fn stop(&self) {
+        let _guard = self
+            .wait_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.stopped.store(true, Ordering::Release);
+        self.wake.notify_all();
+    }
+}
+
+struct LeaseHeartbeat {
+    control: Arc<WorkerControl>,
+    thread: Option<JoinHandle<u64>>,
+}
+
+impl LeaseHeartbeat {
+    fn start(
+        world: SqliteWorld,
+        lease_token: String,
+        lease_duration: Duration,
+    ) -> Result<Self, WorldError> {
+        let control = Arc::new(WorkerControl::default());
+        let heartbeat_control = Arc::clone(&control);
+        let interval = (lease_duration / 3).max(Duration::from_nanos(1));
+        let lease_duration_ms = duration_ms_i64(lease_duration, "lease duration")?;
+        let thread = thread::Builder::new()
+            .name("workflow-queue-lease".to_owned())
+            .spawn(move || {
+                let mut failures = 0_u64;
+                loop {
+                    heartbeat_control.wait(interval);
+                    if heartbeat_control.is_stopped() {
+                        return failures;
+                    }
+                    let result = now_ms().and_then(|now_ms| {
+                        world
+                            .renew_queue_message(&lease_token, now_ms, lease_duration_ms)
+                            .map(|_| ())
+                    });
+                    if let Err(error) = result {
+                        failures = failures.saturating_add(1);
+                        if error.kind() == WorldErrorKind::QueueClaimLost {
+                            return failures;
+                        }
+                    }
+                }
+            })
+            .map_err(|error| {
+                WorldError::new(
+                    WorldErrorKind::Storage,
+                    format!("failed to start queue lease heartbeat thread: {error}"),
+                )
+            })?;
+        Ok(Self {
+            control,
+            thread: Some(thread),
+        })
+    }
+
+    fn stop(mut self) -> Result<u64, WorldError> {
+        self.request_stop();
+        let Some(thread) = self.thread.take() else {
+            return Ok(0);
+        };
+        thread.join().map_err(|_| {
+            WorldError::new(
+                WorldErrorKind::Storage,
+                "queue lease heartbeat thread panicked",
+            )
+        })
+    }
+
+    fn request_stop(&self) {
+        self.control.stop();
+    }
+}
+
+impl Drop for LeaseHeartbeat {
+    fn drop(&mut self) {
+        self.request_stop();
     }
 }
 
@@ -132,10 +252,10 @@ fn validate_config(config: &QueueWorkerConfig) -> Result<(), WorldError> {
             "queue worker lease, poll, and request timeouts must be greater than zero",
         ));
     }
-    if config.request_timeout >= config.lease_duration {
-        return Err(WorldError::invalid_request(
-            "queue worker request timeout must be shorter than its lease",
-        ));
+    if !(1..=MAX_WORKER_CONCURRENCY).contains(&config.concurrency) {
+        return Err(WorldError::invalid_request(format!(
+            "queue worker concurrency must be between 1 and {MAX_WORKER_CONCURRENCY}"
+        )));
     }
     Ok(())
 }
@@ -185,11 +305,39 @@ fn run_worker(
         };
         report.claims += 1;
 
+        let heartbeat = LeaseHeartbeat::start(
+            world.clone(),
+            claim.lease_token.clone(),
+            config.lease_duration,
+        )?;
         let outcome = endpoint.deliver(&claim, config.request_timeout);
+        match heartbeat.stop() {
+            Ok(failures) => {
+                report.storage_failures = report.storage_failures.saturating_add(failures);
+            }
+            Err(_) => report.storage_failures = report.storage_failures.saturating_add(1),
+        }
         // A stop request prevents the next claim, but this lease is already
         // owned. Settle it before joining so a successful handler response is
         // not turned into a spurious redelivery during graceful shutdown.
         let completed_at_ms = now_ms()?;
+        let response_received = outcome
+            .as_ref()
+            .map_or_else(|failure| failure.response_received, |_| true);
+        if response_received
+            && world
+                .record_queue_delivery_response(
+                    &claim.lease_token,
+                    claim.delivery_attempt,
+                    completed_at_ms,
+                )
+                .is_err()
+        {
+            // Do not settle a response whose attempt could not be persisted.
+            // The lease will expire and retry the same handler-visible attempt.
+            report.storage_failures = report.storage_failures.saturating_add(1);
+            continue;
+        }
         let result = match outcome {
             Ok(DeliveryOutcome::Acknowledge) => world
                 .acknowledge_queue_message(&claim.lease_token, completed_at_ms)
@@ -230,6 +378,18 @@ fn duration_ms_i64(duration: Duration, label: &str) -> Result<i64, WorldError> {
 enum DeliveryOutcome {
     Acknowledge,
     Reschedule(Duration),
+}
+
+struct DeliveryFailure {
+    response_received: bool,
+}
+
+impl DeliveryFailure {
+    const fn before_response() -> Self {
+        Self {
+            response_received: false,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -281,13 +441,18 @@ impl LoopbackHttpEndpoint {
         })
     }
 
-    fn deliver(&self, claim: &QueueClaim, timeout: Duration) -> Result<DeliveryOutcome, String> {
-        validate_header_value(&claim.queue_name)?;
-        validate_header_value(&claim.message_id)?;
+    fn deliver(
+        &self,
+        claim: &QueueClaim,
+        timeout: Duration,
+    ) -> Result<DeliveryOutcome, DeliveryFailure> {
+        validate_header_value(&claim.queue_name).map_err(|_| DeliveryFailure::before_response())?;
+        validate_header_value(&claim.message_id).map_err(|_| DeliveryFailure::before_response())?;
         let deadline = Instant::now()
             .checked_add(timeout)
-            .ok_or_else(|| "queue callback timeout is too large".to_owned())?;
-        let mut stream = connect(&self.addresses, deadline)?;
+            .ok_or_else(DeliveryFailure::before_response)?;
+        let mut stream =
+            connect(&self.addresses, deadline).map_err(|_| DeliveryFailure::before_response())?;
         let request = format!(
             "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nx-vqs-queue-name: {}\r\nx-vqs-message-id: {}\r\nx-vqs-message-attempt: {}\r\n\r\n",
             self.path_and_query,
@@ -295,17 +460,23 @@ impl LoopbackHttpEndpoint {
             claim.body.len(),
             claim.queue_name,
             claim.message_id,
-            claim.attempt,
+            claim.delivery_attempt,
         );
-        write_all_before_deadline(&mut stream, request.as_bytes(), deadline)?;
-        write_all_before_deadline(&mut stream, &claim.body, deadline)?;
+        write_all_before_deadline(&mut stream, request.as_bytes(), deadline)
+            .map_err(|_| DeliveryFailure::before_response())?;
+        write_all_before_deadline(&mut stream, &claim.body, deadline)
+            .map_err(|_| DeliveryFailure::before_response())?;
         stream
-            .set_write_timeout(Some(remaining_before(deadline)?))
+            .set_write_timeout(Some(
+                remaining_before(deadline).map_err(|_| DeliveryFailure::before_response())?,
+            ))
             .and_then(|()| stream.flush())
-            .map_err(|error| error.to_string())?;
+            .map_err(|_| DeliveryFailure::before_response())?;
 
         let response = read_response(&mut stream, deadline)?;
-        parse_response(&response)
+        parse_response(&response).map_err(|_| DeliveryFailure {
+            response_received: response_headers_received(&response),
+        })
     }
 }
 
@@ -372,22 +543,38 @@ fn write_all_before_deadline(
     Ok(())
 }
 
-fn read_response(stream: &mut TcpStream, deadline: Instant) -> Result<Vec<u8>, String> {
+fn response_headers_received(response: &[u8]) -> bool {
+    response.windows(4).any(|window| window == b"\r\n\r\n")
+}
+
+fn read_response(stream: &mut TcpStream, deadline: Instant) -> Result<Vec<u8>, DeliveryFailure> {
     let mut response = Vec::new();
     let mut buffer = [0_u8; 4096];
     loop {
         stream
-            .set_read_timeout(Some(remaining_before(deadline)?))
-            .map_err(|error| error.to_string())?;
+            .set_read_timeout(Some(remaining_before(deadline).map_err(|_| {
+                DeliveryFailure {
+                    response_received: response_headers_received(&response),
+                }
+            })?))
+            .map_err(|_| DeliveryFailure {
+                response_received: response_headers_received(&response),
+            })?;
         match stream.read(&mut buffer) {
             Ok(0) => return Ok(response),
             Ok(read) => {
                 response.extend_from_slice(&buffer[..read]);
                 if response.len() > MAX_RESPONSE_BYTES {
-                    return Err("queue callback response exceeded 64 KiB".to_owned());
+                    return Err(DeliveryFailure {
+                        response_received: response_headers_received(&response),
+                    });
                 }
             }
-            Err(error) => return Err(error.to_string()),
+            Err(_) => {
+                return Err(DeliveryFailure {
+                    response_received: response_headers_received(&response),
+                });
+            }
         }
     }
 }
@@ -480,9 +667,293 @@ fn decode_chunked_body(mut encoded: &[u8]) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::IpAddr;
+    use std::net::{IpAddr, TcpListener};
+    use std::sync::mpsc;
+
+    use tempfile::tempdir;
+    use workflow_protocol::QueueMessageRequest;
 
     use super::*;
+
+    fn worker_config(flow_url: String, concurrency: usize) -> QueueWorkerConfig {
+        QueueWorkerConfig {
+            scope: "local-js".to_owned(),
+            queue_names: vec!["__wkf_workflow_test".to_owned()],
+            flow_url,
+            worker_id: "test-worker".to_owned(),
+            lease_duration: Duration::from_millis(600),
+            poll_interval: Duration::from_millis(5),
+            retry_delay: Duration::from_millis(10),
+            request_timeout: Duration::from_secs(3),
+            concurrency,
+        }
+    }
+
+    fn enqueue(world: &SqliteWorld, message_id: &str) {
+        world
+            .enqueue_queue_message(&QueueMessageRequest {
+                message_id: message_id.to_owned(),
+                scope: "local-js".to_owned(),
+                queue_name: "__wkf_workflow_test".to_owned(),
+                idempotency_key: format!("idempotency-{message_id}"),
+                body: br#"{"runId":"wrun_test"}"#.to_vec(),
+                available_at_ms: 0,
+            })
+            .expect("queue message should be enqueued");
+    }
+
+    fn read_request(stream: &mut TcpStream) -> u32 {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("test server timeout should be configured");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        let (header_end, content_length, delivery_attempt) = loop {
+            let read = stream
+                .read(&mut buffer)
+                .expect("request should be readable");
+            assert!(read > 0, "request ended before its headers");
+            request.extend_from_slice(&buffer[..read]);
+            if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                let headers = std::str::from_utf8(&request[..header_end])
+                    .expect("request headers should be UTF-8");
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':').and_then(|(name, value)| {
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                    })
+                    .expect("request should carry content-length");
+                let delivery_attempt = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':').and_then(|(name, value)| {
+                            name.eq_ignore_ascii_case("x-vqs-message-attempt")
+                                .then(|| value.trim().parse::<u32>().ok())
+                                .flatten()
+                        })
+                    })
+                    .expect("request should carry a delivery attempt");
+                break (header_end + 4, content_length, delivery_attempt);
+            }
+        };
+        while request.len() < header_end + content_length {
+            let read = stream.read(&mut buffer).expect("body should be readable");
+            assert!(read > 0, "request ended before its body");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        delivery_attempt
+    }
+
+    fn accept_before(listener: &TcpListener, deadline: Instant) -> TcpStream {
+        listener
+            .set_nonblocking(true)
+            .expect("test server should become nonblocking");
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => return stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    panic!("request did not reach the test server before its deadline");
+                }
+                Err(error) => panic!("test server could not accept a request: {error}"),
+            }
+        }
+    }
+
+    fn acknowledge(stream: &mut TcpStream) {
+        stream
+            .write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+            .expect("test response should be writable");
+    }
+
+    #[test]
+    fn validates_bounded_worker_concurrency() {
+        assert!(validate_config(&worker_config("http://127.0.0.1:1/flow".to_owned(), 1,)).is_ok());
+        assert!(
+            validate_config(&worker_config(
+                "http://127.0.0.1:1/flow".to_owned(),
+                MAX_WORKER_CONCURRENCY,
+            ))
+            .is_ok()
+        );
+        assert!(validate_config(&worker_config("http://127.0.0.1:1/flow".to_owned(), 0,)).is_err());
+        assert!(
+            validate_config(&worker_config(
+                "http://127.0.0.1:1/flow".to_owned(),
+                MAX_WORKER_CONCURRENCY + 1,
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn delivers_up_to_the_configured_concurrency_and_aggregates_reports() {
+        let directory = tempdir().expect("temporary directory should be created");
+        let world = SqliteWorld::new(directory.path().join("world.sqlite"));
+        world.migrate().expect("migration should succeed");
+        enqueue(&world, "msg_concurrent_1");
+        enqueue(&world, "msg_concurrent_2");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+        let address = listener.local_addr().expect("test server address");
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            // Hold the first response until a second connection arrives. A
+            // single delivery loop cannot satisfy this rendezvous.
+            let mut first = accept_before(&listener, deadline);
+            let mut second = accept_before(&listener, deadline);
+            read_request(&mut first);
+            read_request(&mut second);
+            acknowledge(&mut first);
+            acknowledge(&mut second);
+        });
+
+        let worker = QueueWorker::start(
+            world.clone(),
+            worker_config(format!("http://{address}/flow"), 2),
+        )
+        .expect("worker should start");
+        let server_result = server.join();
+        let report = worker.stop().expect("worker should stop cleanly");
+
+        server_result.expect("both concurrent deliveries should reach the server");
+        assert_eq!(
+            report,
+            QueueWorkerReport {
+                claims: 2,
+                acknowledgements: 2,
+                ..QueueWorkerReport::default()
+            }
+        );
+        assert_eq!(
+            world
+                .queue_message_count("local-js")
+                .expect("queue count should be readable"),
+            0
+        );
+    }
+
+    #[test]
+    fn transport_failures_do_not_advance_the_handler_delivery_attempt() {
+        let directory = tempdir().expect("temporary directory should be created");
+        let world = SqliteWorld::new(directory.path().join("world.sqlite"));
+        world.migrate().expect("migration should succeed");
+        enqueue(&world, "msg_transport_attempt");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+        let address = listener.local_addr().expect("test server address");
+        let server = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let mut attempts = Vec::new();
+            for delivery in 0..4 {
+                let mut stream = accept_before(&listener, deadline);
+                attempts.push(read_request(&mut stream));
+                if delivery == 3 {
+                    acknowledge(&mut stream);
+                }
+                // Dropping the first three sockets before response headers
+                // simulates connect/write/read transport failures after the
+                // request reached the server process but not the handler.
+            }
+            attempts
+        });
+
+        let worker = QueueWorker::start(
+            world.clone(),
+            worker_config(format!("http://{address}/flow"), 1),
+        )
+        .expect("worker should start");
+        let attempts = server.join().expect("test server should complete");
+        let report = worker.stop().expect("worker should stop cleanly");
+
+        assert_eq!(attempts, [1, 1, 1, 1]);
+        assert_eq!(report.claims, 4);
+        assert_eq!(report.delivery_failures, 3);
+        assert_eq!(report.acknowledgements, 1);
+        assert_eq!(
+            world
+                .queue_message_count("local-js")
+                .expect("queue count should be readable"),
+            0
+        );
+    }
+
+    #[test]
+    fn renews_a_lease_while_a_delivery_is_in_flight() {
+        let directory = tempdir().expect("temporary directory should be created");
+        let world = SqliteWorld::new(directory.path().join("world.sqlite"));
+        world.migrate().expect("migration should succeed");
+        enqueue(&world, "msg_slow_delivery");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test server should bind");
+        let address = listener.local_addr().expect("test server address");
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let mut stream = accept_before(&listener, Instant::now() + Duration::from_secs(2));
+            read_request(&mut stream);
+            accepted_tx
+                .send(())
+                .expect("test should observe the accepted request");
+            release_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("test should release the response");
+            acknowledge(&mut stream);
+        });
+
+        let config = worker_config(format!("http://{address}/flow"), 1);
+        let worker =
+            QueueWorker::start(world.clone(), config.clone()).expect("worker should start");
+        accepted_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("delivery should reach the test server");
+        thread::sleep(Duration::from_millis(900));
+
+        let competing_claim = world
+            .claim_queue_message(
+                "local-js",
+                "__wkf_workflow_test",
+                "competing-worker",
+                now_ms().expect("current time should be available"),
+                duration_ms_i64(config.lease_duration, "lease duration")
+                    .expect("lease duration should fit"),
+            )
+            .expect("competing claim should be readable");
+        release_tx
+            .send(())
+            .expect("slow response should be released");
+        let report = worker.stop().expect("worker should stop cleanly");
+        let server_result = server.join();
+
+        server_result.expect("slow delivery server should complete");
+        assert!(
+            competing_claim.is_none(),
+            "the heartbeat must retain ownership beyond the original lease"
+        );
+        assert_eq!(
+            report,
+            QueueWorkerReport {
+                claims: 1,
+                acknowledgements: 1,
+                ..QueueWorkerReport::default()
+            }
+        );
+        assert_eq!(
+            world
+                .queue_message_count("local-js")
+                .expect("queue count should be readable"),
+            0
+        );
+    }
 
     #[test]
     fn rejects_non_loopback_and_https_urls() {

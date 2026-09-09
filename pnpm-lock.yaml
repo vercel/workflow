@@ -1047,6 +1047,9 @@ importers:
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      '@workflow/world-sqlite':
+        specifier: workspace:*
+        version: link:../world-sqlite
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1562,6 +1565,9 @@ importers:
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
+      '@workflow/world-testing':
+        specifier: workspace:*
+        version: link:../world-testing
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -2143,6 +2149,9 @@ importers:
       '@workflow/world-postgres':
         specifier: workspace:*
         version: link:../../packages/world-postgres
+      '@workflow/world-sqlite':
+        specifier: workspace:*
+        version: link:../../packages/world-sqlite
       tailwindcss:
         specifier: ^4
         version: 4.1.13

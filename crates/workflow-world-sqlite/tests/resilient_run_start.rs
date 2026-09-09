@@ -254,6 +254,11 @@ fn migrator_and_runtime_reject_a_migration_checksum_mismatch() {
         .expect_err("runtime open should reject schema drift");
 
     assert_eq!(runtime_error.kind(), WorldErrorKind::UnsupportedSchema);
+
+    let inspection_error = SqliteWorld::new_read_only(&database_path)
+        .ensure_ready()
+        .expect_err("read-only inspection should enforce pinned checksums");
+    assert_eq!(inspection_error.kind(), WorldErrorKind::UnsupportedSchema);
 }
 
 #[test]
@@ -313,6 +318,9 @@ fn sqlite_busy_is_reported_as_retryable() {
 
     assert_eq!(error.kind(), WorldErrorKind::Storage);
     assert!(error.retryable());
+    assert_eq!(error.details()["reason"], "storage_busy");
+    assert_eq!(error.details()["waitStage"], "sqlite_lock");
+    assert!(error.details()["elapsedMs"].is_u64());
     lock_holder
         .execute_batch("ROLLBACK;")
         .expect("lock holder should release writer ownership");

@@ -24,7 +24,7 @@ fn version_reports_native_compatibility_axes() {
     let value = stdout_json(&output);
     assert_eq!(value["rustVersionFloor"], "1.88.0");
     assert_eq!(value["sqliteVersion"], "3.53.2");
-    assert_eq!(value["sqliteSchemaVersion"], 3);
+    assert_eq!(value["sqliteSchemaVersion"], 5);
     assert_eq!(value["persistedSpecMin"], 7);
     assert_eq!(value["persistedSpecMax"], 7);
 }
@@ -51,7 +51,7 @@ fn inspect_does_not_create_or_migrate_a_database() {
     Connection::open(&database_path)
         .expect("test inspector should open")
         .execute(
-            "DELETE FROM workflow_schema_migrations WHERE version = 3",
+            "DELETE FROM workflow_schema_migrations WHERE version = 5",
             [],
         )
         .expect("test should make schema history one version old");
@@ -74,7 +74,7 @@ fn inspect_does_not_create_or_migrate_a_database() {
             |row| row.get::<_, i64>(0),
         )
         .expect("migration version should be readable");
-    assert_eq!(applied_version, 2, "read-only inspect must not migrate");
+    assert_eq!(applied_version, 4, "read-only inspect must not migrate");
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn explicit_migration_and_inspection_leave_queued_work_unclaimed() {
 
     let migration = workflow(&["--json", "sqlite", "migrate", "--database", database]);
     assert!(migration.status.success());
-    assert_eq!(stdout_json(&migration)["database"]["schemaVersion"], 3);
+    assert_eq!(stdout_json(&migration)["database"]["schemaVersion"], 5);
 
     let world = SqliteWorld::new(&database_path);
     world

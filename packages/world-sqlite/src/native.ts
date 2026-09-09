@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 export interface NativeInfo {
   crateVersion: string;
+  packageVersion: string;
   nodeApiVersion: number;
   sqliteVersion: string;
   schemaVersion: number;
@@ -47,6 +48,15 @@ export interface NativeStep {
   specVersion: number;
 }
 
+export interface NativeAttributeChangeInput {
+  key: string;
+  value: string | null;
+}
+
+export type NativeAttributeWriter =
+  | { type: 'workflow' }
+  | { type: 'step'; stepId: string; attempt: number };
+
 export interface NativeEventData {
   deploymentId?: string;
   workflowName?: string;
@@ -59,11 +69,22 @@ export interface NativeEventData {
   error?: Uint8Array;
   errorCode?: string;
   cancelReason?: string;
+  changes?: NativeAttributeChangeInput[];
+  writer?: NativeAttributeWriter;
   stepName?: string;
   result?: Uint8Array;
   attempt?: number;
   retryAfterMs?: number;
   ownerMessageId?: string;
+  token?: string;
+  metadata?: Uint8Array;
+  tokenRetentionUntilMs?: number;
+  isWebhook?: boolean;
+  isSystem?: boolean;
+  payload?: Uint8Array;
+  conflictingRunId?: string;
+  resumeAtMs?: number;
+  sealed?: boolean;
 }
 
 export interface NativeEvent {
@@ -74,6 +95,7 @@ export interface NativeEvent {
   createdAtMs: number;
   occurredAtMs?: number;
   correlationId?: string;
+  resumeId?: string;
   eventData?: NativeEventData;
 }
 
@@ -87,10 +109,38 @@ export interface NativeEventResult {
   event?: NativeEvent;
   run?: NativeRun;
   step?: NativeStep;
+  hook?: NativeHook;
+  wait?: NativeWait;
   stepCreated?: true;
   events?: NativeEvent[];
   cursor?: string;
   hasMore?: boolean;
+}
+
+export interface NativeHook {
+  runId: string;
+  hookId: string;
+  token: string;
+  ownerId: string;
+  projectId: string;
+  environment: string;
+  metadata?: Uint8Array;
+  createdAtMs: number;
+  specVersion: number;
+  isWebhook: boolean;
+  isSystem: boolean;
+  tokenRetentionUntilMs?: number;
+}
+
+export interface NativeWait {
+  waitId: string;
+  runId: string;
+  status: 'waiting' | 'completed';
+  resumeAtMs?: number;
+  completedAtMs?: number;
+  createdAtMs: number;
+  updatedAtMs: number;
+  specVersion: number;
 }
 
 export interface NativeQueueWorkerReport {
@@ -99,6 +149,29 @@ export interface NativeQueueWorkerReport {
   reschedules: number;
   deliveryFailures: number;
   storageFailures: number;
+}
+
+export interface NativeQueueReconcileResult {
+  activeRunCount: number;
+  createdMessageCount: number;
+  messageIds: string[];
+}
+
+export interface NativeStreamChunk {
+  index: number;
+  data: Uint8Array;
+}
+
+export interface NativeStreamChunkPage {
+  data: NativeStreamChunk[];
+  cursor: string | null;
+  hasMore: boolean;
+  done: boolean;
+}
+
+export interface NativeStreamInfo {
+  tailIndex: number;
+  done: boolean;
 }
 
 export interface NativeSqliteWorld {
@@ -123,7 +196,18 @@ export interface NativeSqliteWorld {
     retryAfterMs: number | undefined,
     ownerMessageId: string | undefined,
     errorCode: string | undefined,
-    cancelReason: string | undefined
+    cancelReason: string | undefined,
+    resumeId?: string,
+    resumePayloadDigest?: string,
+    token?: string,
+    tokenRetentionUntilMs?: number,
+    isWebhook?: boolean,
+    isSystem?: boolean,
+    resumeAtMs?: number,
+    attributeChanges?: NativeAttributeChangeInput[],
+    attributeWriterType?: string,
+    attributeWriterStepId?: string,
+    attributeWriterAttempt?: number
   ): Promise<NativeEventResult>;
   getRun(runId: string): Promise<NativeRun>;
   listRuns(
@@ -148,6 +232,29 @@ export interface NativeSqliteWorld {
     limit: number,
     descending: boolean
   ): Promise<NativePage<NativeEvent>>;
+  getHook(hookId: string): Promise<NativeHook>;
+  getHookByToken(token: string): Promise<NativeHook>;
+  listHooks(
+    runId: string | undefined,
+    cursor: string | undefined,
+    limit: number,
+    descending: boolean
+  ): Promise<NativePage<NativeHook>>;
+  clear(): Promise<void>;
+  writeStreamChunks(
+    runId: string,
+    name: string,
+    chunks: Uint8Array[]
+  ): Promise<void>;
+  closeStream(runId: string, name: string): Promise<void>;
+  listStreams(runId: string): Promise<string[]>;
+  getStreamChunks(
+    runId: string,
+    name: string,
+    cursor: string | undefined,
+    limit: number
+  ): Promise<NativeStreamChunkPage>;
+  getStreamInfo(runId: string, name: string): Promise<NativeStreamInfo>;
   enqueue(
     messageId: string,
     target: string,
@@ -157,6 +264,11 @@ export interface NativeSqliteWorld {
     availableAtMs: number
   ): Promise<{ messageId: string; created: boolean }>;
   queueMessageCount(target: string): Promise<number>;
+  reconcileActiveRuns(
+    target: string,
+    queuePrefix: string,
+    nowMs: number
+  ): Promise<NativeQueueReconcileResult>;
   startQueueWorker(
     target: string,
     queueNames: string[],
@@ -165,14 +277,18 @@ export interface NativeSqliteWorld {
     leaseDurationMs: number,
     pollIntervalMs: number,
     retryDelayMs: number,
-    requestTimeoutMs: number
+    requestTimeoutMs: number,
+    concurrency?: number
   ): void;
   stopQueueWorker(): Promise<NativeQueueWorkerReport>;
   close(): boolean;
 }
 
 interface NativeModule {
-  NativeSqliteWorld: new (path: string) => NativeSqliteWorld;
+  NativeSqliteWorld: new (
+    path: string,
+    readOnly?: boolean
+  ) => NativeSqliteWorld;
   nativeInfo(): NativeInfo;
 }
 
@@ -194,7 +310,7 @@ const addon = (() => {
   } catch (cause) {
     throw new Error(
       `@workflow/world-sqlite has no usable native addon for ${process.platform}/${process.arch}. ` +
-        'Install a package artifact for a Phase 1 supported target.',
+        'Install a package artifact for a supported experimental target.',
       { cause }
     );
   }
@@ -202,7 +318,7 @@ const addon = (() => {
 
 const info = Object.freeze(addon.nativeInfo());
 if (
-  info.crateVersion !== packageInfo.version ||
+  info.packageVersion !== packageInfo.version ||
   info.nodeApiVersion !== 8 ||
   info.sqliteVersion !== '3.53.2' ||
   !info.enabledBackends.includes('sqlite')

@@ -84,6 +84,7 @@ if (action === 'write') {
     databaseDir,
     queueNames: [queueName],
     flowUrl: `http://127.0.0.1:${address.port}/flow`,
+    recoverActiveRuns: false,
   });
   queueHandler = world.createQueueHandler(
     '__wkf_workflow_',

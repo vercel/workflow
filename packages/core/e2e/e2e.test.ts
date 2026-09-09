@@ -431,7 +431,7 @@ describe.concurrent('e2e', () => {
   // suite's first tests (see warmDeployment). rawStart, not start — probes
   // manage their own stalls without tripping the per-test watchdog.
   beforeAll(async () => {
-    setupWorld(deploymentUrl);
+    await setupWorld(deploymentUrl);
     await warmDeployment(async () =>
       rawStart(
         await getWorkflowMetadata(

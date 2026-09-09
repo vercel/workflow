@@ -1,16 +1,20 @@
-//! Experimental SQLite backend for the first Rust World contract slice.
+//! Experimental SQLite backend for the portable local World profile.
 //!
-//! The schema is a pre-release prototype. It currently exercises resilient run
-//! start, atomic materialization, dense slots, ordered checksummed migrations,
-//! leased queue claims and active-run reconciliation, process contention, and
-//! application-process recovery at instrumented transaction boundaries. It is
-//! not yet a complete local `World` or a power-loss durability claim. The
-//! delivery worker is a deliberately narrow loopback-HTTP prototype.
+//! The pre-release schema covers the current event vocabulary, materialized
+//! runs, steps, Hooks and waits, durable streams, checksummed migrations, and a
+//! leased loopback-HTTP queue with active-run recovery. It is a local
+//! development profile with `synchronous=NORMAL`, not a production or
+//! power-loss durability claim.
 
 #![forbid(unsafe_code)]
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::fmt;
 use std::fs;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -20,14 +24,15 @@ use rusqlite::{
 };
 use sha2::{Digest, Sha256};
 use workflow_protocol::{
-    CreateEventResult, CreateWorldEventRequest, EventPage, EventType, QueueClaim,
-    QueueEnqueueResult, QueueMessageRequest, QueueReconcileResult, RunCreatedEventData,
-    RunStartedRequest, RunStatus, StepStatus, StoredEvent, UnpositionedWorldEvent, WorkflowRun,
-    WorkflowRunPage, WorkflowStep, WorkflowStepPage, WorldError, WorldErrorKind, WorldEvent,
-    WorldEventData, WorldEventPage, WorldEventResult, WorldSnapshot, decode_context_value,
-    encode_context_value, event_id_to_slot, slot_to_event_id,
+    AttributeChange, AttributeWriter, CreateEventResult, CreateWorldEventRequest, EventPage,
+    EventType, QueueClaim, QueueEnqueueResult, QueueMessageRequest, QueueReconcileResult,
+    RunCreatedEventData, RunStartedRequest, RunStatus, StepStatus, StoredEvent,
+    UnpositionedWorldEvent, WaitStatus, WorkflowHook, WorkflowRun, WorkflowRunPage, WorkflowStep,
+    WorkflowStepPage, WorkflowWait, WorldError, WorldErrorKind, WorldEvent, WorldEventData,
+    WorldEventPage, WorldEventResult, WorldSnapshot, decode_context_value, encode_context_value,
+    event_id_to_slot, slot_to_event_id,
 };
-use workflow_world_core::{plan_run_started, plan_world_event};
+use workflow_world_core::{WorldEventState, plan_run_started, plan_world_event_with_state};
 
 use crate::migrations::{
     AppliedMigration, MIGRATIONS, current_schema_version, validate_applied_history,
@@ -36,6 +41,186 @@ use crate::migrations::{
 
 const PRELOAD_LIMIT: usize = 100;
 const MIGRATION_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+const MAX_STREAM_CHUNK_INDEX: u64 = 9_007_199_254_740_991;
+const STREAM_CURSOR_PREFIX: &str = "index:";
+const PAGE_CURSOR_PREFIX: &str = "page:v1:";
+
+thread_local! {
+    static OPERATION_STARTED_AT: RefCell<Option<Instant>> = const { RefCell::new(None) };
+}
+
+#[derive(Default)]
+struct RuntimeEngineState {
+    checked_out: bool,
+    connection: Option<CachedConnection>,
+}
+
+struct CachedConnection {
+    connection: Connection,
+    read_only: bool,
+}
+
+#[derive(Default)]
+struct RuntimeEngine {
+    state: Mutex<RuntimeEngineState>,
+    available: Condvar,
+}
+
+static RUNTIME_ENGINES: OnceLock<Mutex<HashMap<PathBuf, Weak<RuntimeEngine>>>> = OnceLock::new();
+
+struct EngineLane {
+    engine: Arc<RuntimeEngine>,
+    started_at: Instant,
+    released: bool,
+}
+
+impl EngineLane {
+    fn acquire(engine: Arc<RuntimeEngine>, budget: Duration) -> Result<Self, WorldError> {
+        let started_at = Instant::now();
+        let mut state = engine.state.lock().map_err(|_| engine_poisoned_error())?;
+        while state.checked_out {
+            let remaining = budget.saturating_sub(started_at.elapsed());
+            if remaining.is_zero() {
+                return Err(storage_busy_error("writer_lane", started_at.elapsed()));
+            }
+            let (next_state, timeout) = engine
+                .available
+                .wait_timeout(state, remaining)
+                .map_err(|_| engine_poisoned_error())?;
+            state = next_state;
+            if timeout.timed_out() && state.checked_out {
+                return Err(storage_busy_error("writer_lane", started_at.elapsed()));
+            }
+        }
+        state.checked_out = true;
+        drop(state);
+        OPERATION_STARTED_AT.with(|value| *value.borrow_mut() = Some(started_at));
+        Ok(Self {
+            engine,
+            started_at,
+            released: false,
+        })
+    }
+
+    fn remaining(&self, budget: Duration) -> Result<Duration, WorldError> {
+        let remaining = budget.saturating_sub(self.started_at.elapsed());
+        if remaining.is_zero() {
+            Err(storage_busy_error(
+                "connection_acquisition",
+                self.started_at.elapsed(),
+            ))
+        } else {
+            Ok(remaining)
+        }
+    }
+
+    fn take_cached_connection(&self, read_only: bool) -> Result<Option<Connection>, WorldError> {
+        let cached = self
+            .engine
+            .state
+            .lock()
+            .map_err(|_| engine_poisoned_error())
+            .map(|mut state| state.connection.take())?;
+        Ok(cached.and_then(|cached| (cached.read_only == read_only).then_some(cached.connection)))
+    }
+
+    fn discard_cached_connection(&self) -> Result<(), WorldError> {
+        self.engine
+            .state
+            .lock()
+            .map_err(|_| engine_poisoned_error())?
+            .connection
+            .take();
+        Ok(())
+    }
+
+    fn into_connection(
+        mut self,
+        connection: Connection,
+        read_only: bool,
+        cache_on_drop: bool,
+    ) -> EngineConnection {
+        self.released = true;
+        EngineConnection {
+            engine: Arc::clone(&self.engine),
+            connection: Some(connection),
+            read_only,
+            cache_on_drop,
+        }
+    }
+
+    fn release(&mut self) {
+        if self.released {
+            return;
+        }
+        self.released = true;
+        OPERATION_STARTED_AT.with(|value| *value.borrow_mut() = None);
+        let mut state = self
+            .engine
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.checked_out = false;
+        self.engine.available.notify_one();
+    }
+}
+
+impl Drop for EngineLane {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+struct EngineConnection {
+    engine: Arc<RuntimeEngine>,
+    connection: Option<Connection>,
+    read_only: bool,
+    cache_on_drop: bool,
+}
+
+impl EngineConnection {
+    fn discard(&mut self) {
+        self.cache_on_drop = false;
+    }
+}
+
+impl Deref for EngineConnection {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        self.connection
+            .as_ref()
+            .expect("engine connection must exist until drop")
+    }
+}
+
+impl DerefMut for EngineConnection {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.connection
+            .as_mut()
+            .expect("engine connection must exist until drop")
+    }
+}
+
+impl Drop for EngineConnection {
+    fn drop(&mut self) {
+        OPERATION_STARTED_AT.with(|value| *value.borrow_mut() = None);
+        let connection = self.connection.take();
+        let mut state = self
+            .engine
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.cache_on_drop {
+            state.connection = connection.map(|connection| CachedConnection {
+                connection,
+                read_only: self.read_only,
+            });
+        }
+        state.checked_out = false;
+        self.engine.available.notify_one();
+    }
+}
 
 mod migrations;
 mod worker;
@@ -81,19 +266,69 @@ pub struct RunMetadata {
     pub updated_at_ms: i64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamChunk {
+    pub index: u64,
+    pub data: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StreamChunkPage {
+    pub data: Vec<StreamChunk>,
+    pub cursor: Option<String>,
+    pub has_more: bool,
+    pub done: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StreamInfo {
+    pub tail_index: i64,
+    pub done: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkflowHookPage {
+    pub data: Vec<WorkflowHook>,
+    pub cursor: Option<String>,
+    pub has_more: bool,
+}
+
+#[derive(Clone)]
 pub struct SqliteWorld {
     path: PathBuf,
     busy_timeout: Duration,
+    read_only: bool,
+    engine: Arc<RuntimeEngine>,
+}
+
+impl fmt::Debug for SqliteWorld {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SqliteWorld")
+            .field("path", &self.path)
+            .field("busy_timeout", &self.busy_timeout)
+            .field("read_only", &self.read_only)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SqliteWorld {
     #[must_use]
     pub fn new(path: impl Into<PathBuf>) -> Self {
+        let path = resolve_database_identity(path.into());
         Self {
-            path: path.into(),
+            engine: runtime_engine(&path),
+            path,
             busy_timeout: Duration::from_secs(5),
+            read_only: false,
         }
+    }
+
+    #[must_use]
+    pub fn new_read_only(path: impl Into<PathBuf>) -> Self {
+        let mut world = Self::new(path);
+        world.read_only = true;
+        world
     }
 
     #[must_use]
@@ -108,13 +343,18 @@ impl SqliteWorld {
     }
 
     pub fn migrate(&self) -> Result<(), WorldError> {
+        self.require_writable()?;
         validate_registry()?;
         prepare_database_path(&self.path)?;
-        retry_with_busy_budget(
-            self.busy_timeout,
-            MIGRATION_RETRY_INTERVAL,
-            |attempt_timeout| self.migrate_once(attempt_timeout),
-        )?;
+        let lane = EngineLane::acquire(Arc::clone(&self.engine), self.busy_timeout)?;
+        lane.discard_cached_connection()?;
+        let remaining = lane.remaining(self.busy_timeout)?;
+        let result =
+            retry_with_busy_budget(remaining, MIGRATION_RETRY_INTERVAL, |attempt_timeout| {
+                self.migrate_once(attempt_timeout)
+            });
+        drop(lane);
+        result?;
         self.ensure_ready()
     }
 
@@ -275,6 +515,7 @@ impl SqliteWorld {
         transaction.commit().map_err(storage_error)?;
         #[cfg(test)]
         process_tests::pause_at_process_test_failpoint(None, "after_commit_before_preload")?;
+        drop(connection);
         self.with_preload(result)
     }
 
@@ -311,6 +552,8 @@ impl SqliteWorld {
             .map_err(storage_error)?;
         self.require_current_schema(&transaction)?;
 
+        let accepted_at_ms = now_ms()?;
+        prune_expired_hooks(&transaction, accepted_at_ms)?;
         let current_run = read_run(&transaction, &request.run_id)?;
         let old_head = current_run
             .as_ref()
@@ -324,18 +567,64 @@ impl SqliteWorld {
             )));
         }
 
-        let current_step = request
-            .event
-            .correlation_id()
-            .map(|step_id| read_step(&transaction, &request.run_id, step_id))
-            .transpose()?
-            .flatten();
-        let plan = plan_world_event(
-            current_run.as_ref(),
-            current_step.as_ref(),
+        if let Some(existing) = read_committed_resume_event(&transaction, request)? {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(WorldEventResult {
+                event: Some(existing),
+                ..WorldEventResult::default()
+            });
+        }
+
+        let current_step = match &request.event {
+            WorldEventData::StepCreated { step_id, .. }
+            | WorldEventData::StepStarted { step_id, .. }
+            | WorldEventData::StepCompleted { step_id, .. }
+            | WorldEventData::StepFailed { step_id, .. }
+            | WorldEventData::StepRetrying { step_id, .. } => {
+                read_step(&transaction, &request.run_id, step_id)?
+            }
+            _ => None,
+        };
+        let hook_with_id = match &request.event {
+            WorldEventData::HookCreated { hook_id, .. }
+            | WorldEventData::HookReceived { hook_id, .. }
+            | WorldEventData::HookDisposed { hook_id, .. } => read_hook(&transaction, hook_id)?,
+            _ => None,
+        };
+        let current_hook = hook_with_id
+            .as_ref()
+            .filter(|hook| hook.run_id == request.run_id);
+        let hook_with_token = match &request.event {
+            WorldEventData::HookCreated { token, .. } => read_hook_by_token(&transaction, token)?,
+            _ => None,
+        };
+        let current_wait = match &request.event {
+            WorldEventData::WaitCreated { wait_id, .. }
+            | WorldEventData::WaitCompleted { wait_id, .. } => {
+                read_wait(&transaction, &request.run_id, wait_id)?
+            }
+            _ => None,
+        };
+        let plan = plan_world_event_with_state(
+            WorldEventState {
+                run: current_run.as_ref(),
+                step: current_step.as_ref(),
+                hook: current_hook,
+                hook_with_id: hook_with_id.as_ref(),
+                hook_with_token: hook_with_token.as_ref(),
+                wait: current_wait.as_ref(),
+            },
             request,
-            now_ms()?,
+            accepted_at_ms,
         )?;
+
+        // Validate and plan before checking the durable correlation claim so
+        // an invalid first attempt never claims an operation. Because this is
+        // an IMMEDIATE transaction, the precheck and the partial unique index
+        // together serialize sequential and cross-process replays. Checking
+        // before applying the plan also prevents a disposed Hook from being
+        // resurrected by replaying its original hook_created correlation.
+        reject_duplicate_entity_creation(&transaction, request)?;
 
         if let Some(run) = &plan.run {
             if plan.insert_run {
@@ -351,10 +640,46 @@ impl SqliteWorld {
                 update_step(&transaction, step)?;
             }
         }
+        if plan.cleanup_hooks_for_run {
+            delete_unretained_hooks_for_run(&transaction, &request.run_id, accepted_at_ms)?;
+        }
+        if plan.delete_waits_for_run {
+            transaction
+                .execute(
+                    "DELETE FROM workflow_waits WHERE run_id = ?1",
+                    [&request.run_id],
+                )
+                .map_err(storage_error)?;
+        }
+        if let Some(hook) = &plan.hook {
+            if plan.insert_hook {
+                insert_hook(&transaction, hook)?;
+            } else if plan.delete_hook {
+                delete_hook(&transaction, hook)?;
+            }
+        }
+        if let Some(wait) = &plan.wait {
+            if plan.insert_wait {
+                let correlation_id = request.event.correlation_id().ok_or_else(|| {
+                    WorldError::new(
+                        WorldErrorKind::Storage,
+                        "wait insertion plan is missing its correlation ID",
+                    )
+                })?;
+                insert_wait(&transaction, wait, correlation_id)?;
+            } else {
+                update_wait(&transaction, wait)?;
+            }
+        }
 
         let mut appended = Vec::with_capacity(plan.events.len());
         for event in &plan.events {
-            appended.push(append_world_event(&transaction, &request.run_id, event)?);
+            appended.push(append_world_event(
+                &transaction,
+                &request.run_id,
+                event,
+                request.resume_payload_digest.as_deref(),
+            )?);
         }
         let skipped_events = match request.event_count {
             Some(observed) if observed < old_head => Some(read_world_event_page_in_transaction(
@@ -372,6 +697,8 @@ impl SqliteWorld {
             event: appended.last().cloned(),
             run: plan.run,
             step: plan.step,
+            hook: plan.hook,
+            wait: plan.wait,
             step_created: plan.step_created,
             skipped_events,
         };
@@ -399,16 +726,21 @@ impl SqliteWorld {
         descending: bool,
     ) -> Result<WorkflowRunPage, WorldError> {
         validate_page_limit(limit)?;
-        let connection = self.open_runtime_connection()?;
-        self.require_current_schema(&connection)?;
-        list_runs(
-            &connection,
+        let mut connection = self.open_runtime_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(storage_error)?;
+        self.require_current_schema(&transaction)?;
+        let page = list_runs(
+            &transaction,
             workflow_name,
             status,
             cursor,
             limit,
             descending,
-        )
+        )?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(page)
     }
 
     pub fn get_step(&self, run_id: &str, step_id: &str) -> Result<WorkflowStep, WorldError> {
@@ -430,9 +762,354 @@ impl SqliteWorld {
         descending: bool,
     ) -> Result<WorkflowStepPage, WorldError> {
         validate_page_limit(limit)?;
+        let mut connection = self.open_runtime_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(storage_error)?;
+        self.require_current_schema(&transaction)?;
+        let page = list_steps(&transaction, run_id, cursor, limit, descending)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(page)
+    }
+
+    pub fn get_hook(&self, hook_id: &str) -> Result<WorkflowHook, WorldError> {
         let connection = self.open_runtime_connection()?;
         self.require_current_schema(&connection)?;
-        list_steps(&connection, run_id, cursor, limit, descending)
+        read_available_hook(&connection, hook_id, now_ms()?)?.ok_or_else(|| {
+            WorldError::new(
+                WorldErrorKind::HookNotFound,
+                format!("Hook {hook_id:?} was not found"),
+            )
+            .with_details(serde_json::json!({ "identifier": hook_id }))
+        })
+    }
+
+    pub fn get_hook_by_token(&self, token: &str) -> Result<WorkflowHook, WorldError> {
+        let connection = self.open_runtime_connection()?;
+        self.require_current_schema(&connection)?;
+        read_available_hook_by_token(&connection, token, now_ms()?)?.ok_or_else(|| {
+            WorldError::new(
+                WorldErrorKind::HookNotFound,
+                format!("Hook token {token:?} was not found"),
+            )
+            .with_details(serde_json::json!({ "identifier": token }))
+        })
+    }
+
+    pub fn list_hooks(
+        &self,
+        run_id: Option<&str>,
+        cursor: Option<&str>,
+        limit: usize,
+        descending: bool,
+    ) -> Result<WorkflowHookPage, WorldError> {
+        validate_page_limit(limit)?;
+        let mut connection = self.open_runtime_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(storage_error)?;
+        self.require_current_schema(&transaction)?;
+        let page = list_hooks(&transaction, run_id, cursor, limit, descending, now_ms()?)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(page)
+    }
+
+    /// Clear all data owned by this selected database while preserving its schema.
+    pub fn clear(&self) -> Result<(), WorldError> {
+        let mut connection = self.open_runtime_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        self.require_current_schema(&transaction)?;
+        transaction
+            .execute("DELETE FROM workflow_queue_messages", [])
+            .map_err(storage_error)?;
+        transaction
+            .execute("DELETE FROM workflow_streams", [])
+            .map_err(storage_error)?;
+        transaction
+            .execute("DELETE FROM workflow_runs", [])
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)
+    }
+
+    /// Append one binary chunk and return its durable zero-based index.
+    pub fn write_stream_chunk(
+        &self,
+        run_id: &str,
+        name: &str,
+        data: &[u8],
+    ) -> Result<StreamChunk, WorldError> {
+        let chunks = [data.to_vec()];
+        self.write_stream_chunks(run_id, name, &chunks)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                WorldError::new(
+                    WorldErrorKind::Storage,
+                    "internal stream write returned no chunk",
+                )
+            })
+    }
+
+    /// Atomically append a group of binary chunks at consecutive indices.
+    pub fn write_stream_chunks(
+        &self,
+        run_id: &str,
+        name: &str,
+        chunks: &[Vec<u8>],
+    ) -> Result<Vec<StreamChunk>, WorldError> {
+        validate_stream_identity(run_id, name)?;
+        if chunks.is_empty() {
+            self.ensure_ready()?;
+            return Ok(Vec::new());
+        }
+
+        let chunk_count = u64::try_from(chunks.len())
+            .map_err(|_| WorldError::invalid_request("stream chunk count overflow"))?;
+        let mut connection = self.open_runtime_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        self.require_current_schema(&transaction)?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO workflow_streams (
+                  run_id, name, next_chunk_index, closed
+                ) VALUES (?1, ?2, 0, 0)
+                ON CONFLICT (run_id, name) DO NOTHING
+                "#,
+                params![run_id, name],
+            )
+            .map_err(storage_error)?;
+
+        let (first_index, closed) = transaction
+            .query_row(
+                r#"
+                SELECT next_chunk_index, closed
+                FROM workflow_streams
+                WHERE run_id = ?1 AND name = ?2
+                "#,
+                params![run_id, name],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(storage_error)?;
+        if closed != 0 {
+            return Err(WorldError::new(
+                WorldErrorKind::EntityConflict,
+                format!("stream {name:?} in run {run_id:?} is already closed"),
+            ));
+        }
+        let first_index = to_u64(first_index, "stream next chunk index")?;
+        let next_index = first_index.checked_add(chunk_count).ok_or_else(|| {
+            WorldError::invalid_request("stream chunk index exceeds the supported range")
+        })?;
+        if next_index > MAX_STREAM_CHUNK_INDEX + 1 {
+            return Err(WorldError::invalid_request(
+                "stream chunk index exceeds the supported range",
+            ));
+        }
+
+        let mut inserted_indices = Vec::with_capacity(chunks.len());
+        {
+            let mut statement = transaction
+                .prepare(
+                    r#"
+                    INSERT INTO workflow_stream_chunks (
+                      run_id, name, chunk_index, data
+                    ) VALUES (?1, ?2, ?3, ?4)
+                    "#,
+                )
+                .map_err(storage_error)?;
+            for (offset, data) in chunks.iter().enumerate() {
+                let offset = u64::try_from(offset)
+                    .map_err(|_| WorldError::invalid_request("stream chunk offset overflow"))?;
+                let index = first_index.checked_add(offset).ok_or_else(|| {
+                    WorldError::invalid_request("stream chunk index exceeds the supported range")
+                })?;
+                let sqlite_index = i64::try_from(index).map_err(|_| {
+                    WorldError::invalid_request("stream chunk index exceeds SQLite integer range")
+                })?;
+                statement
+                    .execute(params![run_id, name, sqlite_index, data])
+                    .map_err(storage_error)?;
+                inserted_indices.push(index);
+            }
+        }
+        transaction
+            .execute(
+                r#"
+                UPDATE workflow_streams
+                SET next_chunk_index = ?3
+                WHERE run_id = ?1 AND name = ?2
+                "#,
+                params![
+                    run_id,
+                    name,
+                    i64::try_from(next_index).map_err(|_| {
+                        WorldError::invalid_request(
+                            "stream next chunk index exceeds SQLite integer range",
+                        )
+                    })?
+                ],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(inserted_indices
+            .into_iter()
+            .zip(chunks)
+            .map(|(index, data)| StreamChunk {
+                index,
+                data: data.clone(),
+            })
+            .collect())
+    }
+
+    /// Mark a stream complete. Closing an absent stream creates an empty stream.
+    pub fn close_stream(&self, run_id: &str, name: &str) -> Result<(), WorldError> {
+        validate_stream_identity(run_id, name)?;
+        let mut connection = self.open_runtime_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        self.require_current_schema(&transaction)?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO workflow_streams (
+                  run_id, name, next_chunk_index, closed
+                ) VALUES (?1, ?2, 0, 1)
+                ON CONFLICT (run_id, name) DO UPDATE SET closed = 1
+                "#,
+                params![run_id, name],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)
+    }
+
+    /// List every open or closed stream owned by a run.
+    pub fn list_streams(&self, run_id: &str) -> Result<Vec<String>, WorldError> {
+        if run_id.is_empty() {
+            return Err(WorldError::invalid_request(
+                "stream run ID must not be empty",
+            ));
+        }
+        let connection = self.open_runtime_connection()?;
+        self.require_current_schema(&connection)?;
+        let mut statement = connection
+            .prepare(
+                r#"
+                SELECT name
+                FROM workflow_streams
+                WHERE run_id = ?1
+                ORDER BY name ASC
+                "#,
+            )
+            .map_err(storage_error)?;
+        statement
+            .query_map([run_id], |row| row.get::<_, String>(0))
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)
+    }
+
+    /// Read one snapshot page of already-persisted stream chunks.
+    pub fn get_stream_chunks(
+        &self,
+        run_id: &str,
+        name: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<StreamChunkPage, WorldError> {
+        validate_stream_identity(run_id, name)?;
+        validate_page_limit(limit)?;
+        let start_index = cursor.map(parse_stream_cursor).transpose()?.unwrap_or(0);
+        let sqlite_start = i64::try_from(start_index).map_err(|_| {
+            WorldError::invalid_request("stream cursor exceeds SQLite integer range")
+        })?;
+        let fetch_limit = i64::try_from(limit + 1)
+            .map_err(|_| WorldError::invalid_request("pagination limit overflow"))?;
+
+        let mut connection = self.open_runtime_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(storage_error)?;
+        self.require_current_schema(&transaction)?;
+        let stream = read_stream_state(&transaction, run_id, name)?;
+        let done = stream.is_some_and(|(_, closed)| closed);
+        let rows = {
+            let mut statement = transaction
+                .prepare(
+                    r#"
+                    SELECT chunk_index, data
+                    FROM workflow_stream_chunks
+                    WHERE run_id = ?1 AND name = ?2 AND chunk_index >= ?3
+                    ORDER BY chunk_index ASC
+                    LIMIT ?4
+                    "#,
+                )
+                .map_err(storage_error)?;
+            statement
+                .query_map(params![run_id, name, sqlite_start, fetch_limit], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })
+                .map_err(storage_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage_error)?
+        };
+        let has_more = rows.len() > limit;
+        let mut data = Vec::with_capacity(rows.len().min(limit));
+        for (index, bytes) in rows.into_iter().take(limit) {
+            data.push(StreamChunk {
+                index: to_u64(index, "stream chunk index")?,
+                data: bytes,
+            });
+        }
+        let cursor = if has_more {
+            let next = data
+                .last()
+                .ok_or_else(|| {
+                    WorldError::new(
+                        WorldErrorKind::Storage,
+                        "stream page reports more data without a chunk",
+                    )
+                })?
+                .index
+                .checked_add(1)
+                .ok_or_else(|| WorldError::persisted_data("stream chunk index overflow"))?;
+            Some(stream_cursor(next)?)
+        } else {
+            None
+        };
+        transaction.commit().map_err(storage_error)?;
+        Ok(StreamChunkPage {
+            data,
+            cursor,
+            has_more,
+            done,
+        })
+    }
+
+    /// Read the durable tail and completion marker for a stream.
+    pub fn get_stream_info(&self, run_id: &str, name: &str) -> Result<StreamInfo, WorldError> {
+        validate_stream_identity(run_id, name)?;
+        let connection = self.open_runtime_connection()?;
+        self.require_current_schema(&connection)?;
+        let Some((next_index, done)) = read_stream_state(&connection, run_id, name)? else {
+            return Ok(StreamInfo {
+                tail_index: -1,
+                done: false,
+            });
+        };
+        let tail_index = if next_index == 0 {
+            -1
+        } else {
+            i64::try_from(next_index - 1).map_err(|_| {
+                WorldError::persisted_data("stream tail index exceeds SQLite integer range")
+            })?
+        };
+        Ok(StreamInfo { tail_index, done })
     }
 
     pub fn get_event(&self, run_id: &str, event_id: &str) -> Result<WorldEvent, WorldError> {
@@ -674,6 +1351,104 @@ impl SqliteWorld {
         #[cfg(test)]
         process_tests::pause_at_process_test_failpoint(None, "after_queue_claim_commit")?;
         Ok(Some(claim))
+    }
+
+    pub fn renew_queue_message(
+        &self,
+        lease_token: &str,
+        now_ms: i64,
+        lease_duration_ms: i64,
+    ) -> Result<i64, WorldError> {
+        if lease_token.is_empty() {
+            return Err(WorldError::invalid_request(
+                "queue lease token must not be empty",
+            ));
+        }
+        if now_ms < 0 {
+            return Err(WorldError::invalid_request(
+                "queue lease renewal time must not be negative",
+            ));
+        }
+        if lease_duration_ms <= 0 {
+            return Err(WorldError::invalid_request(
+                "queue lease duration must be greater than zero",
+            ));
+        }
+        let lease_expires_at_ms = now_ms.checked_add(lease_duration_ms).ok_or_else(|| {
+            WorldError::invalid_request("queue lease expiration exceeds the timestamp range")
+        })?;
+        let mut connection = self.open_runtime_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        self.require_current_schema(&transaction)?;
+        let renewed_until_ms = transaction
+            .query_row(
+                r#"
+                UPDATE workflow_queue_messages
+                SET lease_expires_at_ms = MAX(lease_expires_at_ms, ?3),
+                    updated_at_ms = ?2
+                WHERE lease_token = ?1 AND lease_expires_at_ms > ?2
+                RETURNING lease_expires_at_ms
+                "#,
+                params![lease_token, now_ms, lease_expires_at_ms],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or_else(|| queue_claim_lost(lease_token))?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(renewed_until_ms)
+    }
+
+    /// Record that a claimed delivery reached an HTTP handler response.
+    ///
+    /// Repeating this operation for the same candidate delivery is idempotent.
+    /// Transport failures deliberately never call it, so reconnects retain the
+    /// same handler-visible attempt number.
+    pub fn record_queue_delivery_response(
+        &self,
+        lease_token: &str,
+        delivery_attempt: u32,
+        now_ms: i64,
+    ) -> Result<String, WorldError> {
+        if lease_token.is_empty() {
+            return Err(WorldError::invalid_request(
+                "queue lease token must not be empty",
+            ));
+        }
+        if delivery_attempt == 0 {
+            return Err(WorldError::invalid_request(
+                "queue delivery attempt must be greater than zero",
+            ));
+        }
+        if now_ms < 0 {
+            return Err(WorldError::invalid_request(
+                "queue delivery response time must not be negative",
+            ));
+        }
+        let mut connection = self.open_runtime_connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        self.require_current_schema(&transaction)?;
+        let message_id = transaction
+            .query_row(
+                r#"
+                UPDATE workflow_queue_messages
+                SET delivery_attempt = MAX(delivery_attempt, ?2),
+                    updated_at_ms = ?3
+                WHERE lease_token = ?1 AND lease_expires_at_ms > ?3
+                RETURNING message_id
+                "#,
+                params![lease_token, i64::from(delivery_attempt), now_ms],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or_else(|| queue_claim_lost(lease_token))?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(message_id)
     }
 
     pub fn reschedule_queue_message(
@@ -925,39 +1700,70 @@ impl SqliteWorld {
         })
     }
 
-    fn open_runtime_connection(&self) -> Result<Connection, WorldError> {
+    fn open_runtime_connection(&self) -> Result<EngineConnection, WorldError> {
         if !self.path.exists() {
             return Err(WorldError::new(
                 WorldErrorKind::NotMigrated,
                 "SQLite World database does not exist; run migrate first",
             ));
         }
-        let connection = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_WRITE)
-            .map_err(storage_error)?;
-        self.configure_connection(&connection)?;
+        let lane = EngineLane::acquire(Arc::clone(&self.engine), self.busy_timeout)?;
+        let remaining = lane.remaining(self.busy_timeout)?;
+        let connection = match lane.take_cached_connection(self.read_only)? {
+            Some(connection) => connection,
+            None => {
+                let flags = if self.read_only {
+                    OpenFlags::SQLITE_OPEN_READ_ONLY
+                } else {
+                    OpenFlags::SQLITE_OPEN_READ_WRITE
+                };
+                Connection::open_with_flags(&self.path, flags).map_err(|error| {
+                    storage_error_at(error, "connection_acquisition", lane.started_at)
+                })?
+            }
+        };
+        let mut connection = lane.into_connection(connection, self.read_only, true);
+        let configured = if self.read_only {
+            Self::configure_read_only_connection(&connection, remaining)
+        } else {
+            Self::configure_connection_with_timeout(&connection, remaining)
+        };
+        if let Err(error) = configured {
+            connection.discard();
+            return Err(error);
+        }
         Ok(connection)
     }
 
-    fn open_inspection_connection(&self) -> Result<Connection, WorldError> {
+    fn open_inspection_connection(&self) -> Result<EngineConnection, WorldError> {
         if !self.path.exists() {
             return Err(WorldError::new(
                 WorldErrorKind::NotMigrated,
                 "SQLite World database does not exist; run migrate first",
             ));
         }
+        let lane = EngineLane::acquire(Arc::clone(&self.engine), self.busy_timeout)?;
+        lane.discard_cached_connection()?;
+        let remaining = lane.remaining(self.busy_timeout)?;
         let connection = Connection::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(storage_error)?;
-        connection
-            .busy_timeout(self.busy_timeout)
-            .map_err(storage_error)?;
+            .map_err(|error| storage_error_at(error, "connection_acquisition", lane.started_at))?;
+        connection.busy_timeout(remaining).map_err(storage_error)?;
         connection
             .pragma_update(None, "foreign_keys", "ON")
             .map_err(storage_error)?;
-        Ok(connection)
+        Ok(lane.into_connection(connection, true, false))
     }
 
-    fn configure_connection(&self, connection: &Connection) -> Result<(), WorldError> {
-        Self::configure_connection_with_timeout(connection, self.busy_timeout)
+    fn configure_read_only_connection(
+        connection: &Connection,
+        busy_timeout: Duration,
+    ) -> Result<(), WorldError> {
+        connection
+            .busy_timeout(busy_timeout)
+            .map_err(storage_error)?;
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .map_err(storage_error)
     }
 
     fn configure_connection_with_timeout(
@@ -969,7 +1775,24 @@ impl SqliteWorld {
             .map_err(storage_error)?;
         connection
             .pragma_update(None, "foreign_keys", "ON")
-            .map_err(storage_error)
+            .map_err(storage_error)?;
+        connection
+            .pragma_update(None, "synchronous", "NORMAL")
+            .map_err(storage_error)?;
+        connection
+            .pragma_update(None, "wal_autocheckpoint", 1000_i64)
+            .map_err(storage_error)?;
+        require_connection_pragmas(connection)
+    }
+
+    fn require_writable(&self) -> Result<(), WorldError> {
+        if self.read_only {
+            Err(WorldError::invalid_request(
+                "SQLite World was opened for read-only observability",
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     fn require_current_schema(&self, connection: &Connection) -> Result<(), WorldError> {
@@ -1004,8 +1827,53 @@ impl SqliteWorld {
                 ),
             ));
         }
+        require_runtime_pragmas(connection)?;
         require_database_metadata(connection)
     }
+}
+
+fn require_connection_pragmas(connection: &Connection) -> Result<(), WorldError> {
+    let foreign_keys = connection
+        .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+        .map_err(storage_error)?;
+    let synchronous = connection
+        .query_row("PRAGMA synchronous", [], |row| row.get::<_, i64>(0))
+        .map_err(storage_error)?;
+    let wal_autocheckpoint = connection
+        .query_row("PRAGMA wal_autocheckpoint", [], |row| row.get::<_, i64>(0))
+        .map_err(storage_error)?;
+    if foreign_keys != 1 || synchronous != 1 || wal_autocheckpoint != 1000 {
+        return Err(WorldError::new(
+            WorldErrorKind::Storage,
+            "SQLite connection did not retain required runtime settings",
+        )
+        .with_details(serde_json::json!({
+            "subsystem": "sqlite",
+            "reason": "invalid_connection_pragmas",
+            "foreignKeys": foreign_keys,
+            "synchronous": synchronous,
+            "walAutocheckpoint": wal_autocheckpoint,
+        })));
+    }
+    Ok(())
+}
+
+fn require_runtime_pragmas(connection: &Connection) -> Result<(), WorldError> {
+    let journal_mode = connection
+        .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+        .map_err(storage_error)?;
+    if !journal_mode.eq_ignore_ascii_case("wal") {
+        return Err(WorldError::new(
+            WorldErrorKind::Storage,
+            format!("SQLite World requires WAL journal mode, found {journal_mode:?}"),
+        )
+        .with_details(serde_json::json!({
+            "subsystem": "sqlite",
+            "reason": "journal_mode_not_wal",
+            "journalMode": journal_mode,
+        })));
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -1025,6 +1893,188 @@ fn validate_queue_routing(scope: &str, queue_name: &str) -> Result<(), WorldErro
         return Err(WorldError::invalid_request("queue name must not be empty"));
     }
     Ok(())
+}
+
+fn validate_stream_identity(run_id: &str, name: &str) -> Result<(), WorldError> {
+    if run_id.is_empty() {
+        return Err(WorldError::invalid_request(
+            "stream run ID must not be empty",
+        ));
+    }
+    if name.is_empty() {
+        return Err(WorldError::invalid_request("stream name must not be empty"));
+    }
+    Ok(())
+}
+
+fn reject_duplicate_entity_creation(
+    connection: &Connection,
+    request: &CreateWorldEventRequest,
+) -> Result<(), WorldError> {
+    let event_type = request.event.event_type();
+    if !matches!(
+        event_type,
+        EventType::StepCreated
+            | EventType::HookCreated
+            | EventType::WaitCreated
+            | EventType::AttrSet
+    ) {
+        return Ok(());
+    }
+    let Some(correlation_id) = request.event.correlation_id() else {
+        return Ok(());
+    };
+    let exists = connection
+        .query_row(
+            r#"
+            SELECT 1
+            FROM workflow_events
+            WHERE run_id = ?1 AND correlation_id = ?2 AND event_type = ?3
+            LIMIT 1
+            "#,
+            params![request.run_id, correlation_id, event_type.as_str()],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .is_some();
+    if exists {
+        return Err(WorldError::new(
+            WorldErrorKind::EntityConflict,
+            format!(
+                "{} for correlation ID {correlation_id:?} already exists in run {:?}",
+                event_type.as_str(),
+                request.run_id
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn read_stream_state(
+    connection: &Connection,
+    run_id: &str,
+    name: &str,
+) -> Result<Option<(u64, bool)>, WorldError> {
+    let state = connection
+        .query_row(
+            r#"
+            SELECT next_chunk_index, closed
+            FROM workflow_streams
+            WHERE run_id = ?1 AND name = ?2
+            "#,
+            params![run_id, name],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(storage_error)?;
+    let Some((next_index, closed)) = state else {
+        return Ok(None);
+    };
+    let next_index = to_u64(next_index, "stream next chunk index")?;
+    if next_index > MAX_STREAM_CHUNK_INDEX + 1 || !matches!(closed, 0 | 1) {
+        return Err(WorldError::persisted_data(format!(
+            "stream {name:?} in run {run_id:?} has invalid durable state"
+        )));
+    }
+    Ok(Some((next_index, closed == 1)))
+}
+
+fn stream_cursor(index: u64) -> Result<String, WorldError> {
+    if index > MAX_STREAM_CHUNK_INDEX + 1 {
+        return Err(WorldError::invalid_request(
+            "stream cursor exceeds the supported index range",
+        ));
+    }
+    Ok(format!("{STREAM_CURSOR_PREFIX}{index}"))
+}
+
+fn parse_stream_cursor(cursor: &str) -> Result<u64, WorldError> {
+    let digits = cursor
+        .strip_prefix(STREAM_CURSOR_PREFIX)
+        .ok_or_else(|| WorldError::invalid_request(format!("invalid stream cursor: {cursor:?}")))?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(WorldError::invalid_request(format!(
+            "invalid stream cursor: {cursor:?}"
+        )));
+    }
+    let index = digits
+        .parse::<u64>()
+        .map_err(|_| WorldError::invalid_request(format!("invalid stream cursor: {cursor:?}")))?;
+    if stream_cursor(index)?.as_str() != cursor {
+        return Err(WorldError::invalid_request(format!(
+            "non-canonical stream cursor: {cursor:?}"
+        )));
+    }
+    Ok(index)
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct PageCursor {
+    created_at_ms: i64,
+    id: String,
+}
+
+fn page_cursor(created_at_ms: i64, id: &str) -> String {
+    let mut payload = Vec::with_capacity(size_of::<i64>() + id.len());
+    payload.extend_from_slice(&created_at_ms.to_be_bytes());
+    payload.extend_from_slice(id.as_bytes());
+
+    let mut encoded = String::with_capacity(PAGE_CURSOR_PREFIX.len() + payload.len() * 2);
+    encoded.push_str(PAGE_CURSOR_PREFIX);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in payload {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+fn parse_page_cursor(cursor: &str) -> Result<PageCursor, WorldError> {
+    let encoded = cursor
+        .strip_prefix(PAGE_CURSOR_PREFIX)
+        .ok_or_else(|| WorldError::invalid_request(format!("invalid page cursor: {cursor:?}")))?;
+    if encoded.len() < (size_of::<i64>() + 1) * 2 || encoded.len() % 2 != 0 {
+        return Err(WorldError::invalid_request(format!(
+            "invalid page cursor: {cursor:?}"
+        )));
+    }
+
+    let mut payload = Vec::with_capacity(encoded.len() / 2);
+    for pair in encoded.as_bytes().chunks_exact(2) {
+        let high = decode_hex_nibble(pair[0]).ok_or_else(|| {
+            WorldError::invalid_request(format!("invalid page cursor: {cursor:?}"))
+        })?;
+        let low = decode_hex_nibble(pair[1]).ok_or_else(|| {
+            WorldError::invalid_request(format!("invalid page cursor: {cursor:?}"))
+        })?;
+        payload.push((high << 4) | low);
+    }
+
+    let timestamp = payload[..size_of::<i64>()]
+        .try_into()
+        .map_err(|_| WorldError::invalid_request("invalid page cursor timestamp"))?;
+    let id = String::from_utf8(payload[size_of::<i64>()..].to_vec())
+        .map_err(|_| WorldError::invalid_request("invalid page cursor identifier"))?;
+    let parsed = PageCursor {
+        created_at_ms: i64::from_be_bytes(timestamp),
+        id,
+    };
+    if page_cursor(parsed.created_at_ms, &parsed.id) != cursor {
+        return Err(WorldError::invalid_request(format!(
+            "non-canonical page cursor: {cursor:?}"
+        )));
+    }
+    Ok(parsed)
+}
+
+const fn decode_hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn validate_page_limit(limit: usize) -> Result<(), WorldError> {
@@ -1116,28 +2166,44 @@ fn list_runs(
 ) -> Result<WorkflowRunPage, WorldError> {
     let comparison = if descending { "<" } else { ">" };
     let order = if descending { "DESC" } else { "ASC" };
+    let cursor = cursor.map(parse_page_cursor).transpose()?;
     let query = format!(
         r#"
         SELECT run_id
         FROM workflow_runs
         WHERE (?1 IS NULL OR workflow_name = ?1)
           AND (?2 IS NULL OR status = ?2)
-          AND (?3 IS NULL OR run_id {comparison} ?3)
-        ORDER BY run_id {order}
-        LIMIT ?4
+          AND (
+            ?3 IS NULL
+            OR created_at_ms {comparison} ?3
+            OR (created_at_ms = ?3 AND run_id {comparison} ?4)
+          )
+        ORDER BY created_at_ms {order}, run_id {order}
+        LIMIT ?5
         "#
     );
     let status = status.map(RunStatus::as_str);
+    let cursor_created_at_ms = cursor.as_ref().map(|cursor| cursor.created_at_ms);
+    let cursor_id = cursor.as_ref().map(|cursor| cursor.id.as_str());
     let fetch_limit = i64::try_from(limit + 1)
         .map_err(|_| WorldError::invalid_request("pagination limit overflow"))?;
     let mut statement = connection.prepare(&query).map_err(storage_error)?;
     let ids = statement
-        .query_map(params![workflow_name, status, cursor, fetch_limit], |row| {
-            row.get::<_, String>(0)
-        })
+        .query_map(
+            params![
+                workflow_name,
+                status,
+                cursor_created_at_ms,
+                cursor_id,
+                fetch_limit
+            ],
+            |row| row.get::<_, String>(0),
+        )
         .map_err(storage_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(storage_error)?;
+    #[cfg(test)]
+    process_tests::pause_at_process_test_failpoint(None, "after_list_run_ids")?;
     let has_more = ids.len() > limit;
     let mut data = Vec::with_capacity(ids.len().min(limit));
     for run_id in ids.into_iter().take(limit) {
@@ -1145,7 +2211,9 @@ fn list_runs(
             WorldError::persisted_data(format!("listed run {run_id:?} disappeared"))
         })?);
     }
-    let cursor = data.last().map(|run| run.run_id.clone());
+    let cursor = data
+        .last()
+        .map(|run| page_cursor(run.created_at_ms, &run.run_id));
     Ok(WorkflowRunPage {
         data,
         cursor,
@@ -1162,25 +2230,36 @@ fn list_steps(
 ) -> Result<WorkflowStepPage, WorldError> {
     let comparison = if descending { "<" } else { ">" };
     let order = if descending { "DESC" } else { "ASC" };
+    let cursor = cursor.map(parse_page_cursor).transpose()?;
     let query = format!(
         r#"
         SELECT step_id
         FROM workflow_steps
-        WHERE run_id = ?1 AND (?2 IS NULL OR step_id {comparison} ?2)
-        ORDER BY step_id {order}
-        LIMIT ?3
+        WHERE run_id = ?1
+          AND (
+            ?2 IS NULL
+            OR created_at_ms {comparison} ?2
+            OR (created_at_ms = ?2 AND step_id {comparison} ?3)
+          )
+        ORDER BY created_at_ms {order}, step_id {order}
+        LIMIT ?4
         "#
     );
+    let cursor_created_at_ms = cursor.as_ref().map(|cursor| cursor.created_at_ms);
+    let cursor_id = cursor.as_ref().map(|cursor| cursor.id.as_str());
     let fetch_limit = i64::try_from(limit + 1)
         .map_err(|_| WorldError::invalid_request("pagination limit overflow"))?;
     let mut statement = connection.prepare(&query).map_err(storage_error)?;
     let ids = statement
-        .query_map(params![run_id, cursor, fetch_limit], |row| {
-            row.get::<_, String>(0)
-        })
+        .query_map(
+            params![run_id, cursor_created_at_ms, cursor_id, fetch_limit],
+            |row| row.get::<_, String>(0),
+        )
         .map_err(storage_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(storage_error)?;
+    #[cfg(test)]
+    process_tests::pause_at_process_test_failpoint(None, "after_list_step_ids")?;
     let has_more = ids.len() > limit;
     let mut data = Vec::with_capacity(ids.len().min(limit));
     for step_id in ids.into_iter().take(limit) {
@@ -1188,8 +2267,72 @@ fn list_steps(
             WorldError::persisted_data(format!("listed step {run_id:?}/{step_id:?} disappeared"))
         })?);
     }
-    let cursor = data.last().map(|step| step.step_id.clone());
+    let cursor = data
+        .last()
+        .map(|step| page_cursor(step.created_at_ms, &step.step_id));
     Ok(WorkflowStepPage {
+        data,
+        cursor,
+        has_more,
+    })
+}
+
+fn list_hooks(
+    connection: &Connection,
+    run_id: Option<&str>,
+    cursor: Option<&str>,
+    limit: usize,
+    descending: bool,
+    at_ms: i64,
+) -> Result<WorkflowHookPage, WorldError> {
+    let comparison = if descending { "<" } else { ">" };
+    let order = if descending { "DESC" } else { "ASC" };
+    let cursor = cursor.map(parse_page_cursor).transpose()?;
+    let query = format!(
+        r#"
+        SELECT h.hook_id
+        FROM workflow_hooks h
+        JOIN workflow_runs r ON r.run_id = h.run_id
+        WHERE (?1 IS NULL OR h.run_id = ?1)
+          AND (
+            ?2 IS NULL
+            OR h.created_at_ms {comparison} ?2
+            OR (h.created_at_ms = ?2 AND h.hook_id {comparison} ?3)
+          )
+          AND (
+            r.status NOT IN ('completed', 'failed', 'cancelled')
+            OR h.token_retention_until_ms > ?4
+          )
+        ORDER BY h.created_at_ms {order}, h.hook_id {order}
+        LIMIT ?5
+        "#
+    );
+    let cursor_created_at_ms = cursor.as_ref().map(|cursor| cursor.created_at_ms);
+    let cursor_id = cursor.as_ref().map(|cursor| cursor.id.as_str());
+    let fetch_limit = i64::try_from(limit + 1)
+        .map_err(|_| WorldError::invalid_request("pagination limit overflow"))?;
+    let mut statement = connection.prepare(&query).map_err(storage_error)?;
+    let ids = statement
+        .query_map(
+            params![run_id, cursor_created_at_ms, cursor_id, at_ms, fetch_limit],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
+    #[cfg(test)]
+    process_tests::pause_at_process_test_failpoint(None, "after_list_hook_ids")?;
+    let has_more = ids.len() > limit;
+    let mut data = Vec::with_capacity(ids.len().min(limit));
+    for hook_id in ids.into_iter().take(limit) {
+        data.push(read_hook(connection, &hook_id)?.ok_or_else(|| {
+            WorldError::persisted_data(format!("listed Hook {hook_id:?} disappeared"))
+        })?);
+    }
+    let cursor = data
+        .last()
+        .map(|hook| page_cursor(hook.created_at_ms, &hook.hook_id));
+    Ok(WorkflowHookPage {
         data,
         cursor,
         has_more,
@@ -1360,6 +2503,7 @@ fn read_queue_claim(connection: &Connection, message_id: &str) -> Result<QueueCl
         queue_name,
         body,
         attempt,
+        delivery_attempt,
         lease_token,
         lease_owner,
         lease_expires_at_ms,
@@ -1367,7 +2511,8 @@ fn read_queue_claim(connection: &Connection, message_id: &str) -> Result<QueueCl
         .query_row(
             r#"
             SELECT message_id, scope, queue_name, body, attempt,
-                   lease_token, lease_owner, lease_expires_at_ms
+                   delivery_attempt, lease_token, lease_owner,
+                   lease_expires_at_ms
             FROM workflow_queue_messages
             WHERE message_id = ?1
             "#,
@@ -1379,9 +2524,10 @@ fn read_queue_claim(connection: &Connection, message_id: &str) -> Result<QueueCl
                     row.get::<_, String>(2)?,
                     row.get::<_, Vec<u8>>(3)?,
                     row.get::<_, i64>(4)?,
-                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, i64>(5)?,
                     row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
                 ))
             },
         )
@@ -1392,6 +2538,9 @@ fn read_queue_claim(connection: &Connection, message_id: &str) -> Result<QueueCl
         queue_name,
         body,
         attempt: to_u32(attempt, "queue attempt")?,
+        delivery_attempt: to_u32(delivery_attempt, "queue delivery attempt")?
+            .checked_add(1)
+            .ok_or_else(|| WorldError::persisted_data("queue delivery attempt overflow"))?,
         lease_token: lease_token.ok_or_else(|| {
             WorldError::persisted_data("claimed queue message is missing its lease token")
         })?,
@@ -1505,7 +2654,8 @@ fn update_run(transaction: &Transaction<'_>, run: &WorkflowRun) -> Result<(), Wo
                 output = ?5,
                 error = ?6,
                 error_code = ?7,
-                completed_at_ms = ?8
+                completed_at_ms = ?8,
+                attributes_json = ?9
             WHERE run_id = ?1
             "#,
             params![
@@ -1517,6 +2667,7 @@ fn update_run(transaction: &Transaction<'_>, run: &WorkflowRun) -> Result<(), Wo
                 run.error,
                 run.error_code,
                 run.completed_at_ms,
+                encode_attributes(&run.attributes)?,
             ],
         )
         .map_err(storage_error)?;
@@ -1609,6 +2760,427 @@ fn update_step(transaction: &Transaction<'_>, step: &WorkflowStep) -> Result<(),
     Ok(())
 }
 
+fn insert_hook(transaction: &Transaction<'_>, hook: &WorkflowHook) -> Result<(), WorldError> {
+    transaction
+        .execute(
+            r#"
+            INSERT INTO workflow_hooks (
+              hook_id, run_id, token, metadata, created_at_ms, spec_version,
+              is_webhook, is_system, token_retention_until_ms
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+            params![
+                hook.hook_id,
+                hook.run_id,
+                hook.token,
+                hook.metadata,
+                hook.created_at_ms,
+                i64::from(hook.spec_version),
+                i64::from(hook.is_webhook),
+                i64::from(hook.is_system),
+                hook.token_retention_until_ms,
+            ],
+        )
+        .map_err(storage_error)?;
+    Ok(())
+}
+
+fn delete_hook(transaction: &Transaction<'_>, hook: &WorkflowHook) -> Result<(), WorldError> {
+    let changed = transaction
+        .execute(
+            "DELETE FROM workflow_hooks WHERE hook_id = ?1 AND run_id = ?2",
+            params![hook.hook_id, hook.run_id],
+        )
+        .map_err(storage_error)?;
+    if changed != 1 {
+        return Err(WorldError::new(
+            WorldErrorKind::HookNotFound,
+            format!(
+                "Hook {:?} disappeared from run {:?} during disposal",
+                hook.hook_id, hook.run_id
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn read_hook(connection: &Connection, hook_id: &str) -> Result<Option<WorkflowHook>, WorldError> {
+    read_hook_query(
+        connection,
+        r#"
+        SELECT hook_id, run_id, token, metadata, created_at_ms, spec_version,
+               is_webhook, is_system, token_retention_until_ms
+        FROM workflow_hooks
+        WHERE hook_id = ?1
+        "#,
+        hook_id,
+    )
+}
+
+fn read_hook_by_token(
+    connection: &Connection,
+    token: &str,
+) -> Result<Option<WorkflowHook>, WorldError> {
+    read_hook_query(
+        connection,
+        r#"
+        SELECT hook_id, run_id, token, metadata, created_at_ms, spec_version,
+               is_webhook, is_system, token_retention_until_ms
+        FROM workflow_hooks
+        WHERE token = ?1
+        "#,
+        token,
+    )
+}
+
+fn read_hook_query(
+    connection: &Connection,
+    query: &str,
+    key: &str,
+) -> Result<Option<WorkflowHook>, WorldError> {
+    connection
+        .query_row(query, [key], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<Vec<u8>>>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+            ))
+        })
+        .optional()
+        .map_err(storage_error)?
+        .map(
+            |(
+                hook_id,
+                run_id,
+                token,
+                metadata,
+                created_at_ms,
+                spec_version,
+                is_webhook,
+                is_system,
+                token_retention_until_ms,
+            )| {
+                Ok(WorkflowHook {
+                    run_id,
+                    hook_id,
+                    token,
+                    metadata,
+                    created_at_ms,
+                    spec_version: to_u32(spec_version, "Hook spec version")?,
+                    is_webhook: decode_sqlite_bool(is_webhook, "Hook is_webhook")?,
+                    is_system: decode_sqlite_bool(is_system, "Hook is_system")?,
+                    token_retention_until_ms,
+                })
+            },
+        )
+        .transpose()
+}
+
+fn hook_is_available(
+    connection: &Connection,
+    hook: &WorkflowHook,
+    at_ms: i64,
+) -> Result<bool, WorldError> {
+    let status = connection
+        .query_row(
+            "SELECT status FROM workflow_runs WHERE run_id = ?1",
+            [&hook.run_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or_else(|| {
+            WorldError::persisted_data(format!(
+                "Hook {:?} has no owning workflow run",
+                hook.hook_id
+            ))
+        })?;
+    let status = RunStatus::try_from(status.as_str())?;
+    Ok(!status.is_terminal()
+        || hook
+            .token_retention_until_ms
+            .is_some_and(|retention| retention > at_ms))
+}
+
+fn read_available_hook(
+    connection: &Connection,
+    hook_id: &str,
+    at_ms: i64,
+) -> Result<Option<WorkflowHook>, WorldError> {
+    let hook = read_hook(connection, hook_id)?;
+    match hook {
+        Some(hook) if hook_is_available(connection, &hook, at_ms)? => Ok(Some(hook)),
+        _ => Ok(None),
+    }
+}
+
+fn read_available_hook_by_token(
+    connection: &Connection,
+    token: &str,
+    at_ms: i64,
+) -> Result<Option<WorkflowHook>, WorldError> {
+    let hook = read_hook_by_token(connection, token)?;
+    match hook {
+        Some(hook) if hook_is_available(connection, &hook, at_ms)? => Ok(Some(hook)),
+        _ => Ok(None),
+    }
+}
+
+fn prune_expired_hooks(transaction: &Transaction<'_>, at_ms: i64) -> Result<(), WorldError> {
+    transaction
+        .execute(
+            r#"
+            DELETE FROM workflow_hooks
+            WHERE EXISTS (
+              SELECT 1 FROM workflow_runs
+              WHERE workflow_runs.run_id = workflow_hooks.run_id
+                AND workflow_runs.status IN ('completed', 'failed', 'cancelled')
+            )
+              AND (
+                token_retention_until_ms IS NULL
+                OR token_retention_until_ms <= ?1
+              )
+            "#,
+            [at_ms],
+        )
+        .map_err(storage_error)?;
+    Ok(())
+}
+
+fn delete_unretained_hooks_for_run(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    at_ms: i64,
+) -> Result<(), WorldError> {
+    transaction
+        .execute(
+            r#"
+            DELETE FROM workflow_hooks
+            WHERE run_id = ?1
+              AND (
+                token_retention_until_ms IS NULL
+                OR token_retention_until_ms <= ?2
+              )
+            "#,
+            params![run_id, at_ms],
+        )
+        .map_err(storage_error)?;
+    Ok(())
+}
+
+fn insert_wait(
+    transaction: &Transaction<'_>,
+    wait: &WorkflowWait,
+    correlation_id: &str,
+) -> Result<(), WorldError> {
+    transaction
+        .execute(
+            r#"
+            INSERT INTO workflow_waits (
+              wait_id, run_id, correlation_id, status, resume_at_ms,
+              completed_at_ms, created_at_ms, updated_at_ms, spec_version
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+            params![
+                wait.wait_id,
+                wait.run_id,
+                correlation_id,
+                wait.status.as_str(),
+                wait.resume_at_ms,
+                wait.completed_at_ms,
+                wait.created_at_ms,
+                wait.updated_at_ms,
+                i64::from(wait.spec_version),
+            ],
+        )
+        .map_err(storage_error)?;
+    Ok(())
+}
+
+fn update_wait(transaction: &Transaction<'_>, wait: &WorkflowWait) -> Result<(), WorldError> {
+    let changed = transaction
+        .execute(
+            r#"
+            UPDATE workflow_waits
+            SET status = ?2, resume_at_ms = ?3, completed_at_ms = ?4,
+                updated_at_ms = ?5
+            WHERE wait_id = ?1
+            "#,
+            params![
+                wait.wait_id,
+                wait.status.as_str(),
+                wait.resume_at_ms,
+                wait.completed_at_ms,
+                wait.updated_at_ms,
+            ],
+        )
+        .map_err(storage_error)?;
+    if changed != 1 {
+        return Err(WorldError::new(
+            WorldErrorKind::WaitNotFound,
+            format!("wait {:?} disappeared during update", wait.wait_id),
+        ));
+    }
+    Ok(())
+}
+
+fn read_wait(
+    connection: &Connection,
+    run_id: &str,
+    correlation_id: &str,
+) -> Result<Option<WorkflowWait>, WorldError> {
+    connection
+        .query_row(
+            r#"
+            SELECT wait_id, status, resume_at_ms, completed_at_ms,
+                   created_at_ms, updated_at_ms, spec_version
+            FROM workflow_waits
+            WHERE run_id = ?1 AND correlation_id = ?2
+            "#,
+            params![run_id, correlation_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(storage_error)?
+        .map(
+            |(
+                wait_id,
+                status,
+                resume_at_ms,
+                completed_at_ms,
+                created_at_ms,
+                updated_at_ms,
+                spec_version,
+            )| {
+                Ok(WorkflowWait {
+                    wait_id,
+                    run_id: run_id.to_owned(),
+                    status: WaitStatus::try_from(status.as_str())?,
+                    resume_at_ms,
+                    completed_at_ms,
+                    created_at_ms,
+                    updated_at_ms,
+                    spec_version: to_u32(spec_version, "wait spec version")?,
+                })
+            },
+        )
+        .transpose()
+}
+
+fn read_committed_resume_event(
+    connection: &Connection,
+    request: &CreateWorldEventRequest,
+) -> Result<Option<WorldEvent>, WorldError> {
+    if request.run_id.is_empty() {
+        return Err(WorldError::invalid_request("runId must not be empty"));
+    }
+    if request.spec_version != workflow_protocol::SUPPORTED_PERSISTED_SPEC_VERSION {
+        return Err(WorldError::new(
+            WorldErrorKind::UnsupportedSpec,
+            format!(
+                "this SQLite World supports persisted spec {}, got {}",
+                workflow_protocol::SUPPORTED_PERSISTED_SPEC_VERSION,
+                request.spec_version
+            ),
+        ));
+    }
+    if request.occurred_at_ms.is_some_and(|value| value < 0) {
+        return Err(WorldError::invalid_request(
+            "event timestamps must not be negative",
+        ));
+    }
+    if request.resume_id.as_ref().is_some_and(String::is_empty) {
+        return Err(WorldError::invalid_request("resumeId must not be empty"));
+    }
+    if request
+        .resume_payload_digest
+        .as_ref()
+        .is_some_and(String::is_empty)
+    {
+        return Err(WorldError::invalid_request(
+            "resumePayloadDigest must not be empty",
+        ));
+    }
+    if request.resume_payload_digest.is_some() && request.resume_id.is_none() {
+        return Err(WorldError::invalid_request(
+            "resumePayloadDigest requires resumeId",
+        ));
+    }
+
+    let Some(resume_id) = request.resume_id.as_deref() else {
+        return Ok(None);
+    };
+    let WorldEventData::HookReceived { hook_id, .. } = &request.event else {
+        return Err(WorldError::invalid_request(
+            "resume idempotency fields are valid only for hook_received",
+        ));
+    };
+    let existing = connection
+        .query_row(
+            r#"
+            SELECT slot, resume_payload_digest
+            FROM workflow_events
+            WHERE run_id = ?1 AND resume_id = ?2
+            "#,
+            params![request.run_id, resume_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()
+        .map_err(storage_error)?;
+    let Some((slot, existing_digest)) = existing else {
+        return Ok(None);
+    };
+    if let (Some(request_digest), Some(existing_digest)) = (
+        request.resume_payload_digest.as_deref(),
+        existing_digest.as_deref(),
+    ) && request_digest != existing_digest
+    {
+        return Err(WorldError::new(
+            WorldErrorKind::EntityConflict,
+            format!(
+                "hook_received resumeId {resume_id:?} is already recorded with a different payload"
+            ),
+        ));
+    }
+    let slot = to_u64(slot, "resume event slot")?;
+    let event = read_world_event(connection, &request.run_id, slot)?.ok_or_else(|| {
+        WorldError::persisted_data(format!(
+            "resume id {resume_id:?} points at missing event {slot}"
+        ))
+    })?;
+    match &event.event {
+        WorldEventData::HookReceived {
+            hook_id: existing_hook_id,
+            ..
+        } if existing_hook_id == hook_id => Ok(Some(event)),
+        WorldEventData::HookReceived { .. } => Err(WorldError::new(
+            WorldErrorKind::EntityConflict,
+            format!(
+                "hook_received resumeId {resume_id:?} is already recorded for a different Hook"
+            ),
+        )),
+        _ => Err(WorldError::persisted_data(format!(
+            "resume id {resume_id:?} points at a non-hook_received event"
+        ))),
+    }
+}
+
 fn read_step(
     connection: &Connection,
     run_id: &str,
@@ -1683,6 +3255,7 @@ fn append_world_event(
     transaction: &Transaction<'_>,
     run_id: &str,
     event: &UnpositionedWorldEvent,
+    resume_payload_digest: Option<&str>,
 ) -> Result<WorldEvent, WorldError> {
     let slot = transaction
         .query_row(
@@ -1698,8 +3271,9 @@ fn append_world_event(
             r#"
             INSERT INTO workflow_events (
               run_id, slot, event_type, spec_version, event_data_present,
-              created_at_ms, correlation_id, occurred_at_ms
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+              created_at_ms, correlation_id, occurred_at_ms, resume_id,
+              resume_payload_digest
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             "#,
             params![
                 run_id,
@@ -1710,6 +3284,8 @@ fn append_world_event(
                 event.created_at_ms,
                 event.event.correlation_id(),
                 event.occurred_at_ms,
+                event.resume_id,
+                resume_payload_digest,
             ],
         )
         .map_err(storage_error)?;
@@ -1746,7 +3322,30 @@ fn append_world_event(
                 .map_err(storage_error)?;
         }
         WorldEventData::RunStarted(_) => {}
-        data if data.is_present() => insert_world_event_data(transaction, run_id, slot, data)?,
+        data @ (WorldEventData::RunCompleted { .. }
+        | WorldEventData::RunFailed { .. }
+        | WorldEventData::RunCancelled { .. }
+        | WorldEventData::StepCreated { .. }
+        | WorldEventData::StepStarted { .. }
+        | WorldEventData::StepCompleted { .. }
+        | WorldEventData::StepFailed { .. }
+        | WorldEventData::StepRetrying { .. })
+            if data.is_present() =>
+        {
+            insert_world_event_data(transaction, run_id, slot, data)?;
+        }
+        data @ (WorldEventData::AttrSet { .. }
+        | WorldEventData::HookCreated { .. }
+        | WorldEventData::HookReceived { .. }
+        | WorldEventData::HookDisposed { .. }
+        | WorldEventData::HookConflict { .. }
+        | WorldEventData::WaitCreated { .. }
+        | WorldEventData::WaitCompleted { .. }
+        | WorldEventData::Noop { .. })
+            if data.is_present() =>
+        {
+            insert_phase2_world_event_data(transaction, run_id, slot, data)?;
+        }
         _ => {}
     }
 
@@ -1758,6 +3357,7 @@ fn append_world_event(
         spec_version: event.spec_version,
         created_at_ms: event.created_at_ms,
         occurred_at_ms: event.occurred_at_ms,
+        resume_id: event.resume_id.clone(),
     })
 }
 
@@ -1845,7 +3445,16 @@ fn insert_world_event_data(
                 None,
                 None,
             ),
-            WorldEventData::RunCreated(_) | WorldEventData::RunStarted(_) => {
+            WorldEventData::RunCreated(_)
+            | WorldEventData::RunStarted(_)
+            | WorldEventData::AttrSet { .. }
+            | WorldEventData::HookCreated { .. }
+            | WorldEventData::HookReceived { .. }
+            | WorldEventData::HookDisposed { .. }
+            | WorldEventData::HookConflict { .. }
+            | WorldEventData::WaitCreated { .. }
+            | WorldEventData::WaitCompleted { .. }
+            | WorldEventData::Noop { .. } => {
                 return Err(WorldError::new(
                     WorldErrorKind::Storage,
                     "internal event-data table received an unsupported event",
@@ -1871,6 +3480,125 @@ fn insert_world_event_data(
                 owner_message_id,
                 error_code,
                 cancel_reason,
+            ],
+        )
+        .map_err(storage_error)?;
+    Ok(())
+}
+
+fn insert_phase2_world_event_data(
+    transaction: &Transaction<'_>,
+    run_id: &str,
+    slot: i64,
+    event: &WorldEventData,
+) -> Result<(), WorldError> {
+    let mut payload: Option<&[u8]> = None;
+    let mut token: Option<&str> = None;
+    let mut metadata: Option<&[u8]> = None;
+    let mut token_retention_until_ms = None;
+    let mut is_webhook = None;
+    let mut is_system = None;
+    let mut conflicting_run_id: Option<&str> = None;
+    let mut resume_at_ms = None;
+    let mut attribute_changes_json = None;
+    let mut attribute_writer_json = None;
+    let mut allow_reserved_attributes = None;
+    let mut sealed = None;
+
+    match event {
+        WorldEventData::AttrSet {
+            changes,
+            writer,
+            allow_reserved_attributes: allow_reserved,
+            ..
+        } => {
+            attribute_changes_json =
+                Some(serde_json::to_string(changes).map_err(persisted_data_error)?);
+            attribute_writer_json =
+                Some(serde_json::to_string(writer).map_err(persisted_data_error)?);
+            allow_reserved_attributes = Some(i64::from(*allow_reserved));
+        }
+        WorldEventData::HookCreated {
+            token: event_token,
+            metadata: event_metadata,
+            token_retention_until_ms: retention,
+            is_webhook: webhook,
+            is_system: system,
+            ..
+        } => {
+            token = Some(event_token);
+            metadata = event_metadata.as_deref();
+            token_retention_until_ms = *retention;
+            is_webhook = webhook.map(i64::from);
+            is_system = system.map(i64::from);
+        }
+        WorldEventData::HookReceived {
+            token: event_token,
+            payload: event_payload,
+            ..
+        } => {
+            token = event_token.as_deref();
+            payload = Some(event_payload);
+        }
+        WorldEventData::HookDisposed {
+            token: event_token, ..
+        } => token = event_token.as_deref(),
+        WorldEventData::HookConflict {
+            token: event_token,
+            conflicting_run_id: owner,
+            ..
+        } => {
+            token = Some(event_token);
+            conflicting_run_id = owner.as_deref();
+        }
+        WorldEventData::WaitCreated {
+            resume_at_ms: resume_at,
+            ..
+        } => resume_at_ms = Some(*resume_at),
+        WorldEventData::WaitCompleted {
+            resume_at_ms: resume_at,
+            ..
+        } => resume_at_ms = *resume_at,
+        WorldEventData::Noop {
+            sealed: event_sealed,
+        } => sealed = event_sealed.map(i64::from),
+        _ => {
+            return Err(WorldError::new(
+                WorldErrorKind::Storage,
+                "phase-2 event-data table received an unsupported event",
+            ));
+        }
+    }
+
+    transaction
+        .execute(
+            r#"
+            INSERT INTO workflow_phase2_event_data (
+              run_id, slot, data_kind, payload, token, metadata,
+              token_retention_until_ms, is_webhook, is_system,
+              conflicting_run_id, resume_at_ms, attribute_changes_json,
+              attribute_writer_json, allow_reserved_attributes, sealed
+            ) VALUES (
+              ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+              ?14, ?15
+            )
+            "#,
+            params![
+                run_id,
+                slot,
+                event.event_type().as_str(),
+                payload,
+                token,
+                metadata,
+                token_retention_until_ms,
+                is_webhook,
+                is_system,
+                conflicting_run_id,
+                resume_at_ms,
+                attribute_changes_json,
+                attribute_writer_json,
+                allow_reserved_attributes,
+                sealed,
             ],
         )
         .map_err(storage_error)?;
@@ -2084,6 +3812,23 @@ struct StoredWorldEventData {
     cancel_reason: Option<String>,
 }
 
+#[derive(Debug)]
+struct StoredPhase2EventData {
+    data_kind: String,
+    payload: Option<Vec<u8>>,
+    token: Option<String>,
+    metadata: Option<Vec<u8>>,
+    token_retention_until_ms: Option<i64>,
+    is_webhook: Option<i64>,
+    is_system: Option<i64>,
+    conflicting_run_id: Option<String>,
+    resume_at_ms: Option<i64>,
+    attribute_changes_json: Option<String>,
+    attribute_writer_json: Option<String>,
+    allow_reserved_attributes: Option<i64>,
+    sealed: Option<i64>,
+}
+
 fn read_world_event(
     connection: &Connection,
     run_id: &str,
@@ -2095,7 +3840,7 @@ fn read_world_event(
         .query_row(
             r#"
             SELECT event_type, spec_version, event_data_present, created_at_ms,
-                   correlation_id, occurred_at_ms
+                   correlation_id, occurred_at_ms, resume_id
             FROM workflow_events
             WHERE run_id = ?1 AND slot = ?2
             "#,
@@ -2108,6 +3853,7 @@ fn read_world_event(
                     row.get::<_, i64>(3)?,
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             },
         )
@@ -2120,6 +3866,7 @@ fn read_world_event(
         created_at_ms,
         correlation_id,
         occurred_at_ms,
+        resume_id,
     )) = base
     else {
         return Ok(None);
@@ -2135,6 +3882,7 @@ fn read_world_event(
         }
     };
     let stored_data = read_stored_world_event_data(connection, run_id, slot_i64)?;
+    let phase2_data = read_stored_phase2_event_data(connection, run_id, slot_i64)?;
     let event = match event_type {
         EventType::RunCreated => {
             if !data_present || stored_data.is_some() {
@@ -2275,6 +4023,171 @@ fn read_world_event(
                 retry_after_ms: data.retry_after_ms,
             }
         }
+        EventType::AttrSet => {
+            if stored_data.is_some() {
+                return Err(invalid_event_data_shape(run_id, slot, event_type));
+            }
+            let data = require_stored_phase2_event_data(
+                phase2_data,
+                data_present,
+                run_id,
+                slot,
+                event_type,
+            )?;
+            let changes = serde_json::from_str::<Vec<AttributeChange>>(
+                data.attribute_changes_json
+                    .as_deref()
+                    .ok_or_else(|| missing_event_data(run_id, slot_i64, "attr_set changes"))?,
+            )
+            .map_err(persisted_data_error)?;
+            let writer = serde_json::from_str::<AttributeWriter>(
+                data.attribute_writer_json
+                    .as_deref()
+                    .ok_or_else(|| missing_event_data(run_id, slot_i64, "attr_set writer"))?,
+            )
+            .map_err(persisted_data_error)?;
+            let allow_reserved_attributes = decode_sqlite_bool(
+                data.allow_reserved_attributes.ok_or_else(|| {
+                    missing_event_data(run_id, slot_i64, "attr_set allow_reserved_attributes")
+                })?,
+                "attr_set allow_reserved_attributes",
+            )?;
+            WorldEventData::AttrSet {
+                correlation_id,
+                changes,
+                writer,
+                allow_reserved_attributes,
+            }
+        }
+        EventType::HookCreated => {
+            if stored_data.is_some() {
+                return Err(invalid_event_data_shape(run_id, slot, event_type));
+            }
+            let hook_id = require_correlation_id(correlation_id.as_deref(), run_id, slot)?;
+            let data = require_stored_phase2_event_data(
+                phase2_data,
+                data_present,
+                run_id,
+                slot,
+                event_type,
+            )?;
+            WorldEventData::HookCreated {
+                hook_id,
+                token: data
+                    .token
+                    .ok_or_else(|| missing_event_data(run_id, slot_i64, "hook_created token"))?,
+                metadata: data.metadata,
+                token_retention_until_ms: data.token_retention_until_ms,
+                is_webhook: data
+                    .is_webhook
+                    .map(|value| decode_sqlite_bool(value, "hook_created is_webhook"))
+                    .transpose()?,
+                is_system: data
+                    .is_system
+                    .map(|value| decode_sqlite_bool(value, "hook_created is_system"))
+                    .transpose()?,
+            }
+        }
+        EventType::HookReceived => {
+            if stored_data.is_some() {
+                return Err(invalid_event_data_shape(run_id, slot, event_type));
+            }
+            let hook_id = require_correlation_id(correlation_id.as_deref(), run_id, slot)?;
+            let data = require_stored_phase2_event_data(
+                phase2_data,
+                data_present,
+                run_id,
+                slot,
+                event_type,
+            )?;
+            WorldEventData::HookReceived {
+                hook_id,
+                token: data.token,
+                payload: data
+                    .payload
+                    .ok_or_else(|| missing_event_data(run_id, slot_i64, "hook_received payload"))?,
+            }
+        }
+        EventType::HookDisposed => {
+            if stored_data.is_some() {
+                return Err(invalid_event_data_shape(run_id, slot, event_type));
+            }
+            let hook_id = require_correlation_id(correlation_id.as_deref(), run_id, slot)?;
+            let token = match (data_present, phase2_data) {
+                (false, None) => None,
+                (true, Some(data)) if data.data_kind == event_type.as_str() => data.token,
+                _ => return Err(invalid_event_data_shape(run_id, slot, event_type)),
+            };
+            WorldEventData::HookDisposed { hook_id, token }
+        }
+        EventType::HookConflict => {
+            if stored_data.is_some() {
+                return Err(invalid_event_data_shape(run_id, slot, event_type));
+            }
+            let hook_id = require_correlation_id(correlation_id.as_deref(), run_id, slot)?;
+            let data = require_stored_phase2_event_data(
+                phase2_data,
+                data_present,
+                run_id,
+                slot,
+                event_type,
+            )?;
+            WorldEventData::HookConflict {
+                hook_id,
+                token: data
+                    .token
+                    .ok_or_else(|| missing_event_data(run_id, slot_i64, "hook_conflict token"))?,
+                conflicting_run_id: data.conflicting_run_id,
+            }
+        }
+        EventType::WaitCreated => {
+            if stored_data.is_some() {
+                return Err(invalid_event_data_shape(run_id, slot, event_type));
+            }
+            let wait_id = require_correlation_id(correlation_id.as_deref(), run_id, slot)?;
+            let data = require_stored_phase2_event_data(
+                phase2_data,
+                data_present,
+                run_id,
+                slot,
+                event_type,
+            )?;
+            WorldEventData::WaitCreated {
+                wait_id,
+                resume_at_ms: data.resume_at_ms.ok_or_else(|| {
+                    missing_event_data(run_id, slot_i64, "wait_created resume_at_ms")
+                })?,
+            }
+        }
+        EventType::WaitCompleted => {
+            if stored_data.is_some() {
+                return Err(invalid_event_data_shape(run_id, slot, event_type));
+            }
+            let wait_id = require_correlation_id(correlation_id.as_deref(), run_id, slot)?;
+            let resume_at_ms = match (data_present, phase2_data) {
+                (false, None) => None,
+                (true, Some(data)) if data.data_kind == event_type.as_str() => data.resume_at_ms,
+                _ => return Err(invalid_event_data_shape(run_id, slot, event_type)),
+            };
+            WorldEventData::WaitCompleted {
+                wait_id,
+                resume_at_ms,
+            }
+        }
+        EventType::Noop => {
+            if stored_data.is_some() {
+                return Err(invalid_event_data_shape(run_id, slot, event_type));
+            }
+            let sealed = match (data_present, phase2_data) {
+                (false, None) => None,
+                (true, Some(data)) if data.data_kind == event_type.as_str() => data
+                    .sealed
+                    .map(|value| decode_sqlite_bool(value, "noop sealed"))
+                    .transpose()?,
+                _ => return Err(invalid_event_data_shape(run_id, slot, event_type)),
+            };
+            WorldEventData::Noop { sealed }
+        }
     };
     Ok(Some(WorldEvent {
         run_id: run_id.to_owned(),
@@ -2283,6 +4196,7 @@ fn read_world_event(
         spec_version: to_u32(spec_version, "event spec version")?,
         created_at_ms,
         occurred_at_ms,
+        resume_id,
     }))
 }
 
@@ -2383,6 +4297,44 @@ fn read_stored_world_event_data(
         .map_err(storage_error)
 }
 
+fn read_stored_phase2_event_data(
+    connection: &Connection,
+    run_id: &str,
+    slot: i64,
+) -> Result<Option<StoredPhase2EventData>, WorldError> {
+    connection
+        .query_row(
+            r#"
+            SELECT data_kind, payload, token, metadata,
+                   token_retention_until_ms, is_webhook, is_system,
+                   conflicting_run_id, resume_at_ms, attribute_changes_json,
+                   attribute_writer_json, allow_reserved_attributes, sealed
+            FROM workflow_phase2_event_data
+            WHERE run_id = ?1 AND slot = ?2
+            "#,
+            params![run_id, slot],
+            |row| {
+                Ok(StoredPhase2EventData {
+                    data_kind: row.get(0)?,
+                    payload: row.get(1)?,
+                    token: row.get(2)?,
+                    metadata: row.get(3)?,
+                    token_retention_until_ms: row.get(4)?,
+                    is_webhook: row.get(5)?,
+                    is_system: row.get(6)?,
+                    conflicting_run_id: row.get(7)?,
+                    resume_at_ms: row.get(8)?,
+                    attribute_changes_json: row.get(9)?,
+                    attribute_writer_json: row.get(10)?,
+                    allow_reserved_attributes: row.get(11)?,
+                    sealed: row.get(12)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(storage_error)
+}
+
 fn require_stored_world_event_data(
     data: Option<StoredWorldEventData>,
     data_present: bool,
@@ -2390,6 +4342,19 @@ fn require_stored_world_event_data(
     slot: u64,
     event_type: EventType,
 ) -> Result<StoredWorldEventData, WorldError> {
+    match data {
+        Some(data) if data_present && data.data_kind == event_type.as_str() => Ok(data),
+        _ => Err(invalid_event_data_shape(run_id, slot, event_type)),
+    }
+}
+
+fn require_stored_phase2_event_data(
+    data: Option<StoredPhase2EventData>,
+    data_present: bool,
+    run_id: &str,
+    slot: u64,
+    event_type: EventType,
+) -> Result<StoredPhase2EventData, WorldError> {
     match data {
         Some(data) if data_present && data.data_kind == event_type.as_str() => Ok(data),
         _ => Err(invalid_event_data_shape(run_id, slot, event_type)),
@@ -2410,7 +4375,7 @@ fn require_correlation_id(
 ) -> Result<String, WorldError> {
     correlation_id.map(str::to_owned).ok_or_else(|| {
         WorldError::persisted_data(format!(
-            "step event {run_id:?}/{slot} is missing its correlation ID"
+            "event {run_id:?}/{slot} is missing its correlation ID"
         ))
     })
 }
@@ -2612,6 +4577,16 @@ fn to_u64(value: i64, label: &str) -> Result<u64, WorldError> {
         .map_err(|_| WorldError::persisted_data(format!("invalid {label}: {value}")))
 }
 
+fn decode_sqlite_bool(value: i64, label: &str) -> Result<bool, WorldError> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(WorldError::persisted_data(format!(
+            "invalid {label}: {value}"
+        ))),
+    }
+}
+
 fn now_ms() -> Result<i64, WorldError> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2694,7 +4669,92 @@ fn harden_sqlite_file_permissions(_path: &Path) -> Result<(), WorldError> {
     Ok(())
 }
 
+fn resolve_database_identity(path: PathBuf) -> PathBuf {
+    let absolute = std::path::absolute(&path).unwrap_or(path);
+    if let Ok(canonical) = fs::canonicalize(&absolute) {
+        return canonical;
+    }
+
+    let mut ancestor = absolute.as_path();
+    let mut missing_components = Vec::new();
+    loop {
+        if let Ok(mut canonical) = fs::canonicalize(ancestor) {
+            for component in missing_components.iter().rev() {
+                canonical.push(component);
+            }
+            return canonical;
+        }
+        let Some(file_name) = ancestor.file_name() else {
+            return absolute;
+        };
+        missing_components.push(file_name.to_os_string());
+        let Some(parent) = ancestor.parent() else {
+            return absolute;
+        };
+        ancestor = parent;
+    }
+}
+
+fn runtime_engine(path: &Path) -> Arc<RuntimeEngine> {
+    let registry = RUNTIME_ENGINES.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut engines = registry
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    engines.retain(|_, engine| engine.strong_count() > 0);
+    if let Some(engine) = engines.get(path).and_then(Weak::upgrade) {
+        return engine;
+    }
+    let engine = Arc::new(RuntimeEngine::default());
+    engines.insert(path.to_path_buf(), Arc::downgrade(&engine));
+    engine
+}
+
+fn engine_poisoned_error() -> WorldError {
+    WorldError::new(
+        WorldErrorKind::Storage,
+        "SQLite runtime engine state was poisoned",
+    )
+    .with_details(serde_json::json!({
+        "subsystem": "sqlite",
+        "reason": "engine_poisoned",
+    }))
+}
+
+fn storage_busy_error(wait_stage: &str, elapsed: Duration) -> WorldError {
+    WorldError::new(
+        WorldErrorKind::Storage,
+        "SQLite storage operation exceeded its busy budget",
+    )
+    .with_retryable(true)
+    .with_details(serde_json::json!({
+        "subsystem": "sqlite",
+        "reason": "storage_busy",
+        "waitStage": wait_stage,
+        "elapsedMs": u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+    }))
+}
+
+fn storage_error_at<E>(error: E, wait_stage: &str, started_at: Instant) -> WorldError
+where
+    E: std::error::Error + 'static,
+{
+    storage_error_with_elapsed(error, wait_stage, Some(started_at.elapsed()))
+}
+
 fn storage_error<E>(error: E) -> WorldError
+where
+    E: std::error::Error + 'static,
+{
+    let elapsed =
+        OPERATION_STARTED_AT.with(|value| value.borrow().as_ref().map(std::time::Instant::elapsed));
+    storage_error_with_elapsed(error, "sqlite_lock", elapsed)
+}
+
+fn storage_error_with_elapsed<E>(
+    error: E,
+    wait_stage: &str,
+    elapsed: Option<Duration>,
+) -> WorldError
 where
     E: std::error::Error + 'static,
 {
@@ -2705,9 +4765,21 @@ where
             _ => None,
         })
         .is_some_and(|code| matches!(code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked));
+    let details = if retryable {
+        serde_json::json!({
+            "subsystem": "sqlite",
+            "reason": "storage_busy",
+            "waitStage": wait_stage,
+            "elapsedMs": elapsed
+                .and_then(|elapsed| u64::try_from(elapsed.as_millis()).ok())
+                .unwrap_or_default(),
+        })
+    } else {
+        serde_json::json!({ "subsystem": "sqlite" })
+    };
     WorldError::new(WorldErrorKind::Storage, "SQLite storage operation failed")
         .with_retryable(retryable)
-        .with_details(serde_json::json!({ "subsystem": "sqlite" }))
+        .with_details(details)
 }
 
 fn persisted_data_error(error: impl std::fmt::Display) -> WorldError {
@@ -2771,6 +4843,92 @@ mod migration_retry_tests {
         assert_eq!(error.kind(), WorldErrorKind::Storage);
         assert!(error.retryable());
         assert_eq!(attempts, 1);
+    }
+}
+
+#[cfg(test)]
+mod runtime_engine_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use tempfile::tempdir;
+    use workflow_protocol::WorldErrorKind;
+
+    use super::SqliteWorld;
+
+    #[cfg(unix)]
+    #[test]
+    fn nested_missing_database_paths_resolve_symlinked_ancestors_to_one_engine() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().expect("temporary directory should be created");
+        let real = directory.path().join("real");
+        std::fs::create_dir(&real).expect("real directory should be created");
+        let alias = directory.path().join("alias");
+        symlink(&real, &alias).expect("directory symlink should be created");
+
+        let through_real = SqliteWorld::new(real.join("missing/nested/world.sqlite"));
+        let through_alias = SqliteWorld::new(alias.join("missing/nested/world.sqlite"));
+
+        assert_eq!(through_real.path, through_alias.path);
+        assert!(Arc::ptr_eq(&through_real.engine, &through_alias.engine));
+    }
+
+    #[test]
+    fn worlds_for_one_database_share_and_reuse_one_runtime_connection() {
+        let directory = tempdir().expect("temporary directory should be created");
+        let database_path = directory.path().join("world.sqlite");
+        let first = SqliteWorld::new(&database_path);
+        let second = SqliteWorld::new(&database_path);
+
+        assert!(Arc::ptr_eq(&first.engine, &second.engine));
+        first.migrate().expect("migration should succeed");
+        {
+            let connection = first
+                .open_runtime_connection()
+                .expect("first checkout should succeed");
+            connection
+                .execute("CREATE TEMP TABLE shared_engine_marker (value TEXT)", [])
+                .expect("temporary marker should be created");
+        }
+        {
+            let connection = second
+                .open_runtime_connection()
+                .expect("second checkout should succeed");
+            let exists = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema WHERE name = 'shared_engine_marker')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .expect("temporary marker should be readable");
+            assert!(
+                exists,
+                "the second World should reuse the engine connection"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_lane_wait_uses_the_operation_budget_and_reports_its_stage() {
+        let directory = tempdir().expect("temporary directory should be created");
+        let database_path = directory.path().join("world.sqlite");
+        let first = SqliteWorld::new(&database_path);
+        first.migrate().expect("migration should succeed");
+        let _held = first
+            .open_runtime_connection()
+            .expect("engine lane should be acquired");
+
+        let error = SqliteWorld::new(&database_path)
+            .with_busy_timeout(Duration::from_millis(10))
+            .ensure_ready()
+            .expect_err("another checkout should exhaust its engine lane budget");
+
+        assert_eq!(error.kind(), WorldErrorKind::Storage);
+        assert!(error.retryable());
+        assert_eq!(error.details()["reason"], "storage_busy");
+        assert_eq!(error.details()["waitStage"], "writer_lane");
+        assert!(error.details()["elapsedMs"].as_u64().unwrap_or_default() >= 9);
     }
 }
 

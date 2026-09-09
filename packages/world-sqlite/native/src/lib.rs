@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use napi::bindgen_prelude::{
     Array, AsyncTask, Buffer, JsObjectValue, KeyCollectionMode, KeyConversion, KeyFilter, Object,
-    TypedArray, TypedArrayType, Unknown,
+    TypedArray, TypedArrayType, Uint8Array, Unknown,
 };
 use napi::{Env, Error, JsValue, Result, Status, Task, ValueType};
 use napi_derive::napi;
@@ -15,23 +15,33 @@ use serde::Serialize;
 use serde::ser::Serializer;
 use serde_json::json;
 use workflow_protocol::{
-    ContextValue, CreateWorldEventRequest, MAX_SAFE_CONTEXT_INTEGER, MIN_SAFE_CONTEXT_INTEGER,
-    QueueMessageRequest, RunCreatedEventData, RunStatus, WorkflowRun, WorkflowRunPage,
-    WorkflowStep, WorkflowStepPage, WorldError, WorldEvent, WorldEventData, WorldEventPage,
+    AttributeChange, AttributeWriter, ContextValue, CreateWorldEventRequest,
+    MAX_SAFE_CONTEXT_INTEGER, MIN_SAFE_CONTEXT_INTEGER, QueueMessageRequest, QueueReconcileResult,
+    RunCreatedEventData, RunStatus, WorkflowHook, WorkflowRun, WorkflowRunPage, WorkflowStep,
+    WorkflowStepPage, WorkflowWait, WorldError, WorldEvent, WorldEventData, WorldEventPage,
     WorldEventResult,
 };
 use workflow_world_sqlite::{
-    QueueWorker, QueueWorkerConfig, QueueWorkerReport, SqliteWorld, sqlite_library_version,
-    sqlite_schema_version,
+    QueueWorker, QueueWorkerConfig, QueueWorkerReport, SqliteWorld, StreamChunk, StreamChunkPage,
+    StreamInfo, WorkflowHookPage, sqlite_library_version, sqlite_schema_version,
 };
 
 const ERROR_MARKER: &str = "WORKFLOW_NATIVE_ERROR:";
 const MAX_CONTEXT_DEPTH: usize = 128;
+const LOCAL_OWNER_ID: &str = "local-owner";
+const LOCAL_PROJECT_ID: &str = "local-project";
+const LOCAL_ENVIRONMENT: &str = "local";
+
+#[napi(object, use_nullable = true)]
+pub struct NativeAttributeChangeInput {
+    pub key: String,
+    pub value: Option<String>,
+}
 
 // @lat: [[rust-portability#Native Binding Contract#Node.js Binding]]
 #[napi]
 pub struct NativeSqliteWorld {
-    path: PathBuf,
+    world: Mutex<Option<SqliteWorld>>,
     closed: Arc<AtomicBool>,
     worker: Mutex<Option<QueueWorker>>,
     worker_stopping: Arc<AtomicBool>,
@@ -40,9 +50,14 @@ pub struct NativeSqliteWorld {
 #[napi]
 impl NativeSqliteWorld {
     #[napi(constructor, catch_unwind)]
-    pub fn new(path: String) -> Self {
+    pub fn new(path: String, read_only: Option<bool>) -> Self {
+        let world = if read_only.unwrap_or(false) {
+            SqliteWorld::new_read_only(PathBuf::from(path))
+        } else {
+            SqliteWorld::new(PathBuf::from(path))
+        };
         Self {
-            path: PathBuf::from(path),
+            world: Mutex::new(Some(world)),
             closed: Arc::new(AtomicBool::new(false)),
             worker: Mutex::new(None),
             worker_stopping: Arc::new(AtomicBool::new(false)),
@@ -83,6 +98,17 @@ impl NativeSqliteWorld {
         owner_message_id: Option<String>,
         error_code: Option<String>,
         cancel_reason: Option<String>,
+        resume_id: Option<String>,
+        resume_payload_digest: Option<String>,
+        token: Option<String>,
+        token_retention_until_ms: Option<f64>,
+        is_webhook: Option<bool>,
+        is_system: Option<bool>,
+        resume_at_ms: Option<f64>,
+        attribute_changes: Option<Vec<NativeAttributeChangeInput>>,
+        attribute_writer_type: Option<String>,
+        attribute_writer_step_id: Option<String>,
+        attribute_writer_attempt: Option<f64>,
     ) -> Result<AsyncTask<WorldTask>> {
         self.ensure_open()?;
         let execution_context = if execution_context.get_type()? == ValueType::Undefined {
@@ -108,6 +134,15 @@ impl NativeSqliteWorld {
         let attempt = attempt
             .map(|value| number_to_u32(value, "attempt"))
             .transpose()?;
+        let token_retention_until_ms = token_retention_until_ms
+            .map(|value| number_to_i64(value, "tokenRetentionUntil"))
+            .transpose()?;
+        let resume_at_ms = resume_at_ms
+            .map(|value| number_to_i64(value, "resumeAt"))
+            .transpose()?;
+        let attribute_writer_attempt = attribute_writer_attempt
+            .map(|value| number_to_u32(value, "writer.attempt"))
+            .transpose()?;
         let payload = payload.map(|value| value.to_vec());
         let event = parse_event_data(
             &event_type,
@@ -125,14 +160,25 @@ impl NativeSqliteWorld {
             owner_message_id,
             error_code,
             cancel_reason,
+            token,
+            token_retention_until_ms,
+            is_webhook,
+            is_system,
+            resume_at_ms,
+            attribute_changes,
+            attribute_writer_type,
+            attribute_writer_step_id,
+            attribute_writer_attempt,
         )?;
         Ok(AsyncTask::new(WorldTask {
-            path: self.path.clone(),
+            world: self.clone_world()?,
             operation: WorldOperation::CreateEvent(CreateWorldEventRequest {
                 run_id,
                 spec_version,
                 event_count,
                 occurred_at_ms,
+                resume_id,
+                resume_payload_digest,
                 event,
             }),
         }))
@@ -211,6 +257,82 @@ impl NativeSqliteWorld {
     }
 
     #[napi(catch_unwind)]
+    pub fn get_hook(&self, hook_id: String) -> Result<AsyncTask<WorldTask>> {
+        self.task(WorldOperation::GetHook(hook_id))
+    }
+
+    #[napi(catch_unwind)]
+    pub fn get_hook_by_token(&self, token: String) -> Result<AsyncTask<WorldTask>> {
+        self.task(WorldOperation::GetHookByToken(token))
+    }
+
+    #[napi(catch_unwind)]
+    pub fn list_hooks(
+        &self,
+        run_id: Option<String>,
+        cursor: Option<String>,
+        limit: f64,
+        descending: bool,
+    ) -> Result<AsyncTask<WorldTask>> {
+        self.task(WorldOperation::ListHooks {
+            run_id,
+            cursor,
+            limit: number_to_u32(limit, "limit")? as usize,
+            descending,
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn clear(&self) -> Result<AsyncTask<WorldTask>> {
+        self.task(WorldOperation::Clear)
+    }
+
+    #[napi(catch_unwind)]
+    pub fn write_stream_chunks(
+        &self,
+        run_id: String,
+        name: String,
+        chunks: Vec<Uint8Array>,
+    ) -> Result<AsyncTask<WorldTask>> {
+        self.task(WorldOperation::WriteStreamChunks {
+            run_id,
+            name,
+            chunks: chunks.into_iter().map(|chunk| chunk.to_vec()).collect(),
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn close_stream(&self, run_id: String, name: String) -> Result<AsyncTask<WorldTask>> {
+        self.task(WorldOperation::CloseStream { run_id, name })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn list_streams(&self, run_id: String) -> Result<AsyncTask<WorldTask>> {
+        self.task(WorldOperation::ListStreams(run_id))
+    }
+
+    #[napi(catch_unwind)]
+    pub fn get_stream_chunks(
+        &self,
+        run_id: String,
+        name: String,
+        cursor: Option<String>,
+        limit: f64,
+    ) -> Result<AsyncTask<WorldTask>> {
+        self.task(WorldOperation::GetStreamChunks {
+            run_id,
+            name,
+            cursor,
+            limit: number_to_u32(limit, "limit")? as usize,
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn get_stream_info(&self, run_id: String, name: String) -> Result<AsyncTask<WorldTask>> {
+        self.task(WorldOperation::GetStreamInfo { run_id, name })
+    }
+
+    #[napi(catch_unwind)]
     #[allow(clippy::too_many_arguments)]
     pub fn enqueue(
         &self,
@@ -237,6 +359,20 @@ impl NativeSqliteWorld {
     }
 
     #[napi(catch_unwind)]
+    pub fn reconcile_active_runs(
+        &self,
+        target: String,
+        queue_prefix: String,
+        now_ms: f64,
+    ) -> Result<AsyncTask<WorldTask>> {
+        self.task(WorldOperation::ReconcileActiveRuns {
+            target,
+            queue_prefix,
+            now_ms: number_to_i64(now_ms, "reconciliation time")?,
+        })
+    }
+
+    #[napi(catch_unwind)]
     #[allow(clippy::too_many_arguments)]
     pub fn start_queue_worker(
         &self,
@@ -248,6 +384,7 @@ impl NativeSqliteWorld {
         poll_interval_ms: u32,
         retry_delay_ms: u32,
         request_timeout_ms: u32,
+        concurrency: Option<u32>,
     ) -> Result<()> {
         self.ensure_open()?;
         if self.worker_stopping.load(Ordering::Acquire) {
@@ -272,9 +409,9 @@ impl NativeSqliteWorld {
             poll_interval: Duration::from_millis(u64::from(poll_interval_ms)),
             retry_delay: Duration::from_millis(u64::from(retry_delay_ms)),
             request_timeout: Duration::from_millis(u64::from(request_timeout_ms)),
+            concurrency: concurrency.unwrap_or(1) as usize,
         };
-        *worker =
-            Some(QueueWorker::start(SqliteWorld::new(&self.path), config).map_err(world_error)?);
+        *worker = Some(QueueWorker::start(self.clone_world()?, config).map_err(world_error)?);
         Ok(())
     }
 
@@ -308,13 +445,17 @@ impl NativeSqliteWorld {
                 "stop the SQLite World queue worker before closing",
             ));
         }
-        Ok(!self.closed.swap(true, Ordering::AcqRel))
+        let first_close = !self.closed.swap(true, Ordering::AcqRel);
+        if first_close {
+            self.lock_world()?.take();
+        }
+        Ok(first_close)
     }
 
     fn task(&self, operation: WorldOperation) -> Result<AsyncTask<WorldTask>> {
         self.ensure_open()?;
         Ok(AsyncTask::new(WorldTask {
-            path: self.path.clone(),
+            world: self.clone_world()?,
             operation,
         }))
     }
@@ -330,6 +471,19 @@ impl NativeSqliteWorld {
         self.worker
             .lock()
             .map_err(|_| native_error("binding", "SQLite queue worker lock was poisoned"))
+    }
+
+    fn lock_world(&self) -> Result<std::sync::MutexGuard<'_, Option<SqliteWorld>>> {
+        self.world
+            .lock()
+            .map_err(|_| native_error("binding", "SQLite World engine lock was poisoned"))
+    }
+
+    fn clone_world(&self) -> Result<SqliteWorld> {
+        self.lock_world()?
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| native_error("closed", "SQLite World engine has already been released"))
     }
 }
 
@@ -366,12 +520,46 @@ enum WorldOperation {
         limit: usize,
         descending: bool,
     },
+    GetHook(String),
+    GetHookByToken(String),
+    ListHooks {
+        run_id: Option<String>,
+        cursor: Option<String>,
+        limit: usize,
+        descending: bool,
+    },
+    Clear,
+    WriteStreamChunks {
+        run_id: String,
+        name: String,
+        chunks: Vec<Vec<u8>>,
+    },
+    CloseStream {
+        run_id: String,
+        name: String,
+    },
+    ListStreams(String),
+    GetStreamChunks {
+        run_id: String,
+        name: String,
+        cursor: Option<String>,
+        limit: usize,
+    },
+    GetStreamInfo {
+        run_id: String,
+        name: String,
+    },
     Enqueue(QueueMessageRequest),
     QueueMessageCount(String),
+    ReconcileActiveRuns {
+        target: String,
+        queue_prefix: String,
+        now_ms: i64,
+    },
 }
 
 pub struct WorldTask {
-    path: PathBuf,
+    world: SqliteWorld,
     operation: WorldOperation,
 }
 
@@ -382,7 +570,7 @@ impl Task for WorldTask {
 
     fn compute(&mut self) -> Result<Self::Output> {
         compute_safely(|| {
-            let world = SqliteWorld::new(&self.path);
+            let world = &self.world;
             match &self.operation {
                 WorldOperation::Migrate => {
                     world.migrate().map_err(world_error)?;
@@ -438,6 +626,7 @@ impl Task for WorldTask {
                 WorldOperation::GetEvent { run_id, event_id } => world
                     .get_event(run_id, event_id)
                     .map(HostEvent::from)
+                    .map(Box::new)
                     .map(HostOutput::Event)
                     .map_err(world_error),
                 WorldOperation::ListEvents {
@@ -457,6 +646,61 @@ impl Task for WorldTask {
                     .map(HostEventPage::from)
                     .map(HostOutput::EventPage)
                     .map_err(world_error),
+                WorldOperation::GetHook(hook_id) => world
+                    .get_hook(hook_id)
+                    .map(HostHook::from)
+                    .map(HostOutput::Hook)
+                    .map_err(world_error),
+                WorldOperation::GetHookByToken(token) => world
+                    .get_hook_by_token(token)
+                    .map(HostHook::from)
+                    .map(HostOutput::Hook)
+                    .map_err(world_error),
+                WorldOperation::ListHooks {
+                    run_id,
+                    cursor,
+                    limit,
+                    descending,
+                } => world
+                    .list_hooks(run_id.as_deref(), cursor.as_deref(), *limit, *descending)
+                    .map(HostHookPage::from)
+                    .map(HostOutput::HookPage)
+                    .map_err(world_error),
+                WorldOperation::Clear => world
+                    .clear()
+                    .map(|()| HostOutput::Unit(()))
+                    .map_err(world_error),
+                WorldOperation::WriteStreamChunks {
+                    run_id,
+                    name,
+                    chunks,
+                } => world
+                    .write_stream_chunks(run_id, name, chunks)
+                    .map(|_| HostOutput::Unit(()))
+                    .map_err(world_error),
+                WorldOperation::CloseStream { run_id, name } => world
+                    .close_stream(run_id, name)
+                    .map(|()| HostOutput::Unit(()))
+                    .map_err(world_error),
+                WorldOperation::ListStreams(run_id) => world
+                    .list_streams(run_id)
+                    .map(HostOutput::Strings)
+                    .map_err(world_error),
+                WorldOperation::GetStreamChunks {
+                    run_id,
+                    name,
+                    cursor,
+                    limit,
+                } => world
+                    .get_stream_chunks(run_id, name, cursor.as_deref(), *limit)
+                    .map(HostStreamChunkPage::from)
+                    .map(HostOutput::StreamChunkPage)
+                    .map_err(world_error),
+                WorldOperation::GetStreamInfo { run_id, name } => world
+                    .get_stream_info(run_id, name)
+                    .map(HostStreamInfo::from)
+                    .map(HostOutput::StreamInfo)
+                    .map_err(world_error),
                 WorldOperation::Enqueue(request) => world
                     .enqueue_queue_message(request)
                     .map(|result| HostEnqueueResult {
@@ -468,6 +712,15 @@ impl Task for WorldTask {
                 WorldOperation::QueueMessageCount(target) => world
                     .queue_message_count(target)
                     .map(HostOutput::Count)
+                    .map_err(world_error),
+                WorldOperation::ReconcileActiveRuns {
+                    target,
+                    queue_prefix,
+                    now_ms,
+                } => world
+                    .reconcile_active_runs(target, target, queue_prefix, *now_ms)
+                    .map(HostQueueReconcileResult::from)
+                    .map(HostOutput::QueueReconcile)
                     .map_err(world_error),
             }
         })
@@ -514,9 +767,15 @@ pub enum HostOutput {
     RunPage(HostRunPage),
     Step(HostStep),
     StepPage(HostStepPage),
-    Event(HostEvent),
+    Event(Box<HostEvent>),
     EventPage(HostEventPage),
+    Hook(HostHook),
+    HookPage(HostHookPage),
+    Strings(Vec<String>),
+    StreamChunkPage(HostStreamChunkPage),
+    StreamInfo(HostStreamInfo),
     Enqueue(HostEnqueueResult),
+    QueueReconcile(HostQueueReconcileResult),
     Count(usize),
 }
 
@@ -529,6 +788,126 @@ impl Serialize for HostBytes {
         S: Serializer,
     {
         serializer.serialize_bytes(&self.0)
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostStreamChunk {
+    index: i64,
+    data: HostBytes,
+}
+
+impl From<StreamChunk> for HostStreamChunk {
+    fn from(chunk: StreamChunk) -> Self {
+        Self {
+            index: i64::try_from(chunk.index).expect("stream indices fit JavaScript numbers"),
+            data: HostBytes(chunk.data),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostStreamChunkPage {
+    data: Vec<HostStreamChunk>,
+    cursor: Option<String>,
+    has_more: bool,
+    done: bool,
+}
+
+impl From<StreamChunkPage> for HostStreamChunkPage {
+    fn from(page: StreamChunkPage) -> Self {
+        Self {
+            data: page.data.into_iter().map(HostStreamChunk::from).collect(),
+            cursor: page.cursor,
+            has_more: page.has_more,
+            done: page.done,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostStreamInfo {
+    tail_index: i64,
+    done: bool,
+}
+
+impl From<StreamInfo> for HostStreamInfo {
+    fn from(info: StreamInfo) -> Self {
+        Self {
+            tail_index: info.tail_index,
+            done: info.done,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostHook {
+    run_id: String,
+    hook_id: String,
+    token: String,
+    owner_id: &'static str,
+    project_id: &'static str,
+    environment: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<HostBytes>,
+    created_at_ms: i64,
+    spec_version: u32,
+    is_webhook: bool,
+    is_system: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token_retention_until_ms: Option<i64>,
+}
+
+impl From<WorkflowHook> for HostHook {
+    fn from(hook: WorkflowHook) -> Self {
+        Self {
+            run_id: hook.run_id,
+            hook_id: hook.hook_id,
+            token: hook.token,
+            owner_id: LOCAL_OWNER_ID,
+            project_id: LOCAL_PROJECT_ID,
+            environment: LOCAL_ENVIRONMENT,
+            metadata: hook.metadata.map(HostBytes),
+            created_at_ms: hook.created_at_ms,
+            spec_version: hook.spec_version,
+            is_webhook: hook.is_webhook,
+            is_system: hook.is_system,
+            token_retention_until_ms: hook.token_retention_until_ms,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostWait {
+    wait_id: String,
+    run_id: String,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resume_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_at_ms: Option<i64>,
+    created_at_ms: i64,
+    updated_at_ms: i64,
+    spec_version: u32,
+}
+
+impl From<WorkflowWait> for HostWait {
+    fn from(wait: WorkflowWait) -> Self {
+        Self {
+            wait_id: wait.wait_id,
+            run_id: wait.run_id,
+            status: wait.status.as_str(),
+            resume_at_ms: wait.resume_at_ms,
+            completed_at_ms: wait.completed_at_ms,
+            created_at_ms: wait.created_at_ms,
+            updated_at_ms: wait.updated_at_ms,
+            spec_version: wait.spec_version,
+        }
     }
 }
 
@@ -641,6 +1020,8 @@ pub struct HostEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     correlation_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    resume_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     event_data: Option<HostEventData>,
 }
 
@@ -670,6 +1051,10 @@ struct HostEventData {
     #[serde(skip_serializing_if = "Option::is_none")]
     cancel_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    changes: Option<Vec<AttributeChange>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    writer: Option<AttributeWriter>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     step_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<HostBytes>,
@@ -679,6 +1064,24 @@ struct HostEventData {
     retry_after_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     owner_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<HostBytes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token_retention_until_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_webhook: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    is_system: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payload: Option<HostBytes>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    conflicting_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resume_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sealed: Option<bool>,
 }
 
 impl From<WorldEvent> for HostEvent {
@@ -712,6 +1115,17 @@ impl From<WorldEvent> for HostEvent {
                     ..HostEventData::default()
                 })
             }
+            WorldEventData::AttrSet {
+                changes,
+                writer,
+                allow_reserved_attributes,
+                ..
+            } => Some(HostEventData {
+                changes: Some(changes),
+                writer: Some(writer),
+                allow_reserved_attributes: allow_reserved_attributes.then_some(true),
+                ..HostEventData::default()
+            }),
             WorldEventData::StepCreated {
                 step_name, input, ..
             } => Some(HostEventData {
@@ -761,6 +1175,53 @@ impl From<WorldEvent> for HostEvent {
                 retry_after_ms,
                 ..HostEventData::default()
             }),
+            WorldEventData::HookCreated {
+                token,
+                metadata,
+                token_retention_until_ms,
+                is_webhook,
+                is_system,
+                ..
+            } => Some(HostEventData {
+                token: Some(token),
+                metadata: metadata.map(HostBytes),
+                token_retention_until_ms,
+                is_webhook,
+                is_system,
+                ..HostEventData::default()
+            }),
+            WorldEventData::HookReceived { token, payload, .. } => Some(HostEventData {
+                token,
+                payload: Some(HostBytes(payload)),
+                ..HostEventData::default()
+            }),
+            WorldEventData::HookDisposed { token, .. } => token.map(|token| HostEventData {
+                token: Some(token),
+                ..HostEventData::default()
+            }),
+            WorldEventData::HookConflict {
+                token,
+                conflicting_run_id,
+                ..
+            } => Some(HostEventData {
+                token: Some(token),
+                conflicting_run_id,
+                ..HostEventData::default()
+            }),
+            WorldEventData::WaitCreated { resume_at_ms, .. } => Some(HostEventData {
+                resume_at_ms: Some(resume_at_ms),
+                ..HostEventData::default()
+            }),
+            WorldEventData::WaitCompleted { resume_at_ms, .. } => {
+                resume_at_ms.map(|resume_at_ms| HostEventData {
+                    resume_at_ms: Some(resume_at_ms),
+                    ..HostEventData::default()
+                })
+            }
+            WorldEventData::Noop { sealed } => sealed.map(|sealed| HostEventData {
+                sealed: Some(sealed),
+                ..HostEventData::default()
+            }),
         };
         Self {
             event_type,
@@ -771,6 +1232,7 @@ impl From<WorldEvent> for HostEvent {
             created_at_ms: event.created_at_ms,
             occurred_at_ms: event.occurred_at_ms,
             correlation_id,
+            resume_id: event.resume_id,
             event_data,
         }
     }
@@ -785,6 +1247,10 @@ pub struct HostEventResult {
     run: Option<HostRun>,
     #[serde(skip_serializing_if = "Option::is_none")]
     step: Option<HostStep>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hook: Option<HostHook>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wait: Option<HostWait>,
     #[serde(skip_serializing_if = "is_false")]
     step_created: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -808,6 +1274,8 @@ impl From<WorldEventResult> for HostEventResult {
             event: result.event.map(HostEvent::from),
             run: result.run.map(HostRun::from),
             step: result.step.map(HostStep::from),
+            hook: result.hook.map(HostHook::from),
+            wait: result.wait.map(HostWait::from),
             step_created: result.step_created,
             events,
             cursor,
@@ -872,9 +1340,45 @@ impl From<WorldEventPage> for HostEventPage {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct HostHookPage {
+    data: Vec<HostHook>,
+    cursor: Option<String>,
+    has_more: bool,
+}
+
+impl From<WorkflowHookPage> for HostHookPage {
+    fn from(page: WorkflowHookPage) -> Self {
+        Self {
+            data: page.data.into_iter().map(HostHook::from).collect(),
+            cursor: page.cursor,
+            has_more: page.has_more,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HostEnqueueResult {
     message_id: String,
     created: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostQueueReconcileResult {
+    active_run_count: usize,
+    created_message_count: usize,
+    message_ids: Vec<String>,
+}
+
+impl From<QueueReconcileResult> for HostQueueReconcileResult {
+    fn from(result: QueueReconcileResult) -> Self {
+        Self {
+            active_run_count: result.active_run_count,
+            created_message_count: result.created_message_count,
+            message_ids: result.message_ids,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -903,6 +1407,7 @@ impl From<QueueWorkerReport> for HostQueueWorkerReport {
 #[serde(rename_all = "camelCase")]
 struct NativeInfo {
     crate_version: &'static str,
+    package_version: &'static str,
     node_api_version: u32,
     sqlite_version: &'static str,
     schema_version: i64,
@@ -915,6 +1420,8 @@ struct NativeInfo {
 pub fn native_info(env: Env) -> Result<Unknown<'static>> {
     env.to_js_value(&NativeInfo {
         crate_version: env!("CARGO_PKG_VERSION"),
+        package_version: option_env!("WORKFLOW_WORLD_SQLITE_PACKAGE_VERSION")
+            .unwrap_or(env!("CARGO_PKG_VERSION")),
         node_api_version: 8,
         sqlite_version: sqlite_library_version(),
         schema_version: sqlite_schema_version(),
@@ -941,6 +1448,15 @@ fn parse_event_data(
     owner_message_id: Option<String>,
     error_code: Option<String>,
     cancel_reason: Option<String>,
+    token: Option<String>,
+    token_retention_until_ms: Option<i64>,
+    is_webhook: Option<bool>,
+    is_system: Option<bool>,
+    resume_at_ms: Option<i64>,
+    attribute_changes: Option<Vec<NativeAttributeChangeInput>>,
+    attribute_writer_type: Option<String>,
+    attribute_writer_step_id: Option<String>,
+    attribute_writer_attempt: Option<u32>,
 ) -> Result<WorldEventData> {
     let required = |value: Option<String>, name: &str| {
         value.ok_or_else(|| native_error("invalid_request", format!("{name} is required")))
@@ -980,6 +1496,38 @@ fn parse_event_data(
             error_code,
         }),
         "run_cancelled" => Ok(WorldEventData::RunCancelled { cancel_reason }),
+        "attr_set" => {
+            let changes = attribute_changes
+                .ok_or_else(|| native_error("invalid_request", "changes is required"))?
+                .into_iter()
+                .map(|change| AttributeChange {
+                    key: change.key,
+                    value: change.value,
+                })
+                .collect();
+            let writer = match attribute_writer_type.as_deref() {
+                Some("workflow") => AttributeWriter::Workflow,
+                Some("step") => AttributeWriter::Step {
+                    step_id: required(attribute_writer_step_id, "writer.stepId")?,
+                    attempt: attribute_writer_attempt.ok_or_else(|| {
+                        native_error("invalid_request", "writer.attempt is required")
+                    })?,
+                },
+                Some(other) => {
+                    return Err(native_error(
+                        "invalid_request",
+                        format!("unsupported attribute writer type {other:?}"),
+                    ));
+                }
+                None => return Err(native_error("invalid_request", "writer.type is required")),
+            };
+            Ok(WorldEventData::AttrSet {
+                correlation_id: correlation_id.clone(),
+                changes,
+                writer,
+                allow_reserved_attributes,
+            })
+        }
         "step_created" => Ok(WorldEventData::StepCreated {
             step_id: required_step()?,
             step_name: required(step_name, "stepName")?,
@@ -1008,9 +1556,39 @@ fn parse_event_data(
             error: required_payload(payload, "error")?,
             retry_after_ms,
         }),
+        "hook_created" => Ok(WorldEventData::HookCreated {
+            hook_id: required_step()?,
+            token: required(token, "token")?,
+            metadata: payload,
+            token_retention_until_ms,
+            is_webhook,
+            is_system,
+        }),
+        "hook_received" => Ok(WorldEventData::HookReceived {
+            hook_id: required_step()?,
+            token,
+            payload: required_payload(payload, "payload")?,
+        }),
+        "hook_disposed" => Ok(WorldEventData::HookDisposed {
+            hook_id: required_step()?,
+            token,
+        }),
+        "wait_created" => Ok(WorldEventData::WaitCreated {
+            wait_id: required_step()?,
+            resume_at_ms: resume_at_ms
+                .ok_or_else(|| native_error("invalid_request", "resumeAt is required"))?,
+        }),
+        "wait_completed" => Ok(WorldEventData::WaitCompleted {
+            wait_id: required_step()?,
+            resume_at_ms,
+        }),
+        "hook_conflict" | "noop" => Err(native_error(
+            "unsupported_operation",
+            format!("event type {event_type:?} is backend-produced"),
+        )),
         other => Err(native_error(
             "unsupported_operation",
-            format!("event type {other:?} is outside the Phase 1 run/step slice"),
+            format!("unsupported event type {other:?}"),
         )),
     }
 }

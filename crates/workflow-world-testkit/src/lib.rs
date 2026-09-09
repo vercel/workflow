@@ -49,6 +49,8 @@ fn request_for(
         spec_version: 7,
         event_count: Some(event_count),
         occurred_at_ms,
+        resume_id: None,
+        resume_payload_digest: None,
         event,
     }
 }

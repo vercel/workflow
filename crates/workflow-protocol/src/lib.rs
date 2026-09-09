@@ -29,11 +29,19 @@ pub enum EventType {
     RunCompleted,
     RunFailed,
     RunCancelled,
+    AttrSet,
     StepCreated,
     StepStarted,
     StepCompleted,
     StepFailed,
     StepRetrying,
+    HookCreated,
+    HookReceived,
+    HookDisposed,
+    HookConflict,
+    WaitCreated,
+    WaitCompleted,
+    Noop,
 }
 
 impl EventType {
@@ -45,11 +53,19 @@ impl EventType {
             Self::RunCompleted => "run_completed",
             Self::RunFailed => "run_failed",
             Self::RunCancelled => "run_cancelled",
+            Self::AttrSet => "attr_set",
             Self::StepCreated => "step_created",
             Self::StepStarted => "step_started",
             Self::StepCompleted => "step_completed",
             Self::StepFailed => "step_failed",
             Self::StepRetrying => "step_retrying",
+            Self::HookCreated => "hook_created",
+            Self::HookReceived => "hook_received",
+            Self::HookDisposed => "hook_disposed",
+            Self::HookConflict => "hook_conflict",
+            Self::WaitCreated => "wait_created",
+            Self::WaitCompleted => "wait_completed",
+            Self::Noop => "noop",
         }
     }
 }
@@ -64,11 +80,19 @@ impl TryFrom<&str> for EventType {
             "run_completed" => Ok(Self::RunCompleted),
             "run_failed" => Ok(Self::RunFailed),
             "run_cancelled" => Ok(Self::RunCancelled),
+            "attr_set" => Ok(Self::AttrSet),
             "step_created" => Ok(Self::StepCreated),
             "step_started" => Ok(Self::StepStarted),
             "step_completed" => Ok(Self::StepCompleted),
             "step_failed" => Ok(Self::StepFailed),
             "step_retrying" => Ok(Self::StepRetrying),
+            "hook_created" => Ok(Self::HookCreated),
+            "hook_received" => Ok(Self::HookReceived),
+            "hook_disposed" => Ok(Self::HookDisposed),
+            "hook_conflict" => Ok(Self::HookConflict),
+            "wait_created" => Ok(Self::WaitCreated),
+            "wait_completed" => Ok(Self::WaitCompleted),
+            "noop" => Ok(Self::Noop),
             other => Err(WorldError::persisted_data(format!(
                 "unsupported event type in persisted storage: {other}"
             ))),
@@ -94,6 +118,37 @@ pub enum StepStatus {
     Completed,
     Failed,
     Cancelled,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitStatus {
+    Waiting,
+    Completed,
+}
+
+impl WaitStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Waiting => "waiting",
+            Self::Completed => "completed",
+        }
+    }
+}
+
+impl TryFrom<&str> for WaitStatus {
+    type Error = WorldError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "waiting" => Ok(Self::Waiting),
+            "completed" => Ok(Self::Completed),
+            other => Err(WorldError::persisted_data(format!(
+                "unsupported wait status in persisted storage: {other}"
+            ))),
+        }
+    }
 }
 
 impl StepStatus {
@@ -239,13 +294,74 @@ pub struct WorkflowStep {
     pub spec_version: u32,
 }
 
-/// Host-normalized event request for the Phase 1 run/step storage slice.
+/// A materialized Hook owned by a workflow run.
+///
+/// Host-specific tenancy fields and transient resume capabilities are added by
+/// the binding. This durable shape contains only values with portable local
+/// storage semantics.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowHook {
+    pub run_id: String,
+    pub hook_id: String,
+    pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Vec<u8>>,
+    pub created_at_ms: i64,
+    pub spec_version: u32,
+    pub is_webhook: bool,
+    pub is_system: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_retention_until_ms: Option<i64>,
+}
+
+/// A materialized durable wait owned by a workflow run.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowWait {
+    pub wait_id: String,
+    pub run_id: String,
+    pub status: WaitStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub spec_version: u32,
+}
+
+/// A single plaintext workflow-run attribute update. `None` removes the key.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttributeChange {
+    pub key: String,
+    pub value: Option<String>,
+}
+
+/// The workflow execution context that authored an attribute update.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum AttributeWriter {
+    Workflow,
+    Step { step_id: String, attempt: u32 },
+}
+
+/// Host-normalized request for one event accepted by a World backend.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CreateWorldEventRequest {
     pub run_id: String,
     pub spec_version: u32,
     pub event_count: Option<u64>,
     pub occurred_at_ms: Option<i64>,
+    /// Idempotency key for a lazily persisted `hook_received` delivery.
+    pub resume_id: Option<String>,
+    /// Digest used to reject reuse of a resume id with another payload.
+    pub resume_payload_digest: Option<String>,
     pub event: WorldEventData,
 }
 
@@ -263,6 +379,12 @@ pub enum WorldEventData {
     },
     RunCancelled {
         cancel_reason: Option<String>,
+    },
+    AttrSet {
+        correlation_id: Option<String>,
+        changes: Vec<AttributeChange>,
+        writer: AttributeWriter,
+        allow_reserved_attributes: bool,
     },
     StepCreated {
         step_id: String,
@@ -292,6 +414,41 @@ pub enum WorldEventData {
         error: Vec<u8>,
         retry_after_ms: Option<i64>,
     },
+    HookCreated {
+        hook_id: String,
+        token: String,
+        metadata: Option<Vec<u8>>,
+        token_retention_until_ms: Option<i64>,
+        is_webhook: Option<bool>,
+        is_system: Option<bool>,
+    },
+    HookReceived {
+        hook_id: String,
+        token: Option<String>,
+        payload: Vec<u8>,
+    },
+    HookDisposed {
+        hook_id: String,
+        token: Option<String>,
+    },
+    /// Backend-produced event returned when a requested Hook token is owned.
+    HookConflict {
+        hook_id: String,
+        token: String,
+        conflicting_run_id: Option<String>,
+    },
+    WaitCreated {
+        wait_id: String,
+        resume_at_ms: i64,
+    },
+    WaitCompleted {
+        wait_id: String,
+        resume_at_ms: Option<i64>,
+    },
+    /// Backend-produced filler representing a sealed abandoned log position.
+    Noop {
+        sealed: Option<bool>,
+    },
 }
 
 impl WorldEventData {
@@ -303,11 +460,19 @@ impl WorldEventData {
             Self::RunCompleted { .. } => EventType::RunCompleted,
             Self::RunFailed { .. } => EventType::RunFailed,
             Self::RunCancelled { .. } => EventType::RunCancelled,
+            Self::AttrSet { .. } => EventType::AttrSet,
             Self::StepCreated { .. } => EventType::StepCreated,
             Self::StepStarted { .. } => EventType::StepStarted,
             Self::StepCompleted { .. } => EventType::StepCompleted,
             Self::StepFailed { .. } => EventType::StepFailed,
             Self::StepRetrying { .. } => EventType::StepRetrying,
+            Self::HookCreated { .. } => EventType::HookCreated,
+            Self::HookReceived { .. } => EventType::HookReceived,
+            Self::HookDisposed { .. } => EventType::HookDisposed,
+            Self::HookConflict { .. } => EventType::HookConflict,
+            Self::WaitCreated { .. } => EventType::WaitCreated,
+            Self::WaitCompleted { .. } => EventType::WaitCompleted,
+            Self::Noop { .. } => EventType::Noop,
         }
     }
 
@@ -319,6 +484,14 @@ impl WorldEventData {
             | Self::StepCompleted { step_id, .. }
             | Self::StepFailed { step_id, .. }
             | Self::StepRetrying { step_id, .. } => Some(step_id),
+            Self::AttrSet { correlation_id, .. } => correlation_id.as_deref(),
+            Self::HookCreated { hook_id, .. }
+            | Self::HookReceived { hook_id, .. }
+            | Self::HookDisposed { hook_id, .. }
+            | Self::HookConflict { hook_id, .. } => Some(hook_id),
+            Self::WaitCreated { wait_id, .. } | Self::WaitCompleted { wait_id, .. } => {
+                Some(wait_id)
+            }
             _ => None,
         }
     }
@@ -337,6 +510,12 @@ impl WorldEventData {
                     owner_message_id: None,
                     ..
                 }
+                | Self::HookDisposed { token: None, .. }
+                | Self::WaitCompleted {
+                    resume_at_ms: None,
+                    ..
+                }
+                | Self::Noop { sealed: None }
         )
     }
 }
@@ -347,6 +526,7 @@ pub struct UnpositionedWorldEvent {
     pub spec_version: u32,
     pub created_at_ms: i64,
     pub occurred_at_ms: Option<i64>,
+    pub resume_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -357,6 +537,7 @@ pub struct WorldEvent {
     pub spec_version: u32,
     pub created_at_ms: i64,
     pub occurred_at_ms: Option<i64>,
+    pub resume_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -380,22 +561,34 @@ pub struct WorkflowStepPage {
     pub has_more: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct WorldEventResult {
     pub event: Option<WorldEvent>,
     pub run: Option<WorkflowRun>,
     pub step: Option<WorkflowStep>,
+    pub hook: Option<WorkflowHook>,
+    pub wait: Option<WorkflowWait>,
     pub step_created: bool,
     pub skipped_events: Option<WorldEventPage>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct WorldMutationPlan {
     pub run: Option<WorkflowRun>,
     pub insert_run: bool,
     pub step: Option<WorkflowStep>,
     pub insert_step: bool,
     pub step_created: bool,
+    /// Hook to insert or delete. `delete_hook` distinguishes deletion.
+    pub hook: Option<WorkflowHook>,
+    pub insert_hook: bool,
+    pub delete_hook: bool,
+    pub wait: Option<WorkflowWait>,
+    pub insert_wait: bool,
+    /// Apply terminal-run Hook cleanup, preserving active minimum retention.
+    pub cleanup_hooks_for_run: bool,
+    /// Delete all materialized waits for a terminal run.
+    pub delete_waits_for_run: bool,
     pub events: Vec<UnpositionedWorldEvent>,
 }
 
@@ -469,7 +662,11 @@ pub struct QueueClaim {
     pub scope: String,
     pub queue_name: String,
     pub body: Vec<u8>,
+    /// Durable lease-claim count, used for queue recovery diagnostics.
     pub attempt: u32,
+    /// Candidate handler delivery number. This advances only after an HTTP
+    /// response proves that the handler accepted the delivery.
+    pub delivery_attempt: u32,
     pub lease_token: String,
     pub lease_owner: String,
     pub lease_expires_at_ms: i64,
@@ -490,6 +687,8 @@ pub enum WorldErrorKind {
     RunExpired,
     RunNotFound,
     StepNotFound,
+    HookNotFound,
+    WaitNotFound,
     EntityConflict,
     TooEarly,
     UnsupportedOperation,
@@ -510,6 +709,8 @@ impl WorldErrorKind {
             Self::RunExpired => "run_expired",
             Self::RunNotFound => "run_not_found",
             Self::StepNotFound => "step_not_found",
+            Self::HookNotFound => "hook_not_found",
+            Self::WaitNotFound => "wait_not_found",
             Self::EntityConflict => "entity_conflict",
             Self::TooEarly => "too_early",
             Self::UnsupportedOperation => "unsupported_operation",
@@ -631,7 +832,38 @@ pub fn event_id_to_slot(event_id: &str) -> Result<u64, WorldError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_EVENT_SLOT, event_id_to_slot, slot_to_event_id};
+    use super::{EventType, MAX_EVENT_SLOT, event_id_to_slot, slot_to_event_id};
+
+    #[test]
+    fn all_current_event_types_round_trip_the_persisted_names() {
+        let event_types = [
+            EventType::RunCreated,
+            EventType::RunStarted,
+            EventType::RunCompleted,
+            EventType::RunFailed,
+            EventType::RunCancelled,
+            EventType::AttrSet,
+            EventType::StepCreated,
+            EventType::StepStarted,
+            EventType::StepCompleted,
+            EventType::StepFailed,
+            EventType::StepRetrying,
+            EventType::HookCreated,
+            EventType::HookReceived,
+            EventType::HookDisposed,
+            EventType::HookConflict,
+            EventType::WaitCreated,
+            EventType::WaitCompleted,
+            EventType::Noop,
+        ];
+
+        for event_type in event_types {
+            assert_eq!(
+                EventType::try_from(event_type.as_str()).expect("known event type should parse"),
+                event_type
+            );
+        }
+    }
 
     #[test]
     fn event_ids_match_the_typescript_slot_format() {

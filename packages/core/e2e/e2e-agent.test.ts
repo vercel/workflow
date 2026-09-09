@@ -60,7 +60,7 @@ async function agentE2e(fn: string) {
 }
 
 beforeAll(async () => {
-  setupWorld(deploymentUrl);
+  await setupWorld(deploymentUrl);
 });
 
 beforeEach((ctx) => {

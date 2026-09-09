@@ -139,7 +139,7 @@ if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
 }
 
-setupWorld(deploymentUrl);
+await setupWorld(deploymentUrl);
 
 const envInt = (name: string, fallback: number, min = 1): number => {
   const raw = process.env[name];

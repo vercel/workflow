@@ -326,6 +326,7 @@ impl NativeSqliteWorld {
             ));
         }
         let config = QueueWorkerConfig {
+            concurrency: 1,
             scope,
             queue_names: vec![queue_name],
             flow_url,

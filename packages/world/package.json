@@ -18,6 +18,10 @@
       "types": "./dist/event-metadata.d.ts",
       "default": "./dist/event-metadata.js"
     },
+    "./observability": {
+      "types": "./dist/observability.d.ts",
+      "default": "./dist/observability.js"
+    },
     "./spec-version": {
       "types": "./dist/spec-version.d.ts",
       "default": "./dist/spec-version.js"

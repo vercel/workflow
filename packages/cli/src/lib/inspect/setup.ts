@@ -3,12 +3,18 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setWorld } from '@workflow/core/runtime';
 import { isVercelWorldTarget } from '@workflow/utils';
+import {
+  discoverWorkflowSqliteDatabases,
+  resolveWorkflowSqliteDatabaseDir,
+} from '@workflow/utils/sqlite-database-dir';
 import type { World } from '@workflow/world';
+import { createAggregatedObservabilityWorld } from '@workflow/world/observability';
 import { createWorld as createLocalCliWorld } from '@workflow/world-local';
 import { createWorld as createVercelCliWorld } from '@workflow/world-vercel';
 import chalk from 'chalk';
 import terminalLink from 'terminal-link';
 import { logger, setJsonMode, setVerboseMode } from '../config/log.js';
+import { getWorkflowConfig } from '../config/workflow-config.js';
 import { checkForUpdateCached } from '../update-check.js';
 import {
   inferLocalWorldEnvVars,
@@ -33,7 +39,8 @@ export const setupCliWorld = async (
     team: string;
   },
   version: string,
-  ignoreLocalWorldConfigError = false
+  ignoreLocalWorldConfigError = false,
+  aggregateSqliteObservability = false
 ) => {
   setJsonMode(Boolean(flags.json));
   setVerboseMode(Boolean(flags.verbose));
@@ -136,6 +143,11 @@ export const setupCliWorld = async (
     flags.backend === '@workflow/world-local'
   ) {
     world = createLocalCliWorld();
+  } else if (
+    aggregateSqliteObservability &&
+    (flags.backend === 'sqlite' || flags.backend === '@workflow/world-sqlite')
+  ) {
+    world = await createSqliteObservabilityWorld(flags.backend);
   } else {
     world = await createDynamicCliWorld(flags.backend);
   }
@@ -143,6 +155,72 @@ export const setupCliWorld = async (
   // Store in the global cache so BaseCommand.finally() can find and close it.
   setWorld(world);
   return world;
+};
+
+async function createSqliteObservabilityWorld(
+  backendId: string
+): Promise<World> {
+  const cwd = getWorkflowConfig().workingDir;
+  const packageId =
+    backendId === 'sqlite' ? '@workflow/world-sqlite' : backendId;
+  let worldPath: string;
+  try {
+    worldPath = createRequire(join(cwd, 'package.json')).resolve(packageId, {
+      paths: [cwd],
+    });
+  } catch {
+    throw new Error(
+      `Could not resolve workflow backend package "${packageId}" from "${cwd}". ` +
+        'Make sure the package is installed in your project.'
+    );
+  }
+  const mod = (await import(pathToFileURL(worldPath).href)) as {
+    createWorld?: (config?: Record<string, unknown>) => SqliteInspectionWorld;
+    default?: {
+      createWorld?: (config?: Record<string, unknown>) => SqliteInspectionWorld;
+    };
+  };
+  const createWorld = mod.createWorld ?? mod.default?.createWorld;
+  if (typeof createWorld !== 'function') {
+    throw new Error(
+      `Workflow backend package "${packageId}" does not expose the SQLite observability API.`
+    );
+  }
+
+  const databaseDir = resolveWorkflowSqliteDatabaseDir(cwd);
+  const candidates = await discoverWorkflowSqliteDatabases(databaseDir);
+  const valid: { source: string; world: World }[] = [];
+  try {
+    for (const candidate of candidates) {
+      const candidateWorld = createWorld({
+        databaseFile: candidate.databasePath,
+        readOnly: true,
+        recoverActiveRuns: false,
+      });
+      try {
+        await candidateWorld.validate();
+        valid.push({ source: candidate.source, world: candidateWorld });
+      } catch (error) {
+        await candidateWorld.close?.();
+        logger.warn(
+          `Ignoring ${candidate.source}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+    }
+    if (valid.length === 0) {
+      throw new Error(
+        `No schema-compatible Workflow SQLite databases found in "${databaseDir}".`
+      );
+    }
+    return createAggregatedObservabilityWorld(valid);
+  } catch (error) {
+    await Promise.allSettled(valid.map(({ world }) => world.close?.()));
+    throw error;
+  }
+}
+
+type SqliteInspectionWorld = World & {
+  validate(): Promise<void>;
 };
 
 /**

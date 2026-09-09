@@ -1,4 +1,4 @@
-import type { WorkflowRun, WorkflowRunStatus } from '@workflow/world';
+import type { WorkflowRunStatus } from '@workflow/world';
 import { useCallback, useMemo } from 'react';
 import useSWRInfinite from 'swr/infinite';
 import {
@@ -6,7 +6,12 @@ import {
   WorkflowWebAPIError,
 } from '~/lib/client/workflow-errors';
 import { fetchRuns } from '~/lib/rpc-client';
-import type { AnalyticsPageInfo, EnvMap, PaginatedResult } from '~/lib/types';
+import type {
+  AnalyticsPageInfo,
+  EnvMap,
+  ObservabilityWorkflowRun,
+  PaginatedResult,
+} from '~/lib/types';
 
 export interface InfiniteList<T> {
   /** All rows accumulated so far, in fetch order (deduped by item key). */
@@ -149,7 +154,7 @@ export function useWorkflowRunsInfinite(
     startTime?: string;
     endTime?: string;
   }
-): InfiniteList<WorkflowRun> {
+): InfiniteList<ObservabilityWorkflowRun> {
   const {
     workflowName,
     status,
@@ -177,7 +182,10 @@ export function useWorkflowRunsInfinite(
     [env, workflowName, limit, sortOrder, status, startTime, endTime]
   );
 
-  const getItemKey = useCallback((run: WorkflowRun) => run.runId, []);
+  const getItemKey = useCallback(
+    (run: ObservabilityWorkflowRun) => run.runId,
+    []
+  );
 
   return useInfiniteList(cacheKey, fetchFn, getItemKey);
 }

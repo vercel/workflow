@@ -36,6 +36,18 @@ pub(super) const MIGRATIONS: &[SchemaMigration] = &[
         sql: include_str!("../migrations/0003_phase1_run_step_storage.sql"),
         checksum: "sha256:3c64d7d88d9a8d0c2ec5228c241ca5550ecb7daae1d42b55ac8b5f5e247c046a",
     },
+    SchemaMigration {
+        version: 4,
+        name: "durable-streams",
+        sql: include_str!("../migrations/0004_durable_streams.sql"),
+        checksum: "sha256:6f4d7123d6805d341ece47fbfa1956ea232b73c686c761e7ad9168e639422a15",
+    },
+    SchemaMigration {
+        version: 5,
+        name: "phase2-entities",
+        sql: include_str!("../migrations/0005_phase2_entities.sql"),
+        checksum: "sha256:bffda993b0bec30b0cea48e1a4fdc0569abcf204f453b72888ce69f353866c91",
+    },
 ];
 
 pub(super) fn current_schema_version() -> i64 {
