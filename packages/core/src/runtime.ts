@@ -152,7 +152,7 @@ export {
 } from './runtime/helpers.js';
 export {
   getHookByToken,
-  type HookWithLazyMetadata,
+  type Hook,
   type ResumedHook,
   resumeHook,
   resumeWebhook,

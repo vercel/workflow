@@ -6,7 +6,6 @@ import {
 } from '@workflow/errors';
 import {
   HOOK_RESUME_DEDUP_VERSION,
-  type Hook,
   type HookResumeContext,
   isLegacySpecVersion,
   isTerminalWorkflowRunStatus,
@@ -15,6 +14,7 @@ import {
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
   type WorkflowRun,
+  type Hook as WorldHook,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { getRunCapabilities } from '../capabilities.js';
@@ -129,13 +129,15 @@ async function publishHookWakeWithRetry(
 /**
  * A hook record with its serialized `metadata` omitted: everything a resume
  * actually reads. Resuming never looks at metadata, so the resume path accepts
- * both a raw {@link Hook} straight out of a World and a
- * {@link HookWithLazyMetadata} whose `metadata` is a Promise.
+ * both a raw {@link WorldHook} straight out of a World and a {@link Hook}
+ * whose `metadata` is a Promise.
  */
-type ResumableHook = Omit<Hook, 'metadata'>;
+type ResumableHook = Omit<WorldHook, 'metadata'>;
 
 /**
- * A {@link Hook} whose user-defined `metadata` is hydrated lazily.
+ * A hook as returned by {@link getHookByToken} and {@link resumeHook}: the
+ * World's {@link WorldHook} record with its user-defined `metadata` hydrated
+ * lazily.
  *
  * `metadata` is a getter that returns a Promise — the same shape as
  * `Run.returnValue` — so looking a hook up by token costs exactly one read.
@@ -161,7 +163,7 @@ type ResumableHook = Omit<Hook, 'metadata'>;
  * const metadata = (await hook.metadata) as { allowedUserId?: string } | undefined;
  * ```
  */
-export interface HookWithLazyMetadata extends ResumableHook {
+export interface Hook extends ResumableHook {
   /**
    * The hook's user-defined metadata, hydrated on first access and memoized.
    * Resolves `undefined` when the hook carries no metadata.
@@ -174,7 +176,7 @@ export interface HookWithLazyMetadata extends ResumableHook {
  * hydrating its `metadata` resolved, if anything ever awaited it.
  */
 interface HookLookup {
-  hook: HookWithLazyMetadata;
+  hook: Hook;
   /**
    * The read-side payload keys resolved while hydrating `metadata`, or
    * `undefined` when `metadata` was never awaited, the hook stored none, or the
@@ -271,7 +273,7 @@ function hasLazyMetadata(hook: ResumableHook): boolean {
 }
 
 /**
- * Wraps a raw hook record from a World in a {@link HookWithLazyMetadata},
+ * Wraps a raw hook record from a World in a {@link Hook},
  * replacing its serialized `metadata` with a memoized Promise getter that
  * hydrates on first access.
  *
@@ -283,7 +285,7 @@ function hasLazyMetadata(hook: ResumableHook): boolean {
  * The original record is left untouched; the returned object is a shallow copy
  * carrying the accessor.
  */
-function withLazyMetadata(raw: Hook): HookLookup {
+function withLazyMetadata(raw: WorldHook): HookLookup {
   const serialized = raw.metadata;
   let hydrated: Promise<unknown> | undefined;
   let encryptionKey: PayloadKey | undefined;
@@ -312,7 +314,7 @@ function withLazyMetadata(raw: Hook): HookLookup {
   const hook = Object.create(
     Object.getPrototypeOf(raw),
     Object.getOwnPropertyDescriptors(raw)
-  ) as HookWithLazyMetadata;
+  ) as Hook;
   Object.defineProperty(hook, 'metadata', {
     // A hook with no metadata resolves `undefined` without any I/O, so callers
     // can await unconditionally. Memoized either way: metadata is fixed at
@@ -336,22 +338,22 @@ function withLazyMetadata(raw: Hook): HookLookup {
 
 /**
  * Normalizes any hook record the resume path accepted into a
- * {@link HookWithLazyMetadata} to return to the caller. Idempotent: a hook that
+ * {@link Hook} to return to the caller. Idempotent: a hook that
  * already carries the lazy accessor (one that came from `getHookByToken`) is
  * returned as-is rather than double-wrapped, which would hand
  * `hydrateStepArguments` a Promise.
  */
-function asLazyMetadataHook(hook: ResumableHook): HookWithLazyMetadata {
+function asLazyMetadataHook(hook: ResumableHook): Hook {
   return hasLazyMetadata(hook)
-    ? (hook as HookWithLazyMetadata)
-    : withLazyMetadata(hook as Hook).hook;
+    ? (hook as Hook)
+    : withLazyMetadata(hook as WorldHook).hook;
 }
 
 /**
  * Get the hook by token to find the associated workflow run.
  *
  * This is a single read. The returned hook's `metadata` is a getter that
- * resolves a Promise (see {@link HookWithLazyMetadata}), so the run fetch and
+ * resolves a Promise (see {@link Hook}), so the run fetch and
  * `run-key` round trip that hydrating it can require are only paid by callers
  * that actually await it:
  *
@@ -365,23 +367,21 @@ function asLazyMetadataHook(hook: ResumableHook): HookWithLazyMetadata {
  *
  * @param token - The unique token identifying the hook
  */
-export async function getHookByToken(
-  token: string
-): Promise<HookWithLazyMetadata> {
+export async function getHookByToken(token: string): Promise<Hook> {
   const world = await getWorldLazy();
   return withLazyMetadata(await world.hooks.getByToken(token)).hook;
 }
 
 /**
- * The result of {@link resumeHook}: a {@link HookWithLazyMetadata} augmented
+ * The result of {@link resumeHook}: a {@link Hook} augmented
  * with an optional resilience signal.
  *
  * `resilientResume` is retained for source compatibility and is never set.
  * `resumeHook()` now requires the durable `hook_received` write and workflow
  * wake to both succeed before it resolves. Treat the result as a plain
- * {@link HookWithLazyMetadata}.
+ * {@link Hook}.
  */
-export type ResumedHook = HookWithLazyMetadata & {
+export type ResumedHook = Hook & {
   resilientResume?: boolean;
 };
 

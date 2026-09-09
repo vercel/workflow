@@ -16,7 +16,7 @@ export type {
 } from '@workflow/core/runtime';
 export {
   getHookByToken,
-  type HookWithLazyMetadata,
+  type Hook,
   type ResumedHook,
   resumeHook,
   resumeWebhook,
