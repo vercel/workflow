@@ -1,5 +1,13 @@
 # @workflow/world
 
+## 5.0.0-beta.34
+
+### Minor Changes
+
+- [#3787](https://github.com/vercel/workflow/pull/3787) [`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an `experimental_retention` option to `start()`: `experimental_retention: 0` asks the World to delete the run's user data as soon as the run completes or fails, while keeping the run itself listable. Implemented on the Vercel, Postgres and Local Worlds. Reading a run whose data has expired now throws `RunExpiredError` instead of resolving to a placeholder.
+
+- [#3832](https://github.com/vercel/workflow/pull/3832) [`4547e1a`](https://github.com/vercel/workflow/commit/4547e1a7a95f273f3166edf45344dc827f1935fa) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add an optional stateful stream writer-session seam with stable writer identity and sequence tracking.
+
 ## 5.0.0-beta.33
 
 ### Minor Changes
