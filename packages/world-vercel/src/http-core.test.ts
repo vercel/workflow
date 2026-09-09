@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   errorForResponse,
   formatVercelDiagnostics,
+  getTransientTransportCode,
   getVercelDiagnostics,
   parseRetryAfter,
   resolveVercelApiToken,
@@ -57,6 +58,22 @@ describe('errorForResponse', () => {
     const err = errorForResponse(503, 'unavailable');
     expect(err).toBeInstanceOf(WorkflowWorldError);
     expect((err as WorkflowWorldError).status).toBe(503);
+  });
+});
+
+describe('getTransientTransportCode', () => {
+  it('finds an HTTP/2 stream timeout in a fetch cause chain', () => {
+    const cause = Object.assign(
+      new Error('HTTP/2: "stream timeout after 300000"'),
+      { code: 'UND_ERR_INFO' }
+    );
+    const error = new TypeError('fetch failed', { cause });
+
+    expect(getTransientTransportCode(error)).toBe('UND_ERR_INFO');
+  });
+
+  it('ignores non-transport errors', () => {
+    expect(getTransientTransportCode(new Error('bad payload'))).toBeUndefined();
   });
 });
 
