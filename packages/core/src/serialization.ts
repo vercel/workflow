@@ -1314,6 +1314,9 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     // One stable identity and sequence space per in-memory sink. Start session
     // construction as soon as the run-ready barrier permits, so transports may
     // negotiate eagerly without allowing a write to overtake run creation.
+    // This eager chain cannot strand a new rejection: ensureRunReady absorbs its
+    // ordering-only failure, and every path that can observe worldPromise also
+    // awaits this session promise before it writes, closes, or disposes.
     const writerId = `wrtr_${defaultUlid()}` as const;
     const writeSessionPromise: Promise<StreamWriteSession | undefined> =
       ensureRunReady().then(async () => {
@@ -1454,6 +1457,8 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
           await world.streams.write(runId, name, chunk);
         }
       }
+      // `inFlight` admits only one dispatch loop, so no second group can read
+      // this sequence space until the current group has advanced it.
       nextChunkSeq += group.length;
       if (groupT0 !== undefined) {
         recordStreamWriteFlush(
