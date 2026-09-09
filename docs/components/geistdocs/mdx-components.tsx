@@ -5,6 +5,10 @@ import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import type { MDXComponents } from 'mdx/types';
 import { AgentTraces } from '@/components/custom/agent-traces';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
+import {
+  LanguageSwitcher,
+  LanguageSwitcherTab,
+} from '@/components/custom/language-switcher';
 import { PreviewInstallServer } from '@/components/preview-install-server';
 import * as AccordionComponents from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
@@ -52,6 +56,8 @@ export const getMDXComponents = (components?: MDXComponents): MDXComponents =>
   createMdxComponents({
     AgentTraces,
     FluidComputeCallout,
+    LanguageSwitcher,
+    LanguageSwitcherTab,
     Badge,
     TSDoc,
     Step,
