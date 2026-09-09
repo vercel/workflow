@@ -18,8 +18,19 @@
  * holds on every commit of a release branch, not only right after a publish,
  * so a gap keeps failing the job until it is closed.
  *
- * The registry can lag a publish by a few seconds, so missing versions are
- * re-checked a few times before they are reported.
+ * npm does not commit a publish synchronously: `pnpm publish` exits 0 once the
+ * version is staged, and the version list and dist-tag catch up afterwards.
+ * The lag is minutes, not seconds, and it scales with the tarball, so the same
+ * few packages are always last. Measured from the publish step to the version
+ * appearing in the registry: 5.0.0-beta.50 took 1m29s for `@workflow/astro`,
+ * 3m03s for `@workflow/core` (9.4MB) and 4m11s for `@workflow/web` (11.3MB);
+ * 5.0.0-beta.49 took just over 5m for `@workflow/web`. The retry budget below
+ * therefore has to be tens of minutes' worth, not one minute's: a budget that
+ * expires during an ordinary commit lag reports a healthy release as broken,
+ * which is the exact signal this script exists to keep trustworthy.
+ *
+ * A gap that outlives the budget is real and needs a person. 5.0.0-beta.48 left
+ * `@workflow/web` staged for about a day, which no retry budget can wait out.
  *
  * Usage: node scripts/check-published.mjs [--tag <dist-tag>]
  */
@@ -30,8 +41,11 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REGISTRY = 'https://registry.npmjs.org';
-const ATTEMPTS = Number(process.env.CHECK_PUBLISHED_ATTEMPTS ?? 6);
-const DELAY_MS = Number(process.env.CHECK_PUBLISHED_DELAY_MS ?? 10_000);
+// 20 attempts, 30s apart: ~9.5 minutes of waiting, which covers every commit
+// lag observed so far with room to spare. Costs nothing when the registry is
+// already caught up, since the loop exits as soon as nothing is pending.
+const ATTEMPTS = Number(process.env.CHECK_PUBLISHED_ATTEMPTS ?? 20);
+const DELAY_MS = Number(process.env.CHECK_PUBLISHED_DELAY_MS ?? 30_000);
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
