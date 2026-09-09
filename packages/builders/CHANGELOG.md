@@ -1,5 +1,12 @@
 # @workflow/builders
 
+## 4.1.13
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.8
+
 ## 4.1.12
 
 ### Patch Changes
