@@ -88,6 +88,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
   private closeAcknowledged = false;
   private idleReconnects = 0;
   private drainReason: 'auth_expiry' | 'max_duration' | undefined;
+  private drainTimer: ReturnType<typeof setTimeout> | undefined;
   private releaseDrainWait: (() => void) | undefined;
   private lastAuthorization: string | null = null;
 
@@ -338,8 +339,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
               return;
             }
             // A server may queue close immediately after its terminal reply.
-            // Let the already-delivered message finish decoding first.
-            void this.inbound.then(() => this.handleSocketClose(Number(code)));
+            // Let the already-delivered message finish decoding first. Pass the
+            // socket so a late close from a forced drain cannot retire its
+            // replacement.
+            void this.inbound.then(() =>
+              this.handleSocketClose(Number(code), ws)
+            );
           });
           ws.on('message', (raw) => {
             this.inbound = this.inbound.then(() =>
@@ -356,7 +361,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
       const frame = await decodeOne(raw);
       const reply = parseStreamWsReply(frame.meta, frame.body);
       if (reply.type === 'drain') {
-        this.handleDrain(reply.reason);
+        this.handleDrain(reply.reason, reply.graceMs);
         return;
       }
       const pending = this.pending;
@@ -397,7 +402,10 @@ class VercelStreamWriteSession implements StreamWriteSession {
     }
   }
 
-  private handleDrain(reason: 'auth_expiry' | 'max_duration'): void {
+  private handleDrain(
+    reason: 'auth_expiry' | 'max_duration',
+    graceMs: number
+  ): void {
     if (this.mode === 'draining') {
       if (reason === 'auth_expiry') this.drainReason = reason;
       return;
@@ -408,9 +416,31 @@ class VercelStreamWriteSession implements StreamWriteSession {
     this.transportDecision = new Promise<void>((resolve) => {
       this.releaseDrainWait = resolve;
     });
+    const socket = this.socket;
+    this.drainTimer = setTimeout(
+      () => {
+        this.drainTimer = undefined;
+        if (this.mode !== 'draining' || socket !== this.socket) return;
+        if (this.pending) {
+          this.failUnknown(
+            new Error('stream WebSocket drain expired before request reply')
+          );
+          return;
+        }
+        socket?.close(1001, 'stream drain grace expired');
+        this.handleSocketClose(1001, socket);
+      },
+      Math.min(graceMs, 2_147_483_647)
+    );
+    this.drainTimer.unref?.();
   }
 
-  private handleSocketClose(code: number): void {
+  private handleSocketClose(code: number, socket = this.socket): void {
+    if (socket !== this.socket) return;
+    if (this.drainTimer) {
+      clearTimeout(this.drainTimer);
+      this.drainTimer = undefined;
+    }
     if (
       this.mode === 'closed' ||
       this.mode === 'http' ||
@@ -523,6 +553,10 @@ class VercelStreamWriteSession implements StreamWriteSession {
   }
 
   private finishDrainWait(): void {
+    if (this.drainTimer) {
+      clearTimeout(this.drainTimer);
+      this.drainTimer = undefined;
+    }
     const release = this.releaseDrainWait;
     this.releaseDrainWait = undefined;
     release?.();

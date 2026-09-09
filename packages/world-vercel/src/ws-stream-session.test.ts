@@ -446,6 +446,58 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(writeHttp).toHaveBeenCalledWith(['one']);
   });
 
+  it('forces reconnect when an idle drain outlives its grace', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const { session, writeHttp } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const firstSocket = sockets[0];
+    firstSocket.open();
+    firstSocket.reply(
+      encodeFrame(
+        { type: 'drain', reason: 'max_duration', graceMs: 10 },
+        new Uint8Array()
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const writing = session.write(0, ['one']);
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    expect(firstSocket.closed).toContainEqual([
+      1001,
+      'stream drain grace expired',
+    ]);
+    sockets[1].open();
+    await vi.waitFor(() => expect(sockets[1].sent).toHaveLength(1));
+    sockets[1].reply(
+      encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
+    );
+
+    await writing;
+    expect(writeHttp).not.toHaveBeenCalled();
+  });
+
+  it('poisons when drain grace expires before an admitted reply', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const { session, writeHttp } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    const writing = session.write(0, ['one']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+    socket.reply(
+      encodeFrame(
+        { type: 'drain', reason: 'max_duration', graceMs: 1 },
+        new Uint8Array()
+      )
+    );
+
+    await expect(writing).rejects.toThrow('drain expired before request reply');
+    await expect(session.write(0, ['one'])).rejects.toThrow(
+      'drain expired before request reply'
+    );
+    expect(writeHttp).not.toHaveBeenCalled();
+  });
+
   it('poisons when drain closes before an admitted reply', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
     const { session, writeHttp } = makeSession();
