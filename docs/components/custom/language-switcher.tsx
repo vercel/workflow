@@ -12,6 +12,13 @@ import {
   useEffect,
   useSyncExternalStore,
 } from 'react';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
 
@@ -43,8 +50,8 @@ function setLanguage(value: string): void {
 const DEFAULT_TITLES: Record<string, string> = {
   js: 'JavaScript',
   javascript: 'JavaScript',
-  py: 'Python',
-  python: 'Python',
+  py: 'Python (beta)',
+  python: 'Python (beta)',
   ts: 'TypeScript',
   typescript: 'TypeScript',
 };
@@ -74,17 +81,31 @@ interface LanguageSwitcherProps {
   children: ReactNode;
 }
 
+interface LanguageContentProps {
+  as?: keyof JSX.IntrinsicElements;
+  value: string;
+  className?: string;
+  children?: ReactNode;
+}
+
+type LanguageTextProps = Record<string, ReactNode>;
+
+interface PageLanguageSwitcherProps {
+  languages: readonly string[];
+  className?: string;
+}
+
+function useSharedLanguage(): string | null {
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+}
+
 function useLanguageStore(
   defaultValue: string,
   availableValues: string[]
 ): [string, (value: string) => void] {
   const router = useRouter();
   const pathname = usePathname();
-  const sharedValue = useSyncExternalStore(
-    subscribe,
-    getSnapshot,
-    getServerSnapshot
-  );
+  const sharedValue = useSharedLanguage();
 
   const fallbackValue = availableValues.includes(defaultValue)
     ? defaultValue
@@ -252,4 +273,82 @@ export function LanguageSwitcher({
       </Tabs>
     </>
   );
+}
+
+function PageLanguageSwitcherImpl({
+  className,
+  languages,
+}: PageLanguageSwitcherProps): JSX.Element | null {
+  const [selected, setSelected] = useLanguageStore(languages[0] ?? 'ts', [
+    ...languages,
+  ]);
+
+  if (languages.length < 2) {
+    return null;
+  }
+
+  return (
+    <div className={cn('mb-6', className)} data-page-language-switcher>
+      <Suspense fallback={null}>
+        <LanguageUrlSyncer />
+      </Suspense>
+      <Select onValueChange={setSelected} value={selected}>
+        <SelectTrigger
+          aria-label="Programming language"
+          className="w-full bg-background-100"
+          size="sm"
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent align="start">
+          {languages.map((language) => (
+            <SelectItem key={language} value={language}>
+              {getDefaultTitle(language)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+/** Renders the language selector only for pages that opt in via frontmatter. */
+export function PageLanguageSwitcher(
+  props: PageLanguageSwitcherProps
+): JSX.Element {
+  return (
+    <Suspense fallback={null}>
+      <PageLanguageSwitcherImpl {...props} />
+    </Suspense>
+  );
+}
+
+/**
+ * Shows block content when its language is selected for the current page.
+ */
+export function LanguageContent({
+  as,
+  children,
+  className,
+  value,
+}: LanguageContentProps): JSX.Element {
+  const selected = useSharedLanguage() ?? 'ts';
+  const Component = as ?? 'div';
+
+  return (
+    <Component
+      className={className}
+      data-language={value}
+      hidden={selected !== value}
+    >
+      {children}
+    </Component>
+  );
+}
+
+/** Selects one inline value, provided as a prop named after each language. */
+export function LanguageText(values: LanguageTextProps): JSX.Element {
+  const selected = useSharedLanguage() ?? 'ts';
+
+  return <>{values[selected]}</>;
 }

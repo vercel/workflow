@@ -6,8 +6,10 @@ import type { MDXComponents } from 'mdx/types';
 import { AgentTraces } from '@/components/custom/agent-traces';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
 import {
+  LanguageContent,
   LanguageSwitcher,
   LanguageSwitcherTab,
+  LanguageText,
 } from '@/components/custom/language-switcher';
 import { PreviewInstallServer } from '@/components/preview-install-server';
 import * as AccordionComponents from '@/components/ui/accordion';
@@ -56,8 +58,10 @@ export const getMDXComponents = (components?: MDXComponents): MDXComponents =>
   createMdxComponents({
     AgentTraces,
     FluidComputeCallout,
+    LanguageContent,
     LanguageSwitcher,
     LanguageSwitcherTab,
+    LanguageText,
     Badge,
     TSDoc,
     Step,
