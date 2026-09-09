@@ -86,6 +86,10 @@ transactions recover after an application-process crash, but a machine crash
 or power loss can roll back recent acknowledged writes. Use this package for
 local development and tests, not as an advertised production backend.
 
+The core runtime's experimental run-payload `retention` option is accepted but
+is not materialized by this backend yet. SQLite keeps that data until ordinary
+run cleanup or `clear()`; do not use this profile to test retention expiry.
+
 The package remains private while its final public package name and artifact
 layout are decided. CI nevertheless packs the wrapper with a prebuilt native
 addon and exercises a clean staged application with failing `cargo` and `rustc`
