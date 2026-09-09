@@ -23,6 +23,7 @@ import {
   _resetNodeHttpAgentsForTests,
   createDispatcherRecycler,
   createEventsDispatcher,
+  createQueueDispatcher,
   createStreamDispatcher,
   DEFAULT_BODY_TIMEOUT_MS,
   DEFAULT_HEADERS_TIMEOUT_MS,
@@ -35,13 +36,17 @@ import {
   getEventsDispatcher,
   getNodeHttpAgents,
   getNodeHttpPhaseTimeouts,
+  getQueueAgentOptions,
   getQueueDispatcher,
+  getQueueRequestTimeoutMs,
   getStreamAgentOptions,
   getStreamCloseDispatcher,
   getStreamDispatcher,
   isRecyclableTransportError,
   MAX_RETRIES,
   noteEventsTransportOutcome,
+  QUEUE_AGENT_CONNECTIONS,
+  QUEUE_REQUEST_TIMEOUT_MS,
   RETRY_ERROR_CODES,
   STREAM_CLOSE_RETRY_OPTIONS,
   STREAM_RETRY_OPTIONS,
@@ -983,6 +988,99 @@ describe('dispatcher recycling accounting', () => {
   });
 });
 
+describe('queue client transport', () => {
+  it('gives the queue client its own dispatcher, not the shared default', () => {
+    expect(getQueueDispatcher()).toBe(getQueueDispatcher());
+    expect(getQueueDispatcher()).not.toBe(getDispatcher());
+  });
+
+  it('still yields to a caller-supplied dispatcher', () => {
+    const custom = {};
+    expect(getQueueDispatcher({ dispatcher: custom })).toBe(custom);
+  });
+
+  // The queue client issues about two small requests per invocation, so its
+  // concurrency tracks how many invocations the instance is serving, not any
+  // per-request fan-out. Sharing the control-plane pool's 8-connection cap made
+  // invocation concurrency the binding constraint on acknowledging messages.
+  it('gives the queue a connection budget well above the shared pool', () => {
+    expect(getQueueAgentOptions().connections).toBe(QUEUE_AGENT_CONNECTIONS);
+    expect(getQueueAgentOptions().connections).toBeGreaterThan(
+      getAgentOptions().connections
+    );
+  });
+
+  // Nothing else bounds this path as a whole: QueueClient calls global fetch
+  // itself and takes no fetch override, so the deadline has to be armed on the
+  // agent (and, for the pool queue wait, by the interceptor below the test
+  // that follows). See QUEUE_REQUEST_TIMEOUT_MS.
+  it('arms explicit per-phase deadlines instead of undici defaults', () => {
+    const options = getQueueAgentOptions();
+    expect(options.headersTimeout).toBe(QUEUE_REQUEST_TIMEOUT_MS);
+    expect(options.bodyTimeout).toBe(QUEUE_REQUEST_TIMEOUT_MS);
+    // Well under undici's 300s headersTimeout / bodyTimeout defaults.
+    expect(options.headersTimeout).toBeLessThan(300_000);
+  });
+
+  it('reads the deadline override, clamped', () => {
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS', '45000');
+    expect(getQueueRequestTimeoutMs()).toBe(45_000);
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS', '1');
+    expect(getQueueRequestTimeoutMs()).toBe(5_000);
+  });
+
+  it('reads the connection override', () => {
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_CONNECTIONS', '16');
+    expect(getQueueAgentOptions().connections).toBe(16);
+  });
+
+  // The regression this guards is not "an ack is slow", it is that waiting for
+  // a free connection is not covered by headersTimeout: undici arms that only
+  // once a request reaches a socket. With one connection and a server that
+  // never answers, an unbounded queue wait would settle the k-th request at
+  // k x deadline. The deadline is armed at dispatch and delivered through the
+  // controller onRequestStart hands over, so the whole backlog drains at the
+  // deadline instead.
+  it('bounds the pool queue wait, not just time on the wire', async () => {
+    const DEADLINE_MS = 5_000;
+    const DEPTH = 6;
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS', String(DEADLINE_MS));
+    vi.stubEnv('WORKFLOW_VERCEL_QUEUE_CONNECTIONS', '1');
+
+    // Accepts the connection, never responds.
+    const silent = createServer(() => {});
+    await new Promise<void>((resolve) =>
+      silent.listen(0, '127.0.0.1', () => resolve())
+    );
+    const { port } = silent.address() as AddressInfo;
+    const dispatcher = createQueueDispatcher();
+
+    const started = Date.now();
+    const settled = await Promise.all(
+      Array.from({ length: DEPTH }, () =>
+        fetch(`http://127.0.0.1:${port}/ack`, {
+          method: 'POST',
+          body: '{}',
+          // @ts-expect-error -- `dispatcher` is undici's extension to RequestInit.
+          dispatcher,
+        })
+          .then(() => 'resolved')
+          .catch(() => 'aborted')
+      )
+    );
+    const elapsed = Date.now() - started;
+
+    silent.close();
+    await dispatcher.close();
+
+    expect(settled).toEqual(Array.from({ length: DEPTH }, () => 'aborted'));
+    // Serialised behind one connection with no queue-wait bound this would be
+    // DEPTH x DEADLINE_MS (30s). Allow generous slack for CI scheduling while
+    // staying far below that product.
+    expect(elapsed).toBeLessThan(DEADLINE_MS * 2);
+  }, 40_000);
+});
+
 describe('node:http mode', () => {
   beforeEach(() => {
     vi.stubEnv(NODE_HTTP_ENV_VAR, '1');
@@ -1020,8 +1118,9 @@ describe('node:http mode', () => {
     vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
     expect(getQueueDispatcher()).toBeDefined();
     expect(getQueueDispatcher()).toBe(getQueueDispatcher());
-    // Same agent the flag-off path hands every other call site.
-    expect(getQueueDispatcher()).toBe(getDispatcher());
+    // Its own agent, not the one the flag-off path hands every other call
+    // site: see QUEUE_AGENT_CONNECTIONS for why the two pools differ.
+    expect(getQueueDispatcher()).not.toBe(getDispatcher());
   });
 
   it('still yields to a caller-supplied dispatcher on that path too', () => {
