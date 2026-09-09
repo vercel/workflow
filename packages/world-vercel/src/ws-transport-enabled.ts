@@ -60,8 +60,10 @@ export function isWsEventsTransportStrict(): boolean {
  * server authoritatively accepts or declines every upgrade, and a decline
  * falls back directly to the HTTP stream writer.
  *
- * HTTP is the compatibility path and the default. This deliberately has no
- * package-version or tenant-policy heuristic; rollout policy belongs to the
+ * HTTP is the compatibility path and the default. Unlike the default-on events
+ * gate above, this opt-in is exact-match: a typo must fail toward HTTP rather
+ * than unexpectedly enabling an experimental transport. This deliberately has
+ * no package-version or tenant-policy heuristic; rollout policy belongs to the
  * server. v1 is `/websockets/v1`, independently versioned from REST v2/v4 and
  * persisted workflow spec versions.
  */
