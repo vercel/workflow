@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 4.7.3
+
+### Patch Changes
+
+- [#4045](https://github.com/vercel/workflow/pull/4045) [`0e56bb8`](https://github.com/vercel/workflow/commit/0e56bb864d685972464f827bd75ed1436250e8c7) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Classify HTTP/2 response stream timeouts as retryable transport failures so `start()` can return the queued run through resilient start.
+
 ## 4.7.2
 
 ### Patch Changes
