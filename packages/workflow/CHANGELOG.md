@@ -1,5 +1,25 @@
 # workflow
 
+## 5.0.0-beta.50
+
+### Major Changes
+
+- [#3988](https://github.com/vercel/workflow/pull/3988) [`efbdc21`](https://github.com/vercel/workflow/commit/efbdc213a0a70f8be2a147a0af195a4d9d82f0fe) Thanks [@pranaygp](https://github.com/pranaygp)! - **Breaking:** `hook.metadata` on hooks returned by `getHookByToken()` and `resumeHook()` is now a lazy getter that returns a Promise, like `run.returnValue`, and needs to be awaited. Looking a hook up by token no longer pays for hydrating metadata that is never read.
+
+### Patch Changes
+
+- Updated dependencies [[`efbdc21`](https://github.com/vercel/workflow/commit/efbdc213a0a70f8be2a147a0af195a4d9d82f0fe)]:
+  - @workflow/core@5.0.0-beta.50
+  - @workflow/cli@5.0.0-beta.50
+  - @workflow/next@5.0.0-beta.50
+  - @workflow/nitro@5.0.0-beta.50
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.50
+  - @workflow/nest@5.0.0-beta.50
+  - @workflow/rollup@5.0.0-beta.50
+  - @workflow/sveltekit@5.0.0-beta.50
+  - @workflow/nuxt@5.0.0-beta.50
+
 ## 5.0.0-beta.49
 
 ### Minor Changes
