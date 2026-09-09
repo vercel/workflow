@@ -161,6 +161,7 @@ export {
   Run,
   type WorkflowReadableStream,
   type WorkflowReadableStreamOptions,
+  type WorkflowRunWritableStreamOptions,
 } from './runtime/run.js';
 export {
   type CancelRunOptions,
