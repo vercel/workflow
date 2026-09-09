@@ -13,6 +13,7 @@ import {
   STREAM_WS_V1_MAX_CHUNKS_PER_WRITE,
   StreamWriterIdSchema,
   StreamWsCloseRequestMetaSchema,
+  StreamWsDrainMetaSchema,
   StreamWsRequestMetaSchema,
   StreamWsWriteRequestMetaSchema,
 } from './stream-ws-protocol-v1.js';
@@ -48,10 +49,10 @@ describe('workflow-stream-ws/v1 contract', () => {
     const fixtureBytes = await readFile(
       new URL('./__fixtures__/workflow-stream-ws-v1.json', import.meta.url)
     );
-    // Canonical source: workflow-server#848
+    // Canonical source: workflow-server#876
     // test/fixtures/workflow-stream-ws-v1.json
     expect(createHash('sha256').update(fixtureBytes).digest('hex')).toBe(
-      'deaa70651a43039322eb0eb5700c8daaa1cb8efbd8c9f5cbf25f671a78b0e38d'
+      '908d0be8ca85661d6b0b666d7e6fc36c581cb70f9561def37c3c93c61bada009'
     );
 
     expect(fixture.protocol).toBe(STREAM_WS_PROTOCOL_V1);
@@ -139,6 +140,27 @@ describe('workflow-stream-ws/v1 contract', () => {
         [new Uint8Array(STREAM_WS_V1_MAX_CHUNK_BYTES + 1)]
       )
     ).toThrow('maximum is 10485760');
+  });
+
+  it('accepts additive connection drain controls', () => {
+    expect(
+      StreamWsDrainMetaSchema.parse({
+        type: 'drain',
+        reason: 'max_duration',
+        graceMs: 10_000,
+      })
+    ).toEqual({
+      type: 'drain',
+      reason: 'max_duration',
+      graceMs: 10_000,
+    });
+    expect(
+      StreamWsDrainMetaSchema.safeParse({
+        type: 'drain',
+        reason: 'unknown',
+        graceMs: 10_000,
+      }).success
+    ).toBe(false);
   });
 
   it('encodes close with an empty body', async () => {

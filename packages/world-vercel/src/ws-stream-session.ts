@@ -1,3 +1,4 @@
+import { getVercelOidcToken } from '@vercel/oidc';
 import type { StreamWriteSession } from '@workflow/world';
 import type { WebSocket } from 'ws';
 import { type DecodedFrame, decodeFrames } from './frames.js';
@@ -24,8 +25,13 @@ import {
 } from './ws-stream-connect.js';
 import { isWsStreamsTransportEnabled } from './ws-transport-enabled.js';
 
-type Mode = 'connecting' | 'ws' | 'http' | 'closed' | 'poisoned';
+type Mode = 'connecting' | 'draining' | 'ws' | 'http' | 'closed' | 'poisoned';
 const MAX_IDLE_RECONNECTS = 3;
+const OIDC_FORCE_REFRESH_BUFFER_MS = 24 * 60 * 60 * 1000;
+
+function readAuthorization(headers: Headers): string | null {
+  return headers.get('authorization');
+}
 
 class StreamWsRequestNotSentError extends Error {
   constructor(error: unknown) {
@@ -81,6 +87,9 @@ class VercelStreamWriteSession implements StreamWriteSession {
   private wsUrl: string | undefined;
   private closeAcknowledged = false;
   private idleReconnects = 0;
+  private drainReason: 'auth_expiry' | 'max_duration' | undefined;
+  private releaseDrainWait: (() => void) | undefined;
+  private lastAuthorization: string | null = null;
 
   constructor(
     private readonly runId: string,
@@ -100,6 +109,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
     return this.enqueue(async () => {
       this.assertUsable();
       await this.transportDecision;
+      this.assertUsable();
       if (this.mode === 'http') {
         await this.writeHttp(chunks);
         return;
@@ -147,6 +157,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
   dispose(): void {
     if (this.mode === 'closed') return;
     this.mode = 'closed';
+    this.finishDrainWait();
     const pending = this.pending;
     this.pending = undefined;
     if (pending) {
@@ -160,6 +171,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
     return this.enqueue(async () => {
       this.assertUsable();
       await this.transportDecision;
+      this.assertUsable();
       if (this.mode === 'http') {
         await this.closeHttp();
         this.mode = 'closed';
@@ -220,24 +232,42 @@ class VercelStreamWriteSession implements StreamWriteSession {
     });
   }
 
-  private startConnect(): Promise<void> {
-    return this.connectSocket().catch(() => {
+  private startConnect(forceRefresh = false): Promise<void> {
+    return this.connectSocket(forceRefresh).catch(() => {
       // Every failure before OPEN is a safe, session-long HTTP fallback. The
       // HTTP request itself still surfaces auth/configuration errors normally.
       if (this.mode === 'connecting') this.mode = 'http';
     });
   }
 
-  private async connectSocket(): Promise<void> {
+  private async connectSocket(forceRefresh: boolean): Promise<void> {
     if (!isWsStreamsTransportEnabled()) {
       this.mode = 'http';
       return;
+    }
+    if (forceRefresh) {
+      // Outside a Vercel function this invalidates @vercel/oidc's cached token.
+      // Inside one, the invocation header remains authoritative; reconnecting
+      // still re-resolves headers rather than retaining the old upgrade object.
+      await getVercelOidcToken({
+        expirationBufferMs: OIDC_FORCE_REFRESH_BUFFER_MS,
+      }).catch(() => undefined);
     }
     const [{ WebSocket: WebSocketImpl }, http] = await Promise.all([
       import('ws'),
       getHttpConfig(this.config),
     ]);
     if (this.mode !== 'connecting') return;
+    if (
+      forceRefresh &&
+      readAuthorization(http.headers) === this.lastAuthorization
+    ) {
+      // A Vercel invocation's context token cannot be refreshed in place. Do
+      // not reconnect with the bearer the server is explicitly draining.
+      this.mode = 'http';
+      return;
+    }
+    this.lastAuthorization = readAuthorization(http.headers);
     if (http.usingProxy) {
       this.mode = 'http';
       return;
@@ -302,14 +332,14 @@ class VercelStreamWriteSession implements StreamWriteSession {
             }
             this.failUnknown(error);
           });
-          ws.once('close', () => {
+          ws.once('close', (code) => {
             if (!opened) {
               fallback();
               return;
             }
             // A server may queue close immediately after its terminal reply.
             // Let the already-delivered message finish decoding first.
-            void this.inbound.then(() => this.handleSocketClose());
+            void this.inbound.then(() => this.handleSocketClose(Number(code)));
           });
           ws.on('message', (raw) => {
             this.inbound = this.inbound.then(() =>
@@ -325,6 +355,10 @@ class VercelStreamWriteSession implements StreamWriteSession {
     try {
       const frame = await decodeOne(raw);
       const reply = parseStreamWsReply(frame.meta, frame.body);
+      if (reply.type === 'drain') {
+        this.handleDrain(reply.reason);
+        return;
+      }
       const pending = this.pending;
       if (
         !pending ||
@@ -355,6 +389,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
         );
         this.socket?.close(1011, 'stream request failed');
       } else {
+        if (reply.type === 'write_ack') this.idleReconnects = 0;
         pending.resolve(reply);
       }
     } catch (error) {
@@ -362,7 +397,20 @@ class VercelStreamWriteSession implements StreamWriteSession {
     }
   }
 
-  private handleSocketClose(): void {
+  private handleDrain(reason: 'auth_expiry' | 'max_duration'): void {
+    if (this.mode === 'draining') {
+      if (reason === 'auth_expiry') this.drainReason = reason;
+      return;
+    }
+    if (this.mode !== 'ws') return;
+    this.mode = 'draining';
+    this.drainReason = reason;
+    this.transportDecision = new Promise<void>((resolve) => {
+      this.releaseDrainWait = resolve;
+    });
+  }
+
+  private handleSocketClose(code: number): void {
     if (
       this.mode === 'closed' ||
       this.mode === 'http' ||
@@ -373,6 +421,34 @@ class VercelStreamWriteSession implements StreamWriteSession {
     }
     if (this.pending) {
       this.failUnknown(new Error('stream WebSocket closed before reply'));
+      return;
+    }
+    if (this.mode === 'draining' && code !== 1001) {
+      // No request is pending, so there is no unknown write to protect. The
+      // promised drain close shape was not honored; fail closed to HTTP rather
+      // than leaving queued operations parked forever.
+      this.drainReason = undefined;
+      this.mode = 'http';
+      this.socket = undefined;
+      this.finishDrainWait();
+      return;
+    }
+    if (this.mode === 'draining') {
+      const forceRefresh = this.drainReason === 'auth_expiry';
+      this.drainReason = undefined;
+      if (this.idleReconnects >= MAX_IDLE_RECONNECTS) {
+        this.mode = 'http';
+        this.socket = undefined;
+        this.finishDrainWait();
+        return;
+      }
+      this.idleReconnects++;
+      this.mode = 'connecting';
+      this.socket = undefined;
+      this.connect = this.startConnect(forceRefresh);
+      const nextDecision = this.makeTransportDecision();
+      this.transportDecision = nextDecision;
+      void nextDecision.then(() => this.finishDrainWait());
       return;
     }
     // Clean idle infrastructure close: reconnect with the same writer identity
@@ -446,6 +522,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
     );
   }
 
+  private finishDrainWait(): void {
+    const release = this.releaseDrainWait;
+    this.releaseDrainWait = undefined;
+    release?.();
+  }
+
   private fallbackToHttpBeforeSend(): void {
     this.mode = 'http';
     this.socket?.close(1000, 'HTTP fallback before send');
@@ -454,6 +536,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
 
   private failUnknown(error: unknown): void {
     const poisoned = this.poison(error);
+    this.finishDrainWait();
     const pending = this.pending;
     this.pending = undefined;
     if (pending) {

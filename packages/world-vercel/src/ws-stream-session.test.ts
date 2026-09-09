@@ -1,77 +1,79 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { decodeFrames, encodeFrame } from './frames.js';
 
-const { FakeWebSocket, injectTraceContextIntoHeaders, sockets } = vi.hoisted(
-  () => {
-    const sockets: FakeSocket[] = [];
-    class FakeSocket {
-      static readonly OPEN = 1;
-      readyState = 0;
-      binaryType = '';
-      sent: Uint8Array[] = [];
-      closed: Array<[number, string]> = [];
-      throwOnSend: Error | undefined;
-      private listeners = new Map<
-        string,
-        Array<(...args: unknown[]) => void>
-      >();
+const {
+  FakeWebSocket,
+  getVercelOidcToken,
+  injectTraceContextIntoHeaders,
+  sockets,
+} = vi.hoisted(() => {
+  const sockets: FakeSocket[] = [];
+  class FakeSocket {
+    static readonly OPEN = 1;
+    readyState = 0;
+    binaryType = '';
+    sent: Uint8Array[] = [];
+    closed: Array<[number, string]> = [];
+    throwOnSend: Error | undefined;
+    private listeners = new Map<string, Array<(...args: unknown[]) => void>>();
 
-      constructor(
-        readonly url: string,
-        readonly options: unknown
-      ) {
-        sockets.push(this);
-      }
-      on(event: string, callback: (...args: unknown[]) => void): this {
-        const callbacks = this.listeners.get(event) ?? [];
-        callbacks.push(callback);
-        this.listeners.set(event, callbacks);
-        return this;
-      }
-      once(event: string, callback: (...args: unknown[]) => void): this {
-        const wrapper = (...args: unknown[]) => {
-          this.off(event, wrapper);
-          callback(...args);
-        };
-        return this.on(event, wrapper);
-      }
-      off(event: string, callback: (...args: unknown[]) => void): this {
-        this.listeners.set(
-          event,
-          (this.listeners.get(event) ?? []).filter((item) => item !== callback)
-        );
-        return this;
-      }
-      emit(event: string, ...args: unknown[]): void {
-        for (const callback of [...(this.listeners.get(event) ?? [])]) {
-          callback(...args);
-        }
-      }
-      send(frame: Uint8Array, callback?: (error?: Error) => void): void {
-        if (this.throwOnSend) throw this.throwOnSend;
-        this.sent.push(frame);
-        callback?.();
-      }
-      close(code = 1000, reason = ''): void {
-        this.closed.push([code, reason]);
-        this.readyState = 3;
-      }
-      open(): void {
-        this.readyState = FakeSocket.OPEN;
-        this.emit('open');
-      }
-      reply(frame: Uint8Array): void {
-        this.emit('message', Buffer.from(frame));
+    constructor(
+      readonly url: string,
+      readonly options: unknown
+    ) {
+      sockets.push(this);
+    }
+    on(event: string, callback: (...args: unknown[]) => void): this {
+      const callbacks = this.listeners.get(event) ?? [];
+      callbacks.push(callback);
+      this.listeners.set(event, callbacks);
+      return this;
+    }
+    once(event: string, callback: (...args: unknown[]) => void): this {
+      const wrapper = (...args: unknown[]) => {
+        this.off(event, wrapper);
+        callback(...args);
+      };
+      return this.on(event, wrapper);
+    }
+    off(event: string, callback: (...args: unknown[]) => void): this {
+      this.listeners.set(
+        event,
+        (this.listeners.get(event) ?? []).filter((item) => item !== callback)
+      );
+      return this;
+    }
+    emit(event: string, ...args: unknown[]): void {
+      for (const callback of [...(this.listeners.get(event) ?? [])]) {
+        callback(...args);
       }
     }
-    return {
-      FakeWebSocket: FakeSocket,
-      injectTraceContextIntoHeaders: vi.fn(),
-      sockets,
-    };
+    send(frame: Uint8Array, callback?: (error?: Error) => void): void {
+      if (this.throwOnSend) throw this.throwOnSend;
+      this.sent.push(frame);
+      callback?.();
+    }
+    close(code = 1000, reason = ''): void {
+      this.closed.push([code, reason]);
+      this.readyState = 3;
+    }
+    open(): void {
+      this.readyState = FakeSocket.OPEN;
+      this.emit('open');
+    }
+    reply(frame: Uint8Array): void {
+      this.emit('message', Buffer.from(frame));
+    }
   }
-);
+  return {
+    FakeWebSocket: FakeSocket,
+    getVercelOidcToken: vi.fn().mockResolvedValue(undefined),
+    injectTraceContextIntoHeaders: vi.fn(),
+    sockets,
+  };
+});
 
+vi.mock('@vercel/oidc', () => ({ getVercelOidcToken }));
 vi.mock('ws', () => ({ WebSocket: FakeWebSocket }));
 vi.mock('./telemetry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./telemetry.js')>();
@@ -95,6 +97,7 @@ const writerId = 'wrtr_01ARZ3NDEKTSV4RRFFQ69G5FAV';
 
 beforeEach(() => {
   sockets.length = 0;
+  getVercelOidcToken.mockClear();
   injectTraceContextIntoHeaders.mockClear();
   delete process.env.WORKFLOW_STREAMS_TRANSPORT;
 });
@@ -103,14 +106,16 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function makeSession() {
+function makeSession(
+  config: { token?: string } | undefined = { token: 'token' }
+) {
   const writeHttp = vi.fn().mockResolvedValue(undefined);
   const closeHttp = vi.fn().mockResolvedValue(undefined);
   const session = createStreamWriteSession(
     'wrun_1',
     'stream/1',
     writerId,
-    { token: 'token' },
+    config,
     writeHttp,
     closeHttp
   );
@@ -257,7 +262,9 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     await session.write(0, [oversized]);
     await session.write(1, ['later']);
 
-    expect(writeHttp.mock.calls).toEqual([[[oversized]], [['later']]]);
+    expect(writeHttp).toHaveBeenCalledTimes(2);
+    expect(writeHttp.mock.calls[0]?.[0]?.[0]).toBe(oversized);
+    expect(writeHttp.mock.calls[1]).toEqual([['later']]);
     expect(sockets[0].sent).toHaveLength(0);
     expect(sockets[0].closed).toContainEqual([
       1000,
@@ -343,6 +350,124 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(sockets).toHaveLength(1);
     expect(writeHttp).not.toHaveBeenCalled();
     expect(closeHttp).not.toHaveBeenCalled();
+  });
+
+  it('drains admitted work before reconnecting queued writes', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const { session, writeHttp } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const firstSocket = sockets[0];
+    firstSocket.open();
+
+    const first = session.write(0, ['one']);
+    const second = session.write(1, ['two']);
+    await vi.waitFor(() => expect(firstSocket.sent).toHaveLength(1));
+    firstSocket.reply(
+      encodeFrame(
+        { type: 'drain', reason: 'max_duration', graceMs: 10_000 },
+        new Uint8Array()
+      )
+    );
+    firstSocket.reply(
+      encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
+    );
+    await first;
+    expect(firstSocket.sent).toHaveLength(1);
+
+    firstSocket.emit('close', 1001);
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    const secondSocket = sockets[1];
+    expect(new URL(secondSocket.url).searchParams.get('writerId')).toBe(
+      writerId
+    );
+    secondSocket.open();
+    await vi.waitFor(() => expect(secondSocket.sent).toHaveLength(1));
+    expect((await decodeOne(secondSocket.sent[0])).meta).toMatchObject({
+      type: 'write',
+      reqId: 2,
+      chunkSeq: 1,
+    });
+    secondSocket.reply(
+      encodeFrame({ type: 'write_ack', reqId: 2 }, new Uint8Array())
+    );
+
+    await second;
+    expect(writeHttp).not.toHaveBeenCalled();
+  });
+
+  it('requests fresh auth after an auth-expiry drain', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    getVercelOidcToken.mockResolvedValueOnce('old-token');
+    getVercelOidcToken.mockResolvedValueOnce('refreshed-token');
+    getVercelOidcToken.mockResolvedValueOnce('refreshed-token');
+    const { session, writeHttp } = makeSession({});
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].open();
+    sockets[0].reply(
+      encodeFrame(
+        { type: 'drain', reason: 'auth_expiry', graceMs: 10_000 },
+        new Uint8Array()
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    sockets[0].emit('close', 1001);
+
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    expect(getVercelOidcToken).toHaveBeenCalledWith({
+      expirationBufferMs: 24 * 60 * 60 * 1000,
+    });
+    sockets[1].open();
+    const writing = session.write(0, ['one']);
+    await vi.waitFor(() => expect(sockets[1].sent).toHaveLength(1));
+    sockets[1].reply(
+      encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
+    );
+    await writing;
+    expect(writeHttp).not.toHaveBeenCalled();
+  });
+
+  it('uses HTTP when auth refresh returns the drained bearer', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    getVercelOidcToken.mockResolvedValue('same-token');
+    const { session, writeHttp } = makeSession({});
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].open();
+    sockets[0].reply(
+      encodeFrame(
+        { type: 'drain', reason: 'auth_expiry', graceMs: 10_000 },
+        new Uint8Array()
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    sockets[0].emit('close', 1001);
+
+    await session.write(0, ['one']);
+    expect(sockets).toHaveLength(1);
+    expect(writeHttp).toHaveBeenCalledWith(['one']);
+  });
+
+  it('poisons when drain closes before an admitted reply', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const { session, writeHttp } = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    const writing = session.write(0, ['one']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+    socket.reply(
+      encodeFrame(
+        { type: 'drain', reason: 'max_duration', graceMs: 1 },
+        new Uint8Array()
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    socket.emit('close', 1001);
+
+    await expect(writing).rejects.toThrow('closed before reply');
+    await expect(session.write(0, ['one'])).rejects.toThrow(
+      'closed before reply'
+    );
+    expect(writeHttp).not.toHaveBeenCalled();
   });
 
   it('bounds idle clean-close reconnects with the same writer id', async () => {
