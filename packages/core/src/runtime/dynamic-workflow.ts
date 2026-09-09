@@ -43,7 +43,6 @@ import type { StartOptions } from './start.js';
  */
 export type DynamicWorkflowStepReference =
   | { readonly stepId: string }
-  // biome-ignore lint/suspicious/noExplicitAny: a step of any signature
   | ((...args: any[]) => unknown);
 
 export interface DynamicWorkflowOptions {
@@ -131,13 +130,18 @@ const SAFE_DYNAMIC_IDENTIFIER = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
  * remaining false negative (an `import` indented behind other code on one
  * line, which still fails loudly at replay).
  *
+ * The keyword must be followed by whitespace or a module-syntax token (`*`,
+ * `{`, `(`, a quote), never by another identifier character, so ordinary
+ * identifiers that merely start with the word — `importData = …`,
+ * `exports.x = …` — are not mistaken for module syntax.
+ *
  * Intentionally a regex and not a parser. The MVP's contract is "one async
  * function, no modules", which is cheap to check conservatively; a real parser
  * is the right answer once the accepted surface grows past that (see the open
  * questions on the RFC).
  */
 const UNSUPPORTED_DYNAMIC_MODULE_SYNTAX =
-  /^[ \t]*(?:import\s*(?:[\w*{]|\(|['"])|export\s+(?:async\s+)?(?:function|const|let|var|class|default|\{|\*))/m;
+  /^[ \t]*(?:import(?:\s+[\w$]|\s*(?:[*{(]|['"]))|export(?:\s+(?:async\s+)?(?:function|const|let|var|class|default)\b|\s*[{*]))/m;
 
 function assertDynamicWorkflowIdentifier(kind: string, value: string): void {
   if (!SAFE_DYNAMIC_IDENTIFIER.test(value)) {

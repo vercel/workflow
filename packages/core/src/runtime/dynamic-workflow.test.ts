@@ -189,6 +189,8 @@ describe('compileDynamicWorkflow', () => {
       ['export const', 'export const helper = 1;\n'],
       ['export default', 'export default 1;\n'],
       ['export list', 'export { workflow };\n'],
+      ['export list without a space', 'export{ workflow };\n'],
+      ['export star', 'export * from "y";\n'],
     ])('rejects module syntax: %s', async (_label, prefix) => {
       // The code is evaluated as a script in the workflow VM, so module
       // syntax is a replay-time syntax error — catching it here turns a run
@@ -196,6 +198,20 @@ describe('compileDynamicWorkflow', () => {
       await expect(
         compileDynamicWorkflow(prefix + SOURCE, { steps: STEPS })
       ).rejects.toThrow(/cannot use `import` or `export`/);
+    });
+
+    it.each([
+      ['an identifier starting with import', 'let importData = null;\n'],
+      ['an identifier starting with export', 'let exportName = "x";\n'],
+      ['a member of exports', 'const exporter = { exports: 1 };\n'],
+    ])('accepts %s at the start of a line', async (_label, prefix) => {
+      // Only the keyword followed by whitespace or module-syntax punctuation
+      // is module syntax. An identifier that merely begins with the word is
+      // ordinary code, and rejecting it would cost the caller a working
+      // workflow for nothing.
+      await expect(
+        compileDynamicWorkflow(prefix + SOURCE, { steps: STEPS })
+      ).resolves.toMatchObject({ metadata: { version: 1 } });
     });
 
     it('accepts source that merely mentions import inside a string', async () => {
