@@ -21,6 +21,7 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
+import { WorkflowWorldError } from '@workflow/errors';
 import { decode } from 'cbor-x';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import {
@@ -29,6 +30,7 @@ import {
 } from './http-client.js';
 import {
   errorForResponse,
+  getTransientTransportCode,
   instrumentedFetch,
   parseRetryAfter,
 } from './http-core.js';
@@ -107,7 +109,15 @@ async function fetchV4(
         }
       } catch (cause) {
         noteEventsTransportOutcome(dispatcher, cause);
-        controller.error(cause);
+        const transportCode = getTransientTransportCode(cause);
+        controller.error(
+          transportCode
+            ? new WorkflowWorldError(
+                `v4 ${opName}: response stream transport failure (${transportCode})`,
+                { url, code: 'TRANSPORT', cause }
+              )
+            : cause
+        );
       }
     },
     cancel(reason) {

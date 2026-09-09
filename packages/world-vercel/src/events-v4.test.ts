@@ -426,7 +426,10 @@ describe('v4 transport reports failures to the events recycler', () => {
     for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
       await expect(
         getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
-      ).rejects.toThrow();
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        code: 'TRANSPORT',
+      });
       // Still the same pool until the threshold is reached.
       if (i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1) {
         expect(getEventsDispatcher({ token: 'test-token' })).toBe(before);
@@ -450,7 +453,14 @@ describe('v4 transport reports failures to the events recycler', () => {
               controller.error(wedgedSessionError());
             },
           }),
-          { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+          {
+            headers: {
+              'content-type': V4_FRAME_CONTENT_TYPE,
+              'x-wf-event-id': 'evnt_1',
+              'x-wf-run-id': 'wrun_1',
+              'x-wf-created-at': new Date().toISOString(),
+            },
+          }
         )
     );
 
@@ -458,8 +468,19 @@ describe('v4 transport reports failures to the events recycler', () => {
 
     for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
       await expect(
-        getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
-      ).rejects.toThrow('fetch failed');
+        createWorkflowRunEventV4(
+          {
+            runId: 'wrun_1',
+            eventType: 'run_created',
+            specVersion: 3,
+          },
+          { token: 'test-token' }
+        )
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        code: 'TRANSPORT',
+        cause: expect.objectContaining({ message: 'fetch failed' }),
+      });
       if (i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1) {
         expect(getEventsDispatcher({ token: 'test-token' })).toBe(before);
       }

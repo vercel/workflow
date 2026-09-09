@@ -517,6 +517,29 @@ describe('start', () => {
       );
     });
 
+    it('should succeed when events.create throws a transport error (queue still dispatched)', async () => {
+      const mockQueue = vi.fn().mockResolvedValue({ messageId: null });
+      const transportError = new WorkflowWorldError(
+        'response stream transport failure (UND_ERR_INFO)',
+        {
+          code: 'TRANSPORT',
+          cause: new TypeError('fetch failed'),
+        }
+      );
+      const mockEventsCreate = vi.fn().mockRejectedValue(transportError);
+
+      vi.mocked(getWorld).mockReturnValue({
+        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      const run = await start(validWorkflow, [42]);
+      expect(run.runId).toMatch(/^wrun_/);
+      expect(mockQueue).toHaveBeenCalledTimes(1);
+    });
+
     it('should throw when queue fails even if events.create succeeds', async () => {
       const mockEventsCreate = vi.fn().mockResolvedValue({
         run: { runId: 'wrun_test', status: 'pending' },
