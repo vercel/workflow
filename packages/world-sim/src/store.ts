@@ -911,6 +911,44 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       delete (event as Record<string, unknown>).eventData;
     }
 
+    /**
+     * The optional `sinceCursor` inline delta: everything appended strictly
+     * after the caller's cursor, this write included.
+     *
+     * Answered only for the writes the Vercel World computes one for — a
+     * step-terminal event (the inline sequential loop) and a hook create (the
+     * hook's own awaited continuation) — rather than for every type, so a
+     * scenario sees the same delta-or-fall-back split the backend actually
+     * produces. Keyed on the REQUESTED type, which is what makes the delta
+     * ride along on a create that commits `hook_conflict` instead of
+     * `hook_created`: the same awaiter is settled either way, so the caller
+     * continues off either event.
+     *
+     * `undefined` when the caller did not ask, or asked on a write that does
+     * not answer.
+     */
+    function sinceCursorDelta():
+      | { events: Event[]; cursor: string | null; hasMore: boolean }
+      | undefined {
+      if (typeof params?.sinceCursor !== 'string') return undefined;
+      if (
+        !isTerminalStepEventType(data.eventType) &&
+        data.eventType !== 'hook_created'
+      ) {
+        return undefined;
+      }
+      const page = paginate(applyWithhold(eventsForRun(runId)), {
+        pagination: { cursor: params.sinceCursor, sortOrder: 'asc' },
+        getCreatedAt: (e) => e.createdAt,
+        getId: (e) => e.eventId,
+      });
+      return {
+        events: page.data.map((e) => stripEventDataRefs(e, resolveData)),
+        cursor: page.cursor,
+        hasMore: page.hasMore,
+      };
+    }
+
     // ---- Per-event-type validation ----------------------------------------
     // Everything the write path *refuses*. What it does to the entity rows is
     // `applyEvent` below: the same fold the seed path runs.
@@ -961,10 +999,18 @@ export function createSimStore(options: SimStoreOptions): SimStore {
               conflictingRunId: hooks.get(owner)?.runId,
             },
           } as Event);
-          return {
+          // The conflict answers the inline delta the same way the
+          // `hook_created` below it would: it is the event the create's
+          // awaiters settle on, so a caller that asked can continue over it
+          // in its own process instead of re-invoking to read it back. This
+          // return is ahead of the shared delta block at the end of the
+          // write, so it computes its own.
+          const delta = sinceCursorDelta();
+          const conflictResult = {
             event: stripEventDataRefs(clone(conflict), resolveData),
             run: currentRun ? clone(currentRun) : undefined,
           };
+          return delta ? { ...conflictResult, ...delta } : conflictResult;
         }
         if (hooks.has(data.correlationId)) {
           throw new EntityConflictError(
@@ -1099,20 +1145,11 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         cursor: page.cursor,
         hasMore: page.hasMore,
       };
-    } else if (
-      isTerminalStepEventType(data.eventType) &&
-      typeof params?.sinceCursor === 'string'
-    ) {
-      const page = paginate(applyWithhold(eventsForRun(runId)), {
-        pagination: { cursor: params.sinceCursor, sortOrder: 'asc' },
-        getCreatedAt: (e) => e.createdAt,
-        getId: (e) => e.eventId,
-      });
-      deltaPage = {
-        events: page.data.map((e) => stripEventDataRefs(e, resolveData)),
-        cursor: page.cursor,
-        hasMore: page.hasMore,
-      };
+    } else {
+      // See `sinceCursorDelta` above for which writes answer one; a create
+      // that committed `hook_conflict` returned before reaching here and
+      // computed its own.
+      deltaPage = sinceCursorDelta();
     }
 
     const result = {

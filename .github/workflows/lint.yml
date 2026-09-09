@@ -87,6 +87,29 @@ jobs:
       - name: Run .github/scripts unit tests
         run: node --test ".github/scripts/**/*.test.js"
 
+  changesets:
+    name: Changesets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        with:
+          install: true
+          require-lockfile: true
+          runtime: node@22
+          cache: true
+
+      # `changeset version` (release.yml) assembles a release plan from every
+      # pending changeset before it bumps anything. A changeset it cannot
+      # place in that plan, such as one that mixes an `ignore`d private
+      # package with published ones, fails the Release job on main and blocks
+      # publishing until it is fixed (#3963). Run the same assembly here.
+      - name: Check pending changesets assemble into a release plan
+        run: node scripts/check-changesets.mjs
+
   docs-links:
     name: Docs Links
     runs-on: ubuntu-latest

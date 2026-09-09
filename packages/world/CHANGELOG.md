@@ -1,5 +1,23 @@
 # @workflow/world
 
+## 5.0.0-beta.33
+
+### Minor Changes
+
+- [#3943](https://github.com/vercel/workflow/pull/3943) [`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Validate `world.analytics` arguments up front: an invalid id, an out-of-range page limit, an oversized attribute filter, or a half-open `startTime`/`endTime` window now throws a `WorkflowWorldError` with `code: 'INVALID_ARGUMENT'` and `field` set to the offending parameter, instead of failing the request. The message names the method, the parameter, and what it received. Adds `ANALYTICS_RUN_SCOPED_PAGE_LIMIT`, `ANALYTICS_PAGE_LIMIT` and `ANALYTICS_MAX_ATTRIBUTE_FILTERS`.
+
+  Deprecate `analytics.events.listByCorrelationId()` in favour of `analytics.events.list({ runId, correlationId })`.
+
+  Fix `analytics.attributes.list()` timestamps being shifted by the local UTC offset.
+
+### Patch Changes
+
+- [#3938](https://github.com/vercel/workflow/pull/3938) [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46) Thanks [@pranaygp](https://github.com/pranaygp)! - Answer the `sinceCursor` event-log delta on a `hook_conflict` write the same way as on `hook_created`.
+
+- [#3914](https://github.com/vercel/workflow/pull/3914) [`4a18b01`](https://github.com/vercel/workflow/commit/4a18b0133aaedaf922b903818c6b0db3adc91beb) Thanks [@shalabhc](https://github.com/shalabhc)! - Accept lazy completed and failed runs whose payload is represented by a remote reference.
+
+- [#3901](https://github.com/vercel/workflow/pull/3901) [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Upgrade repository tooling and CI from pnpm 10 to pnpm 11.
+
 ## 5.0.0-beta.32
 
 ### Patch Changes

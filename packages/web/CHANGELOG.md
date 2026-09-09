@@ -1,5 +1,20 @@
 # @workflow/web
 
+## 5.0.0-beta.48
+
+### Patch Changes
+
+- [#3943](https://github.com/vercel/workflow/pull/3943) [`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Validate `world.analytics` arguments up front: an invalid id, an out-of-range page limit, an oversized attribute filter, or a half-open `startTime`/`endTime` window now throws a `WorkflowWorldError` with `code: 'INVALID_ARGUMENT'` and `field` set to the offending parameter, instead of failing the request. The message names the method, the parameter, and what it received. Adds `ANALYTICS_RUN_SCOPED_PAGE_LIMIT`, `ANALYTICS_PAGE_LIMIT` and `ANALYTICS_MAX_ATTRIBUTE_FILTERS`.
+
+  Deprecate `analytics.events.listByCorrelationId()` in favour of `analytics.events.list({ runId, correlationId })`.
+
+  Fix `analytics.attributes.list()` timestamps being shifted by the local UTC offset.
+
+- [#3944](https://github.com/vercel/workflow/pull/3944) [`1280163`](https://github.com/vercel/workflow/commit/12801635511bc7e301bf8eaeb09c5fb763838826) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fixes the trace and events tabs coming up empty when viewing older runs, and gaps in a run's events while it is still executing. The events tab's id search now stops after fewer pages before reporting a truncated result, and the unused `fetchSteps` server action is removed.
+
+- Updated dependencies [[`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46)]:
+  - @workflow/world-local@5.0.0-beta.42
+
 ## 5.0.0-beta.47
 
 ### Patch Changes

@@ -1,5 +1,16 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.40
+
+### Patch Changes
+
+- [#3901](https://github.com/vercel/workflow/pull/3901) [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Upgrade repository tooling and CI from pnpm 10 to pnpm 11.
+
+- Updated dependencies [[`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`4a18b01`](https://github.com/vercel/workflow/commit/4a18b0133aaedaf922b903818c6b0db3adc91beb), [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491), [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15)]:
+  - @workflow/world@5.0.0-beta.33
+  - @workflow/errors@5.0.0-beta.20
+  - @workflow/world-local@5.0.0-beta.42
+
 ## 5.0.0-beta.39
 
 ### Patch Changes
