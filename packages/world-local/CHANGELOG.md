@@ -1,5 +1,19 @@
 # @workflow/world-local
 
+## 5.0.0-beta.43
+
+### Minor Changes
+
+- [#3787](https://github.com/vercel/workflow/pull/3787) [`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an `experimental_retention` option to `start()`: `experimental_retention: 0` asks the World to delete the run's user data as soon as the run completes or fails, while keeping the run itself listable. Implemented on the Vercel, Postgres and Local Worlds. Reading a run whose data has expired now throws `RunExpiredError` instead of resolving to a placeholder.
+
+### Patch Changes
+
+- [#4051](https://github.com/vercel/workflow/pull/4051) [`9a5660f`](https://github.com/vercel/workflow/commit/9a5660fbd64165e41f6b346407b1c0a099a8123b) Thanks [@chadhietala](https://github.com/chadhietala)! - Retry transient Windows file-lock failures while reading JSON files.
+
+- Updated dependencies [[`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd), [`4547e1a`](https://github.com/vercel/workflow/commit/4547e1a7a95f273f3166edf45344dc827f1935fa)]:
+  - @workflow/errors@5.0.0-beta.21
+  - @workflow/world@5.0.0-beta.34
+
 ## 5.0.0-beta.42
 
 ### Patch Changes

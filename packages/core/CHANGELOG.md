@@ -1,5 +1,23 @@
 # @workflow/core
 
+## 5.0.0-beta.49
+
+### Minor Changes
+
+- [#3787](https://github.com/vercel/workflow/pull/3787) [`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an `experimental_retention` option to `start()`: `experimental_retention: 0` asks the World to delete the run's user data as soon as the run completes or fails, while keeping the run itself listable. Implemented on the Vercel, Postgres and Local Worlds. Reading a run whose data has expired now throws `RunExpiredError` instead of resolving to a placeholder.
+
+- [#3972](https://github.com/vercel/workflow/pull/3972) [`c340820`](https://github.com/vercel/workflow/commit/c3408204110f5e8fbb53cefedf136caf00ee452d) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add `Run#getWritable()` and `run.writable` to append to an existing run's stream.
+
+### Patch Changes
+
+- [#3832](https://github.com/vercel/workflow/pull/3832) [`4547e1a`](https://github.com/vercel/workflow/commit/4547e1a7a95f273f3166edf45344dc827f1935fa) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add an optional stateful stream writer-session seam with stable writer identity and sequence tracking.
+
+- Updated dependencies [[`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd), [`f83e836`](https://github.com/vercel/workflow/commit/f83e8367f43b73e36e5dde9fdd29279dc51c3e09), [`2354301`](https://github.com/vercel/workflow/commit/2354301f39d5740b33ffbbb4dc8573108006619a), [`fdeb642`](https://github.com/vercel/workflow/commit/fdeb6422705afe70da5749057905dfc2027bd049), [`4fdbadc`](https://github.com/vercel/workflow/commit/4fdbadcdce000ca93242f24c3286b5e21ee4ef19), [`9a5660f`](https://github.com/vercel/workflow/commit/9a5660fbd64165e41f6b346407b1c0a099a8123b), [`4547e1a`](https://github.com/vercel/workflow/commit/4547e1a7a95f273f3166edf45344dc827f1935fa)]:
+  - @workflow/errors@5.0.0-beta.21
+  - @workflow/world@5.0.0-beta.34
+  - @workflow/world-local@5.0.0-beta.43
+  - @workflow/world-vercel@5.0.0-beta.45
+
 ## 5.0.0-beta.48
 
 ### Patch Changes
