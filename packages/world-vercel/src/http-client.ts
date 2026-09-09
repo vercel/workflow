@@ -735,19 +735,31 @@ export function getDispatcher(config?: APIConfig): unknown {
 /**
  * Resolves the dispatcher for the `@vercel/queue` client's HTTP sends.
  *
- * Unlike `getDispatcher`, this never returns `undefined` under
- * `WORKFLOW_NODE_HTTP`. The `QueueClient` exposes no `fetch` override, so it
- * cannot be moved onto `node:http` the way `instrumentedFetch` / `makeRequest`
- * are: the flag has nothing to hand the request off to on this path. Returning
- * `undefined` there would therefore not switch transports — it would just drop
- * the tuned shared agent (`getAgentOptions()`: 8 connections, ~10s
- * keep-alive) and let undici fall back to its GLOBAL agent (unlimited
- * connections, 4s keep-alive), an unintended regression from a flag this path
- * can't honor. So the queue send stays on the shared default undici agent
- * regardless of the flag, while still honoring an explicit `config.dispatcher`.
+ * This path is the one exception to `WORKFLOW_NODE_HTTP`'s promise of taking
+ * every request off undici, because `QueueClient` accepts a `dispatcher` and no
+ * `fetch` override: there is nothing here to hand the request off to. What
+ * `undefined` does instead is drop the request onto the runtime's OWN undici,
+ * the copy behind global `fetch`, rather than the copy this package bundles.
+ *
+ * That distinction is the whole reason the flag has to reach this path. The
+ * deployments the flag exists for are the ones where *the bundled copy* is
+ * unusable: a bundler that mangles undici's internals, or a build that pairs a
+ * bundled undici with a different one inside the runtime. On such a deployment
+ * every other request survives (the flag moves them to `node:http`) while the
+ * queue client keeps dispatching through the broken copy, and a queue message
+ * whose `acknowledgeMessage` never resolves is redelivered for as long as the
+ * platform keeps killing the invocation that holds it.
+ *
+ * The cost of honoring the flag is real but much smaller than that: the request
+ * loses this package's pool tuning and lands on undici's global agent
+ * (unlimited connections, 4s keep-alive). Under a flag whose entire premise is
+ * "the bundled undici is not usable here", losing pool tuning is the correct
+ * trade. An explicit `config.dispatcher` still wins over the flag, exactly as
+ * it does on every other path, because supplying one is an instruction to use
+ * undici.
  */
 export function getQueueDispatcher(config?: APIConfig): unknown {
-  return config?.dispatcher ?? getDefaultDispatcher();
+  return resolveDispatcher(config, getDefaultDispatcher);
 }
 
 /**

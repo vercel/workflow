@@ -1004,14 +1004,23 @@ describe('node:http mode', () => {
     expect(getStreamCloseDispatcher()).toBeUndefined();
   });
 
-  // `@vercel/queue` takes a dispatcher and no `fetch` override, so `undefined`
-  // would not move its requests off undici — it would only drop them onto
-  // undici's global agent and quietly lose this package's pool tuning.
-  it('keeps the undici agent for the client that cannot leave undici', () => {
+  // The queue client is the one path `undefined` cannot move to `node:http`,
+  // because `QueueClient` takes a dispatcher and no `fetch` override. It still
+  // has to honor the flag: `undefined` moves the request onto the runtime's own
+  // undici instead of the copy this package bundles, and a deployment where the
+  // bundled copy is broken is exactly what the flag is for. Leaving it on the
+  // bundled agent stranded queue acknowledgements, and an unacknowledged
+  // message is redelivered for as long as the platform keeps killing the
+  // invocation holding it.
+  it('hands the queue client an undefined dispatcher too', () => {
+    expect(getQueueDispatcher()).toBeUndefined();
+  });
+
+  it('keeps the tuned agent for the queue client with the flag off', () => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
     expect(getQueueDispatcher()).toBeDefined();
     expect(getQueueDispatcher()).toBe(getQueueDispatcher());
     // Same agent the flag-off path hands every other call site.
-    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
     expect(getQueueDispatcher()).toBe(getDispatcher());
   });
 
