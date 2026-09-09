@@ -1,5 +1,5 @@
-import { globalSingleton } from '@workflow/utils';
 import type { IncomingHttpHeaders } from 'node:http';
+import { globalSingleton } from '@workflow/utils';
 import { envNumber, isNodeHttpEnabled } from '@workflow/world';
 import {
   createNodeHttpAgents,
