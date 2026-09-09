@@ -1,5 +1,5 @@
 const assert = require('node:assert');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -129,6 +129,50 @@ test('all-passing runs omit the Failed E2E Tests section entirely', () => {
   // The summary section is still present.
   assert.match(body, /### E2E Test Summary/);
   assert.match(body, /<details>\n<summary>Summary<\/summary>/);
+});
+
+test('portable SQLite results get their own local category', () => {
+  const body = renderAggregate({
+    'e2e-local-sqlite-nextjs-turbopack.json': resultJson('sqlite', 3, [
+      'phase two gap',
+    ]),
+    'e2e-flaky-nextjs-turbopack-sqlite.json': JSON.stringify([
+      { testName: 'portable retry', retryCount: 1 },
+    ]),
+    'e2e-infra-nextjs-turbopack-sqlite.json': JSON.stringify([
+      { kind: 'pickup-timeout', testName: 'portable pickup' },
+    ]),
+  });
+
+  assert.match(body, /#### 🪨 Portable SQLite \(1 failed\)/);
+  assert.match(body, /\*\*nextjs-turbopack\*\* \(1 failed\)/);
+  assert.match(body, /- `phase two gap`/);
+  assert.match(body, /- `portable retry` \(nextjs-turbopack\)/);
+  assert.match(body, /`pickup-timeout` · portable pickup \(nextjs-turbopack\)/);
+});
+
+test('report-only aggregate renders failures without becoming a second gate', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-agg-'));
+  fs.writeFileSync(
+    path.join(dir, 'e2e-local-sqlite-nextjs-turbopack.json'),
+    resultJson('sqlite', 3, ['phase two gap'])
+  );
+
+  const gated = spawnSync(
+    process.execPath,
+    [SCRIPT, dir, '--mode', 'aggregate'],
+    { encoding: 'utf8' }
+  );
+  assert.strictEqual(gated.status, 1);
+
+  const reportOnly = spawnSync(
+    process.execPath,
+    [SCRIPT, dir, '--mode', 'aggregate', '--report-only'],
+    { encoding: 'utf8' }
+  );
+  assert.strictEqual(reportOnly.status, 0);
+  assert.match(reportOnly.stdout, /❌ \*\*Some tests failed\*\*/);
+  assert.match(reportOnly.stdout, /phase two gap/);
 });
 
 test('Details by Category has no nested collapsibles', () => {

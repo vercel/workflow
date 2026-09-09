@@ -53,6 +53,7 @@ export async function startServer(opts: {
       WORKFLOW_TARGET_WORLD: opts.world,
       CONTROL_FD: '3',
       WORKFLOW_LOCAL_DATA_DIR: dataDir,
+      WORKFLOW_LOCAL_DATABASE_DIR: dataDir,
       ...(opts.env ?? {}),
     },
   });

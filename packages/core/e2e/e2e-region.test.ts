@@ -215,7 +215,7 @@ async function expectRunInRegion(
 
 describe.skipIf(isLocalDeployment())('multi-region (world-vercel)', () => {
   beforeAll(async () => {
-    setupWorld(deploymentUrl);
+    await setupWorld(deploymentUrl);
   });
 
   beforeEach((ctx) => {

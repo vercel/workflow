@@ -151,6 +151,7 @@ credentials are required:
 ```bash
 pnpm run test:e2e:event-log-race-repro:local              # world-postgres
 pnpm run test:e2e:event-log-race-repro:local --world local # world-local
+pnpm run test:e2e:event-log-race-repro:local --world sqlite # world-sqlite
 ```
 
 The script (`scripts/event-log-race-repro-local.sh`, `--help` for flags) builds
@@ -159,16 +160,19 @@ and starts `workbench/nextjs-turbopack` with `WORKFLOW_TARGET_WORLD` and
 missing either silently yields a default-world app or a 404 manifest), runs the
 harness, prints the same summary table CI posts, and tears the server down. For
 world-postgres it first brings up the container and applies migrations, and
-leaves Postgres running for the next iteration unless `--teardown` is passed;
-the container flags (`--skip-db-setup`, `--no-docker`, `--teardown`) do nothing
-under `--world local`, whose only state is a data directory the script clears
-before each run.
+leaves Postgres running for the next iteration unless `--teardown` is passed.
+world-sqlite receives a fresh temporary database on every invocation, an
+absolute `WORKFLOW_LOCAL_DATABASE_DIR`, the app's loopback
+`WORKFLOW_LOCAL_BASE_URL`, and an explicit migration through the built package;
+the database is removed on exit unless `--keep-queue` is passed. The container
+flags (`--skip-db-setup`, `--no-docker`, `--teardown`) do nothing under
+`--world local` or `--world sqlite`.
 
-Run both worlds because neither subsumes the other: world-postgres
-arbitrates event slots inside one SQL statement, while world-local arbitrates
-them with an exclusive `link(2)` against a directory that two processes (the app
-and the harness) both write to. A slot race a transaction closes is not
-automatically closed by a filesystem.
+Run all three worlds because none subsumes the others: world-postgres and
+world-sqlite have separate transactional implementations, while world-local
+arbitrates event slots with an exclusive `link(2)` against a directory that two
+processes (the app and the harness) both write to. A slot race one
+implementation closes is not automatically closed by another.
 
 Scale is controlled entirely by `EVENT_LOG_RACE_REPRO_*` environment variables.
 Their defaults live only in `event-log-race-repro.test.ts`; neither the CI
@@ -250,7 +254,8 @@ world-local saturates the same single process from its own in-process queue,
 which defaults to 1,000 deliveries in flight, so the script holds it at the same
 number via `WORKFLOW_LOCAL_QUEUE_CONCURRENCY`.
 
-What the local lanes are *not* is a throughput bug in the two Worlds. Under
+What the two established local lanes are *not* is a throughput bug in their
+Worlds. Under
 saturation world-local logged zero failed deliveries, zero handler errors and
 zero exhausted messages across three 14-run passes: its semaphore parks a
 message *before* the delivery fetch, so queue waiting never consumes the
@@ -278,13 +283,13 @@ In CI the same harness runs from `.github/workflows/event-log-race-repro.yml`,
 triggered by adding the `event-log-race-repro` label to a PR or by
 `workflow_dispatch`, whose inputs are the soak dial. Raise `timeout-minutes` in
 that dispatch's branch if you raise `budget_ms`. Alongside the Vercel lane, the
-workflow runs the local script against world-local and world-postgres as
-parallel lanes. Those two lanes are report-only because the local storms have red
-baselines at the default scale (see above), so they publish numbers rather than a
-verdict and fail only when the harness produced no result file at all; the Vercel
-lane remains the gate.
+workflow runs the local script against world-local, world-postgres, and
+world-sqlite as parallel lanes. Those three lanes are report-only because the
+local storms have red baselines at the default scale (see above), so they publish
+numbers rather than a verdict and fail only when the harness produced no result
+file at all; the Vercel lane remains the gate.
 
-All three lanes land in one sticky PR comment, rendered from their artifacts by
+All four lanes land in one sticky PR comment, rendered from their artifacts by
 the `event-log-race-repro-comment` job: a verdict line per lane, then a history
 table of one row per lane per run (total / complete / corrupt / stuck / other),
 then the latest run's non-completed runs with links. Each lane's own job summary
@@ -546,3 +551,111 @@ Every outgoing HTTP request from `@workflow/world-vercel` to workflow-server (or
 Do **not** rely on ambient OpenTelemetry auto-instrumentation to do this: world-vercel's request paths use custom undici dispatchers / `global fetch`, which auto-instrumentation does not reliably hook. When you add a new request path or API version (e.g. a future v5 events API), wire the injection in the same place you build the request headers. The v4 events path (`fetchV4` in `events-v4.ts`) regressed cross-service correlation precisely by routing around `makeRequest` and skipping this step. Workflow-server spans stopped joining the flow-route invocation trace until the injection was added back. Cover new paths with a test in `trace-propagation.test.ts`.
 
 The same rule covers a request path that is not an HTTP request. A non-`fetch` transport must still open the client span callers read a trace through: use `withHttpClientSpan` (`http-core.ts`), the envelope `instrumentedFetch` is built on, so the span carries the same name, kind, and attributes rather than a hand-rolled parallel shape. The WS events transport is the worked example. `postEventFrameOverWs` synthesizes an `http POST` span per frame and tags it `workflow.events.transport: 'ws'`, and the handshake gets its own `workflow.events.ws.connect` span (`ws-transport-spans.test.ts`). Adding a transport that writes events without one silently deletes the per-event view of a run.
+
+%% lat:begin %%
+# Before starting work
+
+- Run `lat search` to find sections relevant to your task. Read them to understand the design intent before writing code.
+- Run `lat expand` on user prompts to expand any `[[refs]]` — this resolves section names to file locations and provides context.
+
+# Post-task checklist (REQUIRED — do not skip)
+
+After EVERY task, before responding to the user:
+
+- [ ] Update `lat.md/` if you added or changed any functionality, architecture, tests, or behavior
+- [ ] Run `lat check` — all wiki links and code refs must pass
+- [ ] Do not skip these steps. Do not consider your task done until both are complete.
+
+---
+
+# What is lat.md?
+
+This project uses [lat.md](https://www.npmjs.com/package/lat.md) to maintain a structured knowledge graph of its architecture, design decisions, and test specs in the `lat.md/` directory. It is a set of cross-linked markdown files that describe **what** this project does and **why** — the domain concepts, key design decisions, business logic, and test specifications. Use it to ground your work in the actual architecture rather than guessing.
+
+# Commands
+
+```bash
+lat locate "Section Name"      # find a section by name (exact, fuzzy)
+lat refs "file#Section"        # find what references a section
+lat search "natural language"  # semantic search across all sections
+lat expand "user prompt text"  # expand [[refs]] to resolved locations
+lat check                      # validate all links and code refs
+```
+
+Run `lat --help` when in doubt about available commands or options.
+
+If `lat search` fails because no API key is configured, explain to the user that semantic search requires a key provided via `LAT_LLM_KEY` (direct value), `LAT_LLM_KEY_FILE` (path to key file), or `LAT_LLM_KEY_HELPER` (command that prints the key). Supported key prefixes: `sk-...` (OpenAI) or `vck_...` (Vercel). If the user doesn't want to set it up, use `lat locate` for direct lookups instead.
+
+# Syntax primer
+
+- **Section ids**: `lat.md/path/to/file#Heading#SubHeading` — full form uses project-root-relative path (e.g. `lat.md/tests/search#RAG Replay Tests`). Short form uses bare file name when unique (e.g. `search#RAG Replay Tests`, `cli#search#Indexing`).
+- **Wiki links**: `[[target]]` or `[[target|alias]]` — cross-references between sections. Can also reference source code: `[[src/foo.ts#myFunction]]`.
+- **Source code links**: Wiki links in `lat.md/` files can reference functions, classes, constants, and methods in TypeScript/JavaScript/Python/Rust/Go/C files. Use the full path: `[[src/config.ts#getConfigDir]]`, `[[src/server.ts#App#listen]]` (class method), `[[lib/utils.py#parse_args]]`, `[[src/lib.rs#Greeter#greet]]` (Rust impl method), `[[src/app.go#Greeter#Greet]]` (Go method), `[[src/app.h#Greeter]]` (C struct). `lat check` validates these exist.
+- **Code refs**: `// @lat: [[section-id]]` (JS/TS/Rust/Go/C) or `# @lat: [[section-id]]` (Python) — ties source code to concepts
+
+# Test specs
+
+Key tests can be described as sections in `lat.md/` files (e.g. `tests.md`). Add frontmatter to require that every leaf section is referenced by a `// @lat:` or `# @lat:` comment in test code:
+
+```markdown
+---
+lat:
+  require-code-mention: true
+---
+# Tests
+
+Authentication and authorization test specifications.
+
+## User login
+
+Verify credential validation and error handling for the login endpoint.
+
+### Rejects expired tokens
+Tokens past their expiry timestamp are rejected with 401, even if otherwise valid.
+
+### Handles missing password
+Login request without a password field returns 400 with a descriptive error.
+```
+
+Every section MUST have a description — at least one sentence explaining what the test verifies and why. Empty sections with just a heading are not acceptable. (This is a specific case of the general leading paragraph rule below.)
+
+Each test in code should reference its spec with exactly one comment placed next to the relevant test — not at the top of the file:
+
+```python
+# @lat: [[tests#User login#Rejects expired tokens]]
+def test_rejects_expired_tokens():
+    ...
+
+# @lat: [[tests#User login#Handles missing password]]
+def test_handles_missing_password():
+    ...
+```
+
+Do not duplicate refs. One `@lat:` comment per spec section, placed at the test that covers it. `lat check` will flag any spec section not covered by a code reference, and any code reference pointing to a nonexistent section.
+
+# Section structure
+
+Every section in `lat.md/` **must** have a leading paragraph — at least one sentence immediately after the heading, before any child headings or other block content. The first paragraph must be ≤250 characters (excluding `[[wiki link]]` content). This paragraph serves as the section's overview and is used in search results, command output, and RAG context — keeping it concise guarantees the section's essence is always captured.
+
+```markdown
+# Good Section
+
+Brief overview of what this section documents and why it matters.
+
+More detail can go in subsequent paragraphs, code blocks, or lists.
+
+## Child heading
+
+Details about this child topic.
+```
+
+```markdown
+# Bad Section
+
+## Child heading
+
+Details about this child topic.
+```
+
+The second example is invalid because `Bad Section` has no leading paragraph. `lat check` validates this rule and reports errors for missing or overly long leading paragraphs.
+%% lat:end %%

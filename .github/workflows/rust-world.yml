@@ -1,0 +1,300 @@
+name: Rust World
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "!*"
+    paths:
+      - ".github/workflows/rust-world.yml"
+      - ".gitattributes"
+      - ".gitignore"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/workflow-protocol/**"
+      - "crates/workflow-cli/**"
+      - "crates/workflow-world-core/**"
+      - "crates/workflow-world-testkit/**"
+      - "crates/workflow-world-sqlite/**"
+      - "fixtures/world-contract/**"
+      - "packages/world-local/package.json"
+      - "packages/world-local/src/storage/contract-fixtures.test.ts"
+      - "packages/world-sqlite/**"
+      - "lat.md/rust-portability.md"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "workbench/node-native-probe/**"
+      - "workbench/python-native-probe/**"
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+    paths:
+      - ".github/workflows/rust-world.yml"
+      - ".gitattributes"
+      - ".gitignore"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/workflow-protocol/**"
+      - "crates/workflow-cli/**"
+      - "crates/workflow-world-core/**"
+      - "crates/workflow-world-testkit/**"
+      - "crates/workflow-world-sqlite/**"
+      - "fixtures/world-contract/**"
+      - "packages/world-local/package.json"
+      - "packages/world-local/src/storage/contract-fixtures.test.ts"
+      - "packages/world-sqlite/**"
+      - "lat.md/rust-portability.md"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "workbench/node-native-probe/**"
+      - "workbench/python-native-probe/**"
+  workflow_dispatch:
+
+concurrency:
+  # Unique group for this workflow and branch
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  typescript-contract:
+    name: TypeScript Contract Fixture
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+
+      - name: Run TypeScript Contract Fixture
+        run: >-
+          pnpm --filter @workflow/world-local exec vitest run
+          src/storage/contract-fixtures.test.ts
+
+  rust:
+    name: Rust ${{ matrix.toolchain }} Tests and Clippy
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain:
+          - 1.88.0
+          - stable
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: clippy
+
+      - name: Run Rust Tests
+        run: >-
+          cargo test
+          -p workflow-protocol
+          -p workflow-world-core
+          -p workflow-world-testkit
+          -p workflow-world-sqlite
+          -p workflow-world-sqlite-node
+          -p workflow-cli
+          --locked
+
+      - name: Run Clippy
+        run: >-
+          cargo clippy
+          -p workflow-protocol
+          -p workflow-world-core
+          -p workflow-world-testkit
+          -p workflow-world-sqlite
+          -p workflow-world-sqlite-node
+          -p workflow-cli
+          -p workflow_node_native_probe
+          -p workflow_python_native_probe
+          --all-targets
+          --locked
+          --
+          -D warnings
+
+  node-sqlite-linux:
+    name: Node ${{ matrix.node }} / Linux x64 / glibc 2.28
+    runs-on: ubuntu-22.04
+    container: quay.io/pypa/manylinux_2_28_x86_64:latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - 22
+          - 24
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          toolchain: 1.88.0
+
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          node-version: ${{ matrix.node }}
+          build-packages: false
+          cache-pnpm: false
+
+      - name: Assert Platform Floor
+        shell: bash
+        run: |
+          test "$(uname -m)" = "x86_64"
+          test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.28"
+          node -e "if (process.platform !== 'linux' || process.arch !== 'x64') process.exit(1)"
+
+      - name: Run SQLite Process Tests
+        if: matrix.node == 22
+        run: >-
+          cargo test
+          -p workflow-world-sqlite
+          --locked
+          --
+          --test-threads=1
+
+      - name: Build Native SQLite World and Dependencies
+        run: pnpm turbo run build --filter=@workflow/world-sqlite
+
+      - name: Run Native SQLite World Contract
+        run: pnpm --filter @workflow/world-sqlite exec vitest run src
+
+      - name: Run Phase 0 Native Probe
+        run: pnpm --filter @workflow/example-node-native-probe probe
+
+  node-sqlite-hosts:
+    name: Node ${{ matrix.node }} / ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            label: macOS arm64
+            platform: darwin
+            architecture: arm64
+            node: 22
+          - runner: macos-15
+            label: macOS arm64
+            platform: darwin
+            architecture: arm64
+            node: 24
+          - runner: windows-2022
+            label: Windows x64
+            platform: win32
+            architecture: x64
+            node: 22
+          - runner: windows-2022
+            label: Windows x64
+            platform: win32
+            architecture: x64
+            node: 24
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.5"
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          toolchain: 1.88.0
+
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          node-version: ${{ matrix.node }}
+          build-packages: false
+          cache-pnpm: false
+
+      - name: Assert Platform and Architecture
+        run: >-
+          node -e
+          "if (process.platform !== '${{ matrix.platform }}' || process.arch !== '${{ matrix.architecture }}') process.exit(1)"
+
+      - name: Run SQLite Process Tests
+        if: matrix.node == 22
+        run: >-
+          cargo test
+          -p workflow-world-sqlite
+          --locked
+          --
+          --test-threads=1
+
+      - name: Build Native SQLite World and Dependencies
+        run: pnpm turbo run build --filter=@workflow/world-sqlite
+
+      - name: Run Native SQLite World Contract
+        run: pnpm --filter @workflow/world-sqlite exec vitest run src
+
+      - name: Run Phase 0 Native Probe
+        run: pnpm --filter @workflow/example-node-native-probe probe
+
+  python-native-probe:
+    name: Python Native Probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-22.04
+          - macos-15
+          - windows-2022
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+        with:
+          toolchain: 1.88.0
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
+
+      - name: Setup Python
+        run: uv python install 3.13
+
+      - name: Build and Load Native Extension
+        run: >-
+          uv run --no-project --python 3.13 python
+          workbench/python-native-probe/build_native.py
+
+      - name: Run Python Native Probe
+        run: >-
+          uv run --no-project --python 3.13 python
+          workbench/python-native-probe/probe.py

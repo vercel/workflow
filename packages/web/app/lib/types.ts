@@ -3,7 +3,7 @@
  * This file should NOT import any server-only modules.
  */
 
-import type { Hook } from '@workflow/world';
+import type { Hook, WorkflowRun } from '@workflow/world';
 
 /**
  * Public configuration info that is safe to send to the client.
@@ -78,6 +78,15 @@ export interface PaginatedResult<T> {
   hasMore: boolean;
   pageInfo?: AnalyticsPageInfo;
 }
+
+/**
+ * A run returned by the observability UI. SQLite aggregation may annotate the
+ * response copy with its database filename; the canonical World entity and
+ * its storage schema remain unchanged.
+ */
+export type ObservabilityWorkflowRun = WorkflowRun & {
+  observabilitySource?: string;
+};
 
 export interface StopSleepResult {
   /** Number of pending sleeps that were stopped */

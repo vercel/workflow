@@ -3,9 +3,10 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path, { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getCurrentTest } from '@vitest/runner';
-import { createWorkflowUrl } from '@workflow/utils';
+import { createWorkflowUrl, resolveWorkflowTargetWorld } from '@workflow/utils';
+import type { World } from '@workflow/world';
 import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
@@ -799,19 +800,57 @@ export async function getWorkflowMetadata(
 /**
  * Configures the world based on the current environment:
  * - Local: sets env vars for local filesystem backend
+ * - SQLite: injects a non-consuming World pointed at the workbench database
  * - Vercel: creates and sets a Vercel world
  * - Postgres: relies on WORKFLOW_TARGET_WORLD and WORKFLOW_POSTGRES_URL env vars set by CI
  */
-export function setupWorld(deploymentUrl: string): void {
+export async function setupWorld(deploymentUrl: string): Promise<void> {
   if (isLocalDeployment()) {
     // Set base URL so the local queue can reach the running workbench app
     process.env.WORKFLOW_LOCAL_BASE_URL = deploymentUrl;
+
+    const appPath = getWorkbenchAppPath();
+    if (resolveWorkflowTargetWorld() === '@workflow/world-sqlite') {
+      // The test runner and workbench are separate processes. Point both at
+      // the same absolute database directory, but do not register queue names
+      // or start this instance: only the workbench process may consume work.
+      const databaseDir =
+        process.env.WORKFLOW_LOCAL_DATABASE_DIR ??
+        path.join(appPath, '.workflow-database');
+      process.env.WORKFLOW_LOCAL_DATABASE_DIR = databaseDir;
+      // Load the adapter through the workbench's install so the E2E test reads
+      // from the exact staged package (including its staged native addon).
+      // Keeping it out of core's dependency graph also prevents unrelated E2E
+      // lanes from compiling the optional Rust package.
+      const sqliteModuleUrl = pathToFileURL(
+        path.join(
+          appPath,
+          'node_modules',
+          '@workflow',
+          'world-sqlite',
+          'dist',
+          'index.js'
+        )
+      ).href;
+      const { createWorld: createSqliteTestWorld } = (await import(
+        /* @vite-ignore */
+        sqliteModuleUrl
+      )) as {
+        createWorld(config?: { databaseDir?: string; baseUrl?: string }): World;
+      };
+      setWorld(
+        createSqliteTestWorld({
+          databaseDir,
+          baseUrl: deploymentUrl,
+        })
+      );
+      return;
+    }
 
     // Set the data directory to match the workbench app's data directory.
     // We must set this explicitly (not discover it) because the data dir
     // may not exist yet when the test starts — the app creates it on first use.
     // Next.js uses .next/workflow-data, all other frameworks use .workflow-data.
-    const appPath = getWorkbenchAppPath();
     const appName = process.env.APP_NAME!;
     const isNextJs = appName.includes('nextjs') || appName.includes('next-');
     const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';

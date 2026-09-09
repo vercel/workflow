@@ -228,7 +228,12 @@ export default class Inspect extends BaseCommand {
 
       // For web mode, allow config errors so we can open the web UI for configuration
       const isWebMode = flags.web || resource === 'web';
-      const world = await setupCliWorld(flags, this.config.version, isWebMode);
+      const world = await setupCliWorld(
+        flags,
+        this.config.version,
+        isWebMode,
+        true
+      );
 
       // Handle web UI mode
       if (isWebMode) {

@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow.dev/schemas/world-contract/v1/fixture.schema.json",
+  "title": "Workflow World contract fixture",
+  "description": "A language-neutral operation trace and observable result. Tagged byte objects are fixture transport values, not a persisted or FFI codec.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "fixtureVersion",
+    "name",
+    "requires",
+    "persistedSpecVersion",
+    "given",
+    "when",
+    "then"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "fixtureVersion": {
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "requires": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": ["run-started-preload"]
+      }
+    },
+    "persistedSpecVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "given": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["storage"],
+      "properties": {
+        "storage": {
+          "const": "empty"
+        }
+      }
+    },
+    "when": {
+      "$ref": "#/$defs/createEventOperation"
+    },
+    "then": {
+      "$ref": "#/$defs/expectedState"
+    }
+  },
+  "$defs": {
+    "bytes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$bytes"],
+      "properties": {
+        "$bytes": {
+          "type": "string",
+          "contentEncoding": "base64"
+        }
+      }
+    },
+    "createEventOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "runId", "event"],
+      "properties": {
+        "operation": {
+          "const": "events.create"
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "event": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["eventType", "specVersion", "eventData"],
+          "properties": {
+            "eventType": {
+              "const": "run_started"
+            },
+            "specVersion": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "eventData": {
+              "$ref": "#/$defs/runCreatedEventData"
+            }
+          }
+        }
+      }
+    },
+    "runCreatedEventData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deploymentId", "workflowName", "input"],
+      "properties": {
+        "deploymentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workflowName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input": {
+          "$ref": "#/$defs/bytes"
+        },
+        "executionContext": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "attributes": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "allowReservedAttributes": {
+          "const": true
+        },
+        "encryptionPublicKey": {
+          "type": "string"
+        }
+      }
+    },
+    "runProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runId",
+        "status",
+        "deploymentId",
+        "workflowName",
+        "specVersion",
+        "input",
+        "executionContext",
+        "attributes",
+        "encryptionPublicKey",
+        "startedAtPresent"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "status": {
+          "enum": ["pending", "running", "completed", "failed", "cancelled"]
+        },
+        "deploymentId": {
+          "type": "string"
+        },
+        "workflowName": {
+          "type": "string"
+        },
+        "specVersion": {
+          "type": "integer"
+        },
+        "input": {
+          "$ref": "#/$defs/bytes"
+        },
+        "executionContext": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "encryptionPublicKey": {
+          "type": "string"
+        },
+        "startedAtPresent": {
+          "type": "boolean"
+        }
+      }
+    },
+    "eventProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slot", "eventType", "specVersion", "eventDataPresent"],
+      "properties": {
+        "slot": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "eventType": {
+          "enum": ["run_created", "run_started"]
+        },
+        "specVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "eventDataPresent": {
+          "type": "boolean"
+        },
+        "eventData": {
+          "$ref": "#/$defs/runCreatedEventData"
+        }
+      }
+    },
+    "expectedState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run", "result", "events"],
+      "properties": {
+        "run": {
+          "$ref": "#/$defs/runProjection"
+        },
+        "result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "event",
+            "preloadedSlots",
+            "preloadedEvents",
+            "cursorPresent",
+            "continuationCount",
+            "hasMore"
+          ],
+          "properties": {
+            "event": {
+              "$ref": "#/$defs/eventProjection"
+            },
+            "preloadedSlots": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "preloadedEvents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/eventProjection"
+              }
+            },
+            "cursorPresent": {
+              "type": "boolean"
+            },
+            "continuationCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "hasMore": {
+              "type": "boolean"
+            }
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/eventProjection"
+          }
+        }
+      }
+    }
+  }
+}

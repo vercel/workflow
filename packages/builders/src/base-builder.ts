@@ -355,6 +355,7 @@ export abstract class BaseBuilder {
       '**/.output/**',
       '**/.vercel/**',
       '**/.workflow-data/**',
+      '**/.workflow-database/**',
       '**/.workflow-vitest/**',
       '**/.well-known/workflow/**',
       '**/.swc/**',

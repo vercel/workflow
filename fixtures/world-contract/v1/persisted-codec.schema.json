@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow.dev/schemas/world-contract/v1/persisted-codec.schema.json",
+  "title": "Workflow persisted codec compatibility fixture",
+  "description": "Fixed vectors for new SQLite context CBOR and legacy world-local JSON and cbor-x persistence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "fixtureVersion",
+    "name",
+    "newSqlite",
+    "legacyJsonText",
+    "legacyCborX"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "./persisted-codec.schema.json"
+    },
+    "fixtureVersion": {
+      "const": 1
+    },
+    "name": {
+      "const": "persisted-codec-compatibility"
+    },
+    "newSqlite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "value", "encoded"],
+      "properties": {
+        "format": {
+          "const": "workflow-cbor-v1"
+        },
+        "value": {
+          "$ref": "#/$defs/value"
+        },
+        "encoded": {
+          "$ref": "#/$defs/bytes"
+        }
+      }
+    },
+    "legacyJsonText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "vectors"],
+      "properties": {
+        "format": {
+          "const": "json-text-v1"
+        },
+        "vectors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "value", "encodedText"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "$ref": "#/$defs/value"
+              },
+              "encodedText": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "legacyCborX": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "vectors"],
+      "properties": {
+        "format": {
+          "const": "cbor-x-v1"
+        },
+        "vectors": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "value", "encoded"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "$ref": "#/$defs/value"
+              },
+              "encoded": {
+                "$ref": "#/$defs/bytes"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "bytes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$bytes"],
+      "properties": {
+        "$bytes": {
+          "type": "string",
+          "contentEncoding": "base64"
+        }
+      }
+    },
+    "value": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "boolean" },
+        { "type": "number" },
+        { "type": "string" },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/value"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/value"
+          }
+        }
+      ]
+    }
+  }
+}

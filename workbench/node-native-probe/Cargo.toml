@@ -1,0 +1,22 @@
+[package]
+name = "workflow_node_native_probe"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version = "1.88"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+base64 = "0.22"
+napi = { version = "3.12.2", default-features = false, features = ["napi8", "dyn-symbols", "serde-json"] }
+napi-derive = "3.6.3"
+serde_json.workspace = true
+workflow-protocol = { path = "../../crates/workflow-protocol" }
+workflow-world-sqlite = { path = "../../crates/workflow-world-sqlite" }
+
+[build-dependencies]
+napi-build = "2.4.1"

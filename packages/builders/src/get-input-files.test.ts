@@ -115,6 +115,7 @@ describe('getInputFiles', () => {
     writeFile(srcDir, '.vercel/output/step.ts');
     writeFile(srcDir, '.svelte-kit/output/step.ts');
     writeFile(srcDir, '.workflow-data/state.ts');
+    writeFile(srcDir, '.workflow-database/generated.ts');
     writeFile(srcDir, '.workflow-vitest/workflows.mjs');
     writeFile(srcDir, '.well-known/workflow/route.ts');
     writeFile(srcDir, '.swc/cache/plugin-output.ts');
@@ -146,6 +147,9 @@ describe('getInputFiles', () => {
     );
     expect(files).not.toContain(
       normalize(join(srcDir, '.workflow-data/state.ts'))
+    );
+    expect(files).not.toContain(
+      normalize(join(srcDir, '.workflow-database/generated.ts'))
     );
     expect(files).not.toContain(
       normalize(join(srcDir, '.workflow-vitest/workflows.mjs'))

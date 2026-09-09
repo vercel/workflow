@@ -1,0 +1,24 @@
+[package]
+name = "workflow-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version = "1.88"
+default-run = "workflow"
+
+[[bin]]
+name = "workflow"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5.48", features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+workflow-protocol = { path = "../workflow-protocol" }
+workflow-world-sqlite = { path = "../workflow-world-sqlite" }
+
+[dev-dependencies]
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+tempfile = "3"

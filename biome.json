@@ -28,6 +28,7 @@
       "!**/tests/fixture",
       "!**/tests/errors",
       "!**/.workflow-data",
+      "!**/.workflow-database",
       "!**/.nuxt",
       "!**/.nitro",
       "!**/.output",

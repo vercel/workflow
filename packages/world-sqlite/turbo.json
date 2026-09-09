@@ -1,0 +1,24 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "cache": false,
+      "dependsOn": ["^build"],
+      "env": [
+        "CARGO_HOME",
+        "CARGO_TARGET_DIR",
+        "MACOSX_DEPLOYMENT_TARGET",
+        "RUSTUP_HOME"
+      ],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/Cargo.lock",
+        "$TURBO_ROOT$/Cargo.toml",
+        "$TURBO_ROOT$/crates/workflow-protocol/**",
+        "$TURBO_ROOT$/crates/workflow-world-core/**",
+        "$TURBO_ROOT$/crates/workflow-world-sqlite/**"
+      ],
+      "outputs": ["dist/**", "workflow-world-sqlite.node"]
+    }
+  }
+}

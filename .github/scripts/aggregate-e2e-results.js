@@ -9,6 +9,7 @@ let resultsDir = '.';
 let jobName = 'E2E Tests';
 let mode = 'single'; // 'single' for step summary, 'aggregate' for PR comment
 let runUrl = '';
+let reportOnly = false;
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--job-name' && args[i + 1]) {
@@ -20,6 +21,8 @@ for (let i = 0; i < args.length; i++) {
   } else if (args[i] === '--run-url' && args[i + 1]) {
     runUrl = args[i + 1];
     i++;
+  } else if (args[i] === '--report-only') {
+    reportOnly = true;
   } else if (!args[i].startsWith('--')) {
     resultsDir = args[i];
   }
@@ -165,7 +168,7 @@ function loadFlaky(dir) {
 
   for (const file of files) {
     const basename = path.basename(file, '.json');
-    const match = basename.match(/^e2e-flaky-(.+)-(?:vercel|local)$/);
+    const match = basename.match(/^e2e-flaky-(.+)-(?:vercel|local|sqlite)$/);
     const app = match ? match[1] : 'unknown';
     try {
       const entries = JSON.parse(fs.readFileSync(file, 'utf-8'));
@@ -206,7 +209,7 @@ function loadInfra(dir) {
 
   for (const file of files) {
     const basename = path.basename(file, '.json');
-    const match = basename.match(/^e2e-infra-(.+)-(?:vercel|local)$/);
+    const match = basename.match(/^e2e-infra-(.+)-(?:vercel|local|sqlite)$/);
     const app = match ? match[1] : 'unknown';
     try {
       const entries = JSON.parse(fs.readFileSync(file, 'utf-8'));
@@ -569,6 +572,7 @@ const categoryNames = {
   'vercel-prod': '▲ Vercel Production',
   'local-dev': '💻 Local Development',
   'local-prod': '📦 Local Production',
+  'local-sqlite': '🪨 Portable SQLite',
   'local-postgres': '🐘 Local Postgres',
   windows: '🪟 Windows',
   conformance: '🌐 Cross-language Conformance',
@@ -581,6 +585,7 @@ const categoryOrder = [
   'vercel-prod',
   'local-dev',
   'local-prod',
+  'local-sqlite',
   'local-postgres',
   'windows',
   'conformance',
@@ -795,8 +800,9 @@ if (mode === 'aggregate') {
     infraEvents
   );
 
-  // Exit with non-zero if any tests failed
-  if (overallSummary.totalFailed > 0) {
+  // CI's aggregate summary is presentation-only; e2e-required-check is the
+  // single gate and intentionally excludes advisory lanes.
+  if (overallSummary.totalFailed > 0 && !reportOnly) {
     process.exit(1);
   }
 } else {

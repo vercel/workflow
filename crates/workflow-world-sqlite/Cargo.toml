@@ -1,0 +1,21 @@
+[package]
+name = "workflow-world-sqlite"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version = "1.88"
+
+[dependencies]
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+serde_json.workspace = true
+sha2 = "0.10.9"
+workflow-protocol = { path = "../workflow-protocol" }
+workflow-world-core = { path = "../workflow-world-core" }
+
+[dev-dependencies]
+base64 = "0.22"
+serde = { workspace = true, features = ["derive"] }
+tempfile = "3"
+workflow-world-testkit = { path = "../workflow-world-testkit" }

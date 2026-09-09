@@ -1,0 +1,22 @@
+{
+  "name": "@workflow/example-node-native-probe",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": "^22.0.0 || ^24.0.0"
+  },
+  "scripts": {
+    "probe": "node build-native.mjs && node probe.mjs"
+  },
+  "napi": {
+    "binaryName": "workflow-node-native-probe",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
+    ]
+  }
+}

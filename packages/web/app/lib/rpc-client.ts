@@ -11,7 +11,6 @@ import type {
   Event,
   Hook,
   Step,
-  WorkflowRun,
   WorkflowRunStatus,
 } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
@@ -21,6 +20,7 @@ import type {
   HealthCheckResult,
   HookListItem,
   HookTokenResult,
+  ObservabilityWorkflowRun,
   PaginatedResult,
   ResumeHookResult,
   ServerActionResult,
@@ -74,7 +74,7 @@ export async function fetchRuns(
     startTime?: string;
     endTime?: string;
   }
-): Promise<ServerActionResult<PaginatedResult<WorkflowRun>>> {
+): Promise<ServerActionResult<PaginatedResult<ObservabilityWorkflowRun>>> {
   return rpc('fetchRuns', { worldEnv, params });
 }
 
@@ -82,7 +82,7 @@ export async function fetchRun(
   worldEnv: EnvMap,
   runId: string,
   resolveData: 'none' | 'all' = 'all'
-): Promise<ServerActionResult<WorkflowRun>> {
+): Promise<ServerActionResult<ObservabilityWorkflowRun>> {
   return rpc('fetchRun', { worldEnv, runId, resolveData });
 }
 

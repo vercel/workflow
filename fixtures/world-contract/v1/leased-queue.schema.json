@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow.dev/schemas/world-contract/v1/leased-queue.schema.json",
+  "title": "Workflow leased queue contract fixture",
+  "description": "A deterministic trace for durable claims, redelivery, timeout rescheduling, acknowledgement, and active-run reconciliation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "fixtureVersion",
+    "name",
+    "requires",
+    "persistedSpecVersion",
+    "given",
+    "when",
+    "then"
+  ],
+  "properties": {
+    "$schema": {
+      "const": "./leased-queue.schema.json"
+    },
+    "fixtureVersion": {
+      "const": 1
+    },
+    "name": {
+      "const": "leased-queue-recovers-and-reconciles"
+    },
+    "requires": {
+      "const": ["leased-queue", "active-run-reconciliation"]
+    },
+    "persistedSpecVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "given": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["activeRun"],
+      "properties": {
+        "activeRun": {
+          "$ref": "#/$defs/activeRun"
+        }
+      }
+    },
+    "when": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "deploymentId",
+        "queuePrefix",
+        "queueName",
+        "leaseDurationMs",
+        "operations"
+      ],
+      "properties": {
+        "scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deploymentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "queuePrefix": {
+          "type": "string",
+          "minLength": 1
+        },
+        "queueName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "leaseDurationMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "oneOf": [
+              { "$ref": "#/$defs/reconcile" },
+              { "$ref": "#/$defs/claim" },
+              { "$ref": "#/$defs/reschedule" },
+              { "$ref": "#/$defs/acknowledge" }
+            ]
+          }
+        }
+      }
+    },
+    "then": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["queuedMessageCount", "messageIds"],
+      "properties": {
+        "queuedMessageCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "messageIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/messageId"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "bytes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$bytes"],
+      "properties": {
+        "$bytes": {
+          "type": "string",
+          "contentEncoding": "base64"
+        }
+      }
+    },
+    "messageId": {
+      "type": "string",
+      "pattern": "^msg_[A-Za-z0-9_-]+$"
+    },
+    "activeRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "deploymentId", "workflowName", "input"],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deploymentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workflowName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "input": {
+          "$ref": "#/$defs/bytes"
+        }
+      }
+    },
+    "reconcile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "atMs", "expect"],
+      "properties": {
+        "operation": {
+          "const": "reconcile"
+        },
+        "atMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expect": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "activeRunCount",
+            "createdMessageCount",
+            "messageIds",
+            "queuedMessageCount"
+          ],
+          "properties": {
+            "activeRunCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "createdMessageCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "messageIds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/messageId"
+              }
+            },
+            "queuedMessageCount": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "claimProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "messageId",
+        "attempt",
+        "leaseOwner",
+        "leaseExpiresAtMs",
+        "body"
+      ],
+      "properties": {
+        "messageId": {
+          "$ref": "#/$defs/messageId"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "leaseOwner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "leaseExpiresAtMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "body": {
+          "$ref": "#/$defs/bytes"
+        }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "workerId", "atMs", "expect"],
+      "properties": {
+        "operation": {
+          "const": "claim"
+        },
+        "workerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "atMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expect": {
+          "type": ["object", "null"],
+          "oneOf": [{ "$ref": "#/$defs/claimProjection" }, { "type": "null" }]
+        }
+      }
+    },
+    "reschedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "atMs", "availableAtMs", "expect"],
+      "properties": {
+        "operation": {
+          "const": "reschedule"
+        },
+        "atMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "availableAtMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expect": {
+          "$ref": "#/$defs/mutationProjection"
+        }
+      }
+    },
+    "acknowledge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation", "atMs", "expect"],
+      "properties": {
+        "operation": {
+          "const": "acknowledge"
+        },
+        "atMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expect": {
+          "$ref": "#/$defs/mutationProjection"
+        }
+      }
+    },
+    "mutationProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["messageId", "queuedMessageCount"],
+      "properties": {
+        "messageId": {
+          "$ref": "#/$defs/messageId"
+        },
+        "queuedMessageCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

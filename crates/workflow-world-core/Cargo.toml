@@ -1,0 +1,12 @@
+[package]
+name = "workflow-world-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version = "1.88"
+
+[dependencies]
+serde_json.workspace = true
+workflow-protocol = { path = "../workflow-protocol" }

@@ -276,15 +276,17 @@ test('lanes render as one row each under a single run', () => {
     postgres: writeTempResults(
       resultsFor({ completed: 9, CORRUPTED_EVENT_LOG: 4, stuck: 1 })
     ),
+    sqlite: writeTempResults(resultsFor({ completed: 12, stuck: 2 })),
   });
 
   const rows = tableRows(output, 'Run History');
-  assert.strictEqual(rows.length, 3, 'one row per lane, not per metric');
+  assert.strictEqual(rows.length, 4, 'one row per lane, not per metric');
   // Columns: Run, Lane, Total, Complete, Corrupt, Stuck, Other.
   assert.ok(output.includes('| Run | Lane | Total | Complete | Corrupt |'));
   assert.match(rows[0], /\| vercel \| 14 \| 14 \| 0 \| 0 \| 0 \|$/);
   assert.match(rows[1], /\| local \| 14 \| 8 \| 6 \| 0 \| 0 \|$/);
   assert.match(rows[2], /\| postgres \| 14 \| 9 \| 4 \| 1 \| 0 \|$/);
+  assert.match(rows[3], /\| sqlite \| 14 \| 12 \| 0 \| 2 \| 0 \|$/);
   // The run is stamped once and its lane rows hang off it.
   assert.ok(rows[0].includes('08-14 17:08'));
   assert.ok(!rows[1].includes('08-14 17:08'));

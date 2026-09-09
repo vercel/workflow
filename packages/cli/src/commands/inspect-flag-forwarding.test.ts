@@ -57,6 +57,12 @@ describe('flag forwarding through the command', () => {
   it('forwards --hookId to the events listing', async () => {
     await runInspect(['events', '--runId', VALID_RUN, '--hookId', VALID_HOOK]);
 
+    expect(state.setupCliWorld).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.any(String),
+      false,
+      true
+    );
     expect(state.listEvents).toHaveBeenCalled();
     expect(state.listEvents.mock.calls[0][1]).toMatchObject({
       hookId: VALID_HOOK,

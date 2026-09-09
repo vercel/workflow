@@ -56,7 +56,7 @@ import {
 } from '~/lib/client/listing-window';
 import { useTableSelection } from '~/lib/hooks/use-table-selection';
 import { fetchEvents, fetchRun } from '~/lib/rpc-client';
-import type { EnvMap } from '~/lib/types';
+import type { EnvMap, ObservabilityWorkflowRun } from '~/lib/types';
 import {
   bulkCancelRuns,
   getErrorMessage,
@@ -562,7 +562,7 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   });
 
   // Multi-select functionality
-  const selection = useTableSelection<WorkflowRun>({
+  const selection = useTableSelection<ObservabilityWorkflowRun>({
     getItemId: (run) => run.runId,
   });
 
@@ -890,6 +890,11 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                       <CopyableText text={run.runId} overlay>
                         {run.runId}
                       </CopyableText>
+                      {run.observabilitySource && (
+                        <div className="mt-1 text-muted-foreground">
+                          {run.observabilitySource}
+                        </div>
+                      )}
                     </TableCell>
                     <TableCell className="py-2">
                       <StatusBadge

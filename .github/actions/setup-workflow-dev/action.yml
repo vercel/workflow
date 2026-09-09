@@ -7,7 +7,7 @@ inputs:
     required: false
     default: '22'
   setup-rust:
-    description: 'Whether to setup Rust toolchain'
+    description: 'Whether to set up Rust even when package builds are disabled'
     required: false
     default: 'false'
   install-dependencies:
@@ -27,7 +27,9 @@ runs:
   using: 'composite'
   steps:
     - name: Setup Rust
-      if: ${{ inputs.setup-rust == 'true' }}
+      # A full package build now includes the native SQLite World. Keep the
+      # explicit input for Rust-only callers that disable package builds.
+      if: ${{ inputs.setup-rust == 'true' || inputs.build-packages == 'true' }}
       uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
       with:
         toolchain: stable

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
 # Run the event-log race repro harness locally, against a workbench app started
-# on this machine and either @workflow/world-postgres (the default) or
-# @workflow/world-local (--world local). No Vercel deployment, no GitHub
-# Actions, no VERCEL_* credentials.
+# on this machine and @workflow/world-postgres (the default),
+# @workflow/world-local (--world local), or @workflow/world-sqlite
+# (--world sqlite). No Vercel deployment, no GitHub Actions, no VERCEL_*
+# credentials.
 #
 # This is the same harness `.github/workflows/event-log-race-repro.yml` runs
 # (`packages/core/e2e/event-log-race-repro.test.ts`), pointed at a local backend.
@@ -17,18 +18,20 @@
 #     defaults it to `local` when VERCEL_DEPLOYMENT_ID is absent, which bakes the
 #     filesystem backend into the app and leaves the harness talking to a
 #     different world than the app is.
-#   * (postgres) The schema has to exist before the app boots, or Graphile Worker
-#     starts against an unmigrated database.
-#   * The backend's pending work has to be empty before the app boots. Both
-#     backends outlive the app here, so an interrupted run leaves its unfinished
-#     flow messages behind and the next boot resumes all of them — stale work
-#     starving the run you actually care about. See clear_pending below.
+#   * (postgres/sqlite) The schema has to exist before the app boots. SQLite
+#     construction deliberately does not migrate implicitly.
+#   * The backend's pending work has to be empty before the app boots. Postgres
+#     and world-local outlive the app here, so an interrupted run leaves its
+#     unfinished flow messages behind and the next boot resumes all of them —
+#     stale work starving the run you actually care about. SQLite instead gets
+#     a fresh database for every invocation.
 #
-# Both worlds are worth running. They fail differently, and neither subsumes the
-# other: world-postgres arbitrates event slots inside one SQL statement, while
-# world-local arbitrates them with an exclusive `link(2)` against a directory
-# that two processes (the app and this harness) both write to. A slot race that
-# a transaction closes is not automatically closed by a filesystem.
+# All three worlds are worth running. They fail differently, and none subsumes
+# the others: world-postgres and world-sqlite use different transactional
+# implementations, while world-local arbitrates event slots with an exclusive
+# `link(2)` against a directory that two processes (the app and this harness)
+# both write to. A slot race one implementation closes is not automatically
+# closed by another.
 #
 # Usage: scripts/event-log-race-repro-local.sh [options]
 # Run with --help for options.
@@ -46,7 +49,8 @@ SKIP_DB_SETUP="0"
 USE_DOCKER="1"
 TEARDOWN="0"
 KEEP_QUEUE="0"
-# Which World the app and the harness both talk to: `postgres` or `local`.
+# Which World the app and the harness both talk to: `postgres`, `local`, or
+# `sqlite`.
 WORLD="postgres"
 # In CI every replay of a run lands in its own Fluid invocation; here they all
 # land in one Next.js process, and a storm run has tens of replays in flight at
@@ -78,21 +82,24 @@ DEFAULT_POSTGRES_URL="postgres://world:world@localhost:5432/world"
 RESULTS_FILE="event-log-race-repro-results.json"
 SERVER_LOG="event-log-race-repro-server.log"
 RENDERER=".github/scripts/render-event-log-race-repro-results.js"
+SQLITE_DATABASE_DIR=""
+SQLITE_TEMP_ROOT=""
 
 usage() {
   cat <<'EOF'
 Run the event-log race repro harness against a local workbench app, backed by
-either world-postgres (default) or world-local.
+world-postgres (default), world-local, or world-sqlite.
 
 Options:
-  --world NAME       Backend World: `postgres` (default) or `local`.
+  --world NAME       Backend World: `postgres` (default), `local`, or `sqlite`.
                      `local` needs no Docker and no database: the app and this
                      harness share the app's filesystem data directory, and
                      --skip-db-setup / --no-docker / --teardown are ignored.
-                     The two worlds arbitrate event slots by different means
-                     (one SQL statement vs. an exclusive link(2) between two
-                     processes), so a clean run on one says nothing about the
-                     other.
+                     `sqlite` also needs no Docker. It gets a new temporary
+                     database directory on every run, applies migrations
+                     explicitly, and ignores those three flags as well.
+                     The worlds arbitrate event slots by different means, so a
+                     clean run on one says nothing about the others.
   --app NAME         Workbench app to drive (default: nextjs-turbopack).
                      The repro workflow fixtures (101_hook_sleep_repro.ts,
                      103_event_log_corruption_repro.ts) only exist in
@@ -115,8 +122,10 @@ Options:
                      leaves its flow messages queued (postgres) or its runs
                      pending in the data directory (local), and resuming those
                      abandoned runs saturates the app so this run reports `stuck`
-                     for reasons that have nothing to do with the event log. Only
-                     useful if you are inspecting the leftovers themselves.
+                     for reasons that have nothing to do with the event log.
+                     SQLite always starts with a fresh database; this flag keeps
+                     that database after exit for inspection. Only useful if you
+                     are inspecting the leftovers themselves.
   --teardown         (postgres) Stop and delete the Postgres container on exit.
                      Off by default so repeat runs skip container startup.
   -h, --help         Show this help.
@@ -144,12 +153,12 @@ wins. Every other default — and the full list — lives in
 packages/core/e2e/event-log-race-repro.test.ts, which is the single source of
 truth the CI workflow also defers to.
 
-The other knob this script sets is the backend's replay concurrency, which
-caps how many replays the app and the harness each run at once. Both backends
-default it far too high for one Next.js process on one machine (50 for
-world-postgres, i.e. ~100 replays in flight; 1000 for world-local), which on a
-12-core laptop saturates GC and reports every attempt as `stuck`. Both are set
-to 10 here. Export your own value to override:
+The other knob this script sets is replay concurrency for the two legacy local
+backends. Their defaults are too high for one Next.js process on one machine
+(50 for world-postgres, i.e. ~100 replays in flight; 1000 for world-local),
+which on a 12-core laptop saturates GC and reports every attempt as `stuck`.
+Both are set to 10 here. SQLite keeps its package default of 4 native delivery
+workers. Export your own legacy-backend value to override:
 
   WORKFLOW_POSTGRES_WORKER_CONCURRENCY   (--world postgres)
   WORKFLOW_LOCAL_QUEUE_CONCURRENCY       (--world local)
@@ -160,6 +169,9 @@ Examples:
 
   # Same, against world-local. No Docker, no database.
   scripts/event-log-race-repro-local.sh --world local
+
+  # Same, against the native SQLite World and a fresh temporary database.
+  scripts/event-log-race-repro-local.sh --world sqlite
 
   # One run per scenario, to smoke the plumbing.
   EVENT_LOG_RACE_REPRO_STEP_STORM_ATTEMPTS=1 \
@@ -209,11 +221,14 @@ for fixture in 101_hook_sleep_repro.ts 103_event_log_corruption_repro.ts; do
 done
 
 case "$WORLD" in
-  postgres|local) ;;
-  *) die "Unknown --world: $WORLD (expected \`postgres\` or \`local\`)" ;;
+  postgres|local|sqlite) ;;
+  *) die "Unknown --world: $WORLD (expected \`postgres\`, \`local\`, or \`sqlite\`)" ;;
 esac
 
 export WORKFLOW_PUBLIC_MANIFEST="1"
+export PORT="$PORT"
+DEPLOYMENT_URL="http://localhost:$PORT"
+MANIFEST_URL="$DEPLOYMENT_URL/.well-known/workflow/v1/manifest.json"
 
 # See the note in usage: a local lane runs the same storm ~2x slower than the
 # Vercel lane, so the harness' own 240000 leaves `step-storm` at ~83% of its
@@ -226,7 +241,7 @@ if [ "$WORLD" = "postgres" ]; then
   export WORKFLOW_POSTGRES_URL="${WORKFLOW_POSTGRES_URL:-$DEFAULT_POSTGRES_URL}"
   export WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
   export WORKFLOW_POSTGRES_WORKER_CONCURRENCY="${WORKFLOW_POSTGRES_WORKER_CONCURRENCY:-$LOCAL_WORKER_CONCURRENCY}"
-else
+elif [ "$WORLD" = "local" ]; then
   # Postgres is a service both processes address by URL; world-local is a
   # directory both processes address by path, so the path has to be pinned
   # explicitly and identically or the two silently use different backends.
@@ -251,11 +266,14 @@ else
   export WORKFLOW_TARGET_WORLD="local"
   export WORKFLOW_LOCAL_DATA_DIR="$DATA_DIR"
   export WORKFLOW_LOCAL_QUEUE_CONCURRENCY="${WORKFLOW_LOCAL_QUEUE_CONCURRENCY:-$LOCAL_QUEUE_CONCURRENCY}"
+else
+  # The native worker never discovers a host port. The same explicit loopback
+  # URL is therefore present during the app build, app startup, and harness.
+  # The database directory itself is allocated after the port preflight so a
+  # rejected run cannot leak a temporary directory.
+  export WORKFLOW_TARGET_WORLD="@workflow/world-sqlite"
+  export WORKFLOW_LOCAL_BASE_URL="$DEPLOYMENT_URL"
 fi
-
-export PORT="$PORT"
-DEPLOYMENT_URL="http://localhost:$PORT"
-MANIFEST_URL="$DEPLOYMENT_URL/.well-known/workflow/v1/manifest.json"
 
 # --- port ---------------------------------------------------------------------
 
@@ -301,14 +319,42 @@ cleanup() {
     log "Removing the Postgres container"
     docker compose -f "$COMPOSE_FILE" down -v >/dev/null 2>&1
   fi
+  if [ "$WORLD" = "sqlite" ] && [ -n "$SQLITE_DATABASE_DIR" ]; then
+    if [ "$KEEP_QUEUE" = "1" ]; then
+      log "SQLite database retained for inspection: $SQLITE_DATABASE_DIR"
+    else
+      # SQLITE_DATABASE_DIR comes only from mktemp below. Check both its parent
+      # and basename before recursively removing it so cleanup cannot widen if
+      # this script is edited or sourced incorrectly later.
+      case "$SQLITE_DATABASE_DIR" in
+        "$SQLITE_TEMP_ROOT"/workflow-event-log-race-sqlite.*)
+          log "Removing the temporary SQLite database"
+          rm -rf -- "$SQLITE_DATABASE_DIR"
+          ;;
+        *)
+          log "Refusing to remove unexpected SQLite path: $SQLITE_DATABASE_DIR"
+          ;;
+      esac
+    fi
+  fi
   set -e
   return $status
 }
 trap cleanup EXIT
 
-# --- postgres -----------------------------------------------------------------
+# --- backend ------------------------------------------------------------------
 
-if [ "$WORLD" != "postgres" ]; then
+if [ "$WORLD" = "sqlite" ]; then
+  # A fresh directory makes every invocation its own application/database
+  # boundary and avoids inheriting durable messages from an interrupted run.
+  # Resolve the parent first so WORKFLOW_LOCAL_DATABASE_DIR is absolute even
+  # when a caller supplied a relative TMPDIR.
+  [ -d "${TMPDIR:-/tmp}" ] || die "Temporary directory does not exist: ${TMPDIR:-/tmp}"
+  SQLITE_TEMP_ROOT="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+  SQLITE_DATABASE_DIR="$(mktemp -d "$SQLITE_TEMP_ROOT/workflow-event-log-race-sqlite.XXXXXX")"
+  export WORKFLOW_LOCAL_DATABASE_DIR="$SQLITE_DATABASE_DIR"
+  log "Backend: world-sqlite at $WORKFLOW_LOCAL_DATABASE_DIR (base URL: $WORKFLOW_LOCAL_BASE_URL)"
+elif [ "$WORLD" = "local" ]; then
   log "Backend: world-local at $WORKFLOW_LOCAL_DATA_DIR"
 elif [ "$USE_DOCKER" = "1" ]; then
   command -v docker >/dev/null 2>&1 || die "docker not found. Install Docker, or use --no-docker with your own Postgres."
@@ -388,9 +434,9 @@ clear_data_dir() {
 if [ "$KEEP_QUEUE" = "0" ]; then
   if [ "$WORLD" = "local" ]; then
     clear_data_dir
-  elif [ "$USE_DOCKER" = "0" ] && ! command -v psql >/dev/null 2>&1; then
+  elif [ "$WORLD" = "postgres" ] && [ "$USE_DOCKER" = "0" ] && ! command -v psql >/dev/null 2>&1; then
     log "psql not found — leaving the queue as it is. Stale jobs from an interrupted run will compete with this one."
-  else
+  elif [ "$WORLD" = "postgres" ]; then
     clear_queue
   fi
 fi
@@ -399,7 +445,7 @@ fi
 
 if [ "$SKIP_BUILD" = "0" ]; then
   # Turbo-cached, so this is cheap on repeat runs. Needed before the migration
-  # step, which loads packages/world-postgres/dist/cli.js.
+  # steps, which load built world-postgres/world-sqlite JavaScript.
   log "Building packages"
   pnpm build
 fi
@@ -407,6 +453,23 @@ fi
 if [ "$WORLD" = "postgres" ] && [ "$SKIP_DB_SETUP" = "0" ]; then
   log "Applying the world-postgres schema"
   ./packages/world-postgres/bin/setup.js
+elif [ "$WORLD" = "sqlite" ]; then
+  # Construction is intentionally side-effect free, and this is a brand-new
+  # database on every run, so migration is never skipped. Import through the
+  # built package export to test the same JS/native artifact pair the app uses.
+  log "Applying the world-sqlite schema through the built package"
+  (
+    cd "$APP_DIR"
+    node --input-type=module -e '
+      import { createWorld } from "@workflow/world-sqlite";
+      const world = createWorld({ recoverActiveRuns: false });
+      try {
+        await world.migrate();
+      } finally {
+        await world.close();
+      }
+    '
+  )
 fi
 
 if [ "$SKIP_BUILD" = "0" ] && [ "$USE_DEV" = "0" ]; then

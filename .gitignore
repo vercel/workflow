@@ -1,4 +1,5 @@
 .workflow-data
+.workflow-database
 node_modules
 /packages/*/dist
 .vercel
@@ -53,3 +54,7 @@ event-log-race-repro-server.log
 # Per-run e2e diagnostics sidecars written to the repo root by the harness
 # (writeDiagnosticsSidecar in packages/core/e2e/utils.ts)
 e2e-diagnostics-*.json
+.codex
+
+# Local architecture-document search index
+lat.md/.cache/

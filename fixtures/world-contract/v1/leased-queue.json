@@ -1,0 +1,151 @@
+{
+  "$schema": "./leased-queue.schema.json",
+  "fixtureVersion": 1,
+  "name": "leased-queue-recovers-and-reconciles",
+  "requires": ["leased-queue", "active-run-reconciliation"],
+  "persistedSpecVersion": 7,
+  "given": {
+    "activeRun": {
+      "runId": "wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "deploymentId": "dpl_fixture",
+      "workflowName": "fixtureQueueWorkflow",
+      "input": {
+        "$bytes": "AAEC/w=="
+      }
+    }
+  },
+  "when": {
+    "scope": "app_fixture:dpl_fixture",
+    "deploymentId": "dpl_fixture",
+    "queuePrefix": "__wkf_workflow_",
+    "queueName": "__wkf_workflow_fixtureQueueWorkflow",
+    "leaseDurationMs": 100,
+    "operations": [
+      {
+        "operation": "reconcile",
+        "atMs": 1000,
+        "expect": {
+          "activeRunCount": 1,
+          "createdMessageCount": 1,
+          "messageIds": [
+            "msg_reconcile_a7fdccd28047322c240aa0e3a37239839119267a859e8b4be2f8a34e16c39690"
+          ],
+          "queuedMessageCount": 1
+        }
+      },
+      {
+        "operation": "reconcile",
+        "atMs": 1001,
+        "expect": {
+          "activeRunCount": 1,
+          "createdMessageCount": 0,
+          "messageIds": [
+            "msg_reconcile_a7fdccd28047322c240aa0e3a37239839119267a859e8b4be2f8a34e16c39690"
+          ],
+          "queuedMessageCount": 1
+        }
+      },
+      {
+        "operation": "claim",
+        "workerId": "worker-a",
+        "atMs": 1010,
+        "expect": {
+          "messageId": "msg_reconcile_a7fdccd28047322c240aa0e3a37239839119267a859e8b4be2f8a34e16c39690",
+          "attempt": 1,
+          "leaseOwner": "worker-a",
+          "leaseExpiresAtMs": 1110,
+          "body": {
+            "$bytes": "eyJydW5JZCI6IndydW5fMDFBUlozTkRFS1RTVjRSUkZGUTY5RzVGQVYifQ=="
+          }
+        }
+      },
+      {
+        "operation": "claim",
+        "workerId": "worker-b",
+        "atMs": 1109,
+        "expect": null
+      },
+      {
+        "operation": "claim",
+        "workerId": "worker-b",
+        "atMs": 1110,
+        "expect": {
+          "messageId": "msg_reconcile_a7fdccd28047322c240aa0e3a37239839119267a859e8b4be2f8a34e16c39690",
+          "attempt": 2,
+          "leaseOwner": "worker-b",
+          "leaseExpiresAtMs": 1210,
+          "body": {
+            "$bytes": "eyJydW5JZCI6IndydW5fMDFBUlozTkRFS1RTVjRSUkZGUTY5RzVGQVYifQ=="
+          }
+        }
+      },
+      {
+        "operation": "reschedule",
+        "atMs": 1120,
+        "availableAtMs": 1300,
+        "expect": {
+          "messageId": "msg_reconcile_a7fdccd28047322c240aa0e3a37239839119267a859e8b4be2f8a34e16c39690",
+          "queuedMessageCount": 1
+        }
+      },
+      {
+        "operation": "claim",
+        "workerId": "worker-c",
+        "atMs": 1299,
+        "expect": null
+      },
+      {
+        "operation": "claim",
+        "workerId": "worker-c",
+        "atMs": 1300,
+        "expect": {
+          "messageId": "msg_reconcile_a7fdccd28047322c240aa0e3a37239839119267a859e8b4be2f8a34e16c39690",
+          "attempt": 3,
+          "leaseOwner": "worker-c",
+          "leaseExpiresAtMs": 1400,
+          "body": {
+            "$bytes": "eyJydW5JZCI6IndydW5fMDFBUlozTkRFS1RTVjRSUkZGUTY5RzVGQVYifQ=="
+          }
+        }
+      },
+      {
+        "operation": "acknowledge",
+        "atMs": 1310,
+        "expect": {
+          "messageId": "msg_reconcile_a7fdccd28047322c240aa0e3a37239839119267a859e8b4be2f8a34e16c39690",
+          "queuedMessageCount": 0
+        }
+      },
+      {
+        "operation": "reconcile",
+        "atMs": 1500,
+        "expect": {
+          "activeRunCount": 1,
+          "createdMessageCount": 1,
+          "messageIds": [
+            "msg_reconcile_a7fdccd28047322c240aa0e3a37239839119267a859e8b4be2f8a34e16c39690"
+          ],
+          "queuedMessageCount": 1
+        }
+      },
+      {
+        "operation": "reconcile",
+        "atMs": 1501,
+        "expect": {
+          "activeRunCount": 1,
+          "createdMessageCount": 0,
+          "messageIds": [
+            "msg_reconcile_a7fdccd28047322c240aa0e3a37239839119267a859e8b4be2f8a34e16c39690"
+          ],
+          "queuedMessageCount": 1
+        }
+      }
+    ]
+  },
+  "then": {
+    "queuedMessageCount": 1,
+    "messageIds": [
+      "msg_reconcile_a7fdccd28047322c240aa0e3a37239839119267a859e8b4be2f8a34e16c39690"
+    ]
+  }
+}

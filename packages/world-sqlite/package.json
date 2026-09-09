@@ -1,0 +1,52 @@
+{
+  "name": "@workflow/world-sqlite",
+  "version": "0.1.0",
+  "description": "Experimental native SQLite World for Workflow SDK",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "workflow-world-sqlite.node",
+    "README.md"
+  ],
+  "scripts": {
+    "benchmark:queue": "pnpm build && node benchmark-queue.mjs",
+    "build": "node build-native.mjs && tsc",
+    "clean": "tsc --build --clean && rm -rf dist workflow-world-sqlite.node",
+    "test": "pnpm build && vitest run src",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@workflow/errors": "workspace:*",
+    "@workflow/utils": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "ulid": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*",
+    "@workflow/world-testing": "workspace:*",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "engines": {
+    "node": "^22.0.0 || ^24.0.0"
+  },
+  "napi": {
+    "binaryName": "workflow-world-sqlite",
+    "targets": [
+      "aarch64-apple-darwin",
+      "x86_64-unknown-linux-gnu",
+      "x86_64-pc-windows-msvc"
+    ]
+  },
+  "license": "Apache-2.0",
+  "packageManager": "pnpm@11.24.0"
+}
