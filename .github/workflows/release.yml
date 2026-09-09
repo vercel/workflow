@@ -72,6 +72,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # `changeset publish` runs one `pnpm publish` per package and one failure
+      # leaves the release half-shipped, with `workflow` possibly pointing at a
+      # `@workflow/core` that is not on npm yet. 5.0.0-beta.48 shipped 7 of 21
+      # packages on its first attempt, and the failure that stopped it crashed
+      # the publish loop before naming the packages it took down. Cross-check
+      # every publishable manifest on this commit against the registry, whatever
+      # the publish step's outcome, so the job says exactly what is missing.
+      - name: Verify every package version on this commit is on npm
+        if: ${{ always() && steps.changesets.outcome != 'skipped' && steps.changesets.outcome != 'cancelled' }}
+        run: node scripts/check-published.mjs
+
       - name: Create GitHub Release
         if: steps.changesets.outputs.published == 'true'
         env:
@@ -111,8 +122,13 @@ jobs:
               --prerelease=$PRERELEASE
           fi
 
+      # A broken Slack token must not turn a successful release red: the Aug 26
+      # and Aug 31 releases published every package and still failed here
+      # (`token_expired`, then `invalid_auth`), which taught people to read a
+      # red Release job as noise. Surface it as a warning instead.
       - name: Post release notes to Slack
         if: steps.changesets.outputs.published == 'true'
+        continue-on-error: true
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_RELEASE_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
