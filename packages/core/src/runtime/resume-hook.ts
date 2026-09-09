@@ -282,8 +282,8 @@ function hasLazyMetadata(hook: ResumableHook): boolean {
  * getter, so a lookup that never reads metadata pays for exactly one
  * `hooks.getByToken`.
  *
- * The original record is left untouched; the returned object is a shallow copy
- * carrying the accessor.
+ * The getter is defined in place on the record the World returned (the same
+ * object the eager path used to mutate), so no copy is made.
  */
 function withLazyMetadata(raw: WorldHook): HookLookup {
   const serialized = raw.metadata;
@@ -311,10 +311,7 @@ function withLazyMetadata(raw: WorldHook): HookLookup {
     );
   };
 
-  const hook = Object.create(
-    Object.getPrototypeOf(raw),
-    Object.getOwnPropertyDescriptors(raw)
-  ) as Hook;
+  const hook = raw as unknown as Hook;
   Object.defineProperty(hook, 'metadata', {
     // A hook with no metadata resolves `undefined` without any I/O, so callers
     // can await unconditionally. Memoized either way: metadata is fixed at

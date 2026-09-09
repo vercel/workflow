@@ -166,7 +166,7 @@ if (conflict) {
 
 ### `hook.metadata` is a Promise
 
-On the hook returned by `getHookByToken()` and `resumeHook()`, `metadata` is now a getter that returns a memoized Promise, the same shape as `run.returnValue`. Looking a hook up by token is a single read; decrypting the metadata needs the owning run's payload keys, and that key round trip is paid only by code that awaits it.
+On the hook returned by `getHookByToken()` and `resumeHook()`, `metadata` is now a getter that returns a memoized Promise, the same shape as `run.returnValue`. Looking a hook up by token is a single read; hydrating the metadata can add network round trips, and those are paid only by code that awaits it.
 
 ```ts
 // v4
@@ -183,7 +183,7 @@ if (metadata?.allowedUserId !== userId) {
 }
 ```
 
-Awaiting it on a hook that stored no metadata resolves `undefined` with no I/O, so the `await` needs no guard. The accessor is non-enumerable: `{ ...hook }` and `JSON.stringify(hook)` no longer carry `metadata`, so a handler that forwarded the whole hook object must forward the awaited value explicitly. `hook.runId`, `hook.token`, and the other fields are unchanged, and `world.hooks.getByToken()` still returns the raw `Hook` record. Under TypeScript the old shape fails the build; in plain JavaScript `hook.metadata.allowedUserId` reads `undefined` off a Promise, so a check like the one above silently rejects every request.
+Awaiting it on a hook that stored no metadata resolves `undefined` with no I/O, so the `await` needs no guard. `{ ...hook }` and `JSON.stringify(hook)` no longer carry `metadata`, so a handler that forwarded the whole hook object must forward the awaited value explicitly. `hook.runId`, `hook.token`, and the other fields are unchanged, and `world.hooks.getByToken()` still returns the raw `Hook` record. Under TypeScript the old shape fails the build; in plain JavaScript `hook.metadata.allowedUserId` reads `undefined` off a Promise, so a check like the one above silently rejects every request.
 
 ### `experimental_setAttributes` renamed to `setAttributes`
 

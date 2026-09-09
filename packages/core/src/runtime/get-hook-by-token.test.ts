@@ -199,19 +199,6 @@ describe('getHookByToken (lazy metadata)', () => {
     await expect(getHookByToken('nope')).rejects.toThrow('hook not found');
   });
 
-  it('leaves the World-supplied record untouched', async () => {
-    // The wrap is a shallow copy: a World that caches or reuses hook records
-    // must not end up with a Promise where its serialized bytes were.
-    const metadata = { customData: 'stored' } as unknown as Hook['metadata'];
-    const hook = { ...baseHook, resumeContext, metadata } satisfies Hook;
-    makeWorld(hook);
-
-    const found = await getHookByToken(hook.token);
-    await found.metadata;
-
-    expect(hook.metadata).toBe(metadata);
-  });
-
   it('does not hydrate when the hook is spread or serialized', async () => {
     // The accessor is non-enumerable, like `Run.returnValue`. An incidental
     // spread or `JSON.stringify` must not kick off hydration nobody awaits —

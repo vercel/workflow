@@ -18,7 +18,7 @@ When `experimental_minRetention` is set, this function continues to return the H
 </Callout>
 
 <Callout type="info">
-`hook.metadata` is a getter that returns a Promise, so `await` it to read the value. Hydrating metadata decrypts it with the owning run's keys, which can cost a run fetch and a key round trip, so the work is deferred to first access and the lookup itself stays a single read. Awaiting it on a hook with no metadata resolves `undefined` and performs no extra work, and repeat reads are free. Like `run.returnValue`, the getter is non-enumerable: it does not appear in `{ ...hook }` or `JSON.stringify(hook)`, so forward the awaited value explicitly if you need to serialize it.
+`hook.metadata` is a getter that returns a Promise, so `await` it to read the value. Hydrating metadata can add extra network round trips, so that work is deferred to first access and the lookup itself stays a single read. Awaiting it on a hook with no metadata resolves `undefined` and performs no extra work, and repeat reads are free.
 </Callout>
 
 <Callout type="info">
