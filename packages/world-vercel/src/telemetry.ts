@@ -307,6 +307,22 @@ export const WorkflowEventType = SemanticConvention<string>(
   'workflow.event.type'
 );
 
+/** Server-side classification of a step_started write. */
+export type WorkflowStepStartMode =
+  | 'single_lazy_create_claim'
+  | 'single_owned_recovery'
+  | 'single_bare'
+  | 'batch_create_claim'
+  | 'batch_bare';
+export const WorkflowStepStartMode = SemanticConvention<WorkflowStepStartMode>(
+  'workflow.step_start.mode'
+);
+
+/** Whether a step_started write carries an inline ownership stamp. */
+export const WorkflowStepStartOwnerStamped = SemanticConvention<boolean>(
+  'workflow.step_start.owner_stamped'
+);
+
 /** Version of the Workflow client package issuing the request. */
 export const WorkflowClientVersion = SemanticConvention<string>(
   'workflow.client.version'
