@@ -1,10 +1,10 @@
 ---
 name: migrating-workflow-v4-to-v5
 description: >-
-  Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `experimental_setAttributes`, `createLocalWorld` / `createVercelWorld`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
+  Upgrades an app from Workflow SDK 4.x to 5.0. Use when bumping the `workflow` / `@workflow/*` dependencies to v5, or when hitting removed v4 APIs — `runStep`, `stepEntrypoint`, `workflow/internal/private`, `@workflow/core/private`, `writeToStream` / `closeStream` / `readFromStream` on a World, `world.steps.get` without a runId, `hook.getConflict()` returning `{ runId }`, `hook.metadata` read synchronously off a `getHookByToken()` result, `experimental_setAttributes`, `createLocalWorld` / `createVercelWorld`, `NestLocalBuilder` imported from `@workflow/nest`, or an SWC transform invoked with `mode: 'client'`.
 metadata:
   author: Vercel Inc.
-  version: '0.2.9'
+  version: '0.2.10'
 ---
 
 # Migrating Workflow SDK 4.x to 5.0
@@ -28,10 +28,11 @@ Before editing, establish:
 3. **Whether the app implements a custom World.** Grep for `implements World`, `: World`, `createLocalWorld`, `createVercelWorld`, `startWorkflowWorld`.
 4. **Which framework integration is in use.** `@workflow/next`, `@workflow/nest`, `@workflow/nitro`, `@workflow/sveltekit`, `@workflow/vite`, `@workflow/nuxt`, `@workflow/astro`, or the CLI.
 5. **Whether `hook.getConflict()` is used.** Grep for `getConflict`.
-6. **Whether the app calls the compiler directly.** Grep for `mode: 'client'`, `transformSync`, `swc-plugin-workflow`. Only custom build integrations do this.
-7. **Whether `experimental_setAttributes` is used.** Grep for `experimental_setAttributes`.
+6. **Whether hook metadata is read outside a workflow.** Grep for `getHookByToken` and `resumeHook`, then for `.metadata` on their results.
+7. **Whether the app calls the compiler directly.** Grep for `mode: 'client'`, `transformSync`, `swc-plugin-workflow`. Only custom build integrations do this.
+8. **Whether `experimental_setAttributes` is used.** Grep for `experimental_setAttributes`.
 
-Report anything in 2–7 that the app does not use as "not applicable" rather than silently skipping it.
+Report anything in 2–8 that the app does not use as "not applicable" rather than silently skipping it.
 
 ## Step 1 — bump the dependencies
 
@@ -163,6 +164,27 @@ if (conflict) {
 
 `await conflict.status` and `await conflict.cancel()` are available on the same handle. Do not remove the `if (conflict)` null check — `getConflict()` still resolves `null` when the token was claimed cleanly.
 
+### `hook.metadata` is a Promise
+
+On the hook returned by `getHookByToken()` and `resumeHook()`, `metadata` is now a getter that returns a memoized Promise, the same shape as `run.returnValue`. Looking a hook up by token is a single read; decrypting the metadata needs the owning run's payload keys, and that key round trip is paid only by code that awaits it.
+
+```ts
+// v4
+const hook = await getHookByToken(token);
+if (hook.metadata?.allowedUserId !== userId) {
+  return new Response('Forbidden', { status: 403 });
+}
+
+// v5
+const hook = await getHookByToken(token);
+const metadata = (await hook.metadata) as { allowedUserId?: string } | undefined;
+if (metadata?.allowedUserId !== userId) {
+  return new Response('Forbidden', { status: 403 });
+}
+```
+
+Awaiting it on a hook that stored no metadata resolves `undefined` with no I/O, so the `await` needs no guard. The accessor is non-enumerable: `{ ...hook }` and `JSON.stringify(hook)` no longer carry `metadata`, so a handler that forwarded the whole hook object must forward the awaited value explicitly. `hook.runId`, `hook.token`, and the other fields are unchanged, and `world.hooks.getByToken()` still returns the raw `Hook` record. Under TypeScript the old shape fails the build; in plain JavaScript `hook.metadata.allowedUserId` reads `undefined` off a Promise, so a check like the one above silently rejects every request.
+
 ### `experimental_setAttributes` renamed to `setAttributes`
 
 ```ts
@@ -272,6 +294,7 @@ Fail the migration if any of these are true:
 - [ ] `world.steps.get` was called with `undefined` as its first argument
 - [ ] `NestLocalBuilder` is imported from `@workflow/nest` instead of `workflow/nest/builder`
 - [ ] a compiler call still passes `mode: 'client'`
+- [ ] `metadata` is read off a `getHookByToken()` or `resumeHook()` result without `await`
 - [ ] a behavior change from step 3 was silently "fixed" instead of reported
 - [ ] workflow or step bodies were restructured beyond the rules above
 - [ ] generated output under `.well-known/workflow/v1/` was hand-edited

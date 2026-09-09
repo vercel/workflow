@@ -52,12 +52,12 @@ showSections={["parameters"]}
 
 ### Returns
 
-Returns a `Promise<ResumedHook>`, a `Hook` extended with an optional `resilientResume` flag. Resolving means the payload is durably recorded as `hook_received` and the workflow wake was accepted. `resilientResume` is retained for source compatibility and is no longer set by any path. The resolved hook:
+Returns a `Promise<ResumedHook>`, a `HookWithLazyMetadata` extended with an optional `resilientResume` flag. Resolving means the payload is durably recorded as `hook_received` and the workflow wake was accepted. `resilientResume` is retained for source compatibility and is no longer set by any path. Resuming never reads the hook's metadata, so the resolved hook's `metadata` is a Promise that hydrates on first access, exactly as with [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token): `await hook.metadata` to read it. The resolved hook:
 
 <TSDoc
 definition={`
-import type { Hook } from "@workflow/world";
-export default Hook;`}
+import type { HookWithLazyMetadata } from "workflow/api";
+export default HookWithLazyMetadata;`}
 showSections={["returns"]}
 />
 
