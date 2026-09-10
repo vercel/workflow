@@ -319,7 +319,7 @@ Workflow does not prescribe an auth mechanism for self-hosted Worlds, so restric
 
 - **Keep the routes unreachable from outside.** By default the worker delivers to a loopback address (`http://localhost:{PORT}`, or `WORKFLOW_LOCAL_BASE_URL` when set), so in the common single-process topology nothing outside the container needs to reach them. Blocking external requests to `/.well-known/workflow/` at your ingress, reverse proxy, or firewall costs you nothing, because loopback delivery never traverses that layer.
 - **Authenticate at the proxy when the routes must cross hosts.** If your web tier and workers are separate deployments, require mTLS or a shared-secret header at the proxy in front of the application, and strip any client-supplied copy of that header at the edge.
-- **Do not gate these paths in framework middleware.** The [Next.js setup guide](/docs/getting-started/next#configure-proxy-handler) tells you to exclude `/.well-known/workflow/*` from your proxy matcher, because a handler that consumes the internal request body breaks execution. Adding the paths back in order to gate them reintroduces that failure mode.
+- **Do not gate these paths in framework middleware.** The [Next.js setup guide](/docs/getting-started/next) tells you to exclude `/.well-known/workflow/*` from your proxy matcher, because a handler that consumes the internal request body breaks execution. Adding the paths back in order to gate them reintroduces that failure mode.
 - **Do not expect the World to present a credential.** It does not sign its delivery requests or attach a secret to them, so an in-application check that requires one will reject the World's own deliveries.
 
 ### Data at rest
