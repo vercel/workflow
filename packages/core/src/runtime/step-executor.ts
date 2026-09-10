@@ -697,6 +697,17 @@ export async function executeStep(
         (params.forceOptimisticStart === true &&
           !isOptimisticInlineStartExplicitlyDisabled()));
 
+    // Keep this on the enclosing step span from the beginning so a losing
+    // claim retains the strategy after the 409 is reconciled as `skipped`.
+    // Bare background starts and owned recovery deliberately have no value.
+    if (params.preclaimedStart) {
+      span?.setAttributes(Attribute.StepStartStrategy('batch_preclaimed'));
+    } else if (params.lazyStepInput !== undefined) {
+      span?.setAttributes(
+        Attribute.StepStartStrategy(optimisticStart ? 'optimistic' : 'awaited')
+      );
+    }
+
     let step: StartedStep;
     // Params for the `step_started` create on either path below. The slot
     // snapshot is not spread here: `createEvent` attaches it to every write,
