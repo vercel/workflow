@@ -41,7 +41,7 @@ export interface SetAttributesOptions {
  * framework/library code (telemetry, agent metadata, etc.). User code
  * trying to write a `$`-prefixed key throws `FatalError`. If you are a
  * framework author and need to set a reserved key, pass
- * `{ allowReservedAttributes: true }` as the second argument — see
+ * `{ allowReservedAttributes: true }` as the second argument; see
  * `SetAttributesOptions` for the trade-offs.
  *
  * **WARNING**: Calling e.g.

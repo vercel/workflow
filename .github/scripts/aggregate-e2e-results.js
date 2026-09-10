@@ -248,6 +248,12 @@ function renderInfraSection(infraEvents) {
       `${event.testName} (${event.app})`,
       time ? `at ${time}Z` : null,
       event.runId ? `abandoned \`${event.runId}\`` : null,
+      // cold-start-warmup events carry every stalled probe; the first is
+      // rendered as the abandoned run, the rest as a count.
+      Array.isArray(event.stalledProbeRunIds) &&
+      event.stalledProbeRunIds.length > 1
+        ? `(+${event.stalledProbeRunIds.length - 1} more)`
+        : null,
     ].filter(Boolean);
     console.log(`- ${parts.join(' · ')}`);
   }

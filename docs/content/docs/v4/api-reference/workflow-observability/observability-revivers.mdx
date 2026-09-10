@@ -8,7 +8,7 @@ related:
   - /docs/api-reference/workflow-observability/hydrate-data
 ---
 
-A set of reviver functions that handle the workflow serialization format's workflow-specific types — streams, step/workflow function references, class instances, `AbortController`/`AbortSignal`, and `DOMException` — reviving them as display-friendly marker objects or strings. Built-in JavaScript types (`Date`, `Map`, `Set`, `RegExp`, etc.) are handled by the devalue format itself and need no revivers.
+A set of reviver functions that handle the workflow serialization format's workflow-specific types (streams, step/workflow function references, class instances, `AbortController`/`AbortSignal`, and `DOMException`), reviving them as display-friendly marker objects or strings. Built-in JavaScript types (`Date`, `Map`, `Set`, `RegExp`, etc.) are handled by the devalue format itself and need no revivers.
 
 Pass it as the `revivers` argument to [`hydrateResourceIO()`](/docs/api-reference/workflow-observability/hydrate-resource-io) or [`hydrateData()`](/docs/api-reference/workflow-observability/hydrate-data). Use [`parseClassName()`](/docs/api-reference/workflow-observability/parse-class-name) to turn the machine-readable class IDs on revived class-instance markers into display-friendly names.
 
@@ -20,7 +20,7 @@ declare const step: Step; // @setup
 const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
 ```
 
-## API Signature
+## API signature
 
 ```typescript
 import type { Revivers } from "workflow/observability";

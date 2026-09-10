@@ -3,7 +3,7 @@
  *
  * This module provides standardized telemetry attributes following OpenTelemetry semantic conventions
  * for instrumenting workflow execution, step processing, and related operations. Each exported function
- * creates a properly formatted attribute object that can be used with OpenTelemetry spans.
+ * creates a properly formatted attribute object for use with OpenTelemetry spans.
  *
  * The semantic conventions are organized into several categories:
  * - **Workflow attributes**: Track workflow lifecycle, status, and metadata
@@ -11,7 +11,7 @@
  * - **Queue attributes**: Instrument message queue operations
  * - **Deployment attributes**: Capture deployment environment information
  *
- * All attribute functions are type-safe and leverage existing backend types to ensure
+ * All attribute functions are type-safe and use existing backend types to ensure
  * consistency between telemetry data and actual system state.
  *
  * @example
@@ -81,6 +81,20 @@ export const WorkflowEventsCount = SemanticConvention<number>(
 export const WorkflowExecutionMode = SemanticConvention<'replay' | 'retained'>(
   'workflow.execution.mode'
 );
+
+/** Whether the compiled application workflow bundle was cached. */
+export const WorkflowBundleCompileCacheHit = SemanticConvention<boolean>(
+  'workflow.bundle.compile.cache_hit'
+);
+
+/** Operation that supplied events to the current replay. */
+export type WorkflowReplayLoadSource =
+  | 'run_started'
+  | 'hook_preload'
+  | 'events_list'
+  | 'events_list_incremental';
+export const WorkflowReplayLoadSource =
+  SemanticConvention<WorkflowReplayLoadSource>('workflow.replay.load.source');
 
 /**
  * Events the replay walked past that no consumer claimed, still held when the
@@ -197,9 +211,18 @@ export const WorkflowWaitsCreated = SemanticConvention<number>(
 );
 
 /**
+ * Number of steps this suspension finalized as failed because their
+ * arguments refused to serialize (step_created placeholder + step_failed
+ * carrying the SerializationError; see finalizeUnserializableStep).
+ */
+export const WorkflowStepsFailedSerialization = SemanticConvention<number>(
+  'workflow.steps.failed_serialization'
+);
+
+/**
  * Number of inline-owned steps this invocation re-executed because it is a
  * redelivery of their owning queue message (crash recovery for inline
- * steps — see the inline step ownership changelog, workflow#2780).
+ * steps; see the inline step ownership changelog, workflow#2780).
  */
 export const WorkflowOwnedRecoverySteps = SemanticConvention<number>(
   'workflow.inline_ownership.owned_recovery_steps'
@@ -242,7 +265,7 @@ export const WorkflowRouteModuleBodyInitMs = SemanticConvention<number>(
 );
 
 /**
- * Compute instance handling this route — the synthesized `COMPUTE_INSTANCE_ID`.
+ * Compute instance handling this route: the synthesized `COMPUTE_INSTANCE_ID`.
  * Uses OTEL `faas.instance` (execution-environment id, reused across
  * invocations to the same function):
  * https://opentelemetry.io/docs/specs/semconv/attributes-registry/faas/
@@ -299,11 +322,11 @@ export const StepRsfsMs = SemanticConvention<number>('step.rsfs_ms');
 /**
  * Client-measured synchronous workflow-function replay duration in
  * milliseconds, excluding awaited network I/O, of only the FINAL replay pass
- * within the rsfs window — the pass that reached and scheduled the first
+ * within the rsfs window: the pass that reached and scheduled the first
  * step. Not accumulated across earlier pre-first-step passes (e.g. a
  * workflow-body `setAttributes()` detour replays more than once, and a
  * redelivery omits earlier invocations' work entirely), so this must not be
- * read as "the replay portion of rsfs" — step.rsfs_ms covers the whole
+ * read as "the replay portion of rsfs"; step.rsfs_ms covers the whole
  * window. Only present alongside step.rsfs_ms and only for the run's first
  * step (see runtime/step-latency.ts).
  */
@@ -317,6 +340,16 @@ export const StepFinalSchedulingReplayMs = SemanticConvention<number>(
  */
 export const StepLatencyOptimizations = SemanticConvention<string[]>(
   'step.latency_optimizations'
+);
+
+/**
+ * How the step's initial `step_started` claim was made. Only present for
+ * inline create claims; ordinary background starts and owned recovery remain
+ * unlabeled.
+ */
+export type StepStartStrategy = 'awaited' | 'optimistic' | 'batch_preclaimed';
+export const StepStartStrategy = SemanticConvention<StepStartStrategy>(
+  'workflow.step_start.strategy'
 );
 
 /** Whether the step was skipped during execution */
@@ -421,21 +454,53 @@ export const HookFound = SemanticConvention<boolean>('workflow.hook.found');
  * `hook_received` write failed transiently but the queue dispatch succeeded, so
  * the resume is recovered via the consumer's re-ensure. Corresponds to
  * `ResumedHook.resilientResume === true`.
+ *
+ * No longer emitted: current producers require the durable event write to
+ * succeed. Retained so dashboards and queries built on the attribute keep
+ * resolving while older producers are still deployed.
  */
 export const HookResilientResume = SemanticConvention<boolean>(
   'workflow.hook.resilient_resume'
 );
 
 /**
+ * Producer-side signal (on the `hook.resume` span) that the durable
+ * `hook_received` write COMMITTED. Stamped after the write resolves, so it
+ * distinguishes a committed resume from an attempted one — an entry-time
+ * attribute cannot, because a span that later records an exception may have
+ * failed either before or after the commit.
+ */
+export const HookResumeCommitted = SemanticConvention<boolean>(
+  'workflow.hook.resume_committed'
+);
+
+/**
+ * Producer-side signal (on the `hook.resume` span) that the workflow wake was
+ * ACCEPTED by the queue, stamped after the publish resolves.
+ *
+ * Together with {@link HookResumeCommitted} this makes stranded resumes
+ * queryable: `resume_committed=true` with `wake_published` absent is a resume
+ * whose durable event exists but whose wake publish failed (the caller was
+ * told, but nothing re-drives it), and `resume_committed=true` +
+ * `wake_published=true` with no subsequent workflow execution for the run is
+ * a wake the queue accepted but never delivered. Both are detection-only
+ * signals — nothing recovers such a run automatically today beyond a later
+ * wake from any other source.
+ */
+export const HookWakePublished = SemanticConvention<boolean>(
+  'workflow.hook.wake_published'
+);
+
+/**
  * Consumer-side signal (on the workflow execution span) that this replay
  * materialized the `hook_received` event from the queue message's `hookInput`
- * because the producer's direct write had not landed — the completion of the
- * recovery path {@link HookResilientResume} began.
+ * because no committed event was found, which completes the recovery path
+ * {@link HookResilientResume} began.
  *
- * Legacy / non-atomic re-ensure signal only. Atomic lazy resumes
+ * Legacy / non-atomic re-ensure signal only. Legacy atomic lazy resumes
  * (resumeId + digest) go through the hoisted preload write instead, whose
  * response cannot tell whether the producer or the consumer won the
- * `(runId, resumeId)` claim — so this attribute is deliberately NOT emitted
+ * `(runId, resumeId)` claim, so this attribute is deliberately NOT emitted
  * for them (emitting `true` unconditionally would count every producer-won
  * resume as a recovery). The producer-begin ({@link HookResilientResume}) /
  * consumer-materialized pairing is therefore no longer complete for atomic
@@ -449,10 +514,10 @@ export const HookResilientResumeMaterialized = SemanticConvention<boolean>(
  * Consumer-side signal (on the workflow execution span) of how a lazy hook
  * resume initialized its replay state:
  *
- * - `hook_received_stream` — the hoisted `hook_received` write returned a
+ * - `hook_received_stream`: the hoisted `hook_received` write returned a
  *   usable replay preload (run + complete event log), so the invocation
  *   skipped both the `run_started` write and the initial `events.list`.
- * - `hook_received_fallback` — the hoisted write succeeded but returned no
+ * - `hook_received_fallback`: the hoisted write succeeded but returned no
  *   usable preload (a CBOR response from an older server, a World that
  *   ignored the opt-in, a bounded `hasMore` page, or a preload that failed
  *   validation); the invocation fell back to the `run_started` setup without
@@ -463,8 +528,8 @@ export const HookResilientResumeMaterialized = SemanticConvention<boolean>(
  *
  * This is a latency/setup-path signal: it says which requests initialized
  * the invocation, NOT that this consumer created the `hook_received` event
- * (the hoisted write may equally have converged on the producer's — claim
- * ownership is not observable client-side; cf.
+ * (the hoisted write may equally have converged on the producer's, since
+ * claim ownership is not observable client-side; cf.
  * {@link HookResilientResumeMaterialized}).
  */
 export const HookResumeSetupSource = SemanticConvention<string>(
@@ -484,7 +549,7 @@ export const StepResilientDispatchRecovered = SemanticConvention<number>(
 /**
  * Consumer-side signal (on the workflow execution span) that this delivery
  * materialized the `step_created` event from the queue message's `stepInput`
- * because the producer's direct write had not landed — the completion of the
+ * because the producer's direct write had not landed, which completes the
  * recovery path {@link StepResilientDispatchRecovered} began.
  */
 export const StepResilientDispatchMaterialized = SemanticConvention<boolean>(
@@ -497,7 +562,7 @@ export const StepResilientDispatchMaterialized = SemanticConvention<boolean>(
 // hook resume, and only there: one resumption produces exactly one sample, so
 // a later step in the same invocation, a retry, or a redelivery never
 // re-reports it. The phases are non-overlapping and sum exactly to
-// {@link ResumeTotalMs} — see runtime/resume-latency.ts for the boundary
+// {@link ResumeTotalMs}; see runtime/resume-latency.ts for the boundary
 // definitions and the emission gate.
 //
 // Deliberately carries no `resumeId`, run ID, or token: the metric is meant to
@@ -559,10 +624,14 @@ export const ResumeTrigger = SemanticConvention<'hook'>(
   'workflow.resume.trigger'
 );
 
-/** Which `resumeHook()` dispatch path produced this resume. */
-export const ResumeStrategy = SemanticConvention<'parallel' | 'sequential'>(
-  'workflow.resume.strategy'
-);
+/**
+ * Which `resumeHook()` dispatch path produced this resume. `parallel` only
+ * appears for messages published by an older producer, which wrote
+ * `hook_received` itself in parallel with the publish.
+ */
+export const ResumeStrategy = SemanticConvention<
+  'lazy' | 'parallel' | 'sequential'
+>('workflow.resume.strategy');
 
 /**
  * How the consuming invocation initialized replay state. Distinct from the

@@ -10,33 +10,42 @@
  */
 import type * as api from '@opentelemetry/api';
 import type { Span, SpanKind, SpanOptions } from '@opentelemetry/api';
+import { globalSingleton } from '@workflow/utils';
 
-// Lazy load OpenTelemetry API to make it optional
-let otelApiPromise: Promise<typeof api | null> | null = null;
+/**
+ * This module's process-wide state: the OpenTelemetry API, imported lazily so
+ * it stays optional, and the tracer built from it.
+ *
+ * On `globalThis` rather than at module scope because a bundler can put several
+ * copies of this file in one process (see `globalSingleton`), which would
+ * import the API and build a tracer once per copy.
+ */
+const otel = globalSingleton('@workflow/world-local//telemetry', 1, () => ({
+  apiPromise: null as Promise<typeof api | null> | null,
+  tracerPromise: null as Promise<api.Tracer | null> | null,
+}));
 
 async function getOtelApi(): Promise<typeof api | null> {
-  if (!otelApiPromise) {
+  if (!otel.apiPromise) {
     // Static specifier is intentional: esbuild-bundled targets (the CLI's
     // `vercel-build-output-api` build, Nitro, Astro) ship a self-contained
     // bundle with no node_modules, so `@opentelemetry/api` (an optional peer)
-    // must be inlined at build time — a runtime-built specifier is opaque to
+    // must be inlined at build time. A runtime-built specifier is opaque to
     // esbuild and would silently disable tracing there. Bundlers that reject
     // an unresolvable static `import()` when the peer is absent (Rollup/Vite,
     // e.g. SvelteKit) externalize it in the framework integration instead.
-    otelApiPromise = import('@opentelemetry/api').catch(() => null);
+    otel.apiPromise = import('@opentelemetry/api').catch(() => null);
   }
-  return otelApiPromise;
+  return otel.apiPromise;
 }
 
-let tracerPromise: Promise<api.Tracer | null> | null = null;
-
 async function getTracer(): Promise<api.Tracer | null> {
-  if (!tracerPromise) {
-    tracerPromise = getOtelApi().then((otel) =>
-      otel ? otel.trace.getTracer('workflow') : null
+  if (!otel.tracerPromise) {
+    otel.tracerPromise = getOtelApi().then((otelApi) =>
+      otelApi ? otelApi.trace.getTracer('workflow') : null
     );
   }
-  return tracerPromise;
+  return otel.tracerPromise;
 }
 
 /**

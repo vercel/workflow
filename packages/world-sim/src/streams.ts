@@ -11,7 +11,7 @@
  * one delivery at a time and never blocks on wall-clock time, a reader that
  * parked on an unfinished stream would deadlock the scenario. So readers park
  * on a promise that the *writer* resolves, and `abortOpenReaders()` releases
- * any that are still parked when the scenario ends — turning what would be a
+ * any that are still parked when the scenario ends, turning what would be a
  * hang into a reported diagnostic.
  */
 

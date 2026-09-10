@@ -44,7 +44,7 @@ interface BaseWorkflowConfig {
 
   // Optionally generate a client library for workflow execution. The preferred
   // method of using workflow is to use a loader within a framework (like
-  // NextJS) that resolves client bindings on the fly.
+  // Next.js) that resolves client bindings on the fly.
   clientBundlePath?: string;
 
   externalPackages?: string[];
@@ -100,8 +100,8 @@ interface BaseWorkflowConfig {
    * Default is `'inline'` for the step bundle and intermediate workflow
    * bundle (gives readable stack traces for step errors and workflow VM
    * errors). Setting `false` omits source maps entirely, which produces
-   * smaller bundles — useful for staying under the Vercel 250MB function
-   * limit — at the cost of stack traces that reference generated code.
+   * smaller bundles (useful for staying under the Vercel 250MB function
+   * limit) at the cost of stack traces that reference generated code.
    *
    * `'external'` and `'linked'` write a separate `.map` file; use these
    * when you want to ship source maps to observability tooling but keep
@@ -118,7 +118,7 @@ interface BaseWorkflowConfig {
    * `workflow`/`@workflow/*` dependency are discovered and compiled into the
    * app's bundles.
    *
-   * Set to `false` to opt out — imports from your application code that resolve
+   * Set to `false` to opt out: imports from your application code that resolve
    * into `node_modules` are not followed, so the build never reads, scans, or
    * descends into dependency file graphs. This skips the cost of scanning
    * `node_modules` and stops third-party workflow/step/serde code from being

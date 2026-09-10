@@ -187,7 +187,7 @@ describe('withWorkflow builder config', () => {
     });
   });
 
-  it('externalizes the built-in Vercel world while preserving user externals', async () => {
+  it('externalizes the non-bundlable Vercel packages while preserving user externals', async () => {
     const config = withWorkflow({
       serverExternalPackages: ['@node-rs/xxhash'],
     });
@@ -196,15 +196,78 @@ describe('withWorkflow builder config', () => {
       defaultConfig: {},
     });
 
+    // @workflow/world-vercel and @vercel/queue are deliberately absent: they
+    // are bundled into the server output so a cold start does not resolve their
+    // module graphs from disk one file at a time.
     expect(nextConfig.serverExternalPackages).toEqual([
       '@node-rs/xxhash',
-      '@workflow/world-vercel',
-      '@vercel/queue',
       '@vercel/oidc',
       '@vercel/cli-auth',
       '@napi-rs/keyring',
     ]);
     expect(nextConfig.outputFileTracingIncludes).toBeUndefined();
+  });
+
+  function writeProjectWithQueueVersion(version: string): string {
+    const projectDir = mkdtempSync(
+      join(realTmpDir, 'workflow-next-queue-version-')
+    );
+    writeFile(
+      join(projectDir, 'node_modules', '@vercel', 'queue', 'package.json'),
+      JSON.stringify({
+        name: '@vercel/queue',
+        version,
+        main: 'index.js',
+        // The published package exports `.` and nothing else, so asking Node
+        // for the manifest by subpath throws. Mirroring the map here keeps a
+        // resolver-based lookup from passing against a fixture that the real
+        // package layout would reject.
+        exports: {
+          '.': {
+            require: './index.js',
+          },
+        },
+      })
+    );
+    writeFile(
+      join(projectDir, 'node_modules', '@vercel', 'queue', 'index.js'),
+      'module.exports = {};'
+    );
+    return projectDir;
+  }
+
+  it('keeps an unbundlable @vercel/queue external', async () => {
+    // Older releases leave their dynamic `import()` unannotated, which Turbopack
+    // cannot resolve, so bundling that copy risks failing the build. Any version
+    // below the bundlable floor works here, without restating the floor.
+    process.chdir(writeProjectWithQueueVersion('0.0.1'));
+
+    const nextConfig = await withWorkflow({})('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(nextConfig.serverExternalPackages).toContain('@vercel/queue');
+  });
+
+  it('bundles a @vercel/queue version that carries the bundler-ignore hints', async () => {
+    // Any version above the bundlable floor, without restating the floor here.
+    process.chdir(writeProjectWithQueueVersion('99.0.0'));
+
+    const nextConfig = await withWorkflow({})('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(nextConfig.serverExternalPackages).not.toContain('@vercel/queue');
+  });
+
+  it('keeps the Vercel world external for the workflow/step bundles', async () => {
+    const config = withWorkflow({});
+
+    await config('phase-production-build', { defaultConfig: {} });
+
+    expect(builderConfigs[0].externalPackages).toEqual(
+      expect.arrayContaining(['@workflow/world-vercel', '@vercel/queue'])
+    );
   });
 
   it('preserves user webpack externals without adding Vercel world dependency externals', async () => {
@@ -286,8 +349,6 @@ describe('withWorkflow builder config', () => {
 
       expect(resolvedConfig.serverExternalPackages).toEqual([
         'plain-external-a',
-        '@workflow/world-vercel',
-        '@vercel/queue',
         '@vercel/oidc',
         '@vercel/cli-auth',
         '@napi-rs/keyring',
@@ -298,11 +359,11 @@ describe('withWorkflow builder config', () => {
           'server-only',
           'client-only',
           'plain-external-a',
-          '@workflow/world-vercel',
-          '@vercel/queue',
           '@vercel/oidc',
           '@vercel/cli-auth',
           '@napi-rs/keyring',
+          '@workflow/world-vercel',
+          '@vercel/queue',
         ],
       });
 
@@ -351,8 +412,6 @@ describe('withWorkflow builder config', () => {
 
       expect(resolvedConfig.serverExternalPackages).toEqual([
         'plain-external-b',
-        '@workflow/world-vercel',
-        '@vercel/queue',
         '@vercel/oidc',
         '@vercel/cli-auth',
         '@napi-rs/keyring',
@@ -363,11 +422,11 @@ describe('withWorkflow builder config', () => {
           'server-only',
           'client-only',
           'plain-external-b',
-          '@workflow/world-vercel',
-          '@vercel/queue',
           '@vercel/oidc',
           '@vercel/cli-auth',
           '@napi-rs/keyring',
+          '@workflow/world-vercel',
+          '@vercel/queue',
         ],
       });
       expect(warnSpy).not.toHaveBeenCalled();

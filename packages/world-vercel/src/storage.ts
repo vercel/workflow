@@ -5,6 +5,7 @@ import type {
 } from '@workflow/world';
 import {
   createWorkflowRunEvent,
+  createWorkflowRunEventBatch,
   getEvent,
   getWorkflowRunEvents,
 } from './events.js';
@@ -16,6 +17,7 @@ import {
   getWorkflowRun,
   getWorkflowRuns,
   listWorkflowRuns,
+  waitForWorkflowRunTerminalStatus,
 } from './runs.js';
 import { getStep, listWorkflowRunSteps } from './steps.js';
 import type { APIConfig } from './utils.js';
@@ -26,6 +28,10 @@ export function createStorage(config?: APIConfig): Storage {
     runs: {
       get: ((id: string, params?: any) =>
         getWorkflowRun(id, params, config)) as Storage['runs']['get'],
+      waitForTerminalStatus: ((id: string, params?: any) =>
+        waitForWorkflowRunTerminalStatus(id, params, config)) as NonNullable<
+        Storage['runs']['waitForTerminalStatus']
+      >,
       getMany: ((ids: readonly string[], params?: any) =>
         getWorkflowRuns(ids, params, config)) as NonNullable<
         Storage['runs']['getMany']
@@ -48,6 +54,8 @@ export function createStorage(config?: APIConfig): Storage {
         data: AnyEventRequest,
         params?: CreateEventParams
       ) => createWorkflowRunEvent(runId, data, params, config),
+      createBatch: (runId, events, params) =>
+        createWorkflowRunEventBatch(runId, events, params, config),
       get: (runId, eventId, params) => getEvent(runId, eventId, params, config),
       list: (params) => getWorkflowRunEvents(params, config),
       listByCorrelationId: (params) => getWorkflowRunEvents(params, config),

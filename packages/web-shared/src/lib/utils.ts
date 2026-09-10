@@ -80,7 +80,7 @@ export function formatDuration(ms: number, compact = false): string {
  * Unlike {@link formatDuration}, this keeps sub-second detail, so 1626ms
  * renders as "1.63s" rather than "2s". `fractionDigits` sets both the number of
  * decimals on the seconds component (trailing zeros trimmed, so 2000ms is "2s"
- * and 1500ms is "1.5s") and the rounding granularity — the default of 2 rounds
+ * and 1500ms is "1.5s") and the rounding granularity: the default of 2 rounds
  * to 10ms; the timeline ruler passes fewer digits to match its tick step.
  *
  * - < 1s: shows whole milliseconds (e.g. "626ms")

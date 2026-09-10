@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
 } from 'react';
+import { cancelMeasurement, scheduleMeasurement } from './measurement-batch';
 import { middleTruncate, toGraphemes } from './truncate';
 
 const useIsomorphicLayoutEffect =
@@ -20,6 +21,17 @@ interface MiddleTruncateState {
   prefixText: string;
   suffixGraphemeCount: number;
   suffixText: string;
+}
+
+interface MiddleTruncateMeasurement {
+  availableWidth: number;
+  typography: string;
+}
+
+interface TextMeasurementCache {
+  typography: string;
+  value: string;
+  widths: Map<string, number>;
 }
 
 function createFullState(
@@ -62,7 +74,15 @@ function useMiddleTruncate(value: string): {
   const ref = useRef<HTMLSpanElement | null>(null);
   const measureRef = useRef<HTMLSpanElement | null>(null);
   const [state, setState] = useState<MiddleTruncateState>(() => fullState);
-  const rafRef = useRef<number>(0);
+  const measurementKeyRef = useRef<object>({});
+  const textMeasurementCacheRef = useRef<TextMeasurementCache>({
+    typography: '',
+    value,
+    widths: new Map(),
+  });
+  const lastMeasurementRef = useRef<
+    (MiddleTruncateMeasurement & { value: string }) | null
+  >(null);
 
   const updateState = useCallback((nextState: MiddleTruncateState) => {
     setState((currentState) => {
@@ -81,76 +101,150 @@ function useMiddleTruncate(value: string): {
     });
   }, []);
 
-  const recalculate = useCallback(() => {
+  const readMeasurement = useCallback((): MiddleTruncateMeasurement | null => {
     const el = ref.current;
     const measureEl = measureRef.current;
-    if (!el || !measureEl) return;
+    if (!el || !measureEl) return null;
 
-    const available = el.clientWidth;
+    const availableWidth = el.clientWidth;
+    const style = getComputedStyle(measureEl);
 
-    if (available <= 0) {
-      updateState(fullState);
-      return;
-    }
-
-    const measure = (text: string): number => {
-      measureEl.textContent = text;
-      return measureEl.scrollWidth;
+    return {
+      availableWidth,
+      typography: [
+        style.fontFamily,
+        style.fontFeatureSettings,
+        style.fontKerning,
+        style.fontSize,
+        style.fontStretch,
+        style.fontStyle,
+        style.fontVariationSettings,
+        style.fontWeight,
+        style.letterSpacing,
+        style.textTransform,
+      ].join('\0'),
     };
+  }, []);
 
-    const fullWidth = measure(value);
+  const recalculate = useCallback(
+    ({ availableWidth, typography }: MiddleTruncateMeasurement) => {
+      const measureEl = measureRef.current;
+      if (!measureEl) return;
 
-    if (fullWidth <= available) {
-      updateState(fullState);
-      return;
-    }
+      const lastMeasurement = lastMeasurementRef.current;
+      if (
+        lastMeasurement?.availableWidth === availableWidth &&
+        lastMeasurement.typography === typography &&
+        lastMeasurement.value === value
+      ) {
+        return;
+      }
 
-    const result = middleTruncate(graphemes, available, measure, fullWidth);
-    updateState({
-      displayText: result.text,
-      isTruncated: result.truncated,
-      prefixGraphemeCount: result.prefixGraphemeCount,
-      prefixText: result.prefixText,
-      suffixGraphemeCount: result.suffixGraphemeCount,
-      suffixText: result.suffixText,
-    });
-  }, [fullState, graphemes, updateState, value]);
+      lastMeasurementRef.current = {
+        availableWidth,
+        typography,
+        value,
+      };
+
+      if (availableWidth <= 0) {
+        updateState(fullState);
+        return;
+      }
+
+      const textMeasurementCache = textMeasurementCacheRef.current;
+      if (
+        textMeasurementCache.typography !== typography ||
+        textMeasurementCache.value !== value
+      ) {
+        textMeasurementCache.typography = typography;
+        textMeasurementCache.value = value;
+        textMeasurementCache.widths.clear();
+      }
+
+      const measure = (text: string): number => {
+        const cachedWidth = textMeasurementCache.widths.get(text);
+        if (cachedWidth !== undefined) {
+          return cachedWidth;
+        }
+
+        measureEl.textContent = text;
+        const width = measureEl.scrollWidth;
+        textMeasurementCache.widths.set(text, width);
+        return width;
+      };
+
+      const fullWidth = measure(value);
+
+      if (fullWidth <= availableWidth) {
+        updateState(fullState);
+        return;
+      }
+
+      const result = middleTruncate(
+        graphemes,
+        availableWidth,
+        measure,
+        fullWidth
+      );
+      updateState({
+        displayText: result.text,
+        isTruncated: result.truncated,
+        prefixGraphemeCount: result.prefixGraphemeCount,
+        prefixText: result.prefixText,
+        suffixGraphemeCount: result.suffixGraphemeCount,
+        suffixText: result.suffixText,
+      });
+    },
+    [fullState, graphemes, updateState, value]
+  );
 
   // Measure on mount and when value changes - before paint
   useIsomorphicLayoutEffect(() => {
-    recalculate();
-  }, [recalculate]);
+    const measurement = readMeasurement();
+    if (measurement) {
+      recalculate(measurement);
+    }
+  }, [readMeasurement, recalculate]);
 
   // ResizeObserver + font loading for ongoing responsiveness
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
 
-    const debouncedRecalc = (): void => {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = requestAnimationFrame(recalculate);
+    const measurementKey = measurementKeyRef.current;
+    const scheduleRecalculation = (): void => {
+      scheduleMeasurement(measurementKey, {
+        read: readMeasurement,
+        measure: recalculate,
+      });
     };
 
     const ro =
       typeof ResizeObserver !== 'undefined'
-        ? new ResizeObserver(debouncedRecalc)
+        ? new ResizeObserver(scheduleRecalculation)
         : null;
     ro?.observe(el);
-    window.addEventListener('resize', debouncedRecalc);
+    if (!ro) {
+      window.addEventListener('resize', scheduleRecalculation);
+    }
 
     const onFontsLoaded = (): void => {
-      debouncedRecalc();
+      textMeasurementCacheRef.current.widths.clear();
+      lastMeasurementRef.current = null;
+      scheduleRecalculation();
     };
     const fontSet = 'fonts' in document ? document.fonts : null;
     fontSet?.addEventListener?.('loadingdone', onFontsLoaded);
 
     return () => {
       ro?.disconnect();
-      window.removeEventListener('resize', debouncedRecalc);
-      cancelAnimationFrame(rafRef.current);
+      if (!ro) {
+        window.removeEventListener('resize', scheduleRecalculation);
+      }
+      cancelMeasurement(measurementKey);
       fontSet?.removeEventListener?.('loadingdone', onFontsLoaded);
     };
-  }, [recalculate]);
+  }, [readMeasurement, recalculate]);
 
   return {
     ref,

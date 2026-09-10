@@ -14,7 +14,7 @@ keywords:
   - workflow management
 ---
 
-The World SDK provides direct access to workflow infrastructure — runs, steps, events, hooks, streams, and queues. Use it to build observability dashboards, admin panels, debugging tools, and custom workflow management logic.
+The World SDK provides direct access to workflow infrastructure (runs, steps, events, hooks, streams, and queues). Use it to build observability dashboards, admin panels, debugging tools, and custom workflow management logic.
 
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
@@ -40,9 +40,9 @@ const world = await getWorld(); // [!code highlight]
   The World SDK is the low-level foundation that higher-level functions like [`getRun()`](/docs/api-reference/workflow-api/get-run) and [`start()`](/docs/api-reference/workflow-api/start) are built on. Use it when you need capabilities beyond what those functions provide.
 </Callout>
 
-## Data Hydration
+## Data hydration
 
-Step input/output data is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format. To display this data in your UI, use the hydration utilities from `workflow/observability`:
+Step input/output data is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format. To display this data in your user interface (UI), use the hydration utilities from `workflow/observability`:
 
 ```typescript lineNumbers
 import { hydrateResourceIO, observabilityRevivers } from "workflow/observability"; // [!code highlight]

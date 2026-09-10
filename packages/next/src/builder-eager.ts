@@ -1,14 +1,5 @@
 import { constants, type Dirent } from 'node:fs';
-import {
-  access,
-  copyFile,
-  mkdir,
-  readdir,
-  realpath,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type {
   NextConfig as BuilderNextConfig,
@@ -32,6 +23,48 @@ const importEsm = new Function('specifier', 'return import(specifier)') as <T>(
   specifier: string
 ) => Promise<T>;
 
+const appEntrypoint =
+  /^(?:page|route|layout|default|error|loading|template|not-found|forbidden|unauthorized|sitemap|(?:icon|apple-icon|opengraph-image|twitter-image)\d?)$/;
+const appRootEntrypoint = /^(?:global-error|global-not-found|robots|manifest)$/;
+const rootEntrypoint = /^(?:instrumentation|middleware|proxy)$/;
+const rootModuleEntrypoint =
+  /^(?:instrumentation-client|mdx-components)\.(?:mjs|[jt]sx?)$/;
+const rootModuleNames = ['instrumentation-client', 'mdx-components'];
+const rootModuleExtensions = ['js', 'mjs', 'tsx', 'ts', 'jsx'];
+
+export function createNextEntrypointMatcher(pageExtensions: readonly string[]) {
+  const extensions = [...pageExtensions].sort((a, b) => b.length - a.length);
+
+  return (entry: string): boolean => {
+    if (/\.d\.(?:cts|mts|ts)$/.test(entry)) return false;
+
+    const sourceEntry = entry.replace(/^src\//, '');
+    const path = sourceEntry.split('/');
+    const filename = path[path.length - 1];
+    if (rootModuleEntrypoint.test(sourceEntry)) return true;
+
+    const extension = extensions.find((extension) =>
+      sourceEntry.endsWith(`.${extension}`)
+    );
+    if (!extension) return false;
+
+    const name = filename.slice(0, -extension.length - 1);
+    if (path[0] === 'pages') return true;
+
+    if (path[0] === 'app') {
+      const segments = path.slice(1, -1);
+      if (segments.some((segment) => segment.startsWith('_'))) return false;
+
+      return (
+        appEntrypoint.test(name) ||
+        (path.length === 2 && appRootEntrypoint.test(name))
+      );
+    }
+
+    return rootEntrypoint.test(sourceEntry.slice(0, -extension.length - 1));
+  };
+}
+
 // Create the eager Next builder dynamically by extending the ESM BaseBuilder.
 // Exported as getNextBuilderEager() to allow CommonJS modules to import from
 // the ESM @workflow/builders package via dynamic import at runtime.
@@ -47,6 +80,7 @@ export async function getNextBuilderEager(
     getWorkflowQueueTrigger,
     detectWorkflowPatterns,
     parentHasChild,
+    writeFileIfChanged,
   } = buildersModule ??
   (await importEsm<typeof import('@workflow/builders')>('@workflow/builders'));
 
@@ -69,7 +103,7 @@ export async function getNextBuilderEager(
           force: true,
         });
       }
-      await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
+      await writeFileIfChanged(join(workflowGeneratedDir, '.gitignore'), '*');
 
       const inputFiles = await this.getInputFiles();
       const tsconfigPath = await this.findTsConfigPath();
@@ -109,11 +143,16 @@ export async function getNextBuilderEager(
           );
           await mkdir(publicManifestDir, { recursive: true });
           if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
-            await writeFile(join(publicManifestDir, '.gitignore'), '*');
+            await writeFileIfChanged(
+              join(publicManifestDir, '.gitignore'),
+              '*'
+            );
           }
-          await copyFile(
-            join(workflowGeneratedDir, 'manifest.json'),
-            join(publicManifestDir, 'manifest.json')
+          // Written from the same string rather than copied, so an unchanged
+          // manifest leaves the public copy untouched too.
+          await writeFileIfChanged(
+            join(publicManifestDir, 'manifest.json'),
+            manifestJson
           );
         }
       };
@@ -428,7 +467,7 @@ export async function getNextBuilderEager(
 
         // Known gap: the initial build has the same two-read shape (the
         // combined build above consumed sources, and this refresh re-reads
-        // them), but no pinning — and the watcher below attaches with
+        // them), but no pinning, and the watcher below attaches with
         // `ignoreInitial: true`, so an edit landing inside the startup window
         // is absorbed with no straggler event to recover it. Bounded by dev
         // server startup rather than recurring per rebuild; knowingly out of
@@ -470,17 +509,28 @@ export async function getNextBuilderEager(
           }
           if (decision.kind === 'full') {
             logDevHmr('workflow dev hmr: full rediscovery');
-            await fullRebuild();
-            await refreshKnownFiles();
+            try {
+              await fullRebuild();
+              await refreshKnownFiles();
+            } finally {
+              // Lets a log reader tell "quiet" from "rebuild in flight".
+              // The e2e HMR tests drain-to-quiet before counting lines.
+              logDevHmr('workflow dev hmr: rebuild complete');
+            }
             return;
           }
 
           logDevHmr(
             `workflow dev hmr: hot rebuild${decision.refreshStepRegistrations ? ' with step registration refresh' : ''}`
           );
-          await hotRebuild(decision.refreshStepRegistrations);
-          for (const [file, snapshot] of decision.snapshots) {
-            sourceSnapshots.set(file, snapshot);
+          try {
+            await hotRebuild(decision.refreshStepRegistrations);
+            for (const [file, snapshot] of decision.snapshots) {
+              sourceSnapshots.set(file, snapshot);
+            }
+          } finally {
+            // See the matching line on the full path above.
+            logDevHmr('workflow dev hmr: rebuild complete');
           }
         };
 
@@ -614,30 +664,33 @@ export async function getNextBuilderEager(
 
     protected async getInputFiles(): Promise<string[]> {
       const inputFiles = await super.getInputFiles();
+      const isNextEntrypoint = createNextEntrypointMatcher(
+        this.config.pageExtensions
+      );
+      const inputFileSet = new Set(inputFiles);
+      const rootModuleFiles = new Set(
+        rootModuleNames.flatMap((name) => {
+          const file = ['src', '']
+            .flatMap((directory) =>
+              rootModuleExtensions.map((extension) =>
+                join(this.config.workingDir, directory, `${name}.${extension}`)
+              )
+            )
+            .find((candidate) => inputFileSet.has(candidate));
+          return file ? [file] : [];
+        })
+      );
+
       return inputFiles.filter((file) => {
         const entry = relative(this.config.workingDir, file).replaceAll(
           '\\',
           '/'
         );
-
-        // Match App Router route, page, and layout entrypoints in app/ or src/app/.
-        if (/^(?:app|src\/app)\/(?:.*\/)?(?:route|page|layout)\./.test(entry)) {
-          return true;
+        const rootModule = entry.startsWith('src/') ? entry.slice(4) : entry;
+        if (rootModuleEntrypoint.test(rootModule)) {
+          return rootModuleFiles.has(file);
         }
-
-        // Match every Pages Router entrypoint in pages/ or src/pages/.
-        if (/^(?:pages|src\/pages)\//.test(entry)) {
-          return true;
-        }
-
-        // Match Next.js root entrypoints at the project root or under src/.
-        return ['instrumentation', 'middleware', 'proxy'].some((name) =>
-          this.config.pageExtensions.some(
-            (extension) =>
-              entry === `${name}.${extension}` ||
-              entry === `src/${name}.${extension}`
-          )
-        );
+        return isNextEntrypoint(entry);
       });
     }
 
@@ -658,7 +711,7 @@ export async function getNextBuilderEager(
         },
       };
 
-      await writeFile(
+      await writeFileIfChanged(
         join(outputDir, '.well-known/workflow/v1/config.json'),
         JSON.stringify(generatedConfig, null, 2)
       );

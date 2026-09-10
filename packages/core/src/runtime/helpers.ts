@@ -89,7 +89,7 @@ export interface HealthCheckResult {
   /**
    * `@workflow/core` version of the responding deployment, used for
    * capability detection (see `getRunCapabilities`). Omitted when the
-   * responding deployment did not provide the field as a string —
+   * responding deployment did not provide the field as a string:
    * for example, an older `@workflow/core` that predates this field,
    * or a non-JSON plain-text health response.
    */
@@ -104,15 +104,15 @@ export interface HealthCheckResult {
    */
   encryptionPublicKey?: string;
   /**
-   * The responding deployment's `HOOK_RESUME_INPUT_VERSION` — the protocol
-   * version at which the *consumer* (queue-message target) re-ensures the
+   * The responding deployment's `HOOK_RESUME_INPUT_VERSION`: the protocol
+   * version at which the *consumer* (queue-message target) materializes the
    * `hook_received` event from `hookInput` on replay. A cross-deployment
    * `start()` stamps the *target's* value (not the caller's) into the new
-   * run's `executionContext.hookResumeInputVersion` so that `resumeHook()`
-   * only takes the parallel path when the deployment that will actually
-   * consume the queue message is known to honor `hookInput`. Omitted when the
-   * responding deployment predates this field (an older consumer that ignores
-   * `hookInput`), which fails the gate closed.
+   * run's `executionContext.hookResumeInputVersion`. Current producers write
+   * the event durably before publishing the wake and do not read the marker;
+   * OLDER producers still gate their lazy path on it, so it keeps being
+   * stamped. Omitted when the responding deployment predates this field,
+   * which fails that gate closed.
    */
   hookResumeInputVersion?: number;
 }
@@ -162,7 +162,7 @@ export async function handleHealthCheckMessage(
   //
   // Only a *public* key may travel this way: the probe response stream is
   // deliberately unauthenticated, so anything secret would be exposed.
-  // Best-effort — a failure here must not fail the health check itself, which
+  // Best-effort: a failure here must not fail the health check itself, which
   // callers also rely on for plain capability detection.
   let encryptionPublicKey: string | undefined;
   if (healthCheck.runId) {
@@ -190,7 +190,7 @@ export async function handleHealthCheckMessage(
     specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
     workflowCoreVersion,
     // We are executing inside the target deployment, so this constant reflects
-    // the *consumer's* hook-resume protocol version — exactly what a
+    // the *consumer's* hook-resume protocol version, exactly what a
     // cross-deployment caller needs to gate its parallel resume path on.
     hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
@@ -219,7 +219,7 @@ export interface HealthCheckOptions {
    * Queue namespace of the target deployment (e.g. `'eve'` for topics like
    * `__eve_wkf_workflow_*`). Falls back to `WORKFLOW_QUEUE_NAMESPACE` in the
    * calling process. Cross-context callers (e.g. the observability
-   * dashboard) must pass the target deployment's namespace explicitly —
+   * dashboard) must pass the target deployment's namespace explicitly:
    * the env fallback resolves in the caller's process, and a message
    * published to a mismatched topic has no consumer, so the check would
    * always time out.
@@ -254,7 +254,7 @@ const HEALTH_CHECK_READ_TIMEOUT = 500;
  * health-check poll loop: some worlds hold that request open until the
  * stream has data (e.g. workflow-server holds unwritten streams open for
  * ~2 minutes), which would otherwise blow through the configured health
- * check timeout — the `while` condition is only re-checked between
+ * check timeout, since the `while` condition is only re-checked between
  * iterations.
  */
 function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -492,7 +492,7 @@ function recordRequestedEventCursor(
  * re-sorted. Every append source is already in canonical order relative to the
  * tail (a cursor-delimited page, or a write-response delta), so receipt order is
  * the order to keep, and re-sorting here would only cost a pass over the log.
- * Nothing downstream may assume the tail is the newest event — see
+ * Nothing downstream may assume the tail is the newest event. See
  * {@link maxEventSlot}.
  */
 export function appendUniqueEvents(
@@ -521,7 +521,7 @@ export function appendUniqueEvents(
  *
  * `preloadedEvents` is loaded `sortOrder: 'asc'` and is never re-sorted
  * client-side, so a `hook_received` spliced in by the lazy-resume consumer must
- * land in `eventId` order — a plain `push` would place a late-committing
+ * land in `eventId` order: a plain `push` would place a late-committing
  * earlier event after events that sort before it, corrupting replay.
  *
  * Lexicographic string order is the log's order: a slot id is a fixed-width
@@ -537,7 +537,7 @@ export function insertEventByEventId(target: Event[], event: Event): void {
   while (i > 0) {
     const existing = target[i - 1];
     if (existing.eventId === event.eventId) {
-      // Already present — keep the splice idempotent.
+      // Already present: keep the splice idempotent.
       return;
     }
     if (existing.eventId < event.eventId) {
@@ -597,108 +597,107 @@ export async function loadWorkflowRunEvents(
   afterCursor?: string
 ): Promise<LoadedEventLog> {
   const incremental = afterCursor !== undefined;
-  return trace(
-    incremental ? 'workflow.loadNewEvents' : 'workflow.loadEvents',
-    async (span) => {
-      span?.setAttributes({
-        ...Attribute.WorkflowRunId(runId),
-      });
+  return trace('workflow.replay.load', async (span) => {
+    span?.setAttributes({
+      ...Attribute.WorkflowRunId(runId),
+      ...Attribute.WorkflowReplayLoadSource(
+        incremental ? 'events_list_incremental' : 'events_list'
+      ),
+    });
 
-      const loadedEvents: Event[] = [];
-      const loadedEventIds = new Set<string>();
-      const requestedCursors = new Set<string>();
-      let cursor: string | null = afterCursor ?? null;
-      let hasMore = true;
-      let pagesLoaded = 0;
-      let retriedWithoutCursor = false;
+    const loadedEvents: Event[] = [];
+    const loadedEventIds = new Set<string>();
+    const requestedCursors = new Set<string>();
+    let cursor: string | null = afterCursor ?? null;
+    let hasMore = true;
+    let pagesLoaded = 0;
+    let retriedWithoutCursor = false;
+    const world = await getWorldLazy();
+    const loadStart = Date.now();
+    while (hasMore) {
+      // TODO: we're currently loading all the data with resolveRef behavior. We need to update this
+      // to lazyload the data from the world instead so that we can optimize and make the event log loading
+      // much faster and memory efficient
+      const pageStart = Date.now();
+      const requestedCursor = cursor;
+      recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
 
-      const world = await getWorldLazy();
-      const loadStart = Date.now();
-      while (hasMore) {
-        // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
-        // to lazyload the data from the world instead so that we can optimize and make the event log loading
-        // much faster and memory efficient
-        const pageStart = Date.now();
-        const requestedCursor = cursor;
-        recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
-
-        let response: Awaited<ReturnType<typeof world.events.list>>;
-        try {
-          response = await world.events.list({
-            runId,
-            pagination: {
-              sortOrder: 'asc',
-              cursor: requestedCursor ?? undefined,
-            },
-          });
-        } catch (error) {
-          if (
-            shouldRetryWithoutEventCursor(
-              error,
-              requestedCursor,
-              retriedWithoutCursor
-            )
-          ) {
-            runtimeLogger.warn(
-              'Event cursor was rejected; retrying with a full event reload.',
-              { workflowRunId: runId }
-            );
-            loadedEvents.length = 0;
-            loadedEventIds.clear();
-            requestedCursors.clear();
-            cursor = null;
-            retriedWithoutCursor = true;
-            continue;
-          }
-          throw error;
-        }
-
-        appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
-        hasMore = response.hasMore;
-        assertEventPaginationProgress(
+      let response: Awaited<ReturnType<typeof world.events.list>>;
+      try {
+        response = await world.events.list({
           runId,
-          hasMore,
-          response.cursor,
-          requestedCursors
-        );
-        // Preserve the last non-null cursor across pages. A World may
-        // legitimately return `{ data: [], cursor: null, hasMore: false }`
-        // on a trailing empty page — for example when the previous page's
-        // underlying DB query hit the limit exactly and returned a
-        // `LastEvaluatedKey` "just in case". Overwriting with that null
-        // would lose the position past the last real event we loaded and
-        // force the runtime into the "no cursor after initial load" full-
-        // reload fallback on every subsequent replay iteration.
-        cursor = response.cursor ?? cursor;
-        pagesLoaded++;
-
-        runtimeLogger.debug('Loaded event page', {
-          workflowRunId: runId,
-          incremental,
-          page: pagesLoaded,
-          pageEvents: response.data.length,
-          totalEvents: loadedEvents.length,
-          hasMore,
-          pageMs: Date.now() - pageStart,
+          pagination: {
+            sortOrder: 'asc',
+            cursor: requestedCursor ?? undefined,
+          },
         });
+      } catch (error) {
+        if (
+          shouldRetryWithoutEventCursor(
+            error,
+            requestedCursor,
+            retriedWithoutCursor
+          )
+        ) {
+          runtimeLogger.warn(
+            'Event cursor was rejected; retrying with a full event reload.',
+            { workflowRunId: runId }
+          );
+          loadedEvents.length = 0;
+          loadedEventIds.clear();
+          requestedCursors.clear();
+          cursor = null;
+          retriedWithoutCursor = true;
+          continue;
+        }
+        throw error;
       }
 
-      runtimeLogger.debug('Event load complete', {
+      appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
+      hasMore = response.hasMore;
+      assertEventPaginationProgress(
+        runId,
+        hasMore,
+        response.cursor,
+        requestedCursors
+      );
+      // Preserve the last non-null cursor across pages. A World may
+      // legitimately return `{ data: [], cursor: null, hasMore: false }`
+      // on a trailing empty page, for example when the previous page's
+      // underlying DB query hit the limit exactly and returned a
+      // precautionary `LastEvaluatedKey`. Overwriting with that null
+      // would lose the position past the last real event we loaded and
+      // force the runtime into the "no cursor after initial load" full-
+      // reload fallback on every subsequent replay iteration.
+      cursor = response.cursor ?? cursor;
+      pagesLoaded++;
+
+      runtimeLogger.debug('Loaded event page', {
         workflowRunId: runId,
         incremental,
+        page: pagesLoaded,
+        pageEvents: response.data.length,
         totalEvents: loadedEvents.length,
-        pagesLoaded,
-        totalMs: Date.now() - loadStart,
+        hasMore,
+        pageMs: Date.now() - pageStart,
       });
-
-      span?.setAttributes({
-        ...Attribute.WorkflowEventsCount(loadedEvents.length),
-        ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
-      });
-
-      return { events: loadedEvents, cursor };
     }
-  );
+
+    runtimeLogger.debug('Event load complete', {
+      workflowRunId: runId,
+      incremental,
+      totalEvents: loadedEvents.length,
+      pagesLoaded,
+      totalMs: Date.now() - loadStart,
+    });
+
+    span?.setAttributes({
+      ...Attribute.WorkflowEventsCount(loadedEvents.length),
+      ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
+    });
+
+    return { events: loadedEvents, cursor };
+  });
 }
 
 /**
@@ -709,6 +708,23 @@ export async function loadWorkflowRunEvents(
 export interface LoadedEventLog {
   events: Event[];
   cursor: string | null;
+}
+
+/**
+ * Extend a loaded log with a page that continues it — a listed page, or the
+ * inline delta a write handed back — and move its read position with it.
+ *
+ * The cursor is only advanced when the page carries one, so a source with no
+ * position of its own (a skipped-slot report) cannot walk the read position
+ * past events it did not carry. Appending does not re-sort; see
+ * {@link appendUniqueEvents} for why receipt order is the order to keep.
+ */
+export function appendEventLog(
+  log: LoadedEventLog,
+  appended: { events: readonly Event[]; cursor?: string | null }
+): void {
+  appendUniqueEvents(log.events, appended.events);
+  log.cursor = appended.cursor ?? log.cursor;
 }
 
 /**
@@ -744,8 +760,8 @@ export function isSlotGapCheckEnabled(): boolean {
  * bump-and-report write hands back the slots it skipped ({@link
  * mergeReportedEvents}), an inline delta extends the tail (`absorbCreateDelta`
  * in `runtime.ts`), and a listed page appends ({@link appendUniqueEvents}).
- * They look alarming — the replay is reading an array while something else
- * writes to it — and they are safe for one reason worth stating plainly, since
+ * They look alarming (the replay is reading an array while something else
+ * writes to it) and they are safe for one reason worth stating plainly, since
  * every correctness argument in this file leans on it.
  *
  * **An event in the log is a fact, and a longer log cannot retract one.** The
@@ -757,8 +773,8 @@ export function isSlotGapCheckEnabled(): boolean {
  *
  * Merging is therefore monotone: it can only add facts this replay has yet to
  * reconcile to, never remove one it already has. That is why absorbing is
- * always optional and never wrong to decline — an unabsorbed event is one the
- * next read returns — and why the guards below can afford to be strict.
+ * always optional and never wrong to decline (an unabsorbed event is one the
+ * next read returns), and why the guards below can afford to be strict.
  */
 
 /**
@@ -809,7 +825,7 @@ export interface SkippedSlotReport {
  * would raise the log's highest position past a position whose event is
  * missing. Later writes read that maximum to say what they have seen, so each
  * would claim a position it never saw, and the World only reports the span a
- * write skips — it would never send the missing one. Dropping costs one more
+ * write skips: it would never send the missing one. Dropping costs one more
  * round of the same events on the next write and keeps the log a prefix of the
  * truth, which the note above {@link mergeReportedEvents} explains is always an
  * available answer.
@@ -946,7 +962,7 @@ export function findEventSlotGap(
  *
  * A hole can be transient. The World allocates a slot inside the insert that
  * occupies it, so two concurrent writers can collide, one retry past the other,
- * and the higher slot commit first — leaving a window in which the lower one is
+ * and the higher slot commit first, leaving a window in which the lower one is
  * genuinely absent from a strongly-consistent read and fills in a moment later.
  * The window is one commit wide, so a short backoff clears it; anything that
  * survives all three re-reads is a position no write will ever occupy.
@@ -959,7 +975,7 @@ const SLOT_GAP_RECHECK_BASE_DELAY_MS = 25;
  * out, and return the settled log alongside the hole that survived.
  *
  * Reads are strongly consistent, so a hole is not an artifact of *when* the log
- * was read — but it can be an artifact of a write that had not committed yet
+ * was read, but it can be an artifact of a write that had not committed yet
  * (see {@link SLOT_GAP_RECHECK_ATTEMPTS}). Distinguishing the two costs a
  * re-read, which is only ever paid by a replay that already found a hole.
  *
@@ -994,7 +1010,7 @@ export async function settleEventSlotGap(
  * One integer says it because the World keeps its positions dense: a writer
  * that names slot N is claiming to hold every event from 1 to N and nothing
  * above. The World answers by numbering the write above whatever the log has
- * actually reached and handing back the events on the slots in between — the
+ * actually reached and handing back the events on the slots in between: the
  * ones this writer decided without.
  *
  * Density is the World's invariant, not a claim about this particular read. A
@@ -1032,14 +1048,14 @@ export function slotSnapshotParams(
  * The events a rejecting World attached to a `PreconditionFailedError`, when it
  * returned the ones the client's snapshot was missing inline.
  *
- * Returns `null` for anything else — no details, a World that did not implement
+ * Returns `null` for anything else: no details, a World that did not implement
  * this, or a payload that does not narrow cleanly. Callers fall back to
  * reloading the event log, which is always correct; this is untrusted-shaped
  * data on a failure path, so nothing here is repaired.
  *
  * `runId` is the caller's run. Every event must belong to it: the delta is
  * merged straight into the replay's log, and one foreign event there is a
- * corrupt log rather than a corrected one — the replay would consume a
+ * corrupt log rather than a corrected one: the replay would consume a
  * correlation id for an event that does not exist on this run.
  */
 export function preconditionEventDelta(
@@ -1129,7 +1145,7 @@ export function withHealthCheck(
 }
 
 /** FNV-1a 32-bit hash of a string, as 8 hex chars. Tiny, deterministic, and
- *  dependency-free — used only to scope idempotency keys, not for security. */
+ *  dependency-free. Used only to scope idempotency keys, not for security. */
 function fnv1a32Hex(value: string): string {
   let hash = 0x811c9dc5;
   for (let i = 0; i < value.length; i++) {
@@ -1141,19 +1157,19 @@ function fnv1a32Hex(value: string): string {
 
 /**
  * Idempotency key for a step's background-dispatch queue message, scoped to
- * the step's IDENTITY — correlation id plus (hashed) step name — rather than
+ * the step's IDENTITY, correlation id plus (hashed) step name, rather than
  * the bare correlation id.
  *
  * The scoping matters for resilient step dispatch under the precondition
  * guard: a guard-rejected `step_created` leaves its (revoked) step message in
  * flight, and the corrected replay may re-derive the same correlation id for
  * a DIFFERENT step. Under a bare-correlationId key the corrected replay's
- * dispatch would silently dedupe against the revoked in-flight message —
+ * dispatch would silently dedupe against the revoked in-flight message,
  * which then resolves `skipped` against the re-created entity (the server's
- * stepName fence rejects its bare start) — and the legitimate step would
+ * stepName fence rejects its bare start), and the legitimate step would
  * never be executed. Scoping by step name keeps every dedup property that
  * matters (crash recovery re-dispatch, concurrent handlers, the delayed
- * retry sharing the suspension re-dispatch's key — all name the same step)
+ * retry sharing the suspension re-dispatch's key: all name the same step)
  * while letting the corrected schedule's dispatch through.
  *
  * Every producer of a step-dispatch (or step-retry) message must use this
@@ -1215,34 +1231,26 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
 }
 
 /**
- * Returns a memoized accessor for a run's full encryption capability.
- *
- * The first call resolves the run's key material via
- * `world.getEncryptionKeyForRun` (which may do HKDF derivation locally on
- * Vercel, or a network fetch from external contexts) and derives a
- * {@link PayloadKey} from it; subsequent calls await the same cached promise.
- * If the world doesn't support encryption or the run has no key configured,
- * the cached value is `undefined`.
- *
- * The resolved value is deliberately the *full* capability — the symmetric AES
- * key plus the run's X25519 keypair — not just a `CryptoKey`. A run reading
- * its own event log can encounter sealed (`encp`) payloads that another run
- * wrote to it (a cross-deployment hook resumption, say), and opening those
- * needs the keypair. Resolving only the symmetric key would leave those
- * payloads unopenable and wedge the run.
- *
- * Used by step / workflow handlers to defer the (potentially expensive)
- * key fetch until the first code path that actually needs it — typically
- * input hydration on the success path, or error dehydration on a failure
- * path. Both paths can race-call the accessor without triggering duplicate
- * fetches.
- *
- * Errors thrown by `getEncryptionKeyForRun` propagate to every caller
- * (the cached promise rejects). This is intentional: when encryption is
- * configured, we never want to silently fall back to plaintext
- * serialization. A propagated error in an event-emission path leaves the
- * outer try/catch to log and surface the issue; the queue's redelivery
- * semantics will retry the key fetch on the next attempt.
+ * Resolve the run's full payload-encryption capability. This includes the
+ * symmetric key and X25519 keypair needed to open cross-run sealed payloads.
+ * Missing world support or key material resolves to `undefined`; lookup and
+ * derivation failures propagate rather than silently falling back to plaintext.
+ */
+export async function resolveRunEncryptionKey(
+  world: World,
+  runOrId: WorkflowRun | string,
+  context?: Record<string, unknown>
+): Promise<PayloadKey | undefined> {
+  const rawKey =
+    typeof runOrId === 'string'
+      ? await world.getEncryptionKeyForRun?.(runOrId, context)
+      : await world.getEncryptionKeyForRun?.(runOrId);
+  return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
+}
+
+/**
+ * Return a lazy, memoized accessor around {@link resolveRunEncryptionKey}.
+ * Concurrent callers share the same promise, including its rejection.
  */
 export function memoizeEncryptionKey(
   world: World,
@@ -1251,20 +1259,7 @@ export function memoizeEncryptionKey(
   let cached: Promise<PayloadKey | undefined> | undefined;
   return () => {
     if (!cached) {
-      cached = (async () => {
-        // The `getEncryptionKeyForRun` overload set takes either a
-        // `WorkflowRun` or a `runId: string` (with optional context). Branch
-        // here so TypeScript picks the right overload for each shape.
-        const rawKey =
-          typeof runOrId === 'string'
-            ? await world.getEncryptionKeyForRun?.(runOrId)
-            : await world.getEncryptionKeyForRun?.(runOrId);
-        // Resolve the *full* capability, not just the symmetric key: a run
-        // reading its own event log may encounter sealed (`encp`) payloads
-        // that another run wrote to it, and opening those needs the run's
-        // X25519 scalar as well.
-        return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
-      })();
+      cached = resolveRunEncryptionKey(world, runOrId);
     }
     return cached;
   };

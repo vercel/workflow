@@ -6,8 +6,8 @@ const UlidSchema = z.string().ulid();
 
 /**
  * A workflow run ID: the `wrun_` prefix followed by a 26-char ULID (minted
- * client-side in core's `start()`). Validates the exact shape — prefix plus a
- * well-formed ULID — rather than a loose length bound, so callers can't smuggle
+ * client-side in core's `start()`). Validates the exact shape (prefix plus a
+ * well-formed ULID) rather than a loose length bound, so callers can't smuggle
  * arbitrary strings through APIs that persist a run ID verbatim.
  */
 export const workflowRunIdSchema = z.templateLiteral(['wrun_', z.ulid()]);

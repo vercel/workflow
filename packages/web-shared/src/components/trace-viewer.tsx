@@ -8,6 +8,7 @@ import {
 } from './sidebar/sidebar-data-context';
 import { TraceViewerSkeleton } from './trace-viewer/components/trace-viewer-skeleton';
 import { TraceViewer as TraceViewerComponent } from './trace-viewer/trace-viewer';
+import type { GetStepAttributes } from './workflow-traces/trace-span-construction';
 
 const TraceViewer = ({
   run,
@@ -17,6 +18,7 @@ const TraceViewer = ({
   hasMore,
   isLoadingMore,
   loading = false,
+  getStepAttributes,
 }: {
   run: WorkflowRun;
   events: Event[];
@@ -25,6 +27,8 @@ const TraceViewer = ({
   hasMore?: boolean;
   isLoadingMore?: boolean;
   loading?: boolean;
+  /** Adds product-specific attributes to event-derived step span data. */
+  getStepAttributes?: GetStepAttributes;
 }) => {
   const trace: TraceWithMeta | undefined = useMemo(() => {
     if (!run?.runId) {
@@ -35,9 +39,10 @@ const TraceViewer = ({
     // repeats with the whole log in hand.
     return buildTrace(run, events, new Date(), {
       isCompleteHistory: !hasMore,
+      getStepAttributes,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `new Date()` is intentionally not a dep
-  }, [run, events, hasMore]);
+  }, [run, events, hasMore, getStepAttributes]);
 
   // The sidebar shows one entity's slice of the log, so it takes the trace's
   // answer rather than recomputing one from the slice.

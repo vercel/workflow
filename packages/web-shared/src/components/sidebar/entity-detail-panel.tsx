@@ -57,7 +57,7 @@ export interface SelectedSpanInfo {
 /**
  * Panel component for workflow traces that displays entity details.
  *
- * This component is rendered OUTSIDE the trace viewer context — it
+ * This component is rendered OUTSIDE the trace viewer context: it
  * receives all data via props rather than reading from context.
  */
 export function EntityDetailPanel({
@@ -71,6 +71,8 @@ export function EntityDetailPanel({
   encryptionKey,
   onDecrypt,
   isDecrypting = false,
+  isDecryptDisabled = false,
+  decryptDisabledReason,
   selectedSpan,
   showSeparateEventOccurrenceTimestamps = false,
   getModuleSourceUrl,
@@ -100,6 +102,10 @@ export function EntityDetailPanel({
   onDecrypt?: () => void;
   /** Whether the encryption key is currently being fetched */
   isDecrypting?: boolean;
+  /** Whether decryption is unavailable */
+  isDecryptDisabled?: boolean;
+  /** Explains why decryption is unavailable */
+  decryptDisabledReason?: string;
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
@@ -315,7 +321,15 @@ export function EntityDetailPanel({
     <div className="flex h-full flex-col">
       <DecryptClickContext.Provider
         value={
-          onDecrypt ? { onDecrypt, isDecrypting, hasEncryptedData } : undefined
+          onDecrypt
+            ? {
+                onDecrypt,
+                isDecrypting,
+                isDecryptDisabled,
+                decryptDisabledReason,
+                hasEncryptedData,
+              }
+            : undefined
         }
       >
         <div className="flex-1 overflow-y-auto px-4 pb-8">
@@ -394,6 +408,8 @@ export function EntityDetailPanel({
             onRunClick={onRunClick}
             onDecrypt={onDecrypt}
             isDecrypting={isDecrypting}
+            isDecryptDisabled={isDecryptDisabled}
+            decryptDisabledReason={decryptDisabledReason}
             resource={resource}
           />
 

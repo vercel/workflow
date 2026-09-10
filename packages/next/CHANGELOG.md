@@ -1,5 +1,80 @@
 # @workflow/next
 
+## 5.0.0-beta.50
+
+### Patch Changes
+
+- Updated dependencies [[`efbdc21`](https://github.com/vercel/workflow/commit/efbdc213a0a70f8be2a147a0af195a4d9d82f0fe)]:
+  - @workflow/core@5.0.0-beta.50
+  - @workflow/builders@5.0.0-beta.50
+
+## 5.0.0-beta.49
+
+### Patch Changes
+
+- Updated dependencies [[`ae5ee5b`](https://github.com/vercel/workflow/commit/ae5ee5ba2e68ca9850a5cb7b2b253388d06fdd8f), [`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd), [`c340820`](https://github.com/vercel/workflow/commit/c3408204110f5e8fbb53cefedf136caf00ee452d), [`4547e1a`](https://github.com/vercel/workflow/commit/4547e1a7a95f273f3166edf45344dc827f1935fa)]:
+  - @workflow/swc-plugin@5.0.0-beta.6
+  - @workflow/core@5.0.0-beta.49
+  - @workflow/builders@5.0.0-beta.49
+
+## 5.0.0-beta.48
+
+### Patch Changes
+
+- Updated dependencies [[`564ad39`](https://github.com/vercel/workflow/commit/564ad3966c5d16d73fd6fd88acdf01e6f92843aa), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`3c08778`](https://github.com/vercel/workflow/commit/3c0877890500257fb19e9575d57399ec4bb159c9), [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491), [`31dabce`](https://github.com/vercel/workflow/commit/31dabce0c87fa48af210362061324ff0369e094f)]:
+  - @workflow/core@5.0.0-beta.48
+  - @workflow/builders@5.0.0-beta.48
+
+## 5.0.0-beta.47
+
+### Patch Changes
+
+- [#3801](https://github.com/vercel/workflow/pull/3801) [`a3da6b7`](https://github.com/vercel/workflow/commit/a3da6b791bb2bd3f77abc1fb92b4c15f688c2627) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Discover workflows imported by every Next.js file convention entrypoint.
+
+- Updated dependencies [[`855e479`](https://github.com/vercel/workflow/commit/855e47990c0da35419325da27976bae925afb0e9), [`2668e33`](https://github.com/vercel/workflow/commit/2668e3325ba89dec973c3c2f35c49efdb239de8d), [`88f5d21`](https://github.com/vercel/workflow/commit/88f5d214d48b15d3126943313ed03d48667e772c), [`07ec212`](https://github.com/vercel/workflow/commit/07ec212fe762e0659d4528913716c59870fd6c7d), [`ee6f917`](https://github.com/vercel/workflow/commit/ee6f917cdbfcf50a5fd697c7a9cb70dd1294f931), [`e9d5c56`](https://github.com/vercel/workflow/commit/e9d5c56701821b090108a85b74bf8b0cbef8ea8e), [`1c28eec`](https://github.com/vercel/workflow/commit/1c28eeca159f022c73912326baf78d69152db876)]:
+  - @workflow/core@5.0.0-beta.47
+  - @workflow/builders@5.0.0-beta.47
+
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- Updated dependencies [[`f806f8c`](https://github.com/vercel/workflow/commit/f806f8c258fb9ba45fec8b0e4919f55b0bf81a3f), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`82e2678`](https://github.com/vercel/workflow/commit/82e267893917e06f5d3ce316baefc27cd024a912), [`556f3f0`](https://github.com/vercel/workflow/commit/556f3f080a33f8673cf3c08805997dba4e4d865e)]:
+  - @workflow/builders@5.0.0-beta.46
+  - @workflow/core@5.0.0-beta.46
+
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- Updated dependencies [[`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c), [`27cab14`](https://github.com/vercel/workflow/commit/27cab14adcc6f748500fca19cf78feeb60a125e7), [`f7fb012`](https://github.com/vercel/workflow/commit/f7fb0126528fac2168492c3143fe0379b6f5ef1a), [`5841558`](https://github.com/vercel/workflow/commit/584155897f75e712a1c2bc199d6d12027cd18dab)]:
+  - @workflow/builders@5.0.0-beta.45
+  - @workflow/core@5.0.0-beta.45
+
+## 5.0.0-beta.44
+
+### Patch Changes
+
+- [#3454](https://github.com/vercel/workflow/pull/3454) [`8a2648e`](https://github.com/vercel/workflow/commit/8a2648e35f3ccfdffd275bc37470dd3396981773) Thanks [@josuediazflores](https://github.com/josuediazflores)! - Emit `manifest.json` in a stable order and remove a redundant compilation round per no-op rebuild in Next dev.
+
+- Updated dependencies [[`5b5a926`](https://github.com/vercel/workflow/commit/5b5a926f8850ec5d967e090cc0500028fd53e2ef), [`9b1b8c7`](https://github.com/vercel/workflow/commit/9b1b8c711104fd507327aafc8cb965738f315e29), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4), [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0), [`8a2648e`](https://github.com/vercel/workflow/commit/8a2648e35f3ccfdffd275bc37470dd3396981773), [`bf9de1c`](https://github.com/vercel/workflow/commit/bf9de1cd81eda1b1721b857364070c0ce70d1e58)]:
+  - @workflow/core@5.0.0-beta.44
+  - @workflow/builders@5.0.0-beta.44
+
+## 5.0.0-beta.43
+
+### Patch Changes
+
+- [#3529](https://github.com/vercel/workflow/pull/3529) [`ae16375`](https://github.com/vercel/workflow/commit/ae1637502b35c8f635d2b0e103cd8de85b5ffcdd) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Fix dev HMR dropping edits to already-tracked files that land while a full rediscovery rebuild is in flight
+
+- [#3589](https://github.com/vercel/workflow/pull/3589) [`916fcf0`](https://github.com/vercel/workflow/commit/916fcf08339695861c41145970085dea96b99140) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Dev HMR logging (`WORKFLOW_DEV_HMR_LOGS=1`) now also logs `workflow dev hmr: rebuild complete`
+
+- [#3493](https://github.com/vercel/workflow/pull/3493) [`0b2797b`](https://github.com/vercel/workflow/commit/0b2797bbace75f590897959367aec03300ca6e13) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Bundle `@workflow/world-vercel` into the Next.js server output instead of leaving it external, so cold starts no longer resolve its module graph from disk one file at a time.
+
+- Updated dependencies [[`b0adb50`](https://github.com/vercel/workflow/commit/b0adb50bce623b23252735021205e8d870a2b11f), [`37e1d9e`](https://github.com/vercel/workflow/commit/37e1d9e5a9870ef4a35e1875e7054253a9fb89c3), [`1321570`](https://github.com/vercel/workflow/commit/13215704645ea487ef6f8821016ec3f13c1cd830), [`234d3dd`](https://github.com/vercel/workflow/commit/234d3dd7b852129e189d321314c4f749f12711d8), [`707dfe6`](https://github.com/vercel/workflow/commit/707dfe6a063564cd1c146742e90661abc49534b3), [`a074259`](https://github.com/vercel/workflow/commit/a074259166819121579ffbb5b9f8da60853ae57b), [`ac51658`](https://github.com/vercel/workflow/commit/ac51658d39649e7d8e290924c3bf7b2c7df78b00), [`c5f9177`](https://github.com/vercel/workflow/commit/c5f9177be3c58a2b5616f798932061b67e0b54a5), [`880801b`](https://github.com/vercel/workflow/commit/880801bd4521a0cfd76e8c46ebf560c388ecf30c)]:
+  - @workflow/core@5.0.0-beta.43
+  - @workflow/builders@5.0.0-beta.43
+
 ## 5.0.0-beta.42
 
 ### Patch Changes

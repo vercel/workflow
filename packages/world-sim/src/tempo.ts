@@ -2,16 +2,16 @@
  * The scripting layer: stop a writer inside a world call, act while it is held,
  * let it go.
  *
- * Everything here compiles down to one thing — a watch on a call point whose
+ * Everything here compiles down to one thing: a watch on a call point whose
  * action returns a promise, which blocks the intercepted call until that
  * promise settles. `Writer.runTo*` (see `writers.ts`) is the vocabulary a
  * scenario should reach for; `park` / `until` / `during` are the primitive it is
  * built from, kept public for points no writer op names.
  *
  * The hazard a script introduces is that it can wait for something that will
- * never happen, and because a held call blocks the writer that made it — and,
- * when that writer is the one the scheduler is inside, the whole loop — that is
- * a hang rather than a quiescent stall. Three things buy the termination
+ * never happen, and because a held call blocks the writer that made it (and,
+ * when that writer is the one the scheduler is inside, the whole loop), that
+ * is a hang rather than a quiescent stall. Three things buy the termination
  * guarantee back:
  *
  *  - `runTo` is **level-triggered**: a point that has already gone by is an
@@ -34,7 +34,7 @@ import { type ArmedHold, createWriters } from './writers.js';
 
 /**
  * Raised into a script's pending waits when the scenario tears down. It means
- * "the world stopped, stop waiting" — not a failure of the script — so the
+ * "the world stopped, stop waiting", not a failure of the script, so the
  * runner does not report it as one.
  */
 export class ScenarioAborted extends Error {
@@ -118,7 +118,7 @@ export function createTempo(
         // Indirect through `settle` rather than storing `reject`: `settle` is
         // replaced below with the wrapper that also disposes the watch, and
         // `abort()` walks this map. Storing the raw `reject` here would reject
-        // the script's promise while leaving the watch armed — and a watch that
+        // the script's promise while leaving the watch armed, and a watch that
         // fires after an abort blocks its call on a promise whose `release` is
         // no longer reachable from anywhere, which is a hang rather than a
         // late wake-up (the global deadline is one-shot and already spent).
@@ -186,7 +186,7 @@ export function createTempo(
 
     return new Promise<CallContext>((resolve, reject) => {
       // Same disposing-reject shape as `armHold`. A leaked watch here does not
-      // hang anything — this action resolves rather than blocking — but it
+      // hang anything (this action resolves rather than blocking), but it
       // still stops a writer for a wait nobody is listening to.
       waiting.set(id, {
         label: name,

@@ -706,7 +706,7 @@ function crttResult({ avg = 120, hist }) {
   });
 }
 
-test('renders stream scenarios in their own table with rate columns', async () => {
+test('renders stream scenarios in their own table without rate columns', async () => {
   const { renderComment, extractHistory } = await loadModule();
   const hist = crttHist([
     [59, 1400],
@@ -728,18 +728,12 @@ test('renders stream scenarios in their own table with rate columns', async () =
   assert.doesNotMatch(body, /\| \*\*stream\*\* \|/);
   assert.match(
     body,
-    /\| Scenario \| wr c\/s \| rd c\/s \| wr KiB\/s \| rd KiB\/s \| CRTT 1st \| p75 \| p90 \| p99 \| CDV max \| iters \|/
+    /\| Scenario \| CRTT 1st \| p75 \| p90 \| p99 \| CDV max \| iters \|/
   );
-  // Rate cells with plain vs-main deltas, latency cells from percentile
-  // baselines, and NO red/green marks anywhere in the stream table.
-  assert.match(
-    body,
-    /\| chunk RTT \(llm\) \| 100 \(\u00b10%\) \| 99\.4 \(\+10%\) \| 6\.1 \(\u00b10%\) \|/
-  );
-  assert.match(
-    body,
-    /\| replay eve-test \(2x\) \| 297 \(\u00b10%\) \| 288 \(\u00b10%\) \| 742 \(\u00b10%\) \| 719 \(\u00b10%\) \|/
-  );
+  // Latency cells retain their vs-main deltas, and the stream table has no
+  // red/green marks.
+  assert.match(body, /\| chunk RTT \(llm\) \| 96 \(\u00b10%\) \|/);
+  assert.match(body, /\| replay eve-test \(2x\) \| 118 \(\u00b10%\) \|/);
   assert.match(body, /\| 141 \(\u00b10%\) \| 10 \|/);
   const streamsSection = body.slice(
     body.indexOf('**Streams**'),
@@ -763,7 +757,7 @@ test('renders stream scenarios in their own table with rate columns', async () =
   // the internal 'stream' id never leaks into it.
   assert.match(body, /\*\*CRTT\*\*: chunk round-trip time/);
   assert.match(body, /\*\*CDV\*\*: chunk delay variation/);
-  assert.match(body, /\*\*Streams\*\*: writer\/reader sustained rates/);
+  assert.match(body, /\*\*Streams\*\*: first-chunk RTT/);
   // History block: per-run arrays and sparkline payloads stripped, medians
   // and baseline annotations kept.
   const history = extractHistory(body);
@@ -780,7 +774,7 @@ test('renders stream scenarios in their own table with rate columns', async () =
     history,
     commit: 'ffffff1234567890',
   });
-  assert.match(rerendered, /\| chunk RTT \(llm\) \| 100/);
+  assert.match(rerendered, /\| chunk RTT \(llm\) \| 96/);
   assert.doesNotMatch(rerendered, /CRTT drill-down/);
 });
 
@@ -794,7 +788,7 @@ test('renders the stream table without deltas when main has no baseline', async 
   });
   assert.match(
     body,
-    /\| chunk RTT \(llm\) \| 100 \| 99\.4 \| 6\.1 \| 6 \| 96 \| 188 \| 438 \| 1229 \| 141 \| 10 \|/
+    /\| chunk RTT \(llm\) \| 96 \| 188 \| 438 \| 1229 \| 141 \| 10 \|/
   );
   assert.doesNotMatch(body, /%\)/);
   assert.match(body, /No `main` baseline yet/);

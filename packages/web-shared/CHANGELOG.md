@@ -1,5 +1,92 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.50
+
+### Patch Changes
+
+- Updated dependencies [[`efbdc21`](https://github.com/vercel/workflow/commit/efbdc213a0a70f8be2a147a0af195a4d9d82f0fe)]:
+  - @workflow/core@5.0.0-beta.50
+
+## 5.0.0-beta.49
+
+### Patch Changes
+
+- Updated dependencies [[`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd), [`c340820`](https://github.com/vercel/workflow/commit/c3408204110f5e8fbb53cefedf136caf00ee452d), [`4547e1a`](https://github.com/vercel/workflow/commit/4547e1a7a95f273f3166edf45344dc827f1935fa)]:
+  - @workflow/core@5.0.0-beta.49
+  - @workflow/world@5.0.0-beta.34
+
+## 5.0.0-beta.48
+
+### Patch Changes
+
+- [#3850](https://github.com/vercel/workflow/pull/3850) [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add a catchable `StreamError` and classify Workflow stream infrastructure failures as `STREAM_ERROR` instead of `USER_ERROR`.
+
+- Updated dependencies [[`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762), [`564ad39`](https://github.com/vercel/workflow/commit/564ad3966c5d16d73fd6fd88acdf01e6f92843aa), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`4a18b01`](https://github.com/vercel/workflow/commit/4a18b0133aaedaf922b903818c6b0db3adc91beb), [`3c08778`](https://github.com/vercel/workflow/commit/3c0877890500257fb19e9575d57399ec4bb159c9), [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491), [`31dabce`](https://github.com/vercel/workflow/commit/31dabce0c87fa48af210362061324ff0369e094f), [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15)]:
+  - @workflow/world@5.0.0-beta.33
+  - @workflow/core@5.0.0-beta.48
+
+## 5.0.0-beta.47
+
+### Patch Changes
+
+- [#3849](https://github.com/vercel/workflow/pull/3849) [`855e479`](https://github.com/vercel/workflow/commit/855e47990c0da35419325da27976bae925afb0e9) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Mark the second of two attribute writes under one id as read past, matching what the runtime does with it, and stop treating a run's step-written attribute events as repeats of each other.
+
+- [#3906](https://github.com/vercel/workflow/pull/3906) [`4f6cc69`](https://github.com/vercel/workflow/commit/4f6cc69eb127fa1340f48943799b83de44a394c0) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Prevent event payload flicker during decryption.
+
+- [#3825](https://github.com/vercel/workflow/pull/3825) [`36944cd`](https://github.com/vercel/workflow/commit/36944cdcad824f3628c29ecc056f3b9d1293cb05) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Allow trace callers to add product-specific attributes to event-derived step spans.
+
+- [#3806](https://github.com/vercel/workflow/pull/3806) [`695a1b7`](https://github.com/vercel/workflow/commit/695a1b76d0e14b1093f93757232efa5c2818d0da) Thanks [@mitul-s](https://github.com/mitul-s)! - Render Headers, URLSearchParams, and other iterables in the data inspector. Map-like values use `entries()`; other iterables render as lists.
+
+- [#3872](https://github.com/vercel/workflow/pull/3872) [`4d5852b`](https://github.com/vercel/workflow/commit/4d5852b901951b8cac3948e5478e8922dc60a8ce) Thanks [@mitul-s](https://github.com/mitul-s)! - Keep the trace viewer Alt+hover delta overlay working after a span click by stopping Chrome from stealing Alt.
+
+- Updated dependencies [[`855e479`](https://github.com/vercel/workflow/commit/855e47990c0da35419325da27976bae925afb0e9), [`2668e33`](https://github.com/vercel/workflow/commit/2668e3325ba89dec973c3c2f35c49efdb239de8d), [`07ec212`](https://github.com/vercel/workflow/commit/07ec212fe762e0659d4528913716c59870fd6c7d), [`ee6f917`](https://github.com/vercel/workflow/commit/ee6f917cdbfcf50a5fd697c7a9cb70dd1294f931), [`e9d5c56`](https://github.com/vercel/workflow/commit/e9d5c56701821b090108a85b74bf8b0cbef8ea8e), [`ffc5807`](https://github.com/vercel/workflow/commit/ffc58078d0c3cd2786d69bab7e41614566a9ea4e), [`1c28eec`](https://github.com/vercel/workflow/commit/1c28eeca159f022c73912326baf78d69152db876)]:
+  - @workflow/world@5.0.0-beta.32
+  - @workflow/core@5.0.0-beta.47
+  - @workflow/utils@5.0.0-beta.10
+
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- Updated dependencies [[`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`82e2678`](https://github.com/vercel/workflow/commit/82e267893917e06f5d3ce316baefc27cd024a912), [`556f3f0`](https://github.com/vercel/workflow/commit/556f3f080a33f8673cf3c08805997dba4e4d865e)]:
+  - @workflow/core@5.0.0-beta.46
+  - @workflow/world@5.0.0-beta.31
+
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- Updated dependencies [[`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c), [`27cab14`](https://github.com/vercel/workflow/commit/27cab14adcc6f748500fca19cf78feeb60a125e7), [`f7fb012`](https://github.com/vercel/workflow/commit/f7fb0126528fac2168492c3143fe0379b6f5ef1a), [`5841558`](https://github.com/vercel/workflow/commit/584155897f75e712a1c2bc199d6d12027cd18dab)]:
+  - @workflow/core@5.0.0-beta.45
+  - @workflow/world@5.0.0-beta.30
+
+## 5.0.0-beta.44
+
+### Patch Changes
+
+- [#3715](https://github.com/vercel/workflow/pull/3715) [`5a59bb8`](https://github.com/vercel/workflow/commit/5a59bb82e8984a6818d62118aeaccc0efd13d4fb) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Allow consumers to disable decrypt controls and explain why decryption is unavailable.
+
+- [#3692](https://github.com/vercel/workflow/pull/3692) [`a06afee`](https://github.com/vercel/workflow/commit/a06afeefe6cd6489c18bbc10e77d429529112224) Thanks [@mitul-s](https://github.com/mitul-s)! - Prefix trace viewer marker context cards with "Hook received" or "Attribute set" before the relative time.
+
+- [#3634](https://github.com/vercel/workflow/pull/3634) [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0) Thanks [@pranaygp](https://github.com/pranaygp)! - Render sealed log positions (`noop` events) as the log rows they are: shown in event lists, excluded from span geometry and trace duration, since a seal's timestamp belongs to whichever reader wrote it rather than to the run.
+
+- [#3684](https://github.com/vercel/workflow/pull/3684) [`4bd533d`](https://github.com/vercel/workflow/commit/4bd533de172a7b56ab1ca40038311dff7d28d1ae) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Display short step names when observability events contain a workflow-prefixed name.
+
+- Updated dependencies [[`5b5a926`](https://github.com/vercel/workflow/commit/5b5a926f8850ec5d967e090cc0500028fd53e2ef), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9b1b8c7`](https://github.com/vercel/workflow/commit/9b1b8c711104fd507327aafc8cb965738f315e29), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4), [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`bf9de1c`](https://github.com/vercel/workflow/commit/bf9de1cd81eda1b1721b857364070c0ce70d1e58)]:
+  - @workflow/core@5.0.0-beta.44
+  - @workflow/utils@5.0.0-beta.9
+  - @workflow/world@5.0.0-beta.29
+
+## 5.0.0-beta.43
+
+### Patch Changes
+
+- [#3630](https://github.com/vercel/workflow/pull/3630) [`6ca2f1b`](https://github.com/vercel/workflow/commit/6ca2f1b3b78dbb811476cdc2848755db108d3022) Thanks [@mitul-s](https://github.com/mitul-s)! - Batch and cache middle-truncate measurements to avoid repeated layout work during resizes.
+
+- Updated dependencies [[`b0adb50`](https://github.com/vercel/workflow/commit/b0adb50bce623b23252735021205e8d870a2b11f), [`37e1d9e`](https://github.com/vercel/workflow/commit/37e1d9e5a9870ef4a35e1875e7054253a9fb89c3), [`1321570`](https://github.com/vercel/workflow/commit/13215704645ea487ef6f8821016ec3f13c1cd830), [`234d3dd`](https://github.com/vercel/workflow/commit/234d3dd7b852129e189d321314c4f749f12711d8), [`04e060a`](https://github.com/vercel/workflow/commit/04e060a0ecc247a3291714d8396430fa9d96bccc), [`707dfe6`](https://github.com/vercel/workflow/commit/707dfe6a063564cd1c146742e90661abc49534b3), [`a074259`](https://github.com/vercel/workflow/commit/a074259166819121579ffbb5b9f8da60853ae57b), [`ac51658`](https://github.com/vercel/workflow/commit/ac51658d39649e7d8e290924c3bf7b2c7df78b00), [`c5f9177`](https://github.com/vercel/workflow/commit/c5f9177be3c58a2b5616f798932061b67e0b54a5), [`880801b`](https://github.com/vercel/workflow/commit/880801bd4521a0cfd76e8c46ebf560c388ecf30c)]:
+  - @workflow/world@5.0.0-beta.28
+  - @workflow/core@5.0.0-beta.43
+
 ## 5.0.0-beta.42
 
 ### Patch Changes

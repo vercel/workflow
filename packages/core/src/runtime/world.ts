@@ -5,6 +5,16 @@ import {
   resolveWorkflowTargetWorld,
 } from '@workflow/utils';
 import type { World } from '@workflow/world';
+// Static imports, so these two are compiled into the host application's server
+// build. A bundler keys module identity on (resource, layer) and Next.js alone
+// builds `instrument`, app-route, `ssr` and `edge` layers, so one process holds
+// one copy of each of their modules *per layer*. Custom worlds below load
+// through `getRuntimeRequire()` and are deduped by Node's module cache instead.
+//
+// Neither package may therefore keep mutable state at module scope; both hold
+// it on `globalThis` via `globalSingleton()` from `@workflow/utils`, enforced
+// by `scripts/lint/module-scope-state.mjs`. See that helper's doc comment, and
+// `docs/content/worlds/*/building-a-world.mdx` for the rule world authors get.
 import { createWorld as createLocalWorld } from '@workflow/world-local';
 import { createWorld as createVercelWorld } from '@workflow/world-vercel';
 import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
@@ -134,7 +144,7 @@ export const createWorld = async (): Promise<World> => {
 
   if (isVercelWorldTarget(targetWorld)) {
     // Warn if WORKFLOW_VERCEL_* env vars are set inside a Vercel serverless
-    // function (VERCEL=1) — they have no effect at runtime and likely indicate
+    // function (VERCEL=1): they have no effect at runtime and likely indicate
     // a misconfiguration (user manually added them as Vercel project env vars,
     // which is not needed). We gate on VERCEL=1 so the warning does not fire
     // when the CLI or web observability app sets these env vars intentionally.
@@ -161,7 +171,7 @@ export const createWorld = async (): Promise<World> => {
     });
   }
 
-  // Try require() first for custom worlds — this avoids Turbopack tracing
+  // Try require() first for custom worlds: this avoids Turbopack tracing
   // a dynamic import() that it can't statically resolve. Fall back to
   // dynamic import() for ESM-only packages.
   let mod: any;

@@ -35,7 +35,7 @@ interface DraggableBorderProps {
  * double-click reset, pointer-capture dragging (works with touch/pen, no
  * ghost image), and keyboard/ARIA window-splitter support.
  *
- * The panel's positioning ancestor must not clip overflow — the strip hangs
+ * The panel's positioning ancestor must not clip overflow: the strip hangs
  * ~8px past the panel edge.
  */
 export function DraggableBorder({

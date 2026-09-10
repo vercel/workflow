@@ -1,6 +1,23 @@
-import { StreamExpiredError } from '@workflow/errors';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  StreamError,
+  StreamExpiredError,
+  ThrottleError,
+} from '@workflow/errors';
+import { NODE_HTTP_ENV_VAR } from '@workflow/world';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeMultiChunks, MAX_CHUNKS_PER_REQUEST } from './streamer.js';
+
+// Every request-issuing test in this file observes the streamer through a
+// stubbed `fetch`. The node:http path does not call `fetch`, so the flag is
+// pinned off for all of them.
+beforeEach(() => {
+  vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 describe('encodeMultiChunks', () => {
   /**
@@ -175,11 +192,48 @@ describe('encodeMultiChunks', () => {
 // makes the intent clear. The encodeMultiChunks tests above are pure
 // functions and are unaffected.
 vi.mock('./utils.js', () => ({
+  makeRequest: vi.fn(),
   getHttpConfig: vi.fn().mockResolvedValue({
     baseUrl: 'https://test.example.com',
     headers: new Headers(),
   }),
 }));
+
+describe('stream writer session capability', () => {
+  it('leaves the stateful seam absent on the HTTP default', async () => {
+    const { createStreamer } = await import('./streamer.js');
+    expect(createStreamer().streams.createWriteSession).toBeUndefined();
+  });
+
+  it('advertises the stateful seam only on the exact ws opt-in', async () => {
+    vi.stubEnv('WORKFLOW_STREAMS_TRANSPORT', 'ws');
+    const { createStreamer } = await import('./streamer.js');
+    expect(createStreamer().streams.createWriteSession).toBeTypeOf('function');
+  });
+});
+
+describe('session HTTP fallback', () => {
+  it('paginates with the configured request-work cap', async () => {
+    vi.stubEnv('WORKFLOW_MAX_CHUNKS_PER_REQUEST', '2');
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response(null, { status: 200 }));
+    const { writeStreamSessionOverHttp } = await import('./streamer.js');
+
+    await writeStreamSessionOverHttp('run-123', 'stream', [
+      new Uint8Array([1]),
+      new Uint8Array([2]),
+      new Uint8Array([3]),
+    ]);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(
+      fetchSpy.mock.calls.map(
+        (call) => (call[1]?.body as Uint8Array).byteLength
+      )
+    ).toEqual([10, 5]);
+  });
+});
 
 describe('streams.get', () => {
   async function getStreamer() {
@@ -278,6 +332,22 @@ describe('streams.get', () => {
   });
 });
 
+describe('stream snapshot errors', () => {
+  it('preserves typed World errors from snapshot requests', async () => {
+    const { makeRequest } = await import('./utils.js');
+    const throttled = new ThrottleError('rate limited', { retryAfter: 5 });
+    vi.mocked(makeRequest).mockRejectedValueOnce(throttled);
+    const { createStreamer } = await import('./streamer.js');
+
+    const error = await createStreamer()
+      .streams.getInfo('wrun_test', 'stream-test')
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBe(throttled);
+    expect(error).toMatchObject({ name: 'ThrottleError', retryAfter: 5 });
+  });
+});
+
 describe('streams.write error diagnostics', () => {
   async function getStreamer() {
     const { createStreamer } = await import('./streamer.js');
@@ -302,9 +372,14 @@ describe('streams.write error diagnostics', () => {
 
     const streamer = await getStreamer();
 
-    await expect(
-      streamer.streams.write('wrun_test', 'user', 'chunk')
-    ).rejects.toThrow(
+    const error = await streamer.streams
+      .write('wrun_test', 'user', 'chunk')
+      .catch((cause: unknown) => cause);
+
+    expect(StreamError.is(error)).toBe(true);
+    expect(error).toMatchObject({ status: 500, code: 'STREAM_ERROR' });
+    expect(error).toHaveProperty(
+      'message',
       'Stream write failed: HTTP 500 (PUT https://test.example.com/v2/runs/wrun_test/stream/user; x-vercel-id=sfo1::abc; x-vercel-error=FUNCTION_INVOCATION_FAILED): Internal Server Error\nrequest-token'
     );
   });

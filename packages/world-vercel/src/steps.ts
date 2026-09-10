@@ -49,7 +49,7 @@ const StepWireWithRefsSchema = StepWireSchema.omit({
  * Transform step from wire format to Step interface format.
  *
  * The `error` field on Step is SerializedData (Uint8Array) from the
- * serialization pipeline — we pass through the wire-format `error` (or
+ * serialization pipeline. We pass through the wire-format `error` (or
  * the resolved `errorRef`) as-is. Consumers hydrate via `hydrateStepError`.
  *
  * Wire→shape only: this does NOT decompress. The runtime write paths
@@ -82,7 +82,7 @@ function filterStepData(
 //
 // This is the read/display entry point, so it decompresses gzip/zstd
 // payload wrappers via `normalizeStepData` (the runtime write paths use
-// `deserializeStep` directly and skip this — see its doc comment).
+// `deserializeStep` directly and skip this (see its doc comment).
 function filterStepData(
   step: any,
   resolveData: 'none' | 'all'

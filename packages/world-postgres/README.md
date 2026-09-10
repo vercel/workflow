@@ -1,6 +1,6 @@
 # @workflow/world-postgres
 
-An embedded worker/workflow system backed by PostgreSQL for multi-host self-hosted solutions.
+An embedded worker and workflow system backed by PostgreSQL for multi-host self-hosted solutions.
 
 > **This is a reference implementation.** It shows how to implement the World
 > interface on top of a database and a queue, and it is a reasonable starting
@@ -27,9 +27,9 @@ in place before an app using this World is reachable by untrusted clients.
 `POST /.well-known/workflow/v1/flow` is where the worker delivers workflow
 orchestration and queued step invocations. It is mounted in your application
 like any other route, so it is publicly reachable by default, and the queue
-handler — inherited from
-[`@workflow/world-local`](https://github.com/vercel/workflow/tree/main/packages/world-local)
-— accepts any request whose `x-vqs-*` headers, queue-name prefix, and body
+handler, inherited from
+[`@workflow/world-local`](https://github.com/vercel/workflow/tree/main/packages/world-local),
+accepts any request whose `x-vqs-*` headers, queue-name prefix, and body
 schema are well-formed. There is no signature, shared secret, or caller check,
 so anyone who can reach the route can forge or replay a workflow or step
 invocation, including steps your application would only reach after its own
@@ -45,8 +45,8 @@ The other routes under `/.well-known/workflow/v1/` differ:
   [`resumeHook()`](https://workflow-sdk.dev/docs/api-reference/workflow-api/resume-hook)
   when you need more than that.
 - `manifest.json` responds with `404` unless `WORKFLOW_PUBLIC_MANIFEST=1` is
-  set. Leave it unset outside of testing — the manifest lists your workflow and
-  step names.
+  set. Leave it unset outside of testing, because the manifest lists your
+  workflow and step names.
 
 ### Bringing your own auth
 
@@ -78,9 +78,9 @@ not participate in Workflow's
 [end-to-end encryption](https://workflow-sdk.dev/docs/how-it-works/encryption):
 workflow and step inputs and return values, hook payloads and metadata, and
 stream chunks are all stored in your database in readable form. A World derived
-from this one can opt in by implementing that single method — see
-[Custom World implementations](https://workflow-sdk.dev/docs/how-it-works/encryption#custom-world-implementations)
-— which is the recommended route if your workflows carry sensitive data. Until
+from this one can opt in by implementing that single method (see
+[Custom World implementations](https://workflow-sdk.dev/docs/how-it-works/encryption#custom-world-implementations)),
+which is the recommended route if your workflows carry sensitive data. Until
 then, protect the database, its credentials, and its backups accordingly.
 
 ## Installation
@@ -95,9 +95,9 @@ yarn add @workflow/world-postgres
 
 ## Usage
 
-### Basic Setup
+### Basic setup
 
-The postgres world can be configured by setting the `WORKFLOW_TARGET_WORLD` environment variable to the package name:
+The PostgreSQL World can be configured by setting the `WORKFLOW_TARGET_WORLD` environment variable to the package name:
 
 ```bash
 export WORKFLOW_TARGET_WORLD="@workflow/world-postgres"
@@ -127,7 +127,7 @@ export WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN="1"
 export WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS="30"
 ```
 
-### Programmatic Usage
+### Programmatic usage
 
 You can also create a PostgreSQL world directly in your code:
 
@@ -148,7 +148,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const worldFromPool = createWorld({ pool });
 ```
 
-### Application-managed Shutdown
+### Application-managed shutdown
 
 By default, Graphile Worker responds automatically when the application is asked to shut down. If your application already coordinates shutdown, set `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` when selecting the package with `WORKFLOW_TARGET_WORLD`, or set `applicationManagedShutdown: true` when calling `createWorld()` directly. Await `world.close()` from your shutdown path so Graphile Worker cannot terminate the process as soon as its queue stops, before your application finishes closing dependent resources:
 
@@ -165,22 +165,22 @@ await world.start();
 
 Use this option only when your application or framework has its own shutdown hook. Handle cleanup errors there and await `world.close()` first, then close the workflow HTTP server and any caller-owned `pg.Pool`.
 
-Closing the world stops the queue from accepting new jobs and waits for active jobs. After Graphile Worker's graceful-shutdown timeout (5 seconds by default), it aborts any workflow HTTP request that is still pending. Graphile Worker then unlocks the same row through its normal failure handling. Graphile counts a delivery attempt when it claims the row, so the aborted delivery consumes that attempt and is retried only if its Graphile attempt budget remains. A one-attempt or final-attempt job is unlocked but not retried. The shutdown handler does not create a replacement row.
+Closing the world stops the queue from accepting new jobs and waits for active jobs. After Graphile Worker's graceful-shutdown timeout (5s by default), it aborts any workflow HTTP request that is still pending. Graphile Worker then unlocks the same row through its normal failure handling. Graphile counts a delivery attempt when it claims the row, so the aborted delivery consumes that attempt and is retried only if its Graphile attempt budget remains. A one-attempt or final-attempt job is unlocked but not retried. The shutdown handler does not create a replacement row.
 
 An aborted HTTP request does not guarantee that its server-side handler stopped, so workflow and step handlers must continue to tolerate at-least-once execution. Keep the workflow HTTP routes and any caller-owned pool available until `world.close()` resolves.
 
-## Configuration Options
+## Configuration options
 
 | Option             | Type      | Default                                                                                | Description                                                                                          |
 | ------------------ | --------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `connectionString` | `string`  | `process.env.WORKFLOW_POSTGRES_URL`, `process.env.DATABASE_URL`, or `'postgres://world:world@localhost:5432/world'` | Used only when `pool` is omitted, to construct an internal pool                                      |
 | `maxPoolSize`      | `number`  | `process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE` or `pg.Pool` default (`10`)              | Optional. Sets the internal `pg.Pool` max size when `createWorld()` creates the pool                |
-| `pool`             | `pg.Pool` | —                                                                                      | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
+| `pool`             | `pg.Pool` | Not applicable                                                                         | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
-| `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. Must be high enough to cover any parent→child workflow polling in flight — each `Run#returnValue` await holds a worker slot until the child run terminates. |
+| `queueConcurrency` | `number`  | `50`                                                                                   | Number of concurrent active step executions per process. Must be high enough to cover any parent→child workflow polling in flight because each `Run#returnValue` await holds a worker slot until the child run terminates. |
 | `applicationManagedShutdown` | `boolean` | `false`; `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` enables it for the default package configuration | Whether the application coordinates shutdown and awaits `world.close()` instead of Graphile Worker responding automatically. |
 
-## Environment Variables
+## Environment variables
 
 | Variable                               | Description                                                  | Default                                         |
 | -------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------- |
@@ -196,17 +196,17 @@ When `pool` is omitted, `maxPoolSize` precedence is: `createWorld({ maxPoolSize 
 
 For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` to `10` or `queueConcurrency + 2`, whichever is larger.
 
-## Database Setup
+## Database setup
 
 This package uses PostgreSQL with the following components:
 
-- **graphile-worker**: For queue processing and job management
+- **Graphile Worker**: For queue processing and job management
 - **Drizzle ORM**: For database operations and schema management
 - **pg** (node-postgres): For PostgreSQL client connections. Drizzle and Graphile Worker share a `pg.Pool`, while LISTEN uses a dedicated `pg.Client` created from the same connection options.
 
-### Quick Setup with CLI
+### Quick setup with CLI
 
-The easiest way to set up your database is using the included CLI tool:
+Set up your database with the included CLI tool:
 
 ```bash
 # npm
@@ -227,15 +227,15 @@ The CLI and runtime World automatically load the connection string from:
 2. `DATABASE_URL` environment variable
 3. Default: `postgres://world:world@localhost:5432/world`
 
-### Database Schema
+### Database schema
 
 The setup creates the following tables:
 
-- `workflow_runs` - Stores workflow execution runs
-- `workflow_events` - Stores workflow events
-- `workflow_steps` - Stores individual workflow steps
-- `workflow_hooks` - Stores webhook hooks
-- `workflow_stream_chunks` - Stores streaming data chunks
+- `workflow_runs`: Stores workflow execution runs
+- `workflow_events`: Stores workflow events
+- `workflow_steps`: Stores individual workflow steps
+- `workflow_hooks`: Stores webhook hooks
+- `workflow_stream_chunks`: Stores streaming data chunks
 
 You can also access the schema programmatically:
 
@@ -247,7 +247,7 @@ import * as schema from '@workflow/world-postgres/schema';
 
 Make sure your PostgreSQL database is accessible and the user has sufficient permissions to create tables and manage jobs.
 
-### Data Retention
+### Data retention
 
 Postgres World does not yet perform general workflow-run cleanup. After a
 retained Hook's run ends and its deadline passes, reads treat the Hook as absent
@@ -256,14 +256,14 @@ and its token can be reused. If the token is never reused, the expired
 
 ## Features
 
-- **Durable Storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL
-- **Queue Processing**: Uses graphile-worker as the durable queue and executes jobs over the workflow HTTP routes
-- **Durable Delays**: Re-schedules waits and retries in PostgreSQL
+- **Durable storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL
+- **Queue processing**: Uses Graphile Worker as the durable queue and executes jobs over the workflow HTTP routes
+- **Durable delays**: Reschedules waits and retries in PostgreSQL
 - **Streaming**: Real-time event streaming capabilities
-- **Health Checks**: Built-in connection health monitoring
-- **Configurable Concurrency**: Adjustable worker concurrency for queue processing
+- **Health checks**: Built-in connection health monitoring
+- **Configurable concurrency**: Adjustable worker concurrency for queue processing
 
-## Queue Behavior
+## Queue behavior
 
 - Graphile jobs are acknowledged only after execution finishes, or after the worker durably schedules a delayed follow-up job
 - Backlog stays in PostgreSQL when all execution slots are busy
@@ -301,7 +301,7 @@ pnpm build
 pnpm test
 ```
 
-## World Selection
+## World selection
 
 To use the PostgreSQL world, set the `WORKFLOW_TARGET_WORLD` environment variable to the package name:
 
