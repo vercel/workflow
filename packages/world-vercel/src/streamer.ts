@@ -1,3 +1,4 @@
+import type { Attributes } from '@opentelemetry/api';
 import {
   EntityConflictError,
   PreconditionFailedError,
@@ -205,7 +206,8 @@ export async function writeStreamSessionOverHttp(
   runId: string,
   name: string,
   chunks: (string | Uint8Array)[],
-  config?: APIConfig
+  config?: APIConfig,
+  attributes?: Attributes
 ): Promise<void> {
   const httpConfig = await getHttpConfig(config);
   httpConfig.headers.set('X-Stream-Multi', 'true');
@@ -225,11 +227,14 @@ export async function writeStreamSessionOverHttp(
       logLabel: url.pathname,
       spanName: 'workflow.stream.write',
       durationAttribute: 'workflow.stream.write.chunk_rtt',
-      attributes: streamSpanAttributes({
-        runId,
-        name,
-        operation: 'write_multi',
-      }),
+      attributes: {
+        ...streamSpanAttributes({
+          runId,
+          name,
+          operation: 'write_multi',
+        }),
+        ...(offset === 0 ? attributes : undefined),
+      },
       buildError: async (res) =>
         createStreamRequestError('write', url, res, await res.text()),
     });
@@ -273,8 +278,14 @@ export function createStreamer(config?: APIConfig): Streamer {
                 name,
                 writerId,
                 config,
-                (chunks) =>
-                  writeStreamSessionOverHttp(runId, name, chunks, config),
+                (chunks, attributes) =>
+                  writeStreamSessionOverHttp(
+                    runId,
+                    name,
+                    chunks,
+                    config,
+                    attributes
+                  ),
                 () => closeStreamSessionOverHttp(runId, name, config)
               );
             },
