@@ -3,6 +3,9 @@ title: Versioning
 description: Understand how workflow runs are pinned to deployments, how to recover runs after a fix, and how to opt in to newer code explicitly.
 type: guide
 summary: Keep in-flight runs stable by default, then choose explicit upgrade boundaries when you need them.
+languageSwitcher:
+  - ts
+  - py
 prerequisites:
   - /docs/foundations/starting-workflows
 related:
@@ -21,6 +24,8 @@ With Workflow SDK, you can keep shipping. New runs use new deployments, while ex
 
 Start a workflow normally:
 
+<LanguageContent value="ts">
+
 ```typescript title="app/api/orders/route.ts" lineNumbers
 import { start } from "workflow/api";
 import { fulfillOrder } from "@/workflows/fulfill-order";
@@ -34,7 +39,25 @@ export async function POST(request: Request) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python title="app/api/orders.py" lineNumbers
+from app.workflows.fulfill_order import fulfill_order
+from vercel import workflow
+
+@app.post("/api/orders")
+async def create_order(request: Request):
+    body = await request.json()
+    run = await workflow.start(fulfill_order, body["order_id"])
+    return {"run_id": run.run_id}
+```
+
+</LanguageContent>
+
 The run is tied to the deployment that handled this request. If you deploy a new version while the workflow is [sleeping](/docs/api-reference/workflow/sleep), [waiting on a hook](/docs/foundations/hooks), [retrying a step](/docs/foundations/errors-and-retries), or processing later queue messages, that existing run still resumes on the original deployment.
+
+<LanguageContent value="ts">
 
 ```typescript title="workflows/fulfill-order.ts" lineNumbers
 import { sleep } from "workflow";
@@ -64,7 +87,39 @@ async function shipOrder(orderId: string) {
 }
 ```
 
-If you deploy a change to `chargeCustomer()` while a run is in the two-day sleep, the existing run does not suddenly resume into the new implementation. It continues on the deployment it started on. The next order starts on the latest deployment and uses the new code from the beginning.
+</LanguageContent>
+<LanguageContent value="py">
+
+```python title="app/workflows/fulfill_order.py" lineNumbers
+from app.workflow import wf
+from vercel import workflow
+
+@wf.step
+async def reserve_inventory(order_id: str):
+    # ... reserve inventory ...
+    pass
+
+@wf.step
+async def charge_customer(order_id: str):
+    # ... charge the customer ...
+    pass
+
+@wf.step
+async def ship_order(order_id: str):
+    # ... ship the order ...
+    pass
+
+@wf.workflow
+async def fulfill_order(order_id: str):
+    await reserve_inventory(order_id)
+    await workflow.sleep("2d")
+    await charge_customer(order_id)
+    await ship_order(order_id)
+```
+
+</LanguageContent>
+
+If you deploy a change to the charge step while a run is in the two-day sleep, the existing run does not suddenly resume into the new implementation. It continues on the deployment it started on. The next order starts on the latest deployment and uses the new code from the beginning.
 
 ## Fixing in-flight runs
 
@@ -98,6 +153,8 @@ The `--workflowName` filter expects the generated workflow ID, not only the expo
 
 In the [observability UI](/docs/observability), use **Rerun on latest** to enqueue the workflow again with the same inputs against the latest deployment.
 
+<LanguageContent value="ts">
+
 If you are writing your own recovery route, call `start()` with the same arguments and `deploymentId: "latest"`:
 
 ```typescript title="app/api/orders/rerun/route.ts" lineNumbers
@@ -119,7 +176,29 @@ export async function POST(request: Request) {
 `deploymentId: "latest"` is currently a Vercel-specific feature. Other Worlds may implement this option differently to match their own deployment runtimes, and the World spec may rename it from `deploymentId` to `version` in a future SDK version. On Vercel, `"latest"` resolves to the most recent deployment matching your current environment. Because the caller and target deployment can be different, keep the [workflow function name and file path](/docs/errors/workflow-not-registered), arguments, and return value backward-compatible across the deployments you plan to bridge.
 </Callout>
 
+</LanguageContent>
+<LanguageContent value="py">
+
+For a custom recovery route, deploy the fix first and call `workflow.start()` with the original inputs from that fixed deployment:
+
+```python title="app/api/orders_rerun.py" lineNumbers
+from app.workflows.fulfill_order import fulfill_order
+from vercel import workflow
+
+@app.post("/api/orders/rerun")
+async def rerun_order(request: Request):
+    body = await request.json()
+    run = await workflow.start(fulfill_order, body["order_id"])
+    return {"run_id": run.run_id}
+```
+
+The Python SDK does not currently expose a `deploymentId: "latest"` selector. A normal `start()` pins the new run to the deployment serving the recovery request, so invoke this route on the deployment that contains the fix.
+
+</LanguageContent>
+
 ## Self upgrading workflows
+
+<LanguageContent value="ts">
 
 Some workflows are expected to run for long periods. Scheduled loops, recurring jobs, agents, and chat sessions often should not stay on one deployment forever.
 
@@ -165,7 +244,16 @@ This pattern gives every run a clear lifecycle:
 - The [serialized `state`](/docs/foundations/serialization) is the migration boundary between versions.
 - Observability can link parent and child runs when a workflow starts another run.
 
+</LanguageContent>
+<LanguageContent value="py">
+
+The Python SDK cannot currently select the latest deployment when starting a child run. A child started from a step executes from the parent's pinned deployment, so chaining runs does not create a self-upgrade boundary. Use bounded runs and start the next run externally from the deployment you want until an explicit deployment selector is available.
+
+</LanguageContent>
+
 ## Carrying context forward
+
+<LanguageContent value="ts">
 
 Anything that is [serializable by Workflow SDK](/docs/foundations/serialization) can be passed from one run to the next as an argument. That includes plain state objects, `ReadableStream`, `WritableStream`, `AbortSignal`, and other supported serialized values.
 
@@ -261,3 +349,12 @@ export async function POST(request: Request) {
 ```
 
 Each run still has one clear version boundary: the current run stays on its original deployment, the next run starts on the latest deployment, and only the explicit state and stream handle are carried forward.
+
+</LanguageContent>
+<LanguageContent value="py">
+
+Pass [serializable state](/docs/foundations/serialization)—including Pydantic models and dataclasses—as inputs when an external recovery route starts a replacement run. Treat that input model as the migration boundary and keep it compatible across the deployments you bridge.
+
+Because Python has no latest-deployment selector or public API for reopening another run's writable stream by run ID, the TypeScript continuation pattern shown here does not yet have a direct Python equivalent.
+
+</LanguageContent>

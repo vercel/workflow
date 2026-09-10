@@ -3,6 +3,9 @@ title: Idempotency
 description: Make step retries safe and coordinate duplicate workflow starts with hook tokens.
 type: conceptual
 summary: Use step IDs for retry-safe external calls, and route duplicate workflow-start requests through deterministic hook tokens.
+languageSwitcher:
+  - ts
+  - py
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -22,8 +25,10 @@ Consider a payment API that charges the user $10, but due to network failures, t
 
 To prevent this, many external APIs support idempotency keys. An idempotency key is a unique identifier for an operation that can be used to deduplicate requests.
 
-Every step invocation has a stable `stepId` that stays the same across retries.
+Every step invocation has a stable step identifier that stays the same across retries.
 Use it as the idempotency key when calling third-party APIs.
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { getStepMetadata } from "workflow";
@@ -48,9 +53,32 @@ async function chargeUser(userId: string, amount: number) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+from app.workflow import wf
+from vercel.workflow import get_step_metadata
+
+@wf.step
+async def charge_user(user_id: str, amount: int):
+    step_id = get_step_metadata().step_id  # [!code highlight]
+
+    # Example: Stripe-style idempotency key
+    # This guarantees only one charge is created even if the step retries
+    await stripe.PaymentIntent.create_async(
+        amount=amount,
+        currency="usd",
+        customer=user_id,
+        idempotency_key=step_id,  # [!code highlight]
+    )
+```
+
+</LanguageContent>
+
 Why this works:
 
-- **Stable across retries**: `stepId` does not change between attempts.
+- **Stable across retries**: The step ID does not change between attempts.
 - **Globally unique per step**: Fulfills the uniqueness requirement for an idempotency key.
 
 ## Run idempotency
@@ -59,9 +87,22 @@ Step idempotency protects side effects **inside** a workflow run. Run idempotenc
 
 Because [hooks](/docs/foundations/hooks) already ensure globally unique active tokens, Workflow can use the same mechanism to coordinate duplicate requests while a run is active.
 
+<LanguageContent value="ts">
+
 Use a hook token as the idempotency key for an active workflow run. Hook tokens are globally unique while they are active: if another run tries to create a hook with the same token, the runtime records a conflict, `hook.getConflict()` resolves with a `Run` handle for the run that owns the token, and the hook rejects with [`HookConflictError`](/docs/errors/hook-conflict) when the workflow awaits or iterates its payload.
 
 The token should come from your domain, such as an order ID, invoice ID, import ID, or request ID. Create the hook near the beginning of the workflow and check `await hook.getConflict()` before doing duplicate-sensitive work that depends on owning the active token. Calling `createHook()` alone does not register the hook; awaiting `getConflict()` suspends the workflow to commit the registration.
+
+</LanguageContent>
+<LanguageContent value="py">
+
+Use a hook token as the idempotency key for an active workflow run. If another run tries to register the same token, `await hook.get_conflict()` returns a `Run` handle for the current owner. Awaiting or iterating the conflicting hook payload raises `HookConflictError`.
+
+Derive the token from your domain, such as an order ID, invoice ID, import ID, or request ID. Call `BaseHook.wait()` near the beginning of the workflow, then await `hook.get_conflict()` before duplicate-sensitive work. `wait()` constructs the hook event; `get_conflict()` suspends the workflow to commit its registration.
+
+</LanguageContent>
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -96,9 +137,52 @@ export async function processOrder(orderId: string): Promise<OrderResult> {
 }
 ```
 
-The runtime creates the hook atomically. At most one hook can own `order:${orderId}`, so duplicate workflow runs converge on one owner. A duplicate run observes `getConflict()` resolving with the owner's `Run` and returns before it reaches `chargeOrder()`. The conflicting run's accessors (`status`, `returnValue`, `cancel()`, …) are durable steps, so the duplicate run can do more than report the owner. See [conflict-handling strategies](#conflict-handling-strategies) below.
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+import pydantic
+
+from app.workflow import wf
+from vercel import workflow
+
+class OrderRequest(pydantic.BaseModel, workflow.BaseHook):
+    confirmed: bool
+
+@wf.workflow
+async def process_order(order_id: str):
+    async with OrderRequest.wait(token=f"order:{order_id}") as request:
+        conflict = await request.get_conflict()  # [!code highlight]
+        if conflict is not None:  # [!code highlight]
+            # Another active run already owns this order's token.
+            return {"status": "duplicate", "run_id": conflict.run_id}
+
+        payload = await request
+        if not payload.confirmed:
+            return {"status": "cancelled"}
+
+        await charge_order(order_id)
+        return {"status": "processed"}
+```
+
+</LanguageContent>
+
+The runtime creates the hook atomically, so at most one active hook can own a token and duplicate workflow runs converge on one owner.
+
+<LanguageContent value="ts">
+
+A duplicate run observes `getConflict()` resolving with the owner's `Run` and returns before it reaches `chargeOrder()`. The conflicting run's accessors (`status`, `returnValue`, `cancel()`, …) are durable steps, so the duplicate run can do more than report the owner. See [conflict-handling strategies](#conflict-handling-strategies) below.
+
+</LanguageContent>
+<LanguageContent value="py">
+
+A duplicate run observes `get_conflict()` returning the owner's `Run` and exits before it reaches `charge_order()`. Python `Run` operations perform World I/O and cannot be called directly in a workflow body, but a step can use the owner's `run_id` to inspect its status or await its result. See [conflict-handling strategies](#conflict-handling-strategies) below.
+
+</LanguageContent>
 
 Outside the workflow, try to resume the hook first. If the hook is not registered yet, start the workflow and retry the resume until the new run creates the hook:
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { resumeHook, start } from "workflow/api";
@@ -145,13 +229,65 @@ export async function POST(request: Request) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+import asyncio
+
+from app.workflows.process_order import OrderRequest, process_order
+from vercel import workflow
+
+async def resume_order(token: str, payload: OrderRequest):
+    for _ in range(5):
+        try:
+            return await payload.resume(token)  # [!code highlight]
+        except workflow.HookNotFoundError:
+            await asyncio.sleep(0.1)
+
+    raise RuntimeError("Order workflow did not register its hook in time")
+
+@app.post("/api/orders/{order_id}")
+async def submit_order(order_id: str, confirmed: bool):
+    token = f"order:{order_id}"
+    payload = OrderRequest(confirmed=confirmed)
+
+    try:
+        hook = await payload.resume(token)  # [!code highlight]
+        return {"run_id": hook.run_id, "reused": True}
+    except workflow.HookNotFoundError:
+        pass
+
+    run = await workflow.start(process_order, order_id)  # [!code highlight]
+    resumed = await resume_order(token, payload)
+
+    # A concurrent request's run may own the token.
+    return {
+        "run_id": resumed.run_id,
+        "reused": resumed.run_id != run.run_id,
+    }
+```
+
+</LanguageContent>
+
 <Callout type="warn">
-This avoids creating a new run only after the first run has registered its hook. Because `start()` returns before the run body executes and calls `createHook()`, two concurrent requests can both observe "no hook yet" and each call `start()`. The race is resolved inside the workflow body, where the losing run observes `getConflict()` resolving with the active owner and returns without doing duplicate-sensitive work, and the route detects it by comparing the resumed hook's `runId` against the run it just started, without waiting for either run to finish. A native API for atomically starting a run and registering a hook is in the works. Until then, model recovery inside the workflow by checking `hook.getConflict()`.
+<LanguageContent value="ts" as="span">This avoids creating a new run only after the first run has registered its hook. Because `start()` returns before the run body executes and calls `createHook()`, two concurrent requests can both observe "no hook yet" and each call `start()`. The race is resolved inside the workflow body, where the losing run observes `getConflict()` resolving with the active owner and returns without doing duplicate-sensitive work, and the route detects it by comparing the resumed hook's `runId` against the run it just started. Until native atomic start-and-hook registration is available, model recovery inside the workflow with `hook.getConflict()`.</LanguageContent><LanguageContent value="py" as="span">This avoids a new run only after the first run has registered its hook. Because `start()` returns before `BaseHook.wait()` executes, concurrent requests can both see no hook and start runs. The losing run must detect the owner with `hook.get_conflict()` before duplicate-sensitive work, and the route must compare the resumed hook's `run_id` with the run it just started.</LanguageContent>
 </Callout>
+
+<LanguageContent value="ts">
 
 This coordinates active runs by default: the token becomes available when its workflow ends. Set `experimental_minRetention` to keep it unavailable to late duplicates. After the workflow ends, the Hook can still be found with `getHookByToken()` until retention ends, but it cannot be resumed. See [`createHook()` minimum retention](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) for examples and supported values.
 
+</LanguageContent>
+<LanguageContent value="py">
+
+Python hook tokens coordinate active runs and become available when their workflow ends. `BaseHook.wait()` does not currently expose a minimum-retention option for keeping a token reserved after completion.
+
+</LanguageContent>
+
 ### Conflict-handling strategies
+
+<LanguageContent value="ts">
 
 Some workflow systems resolve duplicate IDs with a fixed, pre-declared policy, typically a static choice between rejecting the new execution, deferring to the existing one, or terminating it. Workflow has no policy enum. `hook.getConflict()` hands the duplicate run the conflicting `Run` itself, and the policy is ordinary code, including policies that inspect state before deciding, which static configuration can't express.
 
@@ -283,7 +419,68 @@ If duplicate requests should only reuse the active run without sending data, use
 
 Because this pattern uses hooks for idempotency, duplicate requests can also inject additional data and steer the existing run. The route example above uses `resumeHook()` for that: if the hook already exists, the duplicate request resumes the active workflow; if the hook is not registered yet, the route starts the workflow and retries `resumeHook()` so the payload is not dropped.
 
+</LanguageContent>
+<LanguageContent value="py">
+
+`hook.get_conflict()` gives the duplicate workflow a `Run` handle for the owner, so conflict policy remains ordinary Python code. The first example above rejects the duplicate by returning the owner's `run_id`. Other supported strategies use steps for World I/O.
+
+**Adopt the owner's result.** Wait for the active owner in a step, then return the same result from the duplicate run:
+
+```python lineNumbers
+from app.workflow import wf
+from vercel import workflow
+
+@wf.step
+async def wait_for_run_result(run_id: str):
+    return await workflow.Run(run_id).return_value()
+
+@wf.workflow
+async def process_order(order_id: str):
+    async with OrderRequest.wait(token=f"order:{order_id}") as request:
+        conflict = await request.get_conflict()
+        if conflict is not None:
+            return await wait_for_run_result(conflict.run_id)  # [!code highlight]
+
+        return await process_owned_order(order_id)
+```
+
+**Inspect the owner.** Put `Run` calls in a step and return serializable data to the workflow:
+
+```python lineNumbers
+@wf.step
+async def get_run_status(run_id: str) -> str:
+    return await workflow.Run(run_id).status()
+
+async def duplicate_status(conflict):
+    status = await get_run_status(conflict.run_id)
+    return {
+        "status": "duplicate",
+        "run_id": conflict.run_id,
+        "owner_status": status,
+    }
+```
+
+**Signal the owner.** Resume the shared token from a step when the duplicate should forward data to the active workflow:
+
+```python lineNumbers
+@wf.step
+async def forward_to_owner(token: str, confirmed: bool):
+    await OrderRequest(confirmed=confirmed).resume(token)
+
+async def forward_duplicate(order_id: str, confirmed: bool, conflict):
+    await forward_to_owner(f"order:{order_id}", confirmed)
+    return {"status": "forwarded", "run_id": conflict.run_id}
+```
+
+The Python `Run` class does not currently expose `cancel()`, so a Python workflow cannot implement the "supersede the owner" strategy through the SDK.
+
+Outside a workflow, `await workflow.get_hook_by_token(token)` is useful as an advisory pre-check before `start()`. The lookup and start are not atomic, so the workflow must still call `hook.get_conflict()` before duplicate-sensitive work.
+
+</LanguageContent>
+
 ## Related docs
+
+<LanguageContent value="ts">
 
 - Learn about retries in [Errors & Retrying](/docs/foundations/errors-and-retries)
 - API reference: [`getStepMetadata`](/docs/api-reference/workflow/get-step-metadata)
@@ -292,3 +489,12 @@ Because this pattern uses hooks for idempotency, duplicate requests can also inj
 - API reference: [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook)
 - API reference: [`start()`](/docs/api-reference/workflow-api/start)
 - Learn about deterministic hook tokens in [Hooks](/docs/foundations/hooks)
+
+</LanguageContent>
+<LanguageContent value="py">
+
+- Learn about retries in [Errors & Retrying](/docs/foundations/errors-and-retries)
+- Learn about deterministic hook tokens in [Hooks](/docs/foundations/hooks)
+- Review Python workflow setup and core APIs in [Python getting started](/docs/getting-started/python)
+
+</LanguageContent>

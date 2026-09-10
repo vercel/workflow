@@ -3,13 +3,16 @@ title: Serialization
 description: Understand how workflow data is serialized and persisted across suspensions and resumptions.
 type: conceptual
 summary: Learn which types can be passed between workflow and step functions.
+languageSwitcher:
+  - ts
+  - py
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
   - /docs/errors/serialization-failed
 ---
 
-All function arguments and return values passed between workflow and step functions must be serializable. Workflow SDK uses a custom serialization system built on top of [devalue](https://github.com/sveltejs/devalue). This system supports standard JSON types, as well as a few additional popular Web API types.
+All function arguments and return values passed between workflow and step functions must be serializable. Workflow SDK uses a shared serialization format built on top of [devalue](https://github.com/sveltejs/devalue). It supports standard JSON values and additional language-native types.
 
 <Callout type="info">
 The serialization system ensures that all data persists correctly across workflow suspensions and resumptions, enabling durable execution.
@@ -18,6 +21,8 @@ The serialization system ensures that all data persists correctly across workflo
 ## Supported serializable types
 
 The following types can be serialized and passed through workflow functions:
+
+<LanguageContent value="ts">
 
 **Standard JSON types:**
 
@@ -58,11 +63,45 @@ These types have special handling and are explained in detail in the sections be
 - `AbortController`
 - `AbortSignal`
 
+</LanguageContent>
+<LanguageContent value="py">
+
+**Primitive and collection types:**
+
+- `str`
+- `int` and `float`, including integers outside JavaScript's safe range
+- `bool`
+- `None`
+- `list` and `tuple`
+- `dict` with string keys
+- `set` and `frozenset`
+- Repeated and cyclic references
+
+**Extended types:**
+
+- `bytes`, `bytearray`, and `memoryview`
+- `datetime.datetime`, `datetime.date`, `datetime.time`, and `datetime.timedelta`
+- `decimal.Decimal`
+- `pathlib.Path`
+- `re.Pattern`
+- `uuid.UUID`
+- Pydantic models and dataclasses used in workflow or step type annotations
+- Classes registered with `@serializable` or `register_serializable()`
+- `WorkflowWritable` stream handles
+
+<Callout type="info">
+Python values use the same wire format as the TypeScript SDK. For example, `bytes` is read as `Uint8Array` in TypeScript, and `datetime.datetime` is read as `Date`.
+</Callout>
+
+</LanguageContent>
+
 ## Pass-by-value semantics
 
 **Parameters are passed by value, not by reference.** Steps receive deserialized copies of data. Mutations inside a step won't affect the original in the workflow.
 
 **Incorrect:**
+
+<LanguageContent value="ts">
 
 ```typescript title="workflows/incorrect-mutation.ts" lineNumbers
 export async function updateUserWorkflow(userId: string) {
@@ -81,7 +120,30 @@ async function updateUserStep(user: { id: string; name: string; email: string })
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python title="app/workflows/incorrect_mutation.py" lineNumbers
+from app.workflow import wf
+
+@wf.step
+async def update_user_step(user: dict[str, str]):
+    user["email"] = "newemail@example.com"  # Changes are lost  # [!code highlight]
+
+@wf.workflow
+async def update_user_workflow(user_id: str):
+    user = {"id": user_id, "name": "John", "email": "john@example.com"}
+    await update_user_step(user)
+
+    # user["email"] is still "john@example.com"
+    print(user["email"])  # [!code highlight]
+```
+
+</LanguageContent>
+
 **Correct, return the modified data:**
+
+<LanguageContent value="ts">
 
 ```typescript title="workflows/correct-mutation.ts" lineNumbers
 export async function updateUserWorkflow(userId: string) {
@@ -100,17 +162,49 @@ async function updateUserStep(user: { id: string; name: string; email: string })
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python title="app/workflows/correct_mutation.py" lineNumbers
+from app.workflow import wf
+
+@wf.step
+async def update_user_step(user: dict[str, str]):
+    user["email"] = "newemail@example.com"
+    return user  # [!code highlight]
+
+@wf.workflow
+async def update_user_workflow(user_id: str):
+    user = {"id": user_id, "name": "John", "email": "john@example.com"}
+    user = await update_user_step(user)  # Reassign the return value  # [!code highlight]
+
+    print(user["email"])  # "newemail@example.com"
+```
+
+</LanguageContent>
+
 **Custom classes:**
 
-- Class instances that implement [`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`](#custom-class-serialization)
+- <LanguageContent value="ts" as="span">Class instances that implement [`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`](#custom-class-serialization)</LanguageContent><LanguageContent value="py" as="span">Pydantic models, dataclasses, and classes registered with [`@serializable`](#custom-class-serialization)</LanguageContent>
 
 ## Streaming
 
+<LanguageContent value="ts">
+
 `ReadableStream` and `WritableStream` are supported as serializable types with special handling. These streams can be passed between workflow and step functions while maintaining their streaming capabilities.
+
+</LanguageContent>
+<LanguageContent value="py">
+
+`WorkflowWritable` stream handles are serializable. A workflow can create a handle with `get_writable()`, pass it to a step or child workflow, and keep writing to the same durable stream.
+
+</LanguageContent>
 
 For complete information about using streams in workflows, including patterns for AI streaming, file processing, and progress updates, see the [Streaming Guide](/docs/foundations/streaming).
 
 ## Request & response
+
+<LanguageContent value="ts">
 
 The Web API [`Request`](https://developer.mozilla.org/en-US/docs/Web/API/Request) and [`Response`](https://developer.mozilla.org/en-US/docs/Web/API/Response) APIs are supported by the serialization system,
 and can be passed around between workflow and step functions similarly to other data types.
@@ -169,7 +263,33 @@ export async function fetch(...args: Parameters<typeof globalThis.fetch>) {
 
 This allows you to make HTTP requests directly in workflow functions while maintaining deterministic replay behavior through automatic caching.
 
+</LanguageContent>
+<LanguageContent value="py">
+
+Python web-framework request and response objects are not workflow-serializable. Extract serializable values in your route before calling `start()`, and perform outbound HTTP requests in a step:
+
+```python title="app/workflows/api_call.py" lineNumbers
+import httpx
+
+from app.workflow import wf
+
+@wf.step
+async def fetch_data(url: str):
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.json()
+
+@wf.workflow
+async def api_workflow(url: str):
+    return await fetch_data(url)
+```
+
+</LanguageContent>
+
 ## AbortController & AbortSignal
+
+<LanguageContent value="ts">
 
 `AbortController` and `AbortSignal` are serializable types that enable cooperative cancellation across workflow and step boundaries. Inside a workflow function, `new AbortController()` creates a durable controller that works across suspensions and step boundaries:
 
@@ -202,11 +322,22 @@ async function fetchData(signal: AbortSignal) {
 
 For usage patterns including timeouts, parallel cancellation, user-triggered cancellation, and run cancellation, see the [Cancellation Guide](/docs/foundations/cancellation). For details on the hook and stream backing that makes this work, see [How Cancellation Works](/docs/how-it-works/cancellation).
 
+</LanguageContent>
+<LanguageContent value="py">
+
+Python does not serialize `AbortController` or `AbortSignal`. Instead, opt a step into durable cancellation with `@wf.step(cancellable=True)`, run it as an `asyncio.Task`, and call `task.cancel()`. See the [Cancellation Guide](/docs/foundations/cancellation) for examples.
+
+</LanguageContent>
+
 ## Custom class serialization
 
-By default, custom class instances cannot be serialized because the serialization system doesn't know how to reconstruct them. You can make your classes serializable by implementing two static methods using special symbols from the `@workflow/serde` package.
+Custom class instances need a serialization strategy that tells the SDK how to reconstruct them.
 
 ### Basic example
+
+<LanguageContent value="ts">
+
+You can make your classes serializable by implementing two static methods using special symbols from the `@workflow/serde` package.
 
 {/* @expect-error:2351 */}
 
@@ -256,7 +387,53 @@ async function doublePoint(point: Point) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+Use the `@serializable` decorator and implement `_workflow_serialize()` and `_workflow_deserialize()`:
+
+```python title="app/workflows/custom_class.py" lineNumbers
+from vercel.workflow import serializable
+
+@serializable  # [!code highlight]
+class Point:
+    def __init__(self, x: int, y: int):
+        self.x = x
+        self.y = y
+
+    def _workflow_serialize(self):  # [!code highlight]
+        return {"x": self.x, "y": self.y}
+
+    @classmethod
+    def _workflow_deserialize(cls, data):  # [!code highlight]
+        return cls(data["x"], data["y"])
+```
+
+Once registered, instances can cross workflow and step boundaries:
+
+```python title="app/workflows/geometry.py" lineNumbers
+from app.workflow import wf
+from app.workflows.custom_class import Point
+
+@wf.step
+async def double_point(point: Point) -> Point:
+    return Point(point.x * 2, point.y * 2)
+
+@wf.workflow
+async def geometry_workflow() -> Point:
+    point = Point(10, 20)
+    doubled = await double_point(point)  # [!code highlight]
+    print(doubled.x, doubled.y)  # 20, 40
+    return doubled
+```
+
+Pydantic models and dataclasses do not use `@serializable`. Add their types to workflow and step annotations instead; the SDK serializes and validates them through Pydantic.
+
+</LanguageContent>
+
 ### How it works
+
+<LanguageContent value="ts">
 
 1. **`WORKFLOW_SERIALIZE`**: A static method that receives a class instance and returns serializable data (primitives, plain objects, arrays, etc.)
 
@@ -264,7 +441,18 @@ async function doublePoint(point: Point) {
 
 3. **Automatic Registration**: The SWC compiler plugin automatically detects classes that implement these symbols and registers them for serialization. Each class receives a deterministic `classId` derived from its file path and class name, and is registered into the global `Symbol.for("workflow-class-registry")` registry at build time. No manual registration step is required
 
+</LanguageContent>
+<LanguageContent value="py">
+
+1. **`_workflow_serialize()`** converts an instance to values the SDK already supports.
+2. **`_workflow_deserialize()`** is a class method that reconstructs the instance.
+3. **`@serializable`** registers the class with a deterministic ID based on its module and qualified name. Use `register_serializable()` when you cannot decorate the class, or pass `class_id` when Python and TypeScript must share the same class identity.
+
+</LanguageContent>
+
 ### Requirements
+
+<LanguageContent value="ts">
 
 <Callout type="warn">
 `WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE` must be implemented as **static** methods on the class. Defining them as instance methods is not supported.
@@ -282,7 +470,22 @@ The `WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE` methods run inside the workf
 Keep these methods focused on data transformation only.
 </Callout>
 
+</LanguageContent>
+<LanguageContent value="py">
+
+- `_workflow_serialize()` must return supported serializable data.
+- `_workflow_deserialize()` must be a class method that reconstructs the same logical value.
+- Both methods must be implemented together unless you pass explicit `serialize` and `deserialize` callables to `register_serializable()`.
+
+<Callout type="warn">
+Keep serializers focused on pure data transformation. They can run in the replaying workflow sandbox, so they must not perform network calls, access host-only APIs, or use nondeterministic values.
+</Callout>
+
+</LanguageContent>
+
 ### Instance methods as steps
+
+<LanguageContent value="ts">
 
 In practice, many classes have methods that need Node.js APIs, perform network calls, or interact with databases, operations that are not allowed in the `"use workflow"` execution context. You can make these methods workflow-compatible by adding `"use step"` to them. The SWC compiler will strip the method bodies from the workflow bundle and replace them with proxy functions that invoke the method as a step, with full Node.js runtime access. The `this` context (the class instance) is automatically serialized and deserialized across the workflow/step boundary.
 
@@ -408,3 +611,30 @@ export async function processOrderWorkflow() {
   order = await order.addItem("Widget", 3); // [!code highlight]
 }
 ```
+
+</LanguageContent>
+<LanguageContent value="py">
+
+Python registers steps as decorated functions rather than transforming instance methods. Put host-runtime work in a module-level step and pass the serializable instance explicitly. Pass-by-value semantics still apply, so return and reassign the instance when the step changes it:
+
+```python title="app/workflows/order.py" lineNumbers
+from dataclasses import dataclass
+
+from app.workflow import wf
+
+@dataclass
+class Order:
+    items: dict[str, int]
+
+@wf.step
+async def add_item(order: Order, name: str, quantity: int) -> Order:
+    order.items[name] = quantity
+    return order  # [!code highlight]
+
+@wf.workflow
+async def process_order_workflow(order: Order):
+    order = await add_item(order, "Widget", 3)  # [!code highlight]
+    return order
+```
+
+</LanguageContent>
