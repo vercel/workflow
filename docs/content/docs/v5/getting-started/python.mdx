@@ -204,7 +204,7 @@ The sleep consumes no resources. The workflow resumes automatically when the tim
 
 Workflow bodies must be fully deterministic, and so are not allowed to perform operations like reading the system clock or generating randomness using the default generator. Deterministic replacements are provided for use in workflow bodies:
 
-- `workflow.now()` is a deterministic substitute for `datetime.datetime.now`. It returns the time that the last workflow event occured at.
+- `workflow.now()` is a deterministic substitute for `datetime.datetime.now`. It returns the time that the last workflow event occurred at.
 - `workflow.time_ns()` is a deterministic substitute for `time.time_ns`.
 - `workflow.random()` returns a `random.Random` instance with a seed based on the run id.
 
@@ -261,7 +261,7 @@ When a hook receives data, the workflow resumes automatically. You don&apos;t ne
 
 ## Streaming
 
-Steps can stream progress while a workflow is running. Streams are assoicated with workflow runs, can be acquired from inside a workflow or inside a step, and can be passed to workflows and steps as arguments. If a type is specified when getting the stream (or on the type annotation of a step or workflow it is passed to), then Pydantic will be used to encode and decode the type.
+Steps can stream progress while a workflow is running. Streams are associated with workflow runs, can be acquired from inside a workflow or inside a step, and can be passed to workflows and steps as arguments. If a type is specified when getting the stream (or on the type annotation of a step or workflow it is passed to), then Pydantic will be used to encode and decode the type.
 
 ```python filename="app/workflows/streaming.py"
 import pydantic
