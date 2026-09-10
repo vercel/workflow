@@ -1,3 +1,5 @@
+import type { EventOfType } from './events.js';
+
 /** A single run-attribute change. `null` removes the key. */
 export interface AttributeChange {
   key: string;
@@ -113,6 +115,8 @@ export function purgesUserDataOnFinish(
 export const ATTRIBUTE_KEY_MAX_LENGTH = 256;
 export const ATTRIBUTE_VALUE_MAX_BYTES = 256;
 export const ATTRIBUTE_MAX_PER_RUN = 64;
+/** World limit for JSON-serialized inline eventData, not just attribute values. */
+export const ATTRIBUTE_EVENT_DATA_MAX_BYTES = 4096;
 
 const textEncoder = new TextEncoder();
 
@@ -121,6 +125,19 @@ export class AttributeValidationError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'AttributeValidationError';
+  }
+}
+
+/** Validate writes without applying a new constraint to persisted event schemas. */
+export function validateAttributeEventDataSize(
+  eventData: EventOfType<'attr_set'>['eventData']
+): void {
+  // attr_set has no RemoteRef payload fields: the entire eventData counts.
+  const bytes = textEncoder.encode(JSON.stringify(eventData)).length;
+  if (bytes > ATTRIBUTE_EVENT_DATA_MAX_BYTES) {
+    throw new AttributeValidationError(
+      `Attribute eventData exceeds limit ${ATTRIBUTE_EVENT_DATA_MAX_BYTES} UTF-8 JSON bytes (received ${bytes} bytes). Split the changes into smaller setAttributes() calls.`
+    );
   }
 }
 

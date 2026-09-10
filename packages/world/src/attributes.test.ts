@@ -10,6 +10,53 @@ import {
   applyAttributeChanges,
   validateAttributeChanges,
 } from './attributes.js';
+import {
+  ATTRIBUTE_EVENT_DATA_MAX_BYTES,
+  type EventOfType,
+  validateAttributeEventDataSize,
+} from './index.js';
+
+describe('validateAttributeEventDataSize', () => {
+  it.each([
+    ['envelope', 'key', ''],
+    ['long keys', 'k'.repeat(180), ''],
+    ['UTF-8 keys', '\u00e9'.repeat(90), ''],
+    ['UTF-8 values', 'key', '\u00e9'.repeat(64)],
+    ['JSON escapes', '\n"\\', '\n"\\'.repeat(12)],
+  ])('counts %s at the JSON byte boundary', (_label, key, value) => {
+    expect(ATTRIBUTE_EVENT_DATA_MAX_BYTES).toBe(4096);
+    const eventData = {
+      changes: Array.from({ length: 16 }, (_, i) => ({
+        key: `${i}${key}`,
+        value,
+      })),
+      writer: { type: 'workflow' },
+    } satisfies EventOfType<'attr_set'>['eventData'];
+    let remaining = 4096 - Buffer.byteLength(JSON.stringify(eventData));
+    for (const change of eventData.changes) {
+      const padding = Math.min(
+        remaining,
+        256 - Buffer.byteLength(change.value)
+      );
+      change.value += 'x'.repeat(padding);
+      remaining -= padding;
+    }
+    expect(remaining).toBe(0);
+    expect(Buffer.byteLength(JSON.stringify(eventData))).toBe(4096);
+    expect(() => validateAttributeChanges(eventData.changes)).not.toThrow();
+    expect(() => validateAttributeEventDataSize(eventData)).not.toThrow();
+
+    eventData.changes[0].key += 'x';
+    expect(Buffer.byteLength(JSON.stringify(eventData))).toBe(4097);
+    expect(() => validateAttributeChanges(eventData.changes)).not.toThrow();
+    expect(() => validateAttributeEventDataSize(eventData)).toThrow(
+      AttributeValidationError
+    );
+    expect(() => validateAttributeEventDataSize(eventData)).toThrow(
+      /4096.*4097.*Split/
+    );
+  });
+});
 
 describe('attribute schemas', () => {
   it('accepts a normal key', () => {

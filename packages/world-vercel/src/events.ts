@@ -53,6 +53,10 @@ import {
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
+import {
+  AttributeValidationError,
+  validateAttributeEventDataSize,
+} from '@workflow/world/attributes-validation';
 import { ReplayEventObserverError, withEventPostRetry } from './event-retry.js';
 import {
   createHookReceivedPreloadEventV4,
@@ -237,6 +241,14 @@ assertEventDataWireContractExhaustive<[Unhandled, Stale]>();
  * contract and must remain exhaustive with the @workflow/world event schemas.
  */
 export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
+  if (data.eventType === 'attr_set') {
+    try {
+      validateAttributeEventDataSize(data.eventData);
+    } catch (error) {
+      if (!(error instanceof AttributeValidationError)) throw error;
+      throw new WorkflowWorldError(error.message, { status: 400 });
+    }
+  }
   // Some event types in the AnyEventRequest discriminated union (e.g.
   // run_cancelled) have no eventData. Cast through unknown so this
   // helper can read it defensively without TS narrowing per branch.
