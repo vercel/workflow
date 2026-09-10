@@ -18,7 +18,7 @@ import {
  * Used by the CLI to configure environment variables that are read by
  * various subsystems (e.g., WORKFLOW_TARGET_WORLD, WORKFLOW_LOCAL_DATA_DIR).
  * Note: WORKFLOW_VERCEL_* env vars are read back via getEnvVars() and passed
- * to @workflow/world-vercel's createWorld() explicitly — they are NOT read by runtime createWorld().
+ * to @workflow/world-vercel's createWorld() explicitly; they are NOT read by runtime createWorld().
  */
 export const writeEnvVars = (envVars: Record<string, string>) => {
   Object.entries(envVars).forEach(([key, value]) => {
@@ -147,7 +147,7 @@ export const inferLocalWorldEnvVars = async () => {
         }
       }
 
-      // It's okay if manifest is not found - the web UI will just show empty workflows
+      // If the manifest is not found, the web UI will show no workflows.
       if (!envVars.WORKFLOW_MANIFEST_PATH) {
         logger.debug(
           'No workflow manifest found. Workflows tab will be empty.'
@@ -236,7 +236,7 @@ export const inferVercelEnvVars = async (): Promise<VercelEnvVars> => {
   }
 
   // Fetch team information from Vercel API to get the team slug
-  // TODO: Sadly, in order to redirect to Vercel dashboard correctly, we need to
+  // TODO: To redirect to the Vercel dashboard correctly, we need to
   // resolve the team name, which is a whole API request. The alternative would be to
   // change front to allow passing in the team slug directly, or add some generic redirect.
   if (envVars.WORKFLOW_VERCEL_TEAM && envVars.WORKFLOW_VERCEL_AUTH_TOKEN) {

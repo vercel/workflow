@@ -72,6 +72,17 @@ export function getEventColor(
     };
   }
 
+  // Sealed positions - neutral gray: backend log filler, not run activity
+  if (eventType === 'noop') {
+    return {
+      color: 'var(--ds-gray-500)',
+      background: 'var(--ds-gray-100)',
+      border: 'var(--ds-gray-400)',
+      text: 'var(--ds-gray-900)',
+      secondary: 'var(--ds-gray-700)',
+    };
+  }
+
   // Default - Blue
   return {
     color: 'var(--ds-blue-600)',

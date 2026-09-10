@@ -13,8 +13,8 @@ import {
   isWaitEventType,
   type WorkflowRun,
 } from '@workflow/world';
-import type { Span } from '../components/trace-viewer/types';
 import {
+  type GetStepAttributes,
   getEventTimestamp,
   hookToSpan,
   runToSpan,
@@ -23,6 +23,9 @@ import {
   waitToSpan,
 } from '../components/workflow-traces/trace-span-construction';
 import { otelTimeToMs } from '../components/workflow-traces/trace-time-utils';
+import { findDuplicateEventIds } from './duplicate-events';
+import { isSealedNoopEvent } from './sealed-events';
+import type { Span } from './trace-types';
 
 /**
  * Events that belong to the run root span rather than a child entity span.
@@ -135,7 +138,8 @@ function buildSpans(
   run: WorkflowRun,
   groupedEvents: GroupedEvents,
   now: Date,
-  latestKnownTime: Date
+  latestKnownTime: Date,
+  getStepAttributes?: GetStepAttributes
 ) {
   // Active child spans cap at latestKnownTime so they don't extend into
   // unknown territory. Even when the run is completed, we may not have loaded
@@ -144,7 +148,7 @@ function buildSpans(
   const runMaxEnd = run.completedAt ?? now;
 
   const stepSpans = Array.from(groupedEvents.eventsByStepId.values())
-    .map((events) => stepToSpan(events, childMaxEnd))
+    .map((events) => stepToSpan(events, childMaxEnd, getStepAttributes))
     .filter((span): span is Span => span !== null);
 
   const hookSpans = Array.from(groupedEvents.hookEvents.values())
@@ -188,20 +192,56 @@ export interface TraceWithMeta {
   resources: { name: string; attributes: Record<string, string> }[];
   /** Duration in ms from trace start to the latest known event. */
   knownDurationMs: number;
+  /**
+   * The events left out of the span geometry as repeats. Empty unless the
+   * caller vouched for the log being complete. See
+   * {@link findDuplicateEventIds}.
+   */
+  duplicateEventIds: ReadonlySet<string>;
 }
 
 export function buildTrace(
   run: WorkflowRun,
   events: Event[],
-  now: Date
+  now: Date,
+  /**
+   * Whether `events` is the run's whole log. Defaults to false, which builds
+   * the trace from every event: on a subset there is no way to tell a repeat
+   * from the only copy the caller was given, and dropping the wrong one moves
+   * a span. See {@link findDuplicateEventIds}.
+   */
+  {
+    isCompleteHistory = false,
+    getStepAttributes,
+  }: {
+    isCompleteHistory?: boolean;
+    getStepAttributes?: GetStepAttributes;
+  } = {}
 ): TraceWithMeta {
-  const groupedEvents = groupEventsByCorrelation(events);
-  const latestKnownTime = computeLatestKnownTime(events, run);
+  // Span geometry comes from what the run acted on. A repeat of a class the
+  // log already records is read past by every replay, and letting one through
+  // here would stretch a span to whenever a concurrent replay committed it.
+  // Sealed-position noops are excluded for the same reason with a different
+  // clock: a noop's createdAt is the sealer's wall time, which can postdate
+  // every real event around it, so feeding it into span grouping or the
+  // latest-known-time bound would chart the sealer's schedule instead of the
+  // run's. The event lists still show both, marked with the reason.
+  const duplicateEventIds = findDuplicateEventIds(events, {
+    isCompleteHistory,
+  });
+  const actedOnEvents = events.filter(
+    (event) =>
+      !duplicateEventIds.has(event.eventId) && !isSealedNoopEvent(event)
+  );
+
+  const groupedEvents = groupEventsByCorrelation(actedOnEvents);
+  const latestKnownTime = computeLatestKnownTime(actedOnEvents, run);
   const { runSpan, spans } = buildSpans(
     run,
     groupedEvents,
     now,
-    latestKnownTime
+    latestKnownTime,
+    getStepAttributes
   );
   const sortedCascadingSpans = cascadeSpans(runSpan, spans);
 
@@ -222,5 +262,6 @@ export function buildTrace(
       },
     ],
     knownDurationMs: Math.max(0, knownDurationMs),
+    duplicateEventIds,
   };
 }

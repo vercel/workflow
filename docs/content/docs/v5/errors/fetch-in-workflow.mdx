@@ -10,24 +10,24 @@ related:
 ---
 
 <CopyPrompt
-  text="Fix `fetch` usage inside workflow functions. Search workflow files for direct global `fetch(...)` calls and libraries such as AI SDK calls that use fetch. For simple HTTP calls inside a `&quot;use workflow&quot;` function, import `{ fetch }` from `workflow` and replace the global call. For SDK/client calls that need normal Node.js or provider behavior, move the call into a helper function with `&quot;use step&quot;` and call that step from the workflow. Keep all step inputs and outputs serializable. Verify the workflow starts and replays without the fetch-in-workflow error."
+  text="Fix `fetch` usage inside workflow functions. Search workflow files for direct global `fetch(...)` calls and libraries such as AI SDK calls that use fetch. For basic HTTP calls inside a `&quot;use workflow&quot;` function, import `{ fetch }` from `workflow` and replace the global call. For SDK/client calls that need normal Node.js or provider behavior, move the call into a helper function with `&quot;use step&quot;` and call that step from the workflow. Keep all step inputs and outputs serializable. Verify the workflow starts and replays without the fetch-in-workflow error."
 />
 
 This error occurs when you try to use `fetch()` directly in a workflow function, or when a library (like the AI SDK) tries to call `fetch()` under the hood.
 
-## Error Message
+## Error message
 
-```
+```text
 Global "fetch" is unavailable in workflow functions. Use the "fetch" step function from "workflow" to make HTTP requests.
 ```
 
-## Why This Happens
+## Why this happens
 
 Workflow functions run in a sandboxed environment without direct access to `fetch()`.
 
 Many libraries make HTTP requests under the hood. For example, the AI SDK's `generateText()` function calls `fetch()` to make HTTP requests to AI providers. When these libraries run inside a workflow function, they fail because the global `fetch` is not available.
 
-## Quick Fix
+## Quick fix
 
 Import the `fetch` step function from the `workflow` package and assign it to `globalThis.fetch` inside your workflow function. This version of `fetch` is a step function that wraps the standard `fetch` API, automatically handling serialization and providing retry capabilities. This will also make `fetch()` available to all functions and libraries in the current workflow function.
 
@@ -72,9 +72,9 @@ export async function chatWorkflow(prompt: string) {
 }
 ```
 
-## Common Scenarios
+## Common scenarios
 
-### AI SDK Integration
+### AI SDK integration
 
 This is the most common scenario - using AI SDK functions that make HTTP requests:
 
@@ -98,7 +98,7 @@ export async function aiWorkflow(userMessage: string) {
 }
 ```
 
-### Direct API Calls
+### Direct API calls
 
 You can also use the fetch step function directly for your own HTTP requests:
 

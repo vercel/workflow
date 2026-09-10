@@ -8,7 +8,7 @@ async function processPayload(body: string) {
 export async function webhookWorkflow(endpointId: string) {
   'use workflow';
 
-  // createWebhook() does not accept a token — tokens are randomly generated.
+  // createWebhook() does not accept a token — one is always generated for you.
   // Use waitForHook() in tests to discover the token.
   using webhook = createWebhook();
 

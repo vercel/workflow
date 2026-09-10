@@ -1,28 +1,38 @@
 /**
  * Drives the real workflowEntrypoint replay loop (not just the helpers) to
- * validate the stateUpdatedAt precondition guard end to end on the client:
+ * validate the precondition guard end to end on the client:
  *
- * 1. A wait_completed create is rejected as stale (412) because a hook landed
- *    out-of-band after the snapshot. The runtime must reload the event log
- *    from its cursor, retry the create with the *newer* stateUpdatedAt, and
- *    the replay must then observe the hook branch.
- * 2. A run_completed create rejected as stale must NOT be retried in place
- *    (the stale result must not be re-committed) — the error propagates to
- *    the queue handler and the run is not failed.
+ * 1. A create rejected as stale (412) because another writer landed an event
+ *    after the snapshot must restart the replay *in this invocation* — never
+ *    re-post the rejected payload. The payload's correlation ids were minted
+ *    by the rejected replay's seeded ULID sequence, so a corrected event log
+ *    generally implies different ids; only a fresh replay may write again.
+ * 2. The restart reloads the whole event log with no cursor, because a hole
+ *    can sit below the held cursor and survive an incremental load — unless
+ *    the World attached the missing events to the 412, which the runtime
+ *    consumes with no events.list round trip at all (first restart only).
+ * 3. Restarts are bounded; once the bound is spent the runtime schedules a
+ *    delayed re-invocation instead of failing the run — and that escalation is
+ *    itself counted on the queue message, so a run that can never observe its
+ *    own log completely fails loudly rather than cycling restart chains.
  *
- * Modeled on wait-completion-replay.test.ts, but with real ULID event IDs so
- * latestEventStateUpdatedAt() actually derives snapshot times.
+ * Modeled on wait-completion-replay.test.ts, but with slot-numbered event ids,
+ * which is what lets the runtime name a position at all: the snapshot it sends
+ * is the highest slot it holds, and a log of ids it cannot read as slots
+ * produces no snapshot.
  */
-import { PreconditionFailedError } from '@workflow/errors';
+import { PreconditionFailedError, RUN_ERROR_CODES } from '@workflow/errors';
 import {
   type CreateEventRequest,
   type Event,
   SPEC_VERSION_CURRENT,
+  slotToEventId,
   type WorkflowRun,
   type World,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { runtimeLogger } from '../logger.js';
 import { registerStepFunction } from '../private.js';
 import { workflowEntrypoint } from '../runtime.js';
 import {
@@ -31,6 +41,11 @@ import {
   dehydrateWorkflowArguments,
 } from '../serialization.js';
 import { createContext } from '../vm/index.js';
+import {
+  getPreconditionMaxInProcessRestarts,
+  getPreconditionMaxReinvocations,
+  getPreconditionReinvokeDelaySeconds,
+} from './constants.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({
@@ -71,9 +86,19 @@ function buildStepEntity(
   };
 }
 
+interface SnapshotParams {
+  eventType: string;
+  eventCount: number | undefined;
+}
+
 async function runPreconditionScenario(options: {
-  /** Reject the first wait_completed create with 412 (hook landed). */
-  rejectWaitCompletedOnce?: boolean;
+  /** How many wait_completed creates to reject with 412 (hook landed). */
+  rejectWaitCompletedTimes?: number;
+  /**
+   * What a rejecting World attaches to the 412: the missing event (`complete`),
+   * or a payload the runtime must refuse to narrow (`malformed`).
+   */
+  attachDelta?: 'complete' | 'malformed';
 }) {
   vi.spyOn(Date, 'now').mockReturnValue(+fixedNow);
 
@@ -109,18 +134,18 @@ async function runPreconditionScenario(options: {
     updatedAt: startedAt,
   };
 
-  // Real ULID event IDs at controlled times so latestEventStateUpdatedAt()
-  // resolves an actual epoch-ms snapshot from the loaded log.
-  const hostUlid = monotonicFactory();
-  let eventIndex = 0;
+  // Dense slot-numbered event ids in commit order, so the runtime can derive a
+  // snapshot from the loaded log at all. `atMs` only moves `createdAt`: an
+  // event's position is its slot, which is always the next one.
+  let eventSlot = 0;
   const event = (data: CreateEventRequest, atMs?: number): Event => {
-    const t = atMs ?? +startedAt + ++eventIndex * 100;
+    const slot = ++eventSlot;
     return {
       ...data,
       specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
       runId,
-      eventId: `evnt_${hostUlid(t)}`,
-      createdAt: new Date(t),
+      eventId: slotToEventId(slot),
+      createdAt: new Date(atMs ?? +startedAt + slot * 100),
     } as Event;
   };
 
@@ -170,10 +195,9 @@ async function runPreconditionScenario(options: {
       eventData: { resumeAt: new Date(+startedAt - 1_000) },
     }),
   ];
-  const staleSnapshotMs = +startedAt + staleEvents.length * 100;
-  expect(staleSnapshotMs).toBe(+startedAt + 700);
-
   const staleEventsCursor = 'cursor-after-stale-events';
+  // The hook lands far enough in the future that the replay's own `sleep("5s")`
+  // has already elapsed against it.
   const OUTSIDE_EVENT_MS = +startedAt + 5_000;
   const hookReceivedEvent = event(
     {
@@ -193,10 +217,7 @@ async function runPreconditionScenario(options: {
 
   const durableEvents = [...staleEvents];
   const createdEvents: Event[] = [];
-  const createParams: Array<{
-    eventType: string;
-    stateUpdatedAt: number | undefined;
-  }> = [];
+  const createParams: SnapshotParams[] = [];
   let waitCompletedRejections = 0;
   let capturedHandler:
     | ((
@@ -237,11 +258,11 @@ async function runPreconditionScenario(options: {
     async (
       _runId: string,
       request: CreateEventRequest,
-      params?: { stateUpdatedAt?: number }
+      params?: { eventCount?: number }
     ) => {
       createParams.push({
         eventType: request.eventType,
-        stateUpdatedAt: params?.stateUpdatedAt,
+        eventCount: params?.eventCount,
       });
 
       if (request.eventType === 'run_started') {
@@ -254,14 +275,18 @@ async function runPreconditionScenario(options: {
         if (!durableEvents.includes(hookReceivedEvent)) {
           durableEvents.push(hookReceivedEvent);
         }
-        if (
-          options.rejectWaitCompletedOnce &&
-          waitCompletedRejections === 0 &&
-          (params?.stateUpdatedAt ?? 0) < OUTSIDE_EVENT_MS
-        ) {
+        if (waitCompletedRejections < (options.rejectWaitCompletedTimes ?? 0)) {
           waitCompletedRejections++;
           throw new PreconditionFailedError(
-            'Run state is stale: an out-of-band event was recorded after the client snapshot.'
+            'Run state is stale: the client event log is missing at least one event at or before its snapshot.',
+            options.attachDelta === undefined
+              ? undefined
+              : {
+                  details:
+                    options.attachDelta === 'complete'
+                      ? { events: [hookReceivedEvent], cursor: 'cursor-412' }
+                      : { events: [{ notAnEvent: true }] },
+                }
           );
         }
       }
@@ -385,9 +410,9 @@ async function runPreconditionScenario(options: {
     createParams,
     listEvents,
     queue,
+    runId,
     staleEventsCursor,
-    staleSnapshotMs,
-    OUTSIDE_EVENT_MS,
+    staleEventCount: staleEvents.length,
     waitCorrelationId,
     waitCompletedRejectionCount: () => waitCompletedRejections,
   };
@@ -398,7 +423,20 @@ async function runPreconditionScenario(options: {
  * returns, replayed from a loaded 2-event log, with every run_completed
  * create rejected as stale (412).
  */
-async function runCompletedRejectionScenario() {
+async function runCompletedRejectionScenario({
+  turbo = false,
+  preconditionReinvocations,
+}: {
+  /**
+   * Deliver the message the way `start()` does (run input inline, first
+   * attempt), which is the only shape that takes the turbo path — and therefore
+   * the only one whose re-invocation enqueues a NEW message rather than asking
+   * for a redelivery of this one.
+   */
+  turbo?: boolean;
+  /** Escalations already spent, as a re-invoked message carries them. */
+  preconditionReinvocations?: number;
+} = {}) {
   vi.spyOn(Date, 'now').mockReturnValue(+fixedNow);
 
   const runId = 'wrun_precondition_run_completed';
@@ -419,16 +457,15 @@ async function runCompletedRejectionScenario() {
     updatedAt: startedAt,
   };
 
-  const hostUlid = monotonicFactory();
-  let eventIndex = 0;
+  let eventSlot = 0;
   const event = (data: CreateEventRequest, atMs?: number): Event => {
-    const t = atMs ?? +startedAt + ++eventIndex * 100;
+    const slot = ++eventSlot;
     return {
       ...data,
       specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
       runId,
-      eventId: `evnt_${hostUlid(t)}`,
-      createdAt: new Date(t),
+      eventId: slotToEventId(slot),
+      createdAt: new Date(atMs ?? +startedAt + slot * 100),
     } as Event;
   };
 
@@ -442,10 +479,8 @@ async function runCompletedRejectionScenario() {
   ];
   const staleEventsCursor = 'cursor-after-stale-events';
 
-  const createParams: Array<{
-    eventType: string;
-    stateUpdatedAt: number | undefined;
-  }> = [];
+  const createParams: SnapshotParams[] = [];
+  const createRequests: CreateEventRequest[] = [];
   let capturedHandler:
     | ((
         message: unknown,
@@ -463,12 +498,13 @@ async function runCompletedRejectionScenario() {
     async (
       _runId: string,
       request: CreateEventRequest,
-      params?: { stateUpdatedAt?: number }
+      params?: { eventCount?: number }
     ) => {
       createParams.push({
         eventType: request.eventType,
-        stateUpdatedAt: params?.stateUpdatedAt,
+        eventCount: params?.eventCount,
       });
+      createRequests.push(request);
       if (request.eventType === 'run_started') {
         return {
           run: workflowRun,
@@ -486,6 +522,7 @@ async function runCompletedRejectionScenario() {
     }
   );
 
+  const queue = vi.fn().mockResolvedValue({ messageId: 'msg_step' });
   const fakeWorld = {
     specVersion: SPEC_VERSION_CURRENT,
     createQueueHandler: vi.fn((_prefix, handler) => {
@@ -496,7 +533,7 @@ async function runCompletedRejectionScenario() {
       list: listEvents,
       create: createEvent,
     },
-    queue: vi.fn().mockResolvedValue({ messageId: 'msg_step' }),
+    queue,
     getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
   } as unknown as World;
 
@@ -505,6 +542,344 @@ async function runCompletedRejectionScenario() {
   const workflowCode = `
     async function workflow() {
       return "done";
+    }
+
+    ${getWorkflowTransformCode(workflowName)}
+  `;
+
+  const handler = workflowEntrypoint(workflowCode);
+  await handler(new Request('http://localhost', { method: 'POST' }));
+  expect(capturedHandler).toBeDefined();
+
+  const handlerInvocation = capturedHandler?.(
+    {
+      runId,
+      ...(preconditionReinvocations !== undefined
+        ? { preconditionReinvocations }
+        : {}),
+      ...(turbo
+        ? {
+            runInput: {
+              input: workflowArgs,
+              deploymentId,
+              workflowName,
+              specVersion: SPEC_VERSION_CURRENT,
+            },
+          }
+        : {}),
+    },
+    {
+      queueName: `__wkf_workflow_${workflowName}`,
+      messageId: 'msg_workflow',
+      attempt: 1,
+    }
+  );
+
+  return {
+    handlerInvocation,
+    createParams,
+    createRequests,
+    listEvents,
+    queue,
+    staleEventCount: staleEvents.length,
+    staleEventsCursor,
+  };
+}
+
+/**
+ * Minimal scenario for the attribute path: a workflow that sets an attribute
+ * and returns. The attr_set a suspension writes is guarded like every other
+ * replay-origin write, so it must carry the snapshot.
+ */
+async function attributeSnapshotScenario() {
+  vi.spyOn(Date, 'now').mockReturnValue(+fixedNow);
+
+  const runId = 'wrun_precondition_attr_set';
+  const workflowName = 'workflow';
+  const deploymentId = 'dpl_precondition_attr_set';
+  const startedAt = new Date('2026-05-19T12:00:00.000Z');
+  const workflowArgs = await dehydrateWorkflowArguments([], runId, undefined);
+
+  const workflowRun: WorkflowRun = {
+    runId,
+    workflowName,
+    status: 'running',
+    input: workflowArgs,
+    deploymentId,
+    specVersion: SPEC_VERSION_CURRENT,
+    startedAt,
+    createdAt: startedAt,
+    updatedAt: startedAt,
+  };
+
+  let eventSlot = 0;
+  const durableEvents: Event[] = [];
+  const event = (data: CreateEventRequest): Event => {
+    const slot = ++eventSlot;
+    return {
+      ...data,
+      specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
+      runId,
+      eventId: slotToEventId(slot),
+      createdAt: new Date(+startedAt + slot * 100),
+    } as Event;
+  };
+
+  durableEvents.push(
+    event({
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { deploymentId, workflowName, input: workflowArgs },
+    }),
+    event({ eventType: 'run_started', specVersion: SPEC_VERSION_CURRENT })
+  );
+  const preloadedCursor = 'cursor-after-run-started';
+  const preloadedEventCount = durableEvents.length;
+
+  const createParams: SnapshotParams[] = [];
+  let capturedHandler:
+    | ((
+        message: unknown,
+        metadata: { queueName: string; messageId: string; attempt: number }
+      ) => Promise<unknown>)
+    | undefined;
+
+  const createEvent = vi.fn(
+    async (
+      _runId: string,
+      request: CreateEventRequest,
+      params?: { eventCount?: number }
+    ) => {
+      createParams.push({
+        eventType: request.eventType,
+        eventCount: params?.eventCount,
+      });
+      if (request.eventType === 'run_started') {
+        return {
+          run: workflowRun,
+          events: [...durableEvents],
+          cursor: preloadedCursor,
+          hasMore: false,
+        };
+      }
+      const created = event(request);
+      durableEvents.push(created);
+      return { event: created };
+    }
+  );
+
+  const fakeWorld = {
+    specVersion: SPEC_VERSION_CURRENT,
+    createQueueHandler: vi.fn((_prefix, handler) => {
+      capturedHandler = handler;
+      return vi.fn();
+    }),
+    events: {
+      list: vi.fn(async () => ({
+        data: [...durableEvents],
+        hasMore: false,
+        cursor: preloadedCursor,
+      })),
+      create: createEvent,
+    },
+    queue: vi.fn().mockResolvedValue({ messageId: 'msg_step' }),
+    getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+  } as unknown as World;
+
+  setWorld(fakeWorld);
+
+  const workflowCode = `
+    const setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
+
+    async function workflow() {
+      await setAttributes([{ key: "tenant", value: "acme" }]);
+      return "done";
+    }
+
+    ${getWorkflowTransformCode(workflowName)}
+  `;
+
+  const handler = workflowEntrypoint(workflowCode);
+  await handler(new Request('http://localhost', { method: 'POST' }));
+  expect(capturedHandler).toBeDefined();
+
+  await capturedHandler?.(
+    { runId },
+    {
+      queueName: `__wkf_workflow_${workflowName}`,
+      messageId: 'msg_workflow',
+      attempt: 1,
+    }
+  );
+
+  return { createParams, preloadedEventCount };
+}
+
+/**
+ * Scenario for the inline step-claim path: two steps in one `Promise.all` batch,
+ * both started inline via lazy `step_started`. The first claim to arrive is
+ * accepted and its body runs to completion; the second is rejected as stale
+ * (412) once, with the sibling's just-committed `step_created` attached as the
+ * events the client is supposedly missing.
+ */
+async function inlineClaimRejectionScenario() {
+  vi.spyOn(Date, 'now').mockReturnValue(+fixedNow);
+
+  const runId = 'wrun_precondition_inline_claim';
+  const workflowName = 'workflow';
+  const deploymentId = 'dpl_precondition_inline_claim';
+  const startedAt = new Date('2026-05-19T12:00:00.000Z');
+  const workflowArgs = await dehydrateWorkflowArguments([], runId, undefined);
+
+  const workflowRun: WorkflowRun = {
+    runId,
+    workflowName,
+    status: 'running',
+    input: workflowArgs,
+    deploymentId,
+    specVersion: SPEC_VERSION_CURRENT,
+    startedAt,
+    createdAt: startedAt,
+    updatedAt: startedAt,
+  };
+
+  let eventSlot = 0;
+  const event = (data: CreateEventRequest): Event => {
+    const slot = ++eventSlot;
+    return {
+      ...data,
+      specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
+      runId,
+      eventId: slotToEventId(slot),
+      createdAt: new Date(+startedAt + slot * 100),
+    } as Event;
+  };
+
+  const staleEvents: Event[] = [
+    event({
+      eventType: 'run_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { deploymentId, workflowName, input: workflowArgs },
+    }),
+    event({ eventType: 'run_started', specVersion: SPEC_VERSION_CURRENT }),
+  ];
+  const staleEventsCursor = 'cursor-after-stale-events';
+  const durableEvents = [...staleEvents];
+
+  const createParams: SnapshotParams[] = [];
+  let claimsSeen = 0;
+  let rejections = 0;
+  let siblingStepCreated: Event | undefined;
+  let capturedHandler:
+    | ((
+        message: unknown,
+        metadata: { queueName: string; messageId: string; attempt: number }
+      ) => Promise<unknown>)
+    | undefined;
+
+  const listEvents = vi.fn(async () => ({
+    data: [...durableEvents],
+    hasMore: false,
+    cursor: staleEventsCursor,
+  }));
+
+  registerStepFunction('pA', async () => 'a');
+  registerStepFunction('pB', async () => 'b');
+
+  const createEvent = vi.fn(
+    async (
+      _runId: string,
+      request: CreateEventRequest,
+      params?: { eventCount?: number }
+    ) => {
+      createParams.push({
+        eventType: request.eventType,
+        eventCount: params?.eventCount,
+      });
+
+      if (request.eventType === 'run_started') {
+        return {
+          run: workflowRun,
+          events: [...staleEvents],
+          cursor: staleEventsCursor,
+          hasMore: false,
+        };
+      }
+
+      const lazyData = request.eventData as
+        | { stepName?: string; input?: unknown }
+        | undefined;
+      const lazyStepStart =
+        request.eventType === 'step_started' && lazyData?.input !== undefined;
+
+      if (lazyStepStart) {
+        claimsSeen += 1;
+        // The second claim of the batch loses. By then the first has already
+        // committed step events of its own — which is exactly what a delta
+        // computed against the rejected request's snapshot cannot contain.
+        if (claimsSeen === 2 && rejections === 0) {
+          rejections += 1;
+          throw new PreconditionFailedError(
+            'Run state is stale: the client event log is missing at least one event at or before its snapshot.',
+            {
+              details: {
+                events: siblingStepCreated ? [siblingStepCreated] : [],
+                cursor: 'cursor-412',
+              },
+            }
+          );
+        }
+        const syntheticStepCreated = event({
+          eventType: 'step_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: request.correlationId,
+          eventData: { stepName: lazyData?.stepName, input: lazyData?.input },
+        } as CreateEventRequest);
+        durableEvents.push(syntheticStepCreated);
+        siblingStepCreated ??= syntheticStepCreated;
+        const { input: _strippedInput, ...startEventData } = lazyData ?? {};
+        const created = event({
+          ...request,
+          eventData: startEventData,
+        } as CreateEventRequest);
+        durableEvents.push(created);
+        return {
+          event: created,
+          step: buildStepEntity(durableEvents, runId, request.correlationId),
+          stepCreated: true,
+        };
+      }
+
+      const created = event(request);
+      durableEvents.push(created);
+      return { event: created };
+    }
+  );
+
+  const fakeWorld = {
+    specVersion: SPEC_VERSION_CURRENT,
+    createQueueHandler: vi.fn((_prefix, handler) => {
+      capturedHandler = handler;
+      return vi.fn();
+    }),
+    events: {
+      list: listEvents,
+      create: createEvent,
+    },
+    queue: vi.fn().mockResolvedValue({ messageId: null }),
+    getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+  } as unknown as World;
+
+  setWorld(fakeWorld);
+
+  const workflowCode = `
+    const useStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")];
+    const pA = useStep("pA");
+    const pB = useStep("pB");
+
+    async function workflow() {
+      const results = await Promise.all([pA(), pB()]);
+      return results.join("-");
     }
 
     ${getWorkflowTransformCode(workflowName)}
@@ -526,55 +901,71 @@ async function runCompletedRejectionScenario() {
   return {
     handlerInvocation,
     createParams,
-    runStartedSnapshotMs: +startedAt + 200,
+    listEvents,
+    rejectionCount: () => rejections,
   };
 }
 
 describe('precondition guard through the real replay loop', () => {
-  let originalGuard: string | undefined;
+  let originalRestartBound: string | undefined;
+  let originalInlineCap: string | undefined;
 
   beforeEach(() => {
-    originalGuard = process.env.WORKFLOW_PRECONDITION_GUARD;
-    // The guard is opt-in; these scenarios exercise the opted-in path.
-    process.env.WORKFLOW_PRECONDITION_GUARD = '1';
+    originalRestartBound =
+      process.env.WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS;
+    originalInlineCap = process.env.WORKFLOW_MAX_INLINE_STEPS;
+    // The inline-claim scenario needs a whole two-step batch to run inline,
+    // which the default cap allows.
+    delete process.env.WORKFLOW_MAX_INLINE_STEPS;
   });
 
   afterEach(() => {
-    if (originalGuard !== undefined) {
-      process.env.WORKFLOW_PRECONDITION_GUARD = originalGuard;
-    } else {
-      delete process.env.WORKFLOW_PRECONDITION_GUARD;
+    for (const [name, value] of [
+      ['WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS', originalRestartBound],
+      ['WORKFLOW_MAX_INLINE_STEPS', originalInlineCap],
+    ] as const) {
+      if (value !== undefined) {
+        process.env[name] = value;
+      } else {
+        delete process.env[name];
+      }
     }
     setWorld(undefined);
     vi.restoreAllMocks();
   });
 
-  it('reloads and retries a 412-rejected wait_completed with the newer snapshot, then takes the hook branch', async () => {
+  /** Only a restart reloads with no cursor; every other load is incremental. */
+  const cursorlessLoads = (listEvents: { mock: { calls: unknown[][] } }) =>
+    listEvents.mock.calls.filter(
+      (call) =>
+        !(call[0] as { pagination?: { cursor?: string } }).pagination?.cursor
+    ).length;
+
+  it('restarts the replay in-process on a 412, reloading the whole log with no cursor, and then takes the hook branch', async () => {
     const result = await runPreconditionScenario({
-      rejectWaitCompletedOnce: true,
+      rejectWaitCompletedTimes: 1,
     });
     await result.handlerInvocation;
 
-    // Rejected once, then retried and accepted.
     expect(result.waitCompletedRejectionCount()).toBe(1);
     const waitCreates = result.createParams.filter(
       (c) => c.eventType === 'wait_completed'
     );
     expect(waitCreates).toHaveLength(2);
-    // First attempt carried the stale snapshot (ULID time of wait_created)...
-    expect(waitCreates[0]?.stateUpdatedAt).toBe(result.staleSnapshotMs);
-    // ...the retry carried the reloaded snapshot (ULID time of hook_received).
-    expect(waitCreates[1]?.stateUpdatedAt).toBe(result.OUTSIDE_EVENT_MS);
-
-    // The guard reloaded from the held cursor (not a full re-list).
-    expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual(
-      expect.objectContaining({
-        sortOrder: 'asc',
-        cursor: result.staleEventsCursor,
-      })
+    // First attempt named the stale position (the last slot it had loaded)...
+    expect(waitCreates[0]?.eventCount).toBe(result.staleEventCount);
+    // ...the restarted replay named one slot higher, covering the event it had
+    // been missing.
+    expect(waitCreates[1]?.eventCount).toBe(
+      (waitCreates[0]?.eventCount ?? 0) + 1
     );
 
-    // Replay after the retry observed the hook and took the hook branch.
+    // The restart reloaded the full log rather than reading from the held
+    // cursor: a hole can sit below that cursor and survive an incremental
+    // load.
+    expect(cursorlessLoads(result.listEvents)).toBe(1);
+
+    // Replay after the restart observed the hook and took the hook branch.
     expect(result.createdEvents).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -589,29 +980,223 @@ describe('precondition guard through the real replay loop', () => {
     );
   });
 
-  it('does not retry a 412-rejected run_completed in place; it schedules an immediate re-invocation and the run is not failed', async () => {
+  it('costs no extra queue message: the restart happens inside the same delivery', async () => {
+    // The whole point of restarting in-process rather than re-invoking: a 412
+    // mid-replay must not add a queue round trip. Compared against the same
+    // scenario without the rejection, since the workflow's own suspension
+    // continuations also use the workflow queue.
+    const rejected = await runPreconditionScenario({
+      rejectWaitCompletedTimes: 1,
+    });
+    await rejected.handlerInvocation;
+    const baseline = await runPreconditionScenario({});
+    await baseline.handlerInvocation;
+
+    expect(rejected.waitCompletedRejectionCount()).toBe(1);
+    expect(baseline.waitCompletedRejectionCount()).toBe(0);
+    expect(rejected.queue.mock.calls).toHaveLength(
+      baseline.queue.mock.calls.length
+    );
+  });
+
+  it('consumes the events a World attaches to the 412 with no events.list round trip', async () => {
+    const result = await runPreconditionScenario({
+      rejectWaitCompletedTimes: 1,
+      attachDelta: 'complete',
+    });
+    await result.handlerInvocation;
+
+    expect(cursorlessLoads(result.listEvents)).toBe(0);
+    const waitCreates = result.createParams.filter(
+      (c) => c.eventType === 'wait_completed'
+    );
+    expect(waitCreates).toHaveLength(2);
+    expect(waitCreates[1]?.eventCount).toBe(result.staleEventCount + 1);
+    expect(result.createdEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          eventType: 'step_created',
+          eventData: expect.objectContaining({ stepName: 'drainStep' }),
+        }),
+      ])
+    );
+  });
+
+  it('falls back to the full reload when the 412 payload does not narrow to events', async () => {
+    const result = await runPreconditionScenario({
+      rejectWaitCompletedTimes: 1,
+      attachDelta: 'malformed',
+    });
+    await result.handlerInvocation;
+
+    // Untrusted-shaped data on a failure path: dropped without throwing.
+    expect(cursorlessLoads(result.listEvents)).toBe(1);
+    expect(
+      result.createParams.filter((c) => c.eventType === 'wait_completed')
+    ).toHaveLength(2);
+  });
+
+  it('trusts an attached delta only on the first restart of an invocation', async () => {
+    const result = await runPreconditionScenario({
+      rejectWaitCompletedTimes: 2,
+      attachDelta: 'complete',
+    });
+    await result.handlerInvocation;
+
+    // The delta's completeness proof leans on the rejecting World's own index,
+    // so a second rejection for the same run means that proof is not to be
+    // trusted again — the second restart does the authoritative full reload.
+    expect(result.waitCompletedRejectionCount()).toBe(2);
+    expect(cursorlessLoads(result.listEvents)).toBe(1);
+  });
+
+  it('reports whether a restarted replay reloaded the events it was missing', async () => {
+    const warn = vi.spyOn(runtimeLogger, 'warn');
+    const result = await runPreconditionScenario({
+      rejectWaitCompletedTimes: 2,
+      attachDelta: 'complete',
+    });
+    await result.handlerInvocation;
+
+    const reloads = warn.mock.calls
+      .filter(
+        ([message]) =>
+          message ===
+          'Restarted replay reloaded its event log after a stale-snapshot rejection'
+      )
+      .map(([, fields]) => fields as Record<string, unknown>);
+
+    // The first restart consumes the attached delta, which supplies exactly the
+    // outside event the snapshot was missing: the log grew by one.
+    expect(reloads[0]).toMatchObject({
+      workflowRunId: result.runId,
+      outcome: 'grew',
+      added: 1,
+      dropped: 0,
+      source: 'inline-delta',
+      preconditionRestarts: 1,
+    });
+    // The second rejection reloads in full and gets back the same set, because
+    // the World has nothing further to report. That is the diagnostic worth
+    // having: client and World disagree about the same set of events, so the
+    // re-derived snapshot will be rejected again until the bound is spent.
+    expect(reloads[1]).toMatchObject({
+      outcome: 'unchanged',
+      added: 0,
+      dropped: 0,
+      source: 'full-reload',
+      preconditionRestarts: 2,
+    });
+    expect(reloads[1].eventsBefore).toBe(reloads[1].eventsAfter);
+  });
+
+  it('ignores an attached delta when a sibling claim in the same batch was accepted', async () => {
+    const result = await inlineClaimRejectionScenario();
+    await result.handlerInvocation;
+
+    expect(result.rejectionCount()).toBe(1);
+    // The accepted sibling wrote step events of its own, possibly after the
+    // World computed this 412's delta — so the delta can no longer be assumed
+    // to complete the log, and the restart reloads it in full even though one
+    // was attached.
+    expect(cursorlessLoads(result.listEvents)).toBe(1);
+    // The restarted replay finished the run rather than re-posting the fenced
+    // claim or failing.
+    expect(
+      result.createParams.filter((c) => c.eventType === 'run_completed')
+    ).toHaveLength(1);
+    expect(
+      result.createParams.filter((c) => c.eventType === 'run_failed')
+    ).toHaveLength(0);
+  });
+
+  it('bounds in-process restarts, then schedules a single delayed re-invocation instead of failing the run', async () => {
     const result = await runCompletedRejectionScenario();
 
     // The handler must NOT throw (the turbo path has already acked the
     // message, so a rethrow would strand the run until the queue's ~300s
-    // default visibility timeout). It resolves with an immediate re-invoke
-    // so a fresh replay observes the new event.
+    // default visibility timeout). It resolves with a re-invoke so a fresh
+    // invocation replays against a full reload — delayed, because the
+    // in-process reloads just demonstrated the writers are still active.
     await expect(result.handlerInvocation).resolves.toEqual({
-      timeoutSeconds: 0,
+      timeoutSeconds: getPreconditionReinvokeDelaySeconds(),
     });
 
-    // The stale result must not be re-committed: exactly one attempt, carrying
-    // the loaded snapshot (ULID time of run_started).
+    // One attempt per replay: the original plus one per in-process restart.
+    // The stale result is never re-posted — each attempt is a fresh replay.
     const runCompletedCreates = result.createParams.filter(
       (c) => c.eventType === 'run_completed'
     );
-    expect(runCompletedCreates).toHaveLength(1);
-    expect(runCompletedCreates[0]?.stateUpdatedAt).toBe(
-      result.runStartedSnapshotMs
+    expect(runCompletedCreates).toHaveLength(
+      1 + getPreconditionMaxInProcessRestarts()
     );
+    for (const create of runCompletedCreates) {
+      expect(create.eventCount).toBe(result.staleEventCount);
+    }
     // And the runtime must not convert the rejection into a run failure.
     expect(
       result.createParams.filter((c) => c.eventType === 'run_failed')
     ).toHaveLength(0);
+  });
+
+  it('honours the restart bound override', async () => {
+    process.env.WORKFLOW_PRECONDITION_MAX_INPROCESS_RESTARTS = '1';
+    const result = await runCompletedRejectionScenario();
+
+    await expect(result.handlerInvocation).resolves.toEqual({
+      timeoutSeconds: getPreconditionReinvokeDelaySeconds(),
+    });
+    expect(
+      result.createParams.filter((c) => c.eventType === 'run_completed')
+    ).toHaveLength(1 + getPreconditionMaxInProcessRestarts());
+  });
+
+  it('counts the escalation on the re-invocation message so the chain has a run-level bound', async () => {
+    const result = await runCompletedRejectionScenario({ turbo: true });
+    await result.handlerInvocation;
+
+    // The turbo path acks this message and enqueues a new one, which resets the
+    // queue's delivery count — so the count has to ride on the payload or the
+    // chain is unbounded.
+    const [, payload, options] = result.queue.mock.calls.at(-1) as [
+      unknown,
+      { runId: string; preconditionReinvocations?: number },
+      { delaySeconds?: number } | undefined,
+    ];
+    expect(payload.preconditionReinvocations).toBe(1);
+    expect(options?.delaySeconds).toBe(getPreconditionReinvokeDelaySeconds());
+  });
+
+  it('fails the run once the per-run re-invocation budget is spent', async () => {
+    const result = await runCompletedRejectionScenario({
+      preconditionReinvocations: getPreconditionMaxReinvocations(),
+    });
+
+    // No further escalation: a run that cannot observe its own event log
+    // completely enough to commit its result must fail loudly rather than hand
+    // itself back to the queue again.
+    await expect(result.handlerInvocation).resolves.toBeUndefined();
+    expect(result.queue).not.toHaveBeenCalled();
+
+    const runFailed = result.createRequests.find(
+      (r) => r.eventType === 'run_failed'
+    );
+    expect(runFailed).toBeDefined();
+    // RUNTIME_ERROR, not CORRUPTED_EVENT_LOG: the log this replay read was
+    // incomplete, which says nothing about the log itself being corrupt.
+    expect(
+      (runFailed as { eventData?: { errorCode?: string } } | undefined)
+        ?.eventData?.errorCode
+    ).toBe(RUN_ERROR_CODES.RUNTIME_ERROR);
+  });
+
+  it('guards the attr_set a suspension writes with the same snapshot as every other replay-origin write', async () => {
+    const result = await attributeSnapshotScenario();
+
+    const attrCreate = result.createParams.find(
+      (c) => c.eventType === 'attr_set'
+    );
+    expect(attrCreate).toBeDefined();
+    expect(attrCreate?.eventCount).toBe(result.preloadedEventCount);
   });
 });

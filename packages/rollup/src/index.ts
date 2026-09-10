@@ -2,12 +2,11 @@ import { relative } from 'node:path';
 import { transform } from '@swc/core';
 import {
   detectWorkflowPatterns,
-  ensureWorkflowTargetWorldEnv,
   isGeneratedWorkflowFile,
   resolveModuleSpecifier,
   shouldTransformFile,
   WORKFLOW_OPTIONAL_OTEL_API_MODULE,
-  WORKFLOW_WORLD_TARGET_MODULE,
+  WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
 } from '@workflow/builders';
 import { resolveModulePath } from 'exsolve';
 import type { Plugin } from 'rollup';
@@ -34,7 +33,7 @@ export function workflowTransformPlugin(
         // Externalize it ONLY when it isn't installed: otherwise Rollup/Vite
         // fails the build with "failed to resolve import '@opentelemetry/api'"
         // when the peer is absent (observed in SvelteKit's pipeline). When the
-        // peer IS installed we must let it resolve and bundle normally — a
+        // peer IS installed we must let it resolve and bundle normally: a
         // self-contained output (Nitro's `.output/server`, esbuild) ships no
         // node_modules, so forcing it external there strands the runtime
         // `import('@opentelemetry/api')` and crashes the server with
@@ -51,16 +50,22 @@ export function workflowTransformPlugin(
           return resolved ?? { id: source, external: true };
         }
 
-        if (source !== WORKFLOW_WORLD_TARGET_MODULE) {
-          return null;
+        // `ws`'s optional native accelerators. Unlike the OTEL peer above these
+        // are externalized unconditionally, not only when unresolvable: `ws`
+        // requires them in a try/catch, so a failed runtime require is the
+        // designed path while a partially bundled native module is not. This
+        // plugin also runs under Vite, which substitutes a stub for an absent
+        // optional peer and would let that require succeed with no working
+        // masker. See WORKFLOW_OPTIONAL_WS_NATIVE_MODULES.
+        if (
+          WORKFLOW_OPTIONAL_WS_NATIVE_MODULES.some(
+            (name) => source === name || source.startsWith(`${name}/`)
+          )
+        ) {
+          return { id: source, external: true };
         }
 
-        const targetWorld = ensureWorkflowTargetWorldEnv();
-        const resolved = await this.resolve(targetWorld, importer, {
-          ...options,
-          skipSelf: true,
-        });
-        return resolved ?? { id: targetWorld, external: true };
+        return null;
       },
     },
     // This transform applies the "use workflow"/"use step"

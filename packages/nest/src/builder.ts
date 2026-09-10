@@ -1,10 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import {
-  BaseBuilder,
-  createBaseBuilderConfig,
-  ensureWorkflowTargetWorldEnv,
-  isWorkflowTargetWorldPath,
-} from '@workflow/builders';
+import { BaseBuilder, createBaseBuilderConfig } from '@workflow/builders';
 import { join } from 'pathe';
 import { rewriteTsImportsInContent } from './cjs-rewrite.js';
 
@@ -65,18 +60,11 @@ export class NestLocalBuilder extends BaseBuilder {
     const workingDir = options.workingDir ?? process.cwd();
     const outDir = options.outDir ?? join(workingDir, '.nestjs/workflow');
     const dirs = options.dirs ?? ['src'];
-    const targetWorld = ensureWorkflowTargetWorldEnv();
-    const externalPackages =
-      targetWorld === '@workflow/world-local' ||
-      isWorkflowTargetWorldPath(targetWorld)
-        ? []
-        : [targetWorld];
     super({
       ...createBaseBuilderConfig({
         workingDir,
         watch: options.watch ?? false,
         dirs,
-        externalPackages,
         sourcemap: options.sourcemap,
       }),
       // Use 'standalone' as base target - we handle the specific bundling ourselves
@@ -84,7 +72,6 @@ export class NestLocalBuilder extends BaseBuilder {
       stepsBundlePath: join(outDir, 'steps.mjs'),
       workflowsBundlePath: join(outDir, 'workflows.mjs'),
       webhookBundlePath: join(outDir, 'webhook.mjs'),
-      externalPackages,
     });
     this.#outDir = outDir;
     this.#moduleType = options.moduleType ?? 'es6';
@@ -106,7 +93,7 @@ export class NestLocalBuilder extends BaseBuilder {
       stepsOutfile: join(this.#outDir, 'steps.mjs'),
       flowOutfile: join(this.#outDir, 'workflows.mjs'),
       format: 'esm',
-      bundleFinalOutput: true,
+      bundleFinalOutput: false,
       externalizeNonSteps: true,
     });
 
@@ -120,7 +107,7 @@ export class NestLocalBuilder extends BaseBuilder {
 
     await this.createWebhookBundle({
       outfile: join(this.#outDir, 'webhook.mjs'),
-      bundle: true,
+      bundle: false,
     });
 
     // Generate manifest

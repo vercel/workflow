@@ -2,6 +2,8 @@
 
 Load this file when the source pauses for Signals, `step.waitForEvent()`, or `.waitForTaskToken`.
 
+<a id="quick-route-recipes"></a>
+
 ## Quick route recipes
 
 | Situation | Route keys | Must emit | Must not emit |

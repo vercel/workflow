@@ -2,8 +2,8 @@
  * Low-level bit / Crockford-Base32 plumbing for tagged ULIDs.
  *
  * A ULID is a 128-bit value rendered as 26 Crockford-Base32 characters. Since
- * 26 * 5 = 130 bits, the encoded representation has 2 leading zero pad bits
- * — i.e. the top 2 bits of the first character must always be 0. This means
+ * 26 * 5 = 130 bits, the encoded representation has 2 leading zero pad bits,
+ * i.e. the top 2 bits of the first character must always be 0. This means
  * the first character of any valid ULID lies in the range `0`..`7`.
  *
  * The tagged-ULID layout (see ./regions.ts and ./index.ts for context):
@@ -138,7 +138,7 @@ export function bytesToUlid(bytes: Uint8Array): string {
   // Emit 26 chars from 128 bits, MSB-first, with 2 leading zero pad bits
   // implicitly contributed by starting the bit buffer empty (bitCount = 0)
   // and producing the first 5-bit chunk only after we've shifted in 3 real
-  // bits — i.e. we encode by appending bytes and pulling 5-bit groups off
+  // bits; i.e. we encode by appending bytes and pulling 5-bit groups off
   // the top.
   let bitBuf = 0;
   let bitCount = 0;

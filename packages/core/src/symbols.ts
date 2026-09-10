@@ -18,7 +18,7 @@ export const STREAM_FRAMING_SYMBOL = Symbol.for('WORKFLOW_STREAM_FRAMING');
  * `start()`) sees both symbols on a writable, it includes the `runId` in
  * the descriptor it emits. The child run's step-side reviver then opens
  * a server writable against the original `(runId, name)` and resolves
- * that run's encryption key directly — so the child's writes land on
+ * that run's encryption key directly, so the child's writes land on
  * the parent's stream as-is, with no client process in the loop. That
  * keeps the forwarding alive for the full lifetime of the child run,
  * not just for the parent step that initiated `start()`.
@@ -43,7 +43,7 @@ export const STREAM_SERVER_DEPLOYMENT_ID_SYMBOL = Symbol.for(
  * when it creates the stream, so the key travels inside the serialized
  * descriptor; a child on another deployment can then seal frames immediately.
  * Without it the child would have to either fetch the owning run or fetch its
- * symmetric key from the API — the round trip this whole mechanism exists to
+ * symmetric key from the API, the round trip this whole mechanism exists to
  * avoid.
  */
 export const STREAM_SERVER_PUBLIC_KEY_SYMBOL = Symbol.for(

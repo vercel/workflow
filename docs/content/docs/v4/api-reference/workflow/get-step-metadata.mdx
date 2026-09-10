@@ -15,6 +15,8 @@ You may want to use this function when you need to:
 - Access timing information of a step and execution metadata
 - Generate idempotency keys for external APIs
 
+For metadata about the current workflow run, use [`getWorkflowMetadata()`](/docs/api-reference/workflow/get-workflow-metadata) instead.
+
 <Callout type="warn">
   This function can only be called inside a step function.
 </Callout>
@@ -34,7 +36,7 @@ async function logStepId() {
 }
 ```
 
-### Example: Use `stepId` as an idempotency key
+### Example: use `stepId` as an idempotency key
 
 ```typescript lineNumbers
 import { getStepMetadata } from "workflow";
@@ -61,7 +63,7 @@ async function chargeUser(userId: string, amount: number) {
   <a href="/docs/foundations/idempotency">Idempotency</a> guide.
 </Callout>
 
-## API Signature
+## API signature
 
 ### Parameters
 

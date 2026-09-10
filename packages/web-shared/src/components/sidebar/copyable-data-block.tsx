@@ -2,7 +2,7 @@
 
 import { Lock } from 'lucide-react';
 import { useContext } from 'react';
-import { CopyButton } from '../new-trace-viewer/components/copy-button';
+import { CopyButton } from '../trace-viewer/components/copy-button';
 import { Button } from '../ui/button';
 import { DataInspector, DecryptClickContext } from '../ui/data-inspector';
 import { Spinner } from '../ui/spinner';
@@ -25,7 +25,14 @@ export function EncryptedDataBlock() {
       </pre>
       <div className="absolute inset-0 flex items-center justify-center">
         {ctx ? (
-          <Button onClick={ctx.onDecrypt} disabled={ctx.isDecrypting} size="xs">
+          <Button
+            onClick={ctx.onDecrypt}
+            disabled={ctx.isDecrypting || ctx.isDecryptDisabled}
+            title={
+              ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined
+            }
+            size="xs"
+          >
             {ctx.isDecrypting ? (
               <Spinner size={10} />
             ) : (

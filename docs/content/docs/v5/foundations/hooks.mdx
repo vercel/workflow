@@ -11,9 +11,9 @@ related:
   - /docs/ai/human-in-the-loop
 ---
 
-Hooks provide a powerful mechanism for pausing workflow execution and resuming it later with external data. They enable workflows to wait for external events, user interactions (also known as "human in the loop"), or HTTP requests. This guide will teach you the core concepts, starting with the low-level Hook primitive and building up to the higher-level Webhook abstraction.
+Hooks pause workflow execution and resume it later with external data. Workflows can wait for external events, user interactions (also known as "human in the loop"), or HTTP requests.
 
-## Understanding Hooks
+## Understanding hooks
 
 At their core, **Hooks** are a low-level primitive that allows you to pause a workflow and resume it later with arbitrary [serializable data](/docs/foundations/serialization). Think of them as suspension points in your workflow where you're waiting for external input.
 
@@ -23,9 +23,9 @@ When you create a hook, it generates a unique token that external systems can us
 - Receiving data from an external system or service
 - Implementing event-driven workflows that react to multiple events over time
 
-### Creating Your First Hook
+### Creating your first hook
 
-Let's start with a simple example. Here's a workflow that creates a hook and waits for external data:
+This workflow creates a hook and waits for external data:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -59,7 +59,7 @@ We recommend using the `using` keyword which implements the [TC39 Explicit Resou
 See the full API reference for [`createHook()`](/docs/api-reference/workflow/create-hook) for all available options.
 </Callout>
 
-### Resuming a Hook
+### Resuming a hook
 
 To send data to a waiting workflow, use [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) from an API route, server action, or any other external context:
 
@@ -85,7 +85,7 @@ The key points:
 - You need the hook's `token` to resume it
 - The workflow will resume execution right where it left off
 
-### Checking for Token Conflicts
+### Checking for token conflicts
 
 Sometimes you need to know that a hook token has been claimed, but you do not want to wait for external data yet. Await `hook.getConflict()` for that:
 
@@ -112,11 +112,11 @@ export async function orderWorkflow(orderId: string) {
 }
 ```
 
-Calling `createHook()` on its own does not register the hook — registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the hook registration, then resolves with `null` once the hook is registered and ready to receive payloads, or with a `Run` handle for the run that owns the token (see [`HookConflictError`](/docs/errors/hook-conflict)). For `hook_conflict` events persisted by older worlds that did not record the owning run's ID, `getConflict()` rejects with `HookConflictError` instead of resolving with an incomplete handle. The conflicting run's accessors are durable steps, so the workflow can inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()` — see [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies.
+Calling `createHook()` on its own does not register the hook; registration is only committed when the workflow suspends. Awaiting `hook.getConflict()` suspends the workflow to commit the hook registration, then resolves with `null` once the hook is registered and ready to receive payloads, or with a `Run` handle for the run that owns the token (see [`HookConflictError`](/docs/errors/hook-conflict)). For `hook_conflict` events persisted by older worlds that did not record the owning run's ID, `getConflict()` rejects with `HookConflictError` instead of resolving with an incomplete handle. The conflicting run's accessors are durable steps, so the workflow can inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()`. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies.
 
-### Custom Tokens for Deterministic Hooks
+### Custom tokens for deterministic hooks
 
-By default, hooks generate a random token. However, you often want to use a **custom token** that external systems can reconstruct. This is especially useful for long-running workflows where the same workflow instance should handle multiple events.
+By default, hooks generate their own token. However, you often want to use a **custom token** that external systems can reconstruct. This is especially useful for long-running workflows where the same workflow instance should handle multiple events.
 
 For example, imagine a Slack bot where each channel should have its own workflow instance:
 
@@ -168,9 +168,9 @@ export async function POST(request: Request) {
 }
 ```
 
-### Receiving Multiple Events
+### Receiving multiple events
 
-Hooks are _reusable_ - they implement `AsyncIterable`, which means you can use `for await...of` to receive multiple events over time:
+Hooks are _reusable_. They implement `AsyncIterable`, which means you can use `for await...of` to receive multiple events over time:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -198,7 +198,7 @@ export async function dataCollectionWorkflow() {
 
 Each time you call `resumeHook()` with the same token, the loop receives another value.
 
-### Disposing Hooks Early
+### Disposing hooks early
 
 When a workflow ends, hooks are automatically disposed. However, you may want to release a hook token early so another workflow can use it while your workflow continues running. Use a block scope with `using` to control when disposal happens:
 
@@ -240,9 +240,9 @@ hook.dispose(); // Manually release the token
 After disposal, the hook will no longer receive events and the async iterator will stop yielding values.
 </Callout>
 
-## Understanding Webhooks
+## Understanding webhooks
 
-While hooks are powerful, they require you to manually handle HTTP requests and route them to workflows. **Webhooks** solve this by providing a higher-level abstraction built on top of hooks that:
+Hooks require you to manually handle HTTP requests and route them to workflows. **Webhooks** provide a higher-level abstraction built on top of hooks that:
 
 1. Automatically serializes the entire HTTP [`Request`](https://developer.mozilla.org/en-US/docs/Web/API/Request) object
 2. Provides an automatically addressable `url` property pointing to the generated webhook endpoint
@@ -251,16 +251,16 @@ While hooks are powerful, they require you to manually handle HTTP requests and 
 When using Workflow SDK, webhooks are automatically wired up at `/.well-known/workflow/v1/webhook/:token` without any additional setup.
 
 <Callout type="warn">
-`createWebhook()` exposes a public route at `/.well-known/workflow/v1/webhook/:token`, and the token in that URL is the only authorization performed for incoming requests. This is convenient for prototypes and a simple developer experience because you can share the webhook URL (endpoint) without creating another route, but if you need stronger security, prefer [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own route and authorize the request before calling [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid unauthenticated workflow resumptions.
+`createWebhook()` exposes a public route at `/.well-known/workflow/v1/webhook/:token`, and the token in that URL is the only authorization performed for incoming requests. This is convenient for prototypes because you can share the webhook URL (endpoint) without creating another route, but if you need stronger security, prefer [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own route and authorize the request before calling [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid unauthenticated workflow resumptions.
 </Callout>
 
 <Callout type="info">
 See the full API reference for [`createWebhook()`](/docs/api-reference/workflow/create-webhook) for all available options.
 </Callout>
 
-### Creating Your First Webhook
+### Creating your first webhook
 
-Here's a simple webhook that receives HTTP requests. Like hooks, webhooks support the `using` keyword for automatic cleanup:
+Here's a webhook that receives HTTP requests. Like hooks, webhooks support the `using` keyword for automatic cleanup:
 
 ```typescript lineNumbers
 import { createWebhook } from "workflow";
@@ -284,13 +284,13 @@ export async function webhookWorkflow() {
 }
 ```
 
-The webhook will automatically respond with a `202 Accepted` status by default. External systems can simply make an HTTP request to the `webhook.url` to resume your workflow.
+The webhook will automatically respond with a `202 Accepted` status by default. External systems can make an HTTP request to the `webhook.url` to resume your workflow.
 
-### Sending Custom Responses
+### Sending custom responses
 
 Webhooks provide two ways to send custom HTTP responses: **static responses** and **dynamic responses**.
 
-#### Static Responses
+#### Static responses
 
 Use the `respondWith` option to provide a static response that will be sent automatically for every request:
 
@@ -319,7 +319,7 @@ async function processData(data: any) {
 }
 ```
 
-#### Dynamic Responses (Manual Mode)
+#### Dynamic responses (manual mode)
 
 For dynamic responses based on the request content, set `respondWith: "manual"` and call the `respondWith()` method on the request:
 
@@ -365,7 +365,7 @@ export async function webhookWithDynamicResponse() {
 When using `respondWith: "manual"`, the `respondWith()` method **must** be called from within a step function due to serialization requirements. This requirement may be removed in the future.
 </Callout>
 
-### Handling Multiple Webhook Requests
+### Handling multiple webhook requests
 
 Like hooks, webhooks support iteration:
 
@@ -405,7 +405,7 @@ export async function eventCollectorWorkflow() {
 }
 ```
 
-## Hooks vs. Webhooks: When to Use Each
+## Hooks vs. webhooks: when to use each
 
 | Feature | Hooks | Webhooks |
 |---------|-------|----------|
@@ -415,19 +415,19 @@ export async function eventCollectorWorkflow() {
 | **Use Case** | Custom integrations, type-safe payloads | HTTP webhooks, standard REST APIs |
 | **Resuming** | [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) | Automatic via HTTP, or [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook) |
 
-**Use Hooks when:**
+**Use hooks when:**
 - You need full control over the payload structure
 - You're integrating with custom event sources
 - You want strong TypeScript typing with [`defineHook()`](/docs/api-reference/workflow/define-hook)
 
-**Use Webhooks when:**
+**Use webhooks when:**
 - You're receiving HTTP requests from external services
 - You need to send HTTP responses back to the caller
 - You want automatic URL routing without writing API handlers
 
-## Advanced Patterns
+## Advanced patterns
 
-### Type-Safe Hooks with `defineHook()`
+### Type-safe hooks with `defineHook()`
 
 The [`defineHook()`](/docs/api-reference/workflow/define-hook) helper provides type safety and runtime validation between creating and resuming hooks using [Standard Schema v1](https://standardschema.dev). Use any compliant validator like Zod or Valibot:
 
@@ -476,25 +476,25 @@ export async function POST(request: Request) {
 
 This pattern is especially valuable in larger applications where the workflow and API code are in separate files, providing both compile-time type safety and runtime validation.
 
-## Best Practices
+## Best practices
 
-### Token Design
+### Token design
 
-Custom tokens are available for `createHook()` with server-side `resumeHook()` only. Webhooks (`createWebhook()`) always use randomly generated tokens to prevent unauthorized access to public webhook endpoints.
+Custom tokens are available for `createHook()` with server-side `resumeHook()` only. Webhooks (`createWebhook()`) always generate their own unique tokens. A generated token is not trivial to guess, but it is not a strong security contract either, so anyone who obtains the URL can invoke an unintended webhook resumption. To prevent unauthenticated run resumptions entirely, prefer a **hook** over the **webhook** convenience and implement your own authentication on the route that calls `resumeHook()`.
 
 When using custom tokens with `createHook()`:
 
-- **Make them deterministic**: Base them on data the external system can reconstruct (like channel IDs, user IDs, etc.)
-- **Use namespacing**: Prefix tokens to avoid conflicts (e.g., `slack:${channelId}`, `github:${repoId}`)
-- **Include routing information**: Ensure the token contains enough information to identify the correct workflow instance
+- **Make them deterministic**: Base them on data the external system can reconstruct, such as channel IDs or user IDs.
+- **Use namespacing**: Prefix tokens to avoid conflicts, such as `slack:${channelId}` or `github:${repoId}`.
+- **Include routing information**: Ensure the token contains enough information to identify the correct workflow instance.
 
-### Response Handling in Webhooks
+### Response handling in webhooks
 
-- Use **static responses** (`respondWith: Response`) for simple acknowledgments
+- Use **static responses** (`respondWith: Response`) for acknowledgments
 - Use **manual mode** (`respondWith: "manual"`) when responses depend on request processing
 - Remember that `respondWith()` must be called from within a step function
 
-### Iterating Over Events
+### Iterating over events
 
 Both hooks and webhooks support iteration, making them perfect for long-running event loops:
 
@@ -513,7 +513,7 @@ for await (const event of hook) {
 
 This pattern allows a single workflow instance to handle multiple events over time, maintaining state between events.
 
-## Related Documentation
+## Related documentation
 
 - [Serialization](/docs/foundations/serialization) - Understanding what data can be passed through hooks
 - [`createHook()` API Reference](/docs/api-reference/workflow/create-hook)

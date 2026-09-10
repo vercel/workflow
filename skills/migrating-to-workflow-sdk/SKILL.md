@@ -3,7 +3,7 @@ name: migrating-to-workflow-sdk
 description: Migrates Temporal, Inngest, Trigger.dev, and AWS Step Functions workflows to the Workflow SDK. Use when porting Activities, Workers, Signals, step.run(), step.waitForEvent(), Trigger.dev tasks / wait.forToken / triggerAndWait, ASL JSON state machines, Task/Choice/Wait/Parallel states, task tokens, or child workflows.
 metadata:
   author: Vercel Inc.
-  version: '0.2.0'
+  version: '0.3.0'
 ---
 
 # Migrating to the Workflow SDK
@@ -78,10 +78,10 @@ Before drafting `## Migrated Code`, write the selected route keys in `## Migrati
 
 ## Shared references
 
-- `references/shared-patterns.md` — reusable code templates for hooks, child workflows, idempotency, streaming, and rollback.
-- `references/runtime-targets.md` — Managed vs custom `World` guidance.
-- `references/resume-routing.md` — route-key selection, obligations, and exact `## Migration Plan` shape.
-- `references/retries.md` — canonical retry mechanics: `stepFn.maxRetries`, `RetryableError({ retryAfter })`, `FatalError`.
+- `references/shared-patterns.md`: Reusable code templates for hooks, child workflows, idempotency, streaming, and rollback.
+- `references/runtime-targets.md`: Managed vs. custom `World` guidance.
+- `references/resume-routing.md`: Route-key selection, obligations, and exact `## Migration Plan` shape.
+- `references/retries.md`: Canonical retry mechanics, including `stepFn.maxRetries`, `RetryableError({ retryAfter })`, and `FatalError`.
 
 ## Required output shape
 
@@ -144,7 +144,7 @@ For concrete passing code, load:
 
 ## Sample prompt
 
-```
+```text
 Migrate this Inngest workflow to the Workflow SDK.
 It uses step.waitForEvent() with a timeout and step.realtime.publish().
 ```

@@ -4,7 +4,9 @@ import {
   FatalError,
   HookConflictError,
   RetryableError,
+  RUN_ERROR_CODES,
   RuntimeDecryptionError,
+  StreamError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -753,6 +755,103 @@ describe('workflow arguments', () => {
     const wire = new TextDecoder().decode(toStep as Uint8Array);
     expect(wire).toContain('encryptionPublicKey');
     expect(wire).toContain(ownerPublicKey);
+  });
+
+  it('publishes this run public key when a step revives a workflow-body writable', async () => {
+    // `getWritable()` in a workflow body returns a handle with only a name: the
+    // workflow VM holds no key material, so nothing can publish the owner key
+    // there. The handle reaches a step, and reviving it is the first moment the
+    // run's own key is in scope — so that is where the key gets attached.
+    //
+    // It cannot be done later at serialization time: `start()` dehydrates its
+    // arguments with the CHILD's runId and key, so the owner's key is gone by
+    // then. This is the shape eve uses — a driver workflow takes a writable in
+    // its workflow body and forwards it into per-turn child runs.
+    const material = new Uint8Array(32).fill(0x5c);
+    const keys = runPayloadKeys(
+      await importKey(material),
+      await deriveRunKeyPair(material)
+    );
+
+    const handle = new WritableStream();
+    Object.defineProperty(handle, STREAM_NAME_SYMBOL, {
+      value: 'strm_fromworkflowbody',
+      writable: false,
+    });
+    // Deliberately no public-key symbol — that is the case under test.
+
+    const toStep = await dehydrateStepArguments(
+      handle,
+      'wrun_owner',
+      noEncryptionKey
+    );
+    const ops: Promise<void>[] = [];
+    const revived = (await hydrateStepArguments(
+      toStep,
+      'wrun_owner',
+      keys,
+      ops,
+      globalThis,
+      {},
+      'dpl_owner'
+    )) as WritableStream<string>;
+
+    expect((revived as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL]).toBe(
+      bytesToBase64(keys.keyPair.publicKey)
+    );
+
+    // And it survives the forward that `start()` performs, which is what puts
+    // the receiving run on the sealed path.
+    const forwarded = new TextDecoder().decode(
+      (await dehydrateWorkflowArguments(
+        revived,
+        'wrun_child',
+        noEncryptionKey
+      )) as Uint8Array
+    );
+    expect(forwarded).toContain(bytesToBase64(keys.keyPair.publicKey));
+  });
+
+  it('does NOT publish its own key when reviving another run stream', async () => {
+    // The guard that matters. Advertising our key on a stream someone else owns
+    // would make the receiver seal to us, and the real owner could never open
+    // what was written.
+    const material = new Uint8Array(32).fill(0x5c);
+    const keys = runPayloadKeys(
+      await importKey(material),
+      await deriveRunKeyPair(material)
+    );
+
+    const handle = new WritableStream();
+    for (const [sym, v] of [
+      [STREAM_NAME_SYMBOL, 'strm_someoneelse'],
+      [STREAM_SERVER_RUN_ID_SYMBOL, 'wrun_a_different_run'],
+    ] as const) {
+      Object.defineProperty(handle, sym, { value: v, writable: false });
+    }
+
+    const toStep = await dehydrateStepArguments(
+      handle,
+      'wrun_owner',
+      noEncryptionKey
+    );
+    const ops: Promise<void>[] = [];
+    const revived = (await hydrateStepArguments(
+      toStep,
+      'wrun_owner',
+      keys,
+      ops,
+      globalThis,
+      {},
+      'dpl_owner'
+    )) as WritableStream<string>;
+
+    // Sanity: the foreign owner really did survive, so the assertion below is
+    // about the guard and not about a handle that lost its identity.
+    expect((revived as any)[STREAM_SERVER_RUN_ID_SYMBOL]).toBe(
+      'wrun_a_different_run'
+    );
+    expect((revived as any)[STREAM_SERVER_PUBLIC_KEY_SYMBOL]).toBeUndefined();
   });
 
   it('falls back to the symmetric path when the descriptor has no public key', async () => {
@@ -2215,6 +2314,37 @@ describe('workflow arguments', () => {
     }
   });
 
+  it('separates producer uploads from workflow readback pipes', async () => {
+    const request = new Request('https://example.com/webhook', {
+      method: 'POST',
+      body: 'webhook payload',
+      duplex: 'half',
+    } as RequestInit);
+    request[Symbol.for('WEBHOOK_RESPONSE_WRITABLE')] = new WritableStream();
+    const uploadOps: Promise<void>[] = [];
+    const readbackOps: Promise<void>[] = [];
+
+    await dehydrateStepReturnValue(
+      request,
+      mockRunId,
+      noEncryptionKey,
+      uploadOps,
+      globalThis,
+      false,
+      false,
+      false,
+      undefined,
+      readbackOps
+    );
+
+    // The request body is producer -> workflow and must finish before the
+    // event commit. The manual response writable is workflow -> producer and
+    // cannot finish until after the workflow has been woken.
+    expect(uploadOps).toHaveLength(1);
+    expect(readbackOps).toHaveLength(1);
+    await Promise.allSettled([...uploadOps, ...readbackOps]);
+  });
+
   it('should throw error for an unsupported type', async () => {
     class Foo {}
     let err: WorkflowRuntimeError | undefined;
@@ -2913,7 +3043,7 @@ describe('step function serialization', () => {
     const stepId = 'step//workflows/test.ts//addNumbers';
 
     // Create a VM context like the workflow runner does
-    const { context, globalThis: vmGlobalThis } = createContext({
+    const { globalThis: vmGlobalThis } = createContext({
       seed: 'test',
       fixedTimestamp: 1714857600000,
     });
@@ -2975,7 +3105,7 @@ describe('step function serialization', () => {
     const stepId = 'step//workflows/test.ts//missingUseStep';
 
     // Create a VM context WITHOUT setting up WORKFLOW_USE_STEP
-    const { context, globalThis: vmGlobalThis } = createContext({
+    const { globalThis: vmGlobalThis } = createContext({
       seed: 'test',
       fixedTimestamp: 1714857600000,
     });
@@ -4586,6 +4716,34 @@ describe('dehydrate/hydrateRunError', () => {
     expect(cause?.name).toBe('OperationError');
   });
 
+  it('should round-trip StreamError as a catchable error type', async () => {
+    const original = new StreamError('stream write failed', {
+      cause: new Error('HTTP 500'),
+      status: 503,
+      url: 'https://workflow.example/stream',
+    });
+    const serialized = await dehydrateRunError(
+      original,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateRunError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as StreamError;
+
+    expect(StreamError.is(hydrated)).toBe(true);
+    expect(hydrated).toBeInstanceOf(StreamError);
+    expect(hydrated).toMatchObject({
+      message: 'stream write failed',
+      status: 503,
+      url: 'https://workflow.example/stream',
+      code: RUN_ERROR_CODES.STREAM_ERROR,
+    });
+    expect((hydrated.cause as Error).message).toBe('HTTP 500');
+  });
+
   it('should produce DEVALUE_V1-prefixed binary output', async () => {
     const serialized = await dehydrateRunError(
       new Error('x'),
@@ -6096,7 +6254,7 @@ describe('isEncrypted', () => {
 // ============================================================================
 
 describe('AbortController serialization', () => {
-  const { context, globalThis: vmGlobalThis } = createContext({
+  const { globalThis: vmGlobalThis } = createContext({
     seed: 'test-abort-serde',
     fixedTimestamp: 1714857600000,
   });

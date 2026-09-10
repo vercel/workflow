@@ -115,9 +115,7 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
           return (
             <section key={key} className="px-4 py-8">
               <div className="mb-4">
-                <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
-                  {title}
-                </h2>
+                <h2 className="text-heading-20 sm:text-heading-24">{title}</h2>
                 <p className="text-sm text-muted-foreground mt-1">
                   {description}
                 </p>

@@ -1,2 +1,6 @@
 # Auto-generated version file
 src/version.ts
+
+# Auto-generated quickjs-wasi binary assets (base64-encoded WASM + .so files)
+src/runtime/quickjs-assets.generated.ts
+

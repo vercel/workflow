@@ -49,6 +49,64 @@ describe('createContext', () => {
     expect(result).toEqual(specificTime);
   });
 
+  it('should support subclassing `Date`', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = vm.runInContext(
+      `
+      class Sub extends Date {
+        constructor(...args) {
+          super(...args);
+          this.tag = 'sub';
+        }
+        label() {
+          return 'sub';
+        }
+      }
+      const sub = new Sub(2026, 6, 29);
+      const defaulted = new Sub();
+      ({
+        isSub: sub instanceof Sub,
+        isDate: sub instanceof Date,
+        keepsMethods: sub.label(),
+        keepsFields: sub.tag,
+        argsForwarded: sub.getTime() === new Date(2026, 6, 29).getTime(),
+        defaultedIsFixed: defaulted.getTime(),
+      })
+      `,
+      context
+    );
+
+    expect(result.isSub).toBe(true);
+    expect(result.isDate).toBe(true);
+    expect(result.keepsMethods).toBe('sub');
+    expect(result.keepsFields).toBe('sub');
+    expect(result.argsForwarded).toBe(true);
+    expect(result.defaultedIsFixed).toEqual(fixedTimestamp);
+  });
+
+  it('should keep `Date()` callable without `new`, returning the fixed time string', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = vm.runInContext('Date()', context);
+
+    expect(result).toBeTypeOf('string');
+    expect(result).toEqual(vm.runInContext('new Date().toString()', context));
+    // Per spec, `Date()` as a function ignores its arguments
+    expect(vm.runInContext('Date(2000, 0, 1)', context)).toEqual(result);
+  });
+
+  it('should preserve `Date` static methods', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    expect(
+      vm.runInContext("Date.parse('2000-01-01T00:00:00.000Z')", context)
+    ).toEqual(946684800000);
+    expect(vm.runInContext('Date.UTC(2000, 0, 1)', context)).toEqual(
+      946684800000
+    );
+  });
+
   it('should have deterministic `crypto.getRandomValues()`', () => {
     const { context } = createContext({ seed, fixedTimestamp });
 

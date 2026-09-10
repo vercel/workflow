@@ -38,19 +38,14 @@ const stepCompleted = () => ({
 });
 
 const v4Success = () => ({
-  eventId: 'evnt_1',
-  runId: RUN_ID,
-  createdAt: '2020-01-01T00:00:00.000Z',
-  body: {
-    event: {
-      eventId: 'evnt_1',
-      runId: RUN_ID,
-      eventType: 'step_completed',
-      correlationId: 'step_1',
-      specVersion: 2,
-      createdAt: '2020-01-01T00:00:00.000Z',
-      eventData: { stepName: 's', workflowName: 'w' },
-    },
+  event: {
+    eventId: 'evnt_1',
+    runId: RUN_ID,
+    eventType: 'step_completed',
+    correlationId: 'step_1',
+    specVersion: 2,
+    createdAt: '2020-01-01T00:00:00.000Z',
+    eventData: { stepName: 's', workflowName: 'w' },
   },
 });
 

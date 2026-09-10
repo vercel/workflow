@@ -18,6 +18,12 @@
  * round trip.
  */
 
+import {
+  hasProperty,
+  isUseStepClosureFn,
+  readProperty,
+  recordGuestCode,
+} from '../hardened.js';
 import type { Reducers, Revivers } from '../types.js';
 
 // ---- Reducer ----
@@ -26,14 +32,26 @@ export function getStepFunctionReducer(): Partial<Reducers> {
   return {
     StepFunction: (value) => {
       if (typeof value !== 'function') return false;
-      const stepId = (value as any).stepId;
+      const stepId = readProperty(value, 'stepId');
       if (typeof stepId !== 'string') return false;
 
-      const closureVarsFn = (value as any).__closureVarsFn;
-      const closureVars =
-        closureVarsFn && typeof closureVarsFn === 'function'
-          ? closureVarsFn()
-          : undefined;
+      const closureVarsFn = readProperty(value, '__closureVarsFn');
+      // The reducer has to invoke this to read the step's captured closure
+      // variables. The compiler-generated function is a sequence of lexical
+      // reads and cannot perturb observable VM state, so reporting it would
+      // flag every step that captures a variable. But the property is
+      // reachable from workflow code, which can replace it with anything.
+      // `step.ts` marks the function that came through `useStep` when it
+      // builds the proxy, so this is checked rather than assumed; anything
+      // unrecognized is reported like other guest code. See
+      // `markUseStepClosureFn` for what the mark does and does not prove.
+      let closureVars: Record<string, unknown> | undefined;
+      if (typeof closureVarsFn === 'function') {
+        if (!isUseStepClosureFn(closureVarsFn)) {
+          recordGuestCode('method', '__closureVarsFn');
+        }
+        closureVars = (closureVarsFn as () => Record<string, unknown>)();
+      }
 
       // `__boundThis` / `__boundArgs` are marker properties added by the
       // step proxy's overridden `.bind` (see step.ts) to record the
@@ -42,9 +60,13 @@ export function getStepFunctionReducer(): Partial<Reducers> {
       // `undefined`/`null`. `__boundArgs` is only set when the user
       // actually supplied prefilled args, so a missing property means
       // "no prefilled args".
-      const hasBoundThis = '__boundThis' in (value as any);
-      const boundThis = hasBoundThis ? (value as any).__boundThis : undefined;
-      const boundArgs = (value as any).__boundArgs as unknown[] | undefined;
+      const hasBoundThis = hasProperty(value, '__boundThis');
+      const boundThis = hasBoundThis
+        ? readProperty(value, '__boundThis')
+        : undefined;
+      const boundArgs = readProperty(value, '__boundArgs') as
+        | unknown[]
+        | undefined;
 
       const payload: {
         stepId: string;

@@ -57,11 +57,13 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
-    generateUlid: () => ulid(workflowStartedAt), // All generated ulids use the workflow's started at time
+    generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -148,11 +150,14 @@ describe('createUseStep', () => {
     expect((error as WorkflowSuspension).message).toBe(
       '1 step has not been run yet'
     );
-    // Compare Map values with WorkflowSuspension.steps array
+    // Compare Map values with WorkflowSuspension.items array
     expect([...ctx.invocationsQueue.values()]).toEqual(
-      (error as WorkflowSuspension).steps
+      (error as WorkflowSuspension).items
     );
-    expect((error as WorkflowSuspension).steps).toMatchInlineSnapshot(`
+    expect((error as WorkflowSuspension).steps).toBe(
+      (error as WorkflowSuspension).items
+    );
+    expect((error as WorkflowSuspension).items).toMatchInlineSnapshot(`
       [
         {
           "args": [
@@ -194,11 +199,11 @@ describe('createUseStep', () => {
     expect((error as WorkflowSuspension).message).toBe(
       '3 steps have not been run yet'
     );
-    // Compare Map values with WorkflowSuspension.steps array
+    // Compare Map values with WorkflowSuspension.items array
     expect([...ctx.invocationsQueue.values()]).toEqual(
-      (error as WorkflowSuspension).steps
+      (error as WorkflowSuspension).items
     );
-    expect((error as WorkflowSuspension).steps).toMatchInlineSnapshot(`
+    expect((error as WorkflowSuspension).items).toMatchInlineSnapshot(`
       [
         {
           "args": [
@@ -783,7 +788,7 @@ describe('createUseStep', () => {
     const add = useStep('add');
 
     // Start the step - it will process the event asynchronously
-    const stepPromise = add(1, 2);
+    const _stepPromise = add(1, 2);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
@@ -827,8 +832,8 @@ describe('AbortController hook integration', () => {
       const ctx = setupWorkflowContext([]);
       const WorkflowAbortController = createCreateAbortController(ctx);
 
-      const ctrl1 = new WorkflowAbortController();
-      const ctrl2 = new WorkflowAbortController();
+      const _ctrl1 = new WorkflowAbortController();
+      const _ctrl2 = new WorkflowAbortController();
 
       expect(ctx.invocationsQueue.size).toBe(2);
 
@@ -1012,7 +1017,7 @@ describe('AbortController hook integration', () => {
       );
 
       // The suspension should contain the hook with abortRequested
-      const hookItem = suspension.steps.find((s) => s.type === 'hook');
+      const hookItem = suspension.items.find((s) => s.type === 'hook');
       expect(hookItem).toBeDefined();
       expect(hookItem?.type).toBe('hook');
       if (hookItem?.type === 'hook') {
@@ -1114,7 +1119,7 @@ describe('AbortController hook integration', () => {
       );
 
       // The handler should see a hook that needs both creation and abort
-      const hookItem = suspension.steps.find((s) => s.type === 'hook');
+      const hookItem = suspension.items.find((s) => s.type === 'hook');
       expect(hookItem).toBeDefined();
       if (hookItem?.type === 'hook') {
         expect(hookItem.hasCreatedEvent).toBeFalsy();

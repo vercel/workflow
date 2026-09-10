@@ -10,7 +10,7 @@ related:
 ---
 
 <Callout>
-  **For users:** If you just want to use Workflow SDK with an existing framework, see [Getting Started](/docs/getting-started). This page is for framework authors.
+  **For users:** If you want to use Workflow SDK with an existing framework, see [Getting Started](/docs/getting-started). This page is for framework authors.
 </Callout>
 
 This guide uses Bun as a concrete example, but the same build and routing model applies to other JavaScript frameworks and runtimes.
@@ -48,7 +48,7 @@ Steps do not have their own HTTP route. A queued step invocation contains `stepI
 
 ### 1. Generate the bundles
 
-The standalone CLI scans `workflows/` and creates the combined flow handler, an internal step registration module, and the webhook handler.
+The standalone Workflow CLI scans `workflows/` and creates the combined flow handler, an internal step registration module, and the webhook handler.
 
 ```json title="package.json"
 {
@@ -60,17 +60,17 @@ The standalone CLI scans `workflows/` and creates the combined flow handler, an 
 
 The default output is:
 
-- `/.well-known/workflow/v1/flow.mjs` — the combined workflow and step queue consumer
-- `/.well-known/workflow/v1/__step_registrations.mjs` — an internal module imported by `flow.mjs`; do not route to it
-- `/.well-known/workflow/v1/webhook.mjs` — webhook delivery
+- `/.well-known/workflow/v1/flow.mjs`: the combined workflow and step queue consumer
+- `/.well-known/workflow/v1/__step_registrations.mjs`: an internal module imported by `flow.mjs`; do not route to it
+- `/.well-known/workflow/v1/webhook.mjs`: webhook delivery
 
 <Callout>
   Production integrations should extend `BaseBuilder` from `@workflow/builders` so they can participate in the framework's build, watch, and routing lifecycle.
 </Callout>
 
-### 2. Add the client transform
+### 2. Add the app-code transform
 
-Client mode gives application code the workflow IDs used by `start()` and prevents accidental direct workflow execution.
+Applying the step-mode transform to application code gives it the workflow IDs used by `start()` and prevents accidental direct workflow execution. (Earlier releases used a separate `client` mode for this; it merged into `step` in 5.0.)
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript title="workflow-plugin.ts" lineNumbers
@@ -91,7 +91,7 @@ plugin({
         jsc: {
           experimental: {
             plugins: [
-              [require.resolve("@workflow/swc-plugin"), { mode: "client" }],
+              [require.resolve("@workflow/swc-plugin"), { mode: "step" }],
             ],
           },
         },
@@ -149,10 +149,10 @@ console.log(`Server listening on http://localhost:${server.port}`);
 
 The handler consumes every workflow queue message. Depending on the payload and event log, it can:
 
-- start or replay workflow orchestration in the sandboxed VM;
-- execute a queued step in the host runtime;
-- continue replay inline after a step completes;
-- resume a run after a hook, webhook, sleep, retry, or recovery event.
+- Start or replay workflow orchestration in the sandboxed VM.
+- Execute a queued step in the host runtime.
+- Continue replay inline after a step completes.
+- Resume a run after a hook, webhook, sleep, retry, or recovery event.
 
 ### Webhook endpoint
 

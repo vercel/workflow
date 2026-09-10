@@ -308,8 +308,8 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
       // Enable the esbuild metafile so we can inspect which Node.js / Bun
       // built-in imports actually survive tree-shaking. We need this to
       // suppress false positives where a shared module has a workflow-safe
-      // export alongside a step-only export that references Node.js builtins
-      // — esbuild's tree-shaker can drop the step-only branch, but `onResolve`
+      // export alongside a step-only export that references Node.js builtins.
+      // esbuild's tree-shaker can drop the step-only branch, but `onResolve`
       // fires before tree-shaking, so we defer the final error decision to
       // `onEnd` (see the metafile-based filter below).
       build.initialOptions.metafile = true;

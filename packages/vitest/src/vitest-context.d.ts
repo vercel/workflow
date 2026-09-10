@@ -6,5 +6,3 @@ declare module 'vitest' {
     __workflowVitestOptions: ResolvedWorkflowTestOptions;
   }
 }
-
-export {};

@@ -5,13 +5,20 @@
  * reducers (serialize) and revivers (deserialize) which are composed
  * internally based on the serialization mode.
  *
- * The reducer/reviver pattern is specific to devalue — other codecs
+ * The reducer/reviver pattern is specific to devalue: other codecs
  * (CBOR, JSON) would handle types differently (e.g. CBOR supports Date,
  * typed arrays, Map, Set natively).
  */
 
-import { parse, stringify, unflatten } from 'devalue';
+import {
+  defaultParseOperations,
+  type ParseOptions,
+  parse,
+  stringify,
+  unflatten,
+} from 'devalue';
 import type { Codec, CodecOptions, SerializationMode } from './codec.js';
+import { hardenedStringifyOperations, withGuestCodeStats } from './hardened.js';
 import { getClassReducers, getClassRevivers } from './reducers/class.js';
 import { getCommonReducers, getCommonRevivers } from './reducers/common.js';
 import {
@@ -22,6 +29,20 @@ import { type Reducers, type Revivers, SerializationFormat } from './types.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const MAX_SPARSE_ARRAY_LENGTH = 100_000;
+
+const parseOptions = {
+  operations: {
+    createSparseArray(length) {
+      if (length > MAX_SPARSE_ARRAY_LENGTH) {
+        throw new RangeError(
+          `Sparse array length ${length} exceeds the maximum of ${MAX_SPARSE_ARRAY_LENGTH}`
+        );
+      }
+      return defaultParseOperations.createSparseArray(length);
+    },
+  },
+} satisfies ParseOptions;
 
 // ---- Reducer/Reviver composition per mode ----
 
@@ -112,7 +133,15 @@ export const devalueCodec: Codec = {
       options?.global,
       options?.extraReducers
     );
-    const str = stringify(value, reducers);
+    // Hardened operations: devalue's own introspection (classification,
+    // built-in extraction, property reads) goes through captured host
+    // intrinsics and descriptor reads, so serializing a value constructed
+    // inside a workflow VM cannot execute sandbox code behind our back.
+    // Where workflow code must run (getters, proxies, custom serializers),
+    // the execution is recorded into `options.guestCodeStats`.
+    const str = withGuestCodeStats(options?.guestCodeStats, () =>
+      stringify(value, reducers, { operations: hardenedStringifyOperations })
+    );
     return encoder.encode(str);
   },
 
@@ -127,7 +156,7 @@ export const devalueCodec: Codec = {
       options?.extraRevivers
     );
     const str = decoder.decode(data);
-    return parse(str, revivers);
+    return parse(str, revivers, parseOptions);
   },
 
   deserializeLegacy(
@@ -140,6 +169,6 @@ export const devalueCodec: Codec = {
       options?.global,
       options?.extraRevivers
     );
-    return unflatten(data as any[], revivers);
+    return unflatten(data as any[], revivers, parseOptions);
   },
 };

@@ -2,7 +2,12 @@
 
 import { type Event, getEventDataRefFields } from '@workflow/world';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { DUPLICATE_EVENT_MESSAGE } from '../../lib/duplicate-events';
 import { hasEncryptedFields, isExpiredMarker } from '../../lib/hydration';
+import {
+  isSealedNoopEvent,
+  SEALED_EVENT_MESSAGE,
+} from '../../lib/sealed-events';
 import {
   Collapsible,
   CollapsibleContent,
@@ -10,6 +15,7 @@ import {
   CollapsibleTrigger,
 } from '../ui/collapsible';
 import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
+import { EventNoticeTooltip } from '../ui/duplicate-event-tooltip';
 import { ErrorCard } from '../ui/error-card';
 import { ErrorStackBlock, isStructuredError } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
@@ -47,6 +53,7 @@ function EventItem({
   onLoadEventData,
   encryptionKey,
   showSeparateEventOccurrenceTimestamps = false,
+  isDuplicate = false,
 }: {
   event: Event;
   onLoadEventData?: (event: Event) => Promise<unknown | null>;
@@ -54,6 +61,8 @@ function EventItem({
   encryptionKey?: Uint8Array;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  /** The event repeats a class already in the log, so the runtime ignored it. */
+  isDuplicate?: boolean;
 }) {
   const [loadedData, setLoadedData] = useState<unknown | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -106,6 +115,11 @@ function EventItem({
     void loadEventData(true);
   }, [encryptionKey, loadEventData]);
 
+  const rowNotice = isDuplicate
+    ? DUPLICATE_EVENT_MESSAGE
+    : isSealedNoopEvent(event)
+      ? SEALED_EVENT_MESSAGE
+      : undefined;
   const createdAt = new Date(event.createdAt);
   const occurredAt = parseDateValue(event.occurredAt);
   const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
@@ -135,9 +149,15 @@ function EventItem({
     >
       <CollapsibleTrigger className="px-3 py-2">
         <div className="flex w-full items-center justify-between gap-3">
-          <span className="text-gray-1000 text-label-12 font-mono">
-            {event.eventType}
-          </span>
+          <EventNoticeTooltip notice={rowNotice}>
+            <span
+              className={`text-label-12 font-mono ${
+                rowNotice ? 'text-gray-700' : 'text-gray-1000'
+              }`}
+            >
+              {event.eventType}
+            </span>
+          </EventNoticeTooltip>
           <span className="shrink-0 text-label-13 text-gray-900">
             {displayedCreatedAtTime}
           </span>
@@ -232,13 +252,13 @@ function EventDataBlock({
   eventType: string;
   data: unknown;
 }) {
-  // Expired data — show a simple message instead of the raw stub.
+  // Expired data: show a message instead of the raw stub.
   // Check both the top-level eventData and nested sub-fields (result, input, etc.)
   // since the server stubs each ref field independently.
   if (isExpiredMarker(data) || hasOnlyExpiredFields(data, eventType)) {
     return (
       <div
-        className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs"
+        className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-label-12"
         style={{
           borderColor: 'var(--ds-gray-300)',
           backgroundColor: 'var(--ds-gray-100)',
@@ -254,7 +274,7 @@ function EventDataBlock({
     return <EncryptedDataBlock />;
   }
 
-  // Attribute changes — render the changed keys and the writer instead of
+  // Attribute changes: render the changed keys and the writer instead of
   // the raw JSON payload.
   if (eventType === 'attr_set') {
     return <AttrSetEventBlock data={data} />;
@@ -294,6 +314,7 @@ export function EventsList({
   onRunClick,
   encryptionKey,
   showSeparateEventOccurrenceTimestamps = false,
+  duplicateEventIds,
 }: {
   events: Event[];
   isLoading?: boolean;
@@ -305,6 +326,12 @@ export function EventsList({
   encryptionKey?: Uint8Array;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  /**
+   * Events every replay reads past as repeats, from the caller that holds the
+   * whole log. `events` here is one entity's slice of it, which cannot answer
+   * the question on its own.
+   */
+  duplicateEventIds?: ReadonlySet<string>;
 }) {
   // Sort by the timestamp shown as Created by default.
   const sortedEvents = useMemo(
@@ -352,6 +379,7 @@ export function EventsList({
                     showSeparateEventOccurrenceTimestamps={
                       showSeparateEventOccurrenceTimestamps
                     }
+                    isDuplicate={duplicateEventIds?.has(event.eventId)}
                   />
                 ))}
               </div>

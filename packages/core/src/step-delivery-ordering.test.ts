@@ -1,0 +1,977 @@
+import { WorkflowRuntimeError } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
+import type { Event } from '@workflow/world';
+import * as nanoid from 'nanoid';
+import { monotonicFactory } from 'ulid';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { EventsConsumer } from './events-consumer.js';
+import { WorkflowSuspension } from './global.js';
+import type { WorkflowOrchestratorContext } from './private.js';
+import { ReplayPayloadCache } from './replay-payload-cache.js';
+import { dehydrateStepReturnValue } from './serialization.js';
+import { createUseStep } from './step.js';
+import { createContext } from './vm/index.js';
+import { createCreateHook } from './workflow/hook.js';
+import { createSleep } from './workflow/sleep.js';
+
+/**
+ * Production incident: two o2flow runs on `@workflow/core@5.0.0-beta.36`
+ * (`wrun_41KYJENABV0GSF5YTE9EETV5DD` and `wrun_41KYJEE01S0GPC9RWT5MEKVCX8`)
+ * failed permanently with
+ *
+ *   Replay divergence: step event step_created for step_X belongs to
+ *   "countFanoutStep", but the current step consumer is
+ *   "releaseGlobalLaunchSlot"
+ *
+ * repeated at the SAME eventId across three divergence-recovery replays, and
+ * then escalated to a terminal `CorruptedEventLogError`.
+ *
+ * Mechanism reproduced here:
+ *
+ * - Each `useStep(...)` invocation draws the next deterministic ULID as its
+ *   correlation id (`step.ts`), so WHICH workflow branch resumes first decides
+ *   which correlation id each step call gets. Replay matches events to
+ *   consumers by exact correlation id and rejects a `step_created` whose
+ *   recorded `stepName` differs from the consumer's (`step.ts`, the
+ *   `eventStepName !== stepName` divergence check).
+ * - The runtime has a delivery-barrier system that pins branch-deciding
+ *   delivery order to event-log position (`pendingDeliveryBarriers` in
+ *   `private.ts`), but it only covers the kinds `'hook'` and `'wait'`.
+ *   **Step results are not in it.**
+ * - `wait_completed` resolves through a detached chain with a fixed, small
+ *   microtask-hop count (`workflow/sleep.ts`). A `step_completed` instead
+ *   resolves inside a serial `ctx.promiseQueue` slot that first hydrates the
+ *   payload via `ReplayPayloadCache.getStepResult(...)`. That hop count is not
+ *   fixed: the first hydration pays async decrypt/deserialize, while a later
+ *   replay sharing the same `ReplayPayloadCache` hits the
+ *   `primitiveStepResults` memo for small primitive results and resolves in
+ *   one or two hops.
+ *
+ * So when a `step_completed` sits adjacent in the log to a `wait_completed`
+ * (or `hook_received`) and both consumers are live, the FIRST replay of a
+ * queue delivery (cold cache) delivers the wait first — the ordering the live
+ * invocation recorded into the log — while every LATER replay in that same
+ * delivery (warm cache) delivers the step result first. The two branches then
+ * allocate each other's ULIDs and diverge, forever, at the same event.
+ *
+ * Production log shape for run 1, which the synthetic log below mirrors:
+ *
+ *   …, step_completed(finalizeTaskSandbox), wait_completed, wait_completed,
+ *   step_completed(finalizeTaskSandbox), step_created(countFanoutStep),
+ *   step_created(releaseGlobalLaunchSlot), …
+ *
+ * This is entirely core replay machinery — no World implementation is
+ * involved. Worlds only supply event I/O, so the bug is not specific to the
+ * Vercel world.
+ *
+ * These tests assert the CORRECT behavior: both replays must agree with the
+ * committed log and suspend. On `main` the second replay instead throws
+ * `ReplayDivergenceError`, which is the reproduction. The companion fix on
+ * branch `pgp/fix-step-delivery-ordering` brings step results into the
+ * delivery-barrier system and makes these pass.
+ *
+ * Scope limit, worth knowing before treating these five cases as the whole
+ * guarantee: every branch here reaches its next `useStep(...)` in the fewest
+ * possible microtask hops after being resumed. That makes them unable to
+ * distinguish "step results are delivered in event-log order relative to wait
+ * and hook deliveries" from "a step result merely resolves a hop or two later
+ * than it used to", which beats the shortest consumers and nothing else. A
+ * revision of the companion fix that only reordered the `resolve()` calls
+ * passed all five while a consumer padded with one extra `await` still
+ * diverged. Padded consumers are covered separately by
+ * `step-delivery-hop-count.test.ts` on the fix branch; both files together are
+ * what pins the ordering guarantee.
+ */
+
+/**
+ * Harness copied from `hook-sleep-interaction.test.ts`, with one addition: a
+ * `ReplayPayloadCache` can be passed in, so two sequential replays can share
+ * one cache exactly like the replay loop inside a single production queue
+ * delivery does (see the `ReplayPayloadCache` class docstring).
+ */
+function setupWorkflowContext(
+  events: Event[],
+  replayPayloadCache: ReplayPayloadCache = new ReplayPayloadCache(undefined)
+): WorkflowOrchestratorContext {
+  const context = createContext({
+    seed: 'test',
+    fixedTimestamp: 1753481739458,
+  });
+  const ulid = monotonicFactory(() => context.globalThis.Math.random());
+  const workflowStartedAt = context.globalThis.Date.now();
+  const promiseQueueHolder = { current: Promise.resolve() };
+  const ctxRef: { current?: WorkflowOrchestratorContext } = {};
+  const ctx: WorkflowOrchestratorContext = {
+    suspensionGeneration: 0,
+    runId: 'wrun_test',
+    encryptionKey: undefined,
+    replayPayloadCache,
+    globalThis: context.globalThis,
+    eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
+      onUnconsumedEvent: (event) => {
+        ctxRef.current?.onWorkflowError(
+          new WorkflowRuntimeError(
+            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
+          )
+        );
+      },
+      getPromiseQueue: () => promiseQueueHolder.current,
+    }),
+    invocationsQueue: new Map(),
+    generateUlid: () => ulid(workflowStartedAt),
+    generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
+      new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
+    ),
+    onWorkflowError: vi.fn(),
+    get promiseQueue() {
+      return promiseQueueHolder.current;
+    },
+    set promiseQueue(value: Promise<void>) {
+      promiseQueueHolder.current = value;
+    },
+    pendingDeliveries: 0,
+    pendingDeliveryBarriers: new Map(),
+  };
+  ctxRef.current = ctx;
+  return ctx;
+}
+
+// Deterministic correlation IDs from the ULID generator with seed 'test'
+const CORR_IDS = [
+  '01K11TFZ62YS0YYFDQ3E8B9YCV',
+  '01K11TFZ62YS0YYFDQ3E8B9YCW',
+  '01K11TFZ62YS0YYFDQ3E8B9YCX',
+  '01K11TFZ62YS0YYFDQ3E8B9YCY',
+  '01K11TFZ62YS0YYFDQ3E8B9YCZ',
+];
+
+function pendingStepNames(ctx: WorkflowOrchestratorContext): string[] {
+  return [...ctx.invocationsQueue.values()]
+    .filter((item) => item.type === 'step')
+    .map((item) => (item.type === 'step' ? item.stepName : ''));
+}
+
+async function runWithDiscontinuation(
+  ctx: WorkflowOrchestratorContext,
+  workflowFn: () => Promise<any>
+): Promise<{ result?: any; error?: any }> {
+  const workflowDiscontinuation = withResolvers<void>();
+  ctx.onWorkflowError = workflowDiscontinuation.reject;
+
+  let result: any;
+  let error: any;
+  try {
+    result = await Promise.race([
+      workflowFn(),
+      workflowDiscontinuation.promise,
+    ]);
+  } catch (err) {
+    error = err;
+  }
+  return { result, error };
+}
+
+/**
+ * Models the cost of first-touch payload hydration (decrypt + deserialize).
+ * Production shares prepared bytes and memoized primitive results across the
+ * replays of one queue delivery, so the second replay of a small primitive
+ * step result never reaches this spy — which is exactly the hop-count
+ * asymmetry under test.
+ */
+function delayHydration() {
+  const hydrateSpy = vi.fn();
+  return {
+    hydrateSpy,
+    install: async () => {
+      const serialization = await import('./serialization.js');
+      const originalHydrate = serialization.hydrateStepReturnValue;
+      return vi
+        .spyOn(serialization, 'hydrateStepReturnValue')
+        .mockImplementation(async (...args) => {
+          hydrateSpy();
+          await new Promise((r) => setTimeout(r, 10));
+          return originalHydrate(...args);
+        });
+    },
+  };
+}
+
+describe('step result delivery ordering across replays', () => {
+  let spy: ReturnType<typeof vi.spyOn> | undefined;
+
+  afterEach(() => {
+    spy?.mockRestore();
+    spy = undefined;
+  });
+
+  describe('step_completed adjacent to wait_completed', () => {
+    // The wait's `resumeAt` is re-read from the `wait_created` event during
+    // replay (see `workflow/sleep.ts`), so any fixed date works here as long
+    // as `wait_created` and `wait_completed` agree.
+    const resumeAt = new Date('2026-07-27T12:00:05.000Z');
+
+    async function buildEventLog(): Promise<Event[]> {
+      const ops: Promise<any>[] = [];
+      // A short string result is a memoizable primitive, so the SECOND replay
+      // sharing the cache resolves it from `primitiveStepResults` without
+      // touching hydration at all.
+      const stepAResult = await dehydrateStepReturnValue(
+        'ok',
+        'wrun_test',
+        undefined,
+        ops
+      );
+
+      return [
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[0]}`,
+          eventData: { stepName: 'stepA' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_test',
+          eventType: 'wait_created',
+          correlationId: `wait_${CORR_IDS[1]}`,
+          eventData: { resumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_test',
+          eventType: 'step_started',
+          correlationId: `step_${CORR_IDS[0]}`,
+          eventData: { stepName: 'stepA' },
+          createdAt: new Date(),
+        },
+        // The live invocation delivered the wait BEFORE the step result, so
+        // the wait branch resumed first and drew the next ULID. Everything
+        // after this point in the log encodes that ordering.
+        {
+          eventId: 'evnt_3',
+          runId: 'wrun_test',
+          eventType: 'wait_completed',
+          correlationId: `wait_${CORR_IDS[1]}`,
+          eventData: { resumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_4',
+          runId: 'wrun_test',
+          eventType: 'step_completed',
+          correlationId: `step_${CORR_IDS[0]}`,
+          eventData: { stepName: 'stepA', result: stepAResult },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_5',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[2]}`,
+          eventData: { stepName: 'afterSleep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_6',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[3]}`,
+          eventData: { stepName: 'afterStep' },
+          createdAt: new Date(),
+        },
+      ];
+    }
+
+    // ULID draw order in this body: `stepA()` takes CORR_IDS[0], `sleep()`
+    // takes CORR_IDS[1], and then whichever branch is resumed FIRST takes
+    // CORR_IDS[2] while the other takes CORR_IDS[3].
+    function workflowBody(ctx: WorkflowOrchestratorContext) {
+      const useStep = createUseStep(ctx);
+      const sleep = createSleep(ctx);
+
+      return async () => {
+        const stepA = useStep('stepA');
+        const afterStep = useStep('afterStep');
+        const afterSleep = useStep('afterSleep');
+
+        const branchStep = (async () => {
+          await stepA();
+          await afterStep();
+        })();
+        const branchSleep = (async () => {
+          await sleep(resumeAt);
+          await afterSleep();
+        })();
+
+        await Promise.all([branchStep, branchSleep]);
+      };
+    }
+
+    it('delivers the wait before the step result on the first replay, matching the log', async () => {
+      const hydration = delayHydration();
+      spy = await hydration.install();
+      const events = await buildEventLog();
+
+      const ctx = setupWorkflowContext(events);
+      const { error } = await runWithDiscontinuation(ctx, workflowBody(ctx));
+
+      expect(error).toBeDefined();
+      if (!WorkflowSuspension.is(error)) {
+        throw error;
+      }
+
+      // The log's ordering was reproduced: the sleep branch resumed first and
+      // drew CORR_IDS[2] for `afterSleep`, so both `step_created` events at
+      // the tail matched their consumers and the run suspends with both
+      // follow-up steps pending.
+      expect(pendingStepNames(ctx).sort()).toEqual(['afterSleep', 'afterStep']);
+      expect(ctx.eventsConsumer.eventIndex).toBe(events.length);
+    });
+
+    it('delivers the wait before the step result on a later replay sharing the payload cache', async () => {
+      const hydration = delayHydration();
+      spy = await hydration.install();
+      const events = await buildEventLog();
+
+      // One cache for both replays: production shares a single
+      // `ReplayPayloadCache` across every replay of one queue delivery.
+      const sharedCache = new ReplayPayloadCache(undefined);
+
+      const firstCtx = setupWorkflowContext(events, sharedCache);
+      const first = await runWithDiscontinuation(
+        firstCtx,
+        workflowBody(firstCtx)
+      );
+      if (!WorkflowSuspension.is(first.error)) {
+        throw first.error ?? new Error('expected the first replay to suspend');
+      }
+      expect(hydration.hydrateSpy).toHaveBeenCalled();
+
+      // Second replay, fresh VM/context, same event log, same cache. The step
+      // result is now memoized as a primitive, so it resolves in a couple of
+      // microtask hops instead of paying hydration — while the wait's hop
+      // count is unchanged.
+      const secondCtx = setupWorkflowContext(events, sharedCache);
+      const { error } = await runWithDiscontinuation(
+        secondCtx,
+        workflowBody(secondCtx)
+      );
+
+      expect(error).toBeDefined();
+      // FAILS on `main`: the step result now wins, `afterStep` draws
+      // CORR_IDS[2], and replay diverges at evnt_5 with the production error
+      // shape ("... belongs to \"afterSleep\", but the current step consumer
+      // is \"afterStep\"").
+      if (!WorkflowSuspension.is(error)) {
+        throw error;
+      }
+      expect(pendingStepNames(secondCtx).sort()).toEqual([
+        'afterSleep',
+        'afterStep',
+      ]);
+      expect(secondCtx.eventsConsumer.eventIndex).toBe(events.length);
+    });
+  });
+
+  describe('step_completed adjacent to hook_received', () => {
+    async function buildEventLog(): Promise<Event[]> {
+      const ops: Promise<any>[] = [];
+      const [hookPayload, stepAResult] = await Promise.all([
+        dehydrateStepReturnValue({ kind: 'ping' }, 'wrun_test', undefined, ops),
+        dehydrateStepReturnValue('ok', 'wrun_test', undefined, ops),
+      ]);
+
+      return [
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_created',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', isWebhook: false },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'stepA' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_test',
+          eventType: 'step_started',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'stepA' },
+          createdAt: new Date(),
+        },
+        // The live invocation delivered the hook payload BEFORE the step
+        // result, so the hook branch resumed first and drew the next ULID.
+        {
+          eventId: 'evnt_3',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', payload: hookPayload },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_4',
+          runId: 'wrun_test',
+          eventType: 'step_completed',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'stepA', result: stepAResult },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_5',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[2]}`,
+          eventData: { stepName: 'afterHook' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_6',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[3]}`,
+          eventData: { stepName: 'afterStep' },
+          createdAt: new Date(),
+        },
+      ];
+    }
+
+    /**
+     * ULID draw order: `createHook()` takes CORR_IDS[0], `stepA()` takes
+     * CORR_IDS[1], then the branch resumed FIRST takes CORR_IDS[2].
+     *
+     * Two ways of consuming the hook. Both subscribe before `hook_received` is
+     * consumed, so both take the same delivery path in `workflow/hook.ts` (the
+     * `promises.length > 0` branch; the buffered `claim()` path is not involved
+     * in either — entering `for await` calls `next()`, which reaches
+     * `yield await this` and registers the awaiter well before the events
+     * consumer drains the log on `process.nextTick`). What differs is how many
+     * microtask hops separate the payload RESOLVING from the branch calling
+     * `afterHook()` and thereby drawing the next ULID:
+     *
+     * - `for-await` (the idiomatic pattern, and what reproduces): resolution
+     *   resumes the async generator at `yield await this`, the yielded value
+     *   settles the promise returned by `next()`, and only then does the loop
+     *   body run. Those extra hops are enough for a memo-warm `step_completed`
+     *   — which on an unfixed runtime resolves inside its own queue slot with
+     *   no detached chain at all — to draw CORR_IDS[2] first.
+     * - `await hook` (control): resolution resumes the branch's continuation
+     *   directly, so it reaches `afterHook()` in the first microtask and stays
+     *   ahead of the step result even on a warm cache.
+     *
+     * So the hook flavour of this bug is not about payload buffering; it is the
+     * same latency race as the wait flavour, and the consumer shape only sets
+     * how much of a head start the step result needs in order to win.
+     */
+    function workflowBody(
+      ctx: WorkflowOrchestratorContext,
+      consume: 'for-await' | 'direct-await'
+    ) {
+      const useStep = createUseStep(ctx);
+      const createHook = createCreateHook(ctx);
+
+      return async () => {
+        const stepA = useStep('stepA');
+        const afterStep = useStep('afterStep');
+        const afterHook = useStep('afterHook');
+        const hook = createHook<{ kind: string }>({ token: 'test-token' });
+
+        const branchStep = (async () => {
+          await stepA();
+          await afterStep();
+        })();
+        const branchHook = (async () => {
+          if (consume === 'direct-await') {
+            await hook;
+            await afterHook();
+            return;
+          }
+          for await (const payload of hook) {
+            void payload;
+            await afterHook();
+            break;
+          }
+        })();
+
+        await Promise.all([branchStep, branchHook]);
+      };
+    }
+
+    it('delivers the hook payload before the step result on the first replay, matching the log', async () => {
+      const hydration = delayHydration();
+      spy = await hydration.install();
+      const events = await buildEventLog();
+
+      const ctx = setupWorkflowContext(events);
+      const { error } = await runWithDiscontinuation(
+        ctx,
+        workflowBody(ctx, 'for-await')
+      );
+
+      expect(error).toBeDefined();
+      if (!WorkflowSuspension.is(error)) {
+        throw error;
+      }
+      expect(pendingStepNames(ctx).sort()).toEqual(['afterHook', 'afterStep']);
+      expect(ctx.eventsConsumer.eventIndex).toBe(events.length);
+    });
+
+    it('delivers the hook payload before the step result on a later replay sharing the payload cache', async () => {
+      const hydration = delayHydration();
+      spy = await hydration.install();
+      const events = await buildEventLog();
+      const sharedCache = new ReplayPayloadCache(undefined);
+
+      const firstCtx = setupWorkflowContext(events, sharedCache);
+      const first = await runWithDiscontinuation(
+        firstCtx,
+        workflowBody(firstCtx, 'for-await')
+      );
+      if (!WorkflowSuspension.is(first.error)) {
+        throw first.error ?? new Error('expected the first replay to suspend');
+      }
+      expect(hydration.hydrateSpy).toHaveBeenCalled();
+
+      // Hook payloads have no primitive memo, so the payload still re-hydrates
+      // on the second replay while the small primitive step result is served
+      // straight from `primitiveStepResults`.
+      const secondCtx = setupWorkflowContext(events, sharedCache);
+      const { error } = await runWithDiscontinuation(
+        secondCtx,
+        workflowBody(secondCtx, 'for-await')
+      );
+
+      expect(error).toBeDefined();
+      // FAILS on `main`: the step result overtakes the hook payload,
+      // `afterStep` draws CORR_IDS[2], and replay diverges at evnt_5 with the
+      // production error shape.
+      if (!WorkflowSuspension.is(error)) {
+        throw error;
+      }
+      expect(pendingStepNames(secondCtx).sort()).toEqual([
+        'afterHook',
+        'afterStep',
+      ]);
+      expect(secondCtx.eventsConsumer.eventIndex).toBe(events.length);
+    });
+
+    // Control: `await hook` keeps log order on both replays today. This is not
+    // a different delivery path — all three hook cases in this file take the
+    // same `promises.length > 0` immediate path in `workflow/hook.ts` — it is
+    // just a shorter consumer. Resolution resumes this branch's continuation
+    // directly, so it reaches `afterHook()` in the first microtask and stays
+    // ahead of a memo-warm step result. It is the shortest-consumer case here,
+    // and the fix must not regress it.
+    it('keeps log order across replays when the hook is awaited directly', async () => {
+      const hydration = delayHydration();
+      spy = await hydration.install();
+      const events = await buildEventLog();
+      const sharedCache = new ReplayPayloadCache(undefined);
+
+      for (const replay of [1, 2]) {
+        const ctx = setupWorkflowContext(events, sharedCache);
+        const { error } = await runWithDiscontinuation(
+          ctx,
+          workflowBody(ctx, 'direct-await')
+        );
+        if (!WorkflowSuspension.is(error)) {
+          throw error ?? new Error(`expected replay ${replay} to suspend`);
+        }
+        expect(pendingStepNames(ctx).sort()).toEqual([
+          'afterHook',
+          'afterStep',
+        ]);
+        expect(ctx.eventsConsumer.eventIndex).toBe(events.length);
+      }
+    });
+  });
+
+  /**
+   * Third shape, and the one that survives the ordering fix in #3139: a step
+   * result overtaking a wait that is itself parked behind an UNCLAIMED hook
+   * payload.
+   *
+   * A hook payload registers its delivery barrier unarmed when no branch is
+   * waiting on it (`workflow/hook.ts`, `armed: promises.length > 0`), because
+   * nothing in the workflow will ever resolve it — only the barrier registry's
+   * idle safety net retires it. Every other delivery that defers behind hooks
+   * therefore parks behind that payload, waits included.
+   *
+   * A step result may skip an unclaimed payload, or it would stall until that
+   * safety net fires. The bug is that the skip is TRANSITIVE: the step also
+   * skips the wait that is merely parked behind the payload, even though the
+   * wait sits earlier in the log and would otherwise gate it. The step wins a
+   * race the committed log recorded for the wait, the two branches swap
+   * correlation ids, and replay diverges.
+   *
+   * Production shape (o2flow `stepStormReproWorkflow`): the workflow creates a
+   * poke hook it never reads, so every `hook_received` arrives unclaimed, and
+   * the watchdog `wait_completed` events that decide each `Promise.race` sit
+   * behind it. The hook-storm variant of the same workflow consumes its hook
+   * and has never reproduced the divergence, which is the control below.
+   *
+   * Unlike the two shapes above, this one needs no hydration delay and no
+   * shared payload cache: the inversion is structural, not a latency race, so
+   * a single replay on the ordinary path is enough to show it.
+   */
+  describe('step_completed behind a wait parked on an unclaimed hook payload', () => {
+    const resumeAt = new Date('2026-07-27T12:00:05.000Z');
+
+    async function buildEventLog(): Promise<Event[]> {
+      const ops: Promise<any>[] = [];
+      const [hookPayload, stepAResult] = await Promise.all([
+        dehydrateStepReturnValue({ kind: 'poke' }, 'wrun_test', undefined, ops),
+        dehydrateStepReturnValue('ok', 'wrun_test', undefined, ops),
+      ]);
+
+      return [
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_created',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'poke-token', isWebhook: false },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'stepA' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_test',
+          eventType: 'wait_created',
+          correlationId: `wait_${CORR_IDS[2]}`,
+          eventData: { resumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_3',
+          runId: 'wrun_test',
+          eventType: 'step_started',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'stepA' },
+          createdAt: new Date(),
+        },
+        // Nothing in the workflow reads this hook, so its barrier registers
+        // unarmed and every later delivery that defers behind hooks parks on
+        // it.
+        {
+          eventId: 'evnt_4',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'poke-token', payload: hookPayload },
+          createdAt: new Date(),
+        },
+        // The live invocation delivered the wait BEFORE the step result: the
+        // sleep branch resumed first and drew the next correlation id.
+        {
+          eventId: 'evnt_5',
+          runId: 'wrun_test',
+          eventType: 'wait_completed',
+          correlationId: `wait_${CORR_IDS[2]}`,
+          eventData: { resumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_6',
+          runId: 'wrun_test',
+          eventType: 'step_completed',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'stepA', result: stepAResult },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_7',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[3]}`,
+          eventData: { stepName: 'afterSleep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_8',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[4]}`,
+          eventData: { stepName: 'afterStep' },
+          createdAt: new Date(),
+        },
+      ];
+    }
+
+    /**
+     * Draw order: `createHook()` takes CORR_IDS[0], `stepA()` CORR_IDS[1],
+     * `sleep()` CORR_IDS[2]; then whichever branch resumes FIRST takes
+     * CORR_IDS[3] and the other takes CORR_IDS[4].
+     *
+     * The `awaited` variant adds a third branch that awaits the payload and
+     * draws nothing, so both variants replay the SAME event log and differ
+     * only in whether the payload is claimed.
+     */
+    function workflowBody(
+      ctx: WorkflowOrchestratorContext,
+      poke: 'unclaimed' | 'awaited'
+    ) {
+      const useStep = createUseStep(ctx);
+      const sleep = createSleep(ctx);
+      const createHook = createCreateHook(ctx);
+
+      return async () => {
+        const stepA = useStep('stepA');
+        const afterStep = useStep('afterStep');
+        const afterSleep = useStep('afterSleep');
+        const pokeHook = createHook<{ kind: string }>({ token: 'poke-token' });
+
+        const branchStep = (async () => {
+          await stepA();
+          await afterStep();
+        })();
+        const branchSleep = (async () => {
+          await sleep(resumeAt);
+          await afterSleep();
+        })();
+        const branchPoke = (async () => {
+          if (poke === 'awaited') {
+            await pokeHook;
+          }
+        })();
+
+        await Promise.all([branchStep, branchSleep, branchPoke]);
+      };
+    }
+
+    it('keeps log order when the hook payload is never claimed', async () => {
+      const events = await buildEventLog();
+
+      const ctx = setupWorkflowContext(events);
+      const { error } = await runWithDiscontinuation(
+        ctx,
+        workflowBody(ctx, 'unclaimed')
+      );
+
+      expect(error).toBeDefined();
+      // FAILS on `main`: the step result skips the wait transitively through
+      // the unclaimed payload, `afterStep` draws CORR_IDS[3], and replay
+      // diverges at evnt_7 with the production error shape ("... belongs to
+      // \"afterSleep\", but the current step consumer is \"afterStep\"").
+      if (!WorkflowSuspension.is(error)) {
+        throw error;
+      }
+      expect(pendingStepNames(ctx).sort()).toEqual(['afterSleep', 'afterStep']);
+      expect(ctx.eventsConsumer.eventIndex).toBe(events.length);
+    });
+
+    // Control: same event log, but a branch awaits the payload, so the hook
+    // barrier arms, the wait no longer parks behind it, and the step gates on
+    // the wait the ordinary way. This passes on `main` and must keep passing.
+    it('keeps log order when the hook payload is claimed', async () => {
+      const events = await buildEventLog();
+
+      const ctx = setupWorkflowContext(events);
+      const { error } = await runWithDiscontinuation(
+        ctx,
+        workflowBody(ctx, 'awaited')
+      );
+
+      expect(error).toBeDefined();
+      if (!WorkflowSuspension.is(error)) {
+        throw error;
+      }
+      expect(pendingStepNames(ctx).sort()).toEqual(['afterSleep', 'afterStep']);
+      expect(ctx.eventsConsumer.eventIndex).toBe(events.length);
+    });
+  });
+});
+
+/**
+ * Sealed-log noops (specVersion 7) injected into the exact scenario above —
+ * the one this file exists for, where delivery ORDER between adjacent events
+ * decides which branch draws which correlation id. If skipping a noop cost an
+ * extra microtask hop, or shifted the walk relative to the promise queue, it
+ * would surface here as the same divergence the production incident produced.
+ * The noops are deliberately placed in the hop-count-sensitive gap (between
+ * `wait_completed` and `step_completed`) as well as at the head and tail.
+ */
+describe('sealed-log noop events in a scheduling-sensitive replay', () => {
+  const resumeAt = new Date('2026-07-27T12:00:05.000Z');
+
+  function noopAt(id: string): Event {
+    return {
+      eventId: id,
+      runId: 'wrun_test',
+      eventType: 'noop',
+      eventData: { sealed: true },
+      // Deliberately far in the future: a noop's createdAt is the sealer's
+      // wall clock. It must not leak into the replay clock (asserted by the
+      // run completing identically; the clock rule itself is pinned in
+      // events-consumer.test.ts).
+      createdAt: new Date('2030-01-01T00:00:00.000Z'),
+    } as unknown as Event;
+  }
+
+  async function buildEventLog(): Promise<Event[]> {
+    const ops: Promise<any>[] = [];
+    const stepAResult = await dehydrateStepReturnValue(
+      'ok',
+      'wrun_test',
+      undefined,
+      ops
+    );
+
+    return [
+      noopAt('evnt_n0'),
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_test',
+        eventType: 'step_created',
+        correlationId: `step_${CORR_IDS[0]}`,
+        eventData: { stepName: 'stepA' },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_test',
+        eventType: 'wait_created',
+        correlationId: `wait_${CORR_IDS[1]}`,
+        eventData: { resumeAt },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_2',
+        runId: 'wrun_test',
+        eventType: 'step_started',
+        correlationId: `step_${CORR_IDS[0]}`,
+        eventData: { stepName: 'stepA' },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_3',
+        runId: 'wrun_test',
+        eventType: 'wait_completed',
+        correlationId: `wait_${CORR_IDS[1]}`,
+        eventData: { resumeAt },
+        createdAt: new Date(),
+      },
+      // The sensitive gap: the wait branch's resume and the step branch's
+      // resume race on microtask hops from exactly this adjacency.
+      noopAt('evnt_n1'),
+      noopAt('evnt_n2'),
+      {
+        eventId: 'evnt_4',
+        runId: 'wrun_test',
+        eventType: 'step_completed',
+        correlationId: `step_${CORR_IDS[0]}`,
+        eventData: { stepName: 'stepA', result: stepAResult },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_5',
+        runId: 'wrun_test',
+        eventType: 'step_created',
+        correlationId: `step_${CORR_IDS[2]}`,
+        eventData: { stepName: 'afterSleep' },
+        createdAt: new Date(),
+      },
+      noopAt('evnt_n3'),
+      {
+        eventId: 'evnt_6',
+        runId: 'wrun_test',
+        eventType: 'step_created',
+        correlationId: `step_${CORR_IDS[3]}`,
+        eventData: { stepName: 'afterStep' },
+        createdAt: new Date(),
+      },
+      noopAt('evnt_n4'),
+    ];
+  }
+
+  function workflowBody(ctx: WorkflowOrchestratorContext) {
+    const useStep = createUseStep(ctx);
+    const sleep = createSleep(ctx);
+
+    return async () => {
+      const stepA = useStep('stepA');
+      const afterStep = useStep('afterStep');
+      const afterSleep = useStep('afterSleep');
+
+      const branchStep = (async () => {
+        await stepA();
+        await afterStep();
+      })();
+      const branchSleep = (async () => {
+        await sleep(resumeAt);
+        await afterSleep();
+      })();
+
+      await Promise.all([branchStep, branchSleep]);
+    };
+  }
+
+  it('replays the noop-bearing log with the ordering the noop-free log encodes', async () => {
+    const hydration = delayHydration();
+    const spy = await hydration.install();
+    try {
+      const events = await buildEventLog();
+      const ctx = setupWorkflowContext(events);
+      const { error } = await runWithDiscontinuation(ctx, workflowBody(ctx));
+
+      expect(error).toBeDefined();
+      if (!WorkflowSuspension.is(error)) {
+        throw error;
+      }
+      // Identical outcome to the noop-free scenario above: the sleep branch
+      // resumed first and drew CORR_IDS[2], both follow-up steps are pending,
+      // and every event — noops included — was walked to the end.
+      expect(pendingStepNames(ctx).sort()).toEqual(['afterSleep', 'afterStep']);
+      expect(ctx.eventsConsumer.eventIndex).toBe(events.length);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('keeps that ordering on a later replay sharing the payload cache', async () => {
+    const hydration = delayHydration();
+    const spy = await hydration.install();
+    try {
+      const cache = new ReplayPayloadCache(undefined);
+
+      const first = setupWorkflowContext(await buildEventLog(), cache);
+      const firstRun = await runWithDiscontinuation(first, workflowBody(first));
+      expect(WorkflowSuspension.is(firstRun.error)).toBe(true);
+
+      // The second replay resolves the memoized primitive step result in
+      // fewer hops — the exact asymmetry the incident exploited. The noops
+      // must not tip it.
+      const second = setupWorkflowContext(await buildEventLog(), cache);
+      const secondRun = await runWithDiscontinuation(
+        second,
+        workflowBody(second)
+      );
+      expect(WorkflowSuspension.is(secondRun.error)).toBe(true);
+      expect(pendingStepNames(second).sort()).toEqual([
+        'afterSleep',
+        'afterStep',
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
