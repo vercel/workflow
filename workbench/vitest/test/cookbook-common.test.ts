@@ -1,13 +1,13 @@
 import { waitForHook } from '@workflow/vitest';
 import { describe, expect, it } from 'vitest';
 import { getRun, start } from 'workflow/api';
-import { fanOutWorkflow } from '../workflows/cookbook/fan-out.js';
 import { contentRouterWorkflow } from '../workflows/cookbook/content-router.js';
 import {
-  DistributedAbortController,
   abortControllerWorkflow,
   abortHook,
+  DistributedAbortController,
 } from '../workflows/cookbook/distributed-abort-controller.js';
+import { fanOutWorkflow } from '../workflows/cookbook/fan-out.js';
 
 describe('fan-out', () => {
   it('should notify multiple channels in parallel', async () => {

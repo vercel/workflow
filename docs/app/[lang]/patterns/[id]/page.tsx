@@ -181,20 +181,20 @@ export default async function RegistryDetailPage({ params }: PageProps) {
 
   if (guide?.whenToUse && guide.whenToUse.length > 0) {
     pageTextSections.push('## When to use this');
-    guide.whenToUse.forEach((t) => pageTextSections.push(`- ${t}`));
+    pageTextSections.push(...guide.whenToUse.map((t) => `- ${t}`));
   }
 
   if (guide?.whySection) {
     pageTextSections.push(`## ${guide.whySection.title ?? 'Why'}`);
     if (guide.whySection.problemProse)
       pageTextSections.push(guide.whySection.problemProse);
-    (guide.whySection.problemBullets ?? []).forEach((b) =>
-      pageTextSections.push(`- ${b}`)
+    pageTextSections.push(
+      ...(guide.whySection.problemBullets ?? []).map((b) => `- ${b}`)
     );
     if (guide.whySection.solutionProse)
       pageTextSections.push(guide.whySection.solutionProse);
-    (guide.whySection.solutionBullets ?? []).forEach((b) =>
-      pageTextSections.push(`- ${b}`)
+    pageTextSections.push(
+      ...(guide.whySection.solutionBullets ?? []).map((b) => `- ${b}`)
     );
     if (guide.whySection.closingProse)
       pageTextSections.push(guide.whySection.closingProse);
@@ -206,16 +206,18 @@ export default async function RegistryDetailPage({ params }: PageProps) {
     );
     if (guide.approaches.description)
       pageTextSections.push(guide.approaches.description);
-    (guide.approaches.bullets ?? []).forEach((b) =>
-      pageTextSections.push(`- ${b}`)
+    pageTextSections.push(
+      ...(guide.approaches.bullets ?? []).map((b) => `- ${b}`)
     );
     if (guide.approaches.columns && guide.approaches.rows) {
-      pageTextSections.push('| ' + guide.approaches.columns.join(' | ') + ' |');
+      pageTextSections.push(`| ${guide.approaches.columns.join(' | ')} |`);
       pageTextSections.push(
-        '| ' + guide.approaches.columns.map(() => '---').join(' | ') + ' |'
+        `| ${guide.approaches.columns.map(() => '---').join(' | ')} |`
       );
-      guide.approaches.rows.forEach((row) =>
-        pageTextSections.push(`| ${row.aspect} | ${row.values.join(' | ')} |`)
+      pageTextSections.push(
+        ...guide.approaches.rows.map(
+          (row) => `| ${row.aspect} | ${row.values.join(' | ')} |`
+        )
       );
     }
     if (guide.approaches.closing)
@@ -229,20 +231,20 @@ export default async function RegistryDetailPage({ params }: PageProps) {
 
   if (guide?.howItWorks && guide.howItWorks.length > 0) {
     pageTextSections.push('## How it works');
-    guide.howItWorks.forEach((s, i) => pageTextSections.push(`${i + 1}. ${s}`));
+    pageTextSections.push(...guide.howItWorks.map((s, i) => `${i + 1}. ${s}`));
     if (guide.howItWorksClosing) pageTextSections.push(guide.howItWorksClosing);
   }
 
   if (guide?.adapting && guide.adapting.length > 0) {
     pageTextSections.push(`## ${guide.adaptingTitle ?? 'Adapting this'}`);
     if (guide.adaptingIntro) pageTextSections.push(guide.adaptingIntro);
-    guide.adapting.forEach((t) => pageTextSections.push(`- ${t}`));
+    pageTextSections.push(...guide.adapting.map((t) => `- ${t}`));
   }
 
   if (guide?.keyApis && guide.keyApis.length > 0) {
     pageTextSections.push('## Key APIs');
-    guide.keyApis.forEach((api) =>
-      pageTextSections.push(`- [${api.label}](${api.url})`)
+    pageTextSections.push(
+      ...guide.keyApis.map((api) => `- [${api.label}](${api.url})`)
     );
   }
 

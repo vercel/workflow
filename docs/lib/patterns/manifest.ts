@@ -1,124 +1,4 @@
 import {
-  agentCancellationButtonSource,
-  agentCancellationConceptHardCancelSource,
-  agentCancellationConceptStopRouteSource,
-  agentCancellationConceptStopSignalSource,
-  agentCancellationRouteSource,
-  agentCancellationStartRouteSource,
-  agentCancellationUsageSource,
-  agentCancellationWorkflowSource,
-  agentCancellationWorkflowInstallSource,
-} from './snippets/agent-cancellation';
-import {
-  aiSdkClientSource,
-  aiSdkRouteSource,
-  aiSdkWorkflowSource,
-  aiSdkWorkflowInstallSource,
-} from './snippets/ai-sdk';
-import { batchingStartRouteSource } from './snippets/batching';
-import {
-  chatSdkBotSource,
-  chatSdkHandlersSource,
-  chatSdkWebhookSource,
-  chatSdkWorkflowSource,
-  chatSdkWorkflowInstallSource,
-} from './snippets/chat-sdk';
-import {
-  childWorkflowsStartRouteSource,
-  childWorkflowsUsageSource,
-} from './snippets/child-workflows';
-import {
-  killSwitchButtonSource,
-  killSwitchRouteSource,
-  killSwitchUsageSource,
-} from './snippets/kill-switch';
-import { semaphoreUsageSource } from './snippets/semaphore';
-import { rateLimiterUsageSource } from './snippets/rate-limiter';
-import { circuitBreakerUsageSource } from './snippets/circuit-breaker';
-import { debounceUsageSource } from './snippets/debounce';
-import { batchAggregatorUsageSource } from './snippets/batch-aggregator';
-import { singletonRunUsageSource } from './snippets/singleton-run';
-import { pollingStartRouteSource } from './snippets/polling';
-import { deadLetterQueueStartRouteSource } from './snippets/dead-letter-queue';
-import { recurringCronStartRouteSource } from './snippets/recurring-cron';
-import {
-  stripeWorkflowSource,
-  stripeWorkflowInstallSource,
-  stripeWebhookRouteSource,
-} from './snippets/stripe';
-import {
-  slackApprovalWorkflowSource,
-  slackApprovalWorkflowInstallSource,
-  slackApprovalRouteSource,
-} from './snippets/slack-approval';
-import {
-  durableAgentClientSource,
-  durableAgentStartRouteSource,
-  durableAgentWorkflowSource,
-  durableAgentWorkflowInstallSource,
-} from './snippets/durable-agent';
-import {
-  humanInTheLoopCardSource,
-  humanInTheLoopRouteSource,
-  humanInTheLoopStartRouteSource,
-  humanInTheLoopUsageSource,
-  humanInTheLoopWorkflowSource,
-  humanInTheLoopWorkflowInstallSource,
-} from './snippets/human-in-the-loop';
-import { idempotencyStartRouteSource } from './snippets/idempotency';
-import {
-  handlingRateLimitsStartRouteSource,
-  handlingRateLimitsWorkflowSource,
-  handlingRateLimitsWorkflowInstallSource,
-} from './snippets/handling-rate-limits';
-import {
-  resendCancelRouteSource,
-  resendStartRouteSource,
-  resendUsageSource,
-  resendWorkflowSource,
-  resendWorkflowInstallSource,
-} from './snippets/resend';
-import { sagaStartRouteSource } from './snippets/saga';
-import {
-  sandboxClientSource,
-  sandboxCommandRouteSource,
-  sandboxStartRouteSource,
-  sandboxUsageSource,
-  sandboxPipelineInstallSource,
-  sandboxWorkflowSource,
-  sandboxWorkflowInstallSource,
-} from './snippets/sandbox';
-import {
-  schedulingCancelRouteSource,
-  schedulingStartRouteSource,
-  schedulingUsageSource,
-} from './snippets/scheduling';
-import {
-  sequentialAndParallelStartRouteSource,
-  sequentialAndParallelWorkflowSource,
-  sequentialAndParallelWorkflowInstallSource,
-} from './snippets/sequential-and-parallel';
-import { timeoutsStartRouteSource } from './snippets/timeouts';
-import { webhooksStartRouteSource } from './snippets/webhooks';
-import {
-  workflowCompositionStartRouteSource,
-  workflowCompositionWorkflowSource,
-  workflowCompositionWorkflowInstallSource,
-} from './snippets/workflow-composition';
-import {
-  upgradingWorkflowsResumeRouteSource,
-  upgradingWorkflowsStartRouteSource,
-  upgradingWorkflowsWorkflowSource,
-  upgradingWorkflowsMethod2Source,
-  upgradingWorkflowsMethod1InstallSource,
-  upgradingWorkflowsMethod2InstallSource,
-} from './snippets/upgrading-workflows';
-import type {
-  RegistryCategory,
-  RegistryItem,
-  RegistryPatternType,
-} from './types';
-import {
   batchAggregatorDisplaySource,
   batchAggregatorFullSource,
   batchingDisplaySource,
@@ -158,6 +38,126 @@ import {
   webhooksRequestReplyDisplaySource,
   webhooksRequestReplyFullSource,
 } from './generated';
+import {
+  agentCancellationButtonSource,
+  agentCancellationConceptHardCancelSource,
+  agentCancellationConceptStopRouteSource,
+  agentCancellationConceptStopSignalSource,
+  agentCancellationRouteSource,
+  agentCancellationStartRouteSource,
+  agentCancellationUsageSource,
+  agentCancellationWorkflowInstallSource,
+  agentCancellationWorkflowSource,
+} from './snippets/agent-cancellation';
+import {
+  aiSdkClientSource,
+  aiSdkRouteSource,
+  aiSdkWorkflowInstallSource,
+  aiSdkWorkflowSource,
+} from './snippets/ai-sdk';
+import { batchAggregatorUsageSource } from './snippets/batch-aggregator';
+import { batchingStartRouteSource } from './snippets/batching';
+import {
+  chatSdkBotSource,
+  chatSdkHandlersSource,
+  chatSdkWebhookSource,
+  chatSdkWorkflowInstallSource,
+  chatSdkWorkflowSource,
+} from './snippets/chat-sdk';
+import {
+  childWorkflowsStartRouteSource,
+  childWorkflowsUsageSource,
+} from './snippets/child-workflows';
+import { circuitBreakerUsageSource } from './snippets/circuit-breaker';
+import { deadLetterQueueStartRouteSource } from './snippets/dead-letter-queue';
+import { debounceUsageSource } from './snippets/debounce';
+import {
+  durableAgentClientSource,
+  durableAgentStartRouteSource,
+  durableAgentWorkflowInstallSource,
+  durableAgentWorkflowSource,
+} from './snippets/durable-agent';
+import {
+  handlingRateLimitsStartRouteSource,
+  handlingRateLimitsWorkflowInstallSource,
+  handlingRateLimitsWorkflowSource,
+} from './snippets/handling-rate-limits';
+import {
+  humanInTheLoopCardSource,
+  humanInTheLoopRouteSource,
+  humanInTheLoopStartRouteSource,
+  humanInTheLoopUsageSource,
+  humanInTheLoopWorkflowInstallSource,
+  humanInTheLoopWorkflowSource,
+} from './snippets/human-in-the-loop';
+import { idempotencyStartRouteSource } from './snippets/idempotency';
+import {
+  killSwitchButtonSource,
+  killSwitchRouteSource,
+  killSwitchUsageSource,
+} from './snippets/kill-switch';
+import { pollingStartRouteSource } from './snippets/polling';
+import { rateLimiterUsageSource } from './snippets/rate-limiter';
+import { recurringCronStartRouteSource } from './snippets/recurring-cron';
+import {
+  resendCancelRouteSource,
+  resendStartRouteSource,
+  resendUsageSource,
+  resendWorkflowInstallSource,
+  resendWorkflowSource,
+} from './snippets/resend';
+import { sagaStartRouteSource } from './snippets/saga';
+import {
+  sandboxClientSource,
+  sandboxCommandRouteSource,
+  sandboxPipelineInstallSource,
+  sandboxStartRouteSource,
+  sandboxUsageSource,
+  sandboxWorkflowInstallSource,
+  sandboxWorkflowSource,
+} from './snippets/sandbox';
+import {
+  schedulingCancelRouteSource,
+  schedulingStartRouteSource,
+  schedulingUsageSource,
+} from './snippets/scheduling';
+import { semaphoreUsageSource } from './snippets/semaphore';
+import {
+  sequentialAndParallelStartRouteSource,
+  sequentialAndParallelWorkflowInstallSource,
+  sequentialAndParallelWorkflowSource,
+} from './snippets/sequential-and-parallel';
+import { singletonRunUsageSource } from './snippets/singleton-run';
+import {
+  slackApprovalRouteSource,
+  slackApprovalWorkflowInstallSource,
+  slackApprovalWorkflowSource,
+} from './snippets/slack-approval';
+import {
+  stripeWebhookRouteSource,
+  stripeWorkflowInstallSource,
+  stripeWorkflowSource,
+} from './snippets/stripe';
+import { timeoutsStartRouteSource } from './snippets/timeouts';
+import {
+  upgradingWorkflowsMethod1InstallSource,
+  upgradingWorkflowsMethod2InstallSource,
+  upgradingWorkflowsMethod2Source,
+  upgradingWorkflowsResumeRouteSource,
+  upgradingWorkflowsStartRouteSource,
+  upgradingWorkflowsWorkflowSource,
+} from './snippets/upgrading-workflows';
+import { webhooksStartRouteSource } from './snippets/webhooks';
+import {
+  workflowCompositionStartRouteSource,
+  workflowCompositionWorkflowInstallSource,
+  workflowCompositionWorkflowSource,
+} from './snippets/workflow-composition';
+import type {
+  RegistryCategory,
+  RegistryItem,
+  RegistryPatternType,
+} from './types';
 
 /**
  * Public registry of installable Workflow patterns.
@@ -2556,7 +2556,7 @@ export const registryItems: RegistryItem[] = [
         '**First item opens the window** — it lazily starts the coordinator and spawns the flush-deadline timer (a child that sleeps and pings back, so the buffer loop never blocks).',
         '**Two flush triggers, one winner** — `MAX_ITEMS` reached, or the deadline ping with the current sequence number. Either way the buffer flushes exactly once and the run exits.',
         '**Buffered in workflow state** — items survive restarts with the run; no Redis or queue infrastructure.',
-        "**Never-lost items** — an item landing just as a flush exits starts a fresh buffer via `aggregatorSend`\'s ensure-and-retry loop.",
+        "**Never-lost items** — an item landing just as a flush exits starts a fresh buffer via `aggregatorSend`'s ensure-and-retry loop.",
       ],
       adapting: [
         '**Replace `flushBatch`** with your bulk operation and tune `MAX_ITEMS` / `MAX_WAIT_MS`.',
