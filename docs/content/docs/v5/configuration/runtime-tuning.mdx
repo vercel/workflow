@@ -64,9 +64,10 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 
 ### `WORKFLOW_MAX_QUEUE_DELIVERIES`
 
-- Default: `48`
-- Delivery attempts before a run or step is failed gracefully.
-- Can only be lowered. Workflow calibrates the default to record failure before the queue expires the message.
+- Default: `256` when the World reports message expiry (Vercel World), `48` otherwise (Local and Postgres Worlds)
+- Delivery attempts before a run is failed gracefully with `MAX_DELIVERIES_EXCEEDED`.
+- On the Vercel World the budget is time-based: a message that keeps failing is retried until about one hour before the queue's 24-hour message retention expires, then the run is failed. The attempt cap is a safety net above that. On Worlds without message expiry, the attempt cap is the whole budget.
+- Can only be lowered. Workflow calibrates the defaults to record failure before the queue expires the message.
 
 ### `WORKFLOW_MAX_EVENTS`
 

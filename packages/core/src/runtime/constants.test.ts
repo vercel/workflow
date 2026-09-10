@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../logger.js';
 import {
   _resetReplayTimeoutWarnCacheForTests,
+  getExhaustedDeliveryBudget,
   getInlineOwnershipLeaseSeconds,
   getMaxInlineSteps,
   getMaxQueueDeliveries,
@@ -16,9 +17,11 @@ import {
   MAX_INLINE_STEPS,
   MAX_MAX_INLINE_STEPS,
   MAX_QUEUE_DELIVERIES,
+  MAX_QUEUE_DELIVERIES_WITH_EXPIRY,
   MAX_REPLAY_TIMEOUT_MS,
   MIN_MAX_INLINE_STEPS,
   MIN_REPLAY_TIMEOUT_MS,
+  QUEUE_DELIVERY_EXPIRY_MARGIN_MS,
   REPLAY_TIMEOUT_MS,
 } from './constants.js';
 
@@ -316,6 +319,121 @@ describe('getMaxQueueDeliveries', () => {
     // may only lower it, never raise it.
     process.env[ENV] = String(MAX_QUEUE_DELIVERIES + 100);
     expect(getMaxQueueDeliveries()).toBe(MAX_QUEUE_DELIVERIES);
+  });
+
+  it('uses the larger safety-net cap when the queue reports message expiry', () => {
+    expect(getMaxQueueDeliveries(true)).toBe(MAX_QUEUE_DELIVERIES_WITH_EXPIRY);
+    expect(MAX_QUEUE_DELIVERIES_WITH_EXPIRY).toBeGreaterThan(
+      MAX_QUEUE_DELIVERIES
+    );
+  });
+
+  it('clamps an override against the cap that applies to the queue', () => {
+    process.env[ENV] = String(MAX_QUEUE_DELIVERIES + 100);
+    expect(getMaxQueueDeliveries(true)).toBe(MAX_QUEUE_DELIVERIES + 100);
+    process.env[ENV] = String(MAX_QUEUE_DELIVERIES_WITH_EXPIRY + 100);
+    expect(getMaxQueueDeliveries(true)).toBe(MAX_QUEUE_DELIVERIES_WITH_EXPIRY);
+  });
+});
+
+describe('getExhaustedDeliveryBudget', () => {
+  const ENV = 'WORKFLOW_MAX_QUEUE_DELIVERIES';
+  const now = Date.UTC(2026, 0, 1);
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  afterEach(() => {
+    delete process.env[ENV];
+  });
+
+  describe('without message expiry', () => {
+    it('allows deliveries up to the fixed cap', () => {
+      expect(
+        getExhaustedDeliveryBudget({ attempt: MAX_QUEUE_DELIVERIES }, now)
+      ).toBeUndefined();
+    });
+
+    it('is exhausted once the fixed cap is exceeded', () => {
+      const exhausted = getExhaustedDeliveryBudget(
+        { attempt: MAX_QUEUE_DELIVERIES + 1 },
+        now
+      );
+      expect(exhausted?.maxQueueDeliveries).toBe(MAX_QUEUE_DELIVERIES);
+      expect(exhausted?.reason).toContain(
+        `${MAX_QUEUE_DELIVERIES + 1}/${MAX_QUEUE_DELIVERIES}`
+      );
+    });
+  });
+
+  describe('with message expiry', () => {
+    it('keeps retrying past the fixed cap while the message has time left', () => {
+      // The whole point of the time-based budget: a backend outage that lasts
+      // longer than 48 deliveries' worth of backoff does not fail the run as
+      // long as the queue still holds the message.
+      expect(
+        getExhaustedDeliveryBudget(
+          {
+            attempt: MAX_QUEUE_DELIVERIES + 1,
+            expiresAt: new Date(now + DAY_MS / 2),
+          },
+          now
+        )
+      ).toBeUndefined();
+    });
+
+    it('is exhausted once the message is within the expiry margin', () => {
+      const exhausted = getExhaustedDeliveryBudget(
+        {
+          attempt: 30,
+          expiresAt: new Date(now + QUEUE_DELIVERY_EXPIRY_MARGIN_MS - 1),
+        },
+        now
+      );
+      expect(exhausted?.reason).toContain('message expires in');
+      expect(exhausted?.reason).toContain('30 deliveries');
+    });
+
+    it('is not exhausted exactly at the margin', () => {
+      expect(
+        getExhaustedDeliveryBudget(
+          {
+            attempt: 30,
+            expiresAt: new Date(now + QUEUE_DELIVERY_EXPIRY_MARGIN_MS),
+          },
+          now
+        )
+      ).toBeUndefined();
+    });
+
+    it('reports a non-negative remaining time for an already-expired message', () => {
+      const exhausted = getExhaustedDeliveryBudget(
+        { attempt: 5, expiresAt: new Date(now - 1000) },
+        now
+      );
+      expect(exhausted?.reason).toContain('expires in 0s');
+    });
+
+    it('still enforces the safety-net attempt cap', () => {
+      const exhausted = getExhaustedDeliveryBudget(
+        {
+          attempt: MAX_QUEUE_DELIVERIES_WITH_EXPIRY + 1,
+          expiresAt: new Date(now + DAY_MS),
+        },
+        now
+      );
+      expect(exhausted?.maxQueueDeliveries).toBe(
+        MAX_QUEUE_DELIVERIES_WITH_EXPIRY
+      );
+    });
+
+    it('honors a lowered override ahead of the time budget', () => {
+      process.env[ENV] = '5';
+      expect(
+        getExhaustedDeliveryBudget(
+          { attempt: 6, expiresAt: new Date(now + DAY_MS) },
+          now
+        )?.maxQueueDeliveries
+      ).toBe(5);
+    });
   });
 });
 

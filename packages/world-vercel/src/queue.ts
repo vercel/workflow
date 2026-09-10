@@ -143,18 +143,26 @@ const MAX_DELAY_SECONDS = Number(
   process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS || 82800 // 23 hours - leave 1h buffer before the default 24h message TTL
 );
 
+// The queue's default message retention. A message is dropped this long after
+// it was sent, whether or not it has been delivered; the runtime's redelivery
+// budget (`getExhaustedDeliveryBudget` in @workflow/core) runs against the
+// `expiresAt` the queue stamps on each delivery. A delayed message spends most
+// of that window waiting, so it is sent with the delay added on top: every
+// message then has the full window of retries from its first delivery, and a
+// sleep continuation that fires with an hour left does not read as an
+// exhausted budget.
+const DEFAULT_MESSAGE_RETENTION_SECONDS = 86400;
+
 const HANDLER_ERROR_RETRY_AFTER_SECONDS = 1;
 // Ceiling for the per-redelivery backoff. This value is the `retry-after` we
 // hand to VQS, which clamps it into [5s, MAX_SQS_DELAY_SECONDS=900s] for the
 // first 32 deliveries and then applies its own exponential growth (also capped
-// at 900s); see vqs-server `calculateBackoffDelay`. Capping our base at 60s
-// (the old value) wasted that headroom: a run stuck behind a sustained backend
-// outage exhausted its delivery budget in ~3.7h. Ramping to the 900s ceiling
-// instead stretches survival to ~9–10h (across `MAX_QUEUE_DELIVERIES` = 48
-// attempts), so transient outages don't fail otherwise-healthy runs. Spanning
-// the full ~24h message-visibility window would require a higher delivery cap,
-// not a higher ceiling: VQS clamps every hop at 900s, so going above it here
-// is pointless.
+// at 900s); see vqs-server `calculateBackoffDelay`. Ramping to that ceiling
+// (reached by about delivery 11) keeps a run stuck behind a sustained backend
+// outage from burning its redelivery budget in a tight loop. How long the
+// run survives is decided by the runtime's time-based budget against the
+// message's `expiresAt`, so the retention window (24h) is what bounds it, and
+// going above 900s here is pointless since VQS clamps every hop there.
 const HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS = 900;
 const HANDLER_ERROR_RETRY_JITTER_RATIO = 0.25;
 
@@ -496,6 +504,9 @@ export function createQueue(config?: APIConfig): Queue {
     const { messageId } = await client.send(sanitizedQueueName, wrapper, {
       idempotencyKey: opts?.idempotencyKey,
       delaySeconds: opts?.delaySeconds,
+      retentionSeconds: opts?.delaySeconds
+        ? opts.delaySeconds + DEFAULT_MESSAGE_RETENTION_SECONDS
+        : undefined,
       headers: {
         ...getHeadersFromPayload(payload),
         ...opts?.headers,
@@ -541,6 +552,7 @@ export function createQueue(config?: APIConfig): Queue {
             messageId: MessageId.parse(metadata.messageId),
             attempt: metadata.deliveryCount,
             requestId,
+            expiresAt: metadata.expiresAt,
           });
 
           if (typeof result?.timeoutSeconds === 'number') {

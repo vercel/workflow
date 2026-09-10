@@ -52,8 +52,8 @@ import { getStepFunction } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import {
+  getExhaustedDeliveryBudget,
   getMaxEventsOverride,
-  getMaxQueueDeliveries,
   getPreconditionMaxInProcessRestarts,
   getPreconditionMaxReinvocations,
   getPreconditionReinvokeDelaySeconds,
@@ -794,23 +794,28 @@ export function workflowEntrypoint(
         const { requestId } = metadata;
         const workflowName = metadata.queueName.slice(workflowPrefix.length);
 
-        // --- Max delivery check ---
-        // Enforce max delivery limit before any infrastructure calls.
-        // This prevents runaway workflows from consuming infinite queue deliveries.
+        // --- Delivery budget check ---
+        // Enforce the redelivery budget before any infrastructure calls, so a
+        // runaway workflow cannot consume queue deliveries until the message
+        // expires. The budget is the time left before the queue drops the
+        // message when the World reports it, and a fixed attempt count
+        // otherwise (see `getExhaustedDeliveryBudget`).
         // Scoped logger for this run: attaches runId/workflowName to every
         // log line and child loggers below, so callers don't repeat it.
         const runLogger = runtimeLogger.forRun(runId, workflowName);
 
-        const maxQueueDeliveries = getMaxQueueDeliveries();
-        if (metadata.attempt > maxQueueDeliveries) {
+        const exhaustedBudget = getExhaustedDeliveryBudget(metadata);
+        if (exhaustedBudget) {
           const maxDeliveriesDescription = describeError(
             undefined,
             RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
           );
           runLogger.error(
-            `Workflow handler exceeded max deliveries (${metadata.attempt}/${maxQueueDeliveries})`,
+            `Workflow handler exceeded ${exhaustedBudget.reason}`,
             {
               attempt: metadata.attempt,
+              maxQueueDeliveries: exhaustedBudget.maxQueueDeliveries,
+              expiresAt: metadata.expiresAt?.toISOString(),
               errorCode: maxDeliveriesDescription.errorCode,
               errorAttribution: maxDeliveriesDescription.attribution,
             }
@@ -819,7 +824,7 @@ export function workflowEntrypoint(
             const world = await getWorld();
             const getEncryptionKey = memoizeEncryptionKey(world, runId);
             const err = new FatalError(
-              `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`
+              `Workflow exceeded ${exhaustedBudget.reason}`
             );
             await world.events.create(
               runId,

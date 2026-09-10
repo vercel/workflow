@@ -17,6 +17,8 @@ import { runtimeLogger } from './logger.js';
 import { registerStepFunction } from './private.js';
 import {
   DEPLOYMENT_MISMATCH_MAX_RETRIES,
+  MAX_QUEUE_DELIVERIES,
+  QUEUE_DELIVERY_EXPIRY_MARGIN_MS,
   REPLAY_DIVERGENCE_MAX_RETRIES,
 } from './runtime/constants.js';
 import { setWorld } from './runtime/world.js';
@@ -67,6 +69,8 @@ async function runWorkflowHandlerWithEvents(
   events: Event[],
   options: {
     attempt?: number;
+    /** Message expiry reported by the queue, as world-vercel does. */
+    expiresAt?: Date;
     createdEvents?: unknown[];
     createdEventParams?: unknown[];
     queueCalls?: QueueCall[];
@@ -148,6 +152,7 @@ async function runWorkflowHandlerWithEvents(
               attempt: options.attempt ?? 1,
               queueName: '__wkf_workflow_workflow',
               messageId: 'msg_test',
+              expiresAt: options.expiresAt,
             }
           );
           return new Response(null, { status: 204 });
@@ -374,6 +379,83 @@ describe('workflowEntrypoint replay guards', () => {
     expect(createdEvents).not.toContainEqual(
       expect.objectContaining({ eventType: 'run_completed' })
     );
+  });
+
+  describe('delivery budget', () => {
+    const HOUR_MS = 60 * 60 * 1000;
+
+    it('fails the run with MAX_DELIVERIES_EXCEEDED once the fixed attempt cap is exceeded on a queue without message expiry', async () => {
+      const workflowRun = await misroutedRun();
+      const createdEvents = await runWorkflowHandlerWithEvents(
+        mustNotRun,
+        workflowRun,
+        [],
+        { attempt: MAX_QUEUE_DELIVERIES + 1 }
+      );
+
+      const failedEvent = createdEvents.find(
+        (event: any) => event.eventType === 'run_failed'
+      ) as any;
+      expect(failedEvent).toBeDefined();
+      expect(failedEvent.eventData.errorCode).toBe(
+        RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
+      );
+    });
+
+    it('keeps retrying past the fixed attempt cap while the message has time before it expires', async () => {
+      // A message on a queue with retention is budgeted by time, so a long
+      // backend outage does not fail the run at the attempt count that
+      // bounds queues without expiry. This delivery is a misrouted one so
+      // the handler takes a known non-failing path (re-route) after the
+      // budget check passes.
+      const workflowRun = await misroutedRun();
+      const queueCalls: QueueCall[] = [];
+      const createdEvents = await runWorkflowHandlerWithEvents(
+        mustNotRun,
+        workflowRun,
+        [],
+        {
+          attempt: MAX_QUEUE_DELIVERIES + 1,
+          expiresAt: new Date(Date.now() + 12 * HOUR_MS),
+          currentDeploymentId: 'dpl_current',
+          queueCalls,
+        }
+      );
+
+      expect(createdEvents).not.toContainEqual(
+        expect.objectContaining({ eventType: 'run_failed' })
+      );
+      expect(queueCalls).toHaveLength(1);
+    });
+
+    it('fails the run with MAX_DELIVERIES_EXCEEDED once the message is about to expire', async () => {
+      const workflowRun = await misroutedRun();
+      const createdEvents = await runWorkflowHandlerWithEvents(
+        mustNotRun,
+        workflowRun,
+        [],
+        {
+          attempt: 20,
+          expiresAt: new Date(
+            Date.now() + QUEUE_DELIVERY_EXPIRY_MARGIN_MS - 60_000
+          ),
+        }
+      );
+
+      const failedEvent = createdEvents.find(
+        (event: any) => event.eventType === 'run_failed'
+      ) as any;
+      expect(failedEvent).toBeDefined();
+      expect(failedEvent.eventData.errorCode).toBe(
+        RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
+      );
+      const error = await hydrateRunError(
+        failedEvent.eventData.error,
+        workflowRun.runId,
+        undefined
+      );
+      expect(String(error.message)).toContain('message expires in');
+    });
   });
 
   it('records run_failed when run_started response schema validation fails', async () => {
