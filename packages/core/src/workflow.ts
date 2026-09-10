@@ -114,6 +114,8 @@ async function drainPendingQueueItems(
       runReadyBarrier,
     });
   } catch (err) {
+    // Actor invariants and write failures cannot be hidden by terminal drain.
+    if ((await getWorld()).execution?.profile === 'actor-owner-v1') throw err;
     runtimeLogger.warn(
       `Failed to drain pending queue items for ${outcome} workflow run`,
       {

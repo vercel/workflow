@@ -1,4 +1,5 @@
 import type { Analytics } from './analytics.js';
+import type { ActorExecution } from './actor-execution.js';
 import type {
   AttributeChange,
   ExperimentalSetAttributesResult,
@@ -575,6 +576,8 @@ export interface WorldCapabilities {
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
 export interface World extends Queue, Streamer, Storage {
+  /** Opt-in root-only affinity execution. Legacy Worlds leave this absent. */
+  execution?: ActorExecution;
   /**
    * Optional analytics read namespace for observability surfaces.
    *

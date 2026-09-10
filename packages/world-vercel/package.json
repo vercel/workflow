@@ -17,6 +17,10 @@
     "directory": "packages/world-vercel"
   },
   "exports": {
+    "./actor-client": {
+      "types": "./dist/actor-client.d.ts",
+      "default": "./dist/actor-client.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"

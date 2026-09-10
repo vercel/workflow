@@ -5069,6 +5069,10 @@ export function workflowEntrypoint(
               'workflow.route.get_world_handlers',
               async () => getWorld()
             );
+            if (worldHandlers.execution?.profile === 'actor-owner-v1') {
+              const { actorWorkflowHandler } = await import('./runtime/actor.js');
+              return actorWorkflowHandler(workflowCode, worldHandlers, options?.namespace);
+            }
             return handler(worldHandlers);
           });
         }

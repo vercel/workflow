@@ -1,4 +1,6 @@
 export type * from './analytics.js';
+export * from './actor-execution.js';
+export * from './actor-projection.js';
 export {
   ANALYTICS_EVENTS_GET_MANY_LIMIT,
   ANALYTICS_MAX_ATTRIBUTE_FILTERS,

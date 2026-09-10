@@ -45,6 +45,9 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
       maxDuration: 'max',
       experimentalTriggers: [getWorkflowQueueTrigger()],
       runtime: this.config.runtime,
+      ...(process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-vercel-actors'
+        ? { affinity: { mode: 'strict' as const }, regions: ['iad1'] }
+        : {}),
     });
 
     await this.buildWebhookFunction({ workflowGeneratedDir });

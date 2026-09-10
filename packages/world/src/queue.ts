@@ -268,6 +268,8 @@ export type HookResumeTiming = z.infer<typeof HookResumeTimingSchema>;
 
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
+  /** Actor POC submission; decoded strictly by the actor entry point. */
+  actorCommand: z.unknown().optional(),
   traceCarrier: TraceCarrierSchema.optional(),
   requestedAt: z.coerce.date().optional(),
   /** Consecutive replay divergences in this recovery chain and latest position. */
