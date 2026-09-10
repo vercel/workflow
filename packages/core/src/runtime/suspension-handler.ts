@@ -64,6 +64,7 @@ import {
   stepDispatchIdempotencyKey,
 } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
+import { verifyDuplicateStepCreate } from './step-create-conflict.js';
 import type { PreclaimedInlineStart } from './step-executor.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 
@@ -1106,6 +1107,24 @@ export async function handleSuspension({
     event: CreateEventRequest;
   }[] = [];
   const batchPreps: Promise<void>[] = [];
+  /** Same check as the single-write paths, for a `step_created` that the
+   *  batch commit reported as a duplicate. */
+  const verifyDuplicateBatchedStepCreate = (
+    entry: (typeof batchQueue)[number],
+    conflictMessage: string
+  ): Promise<void> =>
+    verifyDuplicateStepCreate({
+      world,
+      runId,
+      correlationId: entry.correlationId,
+      stepName: entry.stepName ?? '',
+      dehydratedInput:
+        entry.event.eventType === 'step_created'
+          ? entry.event.eventData.input
+          : undefined,
+      encryptionKey,
+      conflictMessage,
+    });
 
   // Pre-claimed inline pairs: fold each lazy-inline step's deferred
   // `step_created` (carrying its input) AND its `step_started` claim (bare,
@@ -1318,10 +1337,17 @@ export async function handleSuspension({
               // Concurrent handler wrote it first, same as the sequential
               // path. The step message is already out; a duplicate publish
               // by that handler dedupes on the shared idempotency key.
-              runtimeLogger.info('Step already exists, continuing', {
-                workflowRunId: runId,
+              // Benign only if it wrote the SAME invocation: a different
+              // name or input under this id fails the run (see
+              // verifyDuplicateStepCreate).
+              await verifyDuplicateStepCreate({
+                world,
+                runId,
                 correlationId: queueItem.correlationId,
-                message: err.message,
+                stepName: queueItem.stepName,
+                dehydratedInput,
+                encryptionKey,
+                conflictMessage: err.message,
               });
             } else if (isRetryableWorldError(err)) {
               // Resilient: the write failed transiently (429 / 5xx /
@@ -1369,10 +1395,17 @@ export async function handleSuspension({
           createdStepCorrelationIds.add(queueItem.correlationId);
         } catch (err) {
           if (EntityConflictError.is(err)) {
-            runtimeLogger.info('Step already exists, continuing', {
-              workflowRunId: runId,
+            // A concurrent handler wrote this step first. Benign when it
+            // wrote the same invocation; a different name or input under
+            // this id is a non-deterministic replay and fails the run.
+            await verifyDuplicateStepCreate({
+              world,
+              runId,
               correlationId: queueItem.correlationId,
-              message: err.message,
+              stepName: queueItem.stepName,
+              dehydratedInput,
+              encryptionKey,
+              conflictMessage: err.message,
             });
           } else {
             throw err;
@@ -1481,16 +1514,15 @@ export async function handleSuspension({
             }
           } catch (err) {
             if (EntityConflictError.is(err)) {
-              runtimeLogger.info(
-                entry.kind === 'step'
-                  ? 'Step already exists, continuing'
-                  : 'Wait already exists, continuing',
-                {
+              if (entry.kind === 'step') {
+                await verifyDuplicateBatchedStepCreate(entry, err.message);
+              } else {
+                runtimeLogger.info('Wait already exists, continuing', {
                   workflowRunId: runId,
                   correlationId: entry.correlationId,
                   message: err.message,
-                }
-              );
+                });
+              }
             } else {
               throw err;
             }
@@ -1658,6 +1690,12 @@ export async function handleSuspension({
                 // exactly the single path's semantics (create lost + claim
                 // won still runs the body; create won + claim lost skips).
                 inlineClaims.set(entry.correlationId, { owned: false });
+                if (entry.kind === 'inline-created') {
+                  // The created row lost: the entity already existed. Make
+                  // sure it is the same invocation before this replay goes
+                  // on to await its result (verifyDuplicateStepCreate).
+                  await verifyDuplicateBatchedStepCreate(entry, item.message);
+                }
                 runtimeLogger.info('Inline step pre-claim lost, continuing', {
                   workflowRunId: runId,
                   correlationId: entry.correlationId,
@@ -1666,17 +1704,18 @@ export async function handleSuspension({
                 continue;
               }
               // Same tolerance as the single path's EntityConflictError: a
-              // concurrent or earlier delivery already created it.
-              runtimeLogger.info(
-                entry.kind === 'step'
-                  ? 'Step already exists, continuing'
-                  : 'Wait already exists, continuing',
-                {
+              // concurrent or earlier delivery already created it. For a
+              // step, only when it created the SAME invocation
+              // (verifyDuplicateStepCreate).
+              if (entry.kind === 'step') {
+                await verifyDuplicateBatchedStepCreate(entry, item.message);
+              } else {
+                runtimeLogger.info('Wait already exists, continuing', {
                   workflowRunId: runId,
                   correlationId: entry.correlationId,
                   message: item.message,
-                }
-              );
+                });
+              }
               continue;
             }
             throw new WorkflowWorldError(

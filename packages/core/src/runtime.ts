@@ -3423,11 +3423,22 @@ export function workflowEntrypoint(
                             // hand it back to the queue to spin again.
                             throw escalation.error;
                           }
-                          if (!FatalError.is(suspensionError)) {
+                          if (
+                            !FatalError.is(suspensionError) &&
+                            !CorruptedEventLogError.is(suspensionError)
+                          ) {
                             // Transient failures propagate to the queue
                             // handler so the message is redelivered.
                             throw suspensionError;
                           }
+                          // A CorruptedEventLogError here means the handler
+                          // found a `step_created` a concurrent replay wrote
+                          // under the same correlation id for a DIFFERENT
+                          // step invocation (`verifyDuplicateStepCreate`).
+                          // Redelivery would replay into the same collision
+                          // and continuing would hand that step's result to
+                          // the wrong call, so it fails the run below like
+                          // any other non-retryable suspension failure.
                           // Non-retryable failure while committing the
                           // suspension's events, e.g. an attribute write
                           // the World rejected as invalid (the cumulative
