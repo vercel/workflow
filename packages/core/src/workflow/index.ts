@@ -18,7 +18,11 @@ export {
   type SetAttributesOptions,
   setAttributes,
 } from './set-attributes.js';
-export { getWritable } from './writable-stream.js';
+export {
+  getWritable,
+  type WorkflowWritableStream,
+  type WorkflowWritableStreamOptions,
+} from './writable-stream.js';
 
 // workflows can't use these functions, but we still need to provide
 // the export so bundling doesn't fail when step and workflow are in same file

@@ -119,6 +119,18 @@ const getLockPollIntervalMs = (): number =>
 export interface FlushableStreamState extends PromiseWithResolvers<void> {
   /** Number of write operations currently in flight to the server */
   pendingOps: number;
+  /** Serialized frames emitted by this pipe's producer. */
+  producedFrames: number;
+  /** Produced frames accepted by this pipe's sink. */
+  acceptedFrames: number;
+  /** Terminal pipe failure, retained for flushes requested after failure. */
+  pipeError?: unknown;
+  /** Flush callers waiting for their producer snapshot to reach the sink. */
+  frameWaiters: Array<{
+    target: number;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  }>;
   /** Whether the `done` promise has been resolved */
   doneResolved: boolean;
   /** Whether the underlying stream has actually closed/errored */
@@ -140,6 +152,9 @@ export function createFlushableState(): FlushableStreamState {
   const state: FlushableStreamState = {
     ...withResolvers<void>(),
     pendingOps: 0,
+    producedFrames: 0,
+    acceptedFrames: 0,
+    frameWaiters: [],
     doneResolved: false,
     streamEnded: false,
   };
@@ -227,6 +242,40 @@ function resolveAfterDrain(state: FlushableStreamState): void {
     () => state.resolve(),
     (err) => state.reject(err)
   );
+}
+
+/** Record a frame synchronously when serialization emits it into this pipe. */
+export function markFlushableFrameProduced(state: FlushableStreamState): void {
+  state.producedFrames++;
+}
+
+/**
+ * Wait until every frame produced before this call has reached the sink, then
+ * await the sink's durability barrier. This does not close the stream or
+ * release a writer lock; concurrent writes may join the same sink drain.
+ */
+export async function flushFlushableState(
+  state: FlushableStreamState
+): Promise<void> {
+  if (state.pipeError !== undefined) throw state.pipeError;
+  const target = state.producedFrames;
+  if (state.acceptedFrames < target) {
+    await new Promise<void>((resolve, reject) => {
+      state.frameWaiters.push({ target, resolve, reject });
+    });
+  }
+  if (state.pipeError !== undefined) throw state.pipeError;
+  await state.drainBarrier?.();
+}
+
+/** Attach a workflow-specific `flush()` helper to a native writable stream. */
+export function withWorkflowFlush<T extends WritableStream>(
+  writable: T,
+  state: FlushableStreamState
+): T & { flush(): Promise<void> } {
+  return Object.assign(writable, {
+    flush: () => flushFlushableState(state),
+  });
 }
 
 /**
@@ -393,13 +442,25 @@ async function flushablePipePerChunk(
       state.pendingOps++;
       try {
         await writer.write(readResult.value);
+        state.acceptedFrames++;
+        const ready = state.frameWaiters.filter(
+          (waiter) => waiter.target <= state.acceptedFrames
+        );
+        state.frameWaiters = state.frameWaiters.filter(
+          (waiter) => waiter.target > state.acceptedFrames
+        );
+        for (const waiter of ready) waiter.resolve();
       } finally {
         state.pendingOps--;
       }
     }
   } catch (err) {
     state.streamEnded = true;
+    state.pipeError = err;
     cancelReason = err;
+    const frameWaiters = state.frameWaiters;
+    state.frameWaiters = [];
+    for (const waiter of frameWaiters) waiter.reject(err);
     // Against an early-ack sink, chunks can still be buffered or in flight
     // when the pipe fails (pendingOps only counts un-acked writes). Deliver
     // that accepted prefix before settling the failure: once the state
