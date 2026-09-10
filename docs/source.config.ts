@@ -9,6 +9,8 @@ import { z } from 'zod';
 // You can customise Zod schemas for frontmatter and `meta.json` here
 // see https://fumadocs.dev/docs/mdx/collections
 const docsSchema = geistdocsFrontmatterSchema.extend({
+  // Opt a page into the shared language selector; the first option is default.
+  languageSwitcher: z.array(z.string().min(1)).min(2).optional(),
   // Opt a section landing page out of the card↔nav completeness lint when its
   // `<Cards>` grid is intentionally curated (e.g. links outside the section or
   // deliberately omits children). Exhaustive list pages should use `<AutoCards />`

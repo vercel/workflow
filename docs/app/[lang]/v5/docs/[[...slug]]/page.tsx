@@ -3,6 +3,7 @@ import { createDocsPage } from '@vercel/geistdocs/pages/docs';
 import { Card, type CardProps } from 'fumadocs-ui/components/card';
 import { permanentRedirect } from 'next/navigation';
 import type { ComponentProps, ComponentType } from 'react';
+import { PageLanguageSwitcher } from '@/components/custom/language-switcher';
 import { AutoCards } from '@/components/geistdocs/auto-cards';
 import { getMDXComponents } from '@/components/geistdocs/mdx-components';
 import { config } from '@/lib/geistdocs/config';
@@ -19,6 +20,10 @@ const DEFAULT_LANG = config.defaultLanguage ?? 'en';
 const getPageUrl = ({ page }: { page: { url: string } }) =>
   `${VERSION_PREFIX}${page.url}`;
 
+interface LanguageSwitcherFrontmatter {
+  languageSwitcher?: string[];
+}
+
 // Content links are authored against the raw `/docs/...` and `/worlds/...`
 // URL spaces; rewrite them into the v5 view so navigation doesn't escape to
 // the v4 route. Card renders its own Link (not the `a` component), so it
@@ -31,69 +36,88 @@ function V5Card(props: CardProps) {
   return <Card {...props} href={v5Href(props.href)} />;
 }
 
-const docsPage = createDocsPage({
-  config: {
-    ...config,
-    github: config.github && {
-      ...config.github,
-      editPath: 'docs/content/docs/v5/{path}',
+function createV5DocsPage(languageSwitcher?: string[]) {
+  return createDocsPage({
+    config: {
+      ...config,
+      github: config.github && {
+        ...config.github,
+        editPath: 'docs/content/docs/v5/{path}',
+      },
     },
-  },
-  source: v5GeistdocsSource,
-  getPageUrl,
-  mdx: ({ link, page }) =>
-    getMDXComponents({
-      a: link,
-      Card: V5Card,
-      // Cards render in the v5 URL space (`/v5/docs/...`), matching the
-      // sidebar tree so hrefs don't escape to the v4 route.
-      AutoCards: () => (
-        <AutoCards
-          items={resolveSectionChildren(
-            getDocsTreeForVersion(DEFAULT_LANG, PRE_RELEASE_VERSION),
-            `${VERSION_PREFIX}${page.url}`
-          )}
-        />
-      ),
-    }),
-  resolveLink: ({ link }) => {
-    const Link = link as ComponentType<ComponentProps<'a'>>;
-    const V5Link = (props: ComponentProps<'a'>) => (
-      <Link {...props} href={v5Href(props.href)} />
-    );
+    source: v5GeistdocsSource,
+    getPageUrl,
+    mdx: ({ link, page }) =>
+      getMDXComponents({
+        a: link,
+        Card: V5Card,
+        // Cards render in the v5 URL space (`/v5/docs/...`), matching the
+        // sidebar tree so hrefs don't escape to the v4 route.
+        AutoCards: () => (
+          <AutoCards
+            items={resolveSectionChildren(
+              getDocsTreeForVersion(DEFAULT_LANG, PRE_RELEASE_VERSION),
+              `${VERSION_PREFIX}${page.url}`
+            )}
+          />
+        ),
+      }),
+    resolveLink: ({ link }) => {
+      const Link = link as ComponentType<ComponentProps<'a'>>;
+      const V5Link = (props: ComponentProps<'a'>) => (
+        <Link {...props} href={v5Href(props.href)} />
+      );
 
-    return V5Link;
-  },
-  openGraph: {
-    images: true,
-  },
-  tableOfContentPopover: {
-    enabled: false,
-  },
-  renderTop: ({ data }) => <MobileDocsBar toc={data.toc} />,
-  metadata: ({ metadata, page, params }) => {
-    const pageUrl = getPageUrl({ page });
+      return V5Link;
+    },
+    openGraph: {
+      images: true,
+    },
+    tableOfContentPopover: {
+      enabled: false,
+    },
+    tableOfContent: languageSwitcher
+      ? {
+          header: <PageLanguageSwitcher languages={languageSwitcher} />,
+        }
+      : undefined,
+    renderTop: ({ data }) => (
+      <>
+        <MobileDocsBar toc={data.toc} />
+        {languageSwitcher ? (
+          <PageLanguageSwitcher
+            className="max-w-56 xl:hidden"
+            languages={languageSwitcher}
+          />
+        ) : null}
+      </>
+    ),
+    metadata: ({ metadata, page, params }) => {
+      const pageUrl = getPageUrl({ page });
 
-    return {
-      ...metadata,
-      title: `${page.data.title} · Pre-release`,
-      alternates: {
-        ...metadata.alternates,
-        canonical: source.getPage(params.slug, params.lang)
-          ? page.url
-          : pageUrl,
-        types: {
-          ...metadata.alternates?.types,
-          'text/markdown': `${pageUrl}.md`,
+      return {
+        ...metadata,
+        title: `${page.data.title} · Pre-release`,
+        alternates: {
+          ...metadata.alternates,
+          canonical: source.getPage(params.slug, params.lang)
+            ? page.url
+            : pageUrl,
+          types: {
+            ...metadata.alternates?.types,
+            'text/markdown': `${pageUrl}.md`,
+          },
         },
-      },
-      robots: {
-        index: false,
-        follow: true,
-      },
-    };
-  },
-});
+        robots: {
+          index: false,
+          follow: true,
+        },
+      };
+    },
+  });
+}
+
+const docsPage = createV5DocsPage();
 
 const Page = async (props: PageProps<'/[lang]/v5/docs/[[...slug]]'>) => {
   const { slug, lang } = await props.params;
@@ -106,7 +130,10 @@ const Page = async (props: PageProps<'/[lang]/v5/docs/[[...slug]]'>) => {
     permanentRedirect(`/${lang}${rewriteCookbookUrl(legacyPath)}`);
   }
 
-  return docsPage.Page(props);
+  const page = v5GeistdocsSource.source.getPage(slug, lang);
+  const pageData = page?.data as LanguageSwitcherFrontmatter | undefined;
+
+  return createV5DocsPage(pageData?.languageSwitcher).Page(props);
 };
 
 export default Page;
