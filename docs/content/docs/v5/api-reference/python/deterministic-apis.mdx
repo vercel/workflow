@@ -1,0 +1,61 @@
+---
+title: Deterministic APIs
+description: Read deterministic time and random values inside Python workflows.
+type: reference
+summary: Use now, time_ns, and random instead of nondeterministic standard-library APIs in workflow bodies.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/api-reference/python/sleep
+---
+
+Python workflow bodies replay from their event log. These APIs are seeded or
+fixed so they produce deterministic behavior across replays. Use `now()`,
+`time_ns()`, and `random()` when workflow logic needs time or pseudorandom
+values.
+
+## now()
+
+```python
+def now() -> datetime.datetime
+```
+
+Returns the workflow's logical time as a timezone-aware `datetime`. The value
+is stable at the same point in every replay and advances with the workflow's
+event log.
+
+## time_ns()
+
+```python
+def time_ns() -> int
+```
+
+Returns the same logical time as `now()`, expressed as nanoseconds since the
+Unix epoch.
+
+## random()
+
+```python
+def random() -> random.Random
+```
+
+Returns the run-scoped `random.Random` instance, deterministically seeded from
+the run ID. The same seed produces the same sequence on every replay. Repeated
+calls return the same generator object within a run; use normal methods such as
+`.random()`, `.randint()`, `.choice()`, and `.shuffle()`.
+
+```python
+from vercel import workflow
+
+@wf.workflow
+async def assign_reviewers(candidates: list[str]):
+    created_at = workflow.now()
+    selected = workflow.random().sample(candidates, k=2)
+    return {"created_at": created_at, "reviewers": selected}
+```
+
+<Callout type="warn">
+These functions can only be called from a workflow body. Steps should use the
+normal `datetime`, `time`, and `random` APIs because step results are
+recorded rather than replayed.
+</Callout>

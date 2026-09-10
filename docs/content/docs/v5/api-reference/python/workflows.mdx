@@ -1,0 +1,140 @@
+---
+title: Workflows
+description: Register Python workflow and step functions with a Workflows registry.
+type: reference
+summary: Create a Workflows registry and use its workflow and step decorators.
+prerequisites:
+  - /docs/getting-started/python
+related:
+  - /docs/foundations/workflows-and-steps
+  - /docs/api-reference/python/sandbox-policy
+  - /docs/api-reference/python/http-handlers
+---
+
+`Workflows` is the registry for Python workflow and step functions. Export one
+registry from the entrypoint named in `pyproject.toml`, then import every module
+that decorates a workflow or step so its definitions are registered.
+
+```python filename="app/workflow.py"
+from vercel.workflow import Workflows
+
+wf = Workflows()
+```
+
+## API signature
+
+```python
+Workflows(
+    *,
+    as_vercel_job: bool = True,
+    namespace: str | None = None,
+    sandbox_policy: SandboxPolicy | None = None,
+)
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `as_vercel_job` | `bool` | `True` | Subscribe the registry to its workflow queue and expose `http_handler`. `False` skips both and is intended for tests or hosts that install their own queue handler. |
+| `namespace` | `str \| None` | `None` | Optional queue namespace. It must start with a lowercase letter and contain only lowercase letters and digits. |
+| `sandbox_policy` | `SandboxPolicy \| None` | `None` | Workflow sandbox configuration. `None` uses the default policy. |
+
+### Properties
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `namespace` | `str \| None` | The immutable queue namespace for this registry. |
+| `http_handler` | `HTTPHandler` | Handler for workflow queue deliveries and health probes. Accessing it raises `RuntimeError` when `as_vercel_job=False`. |
+| `manifest_handler` | `HTTPHandler` | Handler that returns the registry manifest when `WORKFLOW_PUBLIC_MANIFEST=1`. |
+
+See [HTTP handlers](/docs/api-reference/python/http-handlers) when integrating
+these handlers with a custom Python web framework.
+
+## workflow()
+
+Registers an async function as a durable workflow.
+
+```python
+Workflows.workflow(
+    func: Callable[P, Coroutine[Any, Any, T]],
+) -> Workflow[P, T]
+```
+
+```python filename="app/workflows/orders.py"
+from app.workflow import wf
+
+@wf.workflow
+async def process_order(order_id: str) -> None:
+    await charge_order(order_id)
+```
+
+The returned workflow wrapper preserves the function's parameter and return
+types for `start()`. Its durable ID is derived from the function's module and
+qualified name.
+
+The wrapper is a registered workflow definition, not a directly callable
+function. Start it from runtime code with
+[`start()`](/docs/api-reference/python/start). To start a child run from a
+workflow, put `start()` inside a step.
+
+<Callout type="warn">
+Moving or renaming a registered workflow changes its durable ID. Existing runs
+remain pinned to the deployment and workflow ID that created them.
+</Callout>
+
+## step()
+
+Registers an async function as a durable step. It can be used as a bare
+decorator or configured with keyword arguments.
+
+```python
+Workflows.step(
+    func: Callable[P, Coroutine[Any, Any, T]] | None = None,
+    *,
+    max_retries: int = 3,
+    cancellable: bool = False,
+) -> Step[P, T] | Callable[[Callable[P, Coroutine[Any, Any, T]]], Step[P, T]]
+```
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `func` | async callable or `None` | `None` | Function to register. Omit it when passing decorator options. |
+| `max_retries` | `int` | `3` | Maximum retries after the initial attempt. The default permits four total attempts. |
+| `cancellable` | `bool` | `False` | Allow cancellation of an `asyncio.Task` awaiting this step to send a durable cancellation request to the running step. |
+
+```python filename="app/steps/payments.py"
+from app.workflow import wf
+
+@wf.step(max_retries=5, cancellable=True)
+async def charge_order(order_id: str) -> None:
+    ...
+```
+
+A decorated step can only be called from a workflow body. Calling it elsewhere
+raises `RuntimeError`. Extract shared business logic into an undecorated helper
+when it must also run outside a workflow.
+
+For a cancellable step, `Task.cancel()` requests cancellation; it does not mark
+the step cancelled immediately. Awaiting the task still waits for the step to
+terminate, following normal `asyncio.Task` semantics. A step that catches
+`asyncio.CancelledError` can complete normally. If a workflow returns while
+cancellable steps are still running, the runtime requests their cancellation
+and waits for them to finish before ending the workflow.
+
+## Registering the entrypoint
+
+```toml filename="pyproject.toml"
+[[tool.vercel.workflows]]
+entrypoint = "app.workflows:wf"
+```
+
+```python filename="app/workflows/__init__.py"
+from app.workflow import wf
+from app.workflows import orders
+
+__all__ = ["orders", "wf"]
+```
+
+Importing `orders` is what executes its decorators and adds those definitions
+to `wf`.

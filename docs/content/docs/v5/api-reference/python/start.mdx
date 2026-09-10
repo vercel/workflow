@@ -1,0 +1,105 @@
+---
+title: start
+description: Start and enqueue a new Python workflow run.
+type: reference
+summary: Use start to programmatically enqueue a new Python workflow run.
+prerequisites:
+  - /docs/foundations/starting-workflows
+related:
+  - /docs/api-reference/python/run
+  - /docs/api-reference/python/workflows
+  - /docs/foundations/idempotency
+---
+
+Start and enqueue a new Python workflow run.
+
+```python
+from vercel.workflow import start
+
+run = await start(process_order, "order_123")
+print(run.run_id)
+```
+
+## API signature
+
+```python
+async def start(
+    wf: Workflow[P, T],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> Run[T]
+```
+
+### Parameters
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `wf` | registered `Workflow[P, T]` | A function decorated with [`@Workflows.workflow`](/docs/api-reference/python/workflows#workflow). |
+| `*args` | `P.args` | Positional arguments passed to the workflow. |
+| `**kwargs` | `P.kwargs` | Keyword arguments passed to the workflow. |
+
+Arguments are bound against the workflow function's signature before a run is
+created. They must be [serializable](/docs/foundations/serialization), and
+supported type annotations are validated through Pydantic.
+
+### Returns
+
+Returns a [`Run[T]`](/docs/api-reference/python/run) object. The function
+returns immediately after enqueuing the workflow; it does not wait for the
+workflow to complete.
+
+## Good to know
+
+- Use `start()` in runtime contexts to programmatically trigger workflow
+  executions.
+- Calling Python `start()` directly from a workflow function is not supported.
+  To spawn a child run, call it from a step. This differs from the TypeScript
+  v5 API, where calling `start()` directly in a workflow is supported and
+  step-backed.
+- Each call to `start()` creates a new workflow run.
+- All arguments must be
+  [serializable](/docs/foundations/serialization). The SDK binds them against
+  the workflow signature before creating a run, then uses Pydantic to validate
+  supported annotations.
+- Python `start()` currently has no options object for selecting a deployment,
+  region, initial attributes, or retention.
+- If retried requests must route to one active workflow, have the workflow
+  create a deterministic hook token. A preflight
+  [`get_hook_by_token()`](/docs/api-reference/python/get-hook-by-token) lookup
+  is not atomic with `start()`, so handle concurrent starts inside the
+  workflow with
+  [`await event.get_conflict()`](/docs/api-reference/python/base-hook#get_conflict)
+  before duplicate-sensitive work. See
+  [Idempotency](/docs/foundations/idempotency#run-idempotency).
+
+## Examples
+
+### From runtime code
+
+Call `start()` from server-side application code:
+
+```python filename="app/api/orders.py"
+from vercel import workflow
+
+@app.post("/api/orders")
+async def create_order(order_id: str):
+    run = await workflow.start(process_order, order_id)
+    return {"run_id": run.run_id}
+```
+
+### From a step
+
+To start another run from a workflow, put `start()` in a step because it
+accesses the workflow backend:
+
+```python
+@wf.step
+async def start_child(value: int) -> str:
+    run = await workflow.start(child_workflow, value)
+    return run.run_id
+
+@wf.workflow
+async def parent_workflow(value: int):
+    child_run_id = await start_child(value)
+    return child_run_id
+```

@@ -10,6 +10,7 @@ prerequisites:
   - /docs/foundations/starting-workflows
 related:
   - /docs/api-reference/workflow-api/start
+  - /docs/api-reference/python/start
   - /docs/foundations/cancellation
   - /cookbook/common-patterns/workflow-composition
 ---
@@ -55,7 +56,7 @@ async def create_order(request: Request):
 
 </LanguageContent>
 
-The run is tied to the deployment that handled this request. If you deploy a new version while the workflow is [sleeping](/docs/api-reference/workflow/sleep), [waiting on a hook](/docs/foundations/hooks), [retrying a step](/docs/foundations/errors-and-retries), or processing later queue messages, that existing run still resumes on the original deployment.
+The run is tied to the deployment that handled this request. If you deploy a new version while the workflow is <LanguageContent value="ts" as="span">[`sleep()`ing](/docs/api-reference/workflow/sleep)</LanguageContent><LanguageContent value="py" as="span">[`sleep()`ing](/docs/api-reference/python/sleep)</LanguageContent>, [waiting on a hook](/docs/foundations/hooks), [retrying a step](/docs/foundations/errors-and-retries), or processing later queue messages, that existing run still resumes on the original deployment.
 
 <LanguageContent value="ts">
 

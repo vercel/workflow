@@ -1,6 +1,7 @@
 {
   "title": "API Reference",
   "pages": [
+    "python",
     "workflow-globals",
     "workflow",
     "workflow-api",

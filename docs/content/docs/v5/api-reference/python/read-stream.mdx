@@ -1,0 +1,137 @@
+---
+title: read_stream
+description: Retrieve streaming output from Python workflow runs.
+type: reference
+summary: Use Run methods or read_stream to consume live durable stream chunks without waiting for workflow completion.
+prerequisites:
+  - /docs/foundations/streaming
+related:
+  - /docs/api-reference/python/get-writable
+  - /docs/api-reference/python/run
+---
+
+Retrieve a run's streaming output without waiting for the workflow to
+complete. Read the default or a namespaced stream through `Run`. Use the
+top-level `read_stream()` function when you already have a full stream name
+returned by `Run.list_streams()`.
+
+<Callout type="info">
+Python stream readers are async generators rather than Web `ReadableStream`
+objects. Each call opens a new read; use `async for` to consume it.
+</Callout>
+
+## Run.readable()
+
+```python
+def Run.readable(
+    self,
+    *,
+    type: Any = None,
+    namespace: str | None = None,
+    start_index: int | None = None,
+) -> AsyncGenerator[Any, None]
+```
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `type` | type annotation | `None` | Validate and reconstruct each chunk through Pydantic. A mismatch raises `TypeValidationError` naming the chunk index. |
+| `namespace` | `str \| None` | `None` | Read the matching namespaced stream, or the default stream when omitted. |
+| `start_index` | `int \| None` | `None` | Zero-based chunk index to begin at. A negative value reads that many chunks back from the current tail. |
+
+The returned async generator yields chunks as they become durable and ends when
+a writer closes the stream.
+
+```python
+run = await start(analyze_document, document)
+
+async for progress in run.readable(type=Progress):
+    print(progress.current, progress.total)
+```
+
+Readers reconnect automatically when the upstream transport ends. A
+non-negative `start_index` resumes exactly and remains reconnectable. A
+negative index is resolved against the tail at connection time, so it is a
+single-shot read and does not reconnect after a dropped connection.
+
+To continue after chunk `last_seen`, pass `last_seen + 1`:
+
+```python
+async for chunk in run.readable(start_index=last_seen + 1):
+    ...
+```
+
+## Run.readable_bytes()
+
+```python
+def Run.readable_bytes(
+    self,
+    *,
+    namespace: str | None = None,
+    start_index: int | None = None,
+) -> AsyncGenerator[bytes, None]
+```
+
+`readable_bytes()` accepts the same `namespace` and `start_index` options.
+It yields `bytes` and converts `bytearray` chunks to `bytes`. Any other
+chunk type raises
+[`SerializationError`](/docs/api-reference/python/errors#serializationerror).
+
+```python filename="app/api/stream.py"
+from fastapi.responses import StreamingResponse
+from vercel.workflow import Run
+
+@app.get("/api/runs/{run_id}/stream")
+async def stream_run(run_id: str, start_index: int = 0):
+    run = Run(run_id)
+    return StreamingResponse(
+        run.readable_bytes(start_index=start_index),
+        media_type="application/octet-stream",
+    )
+```
+
+## read_stream()
+
+```python
+def read_stream(
+    run_id: str,
+    name: str,
+    *,
+    type: Any = None,
+    start_index: int | None = None,
+) -> AsyncGenerator[Any, None]
+```
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `run_id` | `str` | Run that owns the stream. |
+| `name` | `str` | Full stream name, used verbatim. |
+| `type` | type annotation | Optional chunk type for Pydantic validation and reconstruction. |
+| `start_index` | `int \| None` | Same resume index semantics as `Run.readable()`. |
+
+```python
+from vercel.workflow import Run, read_stream
+
+run = Run(run_id)
+for name in await run.list_streams():
+    async for chunk in read_stream(run_id, name):
+        ...
+```
+
+## Stream discovery
+
+```python
+async def Run.list_streams() -> list[str]
+
+async def Run.stream_info(
+    *,
+    namespace: str | None = None,
+) -> StreamInfo
+```
+
+`list_streams()` returns full stream names, including namespaced streams.
+`stream_info()` returns:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `tail_index` | `int` | Zero-based index of the last known chunk, or `-1` before any chunk is written. |
+| `done` | `bool` | Whether a writer has closed the stream. |

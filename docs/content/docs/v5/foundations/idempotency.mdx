@@ -474,7 +474,7 @@ async def forward_duplicate(order_id: str, confirmed: bool, conflict):
 
 The Python `Run` class does not currently expose `cancel()`, so a Python workflow cannot implement the "supersede the owner" strategy through the SDK.
 
-Outside a workflow, `await workflow.get_hook_by_token(token)` is useful as an advisory pre-check before `start()`. The lookup and start are not atomic, so the workflow must still call `hook.get_conflict()` before duplicate-sensitive work.
+Outside a workflow, [`await workflow.get_hook_by_token(token)`](/docs/api-reference/python/get-hook-by-token) is useful as an advisory pre-check before `start()`. The lookup and start are not atomic, so the workflow must still call `hook.get_conflict()` before duplicate-sensitive work.
 
 </LanguageContent>
 
@@ -494,6 +494,10 @@ Outside a workflow, `await workflow.get_hook_by_token(token)` is useful as an ad
 <LanguageContent value="py">
 
 - Learn about retries in [Errors & Retrying](/docs/foundations/errors-and-retries)
+- API reference: [`get_step_metadata()`](/docs/api-reference/python/get-step-metadata)
+- API reference: [`BaseHook`](/docs/api-reference/python/base-hook)
+- API reference: [`get_hook_by_token()`](/docs/api-reference/python/get-hook-by-token)
+- API reference: [`start()`](/docs/api-reference/python/start)
 - Learn about deterministic hook tokens in [Hooks](/docs/foundations/hooks)
 - Review Python workflow setup and core APIs in [Python getting started](/docs/getting-started/python)
 

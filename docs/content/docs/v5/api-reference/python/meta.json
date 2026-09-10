@@ -1,0 +1,21 @@
+{
+  "title": "Python SDK",
+  "pages": [
+    "workflows",
+    "start",
+    "run",
+    "sleep",
+    "deterministic-apis",
+    "base-hook",
+    "get-hook-by-token",
+    "get-writable",
+    "read-stream",
+    "get-workflow-metadata",
+    "get-step-metadata",
+    "attributes",
+    "serialization",
+    "sandbox-policy",
+    "errors",
+    "http-handlers"
+  ]
+}

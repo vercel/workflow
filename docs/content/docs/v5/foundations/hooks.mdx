@@ -92,7 +92,7 @@ The workflow will pause at `await hook` until external code sends data to resume
 </Callout>
 
 <Callout type="info">
-<LanguageContent value="ts" as="span">See the full API reference for [`createHook()`](/docs/api-reference/workflow/create-hook) for all available options.</LanguageContent><LanguageContent value="py" as="span">Python hook payloads must be Pydantic models or dataclasses that inherit `BaseHook`.</LanguageContent>
+<LanguageContent value="ts" as="span">See the full API reference for [`createHook()`](/docs/api-reference/workflow/create-hook) for all available options.</LanguageContent><LanguageContent value="py" as="span">Python hook payloads must be Pydantic models or dataclasses that inherit [`BaseHook`](/docs/api-reference/python/base-hook).</LanguageContent>
 </Callout>
 
 ### Resuming a hook
@@ -846,7 +846,8 @@ This pattern allows a single workflow instance to handle multiple events over ti
 <LanguageContent value="py">
 
 - [Serialization](/docs/foundations/serialization) - Understand what data can be passed through hooks
-- [Python getting started](/docs/getting-started/python#hooks) - Set up and use Python hooks
+- [`BaseHook` API reference](/docs/api-reference/python/base-hook) - Wait for, inspect, resume, and dispose typed hooks
+- [Python getting started](/docs/getting-started/python) - Set up the Python SDK and its workflow registry
 - [Idempotency](/docs/foundations/idempotency) - Coordinate active workflow runs with deterministic tokens
 
 </LanguageContent>
