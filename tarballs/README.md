@@ -10,7 +10,7 @@ For each public package, `scripts/pack.ts`:
 
 It also generates a `public/index.html` that lists every published package alongside a copyable `pnpm i …` command, so the bare deployment URL is itself useful when shared.
 
-The deployment serves the resulting `*.tgz` files at the root of the project URL — e.g. `https://<deployment>.vercel.sh/workflow.tgz`.
+The deployment serves the resulting `*.tgz` files at the root of the project URL. For example, `https://<deployment>.vercel.sh/workflow.tgz`.
 
 This is used for pre-release testing of `vercel/workflow` PRs by installing tarballs directly:
 

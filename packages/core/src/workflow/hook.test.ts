@@ -12,7 +12,6 @@ import {
   aliasSerializationClass,
   RUN_CLASS_ID,
 } from '../class-serialization.js';
-import { createCorrelationIdGenerator } from '../correlation-id.js';
 import { EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
@@ -43,25 +42,33 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
-    generateCorrelationId: createCorrelationIdGenerator({
-      seed: 'test',
-      fixedTimestamp: workflowStartedAt,
-      positional: () => ulid(workflowStartedAt),
-      // The event logs in this file hardcode correlation ids the run-wide
-      // shared sequence minted, so replay only matches under that scheme.
-      perKind: false,
-    }),
+    generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
     onWorkflowError: vi.fn(),
     promiseQueue: Promise.resolve(),
     pendingDeliveries: 0,
+    suspensionGeneration: 0,
   };
+}
+
+/**
+ * Let the idle poll behind `scheduleWhenIdle` make progress. Each poll is one
+ * `setTimeout(0)` turn (plus a `promiseQueue` hop while a delivery is held),
+ * so a handful of explicit macrotask turns covers arming, re-polling against
+ * a held delivery, and firing once it is released, without a wall-clock wait.
+ */
+async function settleTimers(turns = 4): Promise<void> {
+  for (let i = 0; i < turns; i++) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 describe('createCreateHook', () => {
@@ -347,11 +354,63 @@ describe('createCreateHook', () => {
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
     if (WorkflowSuspension.is(workflowError)) {
       expect(workflowError.hookCount).toBe(1);
-      expect(workflowError.steps[0]).toMatchObject({
+      expect(workflowError.items[0]).toMatchObject({
         type: 'hook',
         hasConflictAwaiter: true,
       });
     }
+  });
+
+  // The hook consumer's suspension signal carries the generation guard (see
+  // `scheduleWorkflowSuspension`), which is what lets the runtime resume a
+  // retained VM over the `hook_created` (or `hook_conflict`) it just committed
+  // instead of re-invoking. Without it, a signal armed at the boundary the
+  // resume moved past would raise a suspension the workflow never reached —
+  // carrying none of the work the resume kicked off, leaving the run dormant.
+  it('drops a suspension signal armed for a boundary the run has moved past', async () => {
+    const ctx = setupWorkflowContext([]);
+    const errors: Error[] = [];
+    ctx.onWorkflowError = (error) => {
+      errors.push(error);
+    };
+    // Hold the idle gate so the signal is armed but cannot fire yet — the
+    // window a resume lands in.
+    ctx.pendingDeliveries = 1;
+
+    const hook = createCreateHook(ctx)({ token: 'stale-signal' });
+    void hook.getConflict();
+    await settleTimers();
+    expect(errors).toHaveLength(0);
+
+    // What the runtime does when it resumes the parked VM.
+    ctx.suspensionGeneration++;
+    ctx.pendingDeliveries = 0;
+    await settleTimers();
+
+    expect(errors).toHaveLength(0);
+  });
+
+  it('still signals when the run has not moved past the boundary', async () => {
+    // The control for the test above: the same held-then-released signal
+    // reaches the runtime when the generation has not moved, so the guard
+    // cannot be swallowing signals that are still wanted.
+    const ctx = setupWorkflowContext([]);
+    const errors: Error[] = [];
+    ctx.onWorkflowError = (error) => {
+      errors.push(error);
+    };
+    ctx.pendingDeliveries = 1;
+
+    const hook = createCreateHook(ctx)({ token: 'live-signal' });
+    void hook.getConflict();
+    await settleTimers();
+    expect(errors).toHaveLength(0);
+
+    ctx.pendingDeliveries = 0;
+    await settleTimers();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(WorkflowSuspension);
   });
 
   it('should resolve getConflict with the conflicting run when hook_conflict event is received', async () => {
@@ -1270,7 +1329,7 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
 
     expect(() => createHook({ token: '' })).toThrow(
-      '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a randomly generated one.'
+      '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a generated one.'
     );
 
     // The rejected hook must not be registered in the invocations queue.
@@ -1296,7 +1355,7 @@ describe('createCreateHook', () => {
 describe('createWebhook', () => {
   it('should throw when a token option is passed', () => {
     expect(() => (createWebhook as any)({ token: 'anything' })).toThrow(
-      '`createWebhook()` does not accept a `token` option. Webhook tokens are always randomly generated. Use `createHook()` with `resumeHook()` for deterministic token patterns.'
+      '`createWebhook()` does not accept a `token` option. Webhook tokens are always generated for you. Use `createHook()` with `resumeHook()` for deterministic token patterns.'
     );
   });
 });

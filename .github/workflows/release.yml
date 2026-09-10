@@ -41,40 +41,57 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
-
+      # Keep setup-node because registry-url configures npm publishing. pnpm/setup
+      # handles the pnpm store cache after Node.js is available.
       - name: Setup Node.js 24.x
         uses: actions/setup-node@v4
         with:
           node-version: 24.x
-          cache: "pnpm"
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Setup pnpm
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
+        with:
+          install: true
+          require-lockfile: true
+          cache: true
 
       - name: Check package release major
         run: node .github/scripts/check-release-major.js "$RELEASE_VERSION"
 
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
-
+      # changesets/action v2 pairs with @changesets/cli v3 (it refuses a v2
+      # CLI). It pushes the release commit and tags through the GitHub API by
+      # default, so they are signed with GitHub's key as the branch rules
+      # require; there is no `commitMode` input any more. It learns what the
+      # publish script published from an NDJSON file it names in
+      # `CHANGESETS_OUTPUT`, which `pnpm ci:publish` inherits and passes on to
+      # `changeset publish`; without it the action sees nothing published and
+      # skips the release. Note the output is `published-packages`, not
+      # `publishedPackages`.
       - name: Create Release Pull Request or Publish to npm
         id: changesets
-        uses: changesets/action@63a615b9cd06ba9a3e6d13796c7fbcb080a60a0b # v1.8.0
+        uses: changesets/action@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
         with:
-          version: pnpm ci:version
-          publish: pnpm ci:publish
-          createGithubReleases: false
-          setupGitUser: false
-          # Use GitHub API for GPG-signed commits (required by branch rules).
-          commitMode: github-api
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          version-script: pnpm ci:version
+          publish-script: pnpm ci:publish
+          create-github-releases: false
+
+      # `changeset publish` runs one `pnpm publish` per package and one failure
+      # leaves the release half-shipped, with `workflow` possibly pointing at a
+      # `@workflow/core` that is not on npm yet. 5.0.0-beta.48 shipped 7 of 21
+      # packages on its first attempt, and the failure that stopped it crashed
+      # the publish loop before naming the packages it took down. Cross-check
+      # every publishable manifest on this commit against the registry, whatever
+      # the publish step's outcome, so the job says exactly what is missing.
+      - name: Verify every package version on this commit is on npm
+        if: ${{ always() && steps.changesets.outcome != 'skipped' && steps.changesets.outcome != 'cancelled' }}
+        run: node scripts/check-published.mjs
 
       - name: Create GitHub Release
         if: steps.changesets.outputs.published == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.published-packages }}
         run: |
           # Generate release notes (PUBLISHED_PACKAGES filters to only include packages from this release)
           RELEASE_JSON=$(node scripts/generate-release-notes.mjs)
@@ -109,12 +126,17 @@ jobs:
               --prerelease=$PRERELEASE
           fi
 
+      # A broken Slack token must not turn a successful release red: the Aug 26
+      # and Aug 31 releases published every package and still failed here
+      # (`token_expired`, then `invalid_auth`), which taught people to read a
+      # red Release job as noise. Surface it as a warning instead.
       - name: Post release notes to Slack
         if: steps.changesets.outputs.published == 'true'
+        continue-on-error: true
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_RELEASE_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
-          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.published-packages }}
         run: |
           if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_RELEASE_CHANNEL_ID" ]; then
             echo "Missing Slack secrets: SLACK_BOT_TOKEN and/or SLACK_RELEASE_CHANNEL_ID"

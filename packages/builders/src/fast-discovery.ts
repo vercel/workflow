@@ -65,7 +65,7 @@ interface FastDiscoverEntriesOptions {
   /**
    * Whether workflow discovery descends into `node_modules`. When `false`,
    * imports from application code that resolve into `node_modules` are not
-   * followed, so no dependency file is read, scanned, or registered — third
+   * followed, so no dependency file is read, scanned, or registered: third
    * party workflow/step/serde code is neither transformed nor bundled. Imports
    * *within* `node_modules` are still followed, so the SDK's own seeded runtime
    * serde entry keeps discovering its transitive classes. Defaults to `true`.

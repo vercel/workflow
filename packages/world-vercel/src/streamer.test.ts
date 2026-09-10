@@ -1,5 +1,22 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  StreamError,
+  StreamExpiredError,
+  ThrottleError,
+} from '@workflow/errors';
+import { NODE_HTTP_ENV_VAR } from '@workflow/world';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeMultiChunks, MAX_CHUNKS_PER_REQUEST } from './streamer.js';
+
+// Every request-issuing test in this file observes the streamer through a
+// stubbed `fetch`. The node:http path does not call `fetch`, so the flag is
+// pinned off for all of them.
+beforeEach(() => {
+  vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('encodeMultiChunks', () => {
   /**
@@ -174,6 +191,7 @@ describe('encodeMultiChunks', () => {
 // makes the intent clear. The encodeMultiChunks tests above are pure
 // functions and are unaffected.
 vi.mock('./utils.js', () => ({
+  makeRequest: vi.fn(),
   getHttpConfig: vi.fn().mockResolvedValue({
     baseUrl: 'https://test.example.com',
     headers: new Headers(),
@@ -207,6 +225,60 @@ describe('streams.get', () => {
     expect(url.pathname).toBe('/v3/runs/run-123/stream/my-stream');
   });
 
+  it('throws a typed terminal error with the retention details on 410', async () => {
+    const expiredAt = '2026-08-10T14:40:00.000Z';
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      Response.json(
+        {
+          success: false,
+          error: 'stream-expired',
+          message: 'The stream reached its storage retention limit',
+          details: {
+            runId: 'wrun_test',
+            streamId: 'stream-test',
+            expiredAt,
+          },
+        },
+        { status: 410 }
+      )
+    );
+
+    const streamer = await getStreamer();
+    const error = await streamer.streams
+      .get('wrun_test', 'stream-test')
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(StreamExpiredError);
+    expect(error).toMatchObject({
+      message: 'The stream reached its storage retention limit',
+      runId: 'wrun_test',
+      streamId: 'stream-test',
+      expiredAt: new Date(expiredAt),
+      status: 410,
+      code: 'stream-expired',
+    });
+    const request = vi.mocked(globalThis.fetch).mock.calls[0];
+    const headers = (request[1] as RequestInit).headers as Headers;
+    expect(headers.get('Accept')).toBe('application/json');
+  });
+
+  it('falls back safely for non-stream-expired errors', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      Response.json(
+        { error: 'run-expired', message: 'Run is unavailable' },
+        { status: 410 }
+      )
+    );
+
+    const streamer = await getStreamer();
+    await expect(
+      streamer.streams.get('wrun_test', 'stream-test')
+    ).rejects.toThrow('Run is unavailable');
+    await expect(
+      streamer.streams.get('wrun_test', 'stream-test')
+    ).rejects.not.toBeInstanceOf(StreamExpiredError);
+  });
+
   it('passes startIndex as a query parameter on the v3 read', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
@@ -220,6 +292,22 @@ describe('streams.get', () => {
     const url = new URL(fetchSpy.mock.calls[0][0] as string);
     expect(url.pathname).toBe('/v3/runs/run-123/stream/my-stream');
     expect(url.searchParams.get('startIndex')).toBe('5');
+  });
+});
+
+describe('stream snapshot errors', () => {
+  it('preserves typed World errors from snapshot requests', async () => {
+    const { makeRequest } = await import('./utils.js');
+    const throttled = new ThrottleError('rate limited', { retryAfter: 5 });
+    vi.mocked(makeRequest).mockRejectedValueOnce(throttled);
+    const { createStreamer } = await import('./streamer.js');
+
+    const error = await createStreamer()
+      .streams.getInfo('wrun_test', 'stream-test')
+      .catch((cause: unknown) => cause);
+
+    expect(error).toBe(throttled);
+    expect(error).toMatchObject({ name: 'ThrottleError', retryAfter: 5 });
   });
 });
 
@@ -247,9 +335,14 @@ describe('streams.write error diagnostics', () => {
 
     const streamer = await getStreamer();
 
-    await expect(
-      streamer.streams.write('wrun_test', 'user', 'chunk')
-    ).rejects.toThrow(
+    const error = await streamer.streams
+      .write('wrun_test', 'user', 'chunk')
+      .catch((cause: unknown) => cause);
+
+    expect(StreamError.is(error)).toBe(true);
+    expect(error).toMatchObject({ status: 500, code: 'STREAM_ERROR' });
+    expect(error).toHaveProperty(
+      'message',
       'Stream write failed: HTTP 500 (PUT https://test.example.com/v2/runs/wrun_test/stream/user; x-vercel-id=sfo1::abc; x-vercel-error=FUNCTION_INVOCATION_FAILED): Internal Server Error\nrequest-token'
     );
   });

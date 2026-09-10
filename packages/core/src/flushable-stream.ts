@@ -1,6 +1,6 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
-import { envNumber } from '@workflow/world';
+import { envNumber } from '@workflow/world/env-config';
 import { STREAM_DRAIN_SYMBOL } from './symbols.js';
 
 /**
@@ -20,7 +20,7 @@ type DrainBarrier = () => Promise<void>;
  * This is deliberately distinct from the per-request batch caps below: this
  * bounds how much is *buffered*, those bound how much goes out in one
  * `writeMulti`. Raising this must never let a single request exceed a wire
- * limit — batch sizing enforces that independently.
+ * limit, since batch sizing enforces that independently.
  */
 export const MAX_INFLIGHT_CHUNKS = 1000;
 
@@ -46,7 +46,7 @@ export const getMaxChunksPerBatch = (): number =>
 
 /**
  * Wire limit: maximum cumulative bytes in a single coalesced `writeMulti`.
- * Chunk *count* alone is not enough — 1,000 small chunks are ~100KB but 1,000
+ * Chunk *count* alone is not enough: 1,000 small chunks are ~100KB but 1,000
  * file-sized chunks can be hundreds of MB, which platform request-body limits
  * reject long before the count cap matters. A batch is split once adding the
  * next chunk would exceed this (a single chunk larger than the cap still goes
@@ -61,7 +61,7 @@ export const getMaxBytesPerBatch = (): number =>
   });
 
 /**
- * Buffer bound (bytes) for the server writable's group-commit buffer — the
+ * Buffer bound (bytes) for the server writable's group-commit buffer, the
  * byte-denominated counterpart of {@link MAX_INFLIGHT_CHUNKS}. `write()`
  * blocks once this much data is buffered-but-not-durable, so a fast producer
  * of large chunks can't grow client memory without bound. Default 8 MiB
@@ -88,7 +88,7 @@ export const getMaxBufferedBytes = (): number =>
  * after each step body returns, so a coarser interval (the previous 100ms)
  * adds visible per-step latency to streaming workflows. With a uniformly
  * distributed offset between step return and the next tick, the expected
- * wait is half the interval — so 10ms means ~5ms average wait per step
+ * wait is half the interval, so 10ms means ~5ms average wait per step
  * instead of ~50ms. The per-tick work is `writable.locked` plus a
  * `getWriter()`/`releaseLock()` probe, both microsecond-scale; 10× more
  * ticks during a stream's lifetime is not measurable in practice.
@@ -213,8 +213,8 @@ function isReadableUnlockedNotClosed(readable: ReadableStream): boolean {
  *
  * Lock release means the producer is done *writing*; with a group-commit
  * sink, accepted chunks may still be client-buffered or in a request that is
- * in flight. Awaiting the barrier here keeps the completion's meaning —
- * "everything written so far is durable" — identical to the pre-batching
+ * in flight. Awaiting the barrier here keeps the completion's meaning
+ * ("everything written so far is durable") identical to the pre-batching
  * behavior where each write() was individually durable.
  */
 function resolveAfterDrain(state: FlushableStreamState): void {
@@ -324,7 +324,7 @@ export function flushablePipe(
   state: FlushableStreamState
 ): Promise<void> {
   // Batching lives in the sink (`WorkflowServerWritableStream` group-commits
-  // its buffer), so this pipe is a plain per-chunk pump regardless of path —
+  // its buffer), so this pipe is a plain per-chunk pump regardless of path:
   // its only responsibilities are lock-release completion and durability
   // tracking. Group-commit sinks ack write() on buffer entry; adopt their
   // durability barrier so the lock-release completion still means
@@ -363,8 +363,8 @@ async function flushablePipePerChunk(
         return;
       }
 
-      // Read from source - don't count as pending op since we're just waiting for data
-      // The important ops are writes to the sink (server)
+      // Read from the source. Don't count this as a pending operation because
+      // reads wait for data. The important operations are writes to the sink.
       const readResult = await Promise.race([
         reader.read(),
         writer.closed.then(() => {
@@ -405,7 +405,7 @@ async function flushablePipePerChunk(
     // that accepted prefix before settling the failure: once the state
     // rejects, the step may persist its failure and the invocation finish,
     // and anything still client-side would be lost. The original pipe error
-    // stays primary — a drain failure is already sticky on the sink.
+    // stays primary, since a drain failure is already sticky on the sink.
     if (state.drainBarrier) {
       await state.drainBarrier().catch(() => {});
     }
@@ -422,7 +422,7 @@ async function flushablePipePerChunk(
   } finally {
     // Cancel the upstream reader so the source knows to stop generating data.
     // Uses cancelReason (set in the catch block) so the source receives context
-    // about why it was cancelled. On normal completion cancelReason is undefined,
+    // about why it was canceled. On normal completion cancelReason is undefined,
     // which is a harmless no-op on an already-done reader.
     reader.cancel(cancelReason).catch(() => {});
     reader.releaseLock();

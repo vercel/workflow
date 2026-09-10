@@ -7,6 +7,7 @@
  */
 
 import type {
+  BulkCancelWorkflowRunsResult,
   Event,
   Hook,
   Step,
@@ -83,18 +84,6 @@ export async function fetchRun(
   resolveData: 'none' | 'all' = 'all'
 ): Promise<ServerActionResult<WorkflowRun>> {
   return rpc('fetchRun', { worldEnv, runId, resolveData });
-}
-
-export async function fetchSteps(
-  worldEnv: EnvMap,
-  runId: string,
-  params: {
-    cursor?: string;
-    sortOrder?: 'asc' | 'desc';
-    limit?: number;
-  }
-): Promise<ServerActionResult<PaginatedResult<Step>>> {
-  return rpc('fetchSteps', { worldEnv, runId, params });
 }
 
 export async function fetchStep(
@@ -180,6 +169,13 @@ export async function cancelRun(
   runId: string
 ): Promise<ServerActionResult<void>> {
   return rpc('cancelRun', { worldEnv, runId });
+}
+
+export async function bulkCancelRuns(
+  worldEnv: EnvMap,
+  runIds: string[]
+): Promise<ServerActionResult<BulkCancelWorkflowRunsResult>> {
+  return rpc('bulkCancelRuns', { worldEnv, runIds });
 }
 
 export async function recreateRun(

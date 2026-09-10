@@ -10,6 +10,10 @@ export {
   stepEventsToStepEntity,
   waitEventsToWaitEntity,
 } from './components/workflow-traces/trace-span-construction';
+export {
+  DUPLICATE_EVENT_MESSAGE,
+  findDuplicateEventIds,
+} from './lib/duplicate-events';
 export type { EventAnalysis } from './lib/event-analysis';
 export {
   analyzeEvents,
@@ -55,6 +59,10 @@ export {
   STREAM_REF_TYPE,
   truncateId,
 } from './lib/hydration';
+export {
+  isSealedNoopEvent,
+  SEALED_EVENT_MESSAGE,
+} from './lib/sealed-events';
 export type { DecodedStreamChunkSource } from './lib/stream-display';
 export type { ToastAdapter } from './lib/toast';
 export { ToastProvider, useToast } from './lib/toast';

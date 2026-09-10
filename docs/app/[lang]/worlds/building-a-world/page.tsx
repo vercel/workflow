@@ -1,13 +1,13 @@
 import type { Metadata } from 'next';
 import {
-  BuildingAWorldPage,
-  generateBuildingAWorldMetadata,
-} from '@/components/worlds/building-a-world-page';
+  generateWorldsGuideMetadata,
+  WorldsGuidePage,
+} from '@/components/worlds/worlds-guide-page';
 
 export function generateMetadata(): Promise<Metadata> {
-  return generateBuildingAWorldMetadata('v4');
+  return generateWorldsGuideMetadata('building-a-world', 'v4');
 }
 
 export default function Page() {
-  return <BuildingAWorldPage version="v4" />;
+  return <WorldsGuidePage slug="building-a-world" version="v4" />;
 }

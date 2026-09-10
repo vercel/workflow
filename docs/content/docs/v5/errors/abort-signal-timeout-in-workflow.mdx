@@ -17,21 +17,21 @@ related:
 
 ## Error
 
-```
+```text
 AbortSignal.timeout() is not supported in workflow functions.
 Use sleep() with an AbortController instead.
 ```
 
-## Why This Happens
+## Why this happens
 
-`AbortSignal.timeout()` creates a signal that aborts after a real-time delay using an internal timer. Workflow functions must be [deterministic](/docs/foundations/workflows-and-steps) to support replay — they run the same code multiple times during the workflow's lifecycle, using the [event log](/docs/how-it-works/event-sourcing) to resume execution to the correct point.
+`AbortSignal.timeout()` creates a signal that aborts after a real-time delay using an internal timer. Workflow functions must be [deterministic](/docs/foundations/workflows-and-steps) to support replay: they run the same code multiple times during the workflow's lifecycle, using the [event log](/docs/how-it-works/event-sourcing) to resume execution to the correct point.
 
 Real-time timers break this determinism because:
-- On the first execution, the timer might fire after 10 seconds
-- On replay, the timer would fire again, but the event log may have already advanced past that point
-- The timer's behavior depends on wall-clock time, which varies between executions
+- On the first execution, the timer might fire after 10 seconds.
+- On replay, the timer would fire again, but the event log may have already advanced past that point.
+- The timer's behavior depends on wall-clock time, which varies between executions.
 
-## How to Fix
+## How to fix
 
 Use [`sleep()`](/docs/api-reference/workflow/sleep) with an `AbortController` to create a deterministic timeout that cancels in-flight work:
 
@@ -70,7 +70,7 @@ async function fetchData(signal: AbortSignal) {
 }
 ```
 
-The `sleep()` + `AbortController` pattern is the durable equivalent of `AbortSignal.timeout()`. The sleep is recorded in the event log, so it replays deterministically. If `fetchData` finishes within 10 seconds you get the response; if not, the timer fires `controller.abort()`, `fetch` rejects with an `AbortError`, and the step's failure propagates to the workflow as a `FatalError` (no retries — abort is intentional cancellation).
+The `sleep()` and `AbortController` pattern is the durable equivalent of `AbortSignal.timeout()`. The sleep is recorded in the event log, so it replays deterministically. If `fetchData` finishes within 10 seconds, you get the response. Otherwise, the timer calls `controller.abort()`, `fetch` rejects with an `AbortError`, and the step's failure propagates to the workflow as a `FatalError` (no retries because the abort is intentional cancellation).
 
 <Callout type="info">
 `AbortSignal.timeout()` works normally inside step functions, since steps have full Node.js runtime access and are not replayed.
@@ -78,7 +78,7 @@ The `sleep()` + `AbortController` pattern is the durable equivalent of `AbortSig
 
 ## Related
 
-- [Cancellation](/docs/foundations/cancellation) — Patterns for cancelling in-flight work
-- [`sleep()` API Reference](/docs/api-reference/workflow/sleep) — Durable sleep primitive
-- [Workflows and Steps](/docs/foundations/workflows-and-steps) — Why workflow functions must be deterministic
-- [`setTimeout` in Workflow](/docs/errors/timeout-in-workflow) — Similar restriction on `setTimeout`
+- [Cancellation](/docs/foundations/cancellation): Patterns for canceling in-flight work
+- [`sleep()` API Reference](/docs/api-reference/workflow/sleep): Durable sleep primitive
+- [Workflows and Steps](/docs/foundations/workflows-and-steps): Why workflow functions must be deterministic
+- [`setTimeout` in Workflow](/docs/errors/timeout-in-workflow): Similar restriction on `setTimeout`

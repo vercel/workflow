@@ -6,11 +6,11 @@ import type {
   Step,
   WorkflowRun,
 } from '@workflow/world';
-import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { eventIdToSlot, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { eq } from 'drizzle-orm';
 import { Pool } from 'pg';
-import { decodeTime, ulid } from 'ulid';
+import { ulid } from 'ulid';
 import {
   afterAll,
   afterEach,
@@ -142,7 +142,7 @@ describe('Storage (Postgres integration)', () => {
 
   async function truncateTables() {
     await pool.query(
-      'TRUNCATE TABLE workflow.workflow_events, workflow.workflow_steps, workflow.workflow_hooks, workflow.workflow_runs RESTART IDENTITY CASCADE'
+      'TRUNCATE TABLE workflow.workflow_events, workflow.workflow_event_slots, workflow.workflow_steps, workflow.workflow_hooks, workflow.workflow_runs RESTART IDENTITY CASCADE'
     );
   }
 
@@ -173,9 +173,7 @@ describe('Storage (Postgres integration)', () => {
     await truncateTables();
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
+  afterEach(() => vi.unstubAllEnvs());
 
   afterAll(async () => {
     await pool.end();
@@ -373,6 +371,14 @@ describe('Storage (Postgres integration)', () => {
         const updated = await updateRun(events, created.runId, 'run_started');
         expect(updated.status).toBe('running');
         expect(updated.startedAt).toBeInstanceOf(Date);
+      });
+
+      it('should reject run_started on a non-existent run', async () => {
+        await expect(
+          events.create('wrun_nonexistent', {
+            eventType: 'run_started',
+          })
+        ).rejects.toMatchObject({ name: 'WorkflowRunNotFoundError' });
       });
 
       it('should update run status to completed via run_completed event', async () => {
@@ -808,7 +814,7 @@ describe('Storage (Postgres integration)', () => {
         expect(updated.attempt).toBe(1); // Incremented by step_started
       });
 
-      it('allocates the step_started event id after the guarded step update', async () => {
+      it('allocates the step_started slot after the guarded step update', async () => {
         const stepId = 'step-start-lock';
         await createStep(events, testRunId, {
           stepId,
@@ -821,6 +827,14 @@ describe('Storage (Postgres integration)', () => {
           max: 1,
         });
         const client = await lockPool.connect();
+        // The suite's own pool is `max: 1`, so the parked step_started holds
+        // it for the duration. The overtaking writer needs a connection of
+        // its own, which is also the shape being tested: two processes.
+        const otherPool = new Pool({
+          connectionString: container.getConnectionUri(),
+          max: 1,
+        });
+        const otherEvents = createEventsStorage(createClient(otherPool));
 
         try {
           await client.query('BEGIN');
@@ -835,19 +849,31 @@ describe('Storage (Postgres integration)', () => {
           });
 
           await new Promise((resolve) => setTimeout(resolve, 50));
-          const releasedAt = Date.now();
+          // Written while step_started is still parked on the step row lock.
+          // A writer that drew its slot on entry would already hold a lower
+          // one than this; drawing after the lock puts it above.
+          const overtaking = await otherEvents.create(testRunId, {
+            eventType: 'step_created',
+            correlationId: 'step-start-lock-overtaker',
+            eventData: { stepName: 'test-step', input: new Uint8Array([1]) },
+          });
           await client.query('COMMIT');
 
           const result = await started;
-          if (!result.event) {
-            throw new Error('Expected step_started event');
+          if (!result.event || !overtaking.event) {
+            throw new Error('Expected both events');
           }
-          expect(
-            decodeTime(result.event.eventId.slice('wevt_'.length))
-          ).toBeGreaterThanOrEqual(releasedAt);
+          const startedSlot = eventIdToSlot(result.event.eventId);
+          const overtakingSlot = eventIdToSlot(overtaking.event.eventId);
+          expect(startedSlot).not.toBeNull();
+          expect(overtakingSlot).not.toBeNull();
+          expect(startedSlot as number).toBeGreaterThan(
+            overtakingSlot as number
+          );
         } finally {
           client.release();
           await lockPool.end();
+          await otherPool.end();
         }
       });
 
@@ -1115,7 +1141,7 @@ describe('Storage (Postgres integration)', () => {
         const result = await events.create(testRunId, eventData);
 
         expect(result.event.runId).toBe(testRunId);
-        expect(result.event.eventId).toMatch(/^wevt_/);
+        expect(result.event.eventId).toMatch(/^evnt_0{10}/);
         expect(result.event.eventType).toBe('step_started');
         expect(result.event.correlationId).toBe('corr_123');
         expect(result.event.createdAt).toBeInstanceOf(Date);
@@ -1140,7 +1166,7 @@ describe('Storage (Postgres integration)', () => {
         });
 
         expect(result.event.runId).toBe(testRunId);
-        expect(result.event.eventId).toMatch(/^wevt_/);
+        expect(result.event.eventId).toMatch(/^evnt_0{10}/);
         expect(result.event.eventType).toBe('step_failed');
         expect(result.event.correlationId).toBe('corr_123_null');
         expect(result.event.createdAt).toBeInstanceOf(Date);
@@ -1156,6 +1182,16 @@ describe('Storage (Postgres integration)', () => {
 
         expect(result.event.eventType).toBe('run_completed');
         expect(result.event.correlationId).toBeUndefined();
+      });
+
+      it('skips the run_started preload when requested', async () => {
+        const result = await events.create(
+          testRunId,
+          { eventType: 'run_started' },
+          { skipPreload: true }
+        );
+
+        expect(result.events).toBeUndefined();
       });
     });
 
@@ -1268,6 +1304,58 @@ describe('Storage (Postgres integration)', () => {
 
         expect(page2.data).toHaveLength(2);
         expect(page2.data[0].eventId).not.toBe(page1.data[0].eventId);
+      });
+
+      it('returns all remaining events when no limit is set', async () => {
+        await events.create(testRunId, {
+          eventType: 'run_started',
+        });
+
+        const result = await events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc' },
+        });
+
+        expect(result.data).toHaveLength(2);
+        expect(result.hasMore).toBe(false);
+      });
+
+      it('returns all events across internal query pages', async () => {
+        await drizzle.insert(DrizzleSchema.events).values(
+          Array.from({ length: 500 }, () => ({
+            eventId: `wevt_${ulid()}`,
+            eventType: 'run_started' as const,
+            runId: testRunId,
+          }))
+        );
+
+        const result = await events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc' },
+        });
+
+        expect(result.data).toHaveLength(501);
+        expect(result.hasMore).toBe(false);
+      });
+
+      it('returns a continuation at the configured event ceiling', async () => {
+        await events.create(testRunId, {
+          eventType: 'run_started',
+        });
+        vi.stubEnv('WORKFLOW_MAX_EVENTS', '1');
+
+        const first = await events.list({
+          runId: testRunId,
+        });
+        expect(first.data).toHaveLength(1);
+        expect(first.hasMore).toBe(true);
+
+        const second = await events.list({
+          runId: testRunId,
+          pagination: { cursor: first.cursor ?? undefined },
+        });
+        expect(second.data).toHaveLength(1);
+        expect(second.hasMore).toBe(false);
       });
     });
 
@@ -1744,6 +1832,243 @@ describe('Storage (Postgres integration)', () => {
     });
   });
 
+  describe('slot event ids', () => {
+    let testRunId: string;
+    beforeEach(async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      testRunId = run.runId;
+    });
+
+    it('numbers a run densely from the first slot', async () => {
+      await updateRun(events, testRunId, 'run_started');
+
+      const result = await events.list({
+        runId: testRunId,
+        pagination: { sortOrder: 'asc' },
+      });
+
+      expect(result.data.map((e) => eventIdToSlot(e.eventId))).toEqual([1, 2]);
+    });
+
+    it('gives concurrent writers distinct, dense slots', async () => {
+      const writers = 8;
+      // The suite's own pool is `max: 1`, which would serialize these writes
+      // and defeat the point. Give each writer a connection so they actually
+      // contend for the same slot.
+      const racePool = new Pool({
+        connectionString: container.getConnectionUri(),
+        max: writers,
+      });
+      const raceEvents = createEventsStorage(createClient(racePool));
+
+      try {
+        await Promise.all(
+          Array.from({ length: writers }, (_, i) =>
+            raceEvents.create(testRunId, {
+              eventType: 'step_created',
+              correlationId: `slot-step-${i}`,
+              eventData: {
+                stepName: 'test-step',
+                input: new Uint8Array([i]),
+              },
+            })
+          )
+        );
+      } finally {
+        await racePool.end();
+      }
+
+      const result = await events.list({
+        runId: testRunId,
+        pagination: { sortOrder: 'asc' },
+      });
+      const slots = result.data
+        .map((e) => eventIdToSlot(e.eventId))
+        .sort((a, b) => (a ?? 0) - (b ?? 0));
+
+      // run_created holds slot 1 and the racing writers take the rest: no
+      // duplicate (the composite primary key rejects the loser, which retries)
+      // and no hole (nothing reserves a slot it does not then use), whatever
+      // order they happen to land in.
+      expect(slots).toEqual(
+        Array.from({ length: writers + 1 }, (_, i) => i + 1)
+      );
+    });
+
+    it('leaves no hole behind writes that are rejected', async () => {
+      const writers = 8;
+      const racePool = new Pool({
+        connectionString: container.getConnectionUri(),
+        max: writers,
+      });
+      const raceEvents = createEventsStorage(createClient(racePool));
+
+      // Every writer claims the same correlation id, so exactly one
+      // step_created survives the entity-creation unique index and the rest
+      // are rejected with EntityConflictError. A slot handed out before the
+      // insert lands would be burned by each of those rejections, and a burned
+      // slot is a permanent hole: allocation only moves forward.
+      try {
+        const results = await Promise.allSettled(
+          Array.from({ length: writers }, () =>
+            raceEvents.create(testRunId, {
+              eventType: 'step_created',
+              correlationId: 'slot-contended-step',
+              eventData: {
+                stepName: 'test-step',
+                input: new Uint8Array([1]),
+              },
+            })
+          )
+        );
+        expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      } finally {
+        await racePool.end();
+      }
+
+      // The next write is what exposes a burned slot: it lands right behind
+      // the winner if no rejection consumed a position, and `writers - 1`
+      // past it if every rejection did.
+      await events.create(testRunId, {
+        eventType: 'step_created',
+        correlationId: 'slot-after-contention',
+        eventData: { stepName: 'test-step', input: new Uint8Array([1]) },
+      });
+
+      const result = await events.list({
+        runId: testRunId,
+        pagination: { sortOrder: 'asc' },
+      });
+      const slots = result.data
+        .map((e) => eventIdToSlot(e.eventId))
+        .sort((a, b) => (a ?? 0) - (b ?? 0));
+
+      // run_created, the one step_created that won, and the write after it.
+      expect(slots).toEqual([1, 2, 3]);
+    });
+
+    it('hands back the events occupying the slots a write skipped', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      // What a writer that loaded the log right after run_started would report.
+      const stale = 2;
+
+      for (let i = 0; i < 3; i++) {
+        await events.create(testRunId, {
+          eventType: 'step_created',
+          correlationId: `skipped-step-${i}`,
+          eventData: { stepName: 'test-step', input: new Uint8Array([i]) },
+        });
+      }
+
+      const result = await events.create(
+        testRunId,
+        {
+          eventType: 'wait_created',
+          correlationId: 'skipped-wait',
+          eventData: { resumeAt: new Date('2099-01-01') },
+        },
+        { eventCount: stale }
+      );
+
+      expect(eventIdToSlot(result.event.eventId)).toBe(6);
+      expect(result.events?.map((e) => eventIdToSlot(e.eventId))).toEqual([
+        3, 4, 5,
+      ]);
+      expect(result.events?.map((e) => e.correlationId)).toEqual([
+        'skipped-step-0',
+        'skipped-step-1',
+        'skipped-step-2',
+      ]);
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('reports nothing when the write lands on the slot it asked for', async () => {
+      const result = await events.create(
+        testRunId,
+        {
+          eventType: 'step_created',
+          correlationId: 'unskipped-step',
+          eventData: { stepName: 'test-step', input: new Uint8Array() },
+        },
+        { eventCount: 1 }
+      );
+
+      expect(eventIdToSlot(result.event.eventId)).toBe(2);
+      expect(result.events).toBeUndefined();
+    });
+
+    it('reports nothing when the writer sends no count', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      await events.create(testRunId, {
+        eventType: 'step_created',
+        correlationId: 'uncounted-step',
+        eventData: { stepName: 'test-step', input: new Uint8Array() },
+      });
+
+      const result = await events.create(testRunId, {
+        eventType: 'wait_created',
+        correlationId: 'uncounted-wait',
+        eventData: { resumeAt: new Date('2099-01-01') },
+      });
+
+      expect(result.events).toBeUndefined();
+    });
+
+    it('gives every racing writer the events it was decided without', async () => {
+      await updateRun(events, testRunId, 'run_started');
+      const stale = 2;
+      const writers = 8;
+      const racePool = new Pool({
+        connectionString: container.getConnectionUri(),
+        max: writers,
+      });
+      const raceEvents = createEventsStorage(createClient(racePool));
+
+      let results: Awaited<ReturnType<typeof raceEvents.create>>[];
+      try {
+        results = await Promise.all(
+          Array.from({ length: writers }, (_, i) =>
+            raceEvents.create(
+              testRunId,
+              {
+                eventType: 'step_created',
+                correlationId: `race-report-${i}`,
+                eventData: {
+                  stepName: 'test-step',
+                  input: new Uint8Array([i]),
+                },
+              },
+              { eventCount: stale }
+            )
+          )
+        );
+      } finally {
+        await racePool.end();
+      }
+
+      // Each writer's report covers only the slots between the one it asked
+      // for and the one it landed on. It can be short of that span: a writer
+      // holding a lower slot may not have committed its insert yet, which is
+      // what `hasMore` says.
+      for (const result of results) {
+        const landed = eventIdToSlot(result.event.eventId) as number;
+        const reported = result.events ?? [];
+        const span = landed - stale - 1;
+        expect(reported.length).toBeLessThanOrEqual(span);
+        expect(result.hasMore ?? false).toBe(reported.length < span);
+        for (const event of reported) {
+          const slot = eventIdToSlot(event.eventId) as number;
+          expect(slot).toBeGreaterThan(stale);
+          expect(slot).toBeLessThan(landed);
+        }
+      }
+    });
+  });
+
   describe('concurrent entity-creation races', () => {
     let testRunId: string;
     beforeEach(async () => {
@@ -1809,7 +2134,105 @@ describe('Storage (Postgres integration)', () => {
           stepName: 'test-step',
           input: new Uint8Array(),
         })
-      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+      ).rejects.toMatchObject({
+        name: 'EntityConflictError',
+        message: `step_created for correlationId "step_seq_dup" already exists in run "${testRunId}"`,
+      });
+    });
+
+    it('recovers an orphaned step row before a plain step_started event', async () => {
+      const stepId = 'step_orphan';
+      await drizzle.insert(DrizzleSchema.steps).values({
+        runId: testRunId,
+        stepId,
+        stepName: 'test-step',
+        input: new Uint8Array(),
+        status: 'pending',
+        attempt: 0,
+        specVersion: SPEC_VERSION_CURRENT,
+      });
+
+      const recovered = await createStep(events, testRunId, {
+        stepId,
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      expect(recovered.stepId).toBe(stepId);
+
+      await updateStep(events, testRunId, stepId, 'step_started');
+
+      const evts = await events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      expect(
+        evts.data
+          .filter((event) => event.correlationId === stepId)
+          .map((event) => event.eventType)
+      ).toEqual(['step_created', 'step_started']);
+    });
+
+    it('rolls back the step entity when the matching event insert fails', async () => {
+      await pool.query(`
+        CREATE FUNCTION workflow.reject_step_created_event_for_test()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          IF NEW.type = 'step_created'
+            AND NEW.correlation_id = 'step_partial_write'
+          THEN
+            RAISE EXCEPTION 'forced step_created event insert failure';
+          END IF;
+          RETURN NEW;
+        END;
+        $$;
+
+        CREATE TRIGGER reject_step_created_event_for_test
+        BEFORE INSERT ON workflow.workflow_events
+        FOR EACH ROW
+        EXECUTE FUNCTION workflow.reject_step_created_event_for_test();
+      `);
+
+      try {
+        await expect(
+          createStep(events, testRunId, {
+            stepId: 'step_partial_write',
+            stepName: 'test-step',
+            input: new Uint8Array(),
+          })
+        ).rejects.toMatchObject({
+          cause: {
+            message: expect.stringMatching(
+              /forced step_created event insert failure/
+            ),
+          },
+        });
+
+        const stepRows = await drizzle
+          .select({ stepId: DrizzleSchema.steps.stepId })
+          .from(DrizzleSchema.steps)
+          .where(eq(DrizzleSchema.steps.stepId, 'step_partial_write'));
+        expect(stepRows).toEqual([]);
+
+        const evts = await events.list({
+          runId: testRunId,
+          pagination: {},
+        });
+        expect(
+          evts.data.filter(
+            (event) =>
+              event.eventType === 'step_created' &&
+              event.correlationId === 'step_partial_write'
+          )
+        ).toHaveLength(0);
+      } finally {
+        await pool.query(`
+          DROP TRIGGER reject_step_created_event_for_test
+            ON workflow.workflow_events;
+          DROP FUNCTION workflow.reject_step_created_event_for_test();
+        `);
+      }
     });
 
     it('should reject duplicate correlated workflow attr_set events', async () => {
@@ -3255,6 +3678,177 @@ describe('Storage (Postgres integration)', () => {
         { result: new Uint8Array([1]) }
       );
       expect(result.status).toBe('completed');
+    });
+
+    // A resume racing its hook's disposal must never be journaled AFTER
+    // hook_disposed. Once that order is in the log, no replay of the owning run
+    // can consume the delivery — the run retired that hook's consumer at the
+    // disposal — so it strands, every replay reports divergence, and the run
+    // escalates to CorruptedEventLogError. See vercel/workflow#2781, which
+    // fixed the same ordering for world-local.
+    describe('hook_received vs. hook_disposed ordering (#2781)', () => {
+      const eventTypesFor = async (runId: string) => {
+        const listed = await events.list({ runId, pagination: {} });
+        return listed.data.map((event) => event.eventType);
+      };
+
+      it('rejects hook_received once the disposal has committed', async () => {
+        const hook = await createHook(events, testRunId, {
+          hookId: 'hook_order_after_dispose',
+          token: 'order-after-dispose',
+        });
+        await events.create(testRunId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: new Uint8Array([1]) },
+        });
+        await events.create(testRunId, {
+          eventType: 'hook_disposed',
+          correlationId: hook.hookId,
+        });
+
+        await expect(
+          events.create(testRunId, {
+            eventType: 'hook_received',
+            correlationId: hook.hookId,
+            eventData: { payload: new Uint8Array([2]) },
+          })
+        ).rejects.toMatchObject({ name: 'HookNotFoundError' });
+
+        // Asserted on the log, not only on the throw: a rejection that still
+        // journaled the row would leave the run corrupted exactly as before.
+        expect(await eventTypesFor(testRunId)).toEqual([
+          'run_created',
+          'hook_created',
+          'hook_received',
+          'hook_disposed',
+        ]);
+      });
+
+      it('rejects a resume that passed its unlocked check mid-disposal', async () => {
+        // The regression guard. The unlocked existence read near the top of
+        // `create` cannot see a disposal that commits after it, so what has to
+        // hold is the locked re-check inside hook_received's transaction.
+        //
+        // Forced deterministically: an outside transaction takes the hook's row
+        // lock (as the disposal's DELETE does) and holds it while the resume
+        // runs. With the re-check in place the resume blocks on that lock and,
+        // once the holder deletes and commits, observes the hook gone. Without
+        // it the resume never takes the lock and journals its hook_received
+        // while the hook is being deleted — the ordering this rejects.
+        //
+        // The holder needs its OWN pool: the suite's pool is `max: 1`, so
+        // sharing it would make the resume wait for a free connection instead of
+        // for the row lock, and the test would pass whether or not the re-check
+        // exists.
+        const hook = await createHook(events, testRunId, {
+          hookId: 'hook_order_mid_dispose',
+          token: 'order-mid-dispose',
+        });
+
+        const holderPool = new Pool({
+          connectionString: process.env.DATABASE_URL,
+          max: 1,
+        });
+        let signalLocked!: () => void;
+        const locked = new Promise<void>((resolve) => {
+          signalLocked = resolve;
+        });
+        let releaseHolder!: () => void;
+        const release = new Promise<void>((resolve) => {
+          releaseHolder = resolve;
+        });
+
+        try {
+          const holder = createClient(holderPool).transaction(async (tx) => {
+            await tx
+              .select({ hookId: DrizzleSchema.hooks.hookId })
+              .from(DrizzleSchema.hooks)
+              .where(eq(DrizzleSchema.hooks.hookId, hook.hookId))
+              .for('update')
+              .limit(1);
+            signalLocked();
+            await release;
+            await tx
+              .delete(DrizzleSchema.hooks)
+              .where(eq(DrizzleSchema.hooks.hookId, hook.hookId));
+          });
+
+          await locked;
+          const resume = events.create(testRunId, {
+            eventType: 'hook_received',
+            correlationId: hook.hookId,
+            eventData: { payload: new Uint8Array([1]) },
+          });
+          // Long enough for the resume to clear the unlocked check and reach the
+          // locked one, where it blocks until the holder commits.
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          releaseHolder();
+          await holder;
+
+          await expect(resume).rejects.toMatchObject({
+            name: 'HookNotFoundError',
+          });
+        } finally {
+          await holderPool.end();
+        }
+
+        expect(await eventTypesFor(testRunId)).toEqual([
+          'run_created',
+          'hook_created',
+        ]);
+      });
+
+      it('still accepts a hook_received while the hook is live', async () => {
+        // The lock must not reject an ordinary delivery: nothing holds the
+        // hook's row while it is alive, so the re-check finds it every time.
+        const hook = await createHook(events, testRunId, {
+          hookId: 'hook_order_live',
+          token: 'order-live',
+        });
+
+        const first = await events.create(testRunId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: new Uint8Array([1]) },
+        });
+        const second = await events.create(testRunId, {
+          eventType: 'hook_received',
+          correlationId: hook.hookId,
+          eventData: { payload: new Uint8Array([2]) },
+        });
+
+        expect(first.event.eventType).toBe('hook_received');
+        expect(second.event.eventType).toBe('hook_received');
+        expect(await eventTypesFor(testRunId)).toEqual([
+          'run_created',
+          'hook_created',
+          'hook_received',
+          'hook_received',
+        ]);
+      });
+
+      it('appends hook_disposed and deletes the hook together', async () => {
+        // The disposal's own half of the guard: the delete and the event are one
+        // transaction, so the log never holds a disposal whose hook survived,
+        // nor a deleted hook whose disposal is missing.
+        const hook = await createHook(events, testRunId, {
+          hookId: 'hook_order_atomic_dispose',
+          token: 'order-atomic-dispose',
+        });
+
+        const disposed = await events.create(testRunId, {
+          eventType: 'hook_disposed',
+          correlationId: hook.hookId,
+        });
+
+        expect(disposed.event.eventType).toBe('hook_disposed');
+        const rows = await drizzle
+          .select({ hookId: DrizzleSchema.hooks.hookId })
+          .from(DrizzleSchema.hooks)
+          .where(eq(DrizzleSchema.hooks.hookId, hook.hookId));
+        expect(rows).toHaveLength(0);
+      });
     });
 
     it('should reject hook_disposed before hook_created', async () => {

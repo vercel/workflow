@@ -161,6 +161,43 @@ describe('QueuePayloadSchema', () => {
       QueuePayloadSchema.parse({ runId: 'wrun_01ABC', stepId: 'step_1' })
     ).toEqual({ runId: 'wrun_01ABC', stepId: 'step_1' });
   });
+
+  // Resilient step dispatch: a step message may carry `stepInput` with the
+  // serialized (binary) step input, which the consumer re-ensures the
+  // step_created event from. The bytes must survive parsing untouched.
+  it('round-trips a step message carrying stepInput', () => {
+    const input = new Uint8Array([1, 2, 3]);
+    const parsed = QueuePayloadSchema.parse({
+      runId: 'wrun_01ABC',
+      stepId: 'step_1',
+      stepName: 'myStep',
+      stepInput: { input },
+    });
+    expect(parsed).toEqual({
+      runId: 'wrun_01ABC',
+      stepId: 'step_1',
+      stepName: 'myStep',
+      stepInput: { input },
+    });
+    expect((parsed as { stepInput: { input: unknown } }).stepInput.input).toBe(
+      input
+    );
+  });
+
+  // Producers only attach stepInput when the dehydrated input is binary and
+  // the queue transport preserves bytes (CBOR). A non-binary value means the
+  // payload was mangled in transit — fail the parse rather than letting it be
+  // written into a step_created as non-binary data.
+  it('rejects a stepInput whose input is not a Uint8Array', () => {
+    expect(
+      QueuePayloadSchema.safeParse({
+        runId: 'wrun_01ABC',
+        stepId: 'step_1',
+        stepName: 'myStep',
+        stepInput: { input: 'mangled-to-string' },
+      }).success
+    ).toBe(false);
+  });
 });
 
 describe('RunInputSchema environment', () => {

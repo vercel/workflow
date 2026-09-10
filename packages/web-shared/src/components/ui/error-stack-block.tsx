@@ -39,10 +39,10 @@ export function isStructuredErrorWithStack(
 /**
  * Pull a short, single-line title out of an error message.
  *
- * Workflow's structured error messages are multi-line — the first line is
+ * Workflow's structured error messages are multi-line: the first line is
  * the headline (`Failed to serialize step return value`) and the rest are
  * `╰▶ hint:` / `╰▶ docs:` framed details. The full message belongs in the
- * body of the error block; the title should just be the headline so the
+ * body of the error block; the title should be the headline so the
  * card stays scannable.
  */
 function deriveTitle(message: string): string {
@@ -94,7 +94,7 @@ export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
           <AlertCircle className="h-4 w-4 shrink-0" />
           <p
             className="text-label-12 font-semibold m-0 truncate"
-            // The full message or stack is in the body below; the header just
+            // The full message or stack is in the body below; the header
             // shows the first line, single-line, with overflow
             // ellipsised so a long title doesn't push the copy button or
             // wrap into the framed hint/docs lines.

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  bulkCancelRuns,
   cancelRun,
   recreateRun,
   reenqueueRun,
@@ -8,6 +9,7 @@ import {
 } from './workflow-actions';
 
 vi.mock('~/lib/rpc-client', () => ({
+  bulkCancelRuns: vi.fn(),
   cancelRun: vi.fn(),
   recreateRun: vi.fn(),
   reenqueueRun: vi.fn(),
@@ -43,6 +45,34 @@ describe('cancelRun', () => {
   it('throws with the server error message when cancellation fails', async () => {
     vi.mocked(rpc.cancelRun).mockReturnValue(fail('cancel failed'));
     await expect(cancelRun(env, 'run-1')).rejects.toThrow('cancel failed');
+  });
+});
+
+describe('bulkCancelRuns', () => {
+  it('returns the bulk cancel result on success', async () => {
+    const result = {
+      summary: {
+        requested: 2,
+        cancelled: 2,
+        alreadyCancelled: 0,
+        notCancellable: 0,
+        notFound: 0,
+        failed: 0,
+      },
+      results: [
+        { runId: 'r1', outcome: 'cancelled' as const },
+        { runId: 'r2', outcome: 'cancelled' as const },
+      ],
+    };
+    vi.mocked(rpc.bulkCancelRuns).mockReturnValue(ok(result));
+    await expect(bulkCancelRuns(env, ['r1', 'r2'])).resolves.toEqual(result);
+  });
+
+  it('throws with the server error message when the bulk call fails', async () => {
+    vi.mocked(rpc.bulkCancelRuns).mockReturnValue(fail('bulk cancel failed'));
+    await expect(bulkCancelRuns(env, ['r1'])).rejects.toThrow(
+      'bulk cancel failed'
+    );
   });
 });
 

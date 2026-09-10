@@ -4,7 +4,9 @@ import {
   FatalError,
   HookConflictError,
   RetryableError,
+  RUN_ERROR_CODES,
   RuntimeDecryptionError,
+  StreamError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -2310,6 +2312,37 @@ describe('workflow arguments', () => {
     } finally {
       (globalThis as any)[STABLE_ULID] = originalStableUlid;
     }
+  });
+
+  it('separates producer uploads from workflow readback pipes', async () => {
+    const request = new Request('https://example.com/webhook', {
+      method: 'POST',
+      body: 'webhook payload',
+      duplex: 'half',
+    } as RequestInit);
+    request[Symbol.for('WEBHOOK_RESPONSE_WRITABLE')] = new WritableStream();
+    const uploadOps: Promise<void>[] = [];
+    const readbackOps: Promise<void>[] = [];
+
+    await dehydrateStepReturnValue(
+      request,
+      mockRunId,
+      noEncryptionKey,
+      uploadOps,
+      globalThis,
+      false,
+      false,
+      false,
+      undefined,
+      readbackOps
+    );
+
+    // The request body is producer -> workflow and must finish before the
+    // event commit. The manual response writable is workflow -> producer and
+    // cannot finish until after the workflow has been woken.
+    expect(uploadOps).toHaveLength(1);
+    expect(readbackOps).toHaveLength(1);
+    await Promise.allSettled([...uploadOps, ...readbackOps]);
   });
 
   it('should throw error for an unsupported type', async () => {
@@ -4681,6 +4714,34 @@ describe('dehydrate/hydrateRunError', () => {
     // The underlying DOMException cause is preserved too.
     const cause = (hydrated as Error).cause as Error;
     expect(cause?.name).toBe('OperationError');
+  });
+
+  it('should round-trip StreamError as a catchable error type', async () => {
+    const original = new StreamError('stream write failed', {
+      cause: new Error('HTTP 500'),
+      status: 503,
+      url: 'https://workflow.example/stream',
+    });
+    const serialized = await dehydrateRunError(
+      original,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateRunError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as StreamError;
+
+    expect(StreamError.is(hydrated)).toBe(true);
+    expect(hydrated).toBeInstanceOf(StreamError);
+    expect(hydrated).toMatchObject({
+      message: 'stream write failed',
+      status: 503,
+      url: 'https://workflow.example/stream',
+      code: RUN_ERROR_CODES.STREAM_ERROR,
+    });
+    expect((hydrated.cause as Error).message).toBe('HTTP 500');
   });
 
   it('should produce DEVALUE_V1-prefixed binary output', async () => {

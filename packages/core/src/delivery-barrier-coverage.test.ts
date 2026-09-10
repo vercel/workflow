@@ -20,7 +20,11 @@
  *     its barrier. They then skipped both the gate and
  *     `awaitEarlierDeliveries`' macrotask yield.
  *
- *  3. ABORT deliveries. `_setAborted` fires the signal's listeners, and a
+ *  3. HOOK behind HOOK. Adjacent payloads for independently awaited hooks
+ *     must reach their consumers in log order even when the earlier consumer
+ *     takes more microtask hops to act on its value.
+ *
+ *  4. ABORT deliveries. `_setAborted` fires the signal's listeners, and a
  *     listener may invoke a step and draw a ULID, so an abort is as
  *     branch-deciding as any other delivery — but it resolved straight off its
  *     `promiseQueue` slot and registered no barrier.
@@ -28,6 +32,12 @@
  * Cases 1-4 assert the same thing: the replay allocates its follow-up step
  * ULIDs in the order the committed log recorded. A regression surfaces as the
  * production `ReplayDivergenceError`.
+ *
+ * Section 5 asserts the registry's other job directly, over a registry built
+ * by hand rather than by a replay: which entries an idle check may ignore. Get
+ * that wrong in one direction and a chain parked on an unclaimed hook payload
+ * deadlocks; wrong in the other and a suspension preempts a batch of parked
+ * step results.
  *
  * The final section covers the SUSPENSION side of the registry
  * (vercel/workflow#3183): an idle check must not observe idle — and raise a
@@ -45,12 +55,12 @@ import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
-import { createCorrelationIdGenerator } from './correlation-id.js';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import {
   awaitEarlierDeliveries,
   registerDeliveryBarrier,
+  scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
@@ -70,6 +80,10 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   });
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
+  // Real-session parity: the log-order-draws quiescence fixpoint keys its
+  // progress metric on `mintCount`; without it the loop degrades to a single
+  // turn and this suite would only exercise a degraded variant.
+  let mintCount = 0;
   const promiseQueueHolder = { current: Promise.resolve() };
   const ctxRef: { current?: WorkflowOrchestratorContext } = {};
   const ctx: WorkflowOrchestratorContext = {
@@ -79,6 +93,8 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: (event) => {
         ctxRef.current?.onWorkflowError(
           new WorkflowRuntimeError(`Unconsumed event: ${event.eventType}`)
@@ -87,14 +103,13 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       getPromiseQueue: () => promiseQueueHolder.current,
     }),
     invocationsQueue: new Map(),
-    generateCorrelationId: createCorrelationIdGenerator({
-      seed: 'test',
-      fixedTimestamp: workflowStartedAt,
-      positional: () => ulid(workflowStartedAt),
-      // The event logs in this file hardcode correlation ids the run-wide
-      // shared sequence minted, so replay only matches under that scheme.
-      perKind: false,
-    }),
+    generateUlid: () => {
+      mintCount += 1;
+      return ulid(workflowStartedAt);
+    },
+    get mintCount() {
+      return mintCount;
+    },
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -405,7 +420,75 @@ describe('hook payload delivery ordering against an earlier step result', () => 
   }
 });
 
-// ─── 3. abort deliveries ───────────────────────────────────────────────────
+// ─── 3. hook behind hook, across different consumer shapes ─────────────────
+describe('hook payload delivery ordering against an earlier hook payload', () => {
+  it('keeps the recorded ULID allocation when the earlier hook uses an async iterator', async () => {
+    const ops: Promise<unknown>[] = [];
+    const [firstPayload, secondPayload] = await Promise.all([
+      dehydrateStepReturnValue({ v: 1 }, 'wrun_test', undefined, ops),
+      dehydrateStepReturnValue({ v: 2 }, 'wrun_test', undefined, ops),
+    ]);
+
+    const events: Event[] = [
+      event('evnt_0', 'hook_created', `hook_${ULIDS[0]}`, {
+        token: 'first',
+        isWebhook: false,
+      }),
+      event('evnt_1', 'hook_created', `hook_${ULIDS[1]}`, {
+        token: 'second',
+        isWebhook: false,
+      }),
+      event('evnt_2', 'hook_received', `hook_${ULIDS[0]}`, {
+        token: 'first',
+        payload: firstPayload,
+      }),
+      event('evnt_3', 'hook_received', `hook_${ULIDS[1]}`, {
+        token: 'second',
+        payload: secondPayload,
+      }),
+      event('evnt_4', 'step_created', `step_${ULIDS[2]}`, {
+        stepName: 'afterFirst',
+      }),
+      event('evnt_5', 'step_created', `step_${ULIDS[3]}`, {
+        stepName: 'afterSecond',
+      }),
+    ];
+
+    const ctx = setupWorkflowContext(events);
+    const useStep = createUseStep(ctx);
+    const createHook = createCreateHook(ctx);
+
+    const error = await replay(ctx, async () => {
+      const first = createHook<{ v: number }>({ token: 'first' });
+      const second = createHook<{ v: number }>({ token: 'second' });
+      const afterFirst = useStep('afterFirst');
+      const afterSecond = useStep('afterSecond');
+
+      await Promise.all([
+        (async () => {
+          for await (const payload of first) {
+            void payload;
+            // Model a layered hook consumer such as an async inbox merger:
+            // the delivery order must survive its continuation depth.
+            for (let i = 0; i < 16; i++) {
+              await Promise.resolve();
+            }
+            await afterFirst();
+            break;
+          }
+        })(),
+        (async () => {
+          await second;
+          await afterSecond();
+        })(),
+      ]);
+    });
+
+    expectSuspendedWithPendingSteps(ctx, error, ['afterFirst', 'afterSecond']);
+  });
+});
+
+// ─── 4. abort deliveries ───────────────────────────────────────────────────
 //
 //   evnt_4  wait_completed          ← makes the step result defer
 //   evnt_5  step_completed stepA    ← deferred behind the wait
@@ -490,45 +573,125 @@ describe('abort delivery ordering against an earlier step result', () => {
   });
 });
 
-// ─── 4. registry scan cost ─────────────────────────────────────────────────
+// ─── 5. idle reachability over the barrier registry ────────────────────────
 //
-// `resolvesOnItsOwn` walks the registry recursively: an armed hook re-checks
-// every earlier wait and step, an armed wait every earlier hook and step, and
-// so on. Unmemoized that is T(n) = Σ T(j) — exponential — and the registry is
-// not small by construction: `EventsConsumer` drains consecutively consumable
-// events synchronously while barriers only retire on microtask-driven
-// deliveries, so a fan-out of `Promise.race([hook, sleep(watchdog)])` branches
-// accumulates one barrier per branch per kind (measured: 49 live barriers for
-// 24 branches).
+// `hasParkedCommittedDelivery` decides whether an idle check may observe idle,
+// and it is the only remaining caller of the recursive `resolvesOnItsOwn`
+// walk. Two opposite answers are load-bearing, and neither is covered by the
+// replay sections above, which exercise the walk only through whichever shape
+// their fixture happens to build:
 //
-// The scan runs synchronously, before `awaitEarlierDeliveries` first awaits,
-// so timing the call alone measures it. Unmemoized, 40 alternating armed
-// hook/wait barriers is ~10^8 recursive calls — minutes. Memoized it is
-// linear. The bound is deliberately loose; this is an order-of-magnitude
-// guard, not a benchmark.
-describe('delivery-barrier registry scan cost', () => {
-  it('stays linear in registry size for a step delivery', () => {
-    const ctx = {
+//  - A PARKED CHAIN must not be counted. An unclaimed buffered hook payload is
+//    retired by the idle safety net in `registerDeliveryBarrier`, so counting
+//    it would gate its own retirement — and that extends to the wait parked
+//    behind it and the step gated on that wait. If any link were counted, idle
+//    would be unreachable, no net could fire, and the chain would never
+//    deliver: a deadlock, not a divergence.
+//  - An ALL-ARMED BATCH must be counted (vercel/workflow#3183). Parallel step
+//    results parked between their queue slots and their detached `resolve()`
+//    are invisible to `pendingDeliveries`, and an idle check that observed idle
+//    there would raise a `WorkflowSuspension` carrying none of the follow-up
+//    work the batch was about to create.
+//
+// Asserted through `scheduleWhenIdle`, which is the coupling that matters, and
+// which makes both cases unambiguous: nothing in these registries ever
+// delivers, so the callback can only fire if the registry was excluded from
+// the idle count AND the barriers' own nets then retired it.
+//
+// This replaces a timing guard that no longer measured anything. It timed
+// `awaitEarlierDeliveries(ctx, 40, 'step')` against 40 alternating armed
+// hook/wait barriers to catch an unmemoized exponential walk (4.3e8 recursive
+// calls, 84s). That call site is gone: a step now tests `armed` directly, so
+// the call is a flat loop. The surviving caller cannot reach an exponential
+// shape at all — it returns at the first self-resolving entry, so it only
+// advances past entries that short-circuit on their first false child
+// (measured: 98 recursive calls unmemoized for the worst 40-barrier shape).
+// Timing it would assert nothing; see the memo note on `resolvesOnItsOwn`.
+describe('delivery-barrier idle reachability', () => {
+  function emptyCtx(): WorkflowOrchestratorContext {
+    return {
       pendingDeliveries: 0,
       promiseQueue: Promise.resolve(),
       pendingDeliveryBarriers: new Map(),
     } as unknown as WorkflowOrchestratorContext;
+  }
 
-    const BARRIERS = 40;
-    for (let index = 0; index < BARRIERS; index++) {
-      registerDeliveryBarrier(ctx, index, index % 2 ? 'hook' : 'wait');
+  /** Whether `scheduleWhenIdle` observes idle within `rounds` timer ticks. */
+  async function reachesIdle(
+    ctx: WorkflowOrchestratorContext,
+    rounds = 10
+  ): Promise<boolean> {
+    let idle = false;
+    scheduleWhenIdle(ctx, () => {
+      idle = true;
+    });
+    for (let round = 0; round < rounds && !idle; round++) {
+      await ctx.promiseQueue;
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
-    expect(ctx.pendingDeliveryBarriers?.size).toBe(BARRIERS);
+    return idle;
+  }
 
-    const startedAt = performance.now();
-    // The floating promise never settles (nothing delivers these barriers);
-    // only the synchronous scan inside the call is under test.
-    void awaitEarlierDeliveries(ctx, BARRIERS, 'step');
-    expect(performance.now() - startedAt).toBeLessThan(1_000);
+  it('unwinds a step parked behind a wait parked on an unclaimed payload, in log order', async () => {
+    const ctx = emptyCtx();
+    const order: string[] = [];
+    let payloadRetiredBeforeWait: boolean | undefined;
+
+    // The shape `step-delivery-ordering.test.ts` replays, as a registry: an
+    // unread hook's payload at index 0, a wait behind it, a step gated on that
+    // wait. Only the payload lacks a delivery chain — nothing in the workflow
+    // ever claims it, so the idle safety net is the only thing that can retire
+    // it. The wait and the step get the unconditional chain their real call
+    // sites attach at event-consumption time, as the INVARIANT on
+    // `registerDeliveryBarrier` requires of any armed barrier.
+    registerDeliveryBarrier(ctx, 0, 'hook', { armed: false });
+    const wait = registerDeliveryBarrier(ctx, 1, 'wait');
+    const step = registerDeliveryBarrier(ctx, 2, 'step');
+    const chains = [
+      awaitEarlierDeliveries(ctx, 1, 'wait').then(() => {
+        order.push('wait');
+        payloadRetiredBeforeWait = !ctx.pendingDeliveryBarriers?.has(0);
+        wait.markDelivered();
+      }),
+      awaitEarlierDeliveries(ctx, 2, 'step').then(() => {
+        order.push('step');
+        step.markDelivered();
+      }),
+    ];
+    expect(ctx.pendingDeliveryBarriers?.size).toBe(3);
+
+    // Neither chain can run yet: the wait gates on the unclaimed payload, and
+    // the step gates on the wait (it skips the payload directly, but the skip
+    // is not transitive through the armed wait).
+    await Promise.resolve();
+    expect(order).toEqual([]);
+
+    // Idle must stay reachable for the payload's net to fire at all. If any
+    // link of the chain were counted against idle, this would hang.
+    expect(await reachesIdle(ctx)).toBe(true);
+    await Promise.all(chains);
+
+    expect(payloadRetiredBeforeWait).toBe(true);
+    expect(order).toEqual(['wait', 'step']);
+    expect(ctx.pendingDeliveryBarriers?.size).toBe(0);
+  });
+
+  it('is blocked by an all-armed batch of step results', async () => {
+    const ctx = emptyCtx();
+    // Armed and undelivered is exactly the window #3183 is about: the batch's
+    // queue slots have released `pendingDeliveries` and their detached
+    // `resolve()` calls have not run yet.
+    for (let index = 0; index < 3; index++) {
+      registerDeliveryBarrier(ctx, index, 'step');
+    }
+
+    expect(await reachesIdle(ctx)).toBe(false);
+    // The nets are idle-gated too, so nothing retires behind our back.
+    expect(ctx.pendingDeliveryBarriers?.size).toBe(3);
   });
 });
 
-// ─── 5. suspension timing: idle must wait out parked deliveries ────────────
+// ─── 6. suspension timing: idle must wait out parked deliveries ────────────
 //
 // Field shape from vercel/workflow#3183: a fire-and-forget `sleep()` (a
 // watchdog — never awaited, never completing in-run) plus a parallel batch of
@@ -557,7 +720,7 @@ function expectSuspensionSnapshotSteps(error: unknown, expected: string[]) {
     );
   }
   expect(
-    (error as WorkflowSuspension).steps.flatMap((item) =>
+    (error as WorkflowSuspension).items.flatMap((item) =>
       item.type === 'step' ? [item.stepName] : []
     )
   ).toEqual(expected);
@@ -676,5 +839,90 @@ describe('suspension timing against parked step deliveries', () => {
     });
 
     expectSuspensionSnapshotSteps(error, ['followUp']);
+  });
+});
+
+// ─── step result above a wait parked behind an unclaimed payload ────────────
+//
+// The log-order-draws turnstile (`quiesceEarlierCascades`) refuses to resolve
+// a delivery while a LOWER-index ARMED barrier is still registered. An armed
+// wait can itself be parked behind an unclaimed buffered hook payload — a
+// chain only the idle-gated safety net can move (lowest-first retirement).
+// This test pins the termination argument for that shape: the spinning step
+// delivery must not count as a parked committed delivery (`resolvesOnItsOwn`
+// excludes it — it gates on the parked wait), so `canRetireAbandonedBarriers`
+// stays reachable, the net retires the payload, the wait delivers, and the
+// turnstile opens. A regression that makes the turnstile wait on parked
+// chains directly, or counts the spinner as self-resolving, deadlocks this
+// replay instead of suspending it.
+describe('log-order draws turnstile above a parked chain', () => {
+  const scenario = async () => {
+    const resumeAt = new Date(FIXED_TIMESTAMP + 5_000);
+    const ops: Promise<unknown>[] = [];
+    const [payload, stepAResult] = await Promise.all([
+      dehydrateStepReturnValue({ poke: 1 }, 'wrun_test', undefined, ops),
+      dehydrateStepReturnValue('a', 'wrun_test', undefined, ops),
+    ]);
+
+    const events: Event[] = [
+      event('evnt_0', 'hook_created', `hook_${ULIDS[0]}`, {
+        token: 'parked-token',
+        isWebhook: false,
+      }),
+      event('evnt_1', 'wait_created', `wait_${ULIDS[1]}`, { resumeAt }),
+      event('evnt_2', 'step_created', `step_${ULIDS[2]}`, {
+        stepName: 'stepA',
+      }),
+      event('evnt_3', 'step_started', `step_${ULIDS[2]}`, {
+        stepName: 'stepA',
+      }),
+      event('evnt_4', 'hook_received', `hook_${ULIDS[0]}`, { payload }),
+      event('evnt_5', 'wait_completed', `wait_${ULIDS[1]}`, { resumeAt }),
+      event('evnt_6', 'step_completed', `step_${ULIDS[2]}`, {
+        stepName: 'stepA',
+        result: stepAResult,
+      }),
+      event('evnt_7', 'step_created', `step_${ULIDS[3]}`, {
+        stepName: 'afterBoth',
+      }),
+    ];
+
+    const ctx = setupWorkflowContext(events);
+    const useStep = createUseStep(ctx);
+    const sleep = createSleep(ctx);
+    const createHook = createCreateHook(ctx);
+
+    const error = await replay(ctx, async () => {
+      const stepA = useStep('stepA');
+      const afterBoth = useStep('afterBoth');
+      // Fire-and-forget hook: its payload (evnt_4) is consumed but never
+      // claimed, so its barrier stays unarmed and parks the wait behind it.
+      createHook({ token: 'parked-token' });
+      await Promise.all([sleep('5s'), stepA()]);
+      await afterBoth();
+    });
+
+    expectSuspendedWithPendingSteps(ctx, error, ['afterBoth']);
+  };
+
+  it('terminates and suspends with log-order draws on', async () => {
+    // Pin the flag rather than inherit the ambient environment: a suite-wide
+    // WORKFLOW_LOG_ORDER_DRAWS=0 sweep would otherwise silently run the off
+    // path twice and this test would prove nothing about the turnstile.
+    vi.stubEnv('WORKFLOW_LOG_ORDER_DRAWS', '1');
+    try {
+      await scenario();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('terminates and suspends with log-order draws off', async () => {
+    vi.stubEnv('WORKFLOW_LOG_ORDER_DRAWS', '0');
+    try {
+      await scenario();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

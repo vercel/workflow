@@ -11,10 +11,6 @@ import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
-import {
-  createCorrelationIdGenerator,
-  isPerKindCorrelationIdsEnabled,
-} from './correlation-id.js';
 import { EventsConsumer } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
@@ -44,16 +40,13 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
-    generateCorrelationId: createCorrelationIdGenerator({
-      seed: 'test',
-      fixedTimestamp: workflowStartedAt,
-      positional: () => ulid(workflowStartedAt),
-      perKind: isPerKindCorrelationIdsEnabled(),
-    }),
+    generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -272,7 +265,7 @@ describe('AbortController consistency', () => {
         expect(error.name).toBe('WorkflowSuspension');
         const suspension = error as WorkflowSuspension;
         // The hook queue item should NOT have abortRequested since we didn't call abort()
-        const hookItem = suspension.steps.find((s) => s.type === 'hook');
+        const hookItem = suspension.items.find((s) => s.type === 'hook');
         expect(hookItem).toBeDefined();
         if (hookItem?.type === 'hook') {
           expect(hookItem.abortRequested).toBeFalsy();
@@ -339,7 +332,7 @@ describe('AbortController consistency', () => {
 
       // If workflow suspended, we know the hook correlationId
       if (suspension) {
-        const hookItem = suspension.steps.find((s) => s.type === 'hook');
+        const hookItem = suspension.items.find((s) => s.type === 'hook');
         expect(hookItem).toBeDefined();
 
         if (hookItem) {
@@ -683,7 +676,7 @@ describe('AbortController consistency', () => {
       const suspension = error as WorkflowSuspension;
       expect(suspension.stepCount).toBe(1);
 
-      const stepItem = suspension.steps.find((s) => s.type === 'step');
+      const stepItem = suspension.items.find((s) => s.type === 'step');
       expect(stepItem).toBeDefined();
       if (stepItem?.type === 'step') {
         expect(stepItem.stepName).toBe('add');
@@ -717,7 +710,7 @@ describe('AbortController consistency', () => {
       const suspension = error as WorkflowSuspension;
       expect(suspension.hookCount).toBeGreaterThanOrEqual(1);
 
-      const hookItem = suspension.steps.find(
+      const hookItem = suspension.items.find(
         (s) => s.type === 'hook' && !s.isSystem
       );
       expect(hookItem).toBeDefined();
@@ -751,7 +744,7 @@ describe('AbortController consistency', () => {
       const suspension = error as WorkflowSuspension;
       expect(suspension.waitCount).toBe(1);
 
-      const waitItem = suspension.steps.find((s) => s.type === 'wait');
+      const waitItem = suspension.items.find((s) => s.type === 'wait');
       expect(waitItem).toBeDefined();
       if (waitItem?.type === 'wait') {
         expect(waitItem.resumeAt).toBeInstanceOf(Date);

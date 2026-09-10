@@ -13,7 +13,7 @@ import {
  * ## Why this exists
  *
  * The symmetric `encr` path requires the writer to hold the recipient run's
- * key — which also grants decrypt capability. For *cross-run* writes (a hook
+ * key, which also grants decrypt capability. For *cross-run* writes (a hook
  * resumption targeting another run, or a child workflow writing into a
  * parent's forwarded `WritableStream`) that is more authority than the writer
  * needs, and obtaining the symmetric key across a deployment boundary costs a
@@ -23,7 +23,7 @@ import {
  * key, which is not secret and therefore travels on the run entity (and in
  * stream descriptors) at no cost. "Encrypt-only" stops being an honor-system
  * convention enforced by `importKey(raw, ['encrypt'])` and becomes a
- * cryptographic guarantee — a writer holding just the public key provably
+ * cryptographic guarantee: a writer holding only the public key provably
  * cannot read anything.
  *
  * ## Key hierarchy
@@ -65,7 +65,7 @@ import {
  * HPKE's `kem_context`): it prevents key-substitution/unknown-key-share
  * attacks in which an adversary replays a ciphertext as though it had been
  * sealed to a different recipient. Deviating from strict RFC 9180 framing is
- * a deliberate, documented choice — the envelope is versioned via its format
+ * a deliberate, documented choice: the envelope is versioned via its format
  * prefix and the HKDF labels below, so a conformant profile can be added
  * later as a new version without touching existing payloads.
  *
@@ -78,8 +78,8 @@ import {
  *
  * ## Nonce discipline
  *
- * One-shot {@link seal} generates a fresh ephemeral keypair — and therefore a
- * fresh content key — for every call, so nonce reuse is impossible.
+ * One-shot {@link seal} generates a fresh ephemeral keypair (and therefore a
+ * fresh content key) for every call, so nonce reuse is impossible.
  *
  * Callers that amortize the KEM across many frames via {@link encapsulate}
  * take on nonce discipline themselves, because the content key then outlives a
@@ -87,7 +87,7 @@ import {
  *
  * 1. Every frame MUST use a fresh random nonce (which `aesGcmEncrypt` does).
  *    Never a counter: a counter restarts at zero after a stream reconnect or a
- *    durable replay, reusing `(contentKey, nonce)` — which under AES-GCM leaks
+ *    durable replay, reusing `(contentKey, nonce)`, which under AES-GCM leaks
  *    the plaintext XOR of the two frames and the GCM auth subkey.
  * 2. A writer must not inherit a previous incarnation's content key, so
  *    {@link encapsulate} is re-run per writer instance.
@@ -148,7 +148,7 @@ const infoEncoder = new TextEncoder();
  * A per-run X25519 keypair, derived from the run's key material.
  *
  * Callers should derive this once per run and memoize it alongside the
- * symmetric key — derivation costs several Web Crypto round trips.
+ * symmetric key, since derivation costs several Web Crypto round trips.
  */
 export interface RunKeyPair {
   /** Raw 32-byte X25519 private scalar. Secret. */
@@ -270,7 +270,7 @@ function importPublicKey(publicKey: Uint8Array): Promise<CryptoKey> {
     publicKey,
     { name: 'X25519' },
     /* extractable */ true,
-    // Public keys carry no usages for X25519 — the private key does the
+    // Public keys carry no usages for X25519: the private key does the
     // deriving; the public key is only ever an argument to it.
     []
   );
@@ -318,7 +318,7 @@ export function bytesToBase64(bytes: Uint8Array): string {
  * symmetric path) rather than crash a resumption.
  *
  * Validation is strict, because a lenient decoder is worse than a throwing one
- * here — silently returning a short or truncated key makes a corrupt value look
+ * here: silently returning a short or truncated key makes a corrupt value look
  * *present*, so the caller seals to garbage instead of taking the fallback.
  * Rejected: characters outside the alphabet, a length that cannot describe a
  * whole number of bytes (`length % 4 === 1`), padding anywhere but the end, and
@@ -365,7 +365,7 @@ export function base64ToBytes(value: string): Uint8Array | undefined {
  * Hand-rolled rather than using `atob` or `Buffer`: this module also runs
  * inside the workflow VM, whose global surface is deliberately minimal and
  * does not include either. The inputs here are fixed-size JWK key components,
- * so a compact decoder is sufficient — it accepts unpadded base64url only,
+ * so a compact decoder is sufficient: it accepts unpadded base64url only,
  * which is what RFC 7515 §2 mandates for JWK members.
  */
 function base64UrlToBytes(value: string): Uint8Array {
@@ -439,7 +439,7 @@ async function deriveContentKey(
  * The writer half of the KEM: generate an ephemeral keypair and derive a
  * content key for a recipient's public key.
  *
- * Use this when many payloads share one KEM operation — i.e. stream frames.
+ * Use this when many payloads share one KEM operation, i.e. stream frames.
  * The returned `contentKey` can only encrypt, so a stream writer provably
  * cannot read the recipient run's data even by mistake.
  *
@@ -568,7 +568,7 @@ export async function decapsulate(
  * Seal a payload to a run's public key.
  *
  * Each call performs its own KEM operation, so every sealed payload gets an
- * independent content key — nonce reuse across calls is impossible by
+ * independent content key: nonce reuse across calls is impossible by
  * construction.
  *
  * @param recipientPublicKey - The recipient run's raw 32-byte X25519 public key
@@ -625,7 +625,7 @@ export async function open(
 
 /**
  * A writer-side session that amortizes one KEM operation across many sealed
- * payloads — use it for streams, where one-shot {@link seal} would perform a
+ * payloads. Use it for streams, where one-shot {@link seal} would perform a
  * fresh keygen + ECDH + HKDF for every frame.
  *
  * Safety rests on two properties:
@@ -672,7 +672,7 @@ export function createSealSession(
  * The mirror of {@link createSealSession}: because every frame from one writer
  * carries the same ephemeral public key, this turns an ECDH per frame into an
  * ECDH per writer. Correctness does not depend on the writer having used a
- * session — a stream of independently sealed payloads simply misses the cache
+ * session: a stream of independently sealed payloads misses the cache
  * on each new ephemeral key.
  *
  * The cache is keyed by the ephemeral public key and holds one entry, which is
@@ -741,7 +741,7 @@ function keyCacheId(publicKey: Uint8Array): string {
  * `ephemeralPublicKey ‖ recipientPublicKey`, and a recipient public key is
  * unique per (deployment key × project × run). Replaying a sealed payload at
  * a different run therefore fails at key agreement regardless. AAD is
- * available for callers that want an additional, KDF-independent binding —
+ * available for callers that want an additional, KDF-independent binding:
  * both sides must supply byte-identical values or the payload will not open.
  */
 export function runAad(projectId: string, runId: string): Uint8Array {

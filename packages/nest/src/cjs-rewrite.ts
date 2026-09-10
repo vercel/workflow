@@ -30,7 +30,7 @@ export function rewriteTsImportsInContent(
   // shared across all parseSync calls in the process (each parse leaves the
   // cursor at the end of the previous source). For a freshly-parsed source,
   // `module.span.start` points to the first byte SWC considers part of the
-  // module's text — which empirically:
+  // module's text, which empirically:
   //   • starts BEFORE leading line/block comments and a leading BOM
   //     (SWC skips those out of `module.span`), but
   //   • starts AT a leading shebang line (SWC keeps the shebang inside the
@@ -79,7 +79,7 @@ export function rewriteTsImportsInContent(
  *
  * When dirs includes ".", prefix is empty so no dir matches in the loop; we fall
  * through to the default which prepends distDir to the entire path.
- * e.g. dirs: [".", "src"] — "src/foo.ts" matches "src", files outside match "."
+ * e.g. dirs: [".", "src"]: "src/foo.ts" matches "src", files outside match "."
  */
 export function mapSourceToDistPath(
   relToWorkingDir: string,
@@ -287,7 +287,7 @@ function createBytePositionMapper(
 
 /**
  * Compute the UTF-8 byte length of any leading content that SWC excludes from
- * `module.span` — leading whitespace (including a BOM), `//` line comments,
+ * `module.span`: leading whitespace (including a BOM), `//` line comments,
  * and `/* … *\/` block comments.
  *
  * A leading shebang line is intentionally NOT skipped: SWC keeps the shebang

@@ -42,6 +42,9 @@ const Invoke = z
   });
 
 // Track flow handler invocations per run for testing inline execution
+// per-copy-ok: this file is a standalone test server entry (it calls `serve()`
+// below), so it runs as its own process with one module instance. There is no
+// host bundler to compile it into several layers.
 const flowInvocationCounts = new Map<string, number>();
 
 const app = new Hono()
@@ -88,7 +91,8 @@ const app = new Hono()
     const hook = await getHookByToken(ctx.req.param('token'));
     const { runId } = await resumeHook(hook.token, {
       ...(await ctx.req.json()),
-      metadata: hook.metadata,
+      // `metadata` is a lazily-hydrated Promise; echo the resolved value.
+      metadata: await hook.metadata,
     });
     return ctx.json({ runId, hookId: hook.hookId });
   })
@@ -117,7 +121,11 @@ const app = new Hono()
   .get('/runs/:runId/events', async (ctx) => {
     const runId = ctx.req.param('runId');
     const world = await getWorld();
-    const allEvents: { eventType: string; correlationId?: string }[] = [];
+    const allEvents: {
+      eventId: string;
+      eventType: string;
+      correlationId?: string;
+    }[] = [];
     let cursor: string | undefined;
     while (true) {
       const page = await world.events.list({
@@ -126,6 +134,7 @@ const app = new Hono()
       });
       for (const e of page.data) {
         allEvents.push({
+          eventId: e.eventId,
           eventType: e.eventType,
           correlationId: e.correlationId,
         });

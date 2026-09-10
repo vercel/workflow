@@ -30,7 +30,7 @@ interface StreamViewerProps {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Chunk row — memoized to prevent remounts during polling
+// Chunk row: memoized to prevent remounts during polling
 // ──────────────────────────────────────────────────────────────────────────
 
 const ChunkRow = React.memo(function ChunkRow({ chunk }: { chunk: Chunk }) {
@@ -122,7 +122,7 @@ export function StreamViewer({
                 <ChunkRow chunk={chunks[index]} />
               </div>
             )}
-            style={{ flex: 1, minHeight: 0 }}
+            className="min-h-0 flex-1"
           />
         )}
       </div>

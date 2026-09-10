@@ -4,7 +4,7 @@
  * isn't installed. Rollup/Vite (e.g. SvelteKit's build) treat an unresolvable
  * static `import('@opentelemetry/api')` as a fatal error when the peer is
  * absent, so the framework integrations mark this specifier **external only
- * when it can't be resolved** (they do NOT alias it to an empty stub — that
+ * when it can't be resolved** (they do NOT alias it to an empty stub, which
  * would permanently disable tracing). When the peer IS installed it resolves
  * and bundles normally, which matters for self-contained outputs (Nitro's
  * `.output/server`, esbuild) that ship no node_modules and would otherwise

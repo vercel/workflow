@@ -27,6 +27,7 @@ import {
   type TimelineHover,
 } from './components/timeline';
 import { TraceShortcutHelper } from './components/trace-shortcut-helper';
+import { useAltHeld } from './components/use-alt-held';
 import { ROW_HEIGHT_PX, scrollRowIntoView } from './components/use-row-window';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 import { searchSpans } from './search';
@@ -231,7 +232,7 @@ function TraceViewerContent({
     [root.startTime, root.endTime]
   );
 
-  // Pan (keeping the current zoom) so `timeMs` is centered in view — used by the
+  // Pan (keeping the current zoom) so `timeMs` is centered in view; used by the
   // off-screen marker indicators to scroll their marker into view.
   const handleRevealTime = useCallback(
     (timeMs: number) => {
@@ -307,7 +308,7 @@ function TraceViewerContent({
 
   // Bring a row into view when keyboard/button navigation lands on a span that
   // sits outside the shared scroll container's visible area. The list is
-  // windowed, so an off-screen row has no DOM node to `scrollIntoView` —
+  // windowed, so an off-screen row has no DOM node to `scrollIntoView`;
   // `scrollRowIntoView` computes the target offset from the span's index.
   const scrollSpanIntoView = useCallback(
     (spanId: string) => {
@@ -370,29 +371,16 @@ function TraceViewerContent({
     [setActiveSpan, scrollSpanIntoView, cancelPendingZoom, focusViewportOnSpan]
   );
 
-  const [altHeld, setAltHeld] = useState(false);
+  const { altHeld } = useAltHeld();
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         handleClearActiveSpan();
-      } else if (e.key === 'Alt') {
-        setAltHeld(true);
       }
     };
-    const onKeyUp = (e: KeyboardEvent): void => {
-      if (e.key === 'Alt') setAltHeld(false);
-    };
-    const onBlur = (): void => setAltHeld(false);
-
     window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    window.addEventListener('blur', onBlur);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('blur', onBlur);
-    };
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleClearActiveSpan]);
 
   const timelineRef = useRef<HTMLDivElement>(null);

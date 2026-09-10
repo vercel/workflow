@@ -1,10 +1,16 @@
 import { EntityConflictError, WorkflowRuntimeError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import { workflowDisplayName } from '@workflow/utils/parse-name';
-import type { WorkflowInvokePayload, World } from '@workflow/world';
+import type {
+  RunRetention,
+  WorkflowInvokePayload,
+  World,
+} from '@workflow/world';
 import {
   HOOK_RESUME_INPUT_VERSION,
   isLegacySpecVersion,
   PARENT_RUN_ID_ATTRIBUTE,
+  RETENTION_ATTRIBUTE,
   ROOT_RUN_ID_ATTRIBUTE,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
@@ -45,11 +51,18 @@ import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
  * dehydrating workflow arguments. Kept tight on purpose: the probe is
  * an optimization (it lets the caller emit the framed byte-stream wire
  * format when the target supports it), and the fallback on timeout is
- * the legacy raw format which always works. Long delays here would just
+ * the legacy raw format which always works. Long delays here would
  * make `start({ deploymentId: ... })` slower for users whose target
  * deployments don't recognize the health check at all.
  */
 const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
+
+/**
+ * Wire encoding of `retention: 0`. Attribute values are strings, and the
+ * `$retention` value is a duration written as a decimal integer — so zero
+ * travels as `'0'`, not as the name of a mode.
+ */
+const RETENTION_ZERO_ATTRIBUTE_VALUE = '0';
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
@@ -80,16 +93,22 @@ function resolveLineageAttributes(): Record<string, string> | undefined {
 // The warning that explains this only needs to fire once per process: a
 // workflow that hardcodes 'latest' for its Vercel deployment would otherwise
 // log it on every local/Postgres run, flooding tight dev loops.
-let hasWarnedLatestNoOp = false;
+// On `globalThis` (see `globalSingleton`) so "once per process" is not once
+// per bundler layer.
+const latestNoOpWarning = globalSingleton(
+  '@workflow/core//latestNoOpWarning',
+  1,
+  () => ({ warned: false })
+);
 
 /**
- * Reset the `deploymentId: 'latest'` no-op warn-once guard. Test-only —
+ * Reset the `deploymentId: 'latest'` no-op warn-once guard. Test-only,
  * exported so unit tests can exercise the warn path across `start()` calls.
  *
  * @internal
  */
 export function _resetLatestNoOpWarnForTests(): void {
-  hasWarnedLatestNoOp = false;
+  latestNoOpWarning.warned = false;
 }
 
 export interface StartOptionsBase {
@@ -110,7 +129,7 @@ export interface StartOptionsBase {
    * run ID and routes the initial workflow message to the matching
    * regional queue. When omitted, the world falls back to its own
    * default (for `world-vercel`: the `VERCEL_REGION` environment
-   * variable, then the server-side default region `iad1` — a concrete,
+   * variable, then the server-side default region `iad1`; a concrete,
    * routable region is always chosen).
    *
    * Worlds without a regional dimension ignore this field.
@@ -137,6 +156,37 @@ export interface StartOptionsBase {
    * the `setAttributes` option of the same name.
    */
   allowReservedAttributes?: boolean;
+
+  /**
+   * Set a preference for data retention after run completion.
+   *
+   * **Experimental.** Both the unit and the set of accepted values are expected
+   * to change.
+   *
+   * Worlds control the retention of user data (event payloads and stream
+   * chunks), the event log, and any analytics data. Options are:
+   * - `'default'`: same as omission, the World will decide. On Vercel, this
+   *   is based on your team's plan.
+   * - `0`: data is deleted as soon as your run completes or fails. On
+   *   Vercel, user data is deleted, but metadata may persist for your plan's
+   *   default retention period.
+   *
+   * The value is a duration, with zero being the only valid option currently.
+   *
+   * **Known limitation at `0`.** The purge races your own read of the run's
+   * result and generally wins, so `await run.returnValue` on a
+   * `experimental_retention: 0` run usually throws `RunExpiredError` rather
+   * than resolving. If you need the result, return it through a channel you
+   * control, e.g. a step that writes it to external storage.
+   *
+   * Recorded on the run as the reserved `$retention` attribute, so it
+   * requires a World implementing spec version 4 or later. `'default'` is
+   * not written at all, keeping it exactly equivalent to omitting the
+   * option. Retention is enforced by the World: the first-party Worlds
+   * (Vercel, Local, Postgres) implement it, and a World that does not
+   * recognize the value keeps the data.
+   */
+  experimental_retention?: RunRetention;
 
   /**
    * The ID of an existing run this run is being replayed from, if any.
@@ -180,7 +230,7 @@ export interface StartOptionsWithDeploymentId extends StartOptionsBase {
    * This is only meaningful in worlds with atomic, immutable deployments
    * (currently Vercel). In other worlds (local dev, Postgres) there is no
    * notion of multiple deployments to resolve between, so `'latest'` has no
-   * effect — a warning is logged and the run targets the current deployment.
+   * effect: a warning is logged and the run targets the current deployment.
    *
    * **Note:** When `deploymentId` is provided, the argument and return types become `unknown`
    * since there is no guarantee the types will be consistent across deployments.
@@ -295,14 +345,14 @@ export async function start<TArgs extends unknown[], TResult>(
       // resolveLatestDeploymentId(). Worlds without that concept (local dev,
       // self-hosted Postgres) have nothing to resolve between, so rather than
       // fail a run that works fine on Vercel, we warn and fall back to the
-      // current deployment — making 'latest' an effective no-op there.
+      // current deployment, making 'latest' an effective no-op there.
       if (deploymentId === 'latest') {
         if (world.resolveLatestDeploymentId) {
           deploymentId = await world.resolveLatestDeploymentId();
         } else {
-          // Warn once per process — see hasWarnedLatestNoOp above.
-          if (!hasWarnedLatestNoOp) {
-            hasWarnedLatestNoOp = true;
+          // Warn once per process; see latestNoOpWarning.warned above.
+          if (!latestNoOpWarning.warned) {
+            latestNoOpWarning.warned = true;
             runtimeLogger.warn(
               "deploymentId: 'latest' has no effect in this world and was ignored. " +
                 'It is only supported by worlds with atomic deployments, such as Vercel. ' +
@@ -320,7 +370,7 @@ export async function start<TArgs extends unknown[], TResult>(
       // deployment starts (explicit deploymentId or 'latest' that resolves
       // to a different deployment) we probe the target via healthCheck to
       // learn its workflow-core version, then derive the capability. The
-      // probe has a tight timeout — on miss/failure we fall back to the
+      // probe has a tight timeout: on miss/failure we fall back to the
       // legacy raw byte format, which is universally readable.
       //
       // Worlds that don't expose the `streams` API (e.g. minimal test
@@ -340,10 +390,12 @@ export async function start<TArgs extends unknown[], TResult>(
 
       let framedByteStreams: boolean;
       let targetSupportsCompression: boolean;
-      // The consumer's hook-resume protocol version, stamped onto the new run
-      // so a later `resumeHook()` gates its parallel path on the deployment
-      // that will actually consume the queue message. `undefined` means "could
-      // not attest" and fails the gate closed.
+      // The consumer's hook-resume protocol version, stamped onto the new
+      // run. Current producers write the hook_received event durably before
+      // publishing the wake and never read it; OLDER producers gate their
+      // lazy (hookInput-carrying) path on the deployment that will actually
+      // consume the queue message. `undefined` means "could not attest" and
+      // fails that gate closed.
       let targetHookResumeInputVersion: number | undefined;
       // Public key of the target run, when the capability probe was able to
       // supply one (cross-deployment only).
@@ -357,14 +409,15 @@ export async function start<TArgs extends unknown[], TResult>(
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
         targetSupportsCompression = false;
-        // No probe channel to the target — cannot attest the consumer honors
-        // `hookInput`, so leave the marker off (fail closed to sequential).
+        // No probe channel to the target, so we cannot attest the consumer
+        // honors `hookInput`; leave the marker off (older producers fail
+        // closed to their sequential path).
         targetHookResumeInputVersion = undefined;
       } else {
         // Ask for this run's public key while we're here. The probe already
         // blocks `start()` on every cross-deployment call, and the responder
         // executes inside the target deployment where the key material is
-        // local — so the key comes back for free on a response we are
+        // local, so the key comes back for free on a response we are
         // already awaiting, and we can skip the key-lookup API request
         // entirely. Best-effort: on timeout or an older target, no key comes
         // back and we fall through to the regular lookup below.
@@ -382,7 +435,7 @@ export async function start<TArgs extends unknown[], TResult>(
         );
         // The responder runs inside the target deployment, so its
         // `hookResumeInputVersion` reflects the consumer. Undefined on an
-        // older target or a probe timeout — leaving the marker off.
+        // older target or a probe timeout, leaving the marker off.
         targetHookResumeInputVersion = probe?.hookResumeInputVersion;
       }
 
@@ -404,7 +457,7 @@ export async function start<TArgs extends unknown[], TResult>(
           );
         }
         // `normalizeAttributeChanges` treats `undefined` as "remove this
-        // key", which is meaningless at creation time — reject it up front
+        // key", which is meaningless at creation time. Reject it up front
         // so JS callers get a clear error instead of a downstream schema
         // failure (the types already forbid non-string values).
         for (const [key, value] of Object.entries(opts.attributes)) {
@@ -422,23 +475,59 @@ export async function start<TArgs extends unknown[], TResult>(
         );
       }
 
+      // `retention` is the typed spelling of the reserved `$retention`
+      // attribute, whose value is a duration written as a decimal integer.
+      // `'default'` means "let the World decide", which is already what an
+      // absent attribute means, so it is not written: that keeps
+      // `'default'` exactly equivalent to omitting the option and spends
+      // none of the per-run attribute budget.
+      let retentionAttribute: Record<string, string> | undefined;
+      if (
+        opts.experimental_retention !== undefined &&
+        opts.experimental_retention !== 'default'
+      ) {
+        // The types allow only `0`, but an untyped JS caller can still get
+        // here with some other duration — and there is no unit to interpret
+        // it in yet, so no World can honor it. Reject it rather than seed a
+        // value that would silently resolve to the World's default.
+        if (opts.experimental_retention !== 0) {
+          throw new WorkflowRuntimeError(
+            `start({ experimental_retention }) must be 0 or 'default'; received ${JSON.stringify(
+              opts.experimental_retention
+            )}.`
+          );
+        }
+        if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
+          throw new WorkflowRuntimeError(
+            'start({ experimental_retention }) requires a World that supports spec version 4 or later.'
+          );
+        }
+        retentionAttribute = {
+          [RETENTION_ATTRIBUTE]: RETENTION_ZERO_ATTRIBUTE_VALUE,
+        };
+      }
+
       // Cross-run lineage: the reserved keys ride on the run's existing
       // attributes, so they add no extra write. Caller attributes are spread
       // last, so a caller with allowReservedAttributes can deliberately
-      // re-parent.
+      // re-parent. `retention` is spread after those: it is the supported
+      // spelling, so it wins over a hand-written `$retention` attribute.
       const lineage =
         specVersion >= SPEC_VERSION_SUPPORTS_ATTRIBUTES
           ? resolveLineageAttributes()
           : undefined;
-      const runAttributes = lineage
-        ? { ...lineage, ...attributes }
-        : attributes;
+      const runAttributes =
+        lineage || retentionAttribute
+          ? { ...lineage, ...attributes, ...retentionAttribute }
+          : attributes;
 
       // Shared by the run_created event and the resilient-start queue input.
       const attributeSeed = runAttributes
         ? {
             attributes: runAttributes,
-            ...(allowReservedAttributes || lineage != null
+            ...(allowReservedAttributes ||
+            lineage != null ||
+            retentionAttribute != null
               ? { allowReservedAttributes: true as const }
               : {}),
           }
@@ -468,7 +557,7 @@ export async function start<TArgs extends unknown[], TResult>(
       //
       // Preferred: the capability probe already told us this run's public
       // key, so seal to it. That skips `getEncryptionKeyForRun`, which for a
-      // cross-deployment start is a `run-key` API request — the last one left
+      // cross-deployment start is a `run-key` API request, the last one left
       // on this path. It is also a privilege reduction: the caller ends up
       // able to write the arguments but not read them back, whereas fetching
       // the symmetric key grants full read access to a run it merely
@@ -533,19 +622,19 @@ export async function start<TArgs extends unknown[], TResult>(
       //
       // The two writes below go to different places by different routes:
       // `events.create` is attributed to THIS client's tenant, while the queue
-      // message is pinned to a deploymentId. When those disagree — a
-      // production-credentialed client pinning a preview deployment — the
+      // message is pinned to a deploymentId. When those disagree (a
+      // production-credentialed client pinning a preview deployment) the
       // preview consumer can't find the run in its own tenant, falls back to
       // resilient start, and re-creates it: one client-minted run id, two
       // environments, the production copy pending forever and the preview copy
       // executing. Worlds with a single tenant return undefined and the field
-      // is simply absent.
+      // is absent.
       const creatorEnvironment = world.getEnvironment?.();
 
       // If WORKFLOW_VM is set on the client starting the run, stamp the
       // engine choice into the run's executionContext so the run keeps
       // executing on the engine it started on (the same deployment can
-      // serve both VM engines). Unknown values throw — see
+      // serve both VM engines). Unknown values throw; see
       // getWorkflowVmFromEnv().
       const workflowVm = getWorkflowVmFromEnv();
 
@@ -555,11 +644,11 @@ export async function start<TArgs extends unknown[], TResult>(
         features: { encryption: !!encryptionKey },
         // Attest that the *consumer* deployment's runtime re-ensures a
         // `hook_received` event from a queue message's `hookInput` on replay.
-        // A resume of this run reads the marker (mirrored onto the hook's
-        // resumeContext by the server) to decide whether the parallel fast
-        // path is safe. For a cross-deployment start the consumer is the
+        // An OLDER producer resuming this run reads the marker (mirrored onto
+        // the hook's resumeContext by the server) to decide whether its lazy
+        // fast path is safe. For a cross-deployment start the consumer is the
         // target deployment, so we stamp the *target's* value carried back on
-        // the health-check probe — never the caller's. Omitted when we could
+        // the health-check probe, never the caller's. Omitted when we could
         // not attest the target (older target, timeout, or no probe channel),
         // which fails the resume gate closed to the sequential path.
         ...(targetHookResumeInputVersion !== undefined
@@ -625,7 +714,7 @@ export async function start<TArgs extends unknown[], TResult>(
         ),
       ]);
 
-      // Queue failure is always fatal — the run was not enqueued
+      // Queue failure is always fatal: the run was not enqueued
       if (queueResult.status === 'rejected') {
         throw queueResult.reason;
       }
@@ -641,7 +730,7 @@ export async function start<TArgs extends unknown[], TResult>(
           // In this case, we can safely return.
         } else if (isRetryableWorldError(err)) {
           // 429 (ThrottleError), 5xx, and transient transport failures
-          // (TRANSPORT/TIMEOUT) are retryable — the run was accepted via the
+          // (TRANSPORT/TIMEOUT) are retryable: the run was accepted via the
           // queue and creation will be re-tried by the runtime when it calls
           // run_started.
           resilientStart = true;
@@ -655,13 +744,6 @@ export async function start<TArgs extends unknown[], TResult>(
         }
       } else {
         const result = runCreatedResult.value;
-        // Assert that the run was created
-        if (!result.run) {
-          throw new WorkflowRuntimeError(
-            "Missing 'run' in server response for 'run_created' event"
-          );
-        }
-
         // Verify server accepted our runId
         if (!v1Compat && result.run.runId !== runId) {
           throw new WorkflowRuntimeError(
@@ -687,8 +769,7 @@ export async function start<TArgs extends unknown[], TResult>(
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),
         ...Attribute.DeploymentId(deploymentId),
-        ...(runCreatedResult.status === 'fulfilled' &&
-        runCreatedResult.value.run
+        ...(runCreatedResult.status === 'fulfilled'
           ? Attribute.WorkflowRunStatus(runCreatedResult.value.run.status)
           : {}),
       });

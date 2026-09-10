@@ -2,8 +2,10 @@ import { WorkflowRuntimeError, WorkflowWorldError } from '@workflow/errors';
 import {
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_MAX_SUPPORTED,
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from '@workflow/world';
 import {
   afterEach,
@@ -136,7 +138,7 @@ describe('start', () => {
       } as any);
 
       await expect(start(validWorkflow, [])).rejects.toThrow(
-        'requires a World with matching spec version'
+        'supports Worlds with spec version'
       );
       expect(mockEventsCreate).not.toHaveBeenCalled();
       expect(mockQueue).not.toHaveBeenCalled();
@@ -174,7 +176,7 @@ describe('start', () => {
       } as any);
 
       await expect(start(validWorkflow, [])).rejects.toThrow(
-        'requires a World with matching spec version'
+        'supports Worlds with spec version'
       );
       expect(mockEventsCreate).not.toHaveBeenCalled();
       expect(mockQueue).not.toHaveBeenCalled();
@@ -186,17 +188,75 @@ describe('start', () => {
       });
 
       setWorld({
-        specVersion: SPEC_VERSION_CURRENT + 1,
+        specVersion: SPEC_VERSION_MAX_SUPPORTED + 1,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
       } as any);
 
       await expect(start(validWorkflow, [])).rejects.toThrow(
-        'requires a World with matching spec version'
+        'supports Worlds with spec version'
       );
       expect(mockEventsCreate).not.toHaveBeenCalled();
       expect(mockQueue).not.toHaveBeenCalled();
+    });
+
+    it('accepts a world switched back to the pre-sealed-log version', async () => {
+      // What `WORKFLOW_SEALED_LOG=0` produces: `mintedSpecVersion()` answers
+      // the slot-identity version, so the World declares one BELOW the version
+      // this runtime stamps by default. The runtime has to admit it, or the
+      // kill switch would reject the very World it selects and a rollback
+      // would surface as a startup failure instead.
+      const rolledBack = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      setWorld({
+        specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await start(rolledBack, []);
+
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+        }),
+        expect.anything()
+      );
+    });
+
+    it('accepts a world that declares the ceiling version', async () => {
+      // The default and the ceiling coincide at the sealed log, so what this
+      // pins is that a World declaring the ceiling is admitted and its own
+      // declaration is what gets stamped, not this runtime's default.
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      setWorld({
+        specVersion: SPEC_VERSION_MAX_SUPPORTED,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await start(validWorkflow, []);
+
+      // The declared version is what gets stamped on `run_created`, which is
+      // what pins the run's id scheme for the rest of its life.
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_MAX_SUPPORTED,
+        }),
+        expect.anything()
+      );
     });
 
     it('should use provided specVersion when passed in options', async () => {

@@ -13,7 +13,7 @@
  */
 
 // Local type definitions for the polyfilled methods. These are intentionally
-// NOT `declare global` to avoid leaking types to host-side code — the polyfill
+// NOT `declare global` to avoid leaking types to host-side code; the polyfill
 // is only installed inside the workflow VM context.
 interface Uint8ArrayWithBase64 extends Uint8Array {
   toBase64(options?: { alphabet?: string; omitPadding?: boolean }): string;

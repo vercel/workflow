@@ -5,8 +5,7 @@
     }
   },
   "env": {
-    "WORKFLOW_PUBLIC_MANIFEST": "1",
-    "WORKFLOW_PER_KIND_CORRELATION_IDS": "1"
+    "WORKFLOW_PUBLIC_MANIFEST": "1"
   },
   "regions": [
     "iad1",

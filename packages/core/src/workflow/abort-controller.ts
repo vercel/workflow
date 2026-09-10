@@ -49,7 +49,7 @@ export class WorkflowAbortSignal {
   /**
    * @internal Sets aborted state and fires listeners.
    * Called by abort() on first-run, or by the events consumer on replay.
-   * Idempotent — second call is a no-op.
+   * Idempotent: second call is a no-op.
    */
   _setAborted(reason?: unknown): void {
     if (this.aborted) return;
@@ -111,7 +111,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
     readonly [ABORT_HOOK_TOKEN]: string;
 
     constructor() {
-      const id = ctx.generateCorrelationId('abort');
+      const id = ctx.generateUlid();
       const streamName = getAbortStreamId(id);
       const hookToken = `abrt_${id}`;
 
@@ -120,10 +120,8 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
       this.signal = new WorkflowAbortSignal(streamName, hookToken);
 
       // Register an internal system hook in the invocations queue.
-      // isSystem prevents token namespace conflicts with user hooks. The id
-      // draws from its own family, not `hook`, so constructing an abort
-      // controller does not renumber hooks the workflow creates later.
-      const correlationId = `hook_${ctx.generateCorrelationId('abortHook')}`;
+      // isSystem prevents token namespace conflicts with user hooks.
+      const correlationId = `hook_${ctx.generateUlid()}`;
       ctx.invocationsQueue.set(correlationId, {
         type: 'hook',
         correlationId,
@@ -174,20 +172,20 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           // The abort was recorded in the event log (from a previous run's
           // abort() call, or from a step/external abort). Update signal
           // state and fire listeners at this deterministic point in the
-          // promiseQueue — same ordering as hook payload delivery.
+          // promiseQueue, the same ordering as hook payload delivery.
           //
           // The payload is the dehydrated form written by the suspension
           // handler (a Uint8Array, possibly encrypted). Hydrate it via the
           // same machinery as regular hook payloads (workflow/hook.ts:117)
           // so the reason round-trips with full type fidelity. Reading the
-          // raw payload here is a bug — it's not a plain object after
+          // raw payload here is a bug: it's not a plain object after
           // dehydration, so `'reason' in payload` is false and reason
           // ends up undefined on replay.
           const rawPayload = event.eventData?.payload;
           // An abort is a branch-deciding delivery: `_setAborted` fires the
           // signal's listeners, and a listener is free to invoke a step and
           // draw a ULID. So it registers in the delivery-barrier registry as a
-          // 'hook' — which is exactly what the event is — so that wait, hook
+          // 'hook' (which is exactly what the event is) so that wait, hook
           // and step deliveries order against it by event-log position rather
           // than by whose hydration finished first. It is always ARMED: unlike
           // a buffered user hook payload, nothing about its delivery waits on
@@ -196,7 +194,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           // Resolving straight off the queue slot was sufficient only while
           // every other delivery also resolved from its slot. Step results no
           // longer do (see step.ts), so an abort whose slot ran while a
-          // log-earlier step sat behind a barrier would overtake it — see
+          // log-earlier step sat behind a barrier would overtake it; see
           // `delivery-barrier-coverage.test.ts`.
           //
           // The deferral is captured HERE, at event-consumption time, for the
@@ -214,8 +212,8 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           // results (step.ts) and hook payloads (workflow/hook.ts) do. The
           // suspension handler dehydrates queued step arguments only once
           // `scheduleWhenIdle` observes `pendingDeliveries === 0`. Without
-          // this counter, a step dispatched right after the abort — e.g. one
-          // that receives `controller.signal` — can have its arguments
+          // this counter, a step dispatched right after the abort (e.g. one
+          // that receives `controller.signal`) can have its arguments
           // serialized while the abort is still in flight behind
           // `await hydrateStepReturnValue`, capturing `signal.aborted === false`
           // (and a missing reason). Bumping the counter holds the suspension
@@ -224,7 +222,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           //
           // It is released inside the slot, before the detached deferral, so
           // `scheduleWhenIdle` can still reach idle and retire the barriers
-          // that deferral may be waiting on — the same shape as the hook and
+          // that deferral may be waiting on, the same shape as the hook and
           // step paths.
           ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
@@ -255,7 +253,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
                   }
                 } catch {
                   // Best-effort: if hydration fails, fall back to undefined
-                  // reason. The signal still aborts; the user just won't see
+                  // reason. The signal still aborts; the user won't see
                   // the original reason. Matches WorkflowAbortSignal's spec
                   // fallback (DOMException AbortError).
                 }
@@ -264,7 +262,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
               ctx.pendingDeliveries--;
             }
             // Detached, like the other deliveries: `awaitEarlierDeliveries`
-            // may be waiting on a delivery this very queue drives, and
+            // may be waiting on a delivery this queue itself drives, and
             // blocking a slot on that would deadlock the queue.
             void earlierDelivered.then(() => {
               barrier.markDelivered();
@@ -353,7 +351,7 @@ export function createAbortSignalStatics(): {
         }
       }
 
-      // Listen to each signal — first one to abort wins. Track listeners so
+      // Listen to each signal; first one to abort wins. Track listeners so
       // we can remove them after the composite aborts; otherwise the closures
       // (capturing `composite`) prevent GC for any input signal that outlives
       // the composite (e.g. a long-lived external controller).

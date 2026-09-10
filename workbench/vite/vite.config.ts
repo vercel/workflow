@@ -19,5 +19,10 @@ export default defineConfig({
   nitro: {
     serverDir: './',
     plugins: ['plugins/start-pg-world.ts'],
+    // NOTE: `ws`'s optional native accelerators (`bufferutil`,
+    // `utf-8-validate`) used to be externalized here. That now happens in
+    // `@workflow/rollup`'s `workflowTransformPlugin`, which every Nitro-based
+    // integration already installs — so a real user gets the fix without
+    // copying this block into their own config.
   },
 });

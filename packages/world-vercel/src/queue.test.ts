@@ -1,17 +1,23 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  assert,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 
 const {
   mockSend,
-  MockDuplicateMessageError,
+  MockConsumerDiscoveryError,
   MockQueueClient,
   mockHandleCallback,
 } = vi.hoisted(() => {
-  class MockDuplicateMessageError extends Error {
-    public readonly idempotencyKey?: string;
-    constructor(message: string, idempotencyKey?: string) {
+  class MockConsumerDiscoveryError extends Error {
+    constructor(message: string) {
       super(message);
-      this.name = 'DuplicateMessageError';
-      this.idempotencyKey = idempotencyKey;
+      this.name = 'ConsumerDiscoveryError';
     }
   }
 
@@ -29,7 +35,7 @@ const {
 
   return {
     mockSend,
-    MockDuplicateMessageError,
+    MockConsumerDiscoveryError,
     MockQueueClient,
     mockHandleCallback,
   };
@@ -37,7 +43,7 @@ const {
 
 vi.mock('@vercel/queue', () => ({
   QueueClient: MockQueueClient,
-  DuplicateMessageError: MockDuplicateMessageError,
+  ConsumerDiscoveryError: MockConsumerDiscoveryError,
 }));
 
 vi.mock('./utils.js', () => ({
@@ -58,6 +64,19 @@ describe('createQueue', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('classifies only consumer discovery failures as unavailable deployments', () => {
+    const queue = createQueue();
+
+    expect(
+      queue.isDeploymentUnavailableError?.(
+        new MockConsumerDiscoveryError('deployment not found')
+      )
+    ).toBe(true);
+    expect(
+      queue.isDeploymentUnavailableError?.(new Error('transient send failure'))
+    ).toBe(false);
   });
 
   describe('proxy region header', () => {
@@ -235,13 +254,10 @@ describe('createQueue', () => {
       }
     });
 
-    it('should silently handle idempotency key conflicts', async () => {
-      mockSend.mockRejectedValue(
-        new MockDuplicateMessageError(
-          'Duplicate idempotency key detected',
-          'my-key'
-        )
-      );
+    it('returns the message id for a repeated idempotency key', async () => {
+      // Repeated keys are accepted and deduplicated after the send, so the
+      // caller sees an ordinary message id rather than a conflict.
+      mockSend.mockResolvedValue({ messageId: 'msg-456' });
 
       const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
       process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
@@ -254,7 +270,12 @@ describe('createQueue', () => {
           { idempotencyKey: 'my-key' }
         );
 
-        expect(result.messageId).toBe('msg_duplicate_my-key');
+        expect(result.messageId).toBe('msg-456');
+        expect(mockSend).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.anything(),
+          expect.objectContaining({ idempotencyKey: 'my-key' })
+        );
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
@@ -621,6 +642,34 @@ describe('createQueue', () => {
       expect(mockHandleCallback).toHaveBeenCalledWith(expect.any(Function), {
         retry: expect.any(Function),
       });
+    });
+
+    it('should pass handler rejections to QueueClient', async () => {
+      let capturedHandler: (
+        message: unknown,
+        metadata: unknown
+      ) => Promise<void>;
+      mockHandleCallback.mockImplementation((handler) => {
+        capturedHandler = handler;
+        return async () => new Response('ok');
+      });
+      const handlerError = new Error('retry delivery');
+
+      const queue = createQueue();
+      queue.createQueueHandler('__wkf_workflow_', async () => {
+        throw handlerError;
+      });
+
+      assert(capturedHandler);
+      await expect(
+        capturedHandler(
+          {
+            payload: { runId: 'run-123' },
+            queueName: '__wkf_workflow_test',
+          },
+          { messageId: 'msg-123', deliveryCount: 1 }
+        )
+      ).rejects.toBe(handlerError);
     });
 
     it('should ask VQS to retry handler errors with bounded backoff', () => {

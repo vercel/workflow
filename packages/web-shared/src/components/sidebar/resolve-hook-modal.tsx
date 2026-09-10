@@ -2,6 +2,7 @@
 
 import { Send, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { cn } from '../../lib/cn';
 
 interface ResolveHookModalProps {
   /** Whether the modal is open */
@@ -110,60 +111,24 @@ export function ResolveHookModal({
 
   return (
     <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 50,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
+      className="fixed inset-0 z-50 flex items-center justify-center"
       role="dialog"
       aria-modal="true"
       aria-labelledby="resolve-hook-modal-title"
     >
-      {/* Backdrop — matches Geist dialog ::backdrop */}
+      {/* Backdrop: matches Geist dialog ::backdrop */}
       <div
-        style={{
-          position: 'absolute',
-          inset: 0,
-          background: 'rgba(0, 0, 0, 0.7)',
-        }}
+        className="absolute inset-0 bg-black/70"
         onClick={isSubmitting ? undefined : onClose}
       />
 
-      {/* Modal card — matches Geist dialog.geist-dialog */}
-      <div
-        style={{
-          position: 'relative',
-          zIndex: 10,
-          width: 480,
-          maxWidth: 'calc(100% - 32px)',
-          borderRadius: 12,
-          border: 'none',
-          boxShadow: 'var(--ds-shadow-menu)',
-          background: 'var(--ds-background-100)',
-          color: 'var(--ds-gray-1000)',
-          overflow: 'hidden',
-        }}
-      >
+      {/* Modal card: matches Geist dialog.geist-dialog */}
+      <div className="relative z-10 w-[480px] max-w-[calc(100%_-_32px)] overflow-hidden !border-none bg-background-100 text-gray-1000 material-menu">
         {/* Header */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '16px 24px',
-          }}
-        >
+        <div className="flex items-center justify-between px-6 py-4">
           <h2
             id="resolve-hook-modal-title"
-            style={{
-              margin: 0,
-              fontSize: 16,
-              fontWeight: 600,
-              color: 'var(--ds-gray-1000)',
-            }}
+            className="m-0 font-semibold text-base text-gray-1000"
           >
             Resolve Hook
           </h2>
@@ -172,66 +137,24 @@ export function ResolveHookModal({
             onClick={onClose}
             disabled={isSubmitting}
             aria-label="Close modal"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              padding: 4,
-              borderRadius: 6,
-              border: 'none',
-              background: 'transparent',
-              color: 'var(--ds-gray-900)',
-              cursor: isSubmitting ? 'not-allowed' : 'pointer',
-              opacity: isSubmitting ? 0.5 : 1,
-              transition: 'background 0.15s',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = 'var(--ds-gray-alpha-200)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = 'transparent';
-            }}
+            className="flex cursor-pointer items-center justify-center rounded-md !border-none !bg-transparent p-1 text-gray-900 transition-colors hover:!bg-gray-alpha-200 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <X style={{ width: 16, height: 16 }} />
+            <X className="size-4" />
           </button>
         </div>
 
         {/* Body */}
         <form onSubmit={handleSubmit}>
-          <div style={{ padding: '0 24px 16px' }}>
+          <div className="px-6 pb-4">
             <label
               htmlFor="json-payload"
-              style={{
-                display: 'block',
-                fontSize: 14,
-                fontWeight: 500,
-                marginBottom: 6,
-                color: 'var(--ds-gray-1000)',
-              }}
+              className="mb-1.5 block font-medium text-gray-1000 text-sm"
             >
               JSON Payload
             </label>
-            <p
-              style={{
-                fontSize: 13,
-                marginBottom: 12,
-                marginTop: 0,
-                color: 'var(--ds-gray-900)',
-                lineHeight: 1.5,
-              }}
-            >
+            <p className="mt-0 mb-3 text-[13px] text-gray-900 leading-[1.5]">
               Enter a JSON value to send to the hook. Leave empty to send{' '}
-              <code
-                style={{
-                  padding: '2px 6px',
-                  borderRadius: 4,
-                  fontSize: 12,
-                  fontFamily:
-                    'var(--font-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace)',
-                  background: 'var(--ds-gray-alpha-200)',
-                  color: 'var(--ds-gray-1000)',
-                }}
-              >
+              <code className="rounded bg-gray-alpha-200 px-1.5 py-0.5 font-mono text-gray-1000 text-xs">
                 null
               </code>
               .
@@ -247,57 +170,17 @@ export function ResolveHookModal({
               onKeyDown={handleKeyDown}
               disabled={isSubmitting}
               placeholder='{"key": "value"}'
-              style={{
-                width: '100%',
-                height: 160,
-                padding: '8px 12px',
-                fontFamily:
-                  'var(--font-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace)',
-                fontSize: 13,
-                lineHeight: 1.5,
-                borderRadius: 8,
-                border: `1px solid ${parseError ? 'var(--ds-red-700)' : 'var(--ds-gray-alpha-400)'}`,
-                color: 'var(--ds-gray-1000)',
-                background: 'var(--ds-background-100)',
-                outline: 'none',
-                resize: 'none',
-                opacity: isSubmitting ? 0.5 : 1,
-                cursor: isSubmitting ? 'not-allowed' : 'text',
-                boxSizing: 'border-box',
-              }}
+              className={cn(
+                'box-border h-40 w-full resize-none rounded-lg border bg-background-100 px-3 py-2 font-mono text-[13px] text-gray-1000 leading-[1.5] outline-none disabled:cursor-not-allowed disabled:opacity-50',
+                parseError ? 'border-red-700' : 'border-gray-alpha-400'
+              )}
             />
             {parseError && (
-              <p
-                style={{
-                  marginTop: 8,
-                  fontSize: 13,
-                  color: 'var(--ds-red-900)',
-                  margin: '8px 0 0',
-                }}
-              >
-                {parseError}
-              </p>
+              <p className="mt-2 mb-0 text-[13px] text-red-900">{parseError}</p>
             )}
-            <p
-              style={{
-                marginTop: 8,
-                fontSize: 12,
-                color: 'var(--ds-gray-800)',
-                margin: '8px 0 0',
-              }}
-            >
+            <p className="mt-2 mb-0 text-gray-800 text-xs">
               Press{' '}
-              <kbd
-                style={{
-                  padding: '2px 5px',
-                  borderRadius: 4,
-                  fontSize: 11,
-                  fontFamily:
-                    'var(--font-mono, ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace)',
-                  background: 'var(--ds-gray-alpha-200)',
-                  border: '1px solid var(--ds-gray-alpha-400)',
-                }}
-              >
+              <kbd className="rounded border border-gray-alpha-400 bg-gray-alpha-200 px-[5px] py-0.5 font-mono text-[11px]">
                 {isMacPlatform ? '⌘' : 'Ctrl'}
                 +Enter
               </kbd>{' '}
@@ -306,38 +189,12 @@ export function ResolveHookModal({
           </div>
 
           {/* Footer */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'flex-end',
-              gap: 8,
-              padding: '12px 24px',
-              borderTop: '1px solid var(--ds-gray-alpha-400)',
-            }}
-          >
+          <div className="flex items-center justify-end gap-2 border-gray-alpha-400 border-t px-6 py-3">
             <button
               type="button"
               onClick={onClose}
               disabled={isSubmitting}
-              style={{
-                padding: '8px 16px',
-                fontSize: 14,
-                fontWeight: 500,
-                borderRadius: 8,
-                border: '1px solid var(--ds-gray-alpha-400)',
-                background: 'var(--ds-background-100)',
-                color: 'var(--ds-gray-1000)',
-                cursor: isSubmitting ? 'not-allowed' : 'pointer',
-                opacity: isSubmitting ? 0.5 : 1,
-                transition: 'background 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = 'var(--ds-gray-alpha-100)';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = 'var(--ds-background-100)';
-              }}
+              className="cursor-pointer rounded-lg border border-gray-alpha-400 bg-background-100 px-4 py-2 font-medium text-gray-1000 text-sm transition-colors hover:bg-gray-alpha-100 disabled:cursor-not-allowed disabled:opacity-50"
             >
               Cancel
             </button>
@@ -345,29 +202,9 @@ export function ResolveHookModal({
               type="button"
               onClick={() => void submitPayload()}
               disabled={isSubmitting}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: '8px 16px',
-                fontSize: 14,
-                fontWeight: 500,
-                borderRadius: 8,
-                border: 'none',
-                background: 'var(--ds-gray-1000)',
-                color: 'var(--ds-background-100)',
-                cursor: isSubmitting ? 'not-allowed' : 'pointer',
-                opacity: isSubmitting ? 0.5 : 1,
-                transition: 'opacity 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                if (!isSubmitting) e.currentTarget.style.opacity = '0.9';
-              }}
-              onMouseLeave={(e) => {
-                if (!isSubmitting) e.currentTarget.style.opacity = '1';
-              }}
+              className="flex cursor-pointer items-center gap-1.5 rounded-lg !border-none bg-gray-1000 px-4 py-2 font-medium text-background-100 text-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:opacity-50"
             >
-              <Send style={{ width: 14, height: 14 }} />
+              <Send className="size-3.5" />
               {isSubmitting ? 'Sending...' : 'Send Payload'}
             </button>
           </div>

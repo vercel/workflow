@@ -2,12 +2,9 @@ import { ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { AttributeChange } from '@workflow/world';
 import { EventConsumerResult } from '../events-consumer.js';
+import type { AttributeInvocationQueueItem } from '../global.js';
 import {
-  type AttributeInvocationQueueItem,
-  WorkflowSuspension,
-} from '../global.js';
-import {
-  scheduleWhenIdle,
+  scheduleWorkflowSuspension,
   type WorkflowOrchestratorContext,
 } from '../private.js';
 
@@ -17,7 +14,7 @@ export function createSetAttributes(ctx: WorkflowOrchestratorContext) {
     options: { allowReservedAttributes?: boolean } = {}
   ): Promise<void> {
     const { promise, resolve } = withResolvers<void>();
-    const correlationId = `attr_${ctx.generateCorrelationId('attr')}`;
+    const correlationId = `attr_${ctx.generateUlid()}`;
     const queueItem: AttributeInvocationQueueItem = {
       type: 'attribute',
       correlationId,
@@ -30,11 +27,7 @@ export function createSetAttributes(ctx: WorkflowOrchestratorContext) {
 
     ctx.eventsConsumer.subscribe((event) => {
       if (!event) {
-        scheduleWhenIdle(ctx, () => {
-          ctx.onWorkflowError(
-            new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
-          );
-        });
+        scheduleWorkflowSuspension(ctx);
         return EventConsumerResult.NotConsumed;
       }
 

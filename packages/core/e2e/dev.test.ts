@@ -44,14 +44,24 @@ export function createDevTests(config?: DevTestConfig) {
     // Each prewarm/trigger fetch is hard-bounded by this so cleanup never hangs
     // on a wedged dev server.
     const PREWARM_FETCH_TIMEOUT_MS = 5_000;
-    // The afterEach cleanup can issue two *sequential* prewarms (before and
-    // after deleting an added file) while the dev server is mid-rebuild — the
-    // teardown of a test that added a workflow file and edited an import is
-    // exactly when both rebuild and respond slowly. Its budget must therefore
-    // exceed 2× PREWARM_FETCH_TIMEOUT_MS (plus file IO) with headroom, or it
-    // trips vitest's 10s default hook timeout. The bounded fetches mean this
-    // can't hang indefinitely, so a generous budget is safe.
-    const CLEANUP_HOOK_TIMEOUT_MS = PREWARM_FETCH_TIMEOUT_MS * 4;
+    // The afterEach cleanup can issue three *sequential* prewarms (before the
+    // delete of an added file, after it, and after the directory removals)
+    // while the dev server is mid-rebuild — the teardown of a test that added a
+    // workflow file and edited an import is exactly when both rebuild and
+    // respond slowly. Its budget must therefore exceed 3× PREWARM_FETCH_TIMEOUT_MS
+    // (plus file IO) with headroom, or it trips vitest's 10s default hook
+    // timeout. The bounded fetches mean this can't hang indefinitely, so a
+    // generous budget is safe.
+    //
+    // Cleanup also waits for the generated step registrations to drop every
+    // file it deleted, so its budget has to cover that too.
+    // A delete converges in one watcher event plus one rediscovery — ~2s on the
+    // macOS baseline. A watcher that dropped the unlink never converges, so a
+    // large budget only delays the failure.
+    const STEP_REGISTRATION_CONVERGENCE_TIMEOUT_MS =
+      process.platform === 'win32' ? 60_000 : 20_000;
+    const CLEANUP_HOOK_TIMEOUT_MS =
+      PREWARM_FETCH_TIMEOUT_MS * 4 + STEP_REGISTRATION_CONVERGENCE_TIMEOUT_MS;
     const appPath = getWorkbenchAppPath();
     const deploymentUrl = process.env.DEPLOYMENT_URL;
     const generatedStepRegistration = path.join(
@@ -148,6 +158,67 @@ export function createDevTests(config?: DevTestConfig) {
     };
     const restoreFiles: Array<{ path: string; content: string }> = [];
     const restoreDirectories: string[] = [];
+    /**
+     * The generated step registrations import every discovered step file by
+     * path, so deleting a file that declares a step only stops breaking the
+     * flow route once a rediscovery has regenerated them. A watcher that drops
+     * the unlink therefore leaves the generated file importing a path that no
+     * longer exists: the flow route stops compiling and every later workflow
+     * dispatch in the job gets a 500 that points at the fixture rather than at
+     * whatever test is running. The generated workflow bundle inlines workflow
+     * sources instead of importing them, so only step files can strand it.
+     */
+    const appRelativePosixPath = (filePath: string) =>
+      path.relative(appPath, filePath).split(path.sep).join('/');
+    const findStrandedStepRegistrations = async (deletedPaths: string[]) => {
+      const registrations =
+        (await readFileIfExists(generatedStepRegistration)) ?? '';
+      return deletedPaths.filter((filePath) =>
+        registrations.includes(appRelativePosixPath(filePath))
+      );
+    };
+    /**
+     * Deleted files whose contents are still importable are harmless, so on a
+     * convergence failure the fixture is written back: the shared dev server
+     * keeps serving the rest of the suite instead of 500ing on every request,
+     * and the failure surfaces here, where it is diagnosable.
+     */
+    const waitForDeletedFilesToLeaveStepRegistrations = async (
+      deleted: Array<{ path: string; content: string }>
+    ) => {
+      if (deleted.length === 0) {
+        return;
+      }
+      const deletedPaths = deleted.map((item) => item.path);
+      try {
+        await pollUntil({
+          description:
+            'generated step registrations to drop the deleted workflow files',
+          timeoutMs: STEP_REGISTRATION_CONVERGENCE_TIMEOUT_MS,
+          intervalMs: 250,
+          check: async () => {
+            expect(await findStrandedStepRegistrations(deletedPaths)).toEqual(
+              []
+            );
+          },
+        });
+      } catch {
+        const stranded = await findStrandedStepRegistrations(deletedPaths);
+        await Promise.all(
+          deleted
+            .filter((item) => stranded.includes(item.path))
+            .map((item) => fs.writeFile(item.path, item.content))
+        );
+        throw new Error(
+          `Deleted workflow files are still imported by ${finalConfig.generatedStepRegistrationPath} ` +
+            `after ${STEP_REGISTRATION_CONVERGENCE_TIMEOUT_MS}ms: ${stranded
+              .map(appRelativePosixPath)
+              .join(', ')}. The dev server missed the deletion, so the flow ` +
+            'route would 500 for every later request. The files have been ' +
+            'restored to keep the dev server usable.'
+        );
+      }
+    };
     const devServerLogPath = process.env.DEV_SERVER_LOG_PATH;
     const shouldAssertDevHmrLogs = process.env.WORKFLOW_DEV_HMR_LOGS === '1';
     const hmrLogMessages = {
@@ -155,6 +226,7 @@ export function createDevTests(config?: DevTestConfig) {
       hot: 'workflow dev hmr: hot rebuild',
       full: 'workflow dev hmr: full rediscovery',
     };
+    const hmrRebuildCompleteMessage = 'workflow dev hmr: rebuild complete';
 
     const fetchWithTimeout = (pathname: string) => {
       if (!deploymentUrl) {
@@ -193,10 +265,58 @@ export function createDevTests(config?: DevTestConfig) {
         .then(decodeDevServerLog)
         .catch(() => '');
     };
-    const readDevServerLogCursor = async () =>
-      devServerLogPath && shouldAssertDevHmrLogs
-        ? (await readDevServerLog()).length
-        : undefined;
+    /**
+     * Wait until the dev server's HMR pipeline is quiescent: every rebuild
+     * the log says started (`hot rebuild` / `full rediscovery`) has logged
+     * `rebuild complete`, and no new HMR line has appeared for a short
+     * window (covering watcher latency for a just-landed write plus the
+     * flush debounce).
+     *
+     * Rebuilds are serialized and can take multi-second on CI, so a write
+     * from a previous case (or a teardown restore) can still be rebuilding
+     * — or sitting in the queue — when the next exact-count window would
+     * open. Draining here keeps those legitimate rebuild lines out of the
+     * next window instead of failing it with over-counts.
+     */
+    const hmrQuiescenceQuietMs = 2_000;
+    const waitForHmrQuiescence = async () => {
+      if (!devServerLogPath || !shouldAssertDevHmrLogs) {
+        return;
+      }
+      let lastCounts = '';
+      let quietSince = Date.now();
+      await pollUntil({
+        description: 'dev server HMR pipeline to go quiescent',
+        timeoutMs: hmrRediscoveryTimeoutMs,
+        intervalMs: 250,
+        check: async () => {
+          const log = await readDevServerLog();
+          const hot = countLogMessage(log, hmrLogMessages.hot);
+          const full = countLogMessage(log, hmrLogMessages.full);
+          const skip = countLogMessage(log, hmrLogMessages.skip);
+          const complete = countLogMessage(log, hmrRebuildCompleteMessage);
+          const counts = `${hot}/${full}/${skip}/${complete}`;
+          if (counts !== lastCounts) {
+            lastCounts = counts;
+            quietSince = Date.now();
+          }
+          expect(complete).toBeGreaterThanOrEqual(hot + full);
+          expect(Date.now() - quietSince).toBeGreaterThanOrEqual(
+            hmrQuiescenceQuietMs
+          );
+        },
+      });
+    };
+
+    // Cursors open exact-count windows, so they only get taken once the
+    // pipeline is drained — every call site writes after taking its cursor.
+    const readDevServerLogCursor = async () => {
+      if (!devServerLogPath || !shouldAssertDevHmrLogs) {
+        return undefined;
+      }
+      await waitForHmrQuiescence();
+      return (await readDevServerLog()).length;
+    };
     const countLogMessage = (log: string, message: string) =>
       log.split(message).length - 1;
     type ExpectedHmrLogCount = number | { min?: number; max?: number };
@@ -338,23 +458,39 @@ export function createDevTests(config?: DevTestConfig) {
       // subsequent step request returns 500.
       const toRestore = restoreFiles.filter((item) => item.content !== '');
       const toDelete = restoreFiles.filter((item) => item.content === '');
-      await Promise.all(
-        toRestore.map((item) => fs.writeFile(item.path, item.content))
+      // Captured before the delete so a file the dev server failed to forget
+      // can be put back verbatim. See
+      // `waitForDeletedFilesToLeaveStepRegistrations`.
+      const deleted = await Promise.all(
+        toDelete.map(async (item) => ({
+          path: item.path,
+          content: (await readFileIfExists(item.path)) ?? '',
+        }))
       );
-      if (toDelete.length > 0) {
+      try {
+        await Promise.all(
+          toRestore.map((item) => fs.writeFile(item.path, item.content))
+        );
+        if (toDelete.length > 0) {
+          await prewarm();
+        }
+        await Promise.all(
+          toDelete.map((item) => fs.rm(item.path, { force: true }))
+        );
         await prewarm();
+        // Runs before the directory removals below so a restored fixture still
+        // finds the node_modules package it imports.
+        await waitForDeletedFilesToLeaveStepRegistrations(deleted);
+        await Promise.all(
+          restoreDirectories.map((dir) =>
+            fs.rm(dir, { recursive: true, force: true })
+          )
+        );
+        await prewarm();
+      } finally {
+        restoreFiles.length = 0;
+        restoreDirectories.length = 0;
       }
-      await Promise.all(
-        toDelete.map((item) => fs.rm(item.path, { force: true }))
-      );
-      await Promise.all(
-        restoreDirectories.map((dir) =>
-          fs.rm(dir, { recursive: true, force: true })
-        )
-      );
-      await prewarm();
-      restoreFiles.length = 0;
-      restoreDirectories.length = 0;
     }, CLEANUP_HOOK_TIMEOUT_MS);
 
     test.runIf(shouldRunNextFlowRouteHmrTests)(

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
+  "$schema": "https://unpkg.com/@changesets/config@4.0.0/schema.json",
   "changelog": [
     "./changelog.mjs",
     {
@@ -7,6 +7,11 @@
     }
   ],
   "commit": false,
+  "format": false,
+  "privatePackages": {
+    "version": true,
+    "tag": true
+  },
   "fixed": [
     [
       "workflow",
@@ -32,6 +37,8 @@
     "workflow-sdk-compiler-playground",
     "@workflow/docs-typecheck",
     "@workflow/example-*",
-    "@workflow/vitest-workbench"
+    "@workflow/vitest-workbench",
+    "@workflow/world-sim",
+    "@workflow/sim-world-workbench"
   ]
 }

@@ -25,3 +25,6 @@ vite.config.ts.timestamp-*
 # Workflows
 _workflows.ts
 /.swc
+
+# Copied from index.html by `copy:index` so nitro can serve it statically
+/public/index.html

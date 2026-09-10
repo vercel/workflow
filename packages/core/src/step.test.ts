@@ -9,7 +9,6 @@ import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
-import { createCorrelationIdGenerator } from './correlation-id.js';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
@@ -58,18 +57,13 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
-    generateCorrelationId: createCorrelationIdGenerator({
-      seed: 'test',
-      fixedTimestamp: workflowStartedAt,
-      positional: () => ulid(workflowStartedAt),
-      // The event logs in this file hardcode correlation ids the run-wide
-      // shared sequence minted, so replay only matches under that scheme.
-      perKind: false,
-    }),
+    generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
@@ -156,11 +150,14 @@ describe('createUseStep', () => {
     expect((error as WorkflowSuspension).message).toBe(
       '1 step has not been run yet'
     );
-    // Compare Map values with WorkflowSuspension.steps array
+    // Compare Map values with WorkflowSuspension.items array
     expect([...ctx.invocationsQueue.values()]).toEqual(
-      (error as WorkflowSuspension).steps
+      (error as WorkflowSuspension).items
     );
-    expect((error as WorkflowSuspension).steps).toMatchInlineSnapshot(`
+    expect((error as WorkflowSuspension).steps).toBe(
+      (error as WorkflowSuspension).items
+    );
+    expect((error as WorkflowSuspension).items).toMatchInlineSnapshot(`
       [
         {
           "args": [
@@ -202,11 +199,11 @@ describe('createUseStep', () => {
     expect((error as WorkflowSuspension).message).toBe(
       '3 steps have not been run yet'
     );
-    // Compare Map values with WorkflowSuspension.steps array
+    // Compare Map values with WorkflowSuspension.items array
     expect([...ctx.invocationsQueue.values()]).toEqual(
-      (error as WorkflowSuspension).steps
+      (error as WorkflowSuspension).items
     );
-    expect((error as WorkflowSuspension).steps).toMatchInlineSnapshot(`
+    expect((error as WorkflowSuspension).items).toMatchInlineSnapshot(`
       [
         {
           "args": [
@@ -1020,7 +1017,7 @@ describe('AbortController hook integration', () => {
       );
 
       // The suspension should contain the hook with abortRequested
-      const hookItem = suspension.steps.find((s) => s.type === 'hook');
+      const hookItem = suspension.items.find((s) => s.type === 'hook');
       expect(hookItem).toBeDefined();
       expect(hookItem?.type).toBe('hook');
       if (hookItem?.type === 'hook') {
@@ -1122,7 +1119,7 @@ describe('AbortController hook integration', () => {
       );
 
       // The handler should see a hook that needs both creation and abort
-      const hookItem = suspension.steps.find((s) => s.type === 'hook');
+      const hookItem = suspension.items.find((s) => s.type === 'hook');
       expect(hookItem).toBeDefined();
       if (hookItem?.type === 'hook') {
         expect(hookItem.hasCreatedEvent).toBeFalsy();

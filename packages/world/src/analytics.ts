@@ -6,7 +6,7 @@ import { StepStatusSchema } from './steps.js';
 import { WaitStatusSchema } from './waits.js';
 
 /**
- * Timezone-naive datetime string, e.g. `2026-07-13 17:09:11.593` — the
+ * Timezone-naive datetime string, e.g. `2026-07-13 17:09:11.593`: the
  * shape ClickHouse-backed analytics endpoints serialize `DateTime64`
  * values as. Such values are UTC by convention but carry no designator.
  */
@@ -18,7 +18,7 @@ const NAIVE_DATETIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
  * `z.coerce.date()` delegates to `new Date(value)`, which interprets a
  * naive string in the **process's local timezone**. That is only correct
  * when the process runs in UTC (e.g. the deployed observability web app's
- * server actions) and is wrong by the local UTC offset everywhere else —
+ * server actions) and is wrong by the local UTC offset everywhere else:
  * the CLI on a laptop, `workflow web --localUi`, tests. Normalizing naive
  * strings to an explicit `Z` designator makes parsing timezone-independent.
  * Values that already carry timezone information (a `Z` or `±hh:mm`
@@ -128,8 +128,8 @@ export const AnalyticsWaitSchema = z.object({
 export const AnalyticsAttributeKeySchema = z.object({
   key: z.string(),
   runCount: z.coerce.number(),
-  firstSeenAt: z.coerce.date(),
-  lastSeenAt: z.coerce.date(),
+  firstSeenAt: UTCDateSchema,
+  lastSeenAt: UTCDateSchema,
 });
 
 export type AnalyticsRun = z.infer<typeof AnalyticsRunSchema>;
@@ -145,8 +145,8 @@ export interface AnalyticsListRunsParams {
   /**
    * Bound the listing to runs active between `startTime` and `endTime`
    * (ISO 8601 timestamps). Both must be provided together. A bounded window
-   * lets the backend prune its scan — the ClickHouse-backed Vercel
-   * implementation is significantly faster with one. Requesting a window
+   * lets the backend prune its scan, so the ClickHouse-backed Vercel
+   * implementation is faster with one. Requesting a window
    * older than the plan's observability lookback fails with
    * `observability-upgrade-required`.
    */
@@ -187,12 +187,49 @@ export interface AnalyticsListEventsParams
   correlationId?: string;
 }
 
+/**
+ * @deprecated Parameters of the deprecated `analytics.events.listByCorrelationId`.
+ * Use `AnalyticsListEventsParams` with `list({ runId, correlationId })`.
+ */
 export interface AnalyticsListEventsByCorrelationIdParams {
   correlationId: string;
   /** The run the correlation id belongs to; see `ListEventsByCorrelationIdParams`. */
   runId: string;
   pagination?: PaginationOptions;
 }
+
+/** Maximum number of event IDs accepted by one analytics batch lookup. */
+export const ANALYTICS_EVENTS_GET_MANY_LIMIT = 100;
+
+/**
+ * Maximum `pagination.limit` the run-scoped analytics listings accept:
+ * `events.list`, `events.listByCorrelationId`, `steps.list`, `waits.list`.
+ *
+ * Exported so a World implementation can reject an over-large page before a
+ * request goes out. The backend validates the same bound and answers 400, and
+ * a caller that wraps the listing in a `catch` — the common shape, since
+ * analytics is an optional capability — sees only a swallowed failure and an
+ * empty result. Failing in-process with the bound named is diagnosable.
+ */
+export const ANALYTICS_RUN_SCOPED_PAGE_LIMIT = 1000;
+
+/**
+ * Maximum `pagination.limit` the remaining analytics listings accept:
+ * `runs.list`, `attributes.list`, `hooks.list`.
+ *
+ * Deliberately separate from {@link ANALYTICS_RUN_SCOPED_PAGE_LIMIT}: these
+ * listings scan across runs rather than within one, and the backend caps them
+ * an order of magnitude lower. Two names beat one constant that is right for
+ * half its call sites.
+ */
+export const ANALYTICS_PAGE_LIMIT = 100;
+
+/**
+ * Maximum key=value pairs one runs listing may filter by. Each pair adds an
+ * aggregate condition to the backend's attribute prefilter, so the bound is
+ * about query complexity rather than result size.
+ */
+export const ANALYTICS_MAX_ATTRIBUTE_FILTERS = 8;
 
 export interface AnalyticsListHooksParams {
   runId: string;
@@ -228,9 +265,32 @@ export interface Analytics {
   };
   events: {
     get(runId: string, eventId: string): Promise<AnalyticsEvent>;
+    /**
+     * Retrieves the analytics rows present for a bounded set of event IDs in
+     * one run. Missing rows are omitted because analytics ingestion may lag
+     * canonical storage. Duplicate IDs are looked up once; result ordering is
+     * not guaranteed.
+     */
+    getMany(
+      runId: string,
+      eventIds: readonly string[]
+    ): Promise<AnalyticsEvent[]>;
     list(
       params: AnalyticsListEventsParams
     ): Promise<PaginatedResponse<AnalyticsEvent>>;
+    /**
+     * @deprecated Use `list({ runId, correlationId })`, which issues the same
+     * request and additionally accepts an `eventType` filter.
+     *
+     * This method was the analytics counterpart of the cross-run correlation
+     * lookup, which took the correlation id alone. Requiring a `runId` (a
+     * correlation id is unique per run, not globally) left it a special case
+     * of `list` with no behaviour of its own. Scheduled for removal in the
+     * next major.
+     *
+     * Note this is unrelated to the storage `events.listByCorrelationId`,
+     * which is not deprecated and keeps a distinct endpoint.
+     */
     listByCorrelationId(
       params: AnalyticsListEventsByCorrelationIdParams
     ): Promise<PaginatedResponse<AnalyticsEvent>>;

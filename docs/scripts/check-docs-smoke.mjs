@@ -211,6 +211,10 @@ const checks = [
     run: () => assertHtmlMeta('/worlds/building-a-world', '/og/worlds'),
   },
   {
+    name: 'HTML meta - worlds upgrading-to-v5 (v5)',
+    run: () => assertHtmlMeta('/v5/worlds/upgrading-to-v5', '/og/worlds'),
+  },
+  {
     name: 'HTML meta - world vercel (v5)',
     run: () => assertHtmlMeta('/v5/worlds/vercel', '/og/worlds/vercel'),
   },
