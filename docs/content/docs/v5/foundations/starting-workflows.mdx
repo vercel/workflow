@@ -83,7 +83,7 @@ Most `Run` properties are async getters that return promises. `await` them to ge
 
 ### Starting workflows from workflow functions
 
-You can also call `start()` directly inside workflow functions to spawn child workflows. For choosing between this and awaiting a workflow function directly, see [Workflow Composition](/cookbook/common-patterns/workflow-composition).
+You can also call `start()` directly inside workflow functions to spawn child workflows. For choosing between this and awaiting a workflow function directly, see [Workflow Composition](/patterns/workflow-composition).
 
 ```typescript lineNumbers
 import { start } from "workflow/api";
@@ -107,7 +107,7 @@ Inside workflow functions, each `Run` property access (e.g., `run.status`, `run.
 </Callout>
 
 <Callout type="warn">
-Awaiting `returnValue` polls the child run every second, and the polling step holds its worker slot open until the child finishes. Size worker-based Worlds to cover the peak number of these polls in flight. If the child workflow is long-running, spawn it without awaiting `returnValue` and have it resume a [hook](/docs/foundations/hooks) when it completes. See the [`startAndWait()` pattern](/cookbook/advanced/child-workflows).
+Awaiting `returnValue` polls the child run every second, and the polling step holds its worker slot open until the child finishes. Size worker-based Worlds to cover the peak number of these polls in flight. If the child workflow is long-running, spawn it without awaiting `returnValue` and have it resume a [hook](/docs/foundations/hooks) when it completes. See the [`startAndWait()` pattern](/patterns/child-workflows).
 </Callout>
 
 ### Fire and forget

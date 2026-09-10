@@ -150,5 +150,5 @@ The returned `Run` object is fully functional inside a workflow. Each property a
 </Callout>
 
 <Callout type="warn">
-`returnValue` polls the child run every second and holds the polling step's worker slot open for as long as the child takes to finish. For long-running children, spawn without awaiting `returnValue` and have the child resume a [hook](/docs/foundations/hooks) when it completes. See the [`startAndWait()` pattern](/cookbook/advanced/child-workflows).
+`returnValue` polls the child run every second and holds the polling step's worker slot open for as long as the child takes to finish. For long-running children, spawn without awaiting `returnValue` and have the child resume a [hook](/docs/foundations/hooks) when it completes. See the [`startAndWait()` pattern](/patterns/child-workflows).
 </Callout>
