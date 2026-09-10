@@ -6,10 +6,6 @@ import {
   approvalHook,
   humanInTheLoopWorkflow,
 } from '../workflows/cookbook/human-in-the-loop.js';
-import {
-  stopHook,
-  stopWorkflowDemo,
-} from '../workflows/cookbook/stop-workflow.js';
 import { toolOrchestrationWorkflow } from '../workflows/cookbook/tool-orchestration.js';
 import { toolStreamingWorkflow } from '../workflows/cookbook/tool-streaming.js';
 
@@ -98,35 +94,5 @@ describe('tool-orchestration pattern', () => {
       direct: 'data-for-mykey',
       delayed: 'data-for-mykey-delayed',
     });
-  });
-});
-
-describe('stop-workflow pattern', () => {
-  it('hook signal causes workflow to exit loop gracefully', async () => {
-    const run = await start(stopWorkflowDemo, [10, 'stop:run-1']);
-
-    // Wait for the stop hook to be created, then signal it after some work
-    const hook = await waitForHook(run, { token: 'stop:run-1' });
-    expect(hook.token).toBe('stop:run-1');
-
-    await stopHook.resume('stop:run-1', { reason: 'User cancelled' });
-
-    const result = await run.returnValue;
-    expect(result.stopped).toBe(true);
-    expect(result.stopReason).toBe('User cancelled');
-    expect(result.completed).toBeLessThan(10);
-  });
-
-  it('completes all iterations when no stop signal', async () => {
-    const run = await start(stopWorkflowDemo, [3, 'stop:run-2']);
-
-    // Don't signal the stop hook — workflow should complete all iterations
-    // But the hook is created, so we need to handle it. The workflow will
-    // finish the loop before the hook resolves.
-    const result = await run.returnValue;
-
-    expect(result.stopped).toBe(false);
-    expect(result.completed).toBe(3);
-    expect(result.results).toHaveLength(3);
   });
 });

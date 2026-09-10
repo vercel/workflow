@@ -1,0 +1,154 @@
+name: Patterns Checks
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    paths:
+      - "docs/lib/patterns/**"
+      - "docs/app/r/**"
+      - "docs/scripts/**"
+      - "workbench/install-fixture/**"
+      - "workbench/vitest/workflows/patterns/**"
+      - "packages/**"
+      - ".github/workflows/patterns-checks.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  # Phase A — structural validation of every /r payload + codegen freshness.
+  patterns-validate:
+    name: Patterns Registry Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate registry payloads
+        run: bun ./scripts/validate-registry.ts
+        working-directory: docs
+
+      - name: Check generated pattern sources are in sync
+        run: |
+          bun ./scripts/sync-pattern-source.ts
+          if ! git diff --exit-code ../docs/lib/patterns/generated; then
+            echo "::error::docs/lib/patterns/generated is stale. The canonical sources in workbench/vitest/workflows/patterns changed without regenerating. Run 'pnpm sync-pattern-source' from docs/ and commit the result."
+            exit 1
+          fi
+        working-directory: docs
+
+  # Phase B + D (compile half) — every installable pattern materialized into
+  # a real Next.js app, typechecked, and compiled by the workflow SWC plugin.
+  patterns-fixture-build:
+    name: Patterns Fixture Typecheck + Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm turbo run build --filter='!./workbench/*' --filter='!./docs'
+
+      - name: Materialize pattern payloads into the fixture
+        run: bun ./docs/scripts/materialize-patterns.ts
+
+      - name: Typecheck fixture (all patterns installed)
+        run: pnpm typecheck
+        working-directory: workbench/install-fixture
+
+      - name: Build fixture with the workflow plugin
+        run: pnpm build
+        working-directory: workbench/install-fixture
+
+  # Phase D (CLI half) — install every pattern through the real shadcn CLI
+  # against a locally served docs app, then build the result.
+  patterns-install-e2e:
+    name: Patterns shadcn Install E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm turbo run build --filter='!./workbench/*' --filter='!./docs'
+
+      - name: Start docs dev server
+        run: |
+          pnpm dev > /tmp/docs-dev.log 2>&1 &
+          echo "Waiting for /r endpoint…"
+          for i in $(seq 1 120); do
+            if curl -sf -H 'Accept: application/json' http://localhost:3000/r/semaphore > /dev/null; then
+              echo "docs server ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::docs dev server did not become ready"; tail -50 /tmp/docs-dev.log; exit 1
+        working-directory: docs
+
+      - name: Install every pattern via the shadcn CLI
+        run: bash ./docs/scripts/install-e2e.sh http://localhost:3000
+
+      - name: Typecheck fixture (CLI-installed patterns)
+        run: pnpm typecheck
+        working-directory: workbench/install-fixture
+
+      - name: Build fixture (CLI-installed patterns)
+        run: pnpm build
+        working-directory: workbench/install-fixture

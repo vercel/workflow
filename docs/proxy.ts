@@ -22,8 +22,9 @@ const proxy = createProxy({
 });
 
 export const config = {
+  // Matcher ignoring `/_next/`, `/api/`, `/r/` (shadcn registry), static assets, etc.
   matcher: [
-    '/((?!api(?:/|$)|_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt|og(?:/|$)|.*\\.svg$|.*\\.zip$).*)',
+    '/((?!api(?:/|$)|r(?:/|$)|_next/static|_next/image|favicon.ico|sitemap.xml|robots.txt|og(?:/|$)|.*\\.tgz$|.*\\.svg$|.*\\.zip$).*)',
   ],
 };
 

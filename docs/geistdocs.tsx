@@ -19,8 +19,8 @@ export const nav: { label: string; href: string; preview?: boolean }[] = [
     href: '/docs',
   },
   {
-    label: 'Cookbook',
-    href: '/cookbook',
+    label: 'Patterns',
+    href: '/patterns',
   },
   {
     label: 'Worlds',
