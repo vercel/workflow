@@ -29,8 +29,9 @@ orchestration and queued step invocations. It is mounted in your application
 like any other route, so it is publicly reachable by default, and the queue
 handler, inherited from
 [`@workflow/world-local`](https://github.com/vercel/workflow/tree/main/packages/world-local),
-accepts any request whose `x-vqs-*` headers, queue-name prefix, and body
-schema are well-formed. There is no signature, shared secret, or caller check,
+accepts any request whose `x-vqs-*` headers and queue-name prefix are
+well-formed, leaving the payload itself to be validated later by the runtime
+that consumes the message. There is no signature, shared secret, or caller check,
 so anyone who can reach the route can forge or replay a workflow or step
 invocation, including steps your application would only reach after its own
 gating. Restrict it before you expose the app.
@@ -44,21 +45,26 @@ The other routes under `/.well-known/workflow/v1/` differ:
   behind your own authenticated route and
   [`resumeHook()`](https://workflow-sdk.dev/docs/api-reference/workflow-api/resume-hook)
   when you need more than that.
-- `manifest.json` responds with `404` unless `WORKFLOW_PUBLIC_MANIFEST=1` is
-  set. Leave it unset outside of testing, because the manifest lists your
-  workflow and step names.
+- `manifest.json` responds with `404` unless the app was built with
+  `WORKFLOW_PUBLIC_MANIFEST=1`. That variable is read at build time, so
+  unsetting it in the runtime environment of an already-built deployment does
+  not withdraw the manifest. Leave it unset outside of testing, because the
+  manifest lists your workflow and step names.
 
 ### Bringing your own auth
 
-Workflow does not prescribe an auth mechanism, so gate `/.well-known/workflow/`
-at the network edge rather than inside the application:
+Workflow does not prescribe an auth mechanism, so gate the flow route at the
+network edge rather than inside the application:
 
-- **Keep the routes unreachable from outside.** By default the worker delivers to
-  a loopback address (`http://localhost:{PORT}`, or `WORKFLOW_LOCAL_BASE_URL`
-  when set), so in the common single-process topology nothing outside the
-  container needs to reach them. Blocking external requests to
-  `/.well-known/workflow/` at your ingress, reverse proxy, or firewall costs you
-  nothing, because loopback delivery never traverses that layer.
+- **Keep the flow route unreachable from outside.** By default the worker
+  delivers to a loopback address (`http://localhost:{PORT}`, or
+  `WORKFLOW_LOCAL_BASE_URL` when set), so in the common single-process topology
+  nothing outside the container needs to reach it. Blocking external requests to
+  `/.well-known/workflow/v1/flow` at your ingress, reverse proxy, or firewall
+  costs you nothing, because loopback delivery never traverses that layer. Do
+  not block the whole `/.well-known/workflow/` prefix if you use
+  `createWebhook()`: its `webhook/:token` route sits under the same prefix and
+  has to stay reachable by whoever calls it.
 - **Authenticate at the proxy when the routes must cross hosts.** If your web
   tier and workers are separate deployments, require mTLS or a shared-secret
   header at the proxy in front of the application, and strip any client-supplied

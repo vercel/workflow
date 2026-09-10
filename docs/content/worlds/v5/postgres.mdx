@@ -311,13 +311,13 @@ Unlike the [Vercel World](/worlds/vercel), which authenticates and [encrypts](/d
 The other routes under `/.well-known/workflow/v1/` differ:
 
 - `webhook/:token`, created by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), is authorized by the token in the URL and nothing else. Use [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own authenticated route and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) when you need more than that.
-- `manifest.json` responds with `404` unless `WORKFLOW_PUBLIC_MANIFEST=1`. Leave it unset outside of testing, because the manifest lists your workflow and step names.
+- `manifest.json` responds with `404` unless the app was built with `WORKFLOW_PUBLIC_MANIFEST=1`. That variable is read at build time, so unsetting it in the runtime environment of an already-built deployment does not withdraw the manifest. Leave it unset outside of testing, because the manifest lists your workflow and step names.
 
 ### Bringing your own auth
 
-Workflow does not prescribe an auth mechanism for self-hosted Worlds, so restrict `/.well-known/workflow/` at the network edge rather than inside the application:
+Workflow does not prescribe an auth mechanism for self-hosted Worlds, so restrict the flow route at the network edge rather than inside the application:
 
-- **Keep the routes unreachable from outside.** By default the worker delivers to a loopback address (`http://localhost:{PORT}`, or `WORKFLOW_LOCAL_BASE_URL` when set), so in the common single-process topology nothing outside the container needs to reach them. Blocking external requests to `/.well-known/workflow/` at your ingress, reverse proxy, or firewall costs you nothing, because loopback delivery never traverses that layer.
+- **Keep the flow route unreachable from outside.** By default the worker delivers to a loopback address (`http://localhost:{PORT}`, or `WORKFLOW_LOCAL_BASE_URL` when set), so in the common single-process topology nothing outside the container needs to reach it. Blocking external requests to `/.well-known/workflow/v1/flow` at your ingress, reverse proxy, or firewall costs you nothing, because loopback delivery never traverses that layer. Do not block the whole `/.well-known/workflow/` prefix if you use [`createWebhook()`](/docs/api-reference/workflow/create-webhook): its `webhook/:token` route sits under the same prefix and has to stay reachable by whoever calls it.
 - **Authenticate at the proxy when the routes must cross hosts.** If your web tier and workers are separate deployments, require mTLS or a shared-secret header at the proxy in front of the application, and strip any client-supplied copy of that header at the edge.
 - **Do not gate these paths in framework middleware.** The [Next.js setup guide](/docs/getting-started/next) tells you to exclude `/.well-known/workflow/*` from your proxy matcher, because a handler that consumes the internal request body breaks execution. Adding the paths back in order to gate them reintroduces that failure mode.
 - **Do not expect the World to present a credential.** It does not sign its delivery requests or attach a secret to them, so an in-application check that requires one will reject the World's own deliveries.
@@ -342,7 +342,7 @@ Ensure your deployment has:
 - Network access to your PostgreSQL database
 - Environment variables configured correctly
 - The `start()` function called on server initialization
-- `/.well-known/workflow/` restricted so untrusted clients cannot reach it (see [Security](#security))
+- `/.well-known/workflow/v1/flow` restricted so untrusted clients cannot reach it (see [Security](#security))
 
 <Callout type="info">
 The Postgres World is not compatible with Vercel deployments. On Vercel, workflows automatically use the [Vercel World](/worlds/vercel) with zero configuration.
