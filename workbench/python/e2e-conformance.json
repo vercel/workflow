@@ -9,6 +9,10 @@
   ],
   "language": "python",
   "fixtures": [
+    "abortParallelWorkflow",
+    "abortReasonWorkflow",
+    "abortTimeoutWorkflow",
+    "abortViaHookWorkflow",
     "addTenWorkflow",
     "errorFatalCatchable",
     "errorRetryCustomDelay",

@@ -1,5 +1,39 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- [#4044](https://github.com/vercel/workflow/pull/4044) [`f83e836`](https://github.com/vercel/workflow/commit/f83e8367f43b73e36e5dde9fdd29279dc51c3e09) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Honor `WORKFLOW_NODE_HTTP` on the queue client's transport, so a deployment whose bundled undici is unusable can still acknowledge queue messages instead of redelivering them until the invocation is killed.
+
+- [#4049](https://github.com/vercel/workflow/pull/4049) [`2354301`](https://github.com/vercel/workflow/commit/2354301f39d5740b33ffbbb4dc8573108006619a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Give the queue client its own connection pool and a total per-request deadline, so a stalled queue acknowledgement fails fast instead of holding the invocation until the platform kills it.
+
+- [#3764](https://github.com/vercel/workflow/pull/3764) [`fdeb642`](https://github.com/vercel/workflow/commit/fdeb6422705afe70da5749057905dfc2027bd049) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add the default-off stream WebSocket capability gate.
+
+- [#3763](https://github.com/vercel/workflow/pull/3763) [`4fdbadc`](https://github.com/vercel/workflow/commit/4fdbadcdce000ca93242f24c3286b5e21ee4ef19) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add the client-side `workflow-stream-ws/v1` stream-write frame contract.
+
+- Updated dependencies [[`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd), [`4547e1a`](https://github.com/vercel/workflow/commit/4547e1a7a95f273f3166edf45344dc827f1935fa)]:
+  - @workflow/errors@5.0.0-beta.21
+  - @workflow/world@5.0.0-beta.34
+
+## 5.0.0-beta.44
+
+### Minor Changes
+
+- [#3943](https://github.com/vercel/workflow/pull/3943) [`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Validate `world.analytics` arguments up front: an invalid id, an out-of-range page limit, an oversized attribute filter, or a half-open `startTime`/`endTime` window now throws a `WorkflowWorldError` with `code: 'INVALID_ARGUMENT'` and `field` set to the offending parameter, instead of failing the request. The message names the method, the parameter, and what it received. Adds `ANALYTICS_RUN_SCOPED_PAGE_LIMIT`, `ANALYTICS_PAGE_LIMIT` and `ANALYTICS_MAX_ATTRIBUTE_FILTERS`.
+
+  Deprecate `analytics.events.listByCorrelationId()` in favour of `analytics.events.list({ runId, correlationId })`.
+
+  Fix `analytics.attributes.list()` timestamps being shifted by the local UTC offset.
+
+### Patch Changes
+
+- [#3850](https://github.com/vercel/workflow/pull/3850) [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add a catchable `StreamError` and classify Workflow stream infrastructure failures as `STREAM_ERROR` instead of `USER_ERROR`.
+
+- Updated dependencies [[`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`4a18b01`](https://github.com/vercel/workflow/commit/4a18b0133aaedaf922b903818c6b0db3adc91beb), [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491), [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15)]:
+  - @workflow/world@5.0.0-beta.33
+  - @workflow/errors@5.0.0-beta.20
+
 ## 5.0.0-beta.43
 
 ### Patch Changes

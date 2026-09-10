@@ -1,4 +1,14 @@
 import {
+  EntityConflictError,
+  PreconditionFailedError,
+  RunExpiredError,
+  StreamError,
+  StreamExpiredError,
+  ThrottleError,
+  TooEarlyError,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import {
   envNumber,
   type GetChunksOptions,
   type StreamChunksResponse,
@@ -16,6 +26,10 @@ import {
   instrumentedFetch,
 } from './http-core.js';
 import {
+  encodeMultiChunks,
+  MAX_CHUNKS_PER_STREAM_WRITE,
+} from './stream-chunks.js';
+import {
   WorkflowRunId,
   WorkflowStreamName,
   WorkflowStreamOperation,
@@ -27,19 +41,21 @@ import {
   type HttpConfig,
   makeRequest,
 } from './utils.js';
+import { createStreamWriteSession } from './ws-stream-session.js';
+import { isWsStreamsTransportEnabled } from './ws-transport-enabled.js';
 
 /**
  * Maximum number of chunks per request, matching the server-side
  * MAX_CHUNKS_PER_BATCH. Larger batches are split into multiple requests.
  */
-export const MAX_CHUNKS_PER_REQUEST = 1000;
+export const MAX_CHUNKS_PER_REQUEST = MAX_CHUNKS_PER_STREAM_WRITE;
 
 /**
  * Effective max chunks per write request. Override via
  * `WORKFLOW_MAX_CHUNKS_PER_REQUEST`. Lower it (paired with the server's
  * `MAX_CHUNKS_PER_BATCH` override) to exercise the batch-splitting path.
  */
-const getMaxChunksPerRequest = (): number =>
+export const getMaxChunksPerRequest = (): number =>
   envNumber('WORKFLOW_MAX_CHUNKS_PER_REQUEST', MAX_CHUNKS_PER_REQUEST, {
     integer: true,
     min: 1,
@@ -108,7 +124,9 @@ function streamSpanAttributes(args: {
 
 async function createStreamReadError(response: Response): Promise<Error> {
   const fallback = `Failed to fetch stream: ${response.status}`;
-  if (response.status !== 410) return new Error(fallback);
+  if (response.status !== 410) {
+    return new StreamError(fallback, { status: response.status });
+  }
 
   try {
     const body = (await response.json()) as {
@@ -122,8 +140,24 @@ async function createStreamReadError(response: Response): Promise<Error> {
       { code: body.error, details: body.details }
     );
   } catch {
-    return new Error(fallback);
+    return new StreamError(fallback, { status: response.status });
   }
+}
+
+function toStreamError(message: string, cause: unknown): Error {
+  if (
+    WorkflowWorldError.is(cause) ||
+    EntityConflictError.is(cause) ||
+    RunExpiredError.is(cause) ||
+    StreamError.is(cause) ||
+    StreamExpiredError.is(cause) ||
+    TooEarlyError.is(cause) ||
+    ThrottleError.is(cause) ||
+    PreconditionFailedError.is(cause)
+  ) {
+    return cause;
+  }
+  return new StreamError(message, { cause });
 }
 
 function createStreamRequestError(
@@ -137,47 +171,13 @@ function createStreamRequestError(
     ...getVercelDiagnostics(response.headers),
   ];
 
-  return new Error(
-    `Stream ${operation} failed: HTTP ${response.status} (${context.join('; ')}): ${text}`
+  return new StreamError(
+    `Stream ${operation} failed: HTTP ${response.status} (${context.join('; ')}): ${text}`,
+    { url: url.toString(), status: response.status }
   );
 }
 
-/**
- * Encode multiple chunks into a length-prefixed binary format.
- * Format: [4 bytes big-endian length][chunk bytes][4 bytes length][chunk bytes]...
- *
- * This preserves chunk boundaries so the server can store them as separate
- * chunks, maintaining correct startIndex semantics for readers.
- *
- * @internal Exported for testing purposes
- */
-export function encodeMultiChunks(chunks: (string | Uint8Array)[]): Uint8Array {
-  const encoder = new TextEncoder();
-
-  // Convert all chunks to Uint8Array and calculate total size
-  const binaryChunks: Uint8Array[] = [];
-  let totalSize = 0;
-
-  for (const chunk of chunks) {
-    const binary = typeof chunk === 'string' ? encoder.encode(chunk) : chunk;
-    binaryChunks.push(binary);
-    totalSize += 4 + binary.length; // 4 bytes for length prefix
-  }
-
-  // Allocate buffer and write length-prefixed chunks
-  const result = new Uint8Array(totalSize);
-  const view = new DataView(result.buffer);
-  let offset = 0;
-
-  for (const binary of binaryChunks) {
-    view.setUint32(offset, binary.length, false); // big-endian
-    offset += 4;
-    result.set(binary, offset);
-    offset += binary.length;
-  }
-
-  return result;
-}
+export { encodeMultiChunks } from './stream-chunks.js';
 
 const StreamInfoResponseSchema = z.compile(
   z.object({
@@ -205,10 +205,86 @@ const StreamChunksResponseSchema = z.compile(
   })
 );
 
+export async function writeStreamSessionOverHttp(
+  runId: string,
+  name: string,
+  chunks: (string | Uint8Array)[],
+  config?: APIConfig
+): Promise<void> {
+  const httpConfig = await getHttpConfig(config);
+  httpConfig.headers.set('X-Stream-Multi', 'true');
+  const pageSize = Math.min(
+    getMaxChunksPerRequest(),
+    MAX_CHUNKS_PER_STREAM_WRITE
+  );
+  for (let offset = 0; offset < chunks.length; offset += pageSize) {
+    const url = getStreamUrl(name, runId, httpConfig);
+    const response = await instrumentedFetch({
+      method: 'PUT',
+      url: url.toString(),
+      body: encodeMultiChunks(chunks.slice(offset, offset + pageSize)),
+      headers: httpConfig.headers,
+      dispatcher: getStreamDispatcher(config),
+      timeoutMs: null,
+      logLabel: url.pathname,
+      spanName: 'workflow.stream.write',
+      durationAttribute: 'workflow.stream.write.chunk_rtt',
+      attributes: streamSpanAttributes({
+        runId,
+        name,
+        operation: 'write_multi',
+      }),
+      buildError: async (res) =>
+        createStreamRequestError('write', url, res, await res.text()),
+    });
+    await response.text();
+  }
+}
+
+export async function closeStreamSessionOverHttp(
+  runId: string,
+  name: string,
+  config?: APIConfig
+): Promise<void> {
+  const httpConfig = await getHttpConfig(config);
+  httpConfig.headers.set('X-Stream-Done', 'true');
+  const url = getStreamUrl(name, runId, httpConfig);
+  const response = await instrumentedFetch({
+    method: 'PUT',
+    url: url.toString(),
+    headers: httpConfig.headers,
+    dispatcher: getStreamCloseDispatcher(config),
+    timeoutMs: null,
+    logLabel: url.pathname,
+    spanName: 'workflow.stream.write',
+    durationAttribute: 'workflow.stream.write.chunk_rtt',
+    attributes: streamSpanAttributes({ runId, name, operation: 'close' }),
+    buildError: async (res) =>
+      createStreamRequestError('close', url, res, await res.text()),
+  });
+  await response.text();
+}
+
 /** Creates the HTTP-backed streamer that talks to workflow-server. */
 export function createStreamer(config?: APIConfig): Streamer {
   return {
     streams: {
+      ...(isWsStreamsTransportEnabled()
+        ? {
+            createWriteSession(runId, name, { writerId }) {
+              return createStreamWriteSession(
+                runId,
+                name,
+                writerId,
+                config,
+                (chunks) =>
+                  writeStreamSessionOverHttp(runId, name, chunks, config),
+                () => closeStreamSessionOverHttp(runId, name, config)
+              );
+            },
+          }
+        : {}),
+
       async write(
         runId: string | Promise<string>,
         name: string,
@@ -226,6 +302,7 @@ export function createStreamer(config?: APIConfig): Streamer {
           headers: httpConfig.headers,
           dispatcher: getStreamDispatcher(config),
           timeoutMs: null,
+          transportErrorCode: 'STREAM_ERROR',
           logLabel: url.pathname,
           spanName: 'workflow.stream.write',
           durationAttribute: 'workflow.stream.write.chunk_rtt',
@@ -276,6 +353,7 @@ export function createStreamer(config?: APIConfig): Streamer {
             headers: httpConfig.headers,
             dispatcher: getStreamDispatcher(config),
             timeoutMs: null,
+            transportErrorCode: 'STREAM_ERROR',
             logLabel: url.pathname,
             spanName: 'workflow.stream.write',
             durationAttribute: 'workflow.stream.write.chunk_rtt',
@@ -309,6 +387,7 @@ export function createStreamer(config?: APIConfig): Streamer {
           // 503s with the stream left durably closing.
           dispatcher: getStreamCloseDispatcher(config),
           timeoutMs: null,
+          transportErrorCode: 'STREAM_ERROR',
           logLabel: url.pathname,
           spanName: 'workflow.stream.write',
           durationAttribute: 'workflow.stream.write.chunk_rtt',
@@ -348,6 +427,7 @@ export function createStreamer(config?: APIConfig): Streamer {
           headers: httpConfig.headers,
           dispatcher: undefined,
           timeoutMs: null,
+          transportErrorCode: 'STREAM_ERROR',
           logLabel: url.pathname,
           spanName: 'workflow.stream.read.connect',
           attributes: streamSpanAttributes({
@@ -359,7 +439,9 @@ export function createStreamer(config?: APIConfig): Streamer {
           buildError: createStreamReadError,
         });
         if (!response.body) {
-          throw new Error('No response body for stream');
+          throw new StreamError('No response body for stream', {
+            url: url.toString(),
+          });
         }
         return response.body as ReadableStream<Uint8Array>;
       },
@@ -378,20 +460,31 @@ export function createStreamer(config?: APIConfig): Streamer {
         }
         const qs = params.toString();
         const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/chunks${qs ? `?${qs}` : ''}`;
-        return makeRequest({
-          endpoint,
-          config,
-          schema: StreamChunksResponseSchema,
-        });
+        try {
+          return await makeRequest({
+            endpoint,
+            config,
+            schema: StreamChunksResponseSchema,
+          });
+        } catch (cause) {
+          throw toStreamError(
+            `Failed to read stream chunks for ${name}`,
+            cause
+          );
+        }
       },
 
       async getInfo(runId: string, name: string): Promise<StreamInfoResponse> {
         const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/info`;
-        return makeRequest({
-          endpoint,
-          config,
-          schema: StreamInfoResponseSchema,
-        });
+        try {
+          return await makeRequest({
+            endpoint,
+            config,
+            schema: StreamInfoResponseSchema,
+          });
+        } catch (cause) {
+          throw toStreamError(`Failed to read stream info for ${name}`, cause);
+        }
       },
 
       async list(runId: string) {
@@ -405,11 +498,19 @@ export function createStreamer(config?: APIConfig): Streamer {
           headers: httpConfig.headers,
           dispatcher: undefined,
           timeoutMs: null,
+          transportErrorCode: 'STREAM_ERROR',
           logLabel: url.pathname,
           buildError: (res) =>
-            new Error(`Failed to list streams: ${res.status}`),
+            new StreamError(`Failed to list streams: ${res.status}`, {
+              url: url.toString(),
+              status: res.status,
+            }),
         });
-        return (await response.json()) as string[];
+        try {
+          return (await response.json()) as string[];
+        } catch (cause) {
+          throw toStreamError('Failed to parse stream list response', cause);
+        }
       },
     },
   };

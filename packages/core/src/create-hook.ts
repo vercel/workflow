@@ -174,6 +174,9 @@ export interface HookOptions {
   /**
    * Additional user-defined data to include with the hook payload.
    *
+   * Read it back outside the workflow with `getHookByToken()`, where
+   * `hook.metadata` is a Promise: `await hook.metadata`.
+   *
    * @example
    *
    * ```ts

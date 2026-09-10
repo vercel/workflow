@@ -17,8 +17,15 @@ import type { EnvMap } from '~/lib/types';
 
 const INITIAL_PAGE_SIZE = 100;
 const LOAD_MORE_PAGE_SIZE = 100;
-/** Max pages when fetching correlation ID search results (100 events/page). */
-const MAX_CORRELATION_SEARCH_PAGES = 30;
+/**
+ * Max pages when fetching correlation ID search results (100 events/page).
+ *
+ * Kept low for the storage read path, which filters server-side and so can
+ * cost considerably more to produce a page than the page returns. The
+ * previous 30 was sized for the analytics path, where the same scan was
+ * much cheaper.
+ */
+const MAX_CORRELATION_SEARCH_PAGES = 5;
 
 /**
  * Independent event fetching for the Events tab.

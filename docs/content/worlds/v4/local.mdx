@@ -58,6 +58,12 @@ Port resolution priority: `baseUrl` > `port` > `PORT` > auto-detected
 
 Maximum number of concurrent queue workers. Default: `100`
 
+### `WORKFLOW_NODE_HTTP`
+
+Whether queue deliveries go out through Node's built-in `node:http` and `node:https` modules instead of the HTTP client library this World normally uses. Default: disabled. Set to `1` to switch to Node's modules. Socket pooling, keep-alive, and the request deadlines apply either way.
+
+This variable covers both HTTP-backed Worlds. See [the Vercel World's entry](/worlds/vercel#workflow_node_http) for when to reach for it and what it costs.
+
 ### Programmatic configuration
 
 {/* @skip-typecheck: incomplete code sample */}

@@ -6,6 +6,7 @@ export {
   RunExpiredError,
   RunNotSupportedError,
   StepNotRegisteredError,
+  StreamError,
   ThrottleError,
   TooEarlyError,
   WorkflowError,

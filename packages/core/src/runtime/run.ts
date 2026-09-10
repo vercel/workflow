@@ -1,4 +1,5 @@
 import {
+  RunExpiredError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
@@ -13,9 +14,12 @@ import {
   type PayloadKey,
 } from '../serialization/encryption.js';
 import {
+  createForwardedWritable,
+  getForwardedWritableEncryptionKey,
   getRunReadableStream,
   hydrateRunError,
   hydrateWorkflowReturnValue,
+  tagForwardedWritableTarget,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
 import { getWorldLazy } from './get-world-lazy.js';
@@ -31,6 +35,9 @@ const PAYLOAD_TERMINAL_RUN_STATUSES = new Set<WorkflowRunStatus>([
   'completed',
   'failed',
 ]);
+
+// Give resilient starts up to 10 seconds to create the run.
+const NOT_FOUND_RETRY_DELAYS = [1_000, 3_000, 6_000];
 
 /** @internal */
 export function getReturnValuePollIntervalMs(): number {
@@ -148,6 +155,33 @@ export interface WorkflowReadableStreamOptions {
   ops?: Promise<any>[];
   /**
    * The global object to use for hydrating types from the global scope.
+   *
+   * Defaults to {@link [`globalThis`](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/globalThis)}.
+   */
+  global?: Record<string, any>;
+}
+
+/**
+ * Options for configuring a writable onto a workflow run's stream.
+ */
+export interface WorkflowRunWritableStreamOptions {
+  /**
+   * An optional namespace to distinguish between multiple streams associated
+   * with the same workflow run.
+   */
+  namespace?: string;
+  /**
+   * Any asynchronous operations to complete before pausing or terminating the
+   * execution environment
+   * (i.e. using [`waitUntil()`](https://developer.mozilla.org/docs/Web/API/ExtendableEvent/waitUntil) or similar).
+   *
+   * Writes are acknowledged on buffer entry, so a caller that needs them
+   * durable before the environment goes away should pass an array here and
+   * await it after releasing the writer lock.
+   */
+  ops?: Promise<any>[];
+  /**
+   * The global object to use for reducing types from the global scope.
    *
    * Defaults to {@link [`globalThis`](https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/globalThis)}.
    */
@@ -394,8 +428,116 @@ export class Run<TResult> {
     });
   }
 
+  /** The writable stream of the workflow run. */
+  get writable(): WritableStream {
+    return this.getWritable();
+  }
+
+  /**
+   * Returns a writable that appends to this run's stream.
+   *
+   * Initialization is deferred until the first write. The run must already
+   * exist. The writable may be forwarded through `start()` and into steps, but
+   * grants no read access or additional authorization.
+   *
+   * @remarks
+   * `writer.close()` closes the shared stream. Contributors should call
+   * `releaseLock()`, which also drains pending writes.
+   *
+   * @param options - The writable stream options.
+   */
+  getWritable<W = any>(
+    options: WorkflowRunWritableStreamOptions = {}
+  ): WritableStream<W> {
+    'use step';
+    const { ops = [], global = globalThis, namespace } = options;
+    const name = getWorkflowRunStreamId(this.runId, namespace);
+    let targetPromise:
+      | Promise<{
+          key: PayloadKey | undefined;
+          deploymentId?: string;
+          encryptionPublicKey?: string;
+        }>
+      | undefined;
+    let writable: WritableStream<W>;
+
+    const resolveTarget = () => {
+      targetPromise ??= this.#getMetadata().then(async (run) => {
+        const target = {
+          key: await getForwardedWritableEncryptionKey(
+            this.runId,
+            run.deploymentId,
+            run.encryptionPublicKey
+          ),
+          deploymentId: run.deploymentId,
+          encryptionPublicKey: run.encryptionPublicKey,
+        };
+        tagForwardedWritableTarget(writable, target);
+        return target;
+      });
+      return targetPromise;
+    };
+
+    writable = createForwardedWritable<W>({
+      global,
+      ops,
+      runId: this.runId,
+      name,
+      key: () => resolveTarget().then(({ key }) => key),
+    });
+    return writable;
+  }
+
+  /** Reads metadata, briefly retrying resilient starts. @internal */
+  async #getMetadata() {
+    const world = await this.#lazyWorldPromise;
+    const maxRetries = this.#resilientStart ? NOT_FOUND_RETRY_DELAYS.length : 0;
+    let attempt = 0;
+    while (true) {
+      try {
+        return await world.runs.get(this.runId, { resolveData: 'none' });
+      } catch (error) {
+        if (!WorkflowRunNotFoundError.is(error) || attempt >= maxRetries) {
+          throw error;
+        }
+        const delay = NOT_FOUND_RETRY_DELAYS[attempt]!;
+        attempt++;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+
   /** @internal */
   async #resolveTerminalReturnValue(run: WorkflowRun): Promise<TResult> {
+    // Expiry is checked before the status branches, and deliberately so.
+    //
+    // Past its retention boundary a run's payloads are gone but its metadata
+    // usually is not, so `run.output` and `run.error` hydrate to an
+    // expired-data placeholder rather than to anything the caller asked for.
+    // Handing that back as if it were the return value — or wrapping it as
+    // the `cause` of a WorkflowRunFailedError — is worse than failing: it is
+    // indistinguishable from the workflow having genuinely returned it.
+    //
+    // A run started with `experimental_retention: 0` reaches this almost
+    // immediately (its purge races, and usually beats, the caller's own read
+    // of the result). An ordinary run reaches it whenever it is read after
+    // the World's default window. Both are the same condition and get the
+    // same terminal, non-retryable error, carrying whatever metadata
+    // survived so the caller can still tell success from failure.
+    //
+    // When even the metadata is gone the World reports the run as missing and
+    // the caller gets WorkflowRunNotFoundError from the read above instead —
+    // there is nothing left here to describe.
+    const expiredAt = run.expiredAt;
+    if (expiredAt != null && expiredAt <= new Date()) {
+      throw new RunExpiredError(
+        `Run "${this.runId}" ${run.status === 'completed' ? 'completed' : `is ${run.status}`}, but its data expired at ${expiredAt.toISOString()} and is no longer readable.`,
+        this.runId,
+        run.status,
+        expiredAt
+      );
+    }
+
     if (run.status === 'completed') {
       const encryptionKey = await this.#getEncryptionKey(run);
       return await hydrateWorkflowReturnValue(
@@ -451,8 +593,9 @@ export class Run<TResult> {
     // and the runtime to create the run via run_started.
     // When resilientStart is false, 404 is a real error: fail fast.
     let notFoundRetries = 0;
-    const NOT_FOUND_MAX_RETRIES = this.#resilientStart ? 3 : 0;
-    const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
+    const NOT_FOUND_MAX_RETRIES = this.#resilientStart
+      ? NOT_FOUND_RETRY_DELAYS.length
+      : 0;
 
     // Prefer the World's long poll: one read that the backend holds open
     // until the run finishes, instead of asking again every second and
@@ -531,7 +674,7 @@ export class Run<TResult> {
           WorkflowRunNotFoundError.is(error) &&
           notFoundRetries < NOT_FOUND_MAX_RETRIES
         ) {
-          const delay = NOT_FOUND_DELAYS[notFoundRetries]!;
+          const delay = NOT_FOUND_RETRY_DELAYS[notFoundRetries]!;
           notFoundRetries++;
           await new Promise((resolve) => setTimeout(resolve, delay));
           continue;

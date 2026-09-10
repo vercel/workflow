@@ -821,6 +821,99 @@ async def sleepWithSequentialStepsWorkflow() -> dict:
 
 
 ##########################################################
+# Cancellable steps
+#
+# These fixtures cover cancellation behavior that is shared across runtimes:
+# timeout, parallel cancellation, reason propagation, and hook-triggered
+# cancellation. JavaScript implements them with AbortSignal; Python opts a step
+# in with `cancellable=True` and cancels the asyncio task awaiting it. The APIs
+# differ, but the driver asserts only the shared behavior.
+
+
+@app.step(cancellable=True)
+async def cancellableLongStep() -> dict:
+    try:
+        await asyncio.sleep(30)
+    except asyncio.CancelledError as error:
+        return {
+            "result": "aborted",
+            "reason": str(error.args[0]) if error.args else None,
+        }
+    return {"result": "completed", "reason": None}
+
+
+async def _cancelAndWait(task: asyncio.Task, reason: str | None = None) -> dict:
+    task.cancel(reason)
+    return await task
+
+
+@app.workflow
+async def abortTimeoutWorkflow() -> dict:
+    longStep = asyncio.ensure_future(cancellableLongStep())
+    winner = await _race(longStep, sleep("3s"))
+    if winner is None:
+        state = await _cancelAndWait(longStep)
+        return {"status": "timed out", "aborted": state["result"] == "aborted"}
+    return {"status": "completed", "result": winner["result"]}
+
+
+@app.workflow
+async def abortParallelWorkflow() -> dict:
+    steps = [asyncio.ensure_future(cancellableLongStep()) for _ in range(3)]
+    timeout = asyncio.ensure_future(sleep("3s"))
+    done, _pending = await asyncio.wait(
+        [*steps, timeout], return_when=asyncio.FIRST_COMPLETED
+    )
+    if timeout in done:
+        results = await asyncio.gather(*(_cancelAndWait(step) for step in steps))
+        return {
+            "status": "timed out",
+            "results": [result["result"] for result in results],
+        }
+    results = await asyncio.gather(*steps)
+    return {
+        "status": "completed",
+        "results": [result["result"] for result in results],
+    }
+
+
+@app.workflow
+async def abortReasonWorkflow() -> dict:
+    longStep = asyncio.ensure_future(cancellableLongStep())
+    winner = await _race(longStep, sleep("2s"))
+    if winner is None:
+        state = await _cancelAndWait(longStep, "custom timeout reason")
+    else:
+        state = winner
+    return {
+        "aborted": state["result"] == "aborted",
+        "reason": state["reason"],
+    }
+
+
+@dataclasses.dataclass
+class CancellationHookPayload(BaseHook):
+    reason: str
+
+
+@app.workflow
+async def abortViaHookWorkflow(hookToken: str) -> dict:
+    hook = CancellationHookPayload.wait(token=hookToken)
+    longStep = asyncio.ensure_future(cancellableLongStep())
+    winner = await _race(longStep, hook)
+
+    if isinstance(winner, CancellationHookPayload):
+        state = await _cancelAndWait(longStep, winner.reason)
+        hook.dispose()
+        if state["result"] == "aborted":
+            return {"status": "cancelled", "reason": state["reason"]}
+        return {"status": "completed", "result": state["result"]}
+
+    hook.dispose()
+    return {"status": "completed", "result": winner["result"]}
+
+
+##########################################################
 # writableForwardedFromWorkflowWorkflow
 # writableForwardedFromStepWorkflow
 #

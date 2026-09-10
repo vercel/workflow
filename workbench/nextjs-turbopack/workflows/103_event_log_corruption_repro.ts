@@ -564,3 +564,257 @@ export async function blockedBranchReproWorkflow(
     width: config.width,
   };
 }
+
+// ---------------------------------------------------------------------------
+// wake-loop
+// ---------------------------------------------------------------------------
+
+interface WakeLoopInput {
+  token: string;
+  /** Wakes carrying `fresh: true` to process before returning. */
+  wakes?: number;
+  /** The heartbeat sleep raced against the hook read. */
+  heartbeatMs?: number;
+  /** Base duration of the drain step, the long step of each cycle. */
+  stepDelayMs?: number;
+  /** Deterministic per-cycle spread added to `stepDelayMs`. */
+  stepDelayJitterMs?: number;
+  /** Bytes every step returns, so each replay pays real hydration per event. */
+  stepPayloadBytes?: number;
+  /** Every Nth cycle's drain reports more work, so the loop runs another cycle
+   *  without racing. 0 disables. */
+  continueEvery?: number;
+  /** Hard cap on cycles, so a driver that never sends enough fresh wakes still
+   *  ends the run. */
+  maxCycles?: number;
+}
+
+interface WakeLoopPayload {
+  seq: number;
+  /** Whether this wake has work behind it. A stale wake is consumed without
+   *  emitting a single step, which is the step-count amplifier of this shape. */
+  fresh: boolean;
+  sentAt: number;
+}
+
+type WakeLoopCause = 'start' | 'wake' | 'heartbeat' | 'continue';
+
+interface WakeLoopCycle {
+  cycle: number;
+  cause: WakeLoopCause;
+}
+
+interface WakeLoopResult {
+  runId: string;
+  cycles: number;
+  freshWakes: number;
+  staleWakes: number;
+  heartbeats: number;
+  ledger: WakeLoopCycle[];
+}
+
+const HEARTBEAT = Symbol.for('event-log-corruption-repro:heartbeat');
+
+function payloadOf(bytes: number, tag: string) {
+  return bytes > 0 ? tag.padEnd(bytes, 'x') : tag;
+}
+
+/** The short bookkeeping steps of a cycle (two per cycle, plus one before every
+ *  heartbeat is armed). */
+async function verifyStep(input: {
+  runId: string;
+  cycle: number;
+  phase: string;
+  payloadBytes: number;
+}) {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return {
+    runId: input.runId,
+    cycle: input.cycle,
+    phase: input.phase,
+    verifiedAt: Date.now(),
+    payload: payloadOf(
+      input.payloadBytes,
+      `verify:${input.cycle}:${input.phase}`
+    ),
+  };
+}
+
+/**
+ * The long step of a cycle. Its duration is what lets a heartbeat completion
+ * and a burst of wakes commit while a replay is parked on it, so the events the
+ * next replay has to order against each other sit inside one step's span.
+ * Whether the loop runs another cycle right away is decided here, from inputs
+ * only, so it replays identically.
+ */
+async function drainStep(input: {
+  runId: string;
+  cycle: number;
+  delayMs: number;
+  continueEvery: number;
+  payloadBytes: number;
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  return {
+    runId: input.runId,
+    cycle: input.cycle,
+    more:
+      input.continueEvery > 0 &&
+      input.cycle % input.continueEvery === input.continueEvery - 1,
+    drainedAt: Date.now(),
+    payload: payloadOf(input.payloadBytes, `drain:${input.cycle}`),
+  };
+}
+
+async function syncStep(input: {
+  runId: string;
+  cycle: number;
+  payloadBytes: number;
+}) {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  return {
+    runId: input.runId,
+    cycle: input.cycle,
+    syncedAt: Date.now(),
+    payload: payloadOf(input.payloadBytes, `sync:${input.cycle}`),
+  };
+}
+
+function normalizeWakeLoop(input: WakeLoopInput) {
+  return {
+    wakes: input.wakes ?? 12,
+    heartbeatMs: input.heartbeatMs ?? 4000,
+    stepDelayMs: input.stepDelayMs ?? 600,
+    stepDelayJitterMs: input.stepDelayJitterMs ?? 500,
+    stepPayloadBytes: input.stepPayloadBytes ?? 8192,
+    continueEvery: input.continueEvery ?? 5,
+    maxCycles: input.maxCycles ?? 80,
+  };
+}
+
+/**
+ * The wake-loop shape: ONE sequential loop that races a reusable hook read
+ * against a heartbeat sleep, the pattern of a long-lived agent loop that is
+ * woken by external events and heartbeats in between. It is the shape of a
+ * production run that died `CORRUPTED_EVENT_LOG` on an unconsumable
+ * `wait_created` after replays of the same immutable prefix diverged
+ * non-deterministically: one replay in several observed a hook payload ahead of
+ * an earlier heartbeat completion, ran a wake cycle where the committed log
+ * recorded a heartbeat, and drew the heartbeat's ordinal for a step.
+ *
+ * Nothing here fans out. The concurrency comes from outside: every wake the
+ * driver sends is its own invocation replaying the run, and the driver sends
+ * them in bursts and right around the heartbeat deadline, the two moments the
+ * production log showed a `hook_received` landing next to a `wait_completed`.
+ *
+ * Three properties make an ordering slip fatal rather than benign:
+ *  - the hook read is carried across heartbeat wins (a pending `next()` is
+ *    never dropped), so whichever of hook and heartbeat the replay sees first
+ *    decides the branch;
+ *  - a stale wake emits zero steps and a fresh one emits four, so the branch
+ *    decision changes the step count;
+ *  - the heartbeat is only re-armed (behind a `verify` step) after a heartbeat
+ *    win, so a wake mistaken for a heartbeat, or the reverse, moves a
+ *    `wait_created` in the correlation-id sequence.
+ */
+export async function wakeLoopReproWorkflow(
+  input: WakeLoopInput
+): Promise<WakeLoopResult> {
+  'use workflow';
+
+  const metadata = getWorkflowMetadata();
+  const config = normalizeWakeLoop(input);
+  const runId = metadata.workflowRunId;
+  const ledger: WakeLoopCycle[] = [];
+  let cycles = 0;
+  let freshWakes = 0;
+  let staleWakes = 0;
+  let heartbeats = 0;
+
+  // A second hook the workflow never reads, as the production run had: it
+  // keeps a live consumer with no waiter in the replay.
+  const abortHook = createHook<unknown>({ token: `${input.token}:abort` });
+  const wake = createHook<WakeLoopPayload>({ token: input.token });
+  const iterator = wake[Symbol.asyncIterator]();
+
+  const cycle = async (cause: WakeLoopCause): Promise<boolean> => {
+    const index = cycles;
+    cycles += 1;
+    ledger.push({ cycle: index, cause });
+    const payloadBytes = config.stepPayloadBytes;
+    await verifyStep({ runId, cycle: index, phase: 'before', payloadBytes });
+    const drained = await drainStep({
+      runId,
+      cycle: index,
+      // Deterministic spread: the drain has to be long enough for heartbeat
+      // completions and wake bursts to land inside it, and vary so they land
+      // at different offsets across cycles.
+      delayMs:
+        config.stepDelayMs +
+        Math.floor(((index * 7) % 10) * (config.stepDelayJitterMs / 10)),
+      continueEvery: config.continueEvery,
+      payloadBytes,
+    });
+    await verifyStep({ runId, cycle: index, phase: 'after', payloadBytes });
+    await syncStep({ runId, cycle: index, payloadBytes });
+    return drained.more;
+  };
+
+  try {
+    let pendingRead = iterator.next();
+    let heartbeat: Promise<typeof HEARTBEAT> | null = null;
+    let more = await cycle('start');
+
+    while (freshWakes < config.wakes && cycles < config.maxCycles) {
+      while (more && cycles < config.maxCycles) {
+        more = await cycle('continue');
+      }
+      if (cycles >= config.maxCycles) break;
+
+      if (!heartbeat) {
+        await verifyStep({
+          runId,
+          cycle: cycles,
+          phase: 'heartbeat',
+          payloadBytes: config.stepPayloadBytes,
+        });
+        heartbeat = sleep(config.heartbeatMs).then(() => HEARTBEAT);
+      }
+
+      const winner = await Promise.race([
+        pendingRead.then((result) => ({ payload: result.value })),
+        heartbeat,
+      ]);
+
+      if (winner === HEARTBEAT) {
+        heartbeat = null;
+        heartbeats += 1;
+        more = await cycle('heartbeat');
+        continue;
+      }
+
+      // The read is consumed only when it wins; a heartbeat win above carries
+      // the same pending read into the next race.
+      pendingRead = iterator.next();
+      const payload = (winner as { payload: WakeLoopPayload | undefined })
+        .payload;
+      if (payload?.fresh) {
+        freshWakes += 1;
+        more = await cycle('wake');
+      } else {
+        staleWakes += 1;
+        more = false;
+      }
+    }
+  } finally {
+    wake.dispose();
+    abortHook.dispose();
+  }
+
+  return { runId, cycles, freshWakes, staleWakes, heartbeats, ledger };
+}

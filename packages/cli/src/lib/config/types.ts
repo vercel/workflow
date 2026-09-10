@@ -21,7 +21,12 @@ export type InspectCLIOptions = {
   limit?: number;
   workflowName?: string;
   status?: WorkflowRunStatus;
-  /** Listing window start: relative duration (12h, 7d) or timestamp (runs only) */
+  /** Attribute prefilter for run listings, from repeated `--attribute k=v` */
+  attributes?: Record<string, string>;
+  /**
+   * Listing window start: relative duration (12h, 7d) or timestamp.
+   * Applies to the runs and attribute-key listings.
+   */
   since?: string;
   /** Listing window end: relative duration or timestamp; requires --since */
   until?: string;
