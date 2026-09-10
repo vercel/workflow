@@ -237,13 +237,20 @@ const spansNamed = (name: string): ReadableSpan[] =>
   exporter.getFinishedSpans().filter((s) => s.name === name);
 
 const writeSpan = (): ReadableSpan => {
+  const spans = spansNamed('ws.events.post');
+  expect(spans).toHaveLength(1);
+  return spans[0];
+};
+
+/** The HTTP path's write span, unchanged by the WS rename. */
+const httpWriteSpan = () => {
   const spans = spansNamed('http POST');
   expect(spans).toHaveLength(1);
   return spans[0];
 };
 
 describe('per-write client span', () => {
-  it('emits one `http POST` CLIENT span per event write', async () => {
+  it('emits one `ws.events.post` CLIENT span per event write', async () => {
     await withOpenChannel();
 
     await createWorkflowRunEventV4(input, { token: 'test-token' });
@@ -252,26 +259,35 @@ describe('per-write client span', () => {
     // SpanKind.CLIENT === 2. Asserted as the literal so a change to the kind
     // (which is what makes it render as an outgoing request) is visible here.
     expect(span.kind).toBe(2);
-    expect(span.attributes['http.request.method']).toBe('POST');
+    // No HTTP shape: a frame is not an HTTP request. The method is absent so
+    // Datadog's method-derived resource cannot flatten every frame to `POST`;
+    // the resource is the socket route instead.
+    expect(span.attributes['http.request.method']).toBeUndefined();
+    expect(span.attributes['resource.name']).toBe(
+      '/api/websockets/v1/runs/:runId'
+    );
+    // The status is real — the server's reply status for this frame.
     expect(span.attributes['http.response.status_code']).toBe(201);
     expect(span.attributes['error.type']).toBeUndefined();
   });
 
-  it('reports the v4 REST endpoint as url.full, byte-identical to the HTTP path', async () => {
+  it('carries no synthesized URL: the wire destination is the ws url', async () => {
     await withOpenChannel();
 
     await createWorkflowRunEventV4(input, { token: 'test-token' });
 
-    // Not the socket URL: the server forwards the frame into this route, and
-    // naming it is what keeps a dashboard keyed on `http POST` + `url.full`
-    // working across the transport flag. The HTTP-path assertion in
-    // `transport parity` below pins that these two strings are the same one.
-    expect(writeSpan().attributes['url.full']).toBe(REST_URL);
+    // An earlier version synthesized the REST URL the event would have been
+    // POSTed to as `url.full`. No request to that URL occurs, and the fiction
+    // invited misreading frames as HTTP requests — so it is gone. The only
+    // URL on the span is the socket it actually travelled through.
+    expect(writeSpan().attributes['url.full']).toBeUndefined();
+    expect(writeSpan().attributes['workflow.events.ws.url']).toBe(WS_URL);
     expect(writeSpan().attributes['server.address']).toBe(
       new URL(ORIGIN).hostname
     );
     expect(writeSpan().attributes['peer.service']).toBe('workflow-server');
     expect(writeSpan().attributes['rpc.service']).toBe('workflow-server');
+    expect(writeSpan().attributes['rpc.system']).toBe('websocket');
   });
 
   it('says plainly that it was a frame, not an HTTP request', async () => {
@@ -308,7 +324,7 @@ describe('per-write client span', () => {
       { token: 'test-token' }
     );
 
-    const ids = spansNamed('http POST').map(
+    const ids = spansNamed('ws.events.post').map(
       (s) => s.attributes['workflow.events.ws.req_id']
     );
     expect(ids).toEqual([1, 2]);
@@ -417,7 +433,7 @@ describe('failure reporting', () => {
     );
     expect(result.event.eventId).toBe('evnt_1');
 
-    const spans = spansNamed('http POST');
+    const spans = spansNamed('ws.events.post');
     expect(spans).toHaveLength(2);
     expect(spans.map((s) => s.attributes['http.response.status_code'])).toEqual(
       [500, 201]
@@ -442,6 +458,11 @@ describe('connection span', () => {
     expect(connect).toHaveLength(1);
     expect(connect[0].kind).toBe(2);
     expect(connect[0].attributes['url.full']).toBe(WS_URL);
+    // A real HTTP GET, so it keeps HTTP attributes — the resource override
+    // alone stops the drain rendering it as a bare `GET`.
+    expect(connect[0].attributes['resource.name']).toBe(
+      'WS CONNECT /api/websockets/v1/runs/:runId'
+    );
     expect(connect[0].attributes['workflow.events.transport']).toBe('ws');
     expect(connect[0].attributes['workflow.events.ws.reconnect_attempt']).toBe(
       0
@@ -508,7 +529,7 @@ describe('transport parity', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('emits the same span name and url.full on HTTP as on ws', async () => {
+  it('keeps full HTTP shape on the HTTP path: the asymmetry is the contract', async () => {
     // As above. This one is a write, so unset would now open the gate and the
     // test would only still pass by falling through resolveWsTransport's null
     // — passing for the wrong reason, which is the exact failure this file
@@ -531,10 +552,11 @@ describe('transport parity', () => {
       dispatcher: agent,
     });
 
-    // The whole point of synthesizing the WS span: a trace taken either side of
-    // the flag reads the same, so the A/B the flag exists for compares like
-    // with like. Only `workflow.events.transport` separates them.
-    const span = writeSpan();
+    // After the rename the invariant is: HTTP-shaped attributes mean HTTP
+    // happened. The HTTP path keeps `http POST` + `url.full` untouched;
+    // cross-transport comparison keys on `workflow.event.type` +
+    // `workflow.events.transport`, which both paths carry.
+    const span = httpWriteSpan();
     expect(span.attributes['url.full']).toBe(REST_URL);
     expect(span.attributes['http.request.method']).toBe('POST');
     expect(span.attributes['workflow.event.type']).toBe('step_completed');

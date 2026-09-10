@@ -32,6 +32,7 @@ import {
   withHttpClientSpan,
 } from './http-core.js';
 import {
+  DatadogResourceName,
   ErrorType,
   injectTraceContextIntoHeaders,
   NetworkProtocolName,
@@ -86,6 +87,9 @@ const MALFORMED_FRAME_REQ_ID = -1;
 // Bounded so a server that is down, or an upgrade being rejected outright,
 // can't become a hot reconnect loop. Once exhausted the transport goes quiet
 // and the next `request()` reconnects lazily instead.
+/** Datadog resource for the handshake span (see `connectWithSpan`). */
+const WS_CONNECT_RESOURCE = 'WS CONNECT /api/websockets/v1/runs/:runId';
+
 const RECONNECT_MAX_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY_MS = 100;
 const RECONNECT_MAX_DELAY_MS = 5_000;
@@ -390,6 +394,10 @@ class WsEventsTransport {
         url: this.wsUrl,
         spanName: 'workflow.events.ws.connect',
         attributes: {
+          // The upgrade is a real HTTP GET, so it keeps its HTTP attributes;
+          // the resource override alone stops Datadog rendering it as a bare
+          // `GET` (the method-derived resource ignores the span name).
+          ...DatadogResourceName(WS_CONNECT_RESOURCE),
           ...WorkflowEventsTransport('ws'),
           ...NetworkProtocolName('websocket'),
           ...WorkflowWsReconnectAttempt(this.reconnectAttempts),
