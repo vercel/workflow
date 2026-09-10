@@ -322,6 +322,11 @@ const config: NextConfig = {
         permanent: true,
       },
       {
+        source: '/cookbook/advanced/upgrading-workflows',
+        destination: '/patterns/upgrading-workflows',
+        permanent: true,
+      },
+      {
         source: '/cookbook/advanced/distributed-abort-controller',
         destination: '/patterns/kill-switch',
         permanent: true,
