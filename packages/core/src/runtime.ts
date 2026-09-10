@@ -779,7 +779,9 @@ export function workflowEntrypoint(
                       events,
                       cursor: eventsCursor ?? null,
                     };
-                    let result: Awaited<ReturnType<typeof handleSuspension>>;
+                    let result:
+                      | Awaited<ReturnType<typeof handleSuspension>>
+                      | undefined;
                     try {
                       result = await handleSuspension({
                         suspension: err,
@@ -801,15 +803,28 @@ export function workflowEntrypoint(
                         );
                         return { timeoutSeconds: 0 };
                       }
-                      throw suspensionError;
+                      if (!CorruptedEventLogError.is(suspensionError)) {
+                        throw suspensionError;
+                      }
+                      // The suspension handler found a `step_created` that a
+                      // concurrent replay already wrote for the same
+                      // correlation id but for a DIFFERENT step invocation
+                      // (see `verifyDuplicateStepCreate`). Redelivery would
+                      // replay into the same collision, and continuing would
+                      // hand that step's result to the wrong call, so fall
+                      // through to the terminal path below and fail the run
+                      // as CORRUPTED_EVENT_LOG.
+                      err = suspensionError;
                     }
 
-                    if (result.timeoutSeconds !== undefined) {
-                      return { timeoutSeconds: result.timeoutSeconds };
-                    }
+                    if (result) {
+                      if (result.timeoutSeconds !== undefined) {
+                        return { timeoutSeconds: result.timeoutSeconds };
+                      }
 
-                    // Suspension handled, no further work needed
-                    return;
+                      // Suspension handled, no further work needed
+                      return;
+                    }
                   }
 
                   // Transient infrastructure failures talking to the
