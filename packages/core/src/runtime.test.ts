@@ -2230,6 +2230,8 @@ describe('workflowEntrypoint turbo mode', () => {
     attempt: number;
     source: string;
     runStartedGate?: Promise<void>;
+    currentDeploymentId?: string;
+    encryptionKeyError?: Error;
   }) {
     const { runId, attempt, source } = opts;
     const order = turboOrder;
@@ -2296,7 +2298,12 @@ describe('workflowEntrypoint turbo mode', () => {
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
-      getDeploymentId: vi.fn(async () => 'test-deployment'),
+      ...(opts.currentDeploymentId
+        ? { capabilities: { deploymentAffinity: true } }
+        : {}),
+      getDeploymentId: vi.fn(
+        async () => opts.currentDeploymentId ?? 'test-deployment'
+      ),
       createQueueHandler: vi.fn(
         (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
           async () => {
@@ -2326,7 +2333,10 @@ describe('workflowEntrypoint turbo mode', () => {
       },
       runs: { get: vi.fn(async () => runEntity) },
       queue: vi.fn(async () => ({ messageId: null })),
-      getEncryptionKeyForRun: vi.fn(async () => undefined),
+      getEncryptionKeyForRun: vi.fn(async () => {
+        if (opts.encryptionKeyError) throw opts.encryptionKeyError;
+        return undefined;
+      }),
     } as any);
 
     const handlerPromise = workflowEntrypoint(source)(
@@ -2373,6 +2383,26 @@ describe('workflowEntrypoint turbo mode', () => {
       (c) => (c[1] as any).eventType === 'run_started'
     );
     expect(runStartedCreates).toHaveLength(1);
+  });
+
+  it('handles a speculative key rejection when turbo exits before replay', async () => {
+    const unhandledRejection = vi.fn();
+    process.on('unhandledRejection', unhandledRejection);
+    try {
+      const { handlerPromise } = await driveTurbo({
+        runId: 'wrun_turbo_key_rejection',
+        attempt: 1,
+        source: oneStepWorkflow,
+        currentDeploymentId: 'other-deployment',
+        encryptionKeyError: new Error('key lookup failed'),
+      });
+
+      expect((await handlerPromise).status).toBe(204);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandledRejection).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandledRejection);
+    }
   });
 
   it('does not turbo on a redelivery (attempt > 1): run_started is awaited first', async () => {

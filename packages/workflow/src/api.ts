@@ -22,6 +22,7 @@ export {
 } from '@workflow/core/runtime/lifecycle-hooks';
 export {
   getHookByToken,
+  type Hook,
   type ResumedHook,
   resumeHook,
   resumeWebhook,
@@ -31,6 +32,7 @@ export {
   Run,
   type WorkflowReadableStream,
   type WorkflowReadableStreamOptions,
+  type WorkflowRunWritableStreamOptions,
 } from '@workflow/core/runtime/run';
 export {
   type StartOptions,

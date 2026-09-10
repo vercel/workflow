@@ -58,7 +58,9 @@ export function getWorkflowVmFromEnv(
  * Throws if `WORKFLOW_VM` or `executionContext.workflowVm` is set to an
  * unknown value.
  */
-export function useQuickJSVm(workflowRun: WorkflowRun): boolean {
+export function useQuickJSVm(
+  workflowRun: Pick<WorkflowRun, 'executionContext'>
+): boolean {
   const vmFromRun = (
     workflowRun.executionContext as { workflowVm?: string } | undefined
   )?.workflowVm;

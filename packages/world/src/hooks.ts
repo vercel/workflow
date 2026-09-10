@@ -29,12 +29,14 @@ export const HookResumeContextSchema = z.object({
   encryptionPublicKey: z.string().optional(),
   // Feature marker: the version of the lazy-hook-resume consumer protocol the
   // run's creating deployment supports. Present (>= 1) means that deployment's
-  // `@workflow/core` re-ensures the `hook_received` event from the queue
-  // message's `hookInput` on replay, so `resumeHook()`'s lazy path is safe to
-  // use. Because a run is pinned to its creating deployment, this
-  // marker is a reliable per-run attestation, unlike inferring support from a
-  // version compare against a predicted release cutoff. Absent on runs created
-  // before the marker existed (fall back to the sequential path).
+  // `@workflow/core` re-ensures the `hook_received` event from a queue
+  // message's `hookInput` on replay. Current producers no longer send
+  // `hookInput` (the durable write happens before the wake is published), so
+  // they never read this marker; it remains stamped so OLDER producers, which
+  // still gate their lazy path on it, keep working against new runs. Because a
+  // run is pinned to its creating deployment, this marker is a reliable
+  // per-run attestation, unlike inferring support from a version compare
+  // against a predicted release cutoff.
   hookResumeInputVersion: z.number().optional(),
 });
 
@@ -45,9 +47,10 @@ export type HookResumeContext = z.infer<typeof HookResumeContextSchema>;
  * deployment stamps this into its execution context (and the server mirrors it
  * onto `HookResumeContext.hookResumeInputVersion`) to attest that its
  * `@workflow/core` re-ensures the `hook_received` event from a queue message's
- * `hookInput`. `resumeHook()`'s lazy path requires the target run's marker to
- * be at least this value. Bump only on a breaking change to the
- * `hookInput` re-ensure contract.
+ * `hookInput`. Current producers write the event durably BEFORE publishing the
+ * wake and do not read this marker; it exists for older producers whose lazy
+ * path requires the target run's marker to be at least this value. Bump only
+ * on a breaking change to the `hookInput` re-ensure contract.
  */
 export const HOOK_RESUME_INPUT_VERSION = 1;
 

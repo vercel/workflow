@@ -1,4 +1,4 @@
 {
   "title": "Observability",
-  "pages": ["tracing", "attributes", "lifecycle-hooks"]
+  "pages": ["tracing", "attributes", "lifecycle-hooks", "retention"]
 }
