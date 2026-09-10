@@ -3,18 +3,24 @@ title: Errors & Retrying
 description: Customize retry behavior with FatalError and RetryableError.
 type: conceptual
 summary: Control how steps handle failures and customize retry behavior.
+languageSwitcher:
+  - ts
+  - py
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
   - /docs/api-reference/workflow/fatal-error
   - /docs/api-reference/workflow/retryable-error
+  - /docs/api-reference/python/errors
 ---
 
-By default, errors thrown inside steps are retried. Additionally, Workflow SDK provides two new types of errors you can use to customize retries.
+By default, uncaught errors in steps are retried. Workflow SDK also provides two error types you can use to customize retries.
 
 ## Default retrying
 
-By default, steps retry up to 3 times on arbitrary errors. You can customize the number of retries by adding a `maxRetries` property to the step function.
+By default, steps retry up to 3 times on arbitrary errors. You can customize the number of retries for each step.
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 async function callApi(endpoint: string) {
@@ -33,6 +39,28 @@ async function callApi(endpoint: string) {
 callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+import httpx
+
+from app.workflow import wf
+
+@wf.step(max_retries=5)  # Retry up to 5 times on failure (6 total attempts)
+async def call_api(endpoint: str):
+    async with httpx.AsyncClient() as client:
+        response = await client.get(endpoint)
+
+    if response.status_code >= 500:
+        # Any uncaught error gets retried
+        raise RuntimeError("Uncaught exceptions get retried!")  # [!code highlight]
+
+    return response.json()
+```
+
+</LanguageContent>
+
 Steps get enqueued immediately after a failure. Read on to see how this can be customized.
 
 <Callout type="info">
@@ -44,7 +72,9 @@ Steps get enqueued immediately after a failure. Read on to see how this can be c
 
 ## Intentional errors
 
-When your step needs to intentionally throw an error and skip retrying, throw a [`FatalError`](/docs/api-reference/workflow/fatal-error).
+When your step needs to fail without retrying, raise or throw a `FatalError`.
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { FatalError } from "workflow";
@@ -67,9 +97,36 @@ async function callApi(endpoint: string) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+import httpx
+
+from app.workflow import wf
+from vercel.workflow import FatalError
+
+@wf.step
+async def call_api(endpoint: str):
+    async with httpx.AsyncClient() as client:
+        response = await client.get(endpoint)
+
+    if response.status_code >= 500:
+        raise RuntimeError("Uncaught exceptions get retried!")
+
+    if response.status_code == 404:
+        raise FatalError("Resource not found. Skipping retries.")  # [!code highlight]
+
+    return response.json()
+```
+
+</LanguageContent>
+
 ## Customize retry behavior
 
-When you need to customize the delay on a retry, use [`RetryableError`](/docs/api-reference/workflow/retryable-error) and set the `retryAfter` property.
+When you need to customize the delay before a retry, use `RetryableError`.
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { FatalError, RetryableError } from "workflow";
@@ -97,9 +154,42 @@ async function callApi(endpoint: string) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+import httpx
+
+from app.workflow import wf
+from vercel.workflow import FatalError, RetryableError
+
+@wf.step
+async def call_api(endpoint: str):
+    async with httpx.AsyncClient() as client:
+        response = await client.get(endpoint)
+
+    if response.status_code >= 500:
+        raise RuntimeError("Uncaught exceptions get retried!")
+
+    if response.status_code == 404:
+        raise FatalError("Resource not found. Skipping retries.")
+
+    if response.status_code == 429:
+        raise RetryableError(  # [!code highlight]
+            "Rate limited. Retrying...",
+            retry_after="1m",  # Duration string  # [!code highlight]
+        )
+
+    return response.json()
+```
+
+</LanguageContent>
+
 ## Advanced example
 
-This final example combines everything we've learned, along with [`getStepMetadata`](/docs/api-reference/workflow/get-step-metadata).
+This final example combines everything we've learned with the current step attempt from step metadata.
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { FatalError, RetryableError, getStepMetadata } from "workflow";
@@ -133,13 +223,54 @@ async function callApi(endpoint: string) {
 callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+from datetime import datetime, timedelta, timezone
+
+import httpx
+
+from app.workflow import wf
+from vercel.workflow import FatalError, RetryableError, get_step_metadata
+
+@wf.step(max_retries=5)
+async def call_api(endpoint: str):
+    metadata = get_step_metadata()
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(endpoint)
+
+    if response.status_code >= 500:
+        # Exponential backoff. Numeric Python durations are seconds.
+        raise RetryableError(
+            "Backing off...",
+            retry_after=metadata.attempt**2,  # [!code highlight]
+        )
+
+    if response.status_code == 404:
+        raise FatalError("Resource not found. Skipping retries.")
+
+    if response.status_code == 429:
+        raise RetryableError(
+            "Rate limited. Retrying...",
+            retry_after=datetime.now(timezone.utc) + timedelta(minutes=1),  # [!code highlight]
+        )
+
+    return response.json()
+```
+
+</LanguageContent>
+
 <Callout type="info">
-  Setting <code>maxRetries = 0</code> means the step will run once but will not
-  be retried on failure. The default is <code>maxRetries = 3</code>, meaning the
+  Setting <LanguageContent value="ts" as="code">maxRetries = 0</LanguageContent><LanguageContent value="py" as="code">max_retries=0</LanguageContent> means the step will run once but will not
+  be retried on failure. The default is <LanguageContent value="ts" as="code">maxRetries = 3</LanguageContent><LanguageContent value="py" as="code">max_retries=3</LanguageContent>, meaning the
   step can run up to 4 times total (1 initial attempt + 3 retries).
 </Callout>
 
 ## Serialization failures
+
+<LanguageContent value="ts">
 
 A step whose arguments or return value cannot be [serialized](/docs/foundations/serialization) fails like a step whose body threw a `FatalError`: the failure is deterministic, so it skips the retry loop, and a `try/catch` around the step call observes the `SerializationError`:
 
@@ -164,9 +295,37 @@ export async function myWorkflow(input: unknown) {
 
 Uncaught, the run fails immediately with the `USER_ERROR` code, without retrying. See [serialization-failed](/docs/errors/serialization-failed) for common causes and fixes.
 
+</LanguageContent>
+<LanguageContent value="py">
+
+Python raises `SerializationError` while encoding step arguments, so the workflow can catch it around the step call. A return-value serialization failure happens during step execution and follows that step's retry policy.
+
+```python lineNumbers
+from app.workflow import wf
+from vercel.workflow import SerializationError
+
+@wf.step
+async def some_step(value):
+    return value
+
+@wf.workflow
+async def my_workflow(value):
+    try:
+        await some_step(value)
+    except SerializationError:
+        # The step arguments could not be serialized.
+        return {"status": "invalid input"}
+```
+
+Values that do not match a workflow or step type annotation raise `TypeValidationError`. It is a `FatalError`, so retrying cannot help.
+
+</LanguageContent>
+
 ## Error codes
 
-When a workflow run fails, the error includes an `errorCode` that classifies the failure, alongside the original thrown value (preserved as `cause`):
+When a workflow run fails, the failure includes a code that classifies it alongside the original error:
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { WorkflowRunFailedError } from "@workflow/errors";
@@ -187,6 +346,23 @@ try {
   }
 }
 ```
+
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+from vercel.workflow import WorkflowRunFailedError, start
+
+run = await start(my_workflow, input)
+
+try:
+    result = await run.return_value()
+except WorkflowRunFailedError as error:
+    print(error.error_code)  # For example, "USER_ERROR"
+    print(error.error)  # The original hydrated exception
+```
+
+</LanguageContent>
 
 | Code | Meaning |
 | --- | --- |
@@ -214,6 +390,8 @@ Key guidelines:
 - Make rollbacks steps as well, so they are durable and benefit from retries.
 - Ensure rollbacks are [idempotent](/docs/foundations/idempotency); they may run more than once.
 - Only enqueue a compensation after its forward step succeeds.
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 // Forward steps
@@ -260,3 +438,51 @@ export async function placeOrderSaga(orderId: string) {
   }
 }
 ```
+
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+from collections.abc import Awaitable, Callable
+
+from app.workflow import wf
+
+@wf.step
+async def reserve_inventory(order_id: str):
+    # ... call inventory service to reserve ...
+    pass
+
+@wf.step
+async def charge_payment(order_id: str):
+    # ... charge the customer ...
+    pass
+
+@wf.step
+async def release_inventory(order_id: str):
+    # ... undo inventory reservation ...
+    pass
+
+@wf.step
+async def refund_payment(order_id: str):
+    # ... refund the charge ...
+    pass
+
+@wf.workflow
+async def place_order_saga(order_id: str):
+    rollbacks: list[Callable[[], Awaitable[None]]] = []
+
+    try:
+        await reserve_inventory(order_id)
+        rollbacks.append(lambda: release_inventory(order_id))
+
+        await charge_payment(order_id)
+        rollbacks.append(lambda: refund_payment(order_id))
+
+        # ... more steps and rollbacks ...
+    except Exception:
+        for rollback in reversed(rollbacks):
+            await rollback()
+        raise
+```
+
+</LanguageContent>

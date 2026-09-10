@@ -3,6 +3,9 @@ title: Workflows and Steps
 description: Build long-running, stateful application logic that persists progress and resumes after failures.
 type: conceptual
 summary: Understand the two function types that make up a workflow.
+languageSwitcher:
+  - ts
+  - py
 prerequisites:
   - /docs/foundations
 related:
@@ -21,13 +24,20 @@ Workflows let you model complex multi-step processes in code. To do this, we int
 
 ## Workflow functions
 
+<LanguageContent value="ts">
 *Directive: `"use workflow"`*
+</LanguageContent>
+<LanguageContent value="py">
+*Decorator: `@workflow`*
+</LanguageContent>
 
-Workflow functions define the entrypoint of a workflow and organize how step functions are called. This type of function does not have access to the Node.js runtime, and usable `npm` packages are limited.
+Workflow functions define the entrypoint of a workflow and organize how step functions are called. They run in a sandboxed environment with restricted access to the host runtime and third-party packages.
 
 Although this may seem limiting initially, this feature is required to suspend and accurately resume workflow execution.
 
-It helps to think of the workflow function less like a full JavaScript runtime and more like "stitching together" various steps using conditionals, loops, try/catch handlers, `Promise.all`, and other language primitives.
+It helps to think of the workflow function less like a general-purpose runtime and more like "stitching together" various steps using conditionals, loops, error handling, concurrency, and other language primitives.
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 export async function processOrderWorkflow(orderId: string) {
@@ -41,21 +51,60 @@ export async function processOrderWorkflow(orderId: string) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+from app.workflow import wf
+
+@wf.workflow  # [!code highlight]
+async def process_order_workflow(order_id: str):
+    # Orchestrate multiple steps
+    order = await fetch_order(order_id)
+    payment = await charge_payment(order)
+
+    return {"order_id": order_id, "status": "completed"}
+```
+
+</LanguageContent>
+
 **Key Characteristics:**
 
-- Runs in a sandboxed environment without full Node.js access (see [Workflow Globals](/docs/api-reference/workflow-globals) for what's available)
+- Runs in a sandboxed environment with restricted runtime access (see [Workflow Globals](/docs/api-reference/workflow-globals) for what's available)
 - All step results are persisted to the [event log](/docs/how-it-works/event-sourcing)
 - Must be **deterministic** to allow resuming after failures
 
 Determinism in the workflow is required to resume the workflow from a suspension. Essentially, the workflow code gets re-run multiple times during its lifecycle, each time using the [event log](/docs/how-it-works/event-sourcing) to resume the workflow to the correct spot.
 
+<LanguageContent value="ts">
+
 The sandboxed environment that workflows run in already ensures determinism. For instance, `Math.random` and `Date` constructors are fixed in workflow runs, so you are safe to use them, and the framework ensures that the values don't change across replays.
+
+</LanguageContent>
+<LanguageContent value="py">
+
+The Python sandbox blocks nondeterministic standard-library APIs such as `datetime.datetime.now()` and module-level `random` functions. Use these deterministic replacements in workflow bodies:
+
+- `workflow.now()` returns the time of the last workflow event instead of reading the system clock.
+- `workflow.time_ns()` is a deterministic substitute for `time.time_ns()`.
+- `workflow.random()` returns a `random.Random` instance seeded from the run ID.
+
+These helpers can only be called from a workflow body. Steps should use the normal system functions.
+
+</LanguageContent>
 
 ## Step functions
 
+<LanguageContent value="ts">
 *Directive: `"use step"`*
+</LanguageContent>
+<LanguageContent value="py">
+*Decorator: `@step`*
+</LanguageContent>
 
 Step functions perform the actual work in a workflow and have full runtime access.
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 async function chargePayment(order: Order) {
@@ -74,9 +123,34 @@ async function chargePayment(order: Order) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+import os
+import stripe
+
+from app.workflow import wf
+
+@wf.step  # [!code highlight]
+async def charge_payment(order: Order):
+    # Full Python access - use any PyPI package
+    stripe.api_key = os.environ["STRIPE_KEY"]
+
+    charge = stripe.Charge.create(
+        amount=order.total,
+        currency="usd",
+        source=order.payment_token,
+    )
+
+    return {"charge_id": charge.id}
+```
+
+</LanguageContent>
+
 **Key Characteristics:**
 
-- Full Node.js runtime and npm package access
+- Full language runtime and ecosystem package access
 - Automatic retry on errors
 - Results persisted for replay
 
@@ -90,8 +164,9 @@ By default, steps have a maximum of 3 retry attempts before they fail and propag
 Step functions are primarily meant to be used inside a workflow.
 </Callout>
 
-Calling a step from outside a workflow or from another step will essentially run the step in the same process like a normal function (in other words, the `use step` directive is a no-op). This means you can reuse step functions in other parts of your codebase without needing to duplicate business logic.
+<LanguageContent value="ts">
 
+Calling a step from outside a workflow or from another step will essentially run the step in the same process like a normal function (in other words, the `use step` directive is a no-op). This means you can reuse step functions in other parts of your codebase without needing to duplicate business logic.
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript lineNumbers
@@ -118,7 +193,38 @@ export async function POST() {
 Calling a step function outside a workflow function provides neither retry semantics nor observability. Additionally, certain workflow-specific functions like [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) will throw an error when used inside a step that's called outside a workflow.
 </Callout>
 
-### Suspension and resumption
+</LanguageContent>
+<LanguageContent value="py">
+
+A decorated Python step can only be called from a workflow. Calling it elsewhere raises a `RuntimeError`. To reuse its business logic, extract an undecorated helper and call that helper from both the step and the rest of your application.
+
+```python lineNumbers
+async def update_user_impl(user_id: str):
+    await db.insert(...)
+
+@wf.step
+async def update_user(user_id: str):
+    await update_user_impl(user_id)
+
+# Used inside a workflow
+@wf.workflow
+async def user_onboarding_workflow(user_id: str):
+    await update_user(user_id)
+    # ... more steps
+
+# Used directly outside a workflow
+async def update_user_directly(user_id: str):
+    await update_user_impl(user_id)
+    # ... more logic
+```
+
+<Callout type="info">
+Calling the undecorated helper directly provides neither retry semantics nor workflow observability. Workflow-only APIs also raise an error when used outside their required context.
+</Callout>
+
+</LanguageContent>
+
+## Suspension and resumption
 
 Workflow functions have the ability to automatically suspend while they wait on asynchronous work. While suspended, the workflow's state is stored via the [event log](/docs/how-it-works/event-sourcing) and no compute resources are used until the workflow resumes execution.
 
@@ -128,7 +234,9 @@ There are multiple ways a workflow can suspend:
 
 - Waiting on a step function: the workflow yields while the step body runs. The step usually executes inline in the same invocation; when the invocation's inline budget is exhausted or its timeout approaches, the step is handed to the queue and the workflow resumes in a later invocation.
 - Using `sleep()` to pause for some fixed duration.
-- Awaiting on a promise returned by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), which resumes the workflow when an external system passes data into the workflow.
+- Awaiting on <LanguageContent value="ts" as="span">a promise returned by [`createWebhook()`](/docs/api-reference/workflow/create-webhook)</LanguageContent><LanguageContent value="py" as="span">the hook event returned by [`BaseHook.wait()`](/docs/api-reference/python/base-hook#wait)</LanguageContent>, which resumes the workflow when an external system passes data into the workflow.
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { sleep, createWebhook } from "workflow";
@@ -150,11 +258,38 @@ export async function documentReviewProcess(userId: string) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+import pydantic
+from app.workflow import wf
+from vercel import workflow
+
+class ReviewApproval(pydantic.BaseModel, workflow.BaseHook):
+    approved: bool
+
+@wf.workflow
+async def document_review_process(user_id: str):
+    # Sleep will suspend without consuming any resources
+    await workflow.sleep("30d")  # [!code highlight]
+
+    # An API route resumes this deterministic token when review is complete
+    token = f"document-review:{user_id}"
+    approval = await ReviewApproval.wait(token=token)  # [!code highlight]
+
+    return {"approved": approval.approved}
+```
+
+</LanguageContent>
+
 ## Writing workflows
 
 ### Basic structure
 
 The simplest workflow consists of a workflow function and one or more step functions.
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 // Workflow function (orchestrates the steps)
@@ -176,9 +311,37 @@ async function greet(name: string) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+from datetime import UTC, datetime
+
+from app.workflow import wf
+
+# Workflow function (orchestrates the steps)
+@wf.workflow
+async def greeting_workflow(name: str):
+    message = await greet(name)
+    return {"message": message}
+
+# Step function (does the actual work)
+@wf.step
+async def greet(name: str):
+    # Access host Python APIs
+    message = f"Hello {name} at {datetime.now(UTC).isoformat()}"
+    print(message)
+    return message
+```
+
+</LanguageContent>
+
 ### Project structure
 
 While you can organize workflow and step functions however you like, we find that larger projects benefit from some structure:
+
+<LanguageContent value="ts">
+
 <Files>
   <Folder name="workflows" defaultOpen disabled>
     <Folder name="userOnboarding" defaultOpen disabled>
@@ -203,5 +366,41 @@ While you can organize workflow and step functions however you like, we find tha
 You can choose to organize your steps into a single `steps.ts` file or separate files within a `steps` folder. The `shared` folder is a good place to put common steps that are used by multiple workflows.
 
 <Callout type="info">
-Splitting up steps and workflows will also help avoid most bundler related bugs with the Workflow SDK.
+  Splitting up steps and workflows will also help avoid most bundler related bugs with the Workflow SDK.
 </Callout>
+
+</LanguageContent>
+<LanguageContent value="py">
+
+<Files>
+  <Folder name="app" defaultOpen disabled>
+    <File name="workflow.py" />
+    <Folder name="workflows" defaultOpen disabled>
+      <File name="__init__.py" />
+      <File name="user_onboarding.py" />
+      <Folder name="ai_video_generation" defaultOpen disabled>
+        <File name="__init__.py" />
+        <Folder name="steps" defaultOpen disabled>
+          <File name="__init__.py" />
+          <File name="transcribe_upload.py" />
+          <File name="generate_video.py" />
+          <File name="notify_user.py" />
+        </Folder>
+      </Folder>
+    </Folder>
+    <Folder name="steps" defaultOpen disabled>
+      <File name="__init__.py" />
+      <File name="validate_input.py" />
+      <File name="log_activity.py" />
+    </Folder>
+  </Folder>
+</Files>
+
+You can choose to organize a workflow and its steps in a single module or separate files within a package. The `app/steps` package is a good place to put common steps that are used by multiple workflows.
+
+<Callout type="warn">
+  Re-export the shared `wf` instance from `app/workflows/__init__.py` and import
+  every workflow module or package there so its definitions are registered.
+</Callout>
+
+</LanguageContent>

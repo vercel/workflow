@@ -1,0 +1,124 @@
+---
+title: HTTP handlers
+description: Adapt Python workflow and manifest handlers to a custom web framework.
+type: reference
+summary: Mount Workflows handlers with the public route constants and structural HTTP request and response types.
+prerequisites:
+  - /docs/api-reference/python/workflows
+related:
+  - /docs/getting-started/python
+---
+
+Most applications only export a [`Workflows`](/docs/api-reference/python/workflows)
+registry and let the Vercel Python builder mount it. Custom framework adapters
+can use the registry's handlers and the public HTTP protocols directly.
+
+<Callout type="warn">
+This is a low-level, unstable adapter API. Most applications should export a
+`Workflows` registry and let the Vercel Python builder mount its routes.
+</Callout>
+
+## Route constants
+
+```python
+ENDPOINT_PATH = "/.well-known/workflow/v1/flow"
+MANIFEST_PATH = "/.well-known/workflow/v1/manifest.json"
+```
+
+| Constant | Handler | Description |
+| --- | --- | --- |
+| `ENDPOINT_PATH` | `registry.http_handler` | Workflow queue delivery endpoint. The same route handles the `?__health` probe. |
+| `MANIFEST_PATH` | `registry.manifest_handler` | Workflow and step manifest used by inspection tools. |
+
+The manifest returns HTTP 404 unless `WORKFLOW_PUBLIC_MANIFEST=1`. Publishing
+it exposes the registered workflow and step names and source-module paths.
+
+## HTTPHandler
+
+```python
+class HTTPHandler(Protocol):
+    async def __call__(
+        self,
+        request: HTTPRequest,
+    ) -> HTTPResponse: ...
+```
+
+`registry.http_handler` exists when the registry was constructed with
+`as_vercel_job=True`, the default. Accessing it on an
+`as_vercel_job=False` registry raises `RuntimeError`.
+`registry.manifest_handler` is always available.
+
+## HTTPRequest
+
+```python
+class HTTPRequest(Protocol):
+    @property
+    def method(self) -> str: ...
+
+    @property
+    def url(self) -> str: ...
+
+    @property
+    def headers(self) -> Mapping[str, str]: ...
+
+    def aiter_bytes(
+        self,
+        chunk_size: int | None = None,
+    ) -> AsyncIterator[bytes]: ...
+```
+
+`url` is the request target as received: a path plus its optional query
+string. `HTTPRequest` is a structural protocol, so an adapter object does not
+need to inherit from it when it provides the required members.
+
+## HTTPResponse
+
+```python
+@dataclass
+class HTTPResponse:
+    status: int
+    body: bytes
+    headers: dict[str, str]
+
+    @classmethod
+    def json(
+        cls,
+        data: Any,
+        *,
+        status: int = 200,
+    ) -> Self: ...
+```
+
+`HTTPResponse.json()` serializes `data` with the standard JSON encoder and
+sets `content-type: application/json`.
+
+## Adapter outline
+
+A framework adapter routes to the public constants, converts its incoming
+request to the `HTTPRequest` shape, invokes the SDK handler, and converts the
+`HTTPResponse` back:
+
+```python
+from vercel.workflow import ENDPOINT_PATH, MANIFEST_PATH
+
+flow_handler = registry.http_handler
+manifest_handler = registry.manifest_handler
+
+async def dispatch(request):
+    if request.path == ENDPOINT_PATH:
+        response = await flow_handler(adapt_request(request))
+    elif request.path == MANIFEST_PATH:
+        response = await manifest_handler(adapt_request(request))
+    else:
+        return framework_not_found()
+
+    return framework_response(
+        body=response.body,
+        status=response.status,
+        headers=response.headers,
+    )
+```
+
+The adapter should route POST deliveries to `ENDPOINT_PATH` and also allow
+health-probe requests containing the `__health` query parameter. Route GET
+and HEAD requests for `MANIFEST_PATH`.

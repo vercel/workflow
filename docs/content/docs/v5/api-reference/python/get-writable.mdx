@@ -1,0 +1,169 @@
+---
+title: get_writable
+description: Retrieve the current Python workflow run's writable stream.
+type: reference
+summary: Use get_writable to access a Python workflow run's output stream for real-time data streaming.
+prerequisites:
+  - /docs/foundations/streaming
+related:
+  - /docs/api-reference/python/read-stream
+  - /docs/api-reference/python/run
+  - /docs/foundations/serialization
+---
+
+The writable stream can be obtained in workflow functions and passed to steps,
+or obtained directly within step functions to write data. Code outside the
+workflow can read that data through
+[`Run.readable()`](/docs/api-reference/python/read-stream#runreadable).
+
+Use this function in workflows and steps to produce streaming output that
+clients can consume in real time. Pass `namespace` to select a second,
+independent stream on the same run.
+
+<Callout type="warn">
+`get_writable()` can only be called inside a workflow or step function.
+</Callout>
+
+<Callout type="error">
+**Important:** A workflow function can obtain the stream handle, but it cannot
+call `write()`, `write_from()`, `drain()`, or `close()` on it. Pass the handle
+to a step, or call `get_writable()` directly inside a step, to interact with
+the stream.
+</Callout>
+
+```python
+from vercel.workflow import get_writable
+
+@wf.step
+async def publish_progress(message: str) -> None:
+    writable = get_writable()
+    await writable.write(message)
+```
+
+## API signature
+
+```python
+def get_writable(
+    *,
+    type: Any = None,
+    namespace: str | None = None,
+    reentrant_ctx_on_err: bool = True,
+) -> WorkflowWritable[Any]
+```
+
+### Parameters
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `type` | type annotation | `None` | Type carried by the stream. Pydantic serializes each write against annotations for which it can build a schema; a typed reader validates and reconstructs each chunk. |
+| `namespace` | `str \| None` | `None` | Select a second independent stream on the same run. `None` or an empty string selects the default stream. |
+| `reentrant_ctx_on_err` | `bool` | `True` | For `async with` in a step, leave the stream open when the block raises so a retry can continue it. Set to `False` to close on both successful and exceptional exit. |
+
+### Returns
+
+Returns `WorkflowWritable[T]`, where `T` is the annotation passed in `type`.
+When `type` is omitted, the stream carries `Any`.
+
+## Workflow and step behavior
+
+| Context | Concrete value | Allowed behavior |
+| --- | --- | --- |
+| Workflow body | `WorkflowStreamHandle[T]` | Read `run_id` and `name`, or pass the handle across a workflow/step boundary. Writing, draining, or closing raises `RuntimeError`. |
+| Step body | `WorkflowStreamWriter[T]` | Write, drain, and close the stream. |
+
+Workflow bodies replay and cannot perform network writes. To create the handle
+in a workflow and write through it in a step, annotate the step parameter:
+
+```python
+import pydantic
+from vercel.workflow import WorkflowWritable, get_writable
+
+class Progress(pydantic.BaseModel):
+    current: int
+    total: int
+
+@wf.step
+async def process(
+    items: list[str],
+    progress: WorkflowWritable[Progress],
+) -> None:
+    for index, item in enumerate(items, start=1):
+        await process_item(item)
+        await progress.write(Progress(current=index, total=len(items)))
+    await progress.close()
+
+@wf.workflow
+async def process_all(items: list[str]) -> None:
+    progress = get_writable(type=Progress)
+    await process(items, progress)
+```
+
+The stream's type is not stored in the wire reference. The
+`WorkflowWritable[Progress]` parameter annotation is what restores a typed
+writer when the handle reaches the step.
+
+## WorkflowWritable
+
+```python
+class WorkflowWritable(Generic[T]):
+    @property
+    def run_id(self) -> str: ...
+
+    @property
+    def name(self) -> str: ...
+
+    def with_type(self, type: type[S]) -> WorkflowWritable[S]: ...
+    async def write(self, value: T) -> None: ...
+    async def write_from(self, source: AsyncIterable[T]) -> None: ...
+    async def drain(self) -> None: ...
+    async def close(self) -> None: ...
+```
+
+| Member | Description |
+| --- | --- |
+| `run_id` | Run that owns the stream. |
+| `name` | Full durable stream name. |
+| `with_type(type)` | Return a typed view over the same stream. Views in one step share the same ordered buffer. |
+| `await write(value)` | Serialize and append one chunk. Returns after the chunk is buffered and ordered, before it is necessarily durable. |
+| `await write_from(source)` | Append each value yielded by an async iterable in order. |
+| `await drain()` | Wait until all accepted chunks are durably written and surface any sink error. |
+| `await close()` | Drain and idempotently mark the stream complete so readers can finish. |
+
+`WorkflowWritable`, `WorkflowStreamHandle`, and `WorkflowStreamWriter` are
+public types, but applications normally obtain them through `get_writable()`
+rather than constructing them.
+
+`WorkflowStreamWriter` also exposes a read-only `type` property containing its
+annotation, or `None` for an untyped writer. It supports `async with`; a normal
+exit closes the stream, while an exceptional exit follows
+`reentrant_ctx_on_err`. `WorkflowStreamHandle` is the workflow-side reference
+and does not implement the async context-manager protocol.
+
+## Good to know
+
+- Workflow functions can only obtain a stream handle. Step functions can
+  receive that handle as an argument or call `get_writable()` directly.
+- A step receives the same workflow-scoped stream in either case, so writes
+  remain ordered.
+- Streams can carry bytes or structured values. Pass `type` to serialize
+  writes through Pydantic, and pass the same type to a reader to validate and
+  reconstruct chunks.
+- Nothing closes a stream implicitly. Close it in the last step that writes to
+  it to signal completion, or readers wait until the run expires.
+- `write()` acknowledges buffering. The step handler drains all writers before
+  recording successful step completion, so a completed step implies that its
+  chunks are durable.
+- Chunks written before a step failure remain visible. If the step retries, it
+  can emit them again; consumers should tolerate repeated progress chunks.
+
+Use an async context manager to close on successful exit:
+
+```python
+@wf.step
+async def publish(source) -> None:
+    async with get_writable() as writable:
+        await writable.write_from(source)
+```
+
+With the default `reentrant_ctx_on_err=True`, an exception leaves the stream
+open for the retry.

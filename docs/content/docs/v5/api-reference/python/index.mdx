@@ -1,0 +1,40 @@
+---
+title: Python SDK
+description: API reference for the vercel-workflow Python SDK.
+type: overview
+summary: Browse Python APIs for workflows, steps, runs, hooks, streams, metadata, serialization, and errors.
+prerequisites:
+  - /docs/getting-started/python
+related:
+  - /docs/foundations
+---
+
+The `vercel-workflow` package exposes the Python Workflow SDK through the
+`vercel.workflow` module.
+
+<Callout type="warn">
+The Python SDK is currently in beta. This reference follows the public API on
+the current [`vercel-py` `main` branch](https://github.com/vercel/vercel-py/tree/main/src/vercel-workflow).
+</Callout>
+
+## Installation
+
+```bash
+pip install vercel-workflow
+```
+
+Import the module when several APIs are used together:
+
+```python
+from vercel import workflow
+
+wf = workflow.Workflows()
+```
+
+Or import individual symbols:
+
+```python
+from vercel.workflow import Workflows, sleep, start
+```
+
+<AutoCards />

@@ -1,0 +1,110 @@
+---
+title: Run
+description: Retrieve a Python workflow run by ID, check its status, and access its output.
+type: reference
+summary: Use Run to check status without blocking, await a result, and read run attributes and streams.
+prerequisites:
+  - /docs/foundations/starting-workflows
+related:
+  - /docs/api-reference/python/start
+  - /docs/api-reference/python/read-stream
+  - /docs/api-reference/python/attributes
+---
+
+`Run` retrieves workflow run information for a given run ID. Constructing a
+handle provides immediate access without waiting for completion; individual
+operations read from the workflow backend asynchronously.
+
+Use this class when you need to check workflow status, await a return value,
+access run attributes, or read streaming output.
+
+```python
+from vercel.workflow import Run
+
+run = Run("wrun_...")
+status = await run.status()
+```
+
+## API signature
+
+```python
+Run(
+    run_id: str,
+    *,
+    output_codec: SignatureCodec | None = None,
+)
+```
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `run_id` | `str` | Durable workflow run ID. |
+| `output_codec` | `SignatureCodec \| None` | Internal return-type codec supplied by `start()`. Application code should omit it. |
+
+A handle returned by `start()` validates the workflow result against the
+decorated function's return annotation. A handle recreated with `Run(run_id)`
+returns the value carried on the wire without that workflow-specific return
+annotation.
+
+Constructing `Run` does not check whether the run exists. The first operation,
+such as `await run.status()`, performs the backend lookup and raises the
+backend's error if the ID is unknown.
+
+## Properties and methods
+
+| Member | Returns | Description |
+| --- | --- | --- |
+| `run_id` | `str` | The run's durable ID. This property is synchronous. |
+| `await status()` | `"pending" \| "running" \| "completed" \| "failed" \| "cancelled"` | Read the current status. |
+| `await return_value()` | `T` | Wait for the run to complete and return its output. |
+| `await attributes()` | `dict[str, str]` | Read the run's plaintext attributes. |
+| `readable(...)` | `AsyncGenerator[Any, None]` | Read values from the default or a namespaced stream. |
+| `readable_bytes(...)` | `AsyncGenerator[bytes, None]` | Read a bytes-only stream for use as an HTTP response body. |
+| `await stream_info(...)` | `StreamInfo` | Read the stream's tail index and completion state. |
+| `await list_streams()` | `list[str]` | List the full names of every stream written by this run. |
+
+See [reading streams](/docs/api-reference/python/read-stream) for the stream
+method signatures and resume behavior.
+
+## Awaiting a result
+
+```python
+run = await start(generate_report, report_id)
+result = await run.return_value()
+```
+
+`return_value()` polls until the run reaches a terminal state:
+
+- A completed run returns its deserialized output.
+- A failed run raises
+  [`WorkflowRunFailedError`](/docs/api-reference/python/errors#workflowrunfailederror).
+  The original error is available as `error.error`.
+- A cancelled run raises `RuntimeError("workflow cancelled")`.
+
+The call blocks until the run reaches one of those states. Use `status()` when
+you need an immediate status check without waiting for completion.
+
+<Callout type="warn">
+`return_value()` polls the run every second. When called from a step to wait for
+a child workflow, it holds that step's worker slot until the child finishes.
+For long-running children, return the child run ID and use a hook to notify the
+parent instead of waiting in the step.
+</Callout>
+
+## Recreating a handle
+
+```python filename="app/api/runs.py"
+from vercel.workflow import Run
+
+@app.get("/api/runs/{run_id}")
+async def get_run(run_id: str):
+    run = Run(run_id)
+    status = await run.status()
+    return {"run_id": run.run_id, "status": status}
+```
+
+<Callout type="info">
+Unlike the TypeScript `Run` object, the Python `Run` class does not currently
+expose `exists`, cancellation, early wake-up, or writable-stream operations.
+Python stream reads use async generators through `readable()` and
+`readable_bytes()` rather than a Web `ReadableStream`.
+</Callout>

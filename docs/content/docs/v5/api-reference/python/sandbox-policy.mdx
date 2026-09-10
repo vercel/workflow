@@ -1,0 +1,109 @@
+---
+title: SandboxPolicy
+description: Configure isolation, reuse, passthrough modules, and cleanup for Python workflow sandboxes.
+type: reference
+summary: Pass SandboxPolicy to Workflows to configure Python workflow sandbox behavior.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/api-reference/python/workflows
+---
+
+`SandboxPolicy` configures the Python sandbox used to replay workflow bodies.
+Pass it to [`Workflows`](/docs/api-reference/python/workflows).
+
+```python
+from vercel.workflow import SandboxPolicy, Workflows
+
+wf = Workflows(
+    sandbox_policy=SandboxPolicy(share_sandboxes=True),
+)
+```
+
+## API signature
+
+```python
+SandboxPolicy(
+    *,
+    passthrough_modules: frozenset[str] = frozenset(),
+    share_sandboxes: bool = False,
+    cleanups: tuple[CleanupHandler, ...] = (),
+)
+```
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `passthrough_modules` | `frozenset[str]` | empty | Additional modules served from the host instead of imported separately inside each sandbox. Each name includes its submodules. |
+| `share_sandboxes` | `bool` | `False` | Reuse one sandbox for multiple, potentially concurrent, workflow runs instead of creating a fresh sandbox for each invocation. |
+| `cleanups` | `tuple[CleanupHandler, ...]` | empty | Host callbacks run in order after each non-shared sandbox is torn down. |
+
+## Shared sandboxes
+
+Sharing sandboxes reduces startup work, but module globals are shared among
+concurrent runs:
+
+```python
+wf = Workflows(
+    sandbox_policy=SandboxPolicy(share_sandboxes=True),
+)
+```
+
+Workflow code running under this policy must not mutate global state that is
+specific to a run. Cleanup handlers are not invoked for shared sandboxes.
+
+## Passthrough modules
+
+```python
+policy = SandboxPolicy(
+    passthrough_modules=frozenset({"large_library"}),
+)
+```
+
+Passthrough modules and all their submodules retain host identity and state.
+They are useful for large or stateful libraries that are safe to share, but the
+SDK does not check them for deterministic behavior.
+
+<Callout type="warn">
+Only add a passthrough module after verifying that workflow-body calls into it
+are deterministic. Perform I/O and nondeterministic work in steps.
+</Callout>
+
+## Cleanup handlers
+
+Advanced integrations can import cleanup utilities from
+`vercel.workflow.sandbox`:
+
+```python
+from vercel.workflow import Workflows, sandbox
+
+def clear_library_cache(context: sandbox.SandboxCleanupContext) -> None:
+    ...
+
+wf = Workflows(
+    sandbox_policy=sandbox.SandboxPolicy(
+        cleanups=(*sandbox.ALL_CLEANUPS, clear_library_cache),
+    ),
+)
+```
+
+```python
+CleanupHandler = Callable[[SandboxCleanupContext], None]
+
+@dataclass(frozen=True)
+class SandboxCleanupContext:
+    run_modules: Mapping[str, types.ModuleType]
+```
+
+`run_modules` is a snapshot of the sandbox module table at exit, including
+host-shared modules. Handlers must be thread-safe. An exception is logged and
+skipped; it does not replace the workflow's own exception.
+
+The `sandbox` module also exports:
+
+| Symbol | Description |
+| --- | --- |
+| `ALL_CLEANUPS` | Tuple containing all built-in cleanup handlers. |
+| `clear_typing_caches(context)` | Clear `typing` module LRU caches that can retain sandbox classes. |
+| `clear_pydantic_generics_cache(context)` | Clear Pydantic's generic parametrization cache. |
+
+No cleanup is enabled by default.
