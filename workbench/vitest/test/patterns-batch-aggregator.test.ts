@@ -1,11 +1,25 @@
-// The deadline flush is NOT tested by waiting MAX_WAIT_MS (5 minutes) or by
+// Deadlines are NOT tested by waiting MAX_WAIT_MS (5 minutes) or by
 // force-waking the coordinator's real timer child (that run is spawned
-// inside a step and isn't reachable from the test). Instead the test starts
-// its own aggregatorTimer(key, 1ms, timerId=1) — byte-for-byte the workflow
-// the coordinator spawns — which delivers the same { type: 'timer',
-// timerId: 1 } message and matches the current timerSeq, exercising the
-// deadline-flush path end to end. The real 5-minute timer child later finds
-// the coordinator gone and exits via its catch — by design.
+// inside a step and isn't reachable from the test). Instead each test starts
+// its own aggregatorTimer(key, 1ms, timerId) — byte-for-byte the workflow the
+// coordinator spawns — which delivers the same { type: 'timer', timerId }
+// message. It takes effect only when timerId matches the coordinator's
+// current timerSeq, so the sequence numbers below track the real state
+// machine.
+//
+// A flush does NOT end the run: the coordinator clears the buffer and keeps
+// looping, and only winds down when a matching deadline finds the buffer
+// empty. So every test ends by delivering one last timer to let the run
+// finish — without it `await coordinator.returnValue` would sit for the full
+// MAX_WAIT_MS. The real 5-minute timer children fire long after, find the
+// coordinator gone, and exit via their catch — by design.
+//
+// How timerSeq moves (the coordinator bumps it on every transition that
+// invalidates a pending deadline):
+//   first item into an empty buffer → bump, arm MAX_WAIT_MS
+//   size flush                      → no bump; that window's timer is still
+//                                     pending and becomes the idle deadline
+//   deadline flush                  → bump, arm the next idle deadline
 import { afterAll, describe, expect, it } from 'vitest';
 import { getHookByToken, getRun, start } from 'workflow/api';
 import {
@@ -27,7 +41,14 @@ const KEYS = {
   size: `agg-size-${RUN}`,
   dedupe: `agg-dedupe-${RUN}`,
   deadline: `agg-deadline-${RUN}`,
+  refill: `agg-refill-${RUN}`,
 };
+
+/** Deliver one deadline message to the `key` coordinator, now. */
+async function deliverTimer(key: string, timerId: number) {
+  const timer = await start(aggregatorTimer, [key, 1, timerId]);
+  await timer.returnValue;
+}
 
 // Read-only and idempotent, so retried on WorkflowRunNotFoundError: a
 // concurrently launched vitest invocation reuses this worker's pool-id tag
@@ -66,19 +87,22 @@ describe('batch-aggregator', () => {
       await aggregatorSend(KEYS.size, `item-${i}`, `id-${i}`);
     }
 
-    const result = await coordinator.returnValue;
-    expect(result).toEqual({
-      key: KEYS.size,
-      flushed: MAX_ITEMS,
-      reason: 'size',
-    });
-
     const flushes = await readFlushesFor(KEYS.size);
     expect(flushes).toHaveLength(1);
     expect(flushes[0].reason).toBe('size');
     expect(flushes[0].items).toHaveLength(MAX_ITEMS);
     expect(flushes[0].items[0]).toBe('item-0');
     expect(flushes[0].items[MAX_ITEMS - 1]).toBe(`item-${MAX_ITEMS - 1}`);
+
+    // A size flush doesn't re-arm, so the first window's timer (seq 1) is
+    // still pending and now serves as the idle deadline. Deliver it: the
+    // buffer is empty, so the run winds down.
+    await deliverTimer(KEYS.size, 1);
+    expect(await coordinator.returnValue).toEqual({
+      key: KEYS.size,
+      flushed: MAX_ITEMS,
+      reason: 'idle',
+    });
   });
 
   it('dedupes items by id — a resent id does not count toward the flush', async () => {
@@ -95,13 +119,6 @@ describe('batch-aggregator', () => {
       await aggregatorSend(KEYS.dedupe, `item-${i}`, `id-${i}`);
     }
 
-    const result = await coordinator.returnValue;
-    expect(result).toEqual({
-      key: KEYS.dedupe,
-      flushed: MAX_ITEMS,
-      reason: 'size',
-    });
-
     const flushes = await readFlushesFor(KEYS.dedupe);
     expect(flushes).toHaveLength(1);
     expect(flushes[0].items).toHaveLength(MAX_ITEMS);
@@ -109,6 +126,13 @@ describe('batch-aggregator', () => {
     expect(flushes[0].items.filter((item) => item === 'item-0')).toHaveLength(
       1
     );
+
+    await deliverTimer(KEYS.dedupe, 1);
+    expect(await coordinator.returnValue).toEqual({
+      key: KEYS.dedupe,
+      flushed: MAX_ITEMS,
+      reason: 'idle',
+    });
   });
 
   it('flushes a partial buffer when the deadline timer fires', async () => {
@@ -119,21 +143,59 @@ describe('batch-aggregator', () => {
     await aggregatorSend(KEYS.deadline, 'b', 'id-b');
     await aggregatorSend(KEYS.deadline, 'c', 'id-c');
 
-    // Deliver the deadline message without waiting MAX_WAIT_MS (see file
-    // header). timerSeq is 1: only the first item starts the deadline.
-    const timer = await start(aggregatorTimer, [KEYS.deadline, 1, 1]);
-    await timer.returnValue;
-
-    const result = await coordinator.returnValue;
-    expect(result).toEqual({
-      key: KEYS.deadline,
-      flushed: 3,
-      reason: 'deadline',
-    });
+    // timerSeq is 1: only the first item into an empty buffer arms a
+    // deadline.
+    await deliverTimer(KEYS.deadline, 1);
 
     const flushes = await readFlushesFor(KEYS.deadline);
     expect(flushes).toHaveLength(1);
     expect(flushes[0].reason).toBe('deadline');
     expect(flushes[0].items).toEqual(['a', 'b', 'c']);
+
+    // The deadline flush armed the next deadline as seq 2. Nothing arrived
+    // in that window, so delivering it ends the run.
+    await deliverTimer(KEYS.deadline, 2);
+    expect(await coordinator.returnValue).toEqual({
+      key: KEYS.deadline,
+      flushed: 3,
+      reason: 'idle',
+    });
+  });
+
+  it('keeps buffering in the same run after a flush instead of exiting', async () => {
+    // Why the coordinator loops rather than returning at a flush: a real
+    // flush is a network call, and an item delivered while it is in flight
+    // resumes a hook that a returning run would never read again. Here the
+    // next window is filled immediately after a size flush; the proof that
+    // nothing was orphaned is that the SAME run accounts for both windows.
+    await aggregatorSend(KEYS.refill, 'first', 'id-first');
+    const hook = await getHookByToken(`aggregator:${KEYS.refill}`);
+    const coordinator = getRun(hook.runId);
+
+    for (let i = 1; i < MAX_ITEMS; i++) {
+      await aggregatorSend(KEYS.refill, `item-${i}`, `id-${i}`);
+    }
+    // The size flush has happened; the run is still alive and still owns the
+    // token, so these open a fresh window (timerSeq bumps to 2).
+    await aggregatorSend(KEYS.refill, 'after-1', 'id-after-1');
+    await aggregatorSend(KEYS.refill, 'after-2', 'id-after-2');
+
+    await deliverTimer(KEYS.refill, 2);
+
+    const flushes = await readFlushesFor(KEYS.refill);
+    expect(flushes).toHaveLength(2);
+    expect(flushes[0].reason).toBe('size');
+    expect(flushes[0].items).toHaveLength(MAX_ITEMS);
+    expect(flushes[1].reason).toBe('deadline');
+    expect(flushes[1].items).toEqual(['after-1', 'after-2']);
+
+    // One run, both windows: MAX_ITEMS + 2. A coordinator that returned at
+    // the size flush could only ever report MAX_ITEMS.
+    await deliverTimer(KEYS.refill, 3);
+    expect(await coordinator.returnValue).toEqual({
+      key: KEYS.refill,
+      flushed: MAX_ITEMS + 2,
+      reason: 'idle',
+    });
   });
 });

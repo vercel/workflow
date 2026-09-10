@@ -87,8 +87,11 @@ async function processData(data: string): Promise<string> {
   // Replace with real work. The LOSER of Promise.race keeps running —
   // the workflow ignores its result, but side effects still happen.
   // Use the Kill Switch pattern for hard cross-process cancellation.
-  // DEMO: inputs starting with "slow:" take 5 wall-clock seconds so you can
-  // watch the timeout win the race.
+  // DEMO: inputs starting with "slow:" take 5 wall-clock seconds. That still
+  // beats the 30s deadline above, so the step wins the race — bump this delay
+  // past 30s (or shorten the sleep) to watch the timeout branch fire for real.
+  // The test instead force-expires the sleep with wakeUp(), which is how you
+  // exercise a long deadline without waiting for it.
   if (data.startsWith('slow:')) {
     await new Promise((resolve) => setTimeout(resolve, 5_000));
   }

@@ -1,6 +1,6 @@
-import { getStepMetadata } from 'workflow';
+import { createHook, getStepMetadata } from 'workflow';
 import { getHookByToken, getRun } from 'workflow/api';
-import { withBreaker } from '../patterns/circuit-breaker.js';
+import { breakerEvents, withBreaker } from '../patterns/circuit-breaker.js';
 
 // Module state lives in the step bundle — every step invocation in this
 // file shares it, and results flow back to the test via return values.
@@ -101,6 +101,31 @@ export async function breakerSingleCall(
   const outcome = await attempt(key, label, shouldFail);
   const calls = await readFnCalls();
   return { outcome, calls };
+}
+
+/**
+ * Take the half-open probe slot and never report back — the shape of a run
+ * that died mid-call, or whose report was dropped after sendBreakerEvent
+ * exhausted its attempts. Returns the verdict the coordinator gave.
+ *
+ * This deliberately bypasses withBreaker(), which always reports; the whole
+ * point is to leave the slot dangling.
+ */
+export async function breakerAbandonedProbe(key: string) {
+  'use workflow';
+
+  const reply = createHook<{ allowed: boolean; state: string }>();
+  await sendCheckOnly(key, reply.token);
+  return await reply;
+}
+
+async function sendCheckOnly(key: string, replyToken: string): Promise<void> {
+  'use step';
+  // Same token shape as the pattern's private breakerToken().
+  await breakerEvents.resume(`circuit-breaker:${key}`, {
+    type: 'check',
+    replyToken,
+  });
 }
 
 /** Cancel the coordinator run for `key` so tests don't leave live runs. */

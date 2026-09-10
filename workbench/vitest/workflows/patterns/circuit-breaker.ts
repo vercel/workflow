@@ -6,9 +6,10 @@
  *      machine: closed (calls flow, count consecutive failures) → open
  *      (calls rejected instantly) → half-open (one probe at a time).
  *   2. The coordinator's loop only ever awaits its event channel, so
- *      "may I proceed?" checks are answered instantly in every state. The
- *      open-state cooldown arrives as a message from a tiny timer child
- *      workflow — stale timers carry an old ID and are ignored.
+ *      "may I proceed?" checks are answered instantly in every state.
+ *      Deadlines (the open-state cooldown, and the half-open probe's own
+ *      reporting deadline) arrive as messages from tiny timer child
+ *      workflows — stale timers carry an old ID and are ignored.
  *   3. withBreaker(key, fn) checks, runs, and reports in one call.
  *      It throws CircuitOpenError instead of calling fn while open.
  *
@@ -24,8 +25,11 @@
  *     proceeds). Flip the CHECK_TIMEOUT fallback if you prefer fail-closed.
  *   - Tune FAILURE_THRESHOLD and COOLDOWN_MS; the threshold counts
  *     consecutive failures, not a rolling window.
- *   - Recycling resets the failure count (it only happens while closed
- *     and quiet, so the impact is bounded).
+ *   - Set PROBE_TIMEOUT_MS above your slowest call through the breaker.
+ *   - Recycling resets the failure count, and any check in flight when the
+ *     coordinator exits gets no answer — it fails open after CHECK_TIMEOUT.
+ *     Recycling only happens while closed, where the verdict would have
+ *     been "allowed" anyway, so the cost is a slow check, not a wrong one.
  *   - Catch CircuitOpenError in the caller and decide: skip, queue for
  *     later, or rethrow as a RetryableError with a retryAfter.
  *
@@ -51,6 +55,15 @@ function breakerToken(key: string) {
 const FAILURE_THRESHOLD = 5;
 // How long the circuit stays open before allowing a half-open probe.
 const COOLDOWN_MS = 30_000;
+// How long a half-open probe has to report back before the coordinator
+// gives up on it and reopens the circuit. Reports are best-effort (see
+// sendBreakerEvent), and a probe whose report is lost — or whose run dies
+// mid-call — would otherwise hold the single half-open slot forever, so
+// every later check is rejected and no cooldown is pending to rescue it.
+// Set this ABOVE your slowest call through the breaker: too low and a
+// healthy-but-slow probe is written off, costing another cooldown before
+// the next attempt. Too low degrades recovery speed; it never wedges.
+const PROBE_TIMEOUT_MS = 60_000;
 // If the coordinator can't be reached, fail OPEN (allow the call) — the
 // breaker is an optimization, not a correctness gate. Flip if you prefer.
 const CHECK_TIMEOUT = '10s';
@@ -99,17 +112,25 @@ export async function breakerCoordinator(key: string) {
       } else if (state === 'open') {
         allowed = false;
       } else {
-        // half-open: let exactly one probe through at a time.
+        // half-open: let exactly one probe through at a time, and give that
+        // probe a deadline. Its report is best-effort, so without a deadline
+        // a lost report holds the slot forever — see PROBE_TIMEOUT_MS.
         allowed = !probeOutstanding;
-        if (allowed) probeOutstanding = true;
+        if (allowed) {
+          probeOutstanding = true;
+          timerSeq++;
+          await spawnBreakerTimer(key, PROBE_TIMEOUT_MS, timerSeq);
+        }
       }
       await replyToCheck(ev.replyToken, allowed, state);
     } else if (ev.type === 'report') {
       if (ev.ok) {
         consecutiveFailures = 0;
         if (state === 'half-open') {
+          // The probe made it back — close up and retire its deadline.
           state = 'closed';
           probeOutstanding = false;
+          timerSeq++;
         }
       } else {
         consecutiveFailures++;
@@ -118,22 +139,34 @@ export async function breakerCoordinator(key: string) {
           state = 'open';
           probeOutstanding = false;
           timerSeq++;
-          await spawnCooldownTimer(key, COOLDOWN_MS, timerSeq);
+          await spawnBreakerTimer(key, COOLDOWN_MS, timerSeq);
         } else if (
           state === 'closed' &&
           consecutiveFailures >= FAILURE_THRESHOLD
         ) {
           state = 'open';
           timerSeq++;
-          await spawnCooldownTimer(key, COOLDOWN_MS, timerSeq);
+          await spawnBreakerTimer(key, COOLDOWN_MS, timerSeq);
         }
       }
-    } else if (ev.timerId === timerSeq && state === 'open') {
-      // Current cooldown elapsed — allow a single probe.
-      state = 'half-open';
-      probeOutstanding = false;
+    } else if (ev.timerId === timerSeq) {
+      if (state === 'open') {
+        // Cooldown elapsed — allow a single probe.
+        state = 'half-open';
+        probeOutstanding = false;
+      } else if (state === 'half-open' && probeOutstanding) {
+        // The probe we admitted never reported — its call may still be
+        // running, or its report was dropped. Assume the worst, reopen,
+        // and serve another cooldown rather than rejecting forever.
+        state = 'open';
+        probeOutstanding = false;
+        timerSeq++;
+        await spawnBreakerTimer(key, COOLDOWN_MS, timerSeq);
+      }
     }
-    // Stale timer messages (timerId !== timerSeq) are ignored.
+    // Stale timer messages (timerId !== timerSeq) are ignored. Every
+    // transition that invalidates a pending deadline bumps timerSeq, so at
+    // most one timer is ever live.
 
     if (
       eventCount >= RECYCLE_AFTER_EVENTS &&
@@ -145,24 +178,26 @@ export async function breakerCoordinator(key: string) {
   }
 }
 
-// Cooldown as a message: a tiny child run sleeps, then pings the channel.
-export async function breakerCooldownTimer(
+// A deadline as a message: a tiny child run sleeps, then pings the channel.
+// Used for both the open-state cooldown and the half-open probe deadline —
+// what the message means is decided by the state it arrives in.
+export async function breakerTimer(
   key: string,
-  cooldownMs: number,
+  delayMs: number,
   timerId: number
 ) {
   'use workflow';
-  await sleep(`${cooldownMs}ms`);
+  await sleep(`${delayMs}ms`);
   await sendBreakerEvent(key, { type: 'timer', timerId });
 }
 
-async function spawnCooldownTimer(
+async function spawnBreakerTimer(
   key: string,
-  cooldownMs: number,
+  delayMs: number,
   timerId: number
 ): Promise<void> {
   'use step';
-  await start(breakerCooldownTimer, [key, cooldownMs, timerId]);
+  await start(breakerTimer, [key, delayMs, timerId]);
 }
 
 async function replyToCheck(
@@ -254,8 +289,13 @@ export async function withBreaker<T>(
   ]);
 
   if (verdict.timedOut) {
-    // Make the stale reply token un-resumable so a late coordinator answer
-    // can't mark a half-open probe as outstanding forever.
+    // Release the reply token: nobody is reading it any more, and a late
+    // answer resuming a dead hook would just log a failure on the
+    // coordinator's side. This does NOT undo a half-open grant — the
+    // coordinator marks the probe outstanding before it replies, so by the
+    // time we time out the slot may already be ours. We still run and
+    // report below, and PROBE_TIMEOUT_MS covers the case where that report
+    // never lands.
     reply.dispose();
   }
 

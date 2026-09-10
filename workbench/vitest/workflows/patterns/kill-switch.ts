@@ -44,6 +44,12 @@ function getAbortToken(id: string): string {
   return `abort:${id}`;
 }
 
+/** Is the run that owns a hook token still able to fire it? */
+async function isRunLive(runId: string): Promise<boolean> {
+  const status = await getRun(runId).status.catch(() => null);
+  return status === 'pending' || status === 'running';
+}
+
 async function writeAbortSignal(reason?: string, expired?: boolean) {
   'use step';
   const writable = getWritable<AbortMessage>();
@@ -123,9 +129,15 @@ export class KillSwitch {
     } = options;
     const token = getAbortToken(id);
 
-    // Reconnect to an existing controller if one is already running.
+    // Reconnect to an existing controller if one is already running. The
+    // liveness check is load-bearing: a hook outlives its run, so
+    // getHookByToken() still answers for a switch whose run already
+    // completed or expired. Adopting that runId would hand back a switch
+    // whose .signal reads an already-closed stream — it would never fire,
+    // and never say so. A token claimed by a terminal run counts as vacant,
+    // so falling through to start a replacement is safe.
     const existingHook = await getHookByToken(token).catch(() => null);
-    if (existingHook) {
+    if (existingHook && (await isRunLive(existingHook.runId))) {
       return new KillSwitch(id, existingHook.runId);
     }
 
@@ -137,7 +149,9 @@ export class KillSwitch {
     // fires. Only the winner ever registers the hook, so poll for it.
     for (let i = 0; i < 10; i++) {
       const owner = await getHookByToken(token).catch(() => null);
-      if (owner) {
+      // Same liveness caveat: a claim left behind by a terminal run can be
+      // observed before the run we just started registers its own hook.
+      if (owner && (await isRunLive(owner.runId))) {
         return new KillSwitch(id, owner.runId);
       }
       await new Promise((resolve) => setTimeout(resolve, 300));

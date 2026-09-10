@@ -7,8 +7,9 @@
  *   2. The first item starts a flush-deadline timer (a tiny child workflow
  *      that sleeps and pings back — the coordinator never blocks).
  *   3. The buffer flushes when it reaches MAX_ITEMS, or when the deadline
- *      message arrives — whichever comes first. Then the run exits and the
- *      next item opens a fresh buffer.
+ *      message arrives — whichever comes first. The coordinator then keeps
+ *      looping on the same buffer, and only exits once a whole window
+ *      passes with nothing in it.
  *
  * USEFUL WHEN:
  *   - Turning a stream of single events into efficient bulk operations
@@ -19,9 +20,16 @@
  * CAVEATS / TO ADAPT:
  *   - Replace the flushBatch step body with your real batch operation, and
  *     tune MAX_ITEMS / MAX_WAIT_MS.
- *   - An item arriving in the same instant as a flush can land after the
- *     run exits — aggregatorSend then opens a fresh buffer, so items are
- *     never lost, but a flush slightly smaller than MAX_ITEMS is possible.
+ *   - Flushing deliberately does NOT end the run. A flush is a real network
+ *     call, and it happens exactly when the buffer is filling fastest — if
+ *     the run returned there, every item delivered during the flush would
+ *     resume a hook nobody reads again. Looping instead means those items
+ *     are picked up on the next iteration.
+ *   - The run does still have to end sometime, and it ends on an idle
+ *     window. An item racing that exit almost always fails its resume, and
+ *     aggregatorSend opens a fresh buffer and retries — no loss. Closing
+ *     that last sliver needs an ack from the coordinator, not just a
+ *     successful resume; add one if a dropped item is unacceptable.
  *   - Items are buffered in workflow state: keep them reasonably small, or
  *     buffer IDs and hydrate in the flush step.
  *   - Need per-item payload + only-latest semantics instead? See Debounce.
@@ -46,8 +54,9 @@ const MAX_ITEMS = 100;
 // …or this long after the FIRST item arrived, whichever comes first.
 const MAX_WAIT_MS = 5 * 60 * 1000;
 
-// COORDINATOR — one run per active buffer. Exits after flushing; the next
-// item starts a fresh buffer.
+// COORDINATOR — one run per active buffer. Flushes as often as it needs to
+// and exits once a whole window goes by empty; the next item after that
+// starts a fresh buffer.
 export async function aggregatorCoordinator(key: string) {
   'use workflow';
 
@@ -60,11 +69,12 @@ export async function aggregatorCoordinator(key: string) {
     return { dedupedTo: conflict.runId };
   }
 
-  const items: unknown[] = [];
+  let items: unknown[] = [];
   // Sends from retried steps are at-least-once — the same item can arrive
   // twice. Items that carry an id are deduped here.
   const seenIds = new Set<string>();
   let timerSeq = 0;
+  let flushed = 0;
 
   for (;;) {
     const ev = await events;
@@ -77,18 +87,33 @@ export async function aggregatorCoordinator(key: string) {
       items.push(ev.item);
 
       if (items.length === 1) {
-        // First item opens the window — start the flush deadline.
+        // First item of a window — start its flush deadline. The bump also
+        // retires whatever timer was left over from the previous window, so
+        // exactly one deadline is ever live.
         timerSeq++;
         await spawnFlushTimer(key, MAX_WAIT_MS, timerSeq);
       }
 
       if (items.length >= MAX_ITEMS) {
+        flushed += items.length;
         await flushBatch(key, items, 'size');
-        return { key, flushed: items.length, reason: 'size' as const };
+        items = [];
+        // No re-arm: this window's timer is still pending and now serves as
+        // the idle deadline. The next item supersedes it (above).
       }
-    } else if (ev.timerId === timerSeq && items.length > 0) {
+    } else if (ev.timerId === timerSeq) {
+      if (items.length === 0) {
+        // A whole window with nothing in it — wind the run down. The next
+        // aggregatorSend finds no owner and opens a fresh buffer.
+        return { key, flushed, reason: 'idle' as const };
+      }
+      flushed += items.length;
       await flushBatch(key, items, 'deadline');
-      return { key, flushed: items.length, reason: 'deadline' as const };
+      items = [];
+      // This timer just fired, so nothing is pending — arm the idle
+      // deadline that will eventually end the run.
+      timerSeq++;
+      await spawnFlushTimer(key, MAX_WAIT_MS, timerSeq);
     }
   }
 }
@@ -104,7 +129,7 @@ export async function aggregatorTimer(
   try {
     await pingAggregator(key, timerId);
   } catch {
-    // Buffer already flushed (size limit) and the run exited — fine.
+    // The coordinator already wound down on an earlier idle window — fine.
   }
 }
 

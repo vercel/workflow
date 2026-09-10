@@ -5,8 +5,9 @@
  *   1. The singleton workflow's first act is creating a hook with a
  *      deterministic token derived from its key. That hook is both a
  *      liveness marker and a mailbox.
- *   2. getOrStart(key, startRun) probes the token with getHookByToken():
- *      hit → return the existing run; miss → start a fresh one.
+ *   2. getOrStart(key, startRun) probes the token with getHookByToken()
+ *      and confirms the owning run is still live: live hit → return it;
+ *      miss (or a dead owner) → start a fresh one.
  *   3. The hook token is also the mutex: if two callers race and both
  *      start a run, the duplicate detects the conflict via getConflict()
  *      and returns { dedupedTo: winnerRunId } — exactly one run survives.
@@ -30,7 +31,7 @@
  * DOCS: https://workflow-sdk.dev/patterns/singleton-run
  */
 import { defineHook } from 'workflow';
-import { getHookByToken } from 'workflow/api';
+import { getHookByToken, getRun } from 'workflow/api';
 
 // Liveness marker + mailbox for each singleton. Creating it (with the
 // deterministic token below) is what makes a run discoverable by key.
@@ -38,6 +39,19 @@ export const singletonMailbox = defineHook<unknown>();
 
 export function singletonToken(key: string) {
   return `singleton:${key}`;
+}
+
+/**
+ * A hook outlives its run: getHookByToken() keeps answering for a run that
+ * has already finished (the hook is retained, just not resumable). So the
+ * existence of the token is NOT proof of liveness — check the owning run's
+ * status before adopting it. A token still claimed by a terminal run is
+ * treated as vacant when the replacement creates its own hook, so starting
+ * a fresh run here is safe.
+ */
+async function isRunLive(runId: string): Promise<boolean> {
+  const status = await getRun(runId).status.catch(() => null);
+  return status === 'pending' || status === 'running';
 }
 
 /**
@@ -58,7 +72,7 @@ export async function getOrStart(
   startRun: () => Promise<{ runId: string }>
 ): Promise<{ runId: string; started: boolean }> {
   const existing = await getHookByToken(singletonToken(key)).catch(() => null);
-  if (existing) {
+  if (existing && (await isRunLive(existing.runId))) {
     return { runId: existing.runId, started: false };
   }
   const run = await startRun();

@@ -26,8 +26,10 @@
  *     times if the workflow restarts mid-rollback.
  *   - Use FatalError on permanent failures (auth errors, validation) to skip
  *     retries and trigger the rollback immediately.
- *   - sendConfirmation is fire-and-forget (no compensation) — OK for
- *     notifications where duplication is harmless.
+ *   - sendConfirmation has no compensation registered, but it is still
+ *     awaited inside the try: if it throws, the whole transaction unwinds.
+ *     For a notification that must never roll back a good transaction, move
+ *     it after the try/catch, or catch its error inside the step.
  *
  * DOCS: https://workflow-sdk.dev/patterns/saga
  */
@@ -73,7 +75,9 @@ export async function subscriptionUpgradeSaga(
       undo: () => deprovisionSeats(accountId, entitlementId),
     });
 
-    // Fire-and-forget — notifications don't need a compensation.
+    // No compensation to register — but note this is still inside the try,
+    // so a failed notification rolls the entire upgrade back. See the header
+    // for how to make it non-fatal.
     await sendConfirmation(accountId, invoiceId, entitlementId);
 
     return {
