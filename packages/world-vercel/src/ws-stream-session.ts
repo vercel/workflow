@@ -26,7 +26,14 @@ import {
 } from './ws-stream-connect.js';
 import { isWsStreamsTransportEnabled } from './ws-transport-enabled.js';
 
-type Mode = 'connecting' | 'draining' | 'ws' | 'http' | 'closed' | 'poisoned';
+type Mode =
+  | 'deferred'
+  | 'connecting'
+  | 'draining'
+  | 'ws'
+  | 'http'
+  | 'closed'
+  | 'poisoned';
 type WriteTiming = {
   startedAt: number;
   sessionFirstWrite: boolean;
@@ -181,8 +188,8 @@ function asBytes(raw: unknown): Uint8Array {
 class VercelStreamWriteSession implements StreamWriteSession {
   private mode: Mode = 'connecting';
   private socket: WebSocket | undefined;
-  private connect: Promise<void>;
-  private transportDecision: Promise<void>;
+  private connect = Promise.resolve();
+  private transportDecision = Promise.resolve();
   private tail = Promise.resolve();
   private inbound = Promise.resolve();
   private nextReqId = 1;
@@ -209,10 +216,14 @@ class VercelStreamWriteSession implements StreamWriteSession {
       chunks: (string | Uint8Array)[],
       attributes?: Attributes
     ) => Promise<void>,
-    private readonly closeHttp: () => Promise<void>
+    private readonly closeHttp: () => Promise<void>,
+    private readonly deferInitialConnect: boolean
   ) {
-    this.connect = this.startConnect();
-    this.transportDecision = this.makeTransportDecision();
+    if (deferInitialConnect) {
+      this.mode = 'deferred';
+    } else {
+      this.startInitialConnect();
+    }
   }
 
   write(chunkSeq: number, chunks: (string | Uint8Array)[]): Promise<void> {
@@ -230,23 +241,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
     timing: WriteTiming
   ): Promise<void> {
     this.assertUsable();
-    if (this.mode === 'connecting' && this.connectionAttempt === 1) {
-      // Assign complete groups to HTTP while the initial socket opens in the
-      // background. The serial operation chain prevents later WS work from
-      // overtaking this request, and a failed HTTP request poisons the writer:
-      // its outcome may be unknown, so it must never be replayed over WS.
-      try {
-        await this.writeHttp(chunks, {
-          'workflow.stream.ws.session_first_write': timing.sessionFirstWrite,
-          'workflow.stream.ws.connection_attempt': this.connectionAttempt,
-          'workflow.stream.ws.connecting_at_write': true,
-          'workflow.stream.ws.session_to_write_ms':
-            timing.startedAt - this.sessionCreatedAt,
-        });
-      } catch (error) {
-        this.failUnknown(error);
-        throw this.poisonError;
-      }
+    if (this.mode === 'deferred') {
+      await this.writeBeforeInitialConnect(chunks, timing);
+      return;
+    }
+    if (this.shouldWriteHttpWhileConnecting()) {
+      await this.writeWhileInitialConnectRuns(chunks, timing);
       return;
     }
     await this.transportDecision;
@@ -296,6 +296,58 @@ class VercelStreamWriteSession implements StreamWriteSession {
     }
   }
 
+  private shouldWriteHttpWhileConnecting(): boolean {
+    return (
+      !this.deferInitialConnect &&
+      this.mode === 'connecting' &&
+      this.connectionAttempt === 1
+    );
+  }
+
+  private async writeWhileInitialConnectRuns(
+    chunks: (string | Uint8Array)[],
+    timing: WriteTiming
+  ): Promise<void> {
+    // Assign complete groups to HTTP while the initial socket opens in the
+    // background. The serial operation chain prevents later WS work from
+    // overtaking this request, and a failed HTTP request poisons the writer:
+    // its outcome may be unknown, so it must never be replayed over WS.
+    try {
+      await this.writeHttp(chunks, {
+        'workflow.stream.ws.session_first_write': timing.sessionFirstWrite,
+        'workflow.stream.ws.connection_attempt': this.connectionAttempt,
+        'workflow.stream.ws.connecting_at_write': true,
+        'workflow.stream.ws.session_to_write_ms':
+          timing.startedAt - this.sessionCreatedAt,
+      });
+    } catch (error) {
+      this.failUnknown(error);
+      throw this.poisonError;
+    }
+  }
+
+  private async writeBeforeInitialConnect(
+    chunks: (string | Uint8Array)[],
+    timing: WriteTiming
+  ): Promise<void> {
+    // Diagnostic variant: delay all socket setup until the first HTTP group
+    // settles, isolating concurrent WS initialization from first-chunk CTT.
+    try {
+      await this.writeHttp(chunks, {
+        'workflow.stream.ws.session_first_write': timing.sessionFirstWrite,
+        'workflow.stream.ws.connection_attempt': 0,
+        'workflow.stream.ws.connecting_at_write': false,
+        'workflow.stream.ws.connect_deferred_at_write': true,
+        'workflow.stream.ws.session_to_write_ms':
+          timing.startedAt - this.sessionCreatedAt,
+      });
+    } catch (error) {
+      this.failUnknown(error);
+      throw this.poisonError;
+    }
+    if (this.mode === 'deferred') this.startInitialConnect();
+  }
+
   dispose(): void {
     if (this.mode === 'closed') return;
     this.mode = 'closed';
@@ -312,6 +364,11 @@ class VercelStreamWriteSession implements StreamWriteSession {
   close(): Promise<void> {
     return this.enqueue(async () => {
       this.assertUsable();
+      if (this.mode === 'deferred') {
+        await this.closeHttp();
+        this.mode = 'closed';
+        return;
+      }
       await this.transportDecision;
       this.assertUsable();
       if (this.mode === 'http') {
@@ -350,6 +407,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
   private assertUsable(): void {
     if (this.mode === 'poisoned') throw this.poisonError;
     if (this.mode === 'closed') throw new Error('stream writer is closed');
+  }
+
+  private startInitialConnect(): void {
+    this.mode = 'connecting';
+    this.connect = this.startConnect();
+    this.transportDecision = this.makeTransportDecision();
   }
 
   /** One shared bounded decision for all operations queued while connecting. */
@@ -797,7 +860,8 @@ export function createStreamWriteSession(
     chunks: (string | Uint8Array)[],
     attributes?: Attributes
   ) => Promise<void>,
-  closeHttp: () => Promise<void>
+  closeHttp: () => Promise<void>,
+  deferInitialConnect = false
 ): StreamWriteSession {
   return new VercelStreamWriteSession(
     runId,
@@ -805,6 +869,7 @@ export function createStreamWriteSession(
     StreamWriterIdSchema.parse(writerId),
     config,
     writeHttp,
-    closeHttp
+    closeHttp,
+    deferInitialConnect
   );
 }

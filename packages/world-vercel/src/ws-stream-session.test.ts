@@ -131,7 +131,8 @@ afterEach(() => {
 });
 
 function makeSession(
-  config: { token?: string } | undefined = { token: 'token' }
+  config: { token?: string } | undefined = { token: 'token' },
+  deferInitialConnect = false
 ) {
   const writeHttp = vi.fn().mockResolvedValue(undefined);
   const closeHttp = vi.fn().mockResolvedValue(undefined);
@@ -141,7 +142,8 @@ function makeSession(
     writerId,
     config,
     writeHttp,
-    closeHttp
+    closeHttp,
+    deferInitialConnect
   );
   activeSessions.push(session);
   return { session, writeHttp, closeHttp };
@@ -156,6 +158,66 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(sockets).toHaveLength(0);
     expect(writeHttp).toHaveBeenCalledWith(['one']);
     expect(closeHttp).toHaveBeenCalledTimes(1);
+  });
+
+  it('defers the diagnostic socket until the first HTTP group settles', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    let releaseHttp: (() => void) | undefined;
+    const httpPending = new Promise<void>((resolve) => {
+      releaseHttp = resolve;
+    });
+    const { session, writeHttp } = makeSession({ token: 'token' }, true);
+    writeHttp.mockImplementationOnce(async () => httpPending);
+
+    const first = session.write(0, ['one']);
+    await vi.waitFor(() => expect(writeHttp).toHaveBeenCalledTimes(1));
+    expect(writeHttp).toHaveBeenCalledWith(
+      ['one'],
+      expect.objectContaining({
+        'workflow.stream.ws.session_first_write': true,
+        'workflow.stream.ws.connecting_at_write': false,
+        'workflow.stream.ws.connect_deferred_at_write': true,
+        'workflow.stream.ws.connection_attempt': 0,
+      })
+    );
+    expect(sockets).toHaveLength(0);
+
+    const second = session.write(1, ['two']);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sockets).toHaveLength(0);
+    releaseHttp?.();
+    await first;
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].open();
+    await vi.waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    expect((await decodeOne(sockets[0].sent[0])).meta).toMatchObject({
+      type: 'write',
+      chunkSeq: 1,
+    });
+    sockets[0].reply(
+      encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
+    );
+    await second;
+  });
+
+  it('does not start a diagnostic socket after an ambiguous first HTTP outcome', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const error = new Error('HTTP outcome unknown');
+    const { session, writeHttp } = makeSession({ token: 'token' }, true);
+    writeHttp.mockRejectedValueOnce(error);
+
+    await expect(session.write(0, ['one'])).rejects.toBe(error);
+    await expect(session.write(1, ['two'])).rejects.toBe(error);
+    expect(sockets).toHaveLength(0);
+  });
+
+  it('closes over HTTP without starting a deferred diagnostic socket', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const { session, closeHttp } = makeSession({ token: 'token' }, true);
+
+    await session.close();
+    expect(closeHttp).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(0);
   });
 
   it('sends immediately over HTTP while the initial socket connects, then switches to WS', async () => {
@@ -766,15 +828,16 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(sockets).toHaveLength(0);
   });
 
-  it('forwards streamer-wrapper disposal after session materialization', async () => {
+  it('keeps streamer-wrapper disposal socket-free before its first write', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
     const { createStreamer } = await import('./streamer.js');
     const session = createStreamer({
       token: 'token',
     }).streams.createWriteSession?.('wrun_1', 'stream/1', { writerId });
-    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sockets).toHaveLength(0);
     await session?.dispose?.();
-    expect(sockets[0].closed).toContainEqual([1000, 'stream writer disposed']);
+    expect(sockets).toHaveLength(0);
   });
 
   it('disposes transport without sending protocol close', async () => {

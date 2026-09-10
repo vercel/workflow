@@ -286,7 +286,8 @@ export function createStreamer(config?: APIConfig): Streamer {
                     config,
                     attributes
                   ),
-                () => closeStreamSessionOverHttp(runId, name, config)
+                () => closeStreamSessionOverHttp(runId, name, config),
+                true
               );
             },
           }
