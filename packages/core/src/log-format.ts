@@ -36,7 +36,7 @@ export function composeLogLine(
 ): string {
   const [framing, ...rest] = message.split('\n');
   const body = rest.join('\n');
-  const fields = renderStructuredFields(framing ?? '', metadata);
+  const fields = renderStructuredFields(framing ?? '', body, metadata);
   const trimmedBody = trimStackBody(body);
 
   const lines: string[] = [`${prefix} ${framing ?? ''}`];
@@ -47,18 +47,23 @@ export function composeLogLine(
 
 function renderStructuredFields(
   framing: string,
+  body: string,
   metadata: Record<string, unknown> | undefined
 ): string | null {
   if (!metadata || Object.keys(metadata).length === 0) return null;
 
   // Drop fields that the message already encodes. We render framings and
   // stacks into the message string itself in step executor / combined runtime, so
-  // repeating them here would be pure noise.
+  // repeating them here would be pure noise. A message with neither (a WARN
+  // whose framing is a fixed sentence and whose `errorMessage` is the only
+  // place the underlying error's text appears) keeps `errorMessage` and
+  // renders it as its own row below.
   const redundant = new Set<string>();
   redundant.add('errorStack');
+  const errorMessage = pickString(metadata, 'errorMessage');
   if (
-    typeof metadata.errorMessage === 'string' &&
-    framing.includes(metadata.errorMessage as string)
+    errorMessage &&
+    (framing.includes(errorMessage) || body.includes(errorMessage))
   ) {
     redundant.add('errorMessage');
   }
@@ -128,6 +133,10 @@ function renderStructuredFields(
   const errorCode = pickString(metadata, 'errorCode');
   if (errorCode && errorCode !== errorName) {
     lines.push(`  ${kvKey('code')} ${Ansi.dim(errorCode)}`);
+  }
+
+  if (errorMessage && !redundant.has('errorMessage')) {
+    lines.push(`  ${kvKey('error')} ${formatPassthroughValue(errorMessage)}`);
   }
 
   const hint = pickString(metadata, 'hint');
