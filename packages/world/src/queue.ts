@@ -463,6 +463,13 @@ export interface Queue {
    * whose queue mints a fresh ID per delivery degrades gracefully: owner
    * redeliveries fall back to the delayed-backstop path instead of executing
    * immediately, adding recovery latency but never wedging or duplicating.
+   *
+   * `meta.expiresAt` is the instant the queue will drop this message without
+   * further delivery attempts (its retention / TTL). When present, the
+   * runtime's redelivery budget is time-based: it stops retrying and fails
+   * the run shortly before this instant so the failure is recorded rather
+   * than the message vanishing mid-retry. A queue with no message expiry
+   * omits it, and the runtime falls back to a fixed attempt count.
    */
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
@@ -473,6 +480,7 @@ export interface Queue {
         queueName: ValidQueueName;
         messageId: MessageId;
         requestId?: string;
+        expiresAt?: Date;
       }
       // biome-ignore lint/suspicious/noConfusingVoidType: it is what it is
     ) => Promise<void | { timeoutSeconds: number }>

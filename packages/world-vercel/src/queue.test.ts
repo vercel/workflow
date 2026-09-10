@@ -747,6 +747,55 @@ describe('createQueue', () => {
       }
     });
 
+    it('forwards the message expiry to the handler so the runtime can budget redeliveries by time', async () => {
+      let capturedHandler: (
+        message: unknown,
+        metadata: unknown
+      ) => Promise<void>;
+      mockHandleCallback.mockImplementation((handler) => {
+        capturedHandler = handler;
+        return async () => new Response('ok');
+      });
+
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+
+      try {
+        const queue = createQueue();
+        const handler = vi.fn(async () => undefined);
+        queue.createQueueHandler('__wkf_workflow_', handler);
+
+        const expiresAt = new Date('2026-01-02T00:00:00.000Z');
+        await capturedHandler!(
+          {
+            payload: { runId: 'run-123' },
+            queueName: '__wkf_workflow_test',
+            deploymentId: 'dpl_original',
+          },
+          {
+            messageId: 'msg-123',
+            deliveryCount: 7,
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+            expiresAt,
+            topicName: '__wkf_workflow_test',
+            consumerGroup: 'test',
+          }
+        );
+
+        expect(handler).toHaveBeenCalledTimes(1);
+        expect(handler.mock.calls[0][1]).toMatchObject({
+          attempt: 7,
+          expiresAt,
+        });
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
+    });
+
     it('should send new message with delaySeconds when handler returns timeoutSeconds', async () => {
       mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
 
@@ -787,6 +836,9 @@ describe('createQueue', () => {
         // send(topicName, payload, options)
         const sendOpts = mockSend.mock.calls[0][2];
         expect(sendOpts.delaySeconds).toBe(300);
+        // A delayed message keeps the full default retention (24h) of retry
+        // budget after it fires, so its retention is the delay on top of it.
+        expect(sendOpts.retentionSeconds).toBe(300 + 86400);
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
@@ -885,6 +937,7 @@ describe('createQueue', () => {
         // send(topicName, payload, options)
         const sendOpts = mockSend.mock.calls[0][2];
         expect(sendOpts.delaySeconds).toBeUndefined();
+        expect(sendOpts.retentionSeconds).toBeUndefined();
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;

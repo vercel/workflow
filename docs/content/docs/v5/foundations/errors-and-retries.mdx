@@ -192,7 +192,7 @@ try {
 | --- | --- |
 | `USER_ERROR` | An error thrown in your workflow or step code (including propagated step failures like `FatalError`) |
 | `MAX_EVENTS_EXCEEDED` | The run reached the World's per-run event ceiling (25,000 on the Local and Vercel Worlds). Split unbounded loops into [child workflows](/cookbook/advanced/child-workflows); see [Limits](/docs/configuration/runtime-tuning#limits) |
-| `MAX_DELIVERIES_EXCEEDED` | The run exceeded the maximum number of queue deliveries |
+| `MAX_DELIVERIES_EXCEEDED` | The run exhausted its queue redelivery budget: on the Vercel World, about 24 hours of failed deliveries (the message's retention); on other Worlds, the attempt cap in [`WORKFLOW_MAX_QUEUE_DELIVERIES`](/docs/configuration/runtime-tuning#workflow_max_queue_deliveries). Points at a persistent failure, such as a deployment whose function keeps crashing or timing out |
 | `REPLAY_TIMEOUT` | A workflow replay exceeded the maximum allowed duration |
 | `REPLAY_DIVERGENCE` | A replay could not consume the event log deterministically, usually because of non-deterministic workflow code. |
 | `CORRUPTED_EVENT_LOG` | The event log cannot be replayed: it contains orphaned or mismatched events, or one of its stored payloads is no longer readable from the World's storage. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |

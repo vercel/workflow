@@ -231,7 +231,7 @@ interface Queue {
 
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
-    handler: (message: unknown, meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }) => Promise<void | { timeoutSeconds: number }>
+    handler: (message: unknown, meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId; requestId?: string; expiresAt?: Date }) => Promise<void | { timeoutSeconds: number }>
   ): (req: Request) => Promise<Response>;
 }
 ```

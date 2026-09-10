@@ -75,9 +75,11 @@ const handler = world.createQueueHandler(prefix, callback); // [!code highlight]
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `prefix` | `QueuePrefix` | Queue name prefix to match |
-| `callback` | `(message, meta) => Promise<void \| { timeoutSeconds: number }>` | Handler called for each message. `meta` contains `attempt`, `queueName`, `messageId`, `requestId`. |
+| `callback` | `(message, meta) => Promise<void \| { timeoutSeconds: number }>` | Handler called for each message. `meta` contains `attempt`, `queueName`, `messageId`, `requestId`, and `expiresAt` when the queue drops undelivered messages after a retention period. |
 
 **Returns:** `(req: Request) => Promise<Response>`
+
+`meta.expiresAt` tells the runtime when the queue will drop the message. When a World provides it, the runtime keeps retrying a failing delivery until about an hour before that instant and then fails the run with `MAX_DELIVERIES_EXCEEDED`, so the failure is recorded rather than the message silently expiring. Without it, the runtime falls back to a fixed attempt count (see [`WORKFLOW_MAX_QUEUE_DELIVERIES`](/docs/configuration/runtime-tuning#workflow_max_queue_deliveries)).
 
 `meta.messageId` should be stable across redeliveries of the same message (one ID per enqueued message, reused on every delivery attempt). The runtime records it on inline `step_started` events as a liveness lease so that only a redelivery of the owning message re-executes a crashed inline step before the lease expires (see [Inline step message ownership](/docs/changelog/step-message-ownership)). A World whose queue mints a fresh ID per delivery degrades gracefully. Crashed inline steps recover via the delayed backstop instead of immediately on redelivery, but never wedge or duplicate.
 

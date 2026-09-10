@@ -2,40 +2,92 @@ import { globalSingleton } from '@workflow/utils';
 import { envNumber } from '@workflow/world';
 import { runtimeLogger } from '../logger.js';
 
-// Maximum number of queue delivery attempts before the handler gives up and
-// gracefully fails the run/step. This must be bounded under the VQS message
-// max visibility window (24 hours) so that our handler-side failure path
-// reliably executes before VQS expires the message.
+// The handler's redelivery budget: how long a message that keeps failing is
+// retried before the handler gives up and records `run_failed`. The failure
+// path must run while the queue still holds the message, so the budget is
+// bounded by the message's retention (24 hours on the Vercel queue).
 //
-// The effective wall-clock survival depends on the per-redelivery backoff: the
-// `retry-after` the handler returns (see world-vercel
-// `getHandlerErrorRetryAfterSeconds`) fed through VQS `calculateBackoffDelay`.
-// VQS uses our value for the first 32 attempts (clamped to [5s, 900s]) then
-// applies its own exponential growth, every hop hard-capped at the SQS limit
-// of 900s. With the backoff ramping toward that 900s ceiling (reached by
-// ~delivery 11), 48 attempts span roughly 9–10 hours of wall-clock (~35,000s),
-// comfortably under the 24-hour message-visibility limit so the failure path
-// runs before the message expires. (A flatter, low-capped backoff exhausts the
-// budget in only a few hours, failing otherwise-healthy runs during a transient
-// backend outage; conversely, spanning the full 24h window would require a
-// substantially higher cap here, not a higher per-hop ceiling, since VQS
-// clamps every hop at 900s.)
+// When the queue reports the message's expiry (`meta.expiresAt`), the budget
+// is time-based: the handler keeps retrying until the message is within
+// `QUEUE_DELIVERY_EXPIRY_MARGIN_MS` of expiring, then fails the run. This
+// spans the retention window regardless of how long each attempt takes or
+// how the per-redelivery backoff is shaped. Before this, the budget was a
+// fixed 48 attempts, which under the backoff in world-vercel
+// (`getHandlerErrorRetryAfterSeconds`, ramping to VQS's 900s per-hop cap by
+// about delivery 11) gave up after roughly 9-10 hours of a backend outage,
+// well short of the 24 hours the message would otherwise have survived.
+//
+// The margin has to cover one more redelivery hop plus the handler's own
+// startup: the check runs at the top of each delivery, so the last attempt to
+// see "not yet exhausted" is followed by at most one backoff (VQS caps every
+// hop at 900s) before the attempt that records the failure.
+export const QUEUE_DELIVERY_EXPIRY_MARGIN_MS = 60 * 60 * 1000;
+
+// Attempt cap that applies alongside the time-based budget. It is a safety
+// net against a queue that ignores the requested backoff, not the budget
+// itself: 23 hours of 900s hops is about 100 deliveries, and the jittered
+// backoff can fit at most ~135, so a healthy message never reaches this.
+export const MAX_QUEUE_DELIVERIES_WITH_EXPIRY = 256;
+
+// Attempt cap for queues that report no message expiry (world-local,
+// world-postgres, custom worlds). With no retention to run against, the
+// count is the whole budget, and it stays at the value calibrated for the
+// Vercel queue's retention so a bad deployment on such a world is bounded
+// the same way it was before the time-based budget existed.
 export const MAX_QUEUE_DELIVERIES = 48;
 
 /**
  * Effective max queue deliveries. Override via `WORKFLOW_MAX_QUEUE_DELIVERIES`.
+ *
+ * `hasExpiry` selects the default: the safety-net cap when the queue reports
+ * a message expiry (the time-based budget is the binding bound then), the
+ * fixed budget otherwise.
  */
-export function getMaxQueueDeliveries(): number {
+export function getMaxQueueDeliveries(hasExpiry = false): number {
+  const defaultMax = hasExpiry
+    ? MAX_QUEUE_DELIVERIES_WITH_EXPIRY
+    : MAX_QUEUE_DELIVERIES;
   // Only ever lower the delivery budget. The default is calibrated so the
   // handler-side failure path runs before VQS message-retention expiry (see
-  // MAX_QUEUE_DELIVERIES above); a higher value would bypass that invariant and
-  // let a bad deployment redeliver until queue expiry instead of recording
-  // run_fail. `max` clamps a too-high override back down to the safe default.
-  return envNumber('WORKFLOW_MAX_QUEUE_DELIVERIES', MAX_QUEUE_DELIVERIES, {
+  // above); a higher value would bypass that invariant and let a bad
+  // deployment redeliver until queue expiry instead of recording run_failed.
+  // `max` clamps a too-high override back down to the safe default.
+  return envNumber('WORKFLOW_MAX_QUEUE_DELIVERIES', defaultMax, {
     integer: true,
     min: 1,
-    max: MAX_QUEUE_DELIVERIES,
+    max: defaultMax,
   });
+}
+
+/**
+ * Decides whether a delivery has exhausted its redelivery budget. Returns a
+ * description of the exhausted bound for the failure message, or `undefined`
+ * while the message may still be retried.
+ */
+export function getExhaustedDeliveryBudget(
+  meta: { attempt: number; expiresAt?: Date },
+  now: number = Date.now()
+): { reason: string; maxQueueDeliveries: number } | undefined {
+  const maxQueueDeliveries = getMaxQueueDeliveries(
+    meta.expiresAt !== undefined
+  );
+  if (meta.attempt > maxQueueDeliveries) {
+    return {
+      reason: `maximum queue deliveries (${meta.attempt}/${maxQueueDeliveries})`,
+      maxQueueDeliveries,
+    };
+  }
+  if (meta.expiresAt !== undefined) {
+    const remainingMs = meta.expiresAt.getTime() - now;
+    if (remainingMs < QUEUE_DELIVERY_EXPIRY_MARGIN_MS) {
+      const remainingSeconds = Math.max(0, Math.round(remainingMs / 1000));
+      return {
+        reason: `queue delivery budget (message expires in ${remainingSeconds}s after ${meta.attempt} deliveries)`,
+        maxQueueDeliveries,
+      };
+    }
+  }
+  return undefined;
 }
 
 /**
