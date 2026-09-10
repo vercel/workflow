@@ -22,7 +22,11 @@
  */
 
 import assert from 'node:assert/strict';
-import { CorruptedEventLogError, WorkflowWorldError } from '@workflow/errors';
+import {
+  CorruptedEventLogError,
+  StreamError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   type Event,
   type EventResult,
@@ -38,6 +42,7 @@ import {
 } from '@workflow/world';
 import { decode } from 'cbor-x';
 import { z } from 'zod';
+import { ReplayEventObserverError } from './event-retry.js';
 import {
   type DecodedFrame,
   decodeFrames,
@@ -51,6 +56,7 @@ import {
 } from './http-client.js';
 import {
   errorForResponse,
+  getTransientTransportCode,
   headersToRecord,
   httpLog,
   instrumentedFetch,
@@ -68,6 +74,8 @@ import {
   WorkflowClientVersion,
   WorkflowEventsTransport,
   WorkflowEventType,
+  WorkflowStepStartMode,
+  WorkflowStepStartOwnerStamped,
   WorkflowWsRequestId,
   WorkflowWsUrl,
 } from './telemetry.js';
@@ -107,10 +115,10 @@ async function fetchV4(
   init: { method: string; headers: Headers; body?: Uint8Array },
   config: APIConfig | undefined,
   opName: string,
-  attributes?: Record<string, string | number | string[]>
+  attributes?: Record<string, string | number | boolean | string[]>
 ): Promise<Response> {
   const dispatcher = getEventsDispatcher(config);
-  return instrumentedFetch({
+  const response = await instrumentedFetch({
     method: init.method,
     url,
     headers: init.headers,
@@ -123,7 +131,9 @@ async function fetchV4(
     // until the compute instance is recycled. See noteEventsTransportOutcome.
     onTransportOutcome: (error) =>
       noteEventsTransportOutcome(dispatcher, error),
+    deferTransportSuccessUntilBody: true,
     timeoutMs: null,
+    transportErrorCode: 'STREAM_ERROR',
     logLabel: opName,
     // Read the body as bytes, not text: a CBOR error body (the fence 412
     // carries event payloads back) does not survive a UTF-8 decode.
@@ -135,6 +145,45 @@ async function fetchV4(
         opName,
         url
       ),
+  });
+
+  if (!response.body) {
+    noteEventsTransportOutcome(dispatcher);
+    return response;
+  }
+  const reader = response.body.getReader();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          noteEventsTransportOutcome(dispatcher);
+          controller.close();
+        } else {
+          controller.enqueue(chunk.value);
+        }
+      } catch (cause) {
+        noteEventsTransportOutcome(dispatcher, cause);
+        const transportCode = getTransientTransportCode(cause);
+        controller.error(
+          transportCode
+            ? new StreamError(
+                `v4 ${opName}: response stream transport failure (${transportCode})`,
+                { cause, url }
+              )
+            : cause
+        );
+      }
+    },
+    cancel(reason) {
+      noteEventsTransportOutcome(dispatcher);
+      return reader.cancel(reason);
+    },
+  });
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
   });
 }
 
@@ -739,6 +788,20 @@ async function postWorkflowRunEventV4(
       ...WorkflowEventsTransport('http'),
       ...WorkflowEventType(input.eventType),
       ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+      ...(input.eventType === 'step_started'
+        ? {
+            ...WorkflowStepStartMode(
+              input.payload === undefined
+                ? input.ownerMessageId !== undefined
+                  ? 'single_owned_recovery'
+                  : 'single_bare'
+                : 'single_lazy_create_claim'
+            ),
+            ...WorkflowStepStartOwnerStamped(
+              input.ownerMessageId !== undefined
+            ),
+          }
+        : {}),
       ...(input.stso !== undefined ? StepStsoMs(input.stso) : {}),
       ...(input.optimizations !== undefined
         ? StepLatencyOptimizations(input.optimizations)
@@ -829,6 +892,7 @@ async function decodeCreateEventResponse<T extends EventType>(
   try {
     bodyBytes = new Uint8Array(await response.arrayBuffer());
   } catch (cause) {
+    if (StreamError.is(cause)) throw cause;
     throw new WorkflowWorldError(
       'v4 createEvent: failed to read response body',
       { code: 'TRANSPORT', cause }
@@ -867,14 +931,20 @@ async function decodeCreateEventResponse<T extends EventType>(
 
 export async function createWorkflowRunStartedEventV4(
   input: CreateEventV4InputBase,
-  config?: APIConfig
+  config?: APIConfig,
+  replayEventObserver?: (event: Event) => void
 ) {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'run_started' },
     'event-stream',
     config
   );
-  const page = await consumeReplayLogResponse(response, input.runId, config);
+  const page = await consumeReplayLogResponse(
+    response,
+    input.runId,
+    config,
+    replayEventObserver
+  );
   if (!page.cursor) {
     throw new WorkflowWorldError(
       'v4 createEvent: event stream missing cursor',
@@ -987,6 +1057,18 @@ export async function createWorkflowRunEventsBatchV4(
     {
       ...WorkflowEventsTransport('http'),
       'workflow.batch.bytes': body.byteLength,
+      ...(input.events.some((event) => event.eventType === 'step_started')
+        ? {
+            ...WorkflowStepStartMode(
+              input.events.some((event) => event.eventType === 'step_created')
+                ? 'batch_create_claim'
+                : 'batch_bare'
+            ),
+            ...WorkflowStepStartOwnerStamped(
+              input.events.some((event) => event.ownerMessageId !== undefined)
+            ),
+          }
+        : {}),
     }
   );
 
@@ -1199,6 +1281,20 @@ async function postEventFrameOverWs(
         ...(input.optimizations !== undefined
           ? StepLatencyOptimizations(input.optimizations)
           : {}),
+        ...(input.eventType === 'step_started'
+          ? {
+              ...WorkflowStepStartMode(
+                input.payload === undefined
+                  ? input.ownerMessageId !== undefined
+                    ? 'single_owned_recovery'
+                    : 'single_bare'
+                  : 'single_lazy_create_claim'
+              ),
+              ...WorkflowStepStartOwnerStamped(
+                input.ownerMessageId !== undefined
+              ),
+            }
+          : {}),
         ...NetworkProtocolName('websocket'),
         ...WorkflowWsUrl(wsUrl),
       },
@@ -1319,7 +1415,8 @@ export type HookReceivedPreloadV4Result =
  */
 export async function createHookReceivedPreloadEventV4(
   input: CreateEventV4InputBase,
-  config?: APIConfig
+  config?: APIConfig,
+  replayEventObserver?: (event: Event) => void
 ): Promise<HookReceivedPreloadV4Result> {
   const response = await postWorkflowRunEventV4(
     { ...input, eventType: 'hook_received' },
@@ -1335,7 +1432,12 @@ export async function createHookReceivedPreloadEventV4(
     };
   }
 
-  const page = await consumeReplayLogResponse(response, input.runId, config);
+  const page = await consumeReplayLogResponse(
+    response,
+    input.runId,
+    config,
+    replayEventObserver
+  );
   const maxEvents = MaxEventsHeaderSchema.safeParse(
     response.headers.get(MAX_EVENTS_HEADER)
   );
@@ -1397,14 +1499,21 @@ export async function getEventV4(
 
   // GET emits a single frame (no sentinel); decodeFrames returns at EOF
   // after yielding it.
-  for await (const frame of decodeFrames(chunks)) {
-    if (frame.meta._error === 1) {
-      throw streamErrorFrameToError(frame.meta, 'getEvent');
+  try {
+    for await (const frame of decodeFrames(chunks)) {
+      if (frame.meta._error === 1) {
+        throw streamErrorFrameToError(frame.meta, 'getEvent');
+      }
+      if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
+        throw new Error('v4 getEvent: unexpected control frame');
+      }
+      return decodeEventFrame(frame);
     }
-    if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
-      throw new Error('v4 getEvent: unexpected control frame');
+  } catch (cause) {
+    if (cause instanceof IncompleteFrameError && StreamError.is(cause.cause)) {
+      throw cause.cause;
     }
-    return decodeEventFrame(frame);
+    throw cause;
   }
   throw new Error(`v4 getEvent: empty frame stream for ${eventId}`);
 }
@@ -1470,24 +1579,37 @@ function streamErrorFrameToError(
   );
 }
 
-type EventFrameStreamResult = ListEventsV4Result & {
-  partialError?: WorkflowWorldError;
-};
+type EventFrameStreamResult =
+  | (ListEventsV4Result & { kind: 'complete' })
+  | {
+      kind: 'partial';
+      events: Event[];
+      cursor: string;
+      hasMore: true;
+      error: WorkflowWorldError;
+    };
 
 const MAX_PARTIAL_STREAM_RETRIES = 2;
 
 function partialEventFrameStream(
   events: Event[],
-  partialError: WorkflowWorldError
+  error: WorkflowWorldError
 ): EventFrameStreamResult {
   const eventId = events.at(-1)?.eventId;
-  if (!eventId) throw partialError;
-  return { events, cursor: `eid:${eventId}`, hasMore: true, partialError };
+  if (!eventId) throw error;
+  return {
+    kind: 'partial',
+    events,
+    cursor: `eid:${eventId}`,
+    hasMore: true,
+    error,
+  };
 }
 
 async function consumeEventFrameStream(
   response: Response,
-  opName: string
+  opName: string,
+  replayEventObserver?: (event: Event) => void
 ): Promise<EventFrameStreamResult> {
   const contentType = response.headers.get('content-type');
   if (!contentType?.startsWith(V4_FRAME_CONTENT_TYPE)) {
@@ -1508,6 +1630,7 @@ async function consumeEventFrameStream(
       if (frame.meta._end === 1) {
         const end = EventStreamEndSchema.parse(frame.meta);
         return {
+          kind: 'complete',
           events,
           cursor: end.next ?? null,
           hasMore: end.hasMore,
@@ -1519,22 +1642,38 @@ async function consumeEventFrameStream(
       if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
         throw new Error(`v4 ${opName}: unexpected control frame`);
       }
-      events.push(decodeEventFrame(frame));
+      const event = decodeEventFrame(frame);
+      events.push(event);
+      try {
+        replayEventObserver?.(event);
+      } catch (error) {
+        throw new ReplayEventObserverError(error);
+      }
     }
   } catch (cause) {
-    if (CorruptedEventLogError.is(cause) || WorkflowWorldError.is(cause)) {
+    if (
+      cause instanceof ReplayEventObserverError ||
+      CorruptedEventLogError.is(cause) ||
+      WorkflowWorldError.is(cause)
+    ) {
       throw cause;
     }
-    const incomplete = cause instanceof IncompleteFrameError;
-    const error = new WorkflowWorldError(
-      `v4 ${opName}: ${incomplete ? 'incomplete' : 'invalid'} event frame stream`,
-      {
-        code: incomplete ? 'TRANSPORT' : 'SCHEMA_VALIDATION',
+    if (cause instanceof IncompleteFrameError && StreamError.is(cause.cause)) {
+      return partialEventFrameStream(events, cause.cause);
+    }
+    if (!(cause instanceof IncompleteFrameError)) {
+      throw new WorkflowWorldError(`v4 ${opName}: invalid event frame stream`, {
+        code: 'SCHEMA_VALIDATION',
         cause,
-      }
+      });
+    }
+    return partialEventFrameStream(
+      events,
+      new WorkflowWorldError(`v4 ${opName}: incomplete event frame stream`, {
+        code: 'TRANSPORT',
+        cause,
+      })
     );
-    if (!incomplete) throw error;
-    return partialEventFrameStream(events, error);
   }
 
   return partialEventFrameStream(
@@ -1555,12 +1694,22 @@ async function consumeEventFrameStream(
 async function consumeReplayLogResponse(
   response: Response,
   runId: string,
-  config?: APIConfig
+  config?: APIConfig,
+  replayEventObserver?: (event: Event) => void
 ): Promise<ListEventsV4Result> {
-  const page = await consumeEventFrameStream(response, 'createEvent');
-  if (!page.hasMore) return page;
+  const page = await consumeEventFrameStream(
+    response,
+    'createEvent',
+    replayEventObserver
+  );
+  if (!page.hasMore) {
+    return {
+      events: page.events,
+      cursor: page.cursor,
+      hasMore: false,
+    };
+  }
   if (!page.cursor) {
-    if (page.partialError) throw page.partialError;
     throw new WorkflowWorldError(
       'v4 createEvent: partial event stream missing cursor',
       { code: 'SCHEMA_VALIDATION' }
@@ -1570,7 +1719,8 @@ async function consumeReplayLogResponse(
   const suffix = await getWorkflowRunEventsV4(
     runId,
     { cursor: page.cursor, remoteRefBehavior: 'resolve' },
-    config
+    config,
+    replayEventObserver
   );
   return {
     events: [...page.events, ...suffix.events],
@@ -1592,7 +1742,8 @@ async function consumeListFrameStream(
   url: string,
   headers: Headers,
   config: APIConfig | undefined,
-  opName: string
+  opName: string,
+  replayEventObserver?: (event: Event) => void
 ): Promise<EventFrameStreamResult> {
   const response = await fetchV4(
     url,
@@ -1600,7 +1751,7 @@ async function consumeListFrameStream(
     config,
     opName
   );
-  return consumeEventFrameStream(response, opName);
+  return consumeEventFrameStream(response, opName, replayEventObserver);
 }
 
 /**
@@ -1640,7 +1791,8 @@ function paginationToQuery(params: ListEventsV4Params): string {
 export async function getWorkflowRunEventsV4(
   runId: string,
   params: ListEventsV4Params = {},
-  config?: APIConfig
+  config?: APIConfig,
+  replayEventObserver?: (event: Event) => void
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
   const events: Event[] = [];
@@ -1652,17 +1804,22 @@ export async function getWorkflowRunEventsV4(
     const url =
       `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
       paginationToQuery({ ...params, cursor: cursor ?? undefined });
-    consumed = await consumeListFrameStream(url, headers, config, 'listEvents');
+    consumed = await consumeListFrameStream(
+      url,
+      headers,
+      config,
+      'listEvents',
+      replayEventObserver
+    );
     const cursorAdvanced = !!consumed.cursor && consumed.cursor !== cursor;
-    if (consumed.partialError) {
+    if (consumed.kind === 'partial') {
       if (
         params.limit !== undefined ||
         !cursorAdvanced ||
         partialStreamRetries === MAX_PARTIAL_STREAM_RETRIES
       ) {
-        throw consumed.partialError;
+        throw consumed.error;
       }
-      assert(consumed.cursor);
       partialStreamRetries++;
       cursor = consumed.cursor;
     } else if (
@@ -1677,7 +1834,7 @@ export async function getWorkflowRunEventsV4(
     for (const event of consumed.events) {
       events.push(event);
     }
-  } while (consumed.partialError);
+  } while (consumed.kind === 'partial');
 
   return {
     events,
@@ -1718,6 +1875,10 @@ export async function getEventsByCorrelationIdV4(
     config,
     'listEventsByCorrelationId'
   );
-  if (consumed.partialError) throw consumed.partialError;
-  return consumed;
+  if (consumed.kind === 'partial') throw consumed.error;
+  return {
+    events: consumed.events,
+    cursor: consumed.cursor,
+    hasMore: consumed.hasMore,
+  };
 }

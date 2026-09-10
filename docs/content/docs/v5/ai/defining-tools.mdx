@@ -20,7 +20,7 @@ Using WorkflowAgent, we model most tools as steps. These can range from a single
 
 As with regular AI SDK tool definitions, tools in WorkflowAgent receive the tool's input parameters as the first argument and the tool call context as the second.
 
-When you tool needs access to the full message history, you can access it via the `messages` property of the tool call context:
+When your tool needs access to the full message history, you can access it via the `messages` property of the tool call context:
 
 ```typescript title="tools.ts" lineNumbers
 import type { ModelMessage } from "ai";

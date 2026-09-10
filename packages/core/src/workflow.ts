@@ -145,10 +145,10 @@ export interface CompiledWorkflowScripts {
 /**
  * Compile the workflow bundle before its run snapshot is available.
  *
- * Compilation depends only on the route's bundle string and workflow name,
- * not the event log or VM context. The runtime starts this promise while
- * `run_started` loads the replay snapshot, then evaluates the scripts only
- * after it has created the fresh context.
+ * Compilation depends only on the route's bundle string and the workflow name
+ * persisted on the run, not the event log or VM context. The runtime starts
+ * this promise while `run_started` loads the replay snapshot, then evaluates
+ * the scripts only after it has created the fresh context.
  */
 export function compileWorkflowBundle(
   workflowCode: string,
@@ -427,17 +427,17 @@ async function createWorkflowSessionInner(
         state = WorkflowSuspension.is(error)
           ? { type: 'suspended', suspension: error }
           : { type: 'replay' };
-        // Step, hook, and attribute consumers can schedule the same suspension.
-        // The first signal advances the generation so the rest no-op.
+        // Step, hook, wait, and attribute consumers can schedule the same
+        // suspension. The first signal advances the generation so the rest
+        // no-op.
         workflowContext.suspensionGeneration++;
         interruption.reject(error);
         return;
       }
       case 'suspended':
         // Same-boundary duplicates were staled by the generation bump above,
-        // so anything landing here is out-of-band — an unguarded sleep signal
-        // or a divergence. Those boundaries are unretainable (the runtime
-        // demotes them too), so fall back to replay.
+        // so anything landing here is out-of-band or a divergence. Fall back
+        // to replay rather than resuming a potentially inconsistent session.
         state = { type: 'replay' };
         return;
       case 'replay':
