@@ -1,6 +1,11 @@
 import { z } from 'zod';
+import type {
+  CreateEventParams,
+  CreateEventRequest,
+  EventResult,
+  RunCreatedEventRequest,
+} from './events.js';
 import { CreateEventSchema, EventSchema } from './events.js';
-import type { CreateEventParams, CreateEventRequest, EventResult, RunCreatedEventRequest } from './events.js';
 
 /** Experimental, root-only protocol. No durable pending inbox or body leases. */
 export const ACTOR_EXECUTION_PROFILE = 'actor-owner-v1' as const;
@@ -15,7 +20,11 @@ export const ActorSnapshotSchema = z.object({
   profile: z.literal(ACTOR_EXECUTION_PROFILE),
   runId: z.string(),
   deploymentId: z.string(),
-  tenant: z.object({ ownerId: z.string(), projectId: z.string(), environment: z.string() }),
+  tenant: z.object({
+    ownerId: z.string(),
+    projectId: z.string(),
+    environment: z.string(),
+  }),
   head: z.number().int().nonnegative(),
   events: z.array(EventSchema),
   fault: ActorFaultSchema.optional(),
@@ -24,8 +33,28 @@ export type ActorSnapshot = z.infer<typeof ActorSnapshotSchema>;
 
 export const ActorCommandSchema = z.object({
   operationId: z.string().min(1).max(128),
-  event: CreateEventSchema.refine(event => ['hook_received', 'hook_disposed', 'run_cancelled', 'attr_set'].includes(event.eventType),
-    { message: 'Actor submission must be an external input, not an owner event' }),
+  event: CreateEventSchema.transform((event, ctx): CreateEventRequest => {
+    if (event.eventType === 'run_created') {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Creation is not an actor submission',
+      });
+      return z.NEVER;
+    }
+    if (
+      !['hook_received', 'hook_disposed', 'run_cancelled', 'attr_set'].includes(
+        event.eventType
+      )
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'Actor submission must be an external input, not an owner event',
+      });
+      return z.NEVER;
+    }
+    return event;
+  }),
 });
 export type ActorCommand = z.infer<typeof ActorCommandSchema>;
 
@@ -53,8 +82,12 @@ export class ActorInvariantError extends Error {
     this.name = 'ActorInvariantError';
   }
   static is(error: unknown): error is ActorInvariantError {
-    return !!error && typeof error === 'object' &&
-      'code' in error && error.code === 'ACTOR_INVARIANT_VIOLATION';
+    return (
+      !!error &&
+      typeof error === 'object' &&
+      'code' in error &&
+      error.code === 'ACTOR_INVARIANT_VIOLATION'
+    );
   }
 }
 
@@ -69,27 +102,43 @@ export interface ActorExecution {
   acquire(runId: string): Promise<ActorSnapshot>;
   exchange(request: ActorExchange): Promise<ActorReceipt>;
   /** Durable retry lookup; undefined means this operation has not committed. */
-  receipt(runId: string, operationId: string): Promise<ActorReceipt | undefined>;
+  receipt(
+    runId: string,
+    operationId: string
+  ): Promise<ActorReceipt | undefined>;
   submit<T extends CreateEventRequest>(
-    runId: string, event: T, params?: CreateEventParams
+    runId: string,
+    event: T,
+    params?: CreateEventParams
   ): Promise<EventResult<T['eventType']>>;
-  quarantine(runId: string, fault: z.infer<typeof ActorFaultSchema>): Promise<void>;
+  quarantine(
+    runId: string,
+    fault: z.infer<typeof ActorFaultSchema>
+  ): Promise<void>;
 }
 
 export function assertActorSnapshot(snapshot: ActorSnapshot): void {
   if (snapshot.fault) throw new ActorInvariantError(snapshot.fault.message);
   if (snapshot.head !== snapshot.events.length || snapshot.head < 1) {
-    throw new ActorInvariantError('Actor snapshot is not a complete committed prefix');
+    throw new ActorInvariantError(
+      'Actor snapshot is not a complete committed prefix'
+    );
   }
   for (const [index, event] of snapshot.events.entries()) {
     const expected = `evnt_${String(index + 1).padStart(26, '0')}`;
     if (event.runId !== snapshot.runId || event.eventId !== expected) {
-      throw new ActorInvariantError(`Actor journal is not contiguous at ${expected}`);
+      throw new ActorInvariantError(
+        `Actor journal is not contiguous at ${expected}`
+      );
     }
   }
   const first = snapshot.events[0];
-  if (first.eventType !== 'run_created' ||
-      first.eventData.deploymentId !== snapshot.deploymentId) {
-    throw new ActorInvariantError('Actor journal does not match its immutable deployment');
+  if (
+    first.eventType !== 'run_created' ||
+    first.eventData.deploymentId !== snapshot.deploymentId
+  ) {
+    throw new ActorInvariantError(
+      'Actor journal does not match its immutable deployment'
+    );
   }
 }

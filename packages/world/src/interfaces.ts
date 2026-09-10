@@ -1,5 +1,5 @@
-import type { Analytics } from './analytics.js';
 import type { ActorExecution } from './actor-execution.js';
+import type { Analytics } from './analytics.js';
 import type {
   AttributeChange,
   ExperimentalSetAttributesResult,

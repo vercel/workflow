@@ -661,18 +661,35 @@ export async function start<TArgs extends unknown[], TResult>(
       };
 
       if (world.execution?.profile === 'actor-owner-v1') {
-        if (workflowVm && workflowVm !== 'node') throw new Error('Actor POC supports only the Node workflow VM');
+        if (workflowVm && workflowVm !== 'node')
+          throw new Error('Actor POC supports only the Node workflow VM');
         // Creation and argument durability precede delivery. No resilient-start
         // fallback is valid for the actor protocol.
         await Promise.all(ops);
         await world.execution.create(runId, {
-          eventType: 'run_created', specVersion,
-          eventData: { deploymentId, workflowName, input: workflowArguments,
-            executionContext: { ...executionContext, executionProfile: 'actor-owner-v1' },
-            ...(encryptionPublicKey ? { encryptionPublicKey } : {}), ...attributeSeed },
+          eventType: 'run_created',
+          specVersion,
+          eventData: {
+            deploymentId,
+            workflowName,
+            input: workflowArguments,
+            executionContext: {
+              ...executionContext,
+              executionProfile: 'actor-owner-v1',
+            },
+            ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+            ...attributeSeed,
+          },
         });
-        await world.queue(getWorkflowQueueName(workflowName, opts.namespace), { runId, traceCarrier },
-          { deploymentId, specVersion, ...(opts.region ? { region: opts.region } : {}) });
+        await world.queue(
+          getWorkflowQueueName(workflowName, opts.namespace),
+          { runId, traceCarrier },
+          {
+            deploymentId,
+            specVersion,
+            ...(opts.region ? { region: opts.region } : {}),
+          }
+        );
         return new Run<TResult>(runId);
       }
 

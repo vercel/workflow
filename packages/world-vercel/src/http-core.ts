@@ -284,7 +284,8 @@ export function errorForResponse(
   // Never translate an actor assertion to a legacy catch-and-repair conflict.
   if (code === 'ACTOR_INVARIANT_VIOLATION') {
     return Object.assign(new Error(message), {
-      name: 'ActorInvariantError', code: 'ACTOR_INVARIANT_VIOLATION',
+      name: 'ActorInvariantError',
+      code: 'ACTOR_INVARIANT_VIOLATION',
     });
   }
   if (status === 409) return new EntityConflictError(message);

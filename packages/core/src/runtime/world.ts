@@ -1,9 +1,9 @@
-import { createRequire } from 'node:module';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import {
-  isVercelWorldTarget,
   globalSingleton,
+  isVercelWorldTarget,
   resolveWorkflowTargetWorld,
 } from '@workflow/utils';
 import type { World } from '@workflow/world';
@@ -42,7 +42,11 @@ function getRuntimeRequire() {
 }
 
 const WorldCache = Symbol.for('@workflow/world//cache');
-const scopedWorld = globalSingleton('@workflow/core//scoped-world', 1, () => new AsyncLocalStorage<World>());
+const scopedWorld = globalSingleton(
+  '@workflow/core//scoped-world',
+  1,
+  () => new AsyncLocalStorage<World>()
+);
 
 export function runWithWorld<T>(world: World, fn: () => T): T {
   return scopedWorld.run(world, fn);
