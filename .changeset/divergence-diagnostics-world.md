@@ -1,6 +1,2 @@
 ---
-'@workflow/world': patch
----
-
----
 ---
