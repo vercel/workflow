@@ -6,6 +6,7 @@ const {
   getVercelOidcToken,
   injectTraceContextIntoHeaders,
   sockets,
+  writeSpans,
 } = vi.hoisted(() => {
   const sockets: FakeSocket[] = [];
   class FakeSocket {
@@ -70,6 +71,7 @@ const {
     getVercelOidcToken: vi.fn().mockResolvedValue(undefined),
     injectTraceContextIntoHeaders: vi.fn(),
     sockets,
+    writeSpans: [] as Array<Record<string, unknown>>,
   };
 });
 
@@ -78,6 +80,24 @@ vi.mock('ws', () => ({ WebSocket: FakeWebSocket }));
 vi.mock('./telemetry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./telemetry.js')>();
   return { ...actual, injectTraceContextIntoHeaders };
+});
+vi.mock('./http-core.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./http-core.js')>();
+  return {
+    ...actual,
+    withHttpClientSpan: vi.fn(async (options, callback) => {
+      if (options.spanName !== 'workflow.stream.write') {
+        return callback(undefined);
+      }
+      const attributes = { ...options.attributes };
+      writeSpans.push(attributes);
+      return callback({
+        setAttributes(next: Record<string, unknown>) {
+          Object.assign(attributes, next);
+        },
+      });
+    }),
+  };
 });
 
 const { createStreamWriteSession } = await import('./ws-stream-session.js');
@@ -99,6 +119,7 @@ beforeEach(() => {
   sockets.length = 0;
   getVercelOidcToken.mockClear();
   injectTraceContextIntoHeaders.mockClear();
+  writeSpans.length = 0;
   delete process.env.WORKFLOW_STREAMS_TRANSPORT;
 });
 
@@ -131,6 +152,51 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(sockets).toHaveLength(0);
     expect(writeHttp).toHaveBeenCalledWith(['one']);
     expect(closeHttp).toHaveBeenCalledTimes(1);
+  });
+
+  it('tags the first session and connection write with phase timings', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const { session } = makeSession();
+    const writing = session.write(0, ['one']);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].open();
+    await vi.waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    sockets[0].reply(
+      encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
+    );
+    await writing;
+
+    expect(writeSpans).toHaveLength(1);
+    expect(writeSpans[0]).toMatchObject({
+      'workflow.stream.ws.session_first_write': true,
+      'workflow.stream.ws.connection_first_write': true,
+      'workflow.stream.ws.connection_attempt': 1,
+    });
+    for (const attribute of [
+      'workflow.stream.ws.session_to_write_ms',
+      'workflow.stream.ws.write_wait_for_open_ms',
+      'workflow.stream.ws.write_to_send_ms',
+      'workflow.stream.ws.open_to_send_ms',
+      'workflow.stream.ws.connect_ms',
+      'workflow.stream.ws.config_token_ms',
+      'workflow.stream.ws.send_to_reply_ms',
+      'workflow.stream.ws.reply_processing_ms',
+      'workflow.stream.ws.write_total_ms',
+    ]) {
+      expect(writeSpans[0][attribute]).toEqual(expect.any(Number));
+      expect(writeSpans[0][attribute]).toBeGreaterThanOrEqual(0);
+    }
+
+    const second = session.write(1, ['two']);
+    await vi.waitFor(() => expect(sockets[0].sent).toHaveLength(2));
+    sockets[0].reply(
+      encodeFrame({ type: 'write_ack', reqId: 2 }, new Uint8Array())
+    );
+    await second;
+    expect(writeSpans[1]).toEqual({
+      'workflow.stream.transport': 'ws',
+      'workflow.stream.ws.req_id': 2,
+    });
   });
 
   it('carries the first write when the socket opens inside the budget', async () => {
@@ -350,6 +416,12 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(sockets).toHaveLength(1);
     expect(writeHttp).not.toHaveBeenCalled();
     expect(closeHttp).not.toHaveBeenCalled();
+    expect(writeSpans[0]).toMatchObject({
+      'workflow.stream.ws.session_first_write': true,
+      'workflow.stream.ws.send_to_reply_ms': expect.any(Number),
+      'workflow.stream.ws.reply_processing_ms': expect.any(Number),
+      'workflow.stream.ws.write_total_ms': expect.any(Number),
+    });
   });
 
   it('drains admitted work before reconnecting queued writes', async () => {
@@ -393,6 +465,20 @@ describe('v1 stream WebSocket writer lifecycle', () => {
 
     await second;
     expect(writeHttp).not.toHaveBeenCalled();
+    expect(writeSpans).toHaveLength(2);
+    expect(writeSpans[0]).toMatchObject({
+      'workflow.stream.ws.session_first_write': true,
+      'workflow.stream.ws.connection_first_write': true,
+      'workflow.stream.ws.connection_attempt': 1,
+    });
+    expect(writeSpans[1]).toMatchObject({
+      'workflow.stream.ws.session_first_write': false,
+      'workflow.stream.ws.connection_first_write': true,
+      'workflow.stream.ws.connection_attempt': 2,
+    });
+    expect(writeSpans[1]['workflow.stream.ws.connect_ms']).toEqual(
+      expect.any(Number)
+    );
   });
 
   it('requests fresh auth after an auth-expiry drain', async () => {

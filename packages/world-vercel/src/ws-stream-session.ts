@@ -1,3 +1,4 @@
+import type { Attributes, Span } from '@opentelemetry/api';
 import { getVercelOidcToken } from '@vercel/oidc';
 import type { StreamWriteSession } from '@workflow/world';
 import type { WebSocket } from 'ws';
@@ -26,7 +27,117 @@ import {
 import { isWsStreamsTransportEnabled } from './ws-transport-enabled.js';
 
 type Mode = 'connecting' | 'draining' | 'ws' | 'http' | 'closed' | 'poisoned';
+type WriteTiming = {
+  startedAt: number;
+  sessionFirstWrite: boolean;
+};
+type ConnectionTiming = {
+  attempt: number;
+  configStartedAt: number;
+  configFinishedAt?: number;
+  socketStartedAt?: number;
+  openedAt?: number;
+  firstWriteSent: boolean;
+};
+type PendingRequest = {
+  reqId: number;
+  resolve: (meta: Record<string, unknown>) => void;
+  reject: (error: unknown) => void;
+  timer: ReturnType<typeof setTimeout>;
+  sentAt?: number;
+  replyReceivedAt?: number;
+};
 const MAX_IDLE_RECONNECTS = 3;
+
+function now(): number {
+  return performance.now();
+}
+
+function firstWriteAttributes(
+  write: WriteTiming | undefined,
+  connection: ConnectionTiming | undefined,
+  sessionCreatedAt: number
+): Attributes {
+  if (!write) return {};
+  return {
+    'workflow.stream.ws.session_first_write': write.sessionFirstWrite,
+    'workflow.stream.ws.connection_first_write':
+      connection?.firstWriteSent === false,
+    'workflow.stream.ws.connection_attempt': connection?.attempt ?? 0,
+    'workflow.stream.ws.session_to_write_ms':
+      write.startedAt - sessionCreatedAt,
+  };
+}
+
+function recordFirstWriteSetup(
+  span: Span | undefined,
+  write: WriteTiming,
+  connection: ConnectionTiming | undefined
+): void {
+  if (connection) connection.firstWriteSent = true;
+  const openedAt = connection?.openedAt;
+  const socketStartedAt = connection?.socketStartedAt;
+  const configFinishedAt = connection?.configFinishedAt;
+  span?.setAttributes({
+    'workflow.stream.ws.write_wait_for_open_ms': openedAt
+      ? Math.max(0, openedAt - write.startedAt)
+      : 0,
+    ...(socketStartedAt && configFinishedAt
+      ? {
+          'workflow.stream.ws.connect_setup_ms':
+            socketStartedAt - configFinishedAt,
+        }
+      : {}),
+    ...(socketStartedAt && openedAt
+      ? { 'workflow.stream.ws.connect_ms': openedAt - socketStartedAt }
+      : {}),
+    ...(configFinishedAt && connection
+      ? {
+          'workflow.stream.ws.config_token_ms':
+            configFinishedAt - connection.configStartedAt,
+        }
+      : {}),
+  });
+}
+
+function recordFirstWriteSend(
+  span: Span | undefined,
+  write: WriteTiming,
+  connection: ConnectionTiming | undefined,
+  pending: PendingRequest
+): void {
+  const sentAt = now();
+  pending.sentAt = sentAt;
+  span?.setAttributes({
+    'workflow.stream.ws.write_to_send_ms': sentAt - write.startedAt,
+    ...(connection?.openedAt
+      ? {
+          'workflow.stream.ws.open_to_send_ms': Math.max(
+            0,
+            sentAt - connection.openedAt
+          ),
+        }
+      : {}),
+  });
+}
+
+function recordFirstWriteReply(
+  span: Span | undefined,
+  write: WriteTiming,
+  pending: PendingRequest | undefined
+): void {
+  if (pending?.sentAt === undefined || pending.replyReceivedAt === undefined) {
+    return;
+  }
+  const processedAt = now();
+  span?.setAttributes({
+    'workflow.stream.ws.send_to_reply_ms':
+      pending.replyReceivedAt - pending.sentAt,
+    'workflow.stream.ws.reply_processing_ms':
+      processedAt - pending.replyReceivedAt,
+    'workflow.stream.ws.write_total_ms': processedAt - write.startedAt,
+  });
+}
 const OIDC_FORCE_REFRESH_BUFFER_MS = 24 * 60 * 60 * 1000;
 
 function readAuthorization(headers: Headers): string | null {
@@ -75,14 +186,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
   private tail = Promise.resolve();
   private inbound = Promise.resolve();
   private nextReqId = 1;
-  private pending:
-    | {
-        reqId: number;
-        resolve: (meta: Record<string, unknown>) => void;
-        reject: (error: unknown) => void;
-        timer: ReturnType<typeof setTimeout>;
-      }
-    | undefined;
+  private pending: PendingRequest | undefined;
   private poisonError: unknown;
   private wsUrl: string | undefined;
   private closeAcknowledged = false;
@@ -91,6 +195,10 @@ class VercelStreamWriteSession implements StreamWriteSession {
   private drainTimer: ReturnType<typeof setTimeout> | undefined;
   private releaseDrainWait: (() => void) | undefined;
   private lastAuthorization: string | null = null;
+  private readonly sessionCreatedAt = now();
+  private sessionHasWrite = false;
+  private connectionAttempt = 0;
+  private connectionTiming: ConnectionTiming | undefined;
 
   constructor(
     private readonly runId: string,
@@ -107,29 +215,42 @@ class VercelStreamWriteSession implements StreamWriteSession {
   }
 
   write(chunkSeq: number, chunks: (string | Uint8Array)[]): Promise<void> {
-    return this.enqueue(async () => {
-      this.assertUsable();
-      await this.transportDecision;
-      this.assertUsable();
-      if (this.mode === 'http') {
-        await this.writeHttp(chunks);
-        return;
-      }
-      // Core's default group cap equals the wire cap, so splitting is normally
-      // dormant. Keep it here as a guard against configured or future cap drift;
-      // v1 deliberately defines no separate whole-message byte budget.
-      for (
-        let offset = 0;
-        offset < chunks.length;
-        offset += STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
-      ) {
-        const batch = chunks.slice(
-          offset,
-          offset + STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
-        );
-        let reply: Record<string, unknown>;
-        try {
-          reply = await this.request((reqId) =>
+    const timing: WriteTiming = {
+      startedAt: now(),
+      sessionFirstWrite: !this.sessionHasWrite,
+    };
+    this.sessionHasWrite = true;
+    return this.enqueue(() => this.writeInternal(chunkSeq, chunks, timing));
+  }
+
+  private async writeInternal(
+    chunkSeq: number,
+    chunks: (string | Uint8Array)[],
+    timing: WriteTiming
+  ): Promise<void> {
+    this.assertUsable();
+    await this.transportDecision;
+    this.assertUsable();
+    if (this.mode === 'http') {
+      await this.writeHttp(chunks);
+      return;
+    }
+    // Core's default group cap equals the wire cap, so splitting is normally
+    // dormant. Keep it here as a guard against configured or future cap drift;
+    // v1 deliberately defines no separate whole-message byte budget.
+    for (
+      let offset = 0;
+      offset < chunks.length;
+      offset += STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
+    ) {
+      const batch = chunks.slice(
+        offset,
+        offset + STREAM_WS_V1_MAX_CHUNKS_PER_WRITE
+      );
+      let reply: Record<string, unknown>;
+      try {
+        reply = await this.request(
+          (reqId) =>
             encodeStreamWsWriteRequest(
               {
                 type: 'write',
@@ -138,21 +259,21 @@ class VercelStreamWriteSession implements StreamWriteSession {
                 numChunks: batch.length,
               },
               batch
-            )
-          );
-        } catch (error) {
-          if (!(error instanceof StreamWsRequestNotSentError)) throw error;
-          this.fallbackToHttpBeforeSend();
-          await this.writeHttp(chunks.slice(offset));
-          return;
-        }
-        if (reply.type !== 'write_ack') {
-          throw this.poison(
-            new Error(`stream WebSocket write received ${reply.type}`)
-          );
-        }
+            ),
+          offset === 0 ? timing : undefined
+        );
+      } catch (error) {
+        if (!(error instanceof StreamWsRequestNotSentError)) throw error;
+        this.fallbackToHttpBeforeSend();
+        await this.writeHttp(chunks.slice(offset));
+        return;
       }
-    });
+      if (reply.type !== 'write_ack') {
+        throw this.poison(
+          new Error(`stream WebSocket write received ${reply.type}`)
+        );
+      }
+    }
   }
 
   dispose(): void {
@@ -234,19 +355,31 @@ class VercelStreamWriteSession implements StreamWriteSession {
   }
 
   private startConnect(forceRefresh = false): Promise<void> {
-    return this.connectSocket(forceRefresh).catch(() => {
+    const startedAt = now();
+    const timing: ConnectionTiming = {
+      attempt: ++this.connectionAttempt,
+      configStartedAt: startedAt,
+      firstWriteSent: false,
+    };
+    this.connectionTiming = timing;
+    return this.connectSocket(forceRefresh, timing).catch(() => {
       // Every failure before OPEN is a safe, session-long HTTP fallback. The
       // HTTP request itself still surfaces auth/configuration errors normally.
       if (this.mode === 'connecting') this.mode = 'http';
     });
   }
 
-  private async connectSocket(forceRefresh: boolean): Promise<void> {
+  private async connectSocket(
+    forceRefresh: boolean,
+    timing: ConnectionTiming
+  ): Promise<void> {
     if (!isWsStreamsTransportEnabled()) {
       this.mode = 'http';
       return;
     }
     if (forceRefresh) {
+      // Included in config_token_ms: a slow refresh must not disappear from the
+      // first write after an auth-expiry reconnect.
       // Outside a Vercel function this invalidates @vercel/oidc's cached token.
       // Inside one, the invocation header remains authoritative; reconnecting
       // still re-resolves headers rather than retaining the old upgrade object.
@@ -254,9 +387,13 @@ class VercelStreamWriteSession implements StreamWriteSession {
         expirationBufferMs: OIDC_FORCE_REFRESH_BUFFER_MS,
       }).catch(() => undefined);
     }
+    const httpPromise = getHttpConfig(this.config).then((http) => {
+      timing.configFinishedAt = now();
+      return http;
+    });
     const [{ WebSocket: WebSocketImpl }, http] = await Promise.all([
       import('ws'),
-      getHttpConfig(this.config),
+      httpPromise,
     ]);
     if (this.mode !== 'connecting') return;
     if (
@@ -291,6 +428,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
       async () => {
         await injectTraceContextIntoHeaders(http.headers);
         if (this.mode !== 'connecting') return;
+        timing.socketStartedAt = now();
         const ws = new WebSocketImpl(url, {
           headers: headersToRecord(http.headers),
         });
@@ -306,6 +444,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
           };
           ws.once('open', () => {
             opened = true;
+            timing.openedAt = now();
             if (this.mode !== 'connecting') {
               ws.close(1000, 'HTTP fallback selected');
               resolve();
@@ -347,8 +486,9 @@ class VercelStreamWriteSession implements StreamWriteSession {
             );
           });
           ws.on('message', (raw) => {
+            const receivedAt = now();
             this.inbound = this.inbound.then(() =>
-              this.handleMessage(asBytes(raw))
+              this.handleMessage(asBytes(raw), receivedAt)
             );
           });
         });
@@ -356,7 +496,10 @@ class VercelStreamWriteSession implements StreamWriteSession {
     );
   }
 
-  private async handleMessage(raw: Uint8Array): Promise<void> {
+  private async handleMessage(
+    raw: Uint8Array,
+    receivedAt: number
+  ): Promise<void> {
     try {
       const frame = await decodeOne(raw);
       const reply = parseStreamWsReply(frame.meta, frame.body);
@@ -378,6 +521,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
         throw new Error('stream WebSocket reply cannot be correlated');
       }
       this.pending = undefined;
+      pending.replyReceivedAt = receivedAt;
       clearTimeout(pending.timer);
       if (reply.type === 'close_ack') this.closeAcknowledged = true;
       if (reply.type === 'error') {
@@ -500,7 +644,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
   }
 
   private async request(
-    buildFrame: (reqId: number) => Uint8Array
+    buildFrame: (reqId: number) => Uint8Array,
+    writeTiming?: WriteTiming
   ): Promise<Record<string, unknown>> {
     this.assertUsable();
     const ws = this.socket;
@@ -516,6 +661,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
     } catch (error) {
       throw new StreamWsRequestNotSentError(error);
     }
+    const connectionTiming = this.connectionTiming;
+    const connectionFirstWrite = connectionTiming?.firstWriteSent === false;
+    const detailedTiming =
+      writeTiming && (writeTiming.sessionFirstWrite || connectionFirstWrite)
+        ? writeTiming
+        : undefined;
     return withHttpClientSpan(
       {
         method: 'POST',
@@ -524,31 +675,59 @@ class VercelStreamWriteSession implements StreamWriteSession {
         attributes: {
           'workflow.stream.transport': 'ws',
           'workflow.stream.ws.req_id': reqId,
+          ...firstWriteAttributes(
+            detailedTiming,
+            connectionTiming,
+            this.sessionCreatedAt
+          ),
         },
       },
-      async () =>
-        new Promise<Record<string, unknown>>((resolve, reject) => {
-          // With no v1 progress/control reply, silence cannot distinguish a
-          // slow accepted request from a dead socket. Expiry is therefore an
-          // unknown outcome and must poison rather than replay.
-          const timer = setTimeout(() => {
-            this.failUnknown(
-              new Error(
-                `stream WebSocket request ${reqId} timed out with no reply`
-              )
-            );
-          }, getRequestTimeoutMs());
-          timer.unref?.();
-          this.pending = { reqId, resolve, reject, timer };
-          try {
-            ws.send(frame, (error) => {
-              if (!error) return;
+      async (span) => {
+        if (detailedTiming) {
+          recordFirstWriteSetup(span, detailedTiming, connectionTiming);
+        }
+        let pending: PendingRequest | undefined;
+        const response = new Promise<Record<string, unknown>>(
+          (resolve, reject) => {
+            // With no v1 progress/control reply, silence cannot distinguish a
+            // slow accepted request from a dead socket. Expiry is therefore an
+            // unknown outcome and must poison rather than replay.
+            const timer = setTimeout(() => {
+              this.failUnknown(
+                new Error(
+                  `stream WebSocket request ${reqId} timed out with no reply`
+                )
+              );
+            }, getRequestTimeoutMs());
+            timer.unref?.();
+            pending = { reqId, resolve, reject, timer };
+            this.pending = pending;
+            try {
+              if (detailedTiming) {
+                recordFirstWriteSend(
+                  span,
+                  detailedTiming,
+                  connectionTiming,
+                  pending
+                );
+              }
+              ws.send(frame, (error) => {
+                if (!error) return;
+                this.failUnknown(error);
+              });
+            } catch (error) {
               this.failUnknown(error);
-            });
-          } catch (error) {
-            this.failUnknown(error);
+            }
           }
-        })
+        );
+        try {
+          return await response;
+        } finally {
+          if (detailedTiming) {
+            recordFirstWriteReply(span, detailedTiming, pending);
+          }
+        }
+      }
     );
   }
 
