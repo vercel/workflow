@@ -17,7 +17,7 @@
  * which is safe: `http-client.ts` imports nothing from `utils.ts` but a type.
  */
 
-import type { Span } from '@opentelemetry/api';
+import type { Attributes, Span } from '@opentelemetry/api';
 import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
@@ -429,7 +429,7 @@ export interface HttpClientSpanOptions {
    */
   spanName?: string;
   /** Extra attributes merged on top of the standard HTTP attributes. */
-  attributes?: Record<string, string | number | string[]>;
+  attributes?: Attributes;
 }
 
 /**
