@@ -53,6 +53,10 @@ function aggregatorToken(key: string) {
 const MAX_ITEMS = 100;
 // …or this long after the FIRST item arrived, whichever comes first.
 const MAX_WAIT_MS = 5 * 60 * 1000;
+// How long a sender waits for a cold coordinator to boot and claim its
+// token: 250ms doubling up to MAX_SEND_BACKOFF_MS over SEND_ATTEMPTS (~30s).
+const SEND_ATTEMPTS = 10;
+const MAX_SEND_BACKOFF_MS = 4000;
 
 // COORDINATOR — one run per active buffer. Flushes as often as it needs to
 // and exits once a whole window goes by empty; the next item after that
@@ -206,7 +210,14 @@ export async function aggregatorSend(
   item: unknown,
   id?: string
 ): Promise<void> {
-  for (let i = 0; i < 3; i++) {
+  // Start the coordinator at most once, then back off while it boots and
+  // claims its token. start() resolves on enqueue, not execution, so a cold
+  // coordinator on a slow or busy queue needs more than a fixed few hundred
+  // milliseconds; retrying start() instead would spawn throwaway runs that
+  // all lose the getConflict() race.
+  let startedOne = false;
+  let backoffMs = 250;
+  for (let i = 0; i < SEND_ATTEMPTS; i++) {
     try {
       await aggregatorEvents.resume(aggregatorToken(key), {
         type: 'item',
@@ -215,16 +226,19 @@ export async function aggregatorSend(
       });
       return;
     } catch {
-      // No active buffer for this key — start one and retry. A lost
-      // double-start race is harmless: the loser run detects it via
-      // getConflict() and returns { dedupedTo } cleanly.
+      // No coordinator owns the token yet — it isn't running, was just
+      // recycled, or is still booting.
     }
-    try {
-      await start(aggregatorCoordinator, [key]);
-    } catch {
-      // Another sender raced us to start it — retry the resume.
+    if (!startedOne) {
+      startedOne = true;
+      try {
+        await start(aggregatorCoordinator, [key]);
+      } catch {
+        // Another sender raced us to start it. Fine — retry the resume.
+      }
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    backoffMs = Math.min(backoffMs * 2, MAX_SEND_BACKOFF_MS);
   }
   throw new Error(`Could not deliver item to aggregator "${key}"`);
 }
