@@ -1,5 +1,32 @@
 # @workflow/next
 
+## 4.1.12
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.8
+  - @workflow/builders@4.1.13
+
+## 4.1.11
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.7
+  - @workflow/builders@4.1.12
+
+## 4.1.10
+
+### Patch Changes
+
+- [#3801](https://github.com/vercel/workflow/pull/3801) [`680c263`](https://github.com/vercel/workflow/commit/680c2631edb26af4de70f599fce4796404c8e562) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Discover workflows imported by every Next.js file convention entrypoint.
+
+- Updated dependencies [[`0b9867e`](https://github.com/vercel/workflow/commit/0b9867ebf82eeb37aed9dd071e09917c4e64a800)]:
+  - @workflow/swc-plugin@4.1.3
+  - @workflow/builders@4.1.11
+  - @workflow/core@4.8.6
+
 ## 4.1.9
 
 ### Patch Changes

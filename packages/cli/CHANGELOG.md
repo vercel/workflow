@@ -1,5 +1,37 @@
 # @workflow/cli
 
+## 4.3.12
+
+### Patch Changes
+
+- Updated dependencies [[`4607916`](https://github.com/vercel/workflow/commit/460791641747bc2fd9454cc33f7e061a348248fe), [`5f2fb36`](https://github.com/vercel/workflow/commit/5f2fb36a1c6added3bff75cc04ffa8b580d05eb5)]:
+  - @workflow/world-vercel@4.7.4
+  - @workflow/core@4.8.8
+  - @workflow/web@4.1.24
+  - @workflow/builders@4.1.13
+
+## 4.3.11
+
+### Patch Changes
+
+- Updated dependencies [[`0e56bb8`](https://github.com/vercel/workflow/commit/0e56bb864d685972464f827bd75ed1436250e8c7)]:
+  - @workflow/world-vercel@4.7.3
+  - @workflow/core@4.8.7
+  - @workflow/web@4.1.23
+  - @workflow/builders@4.1.12
+
+## 4.3.10
+
+### Patch Changes
+
+- Updated dependencies [[`0b9867e`](https://github.com/vercel/workflow/commit/0b9867ebf82eeb37aed9dd071e09917c4e64a800), [`0deceda`](https://github.com/vercel/workflow/commit/0deceda53aac030f98aba00badeb996e3f97e610), [`7024b5b`](https://github.com/vercel/workflow/commit/7024b5b00eaa8ede82d27c44fbfeb3fa0014c7d8), [`41abe2d`](https://github.com/vercel/workflow/commit/41abe2dda3a8e191c8ad8f91e0bf9b7b28449d6a)]:
+  - @workflow/swc-plugin@4.1.3
+  - @workflow/world-vercel@4.7.2
+  - @workflow/world-local@4.4.1
+  - @workflow/web@4.1.22
+  - @workflow/builders@4.1.11
+  - @workflow/core@4.8.6
+
 ## 4.3.9
 
 ### Patch Changes

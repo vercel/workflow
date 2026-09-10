@@ -1,5 +1,39 @@
 # @workflow/nitro
 
+## 4.1.14
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.8
+  - @workflow/web@4.1.24
+  - @workflow/builders@4.1.13
+  - @workflow/rollup@4.0.23
+  - @workflow/vite@4.0.23
+
+## 4.1.13
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.7
+  - @workflow/web@4.1.23
+  - @workflow/builders@4.1.12
+  - @workflow/rollup@4.0.22
+  - @workflow/vite@4.0.22
+
+## 4.1.12
+
+### Patch Changes
+
+- Updated dependencies [[`0b9867e`](https://github.com/vercel/workflow/commit/0b9867ebf82eeb37aed9dd071e09917c4e64a800)]:
+  - @workflow/swc-plugin@4.1.3
+  - @workflow/web@4.1.22
+  - @workflow/builders@4.1.11
+  - @workflow/rollup@4.0.21
+  - @workflow/core@4.8.6
+  - @workflow/vite@4.0.21
+
 ## 4.1.11
 
 ### Patch Changes

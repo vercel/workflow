@@ -61,6 +61,47 @@ import {
 export const REQUEST_TIMEOUT_MS = 60_000;
 
 /**
+ * Transport failures that are safe to classify as transient infrastructure
+ * errors. `fetch()` usually wraps the undici error in `TypeError: fetch
+ * failed`, so callers must inspect the cause chain rather than only the
+ * top-level error.
+ */
+const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
+  'UND_ERR_INFO',
+  'UND_ERR_REQ_RETRY',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_CLOSED',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+  'ETIMEDOUT',
+]);
+
+/** Walk a bounded cause chain looking for a transient transport error code. */
+export function getTransientTransportCode(error: unknown): string | undefined {
+  let current = error;
+  for (let depth = 0; current != null && depth < 8; depth++) {
+    if (typeof current === 'object' && 'code' in current) {
+      const code = (current as { code?: unknown }).code;
+      if (
+        typeof code === 'string' &&
+        TRANSIENT_TRANSPORT_ERROR_CODES.has(code)
+      ) {
+        return code;
+      }
+    }
+    current = (current as { cause?: unknown })?.cause;
+  }
+  return undefined;
+}
+
+/**
  * Lightweight debug logger toggle for HTTP requests. Activated when the DEBUG
  * env var contains "workflow:" or is "*".
  *
@@ -332,6 +373,13 @@ export interface InstrumentedFetchOptions {
    * connections stop delivering (see noteEventsTransportOutcome).
    */
   onTransportOutcome?: (error?: unknown) => void;
+  /**
+   * Delay the successful transport outcome until the caller consumes the body.
+   * Streamed responses can fail after their headers arrive, so treating
+   * `fetch()` resolution as success would hide those failures from a caller's
+   * connection-pool recycler.
+   */
+  deferTransportSuccessUntilBody?: boolean;
 }
 
 /**
@@ -362,6 +410,7 @@ export async function instrumentedFetch(
     logLabel,
     buildError,
     onTransportOutcome,
+    deferTransportSuccessUntilBody = false,
   } = opts;
   const label = logLabel ?? url;
 
@@ -438,16 +487,26 @@ export async function instrumentedFetch(
         ) {
           const timeoutError = new WorkflowWorldError(
             `${method} ${label} timed out after ${elapsed}ms`,
-            { url, cause: error }
+            { url, code: 'TIMEOUT', cause: error }
           );
           span?.setAttributes({ ...ErrorType('TIMEOUT') });
           span?.recordException?.(timeoutError);
           throw timeoutError;
         }
+        const transportCode = getTransientTransportCode(error);
+        if (transportCode) {
+          const transportError = new WorkflowWorldError(
+            `${method} ${label} transport failure after ${elapsed}ms (${transportCode})`,
+            { url, code: 'TRANSPORT', cause: error }
+          );
+          span?.setAttributes({ ...ErrorType('TRANSPORT') });
+          span?.recordException?.(transportError);
+          throw transportError;
+        }
         throw error;
       }
       const ms = Date.now() - start;
-      onTransportOutcome?.();
+      if (!deferTransportSuccessUntilBody) onTransportOutcome?.();
 
       httpLog(method, label, response, ms);
       span?.setAttributes({ ...HttpResponseStatusCode(response.status) });
@@ -456,11 +515,34 @@ export async function instrumentedFetch(
         span?.setAttributes({ ...ErrorType(`HTTP ${response.status}`) });
         logCurlRepro(method, url, headers);
         if (buildError) {
-          const error = await buildError(response);
+          let error: Error;
+          try {
+            error = await buildError(response);
+          } catch (cause) {
+            const transportCode = getTransientTransportCode(cause);
+            if (transportCode) {
+              if (deferTransportSuccessUntilBody) {
+                onTransportOutcome?.(cause);
+              }
+              const transportError = new WorkflowWorldError(
+                `${method} ${label} response body transport failure (${transportCode})`,
+                { url, code: 'TRANSPORT', cause }
+              );
+              span?.setAttributes({ ...ErrorType('TRANSPORT') });
+              span?.recordException?.(transportError);
+              throw transportError;
+            }
+            if (deferTransportSuccessUntilBody) {
+              onTransportOutcome?.(cause);
+            }
+            throw cause;
+          }
+          if (deferTransportSuccessUntilBody) onTransportOutcome?.();
           span?.recordException?.(error);
           throw error;
         }
         const text = await response.text().catch(() => '');
+        if (deferTransportSuccessUntilBody) onTransportOutcome?.();
         const error = errorForResponse(
           response.status,
           `${method} ${label} -> HTTP ${response.status}: ${response.statusText}${

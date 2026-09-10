@@ -1,5 +1,11 @@
 # @workflow/swc-plugin
 
+## 4.1.3
+
+### Patch Changes
+
+- [#3971](https://github.com/vercel/workflow/pull/3971) [`0b9867e`](https://github.com/vercel/workflow/commit/0b9867ebf82eeb37aed9dd071e09917c4e64a800) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Register class expressions through an IIFE that closes over the class instead of module-level code that references it by name, fixing the unresolvable `AnonymousClass` reference emitted for shapes such as `var Foo = class { ... }` in pre-bundled packages.
+
 ## 4.1.2
 
 ### Patch Changes

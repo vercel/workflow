@@ -1,5 +1,27 @@
 # @workflow/builders
 
+## 4.1.13
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.8
+
+## 4.1.12
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.8.7
+
+## 4.1.11
+
+### Patch Changes
+
+- Updated dependencies [[`0b9867e`](https://github.com/vercel/workflow/commit/0b9867ebf82eeb37aed9dd071e09917c4e64a800)]:
+  - @workflow/swc-plugin@4.1.3
+  - @workflow/core@4.8.6
+
 ## 4.1.10
 
 ### Patch Changes

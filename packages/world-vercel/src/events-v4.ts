@@ -21,6 +21,7 @@
  * bytes — this module stays at the wire-bytes layer.
  */
 
+import { WorkflowWorldError } from '@workflow/errors';
 import { decode } from 'cbor-x';
 import { decodeFrames, encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import {
@@ -29,6 +30,7 @@ import {
 } from './http-client.js';
 import {
   errorForResponse,
+  getTransientTransportCode,
   instrumentedFetch,
   parseRetryAfter,
 } from './http-core.js';
@@ -64,7 +66,7 @@ async function fetchV4(
   opName: string
 ): Promise<Response> {
   const dispatcher = getEventsDispatcher(config);
-  return instrumentedFetch({
+  const response = await instrumentedFetch({
     method: init.method,
     url,
     headers: init.headers,
@@ -76,6 +78,7 @@ async function fetchV4(
     // until the compute instance is recycled — see noteEventsTransportOutcome.
     onTransportOutcome: (error) =>
       noteEventsTransportOutcome(dispatcher, error),
+    deferTransportSuccessUntilBody: true,
     timeoutMs: null,
     logLabel: opName,
     buildError: async (response) =>
@@ -86,6 +89,47 @@ async function fetchV4(
         opName,
         url
       ),
+  });
+
+  if (!response.body) {
+    noteEventsTransportOutcome(dispatcher);
+    return response;
+  }
+
+  const reader = response.body.getReader();
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          noteEventsTransportOutcome(dispatcher);
+          controller.close();
+        } else {
+          controller.enqueue(chunk.value);
+        }
+      } catch (cause) {
+        noteEventsTransportOutcome(dispatcher, cause);
+        const transportCode = getTransientTransportCode(cause);
+        controller.error(
+          transportCode
+            ? new WorkflowWorldError(
+                `v4 ${opName}: response stream transport failure (${transportCode})`,
+                { url, code: 'TRANSPORT', cause }
+              )
+            : cause
+        );
+      }
+    },
+    cancel(reason) {
+      noteEventsTransportOutcome(dispatcher);
+      return reader.cancel(reason);
+    },
+  });
+
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
   });
 }
 
