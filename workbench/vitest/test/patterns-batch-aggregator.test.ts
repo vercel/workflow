@@ -50,10 +50,25 @@ async function deliverTimer(key: string, timerId: number) {
   await timer.returnValue;
 }
 
-// Read-only and idempotent, so retried on WorkflowRunNotFoundError: a
+// Read the flushes recorded for `key`, waiting until at least `expected`
+// have landed. aggregatorSend resolves when the resume commits, not when the
+// coordinator has processed it, and the coordinator no longer returns at a
+// flush (see file header), so there is no run to await as a barrier — poll.
+//
+// Read-only and idempotent, so also retried on WorkflowRunNotFoundError: a
 // concurrently launched vitest invocation reuses this worker's pool-id tag
 // and its setup clear() can delete our in-flight run files.
-async function readFlushesFor(key: string) {
+async function readFlushesFor(key: string, expected: number) {
+  const deadline = Date.now() + 30_000;
+  let flushes: Awaited<ReturnType<typeof readOnce>> = [];
+  for (;;) {
+    flushes = await readOnce(key);
+    if (flushes.length >= expected || Date.now() > deadline) return flushes;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+
+async function readOnce(key: string) {
   let lastErr: unknown;
   for (let i = 0; i < 3; i++) {
     try {
@@ -87,7 +102,7 @@ describe('batch-aggregator', () => {
       await aggregatorSend(KEYS.size, `item-${i}`, `id-${i}`);
     }
 
-    const flushes = await readFlushesFor(KEYS.size);
+    const flushes = await readFlushesFor(KEYS.size, 1);
     expect(flushes).toHaveLength(1);
     expect(flushes[0].reason).toBe('size');
     expect(flushes[0].items).toHaveLength(MAX_ITEMS);
@@ -119,7 +134,7 @@ describe('batch-aggregator', () => {
       await aggregatorSend(KEYS.dedupe, `item-${i}`, `id-${i}`);
     }
 
-    const flushes = await readFlushesFor(KEYS.dedupe);
+    const flushes = await readFlushesFor(KEYS.dedupe, 1);
     expect(flushes).toHaveLength(1);
     expect(flushes[0].items).toHaveLength(MAX_ITEMS);
     expect(flushes[0].items).not.toContain('item-0-DUPLICATE');
@@ -147,7 +162,7 @@ describe('batch-aggregator', () => {
     // deadline.
     await deliverTimer(KEYS.deadline, 1);
 
-    const flushes = await readFlushesFor(KEYS.deadline);
+    const flushes = await readFlushesFor(KEYS.deadline, 1);
     expect(flushes).toHaveLength(1);
     expect(flushes[0].reason).toBe('deadline');
     expect(flushes[0].items).toEqual(['a', 'b', 'c']);
@@ -182,7 +197,7 @@ describe('batch-aggregator', () => {
 
     await deliverTimer(KEYS.refill, 2);
 
-    const flushes = await readFlushesFor(KEYS.refill);
+    const flushes = await readFlushesFor(KEYS.refill, 2);
     expect(flushes).toHaveLength(2);
     expect(flushes[0].reason).toBe('size');
     expect(flushes[0].items).toHaveLength(MAX_ITEMS);
