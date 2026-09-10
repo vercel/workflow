@@ -72,7 +72,8 @@ only in how the absence is labelled.
   [`RunExpiredError`](/docs/errors/run-expired) instead of resolving.
 
   This is a known limitation. If you need the result, send it somewhere you
-  control, e.g. a step that writes it to your own store, rather than reading it back off the run.
+  control, e.g. a step that writes it to your own store, rather than reading
+  it back off the run.
 </Callout>
 
 `RunExpiredError` is not specific to `experimental_retention: 0`. Any run read
@@ -86,8 +87,9 @@ missing and you get `WorkflowRunNotFoundError` instead.
 
 The SDK records your preference; it does not enforce it. `start()` writes the
 value onto the run as the reserved `$retention` attribute, and the World
-decides what to do when the run ends.
-A World that does not implement retention
-**keeps the data**. If you need certainty that a specific World deletes your data,
-confirm it against that World's own documentation rather than the presence of this
-option.
+decides what to do when the run ends. Attributes are a spec version 4 feature,
+so `experimental_retention: 0` throws against an older World rather than being
+recorded and ignored. A World that does implement spec version 4 but not
+retention **keeps the data**. If you need certainty that a specific World
+deletes your data, confirm it against that World's own documentation rather
+than the presence of this option.
