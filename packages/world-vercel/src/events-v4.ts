@@ -318,9 +318,13 @@ export interface PreconditionFailureDetails {
  * Keep CreateEventSchema strict while preserving the Vercel response contract:
  * temporarily materialize an omitted payload with a private sentinel for
  * EventSchema, then remove only that synthesized value from the parsed response.
+ *
+ * Exported so the legacy `/v1/runs/:id/events` path (see `events.ts`
+ * `createWorkflowRunEventInner` v1Compat catch-all) can parse its event
+ * responses with the same omitted-payload tolerance the v4 sites use.
  */
 const OMITTED_EVENT_PAYLOAD = Symbol('omitted event payload');
-const VercelEventWireSchema = z.compile(
+export const VercelEventWireSchema = z.compile(
   z
     .preprocess((value) => {
       if (typeof value !== 'object' || value === null || Array.isArray(value)) {

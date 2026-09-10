@@ -162,6 +162,49 @@ describe('createWorkflowRunEvent with v1Compat', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  // A `hook_received` resumed with a payload the legacy v1 server does not
+  // echo back (e.g. an `undefined` resume payload) comes back with an
+  // `eventData` that omits the required `payload` key. Under Zod 4.5 the bare
+  // `EventSchema` rejects a missing property, so this path must parse with the
+  // omitted-payload-tolerant wire schema (the same fix the v4 sites use), or
+  // hook resume breaks for legacy spec-1 runs.
+  it('parses a legacy hook_received response that omits payload', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({ path: '/api/v1/runs/wrun_legacy/events', method: 'POST' })
+      .reply(
+        200,
+        {
+          eventId: 'evnt_legacy',
+          runId: 'wrun_legacy',
+          eventType: 'hook_received',
+          correlationId: 'hook_1',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          specVersion: 1,
+          // payload key intentionally absent
+          eventData: {},
+        },
+        { headers: { 'content-type': 'application/json' } }
+      );
+
+    const result = await createWorkflowRunEvent(
+      'wrun_legacy',
+      {
+        eventType: 'hook_received',
+        correlationId: 'hook_1',
+        specVersion: 1,
+        eventData: { payload: undefined },
+      } as AnyEventRequest,
+      { v1Compat: true },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.event?.eventId).toBe('evnt_legacy');
+    expect(result.event?.eventType).toBe('hook_received');
+    agent.assertNoPendingInterceptors();
+  });
+
   it('rejects v1Compat without a runId for non-lifecycle events', async () => {
     await expect(
       createWorkflowRunEvent(
