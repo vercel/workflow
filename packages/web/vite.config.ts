@@ -11,9 +11,9 @@ const isVercelWebDeployment = process.env.WORKFLOW_WEB_VERCEL_BUILD === '1';
 
 export default defineConfig(({ command, isSsrBuild }) => ({
   build: {
-    // Use Express server entry for self-hosting (node server.js).
-    // On the web Vercel deployment, the React Router preset handles the
-    // server entry.
+    // Build `server/app.ts` as the SSR entry for self-hosting (node server.js)
+    // and for embedding (@workflow/web/handler). On the web Vercel deployment,
+    // the React Router preset handles the server entry.
     rollupOptions:
       isSsrBuild && !isVercelWebDeployment
         ? { input: './server/app.ts' }
@@ -28,8 +28,9 @@ export default defineConfig(({ command, isSsrBuild }) => ({
   },
   // Bundle all dependencies into the server build so that @workflow/web
   // can be installed and run without needing any of the UI dependencies
-  // (Radix, lucide-react, etc.) at runtime. Only Node.js built-ins and
-  // express (needed by server.js) remain external.
+  // (Radix, lucide-react, etc.) at runtime. Only Node.js built-ins remain
+  // external — `srvx` is imported by the un-bundled `server.js`, which ships
+  // as-is and never passes through this build.
   //
   // During dev (`react-router dev`), Vite's SSR module runner evaluates
   // modules using its ESM evaluator which cannot handle CJS packages
@@ -37,7 +38,6 @@ export default defineConfig(({ command, isSsrBuild }) => ({
   // noExternal for dev so dependencies are loaded natively by Node.js.
   ssr: {
     noExternal: command === 'build' ? true : undefined,
-    external: isVercelWebDeployment ? undefined : ['express'],
   },
   plugins: [tailwindcss(), reactRouter(), nodeRequireBanner()],
   resolve: {
