@@ -1,5 +1,6 @@
 ---
 '@workflow/core': patch
+'@workflow/world': patch
 ---
 
-Name the entity holding a correlation id and the replay pass when a replay diverges, and render `errorMessage` in warn/error console output when the message itself does not carry it.
+When logging corrupt event logs due to replay divergence, specify the divergent events, and carry error message through retries
