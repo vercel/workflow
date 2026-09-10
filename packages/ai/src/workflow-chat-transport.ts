@@ -20,13 +20,13 @@ import { iteratorToStream, streamToIterator } from './stream-iterator.js';
  * `tool-input-delta` (and the matching `*-end`) when the start chunk for that
  * id was never observed, and on tool output/approval chunks when no tool part
  * exists for the call id. A negative `startIndex` on a flat chunk stream can
- * easily land mid-part, so without this guard the client crashes on resume.
+ * can land mid-part, so without this guard the client crashes on resume.
  *
  * A tool part is established by `tool-input-start` OR by a self-contained
  * `tool-input-available`/`tool-input-error` chunk (the AI SDK creates the
  * part from those directly), so all three mark the call id as seen.
  *
- * This is a best-effort safety net — it preserves only the parts that the
+ * This is a best-effort safety net: it preserves only the parts that the
  * resumed window includes a `*-start` for. Server-side rewinding to a step
  * boundary is the proper fix when you want the full message preserved.
  */
@@ -437,7 +437,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
     // the middle of a `*-start` / `*-delta` / `*-end` sequence, which crashes
     // the AI SDK UI stream processor. The orphan filter drops chunks whose
     // start chunk was emitted before the resume window. Only activated for
-    // negative resumes — non-negative startIndex is the caller's explicit
+    // negative resumes, since non-negative startIndex is the caller's explicit
     // choice and we trust them. See: https://github.com/vercel/workflow/issues/1835
     const orphanFilter =
       useExplicitStartIndex && explicitStartIndex < 0
@@ -476,7 +476,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
           // Resolve: e.g. tailIndex=499, startIndex=-20 → 500 + (-20) = 480
           chunkIndex = Math.max(0, tailIndex + 1 + explicitStartIndex);
         } else {
-          // Header missing or unparseable — fall back to replaying from the
+          // Header missing or unparseable, so fall back to replaying from the
           // beginning so retries don't resume from a wrong position.
           console.warn(
             '[WorkflowChatTransport] Negative initialStartIndex is configured ' +

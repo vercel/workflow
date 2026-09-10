@@ -1,7 +1,7 @@
 'use client';
 
 import { AlertCircle } from 'lucide-react';
-import { CopyButton } from '../new-trace-viewer/components/copy-button';
+import { CopyButton } from '../trace-viewer/components/copy-button';
 
 export type StructuredErrorRecord = Record<string, unknown> & {
   message?: string;
@@ -39,10 +39,10 @@ export function isStructuredErrorWithStack(
 /**
  * Pull a short, single-line title out of an error message.
  *
- * Workflow's structured error messages are multi-line — the first line is
+ * Workflow's structured error messages are multi-line: the first line is
  * the headline (`Failed to serialize step return value`) and the rest are
  * `╰▶ hint:` / `╰▶ docs:` framed details. The full message belongs in the
- * body of the error block; the title should just be the headline so the
+ * body of the error block; the title should be the headline so the
  * card stays scannable.
  */
 function deriveTitle(message: string): string {
@@ -93,8 +93,8 @@ export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
         >
           <AlertCircle className="h-4 w-4 shrink-0" />
           <p
-            className="text-xs font-semibold m-0 truncate"
-            // The full message or stack is in the body below; the header just
+            className="text-label-12 font-semibold m-0 truncate"
+            // The full message or stack is in the body below; the header
             // shows the first line, single-line, with overflow
             // ellipsised so a long title doesn't push the copy button or
             // wrap into the framed hint/docs lines.
@@ -106,7 +106,7 @@ export function ErrorStackBlock({ value }: { value: StructuredErrorRecord }) {
       )}
       {body && (
         <pre
-          className="px-3 py-2.5 text-xs font-mono whitespace-pre-wrap break-words overflow-auto m-0"
+          className="px-3 py-2.5 text-label-12-mono whitespace-pre-wrap break-words overflow-auto m-0"
           style={{
             color: 'var(--ds-red-900)',
             background: 'var(--ds-red-200)',

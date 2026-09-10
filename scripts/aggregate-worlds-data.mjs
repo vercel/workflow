@@ -68,7 +68,7 @@ function findE2EResultFiles(dir) {
         files.push(fullPath);
       }
     }
-  } catch (e) {
+  } catch (_e) {
     // Directory may not exist
   }
   return files;
@@ -90,7 +90,7 @@ function findBenchmarkFiles(dir) {
         files.push(fullPath);
       }
     }
-  } catch (e) {
+  } catch (_e) {
     // Directory may not exist
   }
   return files;
@@ -342,7 +342,7 @@ console.log(`  Total worlds: ${worldCount}`);
 console.log(`  With E2E data: ${withE2E}`);
 console.log(`  With benchmark data: ${withBenchmarks}`);
 
-for (const [id, world] of Object.entries(status.worlds)) {
+for (const [_id, world] of Object.entries(status.worlds)) {
   const e2eStatus = world.e2e
     ? `${world.e2e.passed}/${world.e2e.total} (${world.e2e.progress}%)`
     : 'no data';

@@ -1,5 +1,5 @@
-import { FatalError } from '@workflow/errors';
 import { inspect } from 'node:util';
+import { FatalError } from '@workflow/errors';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   NotInStepContextError,

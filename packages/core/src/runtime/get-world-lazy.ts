@@ -9,9 +9,9 @@
  *
  * Resolution order, in priority:
  *
- * 1. `globalThis[WorldCacheKey]` — populated by a successful prior
+ * 1. `globalThis[WorldCacheKey]`: populated by a successful prior
  *    `getWorld()` call. This is the steady-state hot path.
- * 2. `globalThis[GetWorldFnKey]` — populated by the module-load side
+ * 2. `globalThis[GetWorldFnKey]`: populated by the module-load side
  *    effect at the bottom of `./world.ts`. Fires on every server bundle
  *    that reaches this file via `workflow` or `workflow/api` (which import
  *    `./world-init.ts` for its side effect; see that file for the full

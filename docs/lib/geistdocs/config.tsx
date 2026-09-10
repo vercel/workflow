@@ -1,10 +1,4 @@
 import { IconWorkflow } from '@vercel/geistdocs/assets/icons/icon-workflow';
-import { LogoAiElements } from '@vercel/geistdocs/assets/logos/logo-ai-elements';
-import { LogoAiSdk } from '@vercel/geistdocs/assets/logos/logo-ai-sdk';
-import { LogoChatSdk } from '@vercel/geistdocs/assets/logos/logo-chat-sdk';
-import { LogoEve } from '@vercel/geistdocs/assets/logos/logo-eve';
-import { LogoFlagsSdk } from '@vercel/geistdocs/assets/logos/logo-flags-sdk';
-import { LogoTurborepo } from '@vercel/geistdocs/assets/logos/logo-turborepo';
 import { defineConfig, type GeistdocsNavItem } from '@vercel/geistdocs/config';
 import {
   agent,
@@ -34,19 +28,9 @@ export const config = defineConfig({
   logo: <Logo />,
   github,
   nav: visibleNav,
-  // The package default list includes Workflow itself; drop it here since
-  // linking to the site you're already on is redundant.
-  navbarOssProducts: [
-    { href: 'https://eve.dev/', logo: <LogoEve height={12} /> },
-    { href: 'https://ai-sdk.dev/', logo: <LogoAiSdk height={12} /> },
-    { href: 'https://flags-sdk.dev/', logo: <LogoFlagsSdk height={20} /> },
-    { href: 'https://chat-sdk.dev/', logo: <LogoChatSdk height={20} /> },
-    { href: 'https://turborepo.dev/', logo: <LogoTurborepo height={14} /> },
-    {
-      href: 'https://elements.ai-sdk.dev/',
-      logo: <LogoAiElements height={12} />,
-    },
-  ],
+  // Use the package default OSS product list; just exclude this site's own
+  // entry since linking to the site you're already on is redundant.
+  navbarActiveProduct: 'workflow-sdk',
   basePath,
   siteId,
   translations,

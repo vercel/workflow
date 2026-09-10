@@ -719,16 +719,16 @@ export const Next = (props: ComponentProps<'svg'>) => (
 
 export const Frameworks = () => {
   return (
-    <div className="flex flex-col items-center gap-8 px-4 py-12 sm:py-16 sm:px-12 text-center">
+    <div className="flex flex-col items-start sm:items-center gap-8 py-12 sm:py-16 text-left sm:text-center">
       <div className="flex flex-col gap-3 max-w-xl">
-        <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl">
+        <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
           Universally Compatible
         </h2>
         <p className="text-muted-foreground sm:text-lg">
           Works with the frameworks you already use with more coming soon.
         </p>
       </div>
-      <div className="flex flex-wrap justify-center gap-6 items-center max-w-xl">
+      <div className="flex flex-wrap justify-start sm:justify-center gap-6 items-center max-w-xl">
         <Link
           href="/docs/getting-started/next"
           className="hover:opacity-70 transition-opacity duration-200"

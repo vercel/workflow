@@ -1,18 +1,18 @@
 'use client';
 
 import type { CSSProperties } from 'react';
-import { useMemo, type PropsWithChildren, useCallback } from 'react';
-import { Path } from './path';
-import { Node } from './node';
+import { type PropsWithChildren, useCallback, useMemo } from 'react';
 import { diameter, radius, strokeWidth } from './constants';
+import { GlobeContext } from './context';
+import { Node } from './node';
+import { Path } from './path';
+import type { Point } from './types';
 import {
   dKey,
   drawGreatArc,
   drawHorizontalLine,
   getPerspectiveLatitudeSegment,
 } from './utils';
-import type { Point } from './types';
-import { GlobeContext } from './context';
 
 interface GlobeProps {
   half?: boolean;

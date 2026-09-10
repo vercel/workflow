@@ -1,14 +1,14 @@
 ---
 title: WorkflowRunCancelledError
-description: Thrown when awaiting the return value of a cancelled workflow run.
+description: Thrown when awaiting the return value of a canceled workflow run.
 type: reference
-summary: Catch WorkflowRunCancelledError when awaiting run.returnValue on a run that was cancelled.
+summary: Catch WorkflowRunCancelledError when awaiting run.returnValue on a run that was canceled.
 related:
   - /docs/api-reference/workflow-errors/workflow-run-failed-error
   - /docs/api-reference/workflow-errors/workflow-run-not-found-error
 ---
 
-`WorkflowRunCancelledError` is thrown when awaiting `run.returnValue` on a workflow run that was explicitly cancelled via `run.cancel()`. Cancelled runs do not produce a return value.
+`WorkflowRunCancelledError` is thrown when awaiting `run.returnValue` on a workflow run that was explicitly canceled via `run.cancel()`. Canceled runs do not produce a return value.
 
 You can check for cancellation before awaiting by inspecting `run.status`.
 
@@ -25,14 +25,14 @@ try {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Properties
 
 <TSDoc
 definition={`
 interface WorkflowRunCancelledError {
-  /** The ID of the cancelled run. */
+  /** The ID of the canceled run. */
   runId: string;
   /** The error message. */
   message: string;
@@ -40,7 +40,7 @@ interface WorkflowRunCancelledError {
 export default WorkflowRunCancelledError;`}
 />
 
-### Static Methods
+### Static methods
 
 #### `WorkflowRunCancelledError.is(value)`
 

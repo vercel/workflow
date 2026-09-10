@@ -51,10 +51,127 @@ describe('createSwcPlugin externalizeNonSteps', () => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 
+  it('reports authoritative transform results to an optional observer', async () => {
+    const srcDir = join(testRoot, 'src');
+    const stepFile = join(srcDir, 'step.ts');
+    const source = 'export const value = 42;';
+    const workflowManifest = {
+      steps: {
+        'src/step.ts': {
+          value: {
+            stepId: 'step//src/step//value',
+          },
+        },
+      },
+    };
+    const onAfterTransform = vi.fn();
+
+    writeFile(stepFile, source);
+    applySwcTransformMock.mockResolvedValue({
+      code: `${source}\n/* transformed */`,
+      workflowManifest,
+    });
+
+    await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir: join(testRoot, 'out'),
+      bundle: true,
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          onAfterTransform,
+        }),
+      ],
+    });
+
+    expect(onAfterTransform).toHaveBeenCalledOnce();
+    expect(onAfterTransform).toHaveBeenCalledWith({
+      mode: 'step',
+      filename: 'src/step.ts',
+      absolutePath: stepFile,
+      source,
+      code: `${source}\n/* transformed */`,
+      workflowManifest,
+    });
+  });
+
+  it('awaits asynchronous transform observers', async () => {
+    const stepFile = join(testRoot, 'src', 'step.ts');
+    let markObserverStarted: () => void = () => {};
+    let releaseObserver: () => void = () => {};
+    const observerStarted = new Promise<void>((resolve) => {
+      markObserverStarted = resolve;
+    });
+    const observerBlocked = new Promise<void>((resolve) => {
+      releaseObserver = resolve;
+    });
+    let buildCompleted = false;
+
+    writeFile(stepFile, 'export const value = 42;');
+
+    const build = esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir: join(testRoot, 'out'),
+      bundle: true,
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          onAfterTransform: async () => {
+            markObserverStarted();
+            await observerBlocked;
+          },
+        }),
+      ],
+    });
+    void build.then(() => {
+      buildCompleted = true;
+    });
+
+    await observerStarted;
+    await Promise.resolve();
+    expect(buildCompleted).toBe(false);
+
+    releaseObserver();
+    await build;
+    expect(buildCompleted).toBe(true);
+  });
+
+  it('fails the build when a transform observer throws', async () => {
+    const stepFile = join(testRoot, 'src', 'step.ts');
+
+    writeFile(stepFile, 'export const value = 42;');
+
+    await expect(
+      esbuild.build({
+        entryPoints: [stepFile],
+        absWorkingDir: testRoot,
+        outdir: join(testRoot, 'out'),
+        bundle: true,
+        write: false,
+        plugins: [
+          createSwcPlugin({
+            mode: 'step',
+            entriesToBundle: [stepFile],
+            onAfterTransform: () => {
+              throw new Error('transform observer failed');
+            },
+          }),
+        ],
+      })
+    ).rejects.toThrow(/transform observer failed/);
+  });
+
   it('fails the build when two files emit the same step id', async () => {
     const srcDir = join(testRoot, 'src');
     const firstStepFile = join(srcDir, 'confirmation.ts');
     const secondStepFile = join(srcDir, 'reschedule.ts');
+    const onAfterTransform = vi.fn();
 
     writeFile(firstStepFile, `export const first = true;`);
     writeFile(secondStepFile, `export const second = true;`);
@@ -77,6 +194,121 @@ describe('createSwcPlugin externalizeNonSteps', () => {
     await expect(
       esbuild.build({
         entryPoints: [firstStepFile, secondStepFile],
+        absWorkingDir: testRoot,
+        outdir: join(testRoot, 'out'),
+        bundle: true,
+        format: 'esm',
+        platform: 'node',
+        write: false,
+        plugins: [
+          createSwcPlugin({
+            mode: 'step',
+            onAfterTransform,
+          }),
+        ],
+      })
+    ).rejects.toThrow(/Duplicate workflow step ID/);
+    expect(onAfterTransform).toHaveBeenCalledOnce();
+  });
+
+  it('deduplicates identical pnpm peer-variant copies emitting the same step id', async () => {
+    // pnpm materializes the same package version once per peer-dependency
+    // resolution. Both copies are byte-identical and generate the same
+    // canonical step ID, which must not fail the build.
+    const source = `export const sendMessage = true;`;
+    const firstCopy = join(
+      testRoot,
+      'node_modules/.pnpm/shared-package@1.0.0_peer-a@1.0.0/node_modules/shared-package/index.ts'
+    );
+    const secondCopy = join(
+      testRoot,
+      'node_modules/.pnpm/shared-package@1.0.0_peer-b@2.0.0/node_modules/shared-package/index.ts'
+    );
+    const onAfterTransform = vi.fn();
+    const workflowManifest = {};
+
+    writeFile(firstCopy, source);
+    writeFile(secondCopy, source);
+
+    applySwcTransformMock.mockImplementation(
+      async (filename: string, fileSource: string) => ({
+        code: fileSource,
+        workflowManifest: {
+          steps: {
+            [filename]: {
+              sendMessage: {
+                stepId: 'step//shared-package@1.0.0//sendMessage',
+              },
+            },
+          },
+        },
+      })
+    );
+
+    const result = await esbuild.build({
+      entryPoints: [firstCopy, secondCopy],
+      absWorkingDir: testRoot,
+      outdir: join(testRoot, 'out'),
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          workflowManifest,
+          onAfterTransform,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    expect(onAfterTransform).toHaveBeenCalledTimes(2);
+    // Both copies stay in the manifest under the same step ID.
+    const steps = (
+      workflowManifest as {
+        steps?: Record<string, Record<string, { stepId: string }>>;
+      }
+    ).steps;
+    expect(Object.keys(steps ?? {})).toHaveLength(2);
+    for (const entries of Object.values(steps ?? {})) {
+      expect(entries.sendMessage.stepId).toBe(
+        'step//shared-package@1.0.0//sendMessage'
+      );
+    }
+  });
+
+  it('fails the build when pnpm-style copies with different contents emit the same step id', async () => {
+    const firstCopy = join(
+      testRoot,
+      'node_modules/.pnpm/shared-package@1.0.0_peer-a@1.0.0/node_modules/shared-package/index.ts'
+    );
+    const secondCopy = join(
+      testRoot,
+      'node_modules/.pnpm/shared-package@1.0.0_peer-b@2.0.0/node_modules/shared-package/index.ts'
+    );
+
+    writeFile(firstCopy, `export const sendMessage = 1;`);
+    writeFile(secondCopy, `export const sendMessage = 2;`);
+
+    applySwcTransformMock.mockImplementation(
+      async (filename: string, fileSource: string) => ({
+        code: fileSource,
+        workflowManifest: {
+          steps: {
+            [filename]: {
+              sendMessage: {
+                stepId: 'step//shared-package@1.0.0//sendMessage',
+              },
+            },
+          },
+        },
+      })
+    );
+
+    await expect(
+      esbuild.build({
+        entryPoints: [firstCopy, secondCopy],
         absWorkingDir: testRoot,
         outdir: join(testRoot, 'out'),
         bundle: true,

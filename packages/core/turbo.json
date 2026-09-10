@@ -3,7 +3,11 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist", "src/version.ts"]
+      "outputs": [
+        "dist",
+        "src/version.ts",
+        "src/runtime/quickjs-assets.generated.ts"
+      ]
     }
   }
 }

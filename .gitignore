@@ -42,3 +42,14 @@ packages/swc-plugin-workflow/build-hash.json
 workbench/nextjs-*/public/.well-known/workflow
 workbench/sveltekit/static/.well-known/workflow
 
+
+# Event log race repro output (written to the repo root by the harness and by
+# scripts/event-log-race-repro-local.sh)
+event-log-race-repro-results.json
+event-log-race-repro-summary.md
+event-log-race-repro-previous-comment.md
+event-log-race-repro-server.log
+
+# Per-run e2e diagnostics sidecars written to the repo root by the harness
+# (writeDiagnosticsSidecar in packages/core/e2e/utils.ts)
+e2e-diagnostics-*.json

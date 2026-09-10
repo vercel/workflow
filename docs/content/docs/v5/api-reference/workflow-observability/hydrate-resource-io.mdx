@@ -10,7 +10,7 @@ related:
   - /docs/api-reference/workflow-runtime/world/storage
 ---
 
-Hydrates (deserializes) the data fields of a resource returned by the [World SDK](/docs/api-reference/workflow-runtime/world) — a workflow run, step, hook, or event. Workflow data is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format, so this is required before displaying step input/output in a UI.
+Hydrates (deserializes) the data fields of a resource returned by the [World SDK](/docs/api-reference/workflow-runtime/world): a workflow run, step, hook, or event. Workflow data is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format, so this is required before displaying step input/output in a user interface.
 
 The function dispatches on the resource shape: steps get `input`/`output` hydrated, hooks get `metadata`, events get `eventData`, and runs get `input`/`output`.
 
@@ -26,7 +26,7 @@ const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highl
 console.log(hydrated.input, hydrated.output);
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -40,12 +40,12 @@ console.log(hydrated.input, hydrated.output);
 The same resource with its data fields hydrated into plain JavaScript values.
 
 <Callout type="info">
-  Encrypted data fields pass through as raw `Uint8Array` values rather than being decrypted — see [Encrypted Data](/docs/api-reference/workflow-observability#encrypted-data).
+  Encrypted data fields pass through as raw `Uint8Array` values rather than being decrypted. See [Encrypted Data](/docs/api-reference/workflow-observability#encrypted-data).
 </Callout>
 
 ## Examples
 
-### Display a Run's Steps with Hydrated I/O
+### Display a run's steps with hydrated I/O
 
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";

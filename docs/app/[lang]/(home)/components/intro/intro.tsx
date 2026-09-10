@@ -144,9 +144,9 @@ export const Intro = async () => {
   );
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-[330px_1fr] gap-12 px-4 py-8 sm:py-12 sm:px-12">
-      <div className=" flex flex-col gap-2">
-        <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px]">
+    <div className="grid grid-cols-12 gap-y-12 md:gap-x-8 py-8 sm:py-12">
+      <div className="col-span-12 md:col-span-5 flex flex-col gap-2">
+        <h2 className="text-heading-20 sm:text-heading-24 md:text-heading-32 lg:text-heading-40">
           Reliability-as-code
         </h2>
         <p className="text-lg text-muted-foreground md:mt-4">
@@ -154,7 +154,7 @@ export const Intro = async () => {
           code with simple directives.
         </p>
       </div>
-      <div className="flex items-center justify-center">
+      <div className="col-span-12 md:col-span-7">
         <IntroTabs
           withWorkflow={
             <WorkflowExample

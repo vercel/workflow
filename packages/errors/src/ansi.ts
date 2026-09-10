@@ -1,5 +1,5 @@
 // Imported from a sibling module rather than `chalk` proper so this file
-// (and everything that statically imports it — including the workflow-VM
+// (and everything that statically imports it, including the workflow-VM
 // reachable `context-violation-error.ts`) doesn't pull in chalk's
 // `supports-color` / `require('os')` chain. See `./internal-chalk.ts`
 // for the full rationale and the test mock that swaps it out.
@@ -38,25 +38,25 @@ const styles = {
   error: chalk.red,
 };
 
-/** A "help:" line — use for the primary suggested fix. */
+/** A "help:" line: use for the primary suggested fix. */
 export function help(messages: string | string[]): string {
   const message = Array.isArray(messages) ? messages.join('\n') : messages;
   return styles.help(`${chalk.bold('help:')} ${message}`);
 }
 
-/** A "hint:" line — use for supplementary context or suggestions. */
+/** A "hint:" line: use for supplementary context or suggestions. */
 export function hint(messages: string | string[]): string {
   const message = Array.isArray(messages) ? messages.join('\n') : messages;
   return styles.info(`${chalk.bold('hint:')} ${message}`);
 }
 
-/** A "note:" line — use for informational context. */
+/** A "note:" line: use for informational context. */
 export function note(messages: string | string[]): string {
   const message = Array.isArray(messages) ? messages.join('\n') : messages;
   return styles.info(`${chalk.bold('note:')} ${message}`);
 }
 
-/** A "docs:" line — use for a single documentation URL. */
+/** A "docs:" line: use for a single documentation URL. */
 export function docs(url: string): string {
   return styles.info(`${chalk.bold('docs:')} ${url}`);
 }

@@ -109,3 +109,39 @@ describe('run_cancelled cancelReason', () => {
     ).toBe('operator cancelled');
   });
 });
+
+describe('sealed-log noop events', () => {
+  it('parses a noop event from the read union', () => {
+    // Written only by the World's backend when it seals an abandoned slot
+    // (specVersion >= 7); readers must accept it wherever events are parsed.
+    const parsed = EventSchema.parse({
+      eventType: 'noop',
+      runId: 'wrun_123',
+      eventId: 'evnt_00000000000000000000000003',
+      createdAt: new Date().toISOString(),
+      specVersion: 7,
+      eventData: { sealed: true },
+    });
+    expect(parsed.eventType).toBe('noop');
+  });
+
+  it('parses a noop with no eventData at all', () => {
+    const parsed = EventSchema.parse({
+      eventType: 'noop',
+      runId: 'wrun_123',
+      eventId: 'evnt_00000000000000000000000003',
+      createdAt: new Date().toISOString(),
+    });
+    expect(parsed.eventType).toBe('noop');
+  });
+
+  it('is not user-creatable', () => {
+    // A client-minted noop would burn a slot it never allocated; only the
+    // backend's sealer writes them.
+    const result = CreateEventSchema.safeParse({
+      eventType: 'noop',
+      eventData: { sealed: true },
+    });
+    expect(result.success).toBe(false);
+  });
+});

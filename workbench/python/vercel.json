@@ -1,0 +1,11 @@
+{
+  "git": {
+    "deploymentEnabled": {
+      "changeset-release/main": false
+    }
+  },
+  "env": {
+    "WORKFLOW_PUBLIC_MANIFEST": "1"
+  },
+  "framework": "python"
+}

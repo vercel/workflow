@@ -8,7 +8,7 @@ import {
   isTerminalStepEventType,
   type WorkflowRun,
 } from '@workflow/world';
-import type { Span, SpanEvent } from '../trace-viewer/types';
+import type { Span, SpanEvent } from '../../lib/trace-types';
 import { shouldShowVerticalLine } from './event-colors';
 import { calculateDuration, dateToOtelTime } from './trace-time-utils';
 
@@ -150,6 +150,10 @@ export function waitToSpan(
   };
 }
 
+export type GetStepAttributes = (
+  events: Event[]
+) => Record<string, unknown> | undefined;
+
 export const stepEventsToStepEntity = (
   events: Event[]
 ): {
@@ -175,7 +179,7 @@ export const stepEventsToStepEntity = (
     return null;
   }
 
-  // Walk events in order to derive status, attempt count, and timestamps.
+  // Walk events to derive status, attempt count, and timestamps.
   // Handles both step_retrying and consecutive step_started as retry signals.
   let status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' =
     'pending';
@@ -231,16 +235,26 @@ export const stepEventsToStepEntity = (
 /**
  * Converts step events to an OpenTelemetry Span
  */
-export function stepToSpan(stepEvents: Event[], maxEndTime: Date): Span | null {
+export function stepToSpan(
+  stepEvents: Event[],
+  maxEndTime: Date,
+  getStepAttributes?: GetStepAttributes
+): Span | null {
   const step = stepEventsToStepEntity(stepEvents);
   if (!step) {
     return null;
   }
-  const parsedName = parseStepName(String(step.stepName));
+  const parsedName =
+    parseStepName(String(step.stepName)) ??
+    parseWorkflowName(String(step.stepName));
 
   const attributes = {
     resource: 'step' as const,
-    data: step,
+    data: {
+      ...getStepAttributes?.(stepEvents),
+      // Canonical event-derived fields cannot be overridden by extensions.
+      ...step,
+    },
   };
 
   const resource = 'step';
@@ -404,7 +418,7 @@ export function runToSpan(
     getEventTimestamp(terminalEvent) ?? run.completedAt ?? undefined;
   const endTime = completedAt ?? now;
 
-  // Only embed identification fields — not the full object with
+  // Only embed identification fields, not the full object with
   // input/output/error which may contain non-cloneable types. Lifecycle
   // timestamps are event-derived so detail rows align with the span timeline.
   const { input: _i, output: _o, error: _e, ...runIdentity } = run;

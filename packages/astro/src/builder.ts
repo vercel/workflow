@@ -7,6 +7,7 @@ import {
   NORMALIZE_REQUEST_CODE,
   resolveProjectRoot,
   VercelBuildOutputAPIBuilder,
+  writeFileIfChanged,
 } from '@workflow/builders';
 
 const WORKFLOW_ROUTES = [
@@ -54,7 +55,7 @@ export class LocalBuilder extends BaseBuilder {
 
     // Add .gitignore to exclude generated files from version control
     if (process.env.VERCEL_DEPLOYMENT_ID === undefined) {
-      await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
+      await writeFileIfChanged(join(workflowGeneratedDir, '.gitignore'), '*');
     }
 
     // Clean up stale V1 step route (may persist via Vercel build cache)
@@ -90,7 +91,10 @@ export const POST = async ({request}) => {
 
 export const prerender = false;`
     );
-    await writeFile(workflowsRouteFile, workflowsRouteContent);
+    // These files are generated into the Astro pages directory, which Vite
+    // watches in dev, so an identical rewrite would still invalidate the
+    // module and force a redundant recompile.
+    await writeFileIfChanged(workflowsRouteFile, workflowsRouteContent);
 
     await this.buildWebhookRoute({ workflowGeneratedDir });
 
@@ -105,7 +109,7 @@ export const prerender = false;`
     // Expose manifest as a public HTTP route when WORKFLOW_PUBLIC_MANIFEST=1
     // Astro maps `foo.json.js` to the URL `/foo.json`
     if (this.shouldExposePublicManifest && manifestJson) {
-      await writeFile(
+      await writeFileIfChanged(
         join(workflowGeneratedDir, 'manifest.json.js'),
         `export function GET() {
   return new Response(${JSON.stringify(manifestJson)}, {
@@ -146,13 +150,15 @@ export const prerender = false;\n`
       ''
     );
 
-    // Normalize request, needed for preserving request through astro
+    // Astro's `request` is already a standard `Request`, so it is handed to
+    // the webhook handler as-is. Notably it must NOT be copied via a
+    // normalizer that buffers the body: this is a public route where the
+    // token is checked inside `handler`, so the body must stay unread until
+    // the token has been accepted.
     webhookRouteContent = webhookRouteContent.replace(
       /export const GET = handler;\nexport const POST = handler;\nexport const PUT = handler;\nexport const PATCH = handler;\nexport const DELETE = handler;\nexport const HEAD = handler;\nexport const OPTIONS = handler;/,
-      `${NORMALIZE_REQUEST_CODE}
-const createHandler = (method) => async ({ request, params, platform }) => {
-  const normalRequest = await normalizeRequest(request);
-  const response = await handler(normalRequest, params.token);
+      `const createHandler = (method) => async ({ request, params, platform }) => {
+  const response = await handler(request, params.token);
   return response;
 };
 
@@ -167,7 +173,7 @@ export const OPTIONS = createHandler('OPTIONS');
 export const prerender = false;`
     );
 
-    await writeFile(webhookRouteFile, webhookRouteContent);
+    await writeFileIfChanged(webhookRouteFile, webhookRouteContent);
   }
 }
 

@@ -1,36 +1,48 @@
-import { copyFileSync, mkdirSync, statSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { copyFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import {
-  ensureWorkflowTargetWorldEnv,
-  isWorkflowTargetWorldPath,
   resolveConfiguredProjectRoot,
   resolveProjectRoot,
-  resolveWorkflowTargetWorldAlias,
-  WORKFLOW_WORLD_TARGET_MODULE,
+  WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
 } from '@workflow/builders';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { getNextBuilder } from './builder.js';
 
 const VERCEL_WORLD_PACKAGE = '@workflow/world-vercel';
-const VERCEL_WORLD_DEPENDENCY_PACKAGES = [
-  '@vercel/queue',
+const QUEUE_PACKAGE = '@vercel/queue';
+// Bundling `@vercel/queue` requires the version whose dynamic `import()` carries
+// `turbopackIgnore`/`webpackIgnore` annotations. Without them Turbopack cannot
+// resolve that import ("server relative imports are not implemented yet") and
+// fails the build, so an older copy has to stay external.
+const QUEUE_MIN_BUNDLABLE_VERSION = '0.5.0';
+// `@vercel/oidc` reaches `@vercel/cli-config`, and `@vercel/cli-auth` reaches
+// both that and `@napi-rs/keyring`. Those are CLI-shaped dependencies that never
+// run on a server: `xdg-app-paths` builds its config directory at module scope
+// and throws `The "path" argument must be of type string` once bundled, which
+// fails page-data collection. Keeping the three external stops any bundler from
+// walking into that tree.
+const VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES = [
   '@vercel/oidc',
   '@vercel/cli-auth',
   '@napi-rs/keyring',
 ];
-const VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES = [
+// `@workflow/world-vercel` and the queue client are bundled into the Next.js
+// server build. Every module left external has to be resolved from disk on a
+// cold start, one file at a time, and `register()` in `instrumentation.ts` sits
+// in front of the first request. Bundling the world cuts the module count for
+// that import from ~440 to ~250 and takes ~50ms off `register()`.
+const VERCEL_WORLD_DEPENDENCY_PACKAGES = [
+  QUEUE_PACKAGE,
+  ...VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES,
+];
+// The workflow and step bundles are built by esbuild, which resolves the
+// dynamic import fine but gains nothing from inlining the world: those bundles
+// are loaded once per invocation either way.
+const WORKFLOW_BUNDLE_EXTERNAL_PACKAGES = [
   VERCEL_WORLD_PACKAGE,
   ...VERCEL_WORLD_DEPENDENCY_PACKAGES,
-];
-const WORKFLOW_SERVER_TRANSPILE_PACKAGES = [
-  'workflow',
-  '@workflow/core',
-  '@workflow/serde',
-  '@workflow/errors',
-  '@workflow/utils',
-  '@workflow/ai',
 ];
 const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
 const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
@@ -246,6 +258,64 @@ function resolveNextVersion(workingDir: string): string {
   );
 }
 
+/**
+ * Whether the `@vercel/queue` copy in the app's dependency tree can be bundled.
+ * Fails open when no version can be read: the copy in the graph is then the one
+ * `@workflow/world-vercel` pins, which ships alongside this plugin.
+ */
+function isBundlableQueueVersion(workingDir: string): boolean {
+  const version = readInstalledQueueVersion(workingDir);
+  if (version === undefined || !semver.valid(version)) {
+    return true;
+  }
+  return semver.gte(version, QUEUE_MIN_BUNDLABLE_VERSION);
+}
+
+/**
+ * The installed `@vercel/queue` version, read from the nearest `node_modules`
+ * copy at or above the app directory.
+ *
+ * The manifest is read from disk rather than looked up with
+ * `require.resolve('@vercel/queue/package.json')`: the published package's
+ * `exports` map declares only `.`, so Node answers a manifest subpath with
+ * `ERR_PACKAGE_PATH_NOT_EXPORTED` even when the package is installed. Resolving
+ * the package entry instead is no better, because a bundler or a test runner can
+ * substitute a resolver that answers from the toolchain's module graph rather
+ * than the app's.
+ *
+ * Returns undefined for a layout that keeps the package out of a reachable
+ * `node_modules` directory, which includes any pnpm app that does not depend on
+ * the queue client directly. Those layouts cannot externalize it by name under
+ * webpack either, so the caller bundles it.
+ */
+function readInstalledQueueVersion(workingDir: string): string | undefined {
+  let directory = workingDir;
+  let previous = '';
+  while (directory !== previous) {
+    const manifestPath = join(
+      directory,
+      'node_modules',
+      ...QUEUE_PACKAGE.split('/'),
+      'package.json'
+    );
+    if (fileExists(manifestPath)) {
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+          version?: unknown;
+        };
+        return typeof manifest.version === 'string'
+          ? manifest.version
+          : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    previous = directory;
+    directory = dirname(directory);
+  }
+  return undefined;
+}
+
 function fileExists(path: string): boolean {
   try {
     const stats = statSync(path);
@@ -333,6 +403,26 @@ function registerWorkflowDiagnosticsManifestCopy(metadata: {
   globalWithMarker[marker].push(metadata);
 }
 
+/**
+ * Mark `ws`'s optional native accelerators external on the webpack server
+ * build, which otherwise bundles their JS wrapper without the native `.node`
+ * binding and throws "bufferUtil.mask is not a function" at runtime. See
+ * `WORKFLOW_OPTIONAL_WS_NATIVE_MODULES`; `@workflow/rollup` handles the
+ * Rollup/Vite/Nitro side.
+ */
+function externalizeWsNativeAccelerators(webpackConfig: {
+  externals?: unknown;
+}): void {
+  const names = [...WORKFLOW_OPTIONAL_WS_NATIVE_MODULES];
+  if (Array.isArray(webpackConfig.externals)) {
+    webpackConfig.externals.push(...names);
+  } else if (webpackConfig.externals) {
+    webpackConfig.externals = [webpackConfig.externals, ...names];
+  } else {
+    webpackConfig.externals = names;
+  }
+}
+
 export function withWorkflow(
   nextConfigOrFn:
     | NextConfig
@@ -358,15 +448,18 @@ export function withWorkflow(
     };
   } = {}
 ) {
-  const workflowTargetWorld = ensureWorkflowTargetWorldEnv();
-  if (workflowTargetWorld === '@workflow/world-local') {
-    process.env.WORKFLOW_LOCAL_DATA_DIR ??= '.next/workflow-data';
-  }
-
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
+    if (!process.env.WORKFLOW_TARGET_WORLD) {
+      process.env.WORKFLOW_TARGET_WORLD = 'local';
+      process.env.WORKFLOW_LOCAL_DATA_DIR = '.next/workflow-data';
+    }
     const maybePort = workflows?.local?.port;
     if (maybePort) {
       process.env.PORT = maybePort.toString();
+    }
+  } else {
+    if (!process.env.WORKFLOW_TARGET_WORLD) {
+      process.env.WORKFLOW_TARGET_WORLD = 'vercel';
     }
   }
 
@@ -397,35 +490,11 @@ export function withWorkflow(
     nextConfig = Object.assign({}, nextConfig);
     const workflowBasePath = nextConfig.basePath;
     setWorkflowBasePath(workflowBasePath);
-    nextConfig.env = {
-      ...nextConfig.env,
-      WORKFLOW_TARGET_WORLD: workflowTargetWorld,
-    };
-    const workingDir = process.cwd();
-    const workflowTargetWorldWebpackAlias = resolveWorkflowTargetWorldAlias({
-      workingDir,
-      targetWorld: workflowTargetWorld,
-    });
-    const workflowTargetWorldIsPath =
-      isWorkflowTargetWorldPath(workflowTargetWorld);
-    const workflowTargetWorldTranspilePackages =
-      workflowTargetWorld === VERCEL_WORLD_PACKAGE || workflowTargetWorldIsPath
-        ? []
-        : [workflowTargetWorld];
     nextConfig.serverExternalPackages = [
       ...new Set([
         ...(nextConfig.serverExternalPackages || []),
-        // Keep the Vercel world and its native-prone dependencies external so
-        // local builds do not try to parse @vercel/queue's keyring dependency
-        // tree.
         ...VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES,
-      ]),
-    ];
-    nextConfig.transpilePackages = [
-      ...new Set([
-        ...(nextConfig.transpilePackages || []),
-        ...WORKFLOW_SERVER_TRANSPILE_PACKAGES,
-        ...workflowTargetWorldTranspilePackages,
+        ...(isBundlableQueueVersion(process.cwd()) ? [] : [QUEUE_PACKAGE]),
       ]),
     ];
     const existingCompiler = nextConfig.compiler ?? {};
@@ -485,13 +554,8 @@ export function withWorkflow(
     if (!nextConfig.turbopack.rules) {
       nextConfig.turbopack.rules = {};
     }
-    nextConfig.turbopack.resolveAlias = {
-      ...((nextConfig.turbopack.resolveAlias as Record<string, unknown>) || {}),
-      [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldIsPath
-        ? workflowTargetWorldWebpackAlias
-        : workflowTargetWorld,
-    };
     const existingRules = nextConfig.turbopack.rules as any;
+    const workingDir = process.cwd();
     const nextVersion = resolveNextVersion(workingDir);
     const configuredProjectRoot =
       nextConfig.outputFileTracingRoot ?? nextConfig.turbopack?.root;
@@ -547,7 +611,10 @@ export function withWorkflow(
               // See: https://nextjs.org/docs/app/getting-started/server-and-client-components
               'server-only',
               'client-only',
-              ...effectiveServerExternalPackages,
+              ...new Set([
+                ...effectiveServerExternalPackages,
+                ...WORKFLOW_BUNDLE_EXTERNAL_PACKAGES,
+              ]),
             ],
           });
         })();
@@ -580,7 +647,7 @@ export function withWorkflow(
                   // Uses backreferences (\2, \3) to ensure matching quote types
                   {
                     content:
-                      /(use workflow|use step|@workflow\/core\/runtime\/world-target|from\s+(['"])@workflow\/serde\2|Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\3\s*\))/,
+                      /(use workflow|use step|from\s+(['"])@workflow\/serde\2|Symbol\.for\s*\(\s*(['"])workflow-(?:serialize|deserialize)\3\s*\))/,
                   },
                 ],
               },
@@ -593,11 +660,7 @@ export function withWorkflow(
     // configure the loader for webpack
     const existingWebpackModify = nextConfig.webpack;
     nextConfig.webpack = (...args) => {
-      let [webpackConfig] = args;
-      webpackConfig = existingWebpackModify
-        ? (existingWebpackModify(...args) ?? webpackConfig)
-        : webpackConfig;
-
+      const [webpackConfig] = args;
       if (!webpackConfig.module) {
         webpackConfig.module = {};
       }
@@ -611,24 +674,13 @@ export function withWorkflow(
         loader: loaderPath,
       });
 
-      webpackConfig.resolve ||= {};
-      const existingAlias = webpackConfig.resolve.alias;
-      if (Array.isArray(existingAlias)) {
-        webpackConfig.resolve.alias = [
-          ...existingAlias,
-          {
-            name: WORKFLOW_WORLD_TARGET_MODULE,
-            alias: workflowTargetWorldWebpackAlias,
-          },
-        ];
-      } else {
-        webpackConfig.resolve.alias = {
-          ...(existingAlias || {}),
-          [WORKFLOW_WORLD_TARGET_MODULE]: workflowTargetWorldWebpackAlias,
-        };
+      if (args[1]?.isServer) {
+        externalizeWsNativeAccelerators(webpackConfig);
       }
 
-      return webpackConfig;
+      return existingWebpackModify
+        ? (existingWebpackModify(...args) ?? webpackConfig)
+        : webpackConfig;
     };
     // only run this in the main process so it only runs once
     // as Next.js uses child processes for different builds

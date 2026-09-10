@@ -9,7 +9,7 @@ const Layout = async ({
 }: LayoutProps<'/[lang]/v5/cookbook'>) => {
   const { lang } = await params;
   return (
-    <div className="bg-background-100">
+    <div className="bg-background-200">
       <PreReleaseBanner pathname={`/${lang}/v5/cookbook`} />
       <DocsLayout
         currentVersion={PRE_RELEASE_VERSION.id}

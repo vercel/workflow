@@ -3,16 +3,16 @@ import type { Event } from '@workflow/world';
 /**
  * Scope for {@link countStepStartedEvents}:
  * - `{ type: 'ownedBy', messageId }` counts only starts whose
- *   `eventData.ownerMessageId` matches — i.e. attempts performed by that
+ *   `eventData.ownerMessageId` matches, i.e. attempts performed by that
  *   owning queue message (inline lazy starts and owned-recovery re-stamps).
  * - `{ type: 'totalAttempts' }` estimates the step's genuine attempt total
- *   across its whole lifecycle: unstamped (bare) starts — which only real
- *   queue-dispatched background deliveries write — plus the starts of the
+ *   across its whole lifecycle: unstamped (bare) starts, which only real
+ *   queue-dispatched background deliveries write, plus the starts of the
  *   single most-started owner. A genuine lifecycle has at most one inline
  *   owner phase (ownership is claimed atomically at step creation and
  *   lapses permanently at `step_retrying` or on any bare start), so taking
  *   the max over owners counts that phase's real attempts while invocations
- *   racing on the same batch — which stamp their own one-off message IDs —
+ *   racing on the same batch, which stamp their own one-off message IDs,
  *   contribute at most their single largest count instead of accumulating.
  */
 export type StepStartScope =
@@ -36,7 +36,7 @@ const ownerOf = (e: Event): string | undefined =>
  * Concurrent invocations racing on the same pending batch (stale replays,
  * wake replays, a step message dispatched by a replay that lost the
  * create-claim race, ...) can each write a `step_started` for the same
- * logical attempt — worlds without an atomic start guard (world-local) let
+ * logical attempt. Worlds without an atomic start guard (world-local) let
  * all of them through. Counting those duplicates as "attempts" made the
  * maxRetries ceiling fire on healthy runs and fail them with a false
  * "exceeded max retries" (see workflow#3069).
@@ -44,11 +44,11 @@ const ownerOf = (e: Event): string | undefined =>
  * Callers therefore scope the count to the starts their ceiling is actually
  * about via `scope`:
  * - the inline owned-recovery ceiling counts only THIS message's starts
- *   (`ownedBy`) — each real (re)delivery of the owning message stamps its
+ *   (`ownedBy`): each real (re)delivery of the owning message stamps its
  *   `ownerMessageId` on the start it writes, while racing invocations stamp
  *   their own IDs (or none), so they no longer inflate the count;
  * - the background-step ceiling counts the lifecycle attempt total
- *   (`totalAttempts`: bare starts plus the largest single owner's starts) —
+ *   (`totalAttempts`: bare starts plus the largest single owner's starts),
  *   so a step that exhausted part of its budget under inline ownership
  *   before transitioning to queued/bare retries still trips the combined
  *   ceiling, while racers' one-off stamped duplicates don't accumulate, and

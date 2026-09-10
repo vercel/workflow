@@ -8,6 +8,7 @@
 
 import { decode, encode } from 'cbor-x';
 import {
+  bulkCancelRuns,
   cancelRun,
   fetchEvent,
   fetchEvents,
@@ -18,7 +19,6 @@ import {
   fetchRun,
   fetchRuns,
   fetchStep,
-  fetchSteps,
   fetchStreams,
   fetchWorkflowsManifest,
   getEncryptionKeyForRun,
@@ -36,7 +36,6 @@ type RpcMethod = keyof typeof handlers;
 const handlers = {
   fetchRuns: (p: any) => fetchRuns(p.worldEnv ?? {}, p.params ?? {}),
   fetchRun: (p: any) => fetchRun(p.worldEnv ?? {}, p.runId, p.resolveData),
-  fetchSteps: (p: any) => fetchSteps(p.worldEnv ?? {}, p.runId, p.params ?? {}),
   fetchStep: (p: any) =>
     fetchStep(p.worldEnv ?? {}, p.runId, p.stepId, p.resolveData),
   fetchEvents: (p: any) =>
@@ -54,6 +53,7 @@ const handlers = {
     fetchHookToken(p.worldEnv ?? {}, p.runId, p.hookId),
   fetchHook: (p: any) => fetchHook(p.worldEnv ?? {}, p.hookId, p.resolveData),
   cancelRun: (p: any) => cancelRun(p.worldEnv ?? {}, p.runId),
+  bulkCancelRuns: (p: any) => bulkCancelRuns(p.worldEnv ?? {}, p.runIds ?? []),
   recreateRun: (p: any) =>
     recreateRun(p.worldEnv ?? {}, p.runId, p.deploymentId),
   reenqueueRun: (p: any) => reenqueueRun(p.worldEnv ?? {}, p.runId),

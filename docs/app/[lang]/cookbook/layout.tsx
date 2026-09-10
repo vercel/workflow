@@ -9,7 +9,7 @@ const Layout = async ({
   const { lang } = await params;
 
   return (
-    <div className="bg-background-100">
+    <div className="bg-background-200">
       <DocsLayout
         currentVersion={LATEST_VERSION.id}
         lang={lang}

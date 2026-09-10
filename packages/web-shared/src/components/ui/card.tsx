@@ -32,14 +32,7 @@ const CardTitle = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
 >(({ className, ...props }, ref) => (
-  <div
-    ref={ref}
-    className={cn(
-      'text-2xl font-semibold leading-none tracking-tight',
-      className
-    )}
-    {...props}
-  />
+  <div ref={ref} className={cn('text-heading-24', className)} {...props} />
 ));
 CardTitle.displayName = 'CardTitle';
 
@@ -49,7 +42,7 @@ const CardDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <div
     ref={ref}
-    className={cn('text-sm', className)}
+    className={cn('text-copy-14', className)}
     style={{ color: 'var(--ds-gray-900)' }}
     {...props}
   />

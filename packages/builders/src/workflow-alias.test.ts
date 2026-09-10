@@ -1,6 +1,6 @@
 import {
-  mkdtempSync,
   mkdirSync,
+  mkdtempSync,
   rmSync,
   symlinkSync,
   writeFileSync,

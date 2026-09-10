@@ -1,5 +1,10 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, WorkflowRun, WorkflowRunStatus } from '@workflow/world';
+import {
+  BULK_CANCEL_MAX_RUN_IDS,
+  type Event,
+  type WorkflowRun,
+  type WorkflowRunStatus,
+} from '@workflow/world';
 import {
   AlertCircle,
   ArrowDownAZ,
@@ -42,6 +47,10 @@ import {
   TooltipTrigger,
 } from '~/components/ui/tooltip';
 import {
+  bulkCancelToastSeverity,
+  shouldRetainSelectionAfterBulkCancel,
+} from '~/lib/bulk-cancel-ui';
+import {
   advanceListingWindow,
   getListingWindow,
 } from '~/lib/client/listing-window';
@@ -49,7 +58,7 @@ import { useTableSelection } from '~/lib/hooks/use-table-selection';
 import { fetchEvents, fetchRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 import {
-  cancelRun,
+  bulkCancelRuns,
   getErrorMessage,
   getErrorTitle,
   reenqueueRun,
@@ -620,32 +629,54 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
   }, [selectedRuns]);
 
   const hasCancellableSelection = cancellableSelectedRuns.length > 0;
+  // A single bulk request cancels at most BULK_CANCEL_MAX_RUN_IDS runs; above
+  // that the action is disabled rather than silently truncated.
+  const exceedsBulkCancelLimit =
+    cancellableSelectedRuns.length > BULK_CANCEL_MAX_RUN_IDS;
 
   const handleBulkCancel = useCallback(async () => {
-    if (isBulkCancelling || cancellableSelectedRuns.length === 0) return;
+    if (
+      isBulkCancelling ||
+      cancellableSelectedRuns.length === 0 ||
+      cancellableSelectedRuns.length > BULK_CANCEL_MAX_RUN_IDS
+    ) {
+      return;
+    }
 
     setIsBulkCancelling(true);
     try {
-      const results = await Promise.allSettled(
-        cancellableSelectedRuns.map((run) => cancelRun(env, run.runId))
+      const { summary, results } = await bulkCancelRuns(
+        env,
+        cancellableSelectedRuns.map((run) => run.runId)
       );
 
-      const succeeded = results.filter((r) => r.status === 'fulfilled').length;
-      const failed = results.filter((r) => r.status === 'rejected').length;
+      // Summarize as a single toast, listing only the categories that occurred.
+      const parts: string[] = [];
+      if (summary.cancelled > 0) parts.push(`${summary.cancelled} cancelled`);
+      if (summary.alreadyCancelled > 0)
+        parts.push(`${summary.alreadyCancelled} already cancelled`);
+      if (summary.notCancellable > 0)
+        parts.push(`${summary.notCancellable} not cancellable`);
+      if (summary.notFound > 0) parts.push(`${summary.notFound} not found`);
+      if (summary.failed > 0) parts.push(`${summary.failed} failed`);
+      const message = parts.join(', ') || 'No runs cancelled';
 
-      if (failed === 0) {
-        toast.success(
-          `Cancelled ${succeeded} run${succeeded !== 1 ? 's' : ''}`
-        );
-      } else if (succeeded === 0) {
-        toast.error(`Failed to cancel ${failed} run${failed !== 1 ? 's' : ''}`);
+      const severity = bulkCancelToastSeverity(summary);
+      if (severity === 'error') {
+        toast.error(message);
+      } else if (severity === 'warning') {
+        toast.warning(message);
       } else {
-        toast.warning(
-          `Cancelled ${succeeded} run${succeeded !== 1 ? 's' : ''}, ${failed} failed`
-        );
+        toast.success(message);
       }
 
-      selection.clearSelection();
+      // Deselect every run that reached a terminal outcome, but keep retryable
+      // failures selected so the user can retry them without reselecting.
+      for (const result of results) {
+        if (!shouldRetainSelectionAfterBulkCancel(result)) {
+          selection.deselectById(result.runId);
+        }
+      }
       onReload();
     } catch (err) {
       toast.error('Failed to cancel runs', {
@@ -965,24 +996,38 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
               </TooltipContent>
             </Tooltip>
             {hasCancellableSelection && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
-                onClick={handleBulkCancel}
-                disabled={isBulkCancelling}
-              >
-                {isBulkCancelling ? (
-                  <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                ) : (
-                  <XCircle className="h-4 w-4 mr-1" />
-                )}
-                Cancel{' '}
-                {cancellableSelectedRuns.length !== selection.selectionCount
-                  ? `${cancellableSelectedRuns.length} `
-                  : ''}
-                {isBulkCancelling ? 'cancelling...' : ''}
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  {/* span wrapper keeps the tooltip reachable while the
+                      button is disabled */}
+                  <span className="inline-flex">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
+                      onClick={handleBulkCancel}
+                      disabled={isBulkCancelling || exceedsBulkCancelLimit}
+                    >
+                      {isBulkCancelling ? (
+                        <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                      ) : (
+                        <XCircle className="h-4 w-4 mr-1" />
+                      )}
+                      Cancel{' '}
+                      {cancellableSelectedRuns.length !==
+                      selection.selectionCount
+                        ? `${cancellableSelectedRuns.length} `
+                        : ''}
+                      {isBulkCancelling ? 'cancelling...' : ''}
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {exceedsBulkCancelLimit
+                    ? `Select up to ${BULK_CANCEL_MAX_RUN_IDS} runs at a time.`
+                    : 'Cancel the selected pending and running runs.'}
+                </TooltipContent>
+              </Tooltip>
             )}
           </>
         }

@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { globalSingleton } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import { EventSchema, HookSchema } from '@workflow/world';
 import { z } from 'zod';
@@ -21,7 +22,7 @@ import { hashToken } from './helpers.js';
  * Durable secondary indexes for hook lookups. Event files are keyed by
  * `{runId}-{eventId}`, so answering "find the live hook_created event
  * for this token/hookId" used to require scanning the entire global
- * event log — O(total history) on every first-time hook creation.
+ * event log: O(total history) on every first-time hook creation.
  *
  * Indexes maintained here:
  *   - `hooks/token-index/{sha256(token)}/{eventId}[.tag].json` → `{runId}`
@@ -31,7 +32,7 @@ import { hashToken } from './helpers.js';
  *
  * Crash-ordering invariant: entries are written BEFORE the write they
  * index (event publish / entity write), so a crash can only leave a
- * dangling entry pointing at a write that never landed — readers skip
+ * dangling entry pointing at a write that never landed. Readers skip
  * those. A committed event/entity invisible to the index cannot occur.
  *
  * Pre-index data directories are handled by a one-time backfill
@@ -196,29 +197,36 @@ export async function deleteHookByRunMarkerFile(
   await deleteJSON(path.join(byRunDir(basedir), `${fileId}.json`));
 }
 
-// Per-process ensure cache; only successful backfills are cached.
-const ensuredBasedirs = new Map<string, Promise<void>>();
+// Per-process ensure cache; only successful backfills are cached. On
+// `globalThis` rather than at module scope so "per-process" stays true when a
+// bundler puts several copies of this file in one process (see
+// `globalSingleton`), otherwise each copy runs the full scan again.
+const hookIndex = globalSingleton(
+  '@workflow/world-local//hookIndexEnsureCache',
+  1,
+  () => ({ ensuredBasedirs: new Map<string, Promise<void>>() })
+);
 
 /** Forget completed backfills (data-dir reset / tests). */
 export function resetHookIndexEnsureCache(): void {
-  ensuredBasedirs.clear();
+  hookIndex.ensuredBasedirs.clear();
 }
 
 /**
  * One-time backfill of the indexes for data directories created before
- * they existed — a single full scan, guarded by a completion marker.
+ * they existed: a single full scan, guarded by a completion marker.
  * Concurrent backfills are safe: all writes are idempotent
  * `writeExclusive` calls with byte-identical content.
  */
 export async function ensureHookIndexes(basedir: string): Promise<void> {
   const key = path.resolve(basedir);
-  let pending = ensuredBasedirs.get(key);
+  let pending = hookIndex.ensuredBasedirs.get(key);
   if (!pending) {
     pending = ensureHookIndexesImpl(key).catch((error) => {
-      ensuredBasedirs.delete(key);
+      hookIndex.ensuredBasedirs.delete(key);
       throw error;
     });
-    ensuredBasedirs.set(key, pending);
+    hookIndex.ensuredBasedirs.set(key, pending);
   }
   return pending;
 }
@@ -239,7 +247,7 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
     await fs.access(markerPath);
     return;
   } catch {
-    // Marker absent — backfill below.
+    // Marker absent, so backfill below.
   }
 
   const eventsDir = path.join(basedir, 'events');

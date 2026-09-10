@@ -1,4 +1,9 @@
 {
+  "git": {
+    "deploymentEnabled": {
+      "changeset-release/main": false
+    }
+  },
   "rewrites": [
     {
       "source": "/api/webhook/:webhookId",

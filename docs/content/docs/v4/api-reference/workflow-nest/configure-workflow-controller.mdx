@@ -9,7 +9,7 @@ prerequisites:
 
 Configures the output directory that [`WorkflowController`](/docs/api-reference/workflow-nest/workflow-controller) loads the generated workflow bundles (`steps.mjs`, `workflows.mjs`, `webhook.mjs`, `manifest.json`) from.
 
-[`WorkflowModule.forRoot()`](/docs/api-reference/workflow-nest/workflow-module) calls this for you with its resolved `outDir` — call it yourself only when registering `WorkflowController` manually. The controller's route handlers throw if no directory has been configured.
+[`WorkflowModule.forRoot()`](/docs/api-reference/workflow-nest/workflow-module) calls this for you with its resolved `outDir`. Call it yourself only when registering `WorkflowController` manually. The controller's route handlers throw if no directory has been configured.
 
 ## Usage
 
@@ -20,7 +20,7 @@ import { configureWorkflowController } from "workflow/nest"; // [!code highlight
 configureWorkflowController(join(process.cwd(), ".nestjs/workflow")); // [!code highlight]
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
