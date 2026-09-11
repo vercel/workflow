@@ -1117,6 +1117,14 @@ describe('resilient step dispatch', () => {
       stepId: 's4',
       stepName: 's4',
       traceCarrier: { traceparent: '00-abc' },
+      // Immutable run identity so the consumer can start the step without a
+      // blocking runs.get (vercel/workflow#3456).
+      runContext: {
+        deploymentId: run.deploymentId,
+        specVersion: cborRun.specVersion,
+        startedAt: Number(cborRun.startedAt),
+        rootRunId: run.runId,
+      },
     });
     // The message carries the same serialized input as the direct write.
     expect(payload.stepInput.input).toBeInstanceOf(Uint8Array);
@@ -1124,6 +1132,9 @@ describe('resilient step dispatch', () => {
       ([, event]) => event.correlationId === 's4'
     )?.[1].eventData.input;
     expect(payload.stepInput.input).toBe(createdInput);
+    expect(eventsCreate.mock.calls[0][1].eventData).not.toHaveProperty(
+      'runContext'
+    );
     // Step-identity-scoped key — matches the dispatch key runtime.ts uses for
     // the same step, so redundant publishes dedupe.
     expect(opts).toMatchObject({
@@ -2290,10 +2301,66 @@ describe('handleSuspension batched fan-out', () => {
         runId: slotRun.runId,
         stepName: payload.stepId,
         traceCarrier: { traceparent: '00-abc' },
+        runContext: {
+          deploymentId: slotRun.deploymentId,
+          specVersion: slotRun.specVersion,
+          startedAt: Number(slotRun.startedAt),
+          rootRunId: slotRun.runId,
+        },
       });
       expect(opts.idempotencyKey).toBe(
         stepDispatchIdempotencyKey(payload.stepId, payload.stepName)
       );
+    });
+
+    it('stamps run context on batch messages, not persisted event data', async () => {
+      const createBatch = successfulCreateBatch();
+      const { world, queue } = queueWorld(createBatch);
+      const queueBatch = vi
+        .fn()
+        .mockResolvedValue([{ messageId: 'msg_s2' }, { messageId: 'msg_s3' }]);
+      world.queueBatch = queueBatch;
+      const childRun: WorkflowRun = {
+        ...slotRun,
+        attributes: { $rootRunId: 'wrun_root' },
+      };
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          stepsAndWait(['s1', 's2', 's3']),
+          globalThis
+        ),
+        world,
+        run: childRun,
+        ownerMessageId: 'msg_owner_1',
+        stepDispatch: stepDispatch(),
+      });
+
+      expect(queue).not.toHaveBeenCalled();
+      expect(queueBatch).toHaveBeenCalledTimes(1);
+      expect(queueBatch).toHaveBeenCalledWith(
+        queueName,
+        ['s2', 's3'].map((stepId) => ({
+          message: {
+            runId: childRun.runId,
+            stepId,
+            stepName: stepId,
+            traceCarrier: { traceparent: '00-abc' },
+            requestedAt: expect.any(Date),
+            runContext: {
+              deploymentId: childRun.deploymentId,
+              specVersion: childRun.specVersion,
+              startedAt: Number(childRun.startedAt),
+              rootRunId: 'wrun_root',
+            },
+          },
+          opts: { idempotencyKey: stepDispatchIdempotencyKey(stepId, stepId) },
+        }))
+      );
+      expect([...result.queuedStepCorrelationIds]).toEqual(['s2', 's3']);
+      for (const { event } of createBatch.mock.calls[0][1]) {
+        expect(event.eventData).not.toHaveProperty('runContext');
+      }
     });
 
     it('2 inline + 1 eager: pair chunk via createBatch, the eager create guarded, its publish after it', async () => {
@@ -2371,7 +2438,15 @@ describe('handleSuspension batched fan-out', () => {
       // biome-ignore lint/style/noNonNullAssertion: asserted defined above
       await result.deferredBatchWork!;
       expect(queue).toHaveBeenCalledTimes(1);
-      expect(queue.mock.calls[0][1].stepId).toBe('s3');
+      expect(queue.mock.calls[0][1]).toMatchObject({
+        stepId: 's3',
+        runContext: {
+          deploymentId: slotRun.deploymentId,
+          specVersion: slotRun.specVersion,
+          startedAt: Number(slotRun.startedAt),
+          rootRunId: slotRun.runId,
+        },
+      });
       expect([...result.createdStepCorrelationIds]).toEqual(['s3']);
     });
 

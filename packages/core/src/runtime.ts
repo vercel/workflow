@@ -28,7 +28,7 @@ import {
   isLegacySpecVersion,
   isSealedNoopEvent,
   isTerminalRunEventType,
-  ROOT_RUN_ID_ATTRIBUTE,
+  isTerminalWorkflowRunStatus,
   type RunInput,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
@@ -83,6 +83,8 @@ import {
   preconditionEventDelta,
   queueMessage,
   resolveRunEncryptionKey,
+  rootRunIdFrom,
+  runDispatchContext,
   type SlotSnapshotParams,
   settleEventSlotGap,
   slotSnapshotParams,
@@ -478,17 +480,6 @@ function countMissingIds(ids: Iterable<string>, present: Set<string>): number {
 }
 
 /**
- * The lineage root of a loaded run: its `$rootRunId` attribute, or its own id
- * when it is itself a root.
- */
-function rootRunIdFrom(
-  attributes: Record<string, string> | undefined,
-  runId: string
-): string {
-  return attributes?.[ROOT_RUN_ID_ATTRIBUTE] ?? runId;
-}
-
-/**
  * Whether the run has a hook and/or wait that an out-of-band writer could
  * append an event for between an inline step's `step_completed` write and
  * the next replay, namely an open hook (a `hook_created` not yet
@@ -753,6 +744,7 @@ export function workflowEntrypoint(
           runInput,
           hookInput,
           stepInput,
+          runContext,
           hookResumeTiming,
           waitContinuation,
         } = WorkflowInvokePayloadSchema.parse(message_);
@@ -1664,11 +1656,14 @@ export function workflowEntrypoint(
                       //    ~300s visibility-timeout redelivery, measured
                       //    exactly so in the durabench parallel sweeps before
                       //    this path existed.
-                      //  - EAGERLY on a genuine redelivery (attempt > 1),
-                      //    in parallel with the run fetch below, since a
+                      //  - EAGERLY on a genuine redelivery (attempt > 1): a
                       //    redelivered dispatch already had its create race
-                      //    resolved either way, so this saves the failed
-                      //    start round-trip at no wall-time cost. First
+                      //    resolved either way, so ensuring up front saves the
+                      //    failed-start round trip the in-band recovery would
+                      //    otherwise pay. On the legacy prologue it overlaps
+                      //    the run fetch (no wall-time cost); on the
+                      //    fetch-free (runContext) prologue it is the sole
+                      //    pre-step write and still the cheaper trade. First
                       //    deliveries skip it: the producer's write almost
                       //    always lands, and an eager ensure would burn a
                       //    conditional write per step.
@@ -1735,46 +1730,118 @@ export function workflowEntrypoint(
                         }
                         return 'ok';
                       };
-                      const [bgRun, ensureOutcome] = await Promise.all([
-                        world.runs.get(runId, {
-                          resolveData: 'none',
-                        }),
-                        stepInput && metadata.attempt > 1
-                          ? ensureStepFromMessage()
-                          : ('ok' as const),
-                      ]);
-                      if (ensureOutcome === 'gone') {
-                        runtimeLogger.debug(
-                          'Run already finished, skipping background step',
-                          { workflowRunId: runId }
-                        );
-                        return;
+                      // Run identity for this execution. A message stamped
+                      // with `runContext` (immutable run fields the producer
+                      // held at dispatch time) skips the blocking `runs.get`
+                      // entirely — one less round trip on the TTLS-critical
+                      // path, and N fewer reads on the run's partition per
+                      // fan-out (vercel/workflow#3456). The run-status early
+                      // exit is not lost: every World rejects a `step_started`
+                      // claim on a terminal run (RunExpired → gone, terminal
+                      // step → skipped) — including a redelivered start whose
+                      // step row still reads `running`, which world-local and
+                      // world-postgres reject as of this change (previously
+                      // only world-vercel's run-status fence covered that
+                      // shape, and the body could re-run on a finished run).
+                      // Older messages without the field keep the legacy
+                      // fetch.
+                      let bgRun: WorkflowRun | undefined;
+                      let runIdentity: {
+                        deploymentId: string;
+                        specVersion: number;
+                        startedAt?: number;
+                        rootRunId?: string;
+                      };
+                      // Which prologue ran — makes adoption of the fetch-free
+                      // path (and the round trip it saves) directly observable
+                      // during version-skew windows.
+                      span?.setAttributes(
+                        Attribute.StepDispatchPrologue(
+                          runContext ? 'run_context' : 'runs_get'
+                        )
+                      );
+                      if (runContext) {
+                        // The eager redelivery re-ensure has no run fetch to
+                        // overlap with on this path — it is kept because a
+                        // redelivered dispatch has already had its create race
+                        // resolved, so one conditional write here is cheaper
+                        // than letting the bare start fail and paying the
+                        // in-band recovery's extra start round trip.
+                        const ensureOutcome =
+                          stepInput && metadata.attempt > 1
+                            ? await ensureStepFromMessage()
+                            : ('ok' as const);
+                        if (ensureOutcome === 'gone') {
+                          runtimeLogger.debug(
+                            'Run already finished, skipping background step',
+                            { workflowRunId: runId }
+                          );
+                          return;
+                        }
+                        runIdentity = runContext;
+                      } else {
+                        const [fetched, ensureOutcome] = await Promise.all([
+                          world.runs.get(runId, {
+                            resolveData: 'none',
+                          }),
+                          stepInput && metadata.attempt > 1
+                            ? ensureStepFromMessage()
+                            : ('ok' as const),
+                        ]);
+                        if (ensureOutcome === 'gone') {
+                          runtimeLogger.debug(
+                            'Run already finished, skipping background step',
+                            { workflowRunId: runId }
+                          );
+                          return;
+                        }
+                        if (fetched.status !== 'running') {
+                          runtimeLogger.debug(
+                            'Run already finished, skipping background step',
+                            { workflowRunId: runId, status: fetched.status }
+                          );
+                          return;
+                        }
+                        // `resolveData: 'none'` strips input/output from the
+                        // row's type; every consumer here reads identity
+                        // fields only, and the replay synthesis overrides
+                        // input/output explicitly.
+                        bgRun = fetched as WorkflowRun;
+                        runIdentity = {
+                          deploymentId: fetched.deploymentId,
+                          specVersion: fetched.specVersion ?? 0,
+                          ...(fetched.startedAt
+                            ? { startedAt: +fetched.startedAt }
+                            : {}),
+                          rootRunId: rootRunIdFrom(fetched.attributes, runId),
+                        };
                       }
-                      if (bgRun.status !== 'running') {
-                        runtimeLogger.debug(
-                          'Run already finished, skipping background step',
-                          { workflowRunId: runId, status: bgRun.status }
-                        );
-                        return;
-                      }
-                      // Covers every queued step execution, first dispatch and
-                      // redeliveries/retries alike.
+                      // Covers every queued step execution — first dispatch and
+                      // redeliveries/retries alike. The re-route payload keeps
+                      // the message's stepInput/runContext so the target
+                      // deployment's consumer retains the resilient re-ensure
+                      // and the fetch-free prologue.
                       if (
-                        (await guardDeployment(bgRun, async () => ({
-                          ...(await replayMessage()),
-                          stepId: incomingStepId,
-                          stepName: incomingStepName,
-                          // Carry the resume timing verbatim so the re-routed
-                          // hop stays inside `step_dispatch` rather than
-                          // vanishing from the TTR decomposition.
-                          ...(hookResumeTiming ? { hookResumeTiming } : {}),
-                        }))) !== 'continue'
+                        (await guardDeployment(
+                          {
+                            runId,
+                            deploymentId: runIdentity.deploymentId,
+                            specVersion: runIdentity.specVersion,
+                          },
+                          async () => ({
+                            ...(await replayMessage()),
+                            stepId: incomingStepId,
+                            stepName: incomingStepName,
+                            ...(stepInput ? { stepInput } : {}),
+                            ...(runContext ? { runContext } : {}),
+                            // Keep the re-routed hop in the TTR decomposition.
+                            ...(hookResumeTiming ? { hookResumeTiming } : {}),
+                          })
+                        )) !== 'continue'
                       ) {
                         return;
                       }
-                      const bgStartedAt = bgRun.startedAt
-                        ? +bgRun.startedAt
-                        : Date.now();
+                      const bgStartedAt = runIdentity.startedAt ?? Date.now();
 
                       // Retry ceiling for a backgrounded step. `metadata.attempt`
                       // (the queue delivery count) is a cheap upper bound, but it
@@ -1841,14 +1908,14 @@ export function workflowEntrypoint(
                           executeStep({
                             world,
                             workflowRunId: runId,
-                            workflowDeploymentId: bgRun.deploymentId,
+                            workflowDeploymentId: runIdentity.deploymentId,
                             workflowName,
                             workflowStartedAt: bgStartedAt,
+                            rootRunId: runIdentity.rootRunId ?? runId,
                             requestId,
-                            rootRunId: rootRunIdFrom(bgRun.attributes, runId),
                             stepId: incomingStepId,
                             stepName: incomingStepName,
-                            runSpecVersion: bgRun.specVersion,
+                            runSpecVersion: runIdentity.specVersion,
                             // Retry ceiling: the queue delivery count as a fast
                             // gate, verified against the recorded step_started
                             // count once it crosses the ceiling (see above).
@@ -1978,15 +2045,40 @@ export function workflowEntrypoint(
 
                         // All steps done: fall through to the main replay loop.
                         // Set up shared state so the loop can continue.
-                        // The step body itself needs no workflow VM. Start Node
-                        // compilation only now, once this delivery is known to
-                        // continue into a workflow replay rather than return for
-                        // a still-pending sibling.
-                        startWorkflowCompile(bgRun);
                         runtimeLogger.debug(
                           'All parallel steps done, replaying inline after background step',
                           { workflowRunId: runId }
                         );
+                        // Fetch the run row only when continuing into replay,
+                        // not for every queued step's prologue. This also
+                        // covers recovery of an inline step owned by this message.
+                        const replayRunRow =
+                          bgRun ??
+                          (await world.runs.get(runId, {
+                            resolveData: 'none',
+                          }));
+                        // Terminal statuses only: a `pending` read here is a
+                        // stale row (this run has completed steps, so it has
+                        // started), and under the fetch-free prologue this is
+                        // the last completer's ONLY status read — returning on
+                        // it would silently abandon the fan-out's continuation
+                        // (the final step_completed is written, the inline
+                        // replay never runs). Fall through instead: the replay
+                        // synthesizes `running` and the next entity write is
+                        // fenced server-side if the run truly ended meanwhile.
+                        if (isTerminalWorkflowRunStatus(replayRunRow.status)) {
+                          runtimeLogger.debug(
+                            'Run already finished, skipping inline replay after background step',
+                            {
+                              workflowRunId: runId,
+                              status: replayRunRow.status,
+                            }
+                          );
+                          return;
+                        }
+                        // The step body needs no workflow VM. Compile only when
+                        // replaying, using the fetched row's VM selection.
+                        startWorkflowCompile(replayRunRow);
                         const runCreatedEvent = loaded.events.find(
                           (event) => event.eventType === 'run_created'
                         );
@@ -1994,7 +2086,7 @@ export function workflowEntrypoint(
                         if (runCreatedEvent) {
                           replayInput = runCreatedEvent.eventData.input;
                         } else {
-                          if (!isLegacySpecVersion(bgRun.specVersion)) {
+                          if (!isLegacySpecVersion(replayRunRow.specVersion)) {
                             throw new WorkflowRuntimeError(
                               `Workflow run "${runId}" has no "run_created" event`
                             );
@@ -2010,7 +2102,7 @@ export function workflowEntrypoint(
                           replayInput = legacyRun.input;
                         }
                         workflowRun = {
-                          ...bgRun,
+                          ...replayRunRow,
                           input: replayInput,
                           status: 'running',
                           output: undefined,
@@ -4036,6 +4128,10 @@ export function workflowEntrypoint(
                                 stepName: step.stepName,
                                 traceCarrier,
                                 requestedAt: new Date(),
+                                // Immutable run identity so the consumer can
+                                // start the step without a blocking runs.get
+                                // — see RunDispatchContextSchema.
+                                runContext: runDispatchContext(workflowRun),
                                 ...(stepResumeTiming
                                   ? { hookResumeTiming: stepResumeTiming }
                                   : {}),
@@ -4735,6 +4831,7 @@ export function workflowEntrypoint(
                                   stepName: step.stepName,
                                   traceCarrier: retryTraceCarrier,
                                   requestedAt: new Date(),
+                                  runContext: runDispatchContext(workflowRun),
                                 },
                                 {
                                   delaySeconds,

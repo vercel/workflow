@@ -61,6 +61,7 @@ import {
   maxEventSlot,
   queueMessage,
   queueMessages,
+  runDispatchContext,
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
@@ -1266,6 +1267,7 @@ export async function handleSuspension({
                 traceCarrier,
                 requestedAt: new Date(),
                 stepInput: { input: dehydratedInput },
+                runContext: runDispatchContext(run),
               },
               // Same key as the caller's dispatch pass and any concurrent
               // handler's, so redundant publishes for this step dedupe. The
@@ -1762,6 +1764,7 @@ export async function handleSuspension({
                 stepName: entry.stepName!,
                 traceCarrier,
                 requestedAt: new Date(),
+                runContext: runDispatchContext(run),
               },
               opts: {
                 idempotencyKey: stepDispatchIdempotencyKey(
