@@ -105,3 +105,97 @@ fn inferred_class_names_step_mode() {
 fn inferred_class_names_workflow_mode() {
     assert_class_names(TransformMode::Workflow);
 }
+
+/// Running the transform a second time over its own output must not crash,
+/// even though `classId` is defined non-configurable.
+///
+/// Regression test for a real npm package (`@ai-sdk/gateway`'s
+/// `GatewayLanguageModel`) that pairs a named class expression with a
+/// self-reference through its *inner* name:
+/// `var Foo = class _Foo { static [WORKFLOW_DESERIALIZE]() { return new
+/// _Foo(); } }`. A bundler pipeline that re-runs this transform over its own
+/// output for the same module (observed with a Vite/Nitro SSR build, where a
+/// dependency is reached through more than one build stage) transforms an
+/// already-wrapped class a second time. The first pass resolves the class's
+/// name from its *binding* (`Foo`), matching `class-expression-binding-name`;
+/// on the second pass the class is no longer a bare initializer (it is now
+/// wrapped in the first pass's registration IIFE), so the binding name is
+/// unavailable and the second pass falls back to the class expression's own
+/// inner name (`_Foo`) instead, nesting a second `Object.defineProperty`
+/// call for `classId` inside the first. Before the fix in
+/// `class_registration_stmts`, that second, unguarded call threw "Cannot
+/// redefine property: classId" at module load, crashing the bundle.
+#[test]
+fn repeated_transform_of_named_class_expression_does_not_crash() {
+    let source = r#"
+        var GatewayLanguageModel = class _GatewayLanguageModel {
+          constructor(modelId) {
+            this.modelId = modelId;
+          }
+          static [Symbol.for('workflow-serialize')](model) {
+            return { modelId: model.modelId };
+          }
+          static [Symbol.for('workflow-deserialize')](options) {
+            return new _GatewayLanguageModel(options.modelId);
+          }
+        };
+
+        export { GatewayLanguageModel };
+    "#
+    .to_string();
+
+    let transform_once = |source: &str| {
+        Tester::run(|tester| {
+            let program = tester.apply_transform(
+                visit_mut_pass(StepTransform::new(
+                    TransformMode::Step,
+                    "input.js".into(),
+                    None,
+                )),
+                "input.js",
+                Default::default(),
+                Some(true),
+                source,
+            )?;
+            Ok(tester.print(&program, &tester.comments.clone()))
+        })
+    };
+
+    let pass1 = transform_once(&source);
+    // The bug only manifests on a second pass over already-transformed code:
+    // confirm pass 1 alone is unaffected before layering pass 2 on top of it.
+    let pass1_check = format!(
+        r#"{pass1}
+        import assert from 'node:assert/strict';
+        assert.equal(typeof GatewayLanguageModel.classId, 'string');
+        "#
+    );
+    let output = Command::new("node")
+        .args(["--input-type=module", "--eval", &pass1_check])
+        .output()
+        .expect("Node.js is required for class-name runtime tests");
+    assert!(
+        output.status.success(),
+        "pass 1 alone: {}\n{pass1_check}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let pass2 = transform_once(&pass1);
+    let pass2_check = format!(
+        r#"{pass2}
+        import assert from 'node:assert/strict';
+        const registry = globalThis[Symbol.for('workflow-class-registry')];
+        assert.equal(typeof GatewayLanguageModel.classId, 'string');
+        assert.equal(registry.get(GatewayLanguageModel.classId), GatewayLanguageModel);
+        "#
+    );
+    let output = Command::new("node")
+        .args(["--input-type=module", "--eval", &pass2_check])
+        .output()
+        .expect("Node.js is required for class-name runtime tests");
+    assert!(
+        output.status.success(),
+        "pass 2 (re-transforming pass 1's output): {}\n{pass2_check}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

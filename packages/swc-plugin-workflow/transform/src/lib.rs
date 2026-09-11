@@ -3662,22 +3662,66 @@ impl StepTransform {
     ///
     /// ```js
     /// __wf_reg.set(<class_id>, <cls>);
-    /// Object.defineProperty(<cls>, "classId", { value: <class_id>, writable: false, enumerable: false, configurable: false });
+    /// if (!Object.prototype.hasOwnProperty.call(<cls>, "classId")) {
+    ///   Object.defineProperty(<cls>, "classId", { value: <class_id>, writable: false, enumerable: false, configurable: false });
+    /// }
     /// ```
+    ///
+    /// The `hasOwnProperty` guard makes the `defineProperty` call idempotent.
+    /// Some multi-pass bundler pipelines (observed with a Vite/Nitro SSR
+    /// build re-running this transform over its own already-registered
+    /// output for a dependency reached through more than one build stage)
+    /// visit the same class object twice; since `defineProperty` marks
+    /// `classId` non-configurable, a second, unguarded call would throw
+    /// "Cannot redefine property: classId" and crash the bundle at module
+    /// load. The registry `.set()` above stays unconditional: it is what
+    /// makes {@link aliasSerializationClass}-style dual lookups work, and a
+    /// repeated `.set()` under the same or a different id is harmless.
     fn class_registration_stmts(reg_var: &str, cls_ref: &Expr, class_id: &Expr) -> Vec<Stmt> {
         let boxed = |expr: &Expr| Box::new(expr.clone());
+        let has_own_class_id = Expr::Call(CallExpr {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            callee: Callee::Expr(Self::member(
+                Self::member(
+                    Self::member(Self::ident_expr("Object"), "prototype"),
+                    "hasOwnProperty",
+                ),
+                "call",
+            )),
+            args: vec![
+                ExprOrSpread {
+                    spread: None,
+                    expr: boxed(cls_ref),
+                },
+                ExprOrSpread {
+                    spread: None,
+                    expr: Self::str_lit("classId"),
+                },
+            ],
+            type_args: None,
+        });
         vec![
             Self::registry_set_stmt(reg_var, boxed(class_id), boxed(cls_ref)),
-            Self::define_property_stmt(
-                boxed(cls_ref),
-                "classId",
-                vec![
-                    ("value", boxed(class_id)),
-                    ("writable", Self::bool_lit(false)),
-                    ("enumerable", Self::bool_lit(false)),
-                    ("configurable", Self::bool_lit(false)),
-                ],
-            ),
+            Stmt::If(IfStmt {
+                span: DUMMY_SP,
+                test: Box::new(Expr::Unary(UnaryExpr {
+                    span: DUMMY_SP,
+                    op: UnaryOp::Bang,
+                    arg: Box::new(has_own_class_id),
+                })),
+                cons: Box::new(Self::define_property_stmt(
+                    boxed(cls_ref),
+                    "classId",
+                    vec![
+                        ("value", boxed(class_id)),
+                        ("writable", Self::bool_lit(false)),
+                        ("enumerable", Self::bool_lit(false)),
+                        ("configurable", Self::bool_lit(false)),
+                    ],
+                )),
+                alt: None,
+            }),
         ]
     }
 
