@@ -5124,6 +5124,16 @@ export function workflowEntrypoint(
               'workflow.route.get_world_handlers',
               async () => getWorld()
             );
+            if (worldHandlers.execution) {
+              const { executionWorkflowHandler } = await import(
+                './runtime/execution.js'
+              );
+              return executionWorkflowHandler(
+                workflowCode,
+                worldHandlers,
+                options?.namespace
+              );
+            }
             return handler(worldHandlers);
           });
         }

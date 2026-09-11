@@ -75,6 +75,8 @@ export {
   TerminalRunEventTypeSchema,
   WAIT_EVENT_TYPES,
 } from './events.js';
+export * from './execution.js';
+export * from './execution-projection.js';
 export type * from './hooks.js';
 export {
   HOOK_RESUME_DEDUP_VERSION,

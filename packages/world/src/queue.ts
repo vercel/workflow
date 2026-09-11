@@ -268,6 +268,8 @@ export type HookResumeTiming = z.infer<typeof HookResumeTimingSchema>;
 
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
+  /** External input for the optional execution API; validated by its adapter. */
+  executionInput: z.unknown().optional(),
   traceCarrier: TraceCarrierSchema.optional(),
   requestedAt: z.coerce.date().optional(),
   /**

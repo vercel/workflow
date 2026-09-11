@@ -85,7 +85,8 @@ export type PostgresQueue = Queue & {
 
 export function createQueue(
   config: PostgresWorldConfig,
-  pool: Pool
+  pool: Pool,
+  options: { migrateLegacyJobs?: boolean; serializeWorkflowRuns?: boolean } = {}
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createWorld({ dataDir: undefined, port });
@@ -479,7 +480,8 @@ export function createQueue(
             logger: graphileLogger,
           });
           await workerUtils.migrate();
-          await migratePgBossJobs(workerUtils);
+          if (options.migrateLegacyJobs !== false)
+            await migratePgBossJobs(workerUtils);
           await startRunnerWhenExecutorIsReady();
         } catch (err) {
           startPromise = null;
@@ -528,7 +530,9 @@ export function createQueue(
       QueuePayloadSchema.parse(body);
       const workflowInvoke = WorkflowInvokePayloadSchema.safeParse(body);
       const workflowRunSerializationKey =
-        workflowInvoke.success && !workflowInvoke.data.stepId
+        options.serializeWorkflowRuns !== false &&
+        workflowInvoke.success &&
+        !workflowInvoke.data.stepId
           ? `workflow:${workflowInvoke.data.runId}`
           : undefined;
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {

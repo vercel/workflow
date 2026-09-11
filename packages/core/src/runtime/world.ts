@@ -1,6 +1,8 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import {
+  globalSingleton,
   isVercelWorldTarget,
   resolveWorkflowTargetWorld,
 } from '@workflow/utils';
@@ -40,6 +42,15 @@ function getRuntimeRequire() {
 }
 
 const WorldCache = Symbol.for('@workflow/world//cache');
+const scopedWorld = globalSingleton(
+  '@workflow/core//scoped-world',
+  1,
+  () => new AsyncLocalStorage<World>()
+);
+
+export function runWithWorld<T>(world: World, fn: () => T): T {
+  return scopedWorld.run(world, fn);
+}
 const StubbedWorldCache = Symbol.for('@workflow/world//stubbedCache');
 const WorldCachePromise = Symbol.for('@workflow/world//cachePromise');
 const StubbedWorldCachePromise = Symbol.for(
@@ -236,6 +247,8 @@ export const getWorldHandlers = async (): Promise<WorldHandlers> => {
 };
 
 export const getWorld = async (): Promise<World> => {
+  const scoped = scopedWorld.getStore();
+  if (scoped) return scoped;
   if (globalSymbols[WorldCache]) {
     assertWorldSupportsRuntimeProtocol(globalSymbols[WorldCache]);
     return globalSymbols[WorldCache];

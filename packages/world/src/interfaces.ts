@@ -16,6 +16,7 @@ import type {
   ListEventsParams,
   RunCreatedEventRequest,
 } from './events.js';
+import type { ExecutionStorage } from './execution.js';
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
 import type { Queue } from './queue.js';
 import type {
@@ -575,6 +576,8 @@ export interface WorldCapabilities {
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
 export interface World extends Queue, Streamer, Storage {
+  /** Optional single-owner execution API. Legacy Worlds leave this absent. */
+  execution?: ExecutionStorage;
   /**
    * Optional analytics read namespace for observability surfaces.
    *
