@@ -248,10 +248,11 @@ export const WorkflowDispatchRepublishSkipped = SemanticConvention<number>(
 );
 
 /**
- * Number of pending steps for which this replay suppressed the immediate
- * requeue because they are queue-owned and running (bare `step_started`, no
- * terminal event) on a World whose queue redelivers unacked messages, and
- * ensured a delayed backstop wake instead.
+ * 1 when this replay pass armed the run's single delayed backstop wake for
+ * its queue-owned running steps (bare `step_started`, no terminal event, on a
+ * World whose queue redelivers unacked messages) instead of re-sending their
+ * step messages; absent when it re-sent them, or when the invocation had
+ * already armed that wake on an earlier pass and skipped the send.
  */
 export const WorkflowQueueOwnedBackstopWakesArmed = SemanticConvention<number>(
   'workflow.queue_ownership.backstop_wakes_armed'

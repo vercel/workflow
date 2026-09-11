@@ -6,6 +6,9 @@ import {
   hasPendingStepOwnedByMessage,
   isQueueOwnedRunning,
   isStepOwnershipActive,
+  leaseRemainingSeconds,
+  QUEUE_OWNED_RUNNING_MIN_SPEC_VERSION,
+  queueOwnedBackstopIdempotencyKey,
   stepLeaseRemainingSeconds,
 } from './step-ownership.js';
 
@@ -57,41 +60,93 @@ describe('isQueueOwnedRunning', () => {
   // (unstamped), after step_created, with no step_retrying since.
   const queueOwned = () =>
     makeStep({ ownerMessageId: undefined, lastStartedAt: 1_000_000 });
+  // A run minted by a runtime that stamps every inline start.
+  const stamping = QUEUE_OWNED_RUNNING_MIN_SPEC_VERSION;
 
   it('is running for a created step whose latest start is bare', () => {
-    expect(isQueueOwnedRunning(queueOwned())).toBe(true);
+    expect(isQueueOwnedRunning(queueOwned(), stamping)).toBe(true);
+    expect(isQueueOwnedRunning(queueOwned(), stamping + 1)).toBe(true);
   });
 
   it('is not running when the latest start is stamped (inline-owned)', () => {
-    expect(isQueueOwnedRunning(makeStep({ ownerMessageId: 'msg_owner' }))).toBe(
-      false
-    );
+    expect(
+      isQueueOwnedRunning(makeStep({ ownerMessageId: 'msg_owner' }), stamping)
+    ).toBe(false);
   });
 
   it('is not running after step_retrying', () => {
-    expect(isQueueOwnedRunning({ ...queueOwned(), sawRetrying: true })).toBe(
-      false
-    );
+    expect(
+      isQueueOwnedRunning({ ...queueOwned(), sawRetrying: true }, stamping)
+    ).toBe(false);
   });
 
   it('is not running for a step that was created but never started', () => {
     expect(
-      isQueueOwnedRunning({ ...queueOwned(), lastStartedAt: undefined })
+      isQueueOwnedRunning(
+        { ...queueOwned(), lastStartedAt: undefined },
+        stamping
+      )
     ).toBe(false);
   });
 
   it('is not running before step_created is observed', () => {
     expect(
-      isQueueOwnedRunning({ ...queueOwned(), hasCreatedEvent: false })
+      isQueueOwnedRunning({ ...queueOwned(), hasCreatedEvent: false }, stamping)
     ).toBe(false);
+  });
+
+  it('treats a bare start on a run from before ownership stamps as NOT queue-owned', () => {
+    // The replay contract tolerates an unstamped inline start from an older
+    // runtime, so on such a run a bare start proves nothing about who wrote
+    // it; the conservative immediate re-enqueue must win. Same for a run
+    // whose spec version is unknown.
+    expect(isQueueOwnedRunning(queueOwned(), stamping - 1)).toBe(false);
+    expect(isQueueOwnedRunning(queueOwned(), 1)).toBe(false);
+    expect(isQueueOwnedRunning(queueOwned(), undefined)).toBe(false);
   });
 
   it('is exclusive with inline ownership', () => {
     for (const step of [queueOwned(), makeStep()]) {
-      expect(isQueueOwnedRunning(step) && isStepOwnershipActive(step)).toBe(
-        false
-      );
+      expect(
+        isQueueOwnedRunning(step, stamping) && isStepOwnershipActive(step)
+      ).toBe(false);
     }
+  });
+});
+
+describe('queueOwnedBackstopIdempotencyKey', () => {
+  it('is scoped to the run and the latest bare start, never to a step', () => {
+    expect(queueOwnedBackstopIdempotencyKey('wrun_1', 1_000_000)).toBe(
+      'wrun_1:queue-backstop:1000000'
+    );
+    // Unchanged log ⇒ same key (replays collapse onto one pending wake).
+    expect(queueOwnedBackstopIdempotencyKey('wrun_1', 1_000_000)).toBe(
+      queueOwnedBackstopIdempotencyKey('wrun_1', 1_000_000)
+    );
+    // A later bare start moves the epoch and so the key.
+    expect(queueOwnedBackstopIdempotencyKey('wrun_1', 1_000_001)).not.toBe(
+      queueOwnedBackstopIdempotencyKey('wrun_1', 1_000_000)
+    );
+    // Distinct from every per-step backstop key of the same epoch.
+    expect(queueOwnedBackstopIdempotencyKey('wrun_1', 1_000_000)).not.toBe(
+      backstopIdempotencyKey(makeStep({ lastStartedAt: 1_000_000 }))
+    );
+  });
+});
+
+describe('leaseRemainingSeconds', () => {
+  it('matches stepLeaseRemainingSeconds for the same start timestamp', () => {
+    process.env[LEASE_ENV] = '100';
+    expect(leaseRemainingSeconds(1_000_000, 1_040_500)).toBe(60);
+    expect(leaseRemainingSeconds(1_000_000, 1_040_500)).toBe(
+      stepLeaseRemainingSeconds(
+        makeStep({ lastStartedAt: 1_000_000 }),
+        1_040_500
+      )
+    );
+    expect(leaseRemainingSeconds(1_000_000, 1_100_000)).toBe(0);
+    // Clamped to the lease under clock skew.
+    expect(leaseRemainingSeconds(1_000_000, 900_000)).toBe(100);
   });
 });
 

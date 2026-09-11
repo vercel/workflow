@@ -511,13 +511,16 @@ export interface WorldCapabilities {
    * is bare (no `ownerMessageId`) and has no terminal event is being executed
    * by a queue delivery of its step message that has not acked yet; on such
    * a queue that unacked message IS the step's crash recovery, so a replay
-   * needs no re-enqueue for it. The dispatch pass then arms a delayed
-   * backstop wake for the ownership lease remainder (the shape inline-owned
-   * steps already use) instead of re-sending the step message on every
-   * replay, and falls back to the immediate enqueue once the lease is spent.
-   * A step that is created but never started is NOT covered and keeps its
-   * immediate re-enqueue: `step_created` in the log proves nothing about
-   * whether the step's message was ever sent.
+   * needs no re-enqueue for it. The dispatch pass then arms ONE delayed
+   * backstop wake per replay pass for the run, due when the last such
+   * step's ownership lease expires, instead of re-sending each step's
+   * message on every replay, and falls back to the immediate enqueue for
+   * whatever is still pending once the leases are spent. Only runs whose
+   * runtime stamps inline starts qualify (spec version 6 and later): on an
+   * older run a bare start may be a legacy inline start, so those keep the
+   * immediate re-enqueue. A step that is created but never started is NOT
+   * covered either: `step_created` in the log proves nothing about whether
+   * the step's message was ever sent.
    *
    * Leave this unset when the queue is in-process, when a dead consumer's
    * message can stay locked for longer than the inline ownership lease

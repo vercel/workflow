@@ -1,4 +1,5 @@
 import type { Event } from '@workflow/world';
+import { SPEC_VERSION_SUPPORTS_SLOT_IDENTITY } from '@workflow/world';
 import type { StepInvocationQueueItem } from '../global.js';
 import { getInlineOwnershipLeaseSeconds } from './constants.js';
 
@@ -26,6 +27,19 @@ export function isStepOwnershipActive(step: StepInvocationQueueItem): boolean {
 }
 
 /**
+ * Lowest run `specVersion` whose runtime is known to stamp `ownerMessageId`
+ * on every inline `step_started`. Ownership stamps shipped in
+ * vercel/workflow#2848 while runs were still minted at spec version 5, so a
+ * spec-5 run may predate them; spec version 6 (slot identity, #3389) shipped
+ * after, so every runtime that mints a spec-6+ run also stamps its inline
+ * starts. A run's spec version is fixed at `start()` and its deliveries are
+ * pinned to one deployment, so within a run the runtime is one version: the
+ * run's spec version stands for the version of every start in its log.
+ */
+export const QUEUE_OWNED_RUNNING_MIN_SPEC_VERSION =
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
+
+/**
  * Whether a pending step is queue-owned and running: created, its latest
  * `step_started` is bare (unstamped, so written by a queue delivery of the
  * step message rather than by an inline owner), and no `step_retrying` has
@@ -35,18 +49,68 @@ export function isStepOwnershipActive(step: StepInvocationQueueItem): boolean {
  * step's crash recovery, so a replay need not re-enqueue it and arms a
  * delayed backstop wake instead (see the dispatch loop in runtime.ts).
  *
+ * A bare start only PROVES a queue delivery on a run whose runtime stamps
+ * inline starts: the replay contract tolerates an unstamped inline start
+ * from an older runtime (step.ts), and treating one as queue-owned would
+ * delay a dead inline step's recovery by a lease. So the predicate also
+ * requires `runSpecVersion >= QUEUE_OWNED_RUNNING_MIN_SPEC_VERSION`; older
+ * or unknown runs keep the immediate re-enqueue.
+ *
  * `step_retrying` excludes the step deliberately, mirroring
  * {@link isStepOwnershipActive}: from there the step rides its delayed retry
  * handoff, which stays on the immediate re-enqueue path. The two predicates
  * are mutually exclusive, since ownership requires a stamped start.
  */
-export function isQueueOwnedRunning(step: StepInvocationQueueItem): boolean {
+export function isQueueOwnedRunning(
+  step: StepInvocationQueueItem,
+  runSpecVersion: number | undefined
+): boolean {
   return (
+    runSpecVersion !== undefined &&
+    runSpecVersion >= QUEUE_OWNED_RUNNING_MIN_SPEC_VERSION &&
     step.hasCreatedEvent === true &&
     step.lastStartedAt !== undefined &&
     step.ownerMessageId === undefined &&
     step.sawRetrying !== true
   );
+}
+
+/**
+ * Seconds left on a liveness lease anchored at `startedAtMs`, with the same
+ * rounding and clamp as {@link stepLeaseRemainingSeconds}.
+ */
+export function leaseRemainingSeconds(
+  startedAtMs: number,
+  nowMs: number
+): number {
+  const leaseSeconds = getInlineOwnershipLeaseSeconds();
+  const remainingMs = startedAtMs + leaseSeconds * 1000 - nowMs;
+  return Math.min(leaseSeconds, Math.max(0, Math.ceil(remainingMs / 1000)));
+}
+
+/**
+ * Idempotency key for a run's queue-owned backstop wake: ONE delayed run
+ * continuation per replay pass covering every queue-owned running step seen
+ * in that pass, delayed to the latest of their lease expiries.
+ *
+ * The key is scoped to the run plus that latest bare-start timestamp (the
+ * run's queue-ownership epoch), for the reasons {@link backstopIdempotencyKey}
+ * gives per step: replays of an unchanged log derive the same key, so
+ * concurrent invocations collapse onto one pending wake server-side, and
+ * the invocation itself skips the send outright once it has armed an epoch
+ * (see the dispatch loop). A later bare start moves the epoch and so the
+ * key, which is what keeps the new step covered: a wake keyed to a coarser
+ * window would be deduped against the one already in flight while firing
+ * BEFORE the new step's lease expires, and a window wide enough to always
+ * fire after it would exceed the queue's per-message delay cap that
+ * `stepLeaseRemainingSeconds` clamps to. The timestamp is the persisted
+ * event's `createdAt`, so every replayer derives the same key.
+ */
+export function queueOwnedBackstopIdempotencyKey(
+  runId: string,
+  latestStartedAtMs: number
+): string {
+  return `${runId}:queue-backstop:${latestStartedAtMs}`;
 }
 
 /**
@@ -69,9 +133,7 @@ export function stepLeaseRemainingSeconds(
   nowMs: number
 ): number {
   if (step.lastStartedAt === undefined) return 0;
-  const leaseSeconds = getInlineOwnershipLeaseSeconds();
-  const remainingMs = step.lastStartedAt + leaseSeconds * 1000 - nowMs;
-  return Math.min(leaseSeconds, Math.max(0, Math.ceil(remainingMs / 1000)));
+  return leaseRemainingSeconds(step.lastStartedAt, nowMs);
 }
 
 /**
