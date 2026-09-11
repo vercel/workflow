@@ -4,16 +4,6 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module.js';
 
 async function bootstrap() {
-  // Start the Postgres World if configured
-  if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
-    const { getWorld } = await import('workflow/runtime');
-    const world = await getWorld();
-    if (world.start) {
-      console.log('Starting World workers...');
-      await world.start();
-    }
-  }
-
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: false,
   });
@@ -24,6 +14,13 @@ async function bootstrap() {
   app.use(expressModule.json());
   app.use(expressModule.text({ type: 'text/*' }));
   app.use(expressModule.raw({ type: 'application/octet-stream' }));
+
+  await app.init();
+  if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
+    const { getWorld } = await import('workflow/runtime');
+    console.log('Starting World workers...');
+    await (await getWorld()).start?.();
+  }
 
   const port = process.env.PORT ?? 3000;
   await app.listen(port);

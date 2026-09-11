@@ -75,6 +75,7 @@ export function createWorld(
   return {
     specVersion: mintedSpecVersion(),
     capabilities: {
+      directQueueDelivery: true,
       hookRetention: { active: true },
     },
     ...storage,

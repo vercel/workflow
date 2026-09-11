@@ -5,7 +5,7 @@ import {
   FIRST_EVENT_SLOT,
   SPEC_VERSION_CURRENT,
 } from '@workflow/world';
-import { createTestSuite } from '@workflow/world-testing';
+import { createTestSuite, flowRouteSecurity } from '@workflow/world-testing';
 import { afterAll, beforeAll, expect, test } from 'vitest';
 
 // Skip these tests on Windows since it relies on a docker container
@@ -101,8 +101,14 @@ if (process.platform === 'win32') {
       FIRST_EVENT_SLOT + 2,
       FIRST_EVENT_SLOT + 3,
     ]);
+    await world.events.create(runId, {
+      eventType: 'run_completed',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { output: serialized(null) },
+    } as any);
     await pool.end();
   }, 60_000);
 
   createTestSuite('./dist/index.js');
+  flowRouteSecurity('./dist/index.js');
 }

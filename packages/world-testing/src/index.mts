@@ -1,6 +1,9 @@
 import { addition } from './addition.mjs';
 import { errors } from './errors.mjs';
 import { eventIds } from './event-ids.mjs';
+
+export { flowRouteSecurity } from './flow-route-security.mjs';
+
 import { hooks } from './hooks.mjs';
 import { idempotency } from './idempotency.mjs';
 import { inlineExecution } from './inline-execution.mjs';

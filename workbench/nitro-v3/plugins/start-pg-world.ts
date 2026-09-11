@@ -4,12 +4,10 @@ import { definePlugin } from 'nitro';
 // Needed since we test this in CI
 export default definePlugin(async () => {
   if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
-    import('workflow/runtime').then(async ({ getWorld }) => {
-      const world = await getWorld();
-      if (world.start) {
-        console.log('Starting World workers...');
-        await world.start();
-      }
-    });
+    const { initializeWorkflow } = await import('#workflow/workflows.mjs');
+    await initializeWorkflow();
+    const { getWorld } = await import('workflow/runtime');
+    console.log('Starting World workers...');
+    await (await getWorld()).start?.();
   }
 });

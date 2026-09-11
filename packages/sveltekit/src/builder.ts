@@ -94,10 +94,11 @@ export class SvelteKitBuilder extends BaseBuilder {
     workflowsRouteContent = workflowsRouteContent.replace(
       /export const POST = workflowEntrypoint\(workflowCode(?<options>[^)]*)\);?$/m,
       (_match, options = '') => `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
+const workflowHandler = workflowEntrypoint(workflowCode${options});
+export const POST = Object.assign(async ({request}) => {
   const normalRequest = await normalizeRequest(request);
-  return workflowEntrypoint(workflowCode${options})(normalRequest);
-}`
+  return workflowHandler(normalRequest);
+}, { initialize: workflowHandler.initialize });`
     );
     // These files are generated into the SvelteKit routes directory, which
     // Vite watches in dev, so an identical rewrite would still invalidate the

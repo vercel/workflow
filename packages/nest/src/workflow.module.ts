@@ -9,6 +9,7 @@ import { join } from 'pathe';
 import type { NestBuilderOptions } from './builder.js';
 import {
   configureWorkflowController,
+  loadWorkflowHandler,
   WorkflowController,
 } from './workflow.controller.js';
 
@@ -86,19 +87,23 @@ export class WorkflowModule implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     const options = WorkflowModule.state.options;
-    if (!options || options.skipBuild) {
-      return;
+    const outDir = WorkflowModule.state.outDir;
+    if (!options || !outDir) return;
+
+    if (!options.skipBuild) {
+      // Lazy-load the toolchain so it never enters the runtime bundle.
+      const [{ NestLocalBuilder }, { createBuildQueue }] = await Promise.all([
+        import('./builder.js'),
+        import('@workflow/builders'),
+      ]);
+      const builder = new NestLocalBuilder({ ...options, outDir });
+      await createBuildQueue()(() => builder.build());
     }
-    // Lazy-load the toolchain so it never enters the runtime bundle.
-    const [{ NestLocalBuilder }, { createBuildQueue }] = await Promise.all([
-      import('./builder.js'),
-      import('@workflow/builders'),
-    ]);
-    const builder = new NestLocalBuilder({
-      ...options,
-      outDir: WorkflowModule.state.outDir ?? undefined,
-    });
-    await createBuildQueue()(() => builder.build());
+
+    if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
+      const { POST } = await loadWorkflowHandler();
+      await POST.initialize();
+    }
   }
 
   async onModuleDestroy() {
