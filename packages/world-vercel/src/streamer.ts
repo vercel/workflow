@@ -211,7 +211,8 @@ export async function writeStreamSessionOverHttp(
   name: string,
   chunks: (string | Uint8Array)[],
   config?: APIConfig,
-  attributes?: Attributes
+  attributes?: Attributes,
+  onRequestDispatched?: () => void
 ): Promise<void> {
   const httpConfig = await getHttpConfig(config);
   httpConfig.headers.set('X-Stream-Multi', 'true');
@@ -231,6 +232,7 @@ export async function writeStreamSessionOverHttp(
       logLabel: url.pathname,
       spanName: 'workflow.stream.write',
       durationAttribute: 'workflow.stream.write.chunk_rtt',
+      onRequestDispatched: offset === 0 ? onRequestDispatched : undefined,
       attributes: {
         ...streamSpanAttributes({
           runId,
@@ -282,13 +284,14 @@ export function createStreamer(config?: APIConfig): Streamer {
                 name,
                 writerId,
                 config,
-                (chunks, attributes) =>
+                (chunks, attributes, onRequestDispatched) =>
                   writeStreamSessionOverHttp(
                     runId,
                     name,
                     chunks,
                     config,
-                    attributes
+                    attributes,
+                    onRequestDispatched
                   ),
                 () => closeStreamSessionOverHttp(runId, name, config)
               );

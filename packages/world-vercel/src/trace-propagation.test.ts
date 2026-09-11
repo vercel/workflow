@@ -345,14 +345,16 @@ describe('ws stream transport upgrade trace propagation', () => {
     await tracer.startActiveSpan('flow-invocation', async (span) => {
       traceId = span.spanContext().traceId;
       spanId = span.spanContext().spanId;
-      createStreamWriteSession(
+      const session = createStreamWriteSession(
         'wrun_1',
         'user',
         'wrtr_01ARZ3NDEKTSV4RRFFQ69G5FAV',
         { token: 'test-token' },
-        async () => {},
+        async (_chunks, _attributes, dispatched) => dispatched?.(),
         async () => {}
       );
+      await session.write(0, ['first']);
+      await session.write(1, ['second']);
       await vi.waitFor(() => expect(wsUpgrades).toHaveLength(1));
       span.end();
     });
