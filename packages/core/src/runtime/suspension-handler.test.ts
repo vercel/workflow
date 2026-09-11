@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import {
   EntityConflictError,
@@ -1032,8 +1033,9 @@ describe('handleSuspension', () => {
 describe('resilient step dispatch', () => {
   const queueName = '__wkf_workflow_test-workflow' as ValidQueueName;
 
-  // Opt-in feature, so every test that expects a publish has to ask for it.
-  // The default-off case is covered by its own test below, which unsets this.
+  // On by default. Pinned to '1' here so an ambient kill switch in the
+  // environment cannot silently disable the feature these tests exercise;
+  // the default (unset) and the kill switch each have their own test below.
   let previousFlag: string | undefined;
   beforeEach(() => {
     previousFlag = process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
@@ -1215,8 +1217,28 @@ describe('resilient step dispatch', () => {
     expect(result.queuedStepCorrelationIds.size).toBe(0);
   });
 
-  it('falls back to create-only when WORKFLOW_RESILIENT_STEP_DISPATCH is unset', async () => {
+  it('is on by default: an unset WORKFLOW_RESILIENT_STEP_DISPATCH publishes with stepInput', async () => {
     delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
+    const { world, queue } = createQueueWorld();
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(fourStepsPending(), globalThis),
+      world,
+      run: cborRun,
+      stepDispatch: stepDispatch(),
+    });
+
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(queue.mock.calls[0][1].stepInput.input).toBeInstanceOf(Uint8Array);
+    expect([...result.queuedStepCorrelationIds]).toEqual(['s4']);
+  });
+
+  it.each([
+    '0',
+    'false',
+    'FALSE',
+  ])('falls back to create-only when WORKFLOW_RESILIENT_STEP_DISPATCH=%s', async (flag) => {
+    process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = flag;
     const { world, queue } = createQueueWorld();
 
     const result = await handleSuspension({
@@ -2240,11 +2262,13 @@ describe('handleSuspension batched fan-out', () => {
       expect(result.createdStepCorrelationIds.size).toBe(33);
     });
 
-    it('returns off the pair chunk; trailing chunks ride deferredBatchWork', async () => {
-      // 35 steps with two pairs: chunk 1 = the pairs alone (4 rows), chunk
-      // 2 = 32 eager, chunk 3 = 1 eager. Releasing only chunk 1 must
-      // resolve the handler with the claims; chunks 2 and 3 settle
-      // deferredBatchWork later.
+    it('with resilient dispatch disabled, returns off the pair chunk; per-chunk publishes ride deferredBatchWork', async () => {
+      // The kill switch restores publish-after-create per chunk. 35 steps
+      // with two pairs: chunk 1 = the pairs alone (4 rows), chunk 2 = 32
+      // eager, chunk 3 = 1 eager. Releasing only chunk 1 must resolve the
+      // handler with the claims and no messages yet; chunks 2 and 3 publish
+      // off their own commits and settle deferredBatchWork later.
+      vi.stubEnv('WORKFLOW_RESILIENT_STEP_DISPATCH', '0');
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const { createBatch, releases } = gatedCreateBatch();
       const { world, queue } = queueWorld(createBatch);
@@ -2294,7 +2318,8 @@ describe('handleSuspension batched fan-out', () => {
       // biome-ignore lint/style/noNonNullAssertion: asserted defined above
       await result.deferredBatchWork!;
       expect(queue).toHaveBeenCalledTimes(33);
-      // Message shape and idempotency key match the caller's dispatch pass.
+      // Message shape and idempotency key match the caller's dispatch pass;
+      // no payload rides a publish-after-create message.
       const [calledQueueName, payload, opts] = queue.mock.calls[0];
       expect(calledQueueName).toBe(queueName);
       expect(payload).toMatchObject({
@@ -2308,12 +2333,17 @@ describe('handleSuspension batched fan-out', () => {
           rootRunId: slotRun.runId,
         },
       });
+      expect(payload.stepInput).toBeUndefined();
       expect(opts.idempotencyKey).toBe(
         stepDispatchIdempotencyKey(payload.stepId, payload.stepName)
       );
     });
 
-    it('stamps run context on batch messages, not persisted event data', async () => {
+    it('with resilient dispatch disabled, stamps run context on batch messages, not persisted event data', async () => {
+      // Publish-after-create goes through queueBatch only when the fold does
+      // not publish first; the default path's runContext stamping is covered
+      // by the publish-first tests below.
+      vi.stubEnv('WORKFLOW_RESILIENT_STEP_DISPATCH', '0');
       const createBatch = successfulCreateBatch();
       const { world, queue } = queueWorld(createBatch);
       const queueBatch = vi
@@ -2363,11 +2393,13 @@ describe('handleSuspension batched fan-out', () => {
       }
     });
 
-    it('2 inline + 1 eager: pair chunk via createBatch, the eager create guarded, its publish after it', async () => {
+    it('with resilient dispatch disabled, 2 inline + 1 eager: pair chunk via createBatch, the eager create guarded, its publish after it', async () => {
       // The plain partition is exactly one entry, so it takes the guarded
       // single write (`events.create` with the slot-snapshot params) rather
-      // than a one-row createBatch, and its queue message still waits for
-      // THAT create: publish-after-create holds for the single too.
+      // than a one-row createBatch, and under the kill switch its queue
+      // message still waits for THAT create: publish-after-create holds for
+      // the single too.
+      vi.stubEnv('WORKFLOW_RESILIENT_STEP_DISPATCH', '0');
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const { createBatch, releases } = gatedCreateBatch();
       let releaseSingle: (() => void) | undefined;
@@ -2448,6 +2480,358 @@ describe('handleSuspension batched fan-out', () => {
         },
       });
       expect([...result.createdStepCorrelationIds]).toEqual(['s3']);
+    });
+
+    it('publish-first: 2 inline + 1 eager: the lone plain entry publishes first, its guarded single create is joined, and it is never sent twice', async () => {
+      // Default (resilient dispatch on). The plain partition is exactly one
+      // entry beside the pair chunk, so its create takes `commitSingle`
+      // (the guarded `events.create`), not a one-row createBatch. Its
+      // message must already be out, carrying stepInput, before either
+      // write commits; the single path must not publish it again once the
+      // create is durable; and deferredBatchWork must not settle until
+      // BOTH the create and the early send have.
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
+      const { createBatch, releases } = gatedCreateBatch();
+      let releaseSingle: (() => void) | undefined;
+      const eventsCreate = vi.fn().mockImplementation(
+        (_runId, event) =>
+          new Promise((resolve) => {
+            releaseSingle = () => resolve({ event });
+          })
+      );
+      let releaseQueue: (() => void) | undefined;
+      const queue = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            releaseQueue = () => resolve({ messageId: 'msg_q' });
+          })
+      );
+      const world = {
+        events: { create: eventsCreate, createBatch },
+        queue,
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      } as unknown as World;
+
+      const pending = handleSuspension({
+        suspension: new WorkflowSuspension(
+          stepsAndWait(['s1', 's2', 's3']),
+          globalThis
+        ),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+        stepDispatch: stepDispatch(),
+        allowDeferredBatchWork: true,
+      });
+      // The send, the pair chunk's POST and s3's guarded single create are
+      // all in flight together, nothing committed yet.
+      await vi.waitFor(() => {
+        expect(queue).toHaveBeenCalledTimes(1);
+        expect(createBatch).toHaveBeenCalledTimes(1);
+        expect(eventsCreate).toHaveBeenCalledTimes(1);
+      });
+      expect(createBatch.mock.calls[0][1]).toHaveLength(4);
+      const [calledQueueName, payload, opts] = queue.mock.calls[0];
+      expect(calledQueueName).toBe(queueName);
+      expect(payload).toMatchObject({
+        stepId: 's3',
+        stepName: 's3',
+        runContext: {
+          deploymentId: slotRun.deploymentId,
+          specVersion: slotRun.specVersion,
+          startedAt: Number(slotRun.startedAt),
+          rootRunId: slotRun.runId,
+        },
+      });
+      expect(payload.stepInput.input).toBeInstanceOf(Uint8Array);
+      expect(opts.idempotencyKey).toBe(stepDispatchIdempotencyKey('s3', 's3'));
+      expect(eventsCreate).toHaveBeenCalledWith(
+        slotRun.runId,
+        expect.objectContaining({
+          eventType: 'step_created',
+          correlationId: 's3',
+        }),
+        expect.anything()
+      );
+
+      // The pair chunk alone releases the handler.
+      releases[0]();
+      const result = await pending;
+      expect(result.inlineClaims.get('s1')?.owned).toBe(true);
+      expect(result.inlineClaims.get('s2')?.owned).toBe(true);
+      expect([...result.queuedStepCorrelationIds]).toEqual(['s3']);
+      expect(await probe(result.deferredBatchWork)).toBe('pending');
+
+      // The single create commits: no second publish for s3 (its
+      // `earlyPublished` flag keeps it out of the per-chunk pass), and the
+      // trailing work still waits on the early send.
+      // biome-ignore lint/style/noNonNullAssertion: set by the single create
+      releaseSingle!();
+      await tick();
+      expect(queue).toHaveBeenCalledTimes(1);
+      expect(await probe(result.deferredBatchWork)).toBe('pending');
+
+      // biome-ignore lint/style/noNonNullAssertion: set by the queue call above
+      releaseQueue!();
+      // biome-ignore lint/style/noNonNullAssertion: asserted defined above
+      await result.deferredBatchWork!;
+      expect(queue).toHaveBeenCalledTimes(1);
+      expect([...result.createdStepCorrelationIds]).toEqual(['s3']);
+    });
+
+    it('publish-first: every foldable step message is out, carrying stepInput, before any chunk commits', async () => {
+      // Default (resilient dispatch on). 35 steps with two pairs chunk as
+      // [the pairs alone (4 rows), 32 eager, 1 eager]: while ALL THREE
+      // createBatch POSTs are still pending, all 33 eager steps' messages
+      // must already have been sent, each with the serialized input, and
+      // the per-chunk pass must not send them again once the chunks commit.
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
+      const { createBatch, releases } = gatedCreateBatch();
+      const { world, queue } = queueWorld(createBatch);
+      const stepIds = Array.from({ length: 35 }, (_, i) => `s${i + 1}`);
+
+      const pending = handleSuspension({
+        suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+        stepDispatch: stepDispatch(),
+        allowDeferredBatchWork: true,
+      });
+      await vi.waitFor(() => {
+        expect(createBatch).toHaveBeenCalledTimes(3);
+        expect(queue).toHaveBeenCalledTimes(33);
+      });
+      expect(createBatch.mock.calls.map((call) => call[1].length)).toEqual([
+        4, 32, 1,
+      ]);
+      // Nothing has committed yet (no release), so publish preceded create.
+      const published = queue.mock.calls.map((call) => call[1].stepId);
+      // The inline pairs never publish.
+      expect(published).not.toContain('s1');
+      expect(published).not.toContain('s2');
+      expect(new Set(published).size).toBe(33);
+      for (const [calledQueueName, payload, opts] of queue.mock.calls) {
+        expect(calledQueueName).toBe(queueName);
+        expect(payload).toMatchObject({
+          runId: slotRun.runId,
+          stepName: payload.stepId,
+          traceCarrier: { traceparent: '00-abc' },
+          // Stamped exactly like every other step-dispatch producer, so the
+          // consumer's prologue reads nothing before its step_started claim.
+          runContext: {
+            deploymentId: slotRun.deploymentId,
+            specVersion: slotRun.specVersion,
+            startedAt: Number(slotRun.startedAt),
+            rootRunId: slotRun.runId,
+          },
+        });
+        expect(payload.stepInput.input).toBeInstanceOf(Uint8Array);
+        expect(opts.idempotencyKey).toBe(
+          stepDispatchIdempotencyKey(payload.stepId, payload.stepName)
+        );
+      }
+      // Run identity rides the message only, never the persisted event.
+      for (const [, events] of createBatch.mock.calls) {
+        for (const { event } of events) {
+          expect(event.eventData).not.toHaveProperty('runContext');
+        }
+      }
+      // The message carries the very bytes the fold's step_created carries.
+      const batchedInput = createBatch.mock.calls
+        .flatMap(([, events]) => events)
+        .find(
+          ({ event }: { event: { correlationId: string } }) =>
+            event.correlationId === 's3'
+        ).event.eventData.input;
+      expect(
+        queue.mock.calls.find((call) => call[1].stepId === 's3')?.[1].stepInput
+          .input
+      ).toBe(batchedInput);
+
+      releases[0]();
+      const result = await pending;
+      expect(result.inlineClaims.get('s1')?.owned).toBe(true);
+      expect(result.inlineClaims.get('s2')?.owned).toBe(true);
+      // Every early publish is reported at return time, so the caller's
+      // dispatch pass skips them all, before the trailing work settles.
+      expect([...result.queuedStepCorrelationIds].sort()).toEqual(
+        stepIds.slice(2).sort()
+      );
+      expect(await probe(result.deferredBatchWork)).toBe('pending');
+      releases[1]();
+      releases[2]();
+      // biome-ignore lint/style/noNonNullAssertion: asserted defined above
+      await result.deferredBatchWork!;
+      // No second send for any step: the per-chunk pass skipped them all.
+      expect(queue).toHaveBeenCalledTimes(33);
+      expect(result.createdStepCorrelationIds.size).toBe(33);
+    });
+
+    it('publish-first: an oversize input falls back to publish-after-commit without stepInput', async () => {
+      // s5's input exceeds MAX_RESILIENT_STEP_INPUT_BYTES (random bytes, so
+      // compression cannot shrink it under the cap). The two pairs take
+      // chunk 1 alone, so s5 lands in chunk 2 (s3..s34): its message must
+      // wait for chunk 2's commit and carry no payload, while its 32
+      // siblings publish first.
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
+      const { createBatch, releases } = gatedCreateBatch();
+      const { world, queue } = queueWorld(createBatch);
+      const stepIds = Array.from({ length: 35 }, (_, i) => `s${i + 1}`);
+      const pending = stepsAndWait(stepIds) as Map<string, { args: unknown[] }>;
+      // biome-ignore lint/style/noNonNullAssertion: seeded above
+      pending.get('s5')!.args = [randomBytes(200 * 1024)];
+
+      const inFlight = handleSuspension({
+        suspension: new WorkflowSuspension(
+          pending as ConstructorParameters<typeof WorkflowSuspension>[0],
+          globalThis
+        ),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+        stepDispatch: stepDispatch(),
+        allowDeferredBatchWork: true,
+      });
+      await vi.waitFor(() => {
+        expect(createBatch).toHaveBeenCalledTimes(3);
+        expect(queue).toHaveBeenCalledTimes(32);
+      });
+      expect(queue.mock.calls.map((call) => call[1].stepId)).not.toContain(
+        's5'
+      );
+      // Still claimed for the fold's in-flush publish, so the caller skips it.
+      releases[0]();
+      const result = await inFlight;
+      expect(result.queuedStepCorrelationIds.has('s5')).toBe(true);
+      // The pair chunk's commit publishes nothing: s5 waits for ITS chunk.
+      await tick();
+      expect(queue).toHaveBeenCalledTimes(32);
+      releases[1]();
+      await vi.waitFor(() => {
+        expect(queue).toHaveBeenCalledTimes(33);
+      });
+      const s5 = queue.mock.calls.find((call) => call[1].stepId === 's5');
+      expect(s5?.[1].stepInput).toBeUndefined();
+      expect(s5?.[2].idempotencyKey).toBe(
+        stepDispatchIdempotencyKey('s5', 's5')
+      );
+      releases[2]();
+      // biome-ignore lint/style/noNonNullAssertion: opted in above
+      await result.deferredBatchWork!;
+      expect(queue).toHaveBeenCalledTimes(33);
+    });
+
+    it('publish-first: a failed early publish fails the pass through deferredBatchWork', async () => {
+      const { createBatch, releases } = gatedCreateBatch();
+      const queue = vi.fn().mockImplementation(async (_queueName, payload) => {
+        if (payload.stepId === 's7') throw new Error('queue down');
+        return { messageId: 'msg_q' };
+      });
+      const { world } = queueWorld(createBatch, queue);
+      // 35 steps, two pairs: three chunks, the send failure in chunk 2.
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
+      const stepIds = Array.from({ length: 35 }, (_, i) => `s${i + 1}`);
+
+      const pending = handleSuspension({
+        suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+        stepDispatch: stepDispatch(),
+        allowDeferredBatchWork: true,
+      });
+      await vi.waitFor(() => {
+        expect(createBatch).toHaveBeenCalledTimes(3);
+      });
+      for (const release of releases) release();
+      // The pair chunk committed, so the handler returns with its claims;
+      // the send failure is the caller's to observe before it acks.
+      const result = await pending;
+      expect(result.inlineClaims.get('s1')?.owned).toBe(true);
+      await expect(result.deferredBatchWork).rejects.toThrow('queue down');
+    });
+
+    it('publish-first: a failed early publish rejects the handler without the opt-in', async () => {
+      const { createBatch, releases } = gatedCreateBatch();
+      const queue = vi.fn().mockImplementation(async (_queueName, payload) => {
+        if (payload.stepId === 's7') throw new Error('queue down');
+        return { messageId: 'msg_q' };
+      });
+      const { world } = queueWorld(createBatch, queue);
+      // 35 steps, two pairs: three chunks, the send failure in chunk 2.
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
+      const stepIds = Array.from({ length: 35 }, (_, i) => `s${i + 1}`);
+
+      const pending = handleSuspension({
+        suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+        stepDispatch: stepDispatch(),
+      });
+      await vi.waitFor(() => {
+        expect(createBatch).toHaveBeenCalledTimes(3);
+      });
+      for (const release of releases) release();
+      await expect(pending).rejects.toThrow('queue down');
+    });
+
+    it('publish-first: a lone eager step publishes ahead of its single-path create, and the send is joined', async () => {
+      // No ownerMessageId, so no pair: s1 defers lazily and s2 is the fold's
+      // only entry, which takes the single write path. Its message still
+      // goes out with stepInput, and the handler must not resolve until
+      // that send has settled (there is no trailing work for it to ride).
+      let releaseQueue: (() => void) | undefined;
+      const queue = vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            releaseQueue = () => resolve({ messageId: 'msg_q' });
+          })
+      );
+      const eventsCreate = vi
+        .fn()
+        .mockImplementation(async (_runId, event) => ({ event }));
+      const world = {
+        events: { create: eventsCreate, createBatch: successfulCreateBatch() },
+        queue,
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      } as unknown as World;
+
+      const pending = handleSuspension({
+        suspension: new WorkflowSuspension(
+          stepsAndWait(['s1', 's2']),
+          globalThis
+        ),
+        world,
+        run: slotRun,
+        stepDispatch: stepDispatch(),
+        allowDeferredBatchWork: true,
+      });
+      await vi.waitFor(() => {
+        expect(queue).toHaveBeenCalledTimes(1);
+      });
+      expect(queue.mock.calls[0][1]).toMatchObject({ stepId: 's2' });
+      expect(queue.mock.calls[0][1].stepInput.input).toBeInstanceOf(Uint8Array);
+      await vi.waitFor(() => {
+        expect(eventsCreate).toHaveBeenCalledWith(
+          slotRun.runId,
+          expect.objectContaining({
+            eventType: 'step_created',
+            correlationId: 's2',
+          }),
+          expect.anything()
+        );
+      });
+      expect(await probe(pending)).toBe('pending');
+      // biome-ignore lint/style/noNonNullAssertion: set by the queue call above
+      releaseQueue!();
+      const result = await pending;
+      expect([...result.queuedStepCorrelationIds]).toEqual(['s2']);
+      expect([...result.createdStepCorrelationIds]).toEqual(['s2']);
+      expect(result.lazyInlineSteps.map((step) => step.correlationId)).toEqual([
+        's1',
+      ]);
     });
 
     it('surfaces a trailing-chunk failure through deferredBatchWork, not the return', async () => {

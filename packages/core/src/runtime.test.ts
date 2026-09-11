@@ -2000,7 +2000,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
   });
 });
 
-describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', () => {
+describe('workflowEntrypoint resilient step consumption (stepInput lazy-start recovery)', () => {
   afterEach(() => {
     setWorld(undefined);
     vi.clearAllMocks();
@@ -2025,22 +2025,31 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
    * Drives the handler with a background-step message carrying `stepInput`.
    * The event log is seeded with a pending unrelated step so the handler
    * returns after the step executes (no full workflow replay to converge).
+   *
+   * The events mock models every World's lazy-start contract: a
+   * `step_started` carrying `input` creates the step when it does not exist
+   * and is a 409 (`EntityConflictError`) when it does; a bare `step_started`
+   * rejects with `stepMissingError` while the step does not exist.
    */
   async function driveStepMessage(opts: {
     runId: string;
     attempt: number;
-    /** Reject the step_created re-ensure with this error. */
-    ensureError?: Error;
     omitStepInput?: boolean;
     /**
-     * Simulate the delivery beating the producer's parallel step_created:
-     * bare step_started rejects with this error until a step_created for the
-     * step has been written (the in-band re-ensure path).
+     * Simulate the delivery beating the producer's step_created: the bare
+     * step_started rejects with this error until the step has been created
+     * (by the lazy recovery start, or see `lazyStartConflict`).
      */
     stepMissingError?: Error;
     /** Stamp the message with the producer-carried run identity so the
      *  consumer skips the blocking runs.get (vercel/workflow#3456). */
     includeRunContext?: boolean;
+    /**
+     * Simulate the producer's step_created landing between the failed bare
+     * start and the lazy recovery start: the lazy step_started loses its
+     * atomic create-claim (409) and the step exists from then on.
+     */
+    lazyStartConflict?: boolean;
   }) {
     const stepId = 'step_resilient_1';
     const dehydratedInput = (await dehydrateStepArguments(
@@ -2096,12 +2105,20 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
         createdEvents.push(data);
         createdEventParams.push(params);
         if (data.eventType === 'step_created') {
-          if (opts.ensureError) throw opts.ensureError;
           stepEntityExists = true;
           return { event: recordEvent(data) };
         }
         if (data.eventType === 'step_started') {
-          if (opts.stepMissingError && !stepEntityExists) {
+          if (data.eventData?.input !== undefined) {
+            // Lazy start: exactly-one-owner create-claim.
+            if (stepEntityExists) {
+              throw new EntityConflictError(`step ${stepId} already exists`);
+            }
+            stepEntityExists = true;
+            if (opts.lazyStartConflict) {
+              throw new EntityConflictError('lost the create-claim');
+            }
+          } else if (opts.stepMissingError && !stepEntityExists) {
             throw opts.stepMissingError;
           }
           return {
@@ -2191,116 +2208,17 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
     };
   }
 
-  it('materializes step_created from stepInput on a redelivery before executing', async () => {
+  // The load-bearing recovery: a delivery that beats (or outlives a transient
+  // failure of) the producer's step_created must materialize the step and
+  // execute it within the same delivery, with ONE lazy step_started carrying
+  // the message's input, never a step_created write plus a second bare start.
+  // It cannot wait for a redelivery: world-vercel's failure retries re-enqueue
+  // fresh messages whose attempt resets to 1, so an attempt-gated recovery
+  // would stall the step until the original message's ~300s
+  // visibility-timeout redelivery (measured exactly so in the durabench
+  // parallel sweeps).
+  it('materializes the step with one lazy step_started when the bare start finds no step (world-vercel shape)', async () => {
     const { response, createdEvents, createdEventParams, dehydratedInput } =
-      await driveStepMessage({
-        runId: 'wrun_resilient_step_materialize',
-        attempt: 2,
-      });
-
-    expect(response.status).toBe(204);
-    // The re-ensure wrote the step_created with the message's payload…
-    expect(createdEvents).toContainEqual(
-      expect.objectContaining({
-        eventType: 'step_created',
-        correlationId: 'step_resilient_1',
-        eventData: expect.objectContaining({
-          stepName: 'resilientAdd',
-          input: dehydratedInput,
-        }),
-      })
-    );
-    // …marked as a dispatch re-ensure so a guard-enforcing backend can refuse
-    // it when the producer's write was 412-rejected (dispatch revoked).
-    const ensureParamIdx = createdEvents.findIndex(
-      (e) => e.eventType === 'step_created'
-    );
-    expect(createdEventParams[ensureParamIdx]).toMatchObject({
-      viaStepDispatch: true,
-    });
-    // …and it preceded the step's start.
-    const createdIdx = createdEvents.findIndex(
-      (e) => e.eventType === 'step_created'
-    );
-    const startedIdx = createdEvents.findIndex(
-      (e) => e.eventType === 'step_started'
-    );
-    expect(createdIdx).toBeGreaterThanOrEqual(0);
-    expect(createdIdx).toBeLessThan(startedIdx);
-    // The queued step start carries the queue invocation's request provenance.
-    const startIdx = createdEvents.findIndex(
-      (e) => e.eventType === 'step_started'
-    );
-    expect(createdEventParams[startIdx]).toMatchObject({
-      requestId: 'req_test',
-    });
-    // The step body ran and its terminal event was written.
-    expect(stepBodySpy).toHaveBeenCalledWith(2, 3);
-    expect(createdEvents).toContainEqual(
-      expect.objectContaining({
-        eventType: 'step_completed',
-        correlationId: 'step_resilient_1',
-      })
-    );
-  });
-
-  it('skips the re-ensure on a first delivery (no per-step write overhead)', async () => {
-    const { response, createdEvents } = await driveStepMessage({
-      runId: 'wrun_resilient_step_first_delivery',
-      attempt: 1,
-    });
-
-    expect(response.status).toBe(204);
-    expect(
-      createdEvents.filter((e) => e.eventType === 'step_created')
-    ).toHaveLength(0);
-    expect(createdEvents).toContainEqual(
-      expect.objectContaining({
-        eventType: 'step_completed',
-        correlationId: 'step_resilient_1',
-      })
-    );
-  });
-
-  it('treats an EntityConflict re-ensure as the common already-created case', async () => {
-    const { response, createdEvents } = await driveStepMessage({
-      runId: 'wrun_resilient_step_conflict',
-      attempt: 2,
-      ensureError: new EntityConflictError('already exists'),
-    });
-
-    expect(response.status).toBe(204);
-    // The conflict is swallowed and the step still executes to completion.
-    expect(createdEvents).toContainEqual(
-      expect.objectContaining({
-        eventType: 'step_completed',
-        correlationId: 'step_resilient_1',
-      })
-    );
-  });
-
-  it('does not re-ensure when the message carries no stepInput (legacy dispatch)', async () => {
-    const { response, createdEvents } = await driveStepMessage({
-      runId: 'wrun_resilient_step_legacy',
-      attempt: 2,
-      omitStepInput: true,
-    });
-
-    expect(response.status).toBe(204);
-    expect(
-      createdEvents.filter((e) => e.eventType === 'step_created')
-    ).toHaveLength(0);
-  });
-
-  // The load-bearing recovery: a FIRST delivery that beats (or outlives a
-  // transient failure of) the producer's parallel step_created must
-  // materialize the step and execute it within the same delivery. It cannot
-  // wait for a redelivery — world-vercel's failure retries re-enqueue fresh
-  // messages whose attempt resets to 1, so an attempt-gated recovery would
-  // stall the step until the original message's ~300s visibility-timeout
-  // redelivery (measured exactly so in the durabench parallel sweeps).
-  it('recovers in-band on attempt 1 when the bare start rejects with step-not-found (world-vercel shape)', async () => {
-    const { response, createdEvents, createdEventParams } =
       await driveStepMessage({
         runId: 'wrun_resilient_step_inband_vercel',
         attempt: 1,
@@ -2311,21 +2229,32 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
       });
 
     expect(response.status).toBe(204);
-    // Order: failed bare start → re-ensured step_created (viaStepDispatch) →
-    // successful start → completion, all in this delivery.
-    const types = createdEvents.map((e) => e.eventType);
-    expect(types).toEqual([
+    // Order: failed bare start → lazy start carrying the payload →
+    // completion, all in this delivery. No step_created is ever written by
+    // the consumer.
+    expect(createdEvents.map((e) => e.eventType)).toEqual([
       'step_started',
-      'step_created',
       'step_started',
       'step_completed',
     ]);
-    const ensureIdx = types.indexOf('step_created');
-    expect(createdEventParams[ensureIdx]).toMatchObject({
-      viaStepDispatch: true,
+    const [bareStart, lazyStart] = createdEvents;
+    expect(bareStart.eventData.input).toBeUndefined();
+    expect(lazyStart).toMatchObject({
+      correlationId: 'step_resilient_1',
+      eventData: {
+        stepName: 'resilientAdd',
+        workflowName: 'workflow',
+        input: dehydratedInput,
+      },
     });
-    // Both the failed bare start and the recovery start retain the current
-    // invocation's provenance.
+    // Queue-owned like every bare start on this path: no ownership stamp.
+    expect(lazyStart.eventData.ownerMessageId).toBeUndefined();
+    // `viaStepDispatch` is a step_created-only marker; the server rejects
+    // it on any other event type, so no start may carry it.
+    for (const params of createdEventParams) {
+      expect(params?.viaStepDispatch).toBeUndefined();
+    }
+    // Both starts retain the current invocation's provenance.
     for (const [index, event] of createdEvents.entries()) {
       if (event.eventType === 'step_started') {
         expect(createdEventParams[index]).toMatchObject({
@@ -2333,9 +2262,18 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
         });
       }
     }
+    // The step body ran exactly once and its terminal event was written.
+    expect(stepBodySpy).toHaveBeenCalledTimes(1);
+    expect(stepBodySpy).toHaveBeenCalledWith(2, 3);
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({
+        eventType: 'step_completed',
+        correlationId: 'step_resilient_1',
+      })
+    );
   });
 
-  it('recovers in-band on attempt 1 with the local-world error shape (no status)', async () => {
+  it('recovers with the local-world error shape (no status)', async () => {
     const { response, createdEvents } = await driveStepMessage({
       runId: 'wrun_resilient_step_inband_local',
       attempt: 1,
@@ -2347,7 +2285,89 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
     expect(response.status).toBe(204);
     expect(createdEvents.map((e) => e.eventType)).toEqual([
       'step_started',
-      'step_created',
+      'step_started',
+      'step_completed',
+    ]);
+    expect(createdEvents[1].eventData.input).toBeDefined();
+  });
+
+  it('falls back to one more bare start when the lazy start loses to the producer\u2019s create (409)', async () => {
+    const { response, createdEvents } = await driveStepMessage({
+      runId: 'wrun_resilient_step_lazy_lost',
+      attempt: 1,
+      stepMissingError: new WorkflowWorldError(
+        'workflow step step_resilient_1 not found',
+        { status: 404 }
+      ),
+      lazyStartConflict: true,
+    });
+
+    expect(response.status).toBe(204);
+    // bare (404) → lazy (409, the producer's create landed in between) →
+    // bare again, which now finds the step → completion.
+    expect(createdEvents.map((e) => e.eventType)).toEqual([
+      'step_started',
+      'step_started',
+      'step_started',
+      'step_completed',
+    ]);
+    expect(createdEvents[1].eventData.input).toBeDefined();
+    expect(createdEvents[2].eventData.input).toBeUndefined();
+    // The lost lazy claim never ran the body; the bare start did, once.
+    expect(stepBodySpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers a redelivery (attempt > 1) in-band too, with no eager step_created write', async () => {
+    // There is no eager pre-ensure on redelivery any more: the in-band lazy
+    // start covers a redelivered dispatch whose step is missing at the same
+    // round-trip count, and one whose step exists pays nothing extra.
+    const { response, createdEvents } = await driveStepMessage({
+      runId: 'wrun_resilient_step_redelivery_missing',
+      attempt: 2,
+      stepMissingError: new WorkflowWorldError(
+        'workflow step step_resilient_1 not found',
+        { status: 404 }
+      ),
+    });
+
+    expect(response.status).toBe(204);
+    expect(createdEvents.map((e) => e.eventType)).toEqual([
+      'step_started',
+      'step_started',
+      'step_completed',
+    ]);
+    expect(
+      createdEvents.filter((e) => e.eventType === 'step_created')
+    ).toHaveLength(0);
+  });
+
+  it.each([
+    1, 2,
+  ])('writes nothing extra on attempt %i when the step already exists', async (attempt) => {
+    const { response, createdEvents } = await driveStepMessage({
+      runId: `wrun_resilient_step_exists_${attempt}`,
+      attempt,
+    });
+
+    expect(response.status).toBe(204);
+    expect(createdEvents.map((e) => e.eventType)).toEqual([
+      'step_started',
+      'step_completed',
+    ]);
+    // A materialized step keeps the bare start: the lazy start is only
+    // ever the recovery for a step-missing bare start.
+    expect(createdEvents[0].eventData.input).toBeUndefined();
+  });
+
+  it('does not recover when the message carries no stepInput (legacy dispatch)', async () => {
+    const { response, createdEvents } = await driveStepMessage({
+      runId: 'wrun_resilient_step_legacy',
+      attempt: 2,
+      omitStepInput: true,
+    });
+
+    expect(response.status).toBe(204);
+    expect(createdEvents.map((e) => e.eventType)).toEqual([
       'step_started',
       'step_completed',
     ]);
@@ -2410,9 +2430,10 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
 
     expect(response.status).toBe(204);
     expect(runsGet).not.toHaveBeenCalled();
+    // Zero reads before the step, and the recovery is the one lazy start:
+    // bare start (step missing), lazy start (atomic create + claim), body.
     expect(createdEvents.map((e) => e.eventType)).toEqual([
       'step_started',
-      'step_created',
       'step_started',
       'step_completed',
     ]);
