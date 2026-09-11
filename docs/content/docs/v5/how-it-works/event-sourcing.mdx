@@ -203,6 +203,12 @@ Events are categorized by the entity type they affect. Each event contains metad
 |-------|-------------|
 | `noop` | Seals an abandoned log position (`specVersion` 7 and above). Only the backend writes this event; the create endpoints reject it. See [Sealed positions](#sealed-positions-noop-events). |
 
+### How fast a log grows
+
+Counting the events above is how you size a run. A step that succeeds on the first attempt contributes three events; a retry adds a `step_retrying` and another `step_started`; a sleep contributes two, and a hook at least two.
+
+A run's log is capped — the [Vercel World](/worlds/vercel#per-run-event-limit) fails anything past its ceiling with `MAX_EVENTS_EXCEEDED`. If you expect a run to accumulate tens of thousands of events, split the work into [child workflows](/cookbook/advanced/child-workflows).
+
 ## Terminal states
 
 Terminal states represent the end of an entity's lifecycle. Once an entity reaches a terminal state, no further events can transition it to another state.

@@ -219,6 +219,37 @@ export async function parentWorkflow() {
 
 `start()` returns immediately and doesn't wait for the workflow to complete. Use `run.returnValue` to await completion.
 
+## Run size & concurrency: know when to split
+
+Two independent things to size. Deep runs are fine — a long sequential chain of steps is not itself a problem.
+
+**Events per run.** A run's event log is capped, and the run fails with `MAX_EVENTS_EXCEEDED` past the ceiling. Do NOT treat any number you remember as authoritative — check https://vercel.com/docs/workflows/pricing#workflow-run-limits. Events are not steps: a step that succeeds on the first try records three (`step_created`, `step_started`, `step_completed`), retries add more, and hooks, sleeps, and webhooks each record their own. When you expect a run to accumulate **tens of thousands of events**, split the work into child workflows. Raising the limit is not an option — `WORKFLOW_MAX_EVENTS_OVERRIDE` only clamps *down*, and on the Vercel World the ceiling is service-owned.
+
+**Concurrency.** When a fan-out would put more than **~1000 steps** in flight at once, batch or bundle the work: process the list in chunks, or handle several items per step, so fewer and larger units run concurrently. Note that spawning one child run per item is the *same* fan-out width — it bounds each log, it does not reduce concurrency.
+
+```typescript
+// ❌ One step per item, all in flight at once
+export async function processAll(items: string[]) {
+  "use workflow";
+  await Promise.all(items.map((item) => processItem(item)));
+}
+
+// ✅ Chunked, so only BATCH steps are in flight at a time
+const BATCH = 100;
+export async function processBatched(items: string[]) {
+  "use workflow";
+  for (let i = 0; i < items.length; i += BATCH) {
+    await Promise.allSettled(items.slice(i, i + BATCH).map((item) => processItem(item)));
+  }
+}
+
+// ✅ Bundled, so one step covers many items and the log stays short
+async function processChunk(chunk: string[]) {
+  "use step";
+  return Promise.all(chunk.map((item) => handle(item)));
+}
+```
+
 ## Hooks: pause & resume with external events
 
 Hooks let workflows wait for external data. Use `createHook()` inside a workflow and `resumeHook()` from API routes. Deterministic tokens are for `createHook()` + `resumeHook()` (server-side) only. `createWebhook()` always generates random tokens, so do not pass a `token` option to `createWebhook()`.

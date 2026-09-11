@@ -73,7 +73,7 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Default: `25000`
 - Positive-integer event limit reported by the Local World and enforced by the runtime as `MAX_EVENTS_EXCEEDED`.
 - The Local and Postgres Worlds also use it as the maximum number of events returned when `events.list()` is called without a limit. If more events exist, the response includes `hasMore: true` and a continuation cursor.
-- The Vercel World receives its event limit from the service; this environment variable does not override that service-owned value.
+- The Vercel World receives its event limit from the service; this environment variable does not override that service-owned value. See [Vercel World limits](/worlds/vercel#per-run-event-limit).
 - Invalid or non-positive values fall back to the default.
 
 ### `WORKFLOW_REPLAY_DIVERGENCE_MAX_RETRIES`
@@ -378,4 +378,4 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - Default: unset
 - Lowers the per-run event ceiling supplied by the World. A run whose event log reaches the ceiling fails with `MAX_EVENTS_EXCEEDED`, which stops a runaway loop from growing its log without bound.
 - Clamp-down only: it never raises the World's limit, and it applies even when the World supplies none. With no World limit and no override, nothing is enforced.
-- The Local and Vercel Worlds both supply a limit; the Local World defaults to 25,000 and is configurable with [`WORKFLOW_MAX_EVENTS`](/docs/configuration/worlds#workflow_max_events).
+- The Local and Vercel Worlds both supply a limit; the Local World defaults to 25,000 and is configurable with [`WORKFLOW_MAX_EVENTS`](/docs/configuration/worlds#workflow_max_events). The Vercel World's ceiling is documented under [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits).

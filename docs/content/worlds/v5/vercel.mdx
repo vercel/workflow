@@ -42,6 +42,12 @@ For complete details on pricing, usage limits, and included allotments on Vercel
 
 For self-hosted deployments, use the [Postgres World](/worlds/postgres). For local development, use the [Local World](/worlds/local).
 
+## Per-run event limit
+
+The Vercel World caps a single run's [event log](/docs/how-it-works/event-sourcing); see [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits) for the current ceiling. A run that reaches it fails with `MAX_EVENTS_EXCEEDED` and cannot be continued.
+
+Treat the cap as a backstop, not a budget. If you expect a run to accumulate tens of thousands of events, split the work into [child workflows](/cookbook/advanced/child-workflows) so each run's log stays small.
+
 ## Multi-region
 
 The Vercel World runs in every [Vercel Function region](https://vercel.com/docs/regions). Each workflow run is pinned to a single region at creation time. Its stored state, queue dispatch, and streams are all served from that region without cross-region round trips on the hot path. When your application is deployed in the run's region, as described below, step execution is also region-local.
