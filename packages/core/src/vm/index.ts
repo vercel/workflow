@@ -23,7 +23,7 @@ const DIGEST_ALGORITHMS: Record<string, string> = {
 // WebCrypto BufferSource conversion. The `util.types` brand checks work
 // across vm realms, and node:crypto's `hash.update()` reads view ranges from
 // internal slots (own properties shadowing `byteOffset`/`byteLength` are
-// ignored) — matching WebCrypto, which also reads internal slots.
+// ignored), matching WebCrypto, which also reads internal slots.
 function toDigestInput(
   data: ArrayBuffer | ArrayBufferView
 ): NodeJS.ArrayBufferView {
@@ -108,7 +108,7 @@ export function createContext(options: CreateContextOptions) {
   // - Dynamic `import()` settles within a microtask (rejected: no
   //   `importModuleDynamically`), so it needs no handling.
   // - All `crypto.subtle` methods except the deterministic `digest` override
-  //   below throw explicitly (see the subtle proxy) — binding them to the
+  //   below throw explicitly (see the subtle proxy); binding them to the
   //   host subtle would hand workflows a host-timing promise.
   const intrinsics = g as unknown as Record<string, Record<string, unknown>>;
   delete intrinsics.Atomics.waitAsync;
@@ -121,7 +121,7 @@ export function createContext(options: CreateContextOptions) {
 
   // `crypto.subtle.digest` computes synchronously via node:crypto, so its
   // promise settles on a deterministic microtask instead of host threadpool
-  // timing — a digest can never advance a suspended workflow, and
+  // timing: a digest can never advance a suspended workflow, and
   // digest-using VMs stay retainable. Values are byte-identical to WebCrypto.
   const digest = async (
     algorithm: string | { name: string },

@@ -153,8 +153,10 @@ describe('computeSpanMarkers', () => {
       attrSetMs: [10_000, 70_000],
     });
 
-    expect(computeSpanMarkers(span).map((m) => m.timeMs)).toEqual([
-      10_000, 50_000, 70_000,
+    expect(computeSpanMarkers(span)).toEqual([
+      { timeMs: 10_000, kind: 'attr_set' },
+      { timeMs: 50_000, kind: 'hook_received' },
+      { timeMs: 70_000, kind: 'attr_set' },
     ]);
   });
 
@@ -165,7 +167,7 @@ describe('computeSpanMarkers', () => {
 });
 
 describe('computeOffscreenMarkers', () => {
-  const mk = (timeMs: number) => ({ timeMs });
+  const mk = (timeMs: number) => ({ timeMs, kind: 'hook_received' as const });
 
   it('partitions markers by side with the nearest one per side', () => {
     const markers = [mk(5), mk(8), mk(50), mk(92), mk(99)];

@@ -54,7 +54,7 @@ describe('WorkflowSuspension', () => {
     expect(error).toBeInstanceOf(WorkflowSuspension);
     expect(error).toBeInstanceOf(Error);
     expect(error.name).toBe('WorkflowSuspension');
-    expect(error.steps).toEqual(steps);
+    expect(error.items).toEqual(steps);
   });
 
   it('should generate correct error message for single step', () => {
@@ -95,7 +95,7 @@ describe('WorkflowSuspension', () => {
     const steps: StepInvocationQueueItem[] = [];
     const error = new WorkflowSuspension(toQueueMap(steps), globalThis);
 
-    expect(error.steps).toEqual([]);
+    expect(error.items).toEqual([]);
     expect(error.message).toBe('0 steps have not been run yet');
   });
 
@@ -123,18 +123,18 @@ describe('WorkflowSuspension', () => {
     ];
     const error = new WorkflowSuspension(toQueueMap(complexSteps), globalThis);
 
-    expect(error.steps).toEqual(complexSteps);
+    expect(error.items).toEqual(complexSteps);
     expect(error.message).toBe('2 steps have not been run yet');
-    expect((error.steps[0] as StepInvocationQueueItem).stepName).toBe(
+    expect((error.items[0] as StepInvocationQueueItem).stepName).toBe(
       'complex-step'
     );
-    expect((error.steps[0] as StepInvocationQueueItem).correlationId).toBe(
+    expect((error.items[0] as StepInvocationQueueItem).correlationId).toBe(
       'complex-inv'
     );
-    expect((error.steps[1] as StepInvocationQueueItem).stepName).toBe(
+    expect((error.items[1] as StepInvocationQueueItem).stepName).toBe(
       'another-step'
     );
-    expect((error.steps[1] as StepInvocationQueueItem).correlationId).toBe(
+    expect((error.items[1] as StepInvocationQueueItem).correlationId).toBe(
       'another-inv'
     );
   });
@@ -187,25 +187,25 @@ describe('WorkflowSuspension', () => {
     ];
     const error = new WorkflowSuspension(toQueueMap(steps), globalThis);
 
-    expect(error.steps).toHaveLength(2);
-    expect((error.steps[0] as StepInvocationQueueItem).stepName).toBe(
+    expect(error.items).toHaveLength(2);
+    expect((error.items[0] as StepInvocationQueueItem).stepName).toBe(
       'database-query'
     );
-    expect((error.steps[0] as StepInvocationQueueItem).args).toEqual([
+    expect((error.items[0] as StepInvocationQueueItem).args).toEqual([
       'SELECT * FROM users',
       { limit: 10 },
     ]);
-    expect((error.steps[0] as StepInvocationQueueItem).correlationId).toBe(
+    expect((error.items[0] as StepInvocationQueueItem).correlationId).toBe(
       'db-query-123'
     );
-    expect((error.steps[1] as StepInvocationQueueItem).stepName).toBe(
+    expect((error.items[1] as StepInvocationQueueItem).stepName).toBe(
       'send-email'
     );
-    expect((error.steps[1] as StepInvocationQueueItem).args).toEqual([
+    expect((error.items[1] as StepInvocationQueueItem).args).toEqual([
       'user@example.com',
       'Welcome!',
     ]);
-    expect((error.steps[1] as StepInvocationQueueItem).correlationId).toBe(
+    expect((error.items[1] as StepInvocationQueueItem).correlationId).toBe(
       'email-456'
     );
   });

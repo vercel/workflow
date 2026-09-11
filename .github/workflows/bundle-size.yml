@@ -1,0 +1,261 @@
+name: Bundle Size
+
+# Tracks the size of the /.well-known/workflow/v1/flow route for two workbench
+# apps and compares it against main. The flow route carries the whole workflow
+# runtime, so it is the cold-start payload for every invocation; without this
+# job a lost tree-shake or a new transitive dependency only shows up as TTFS
+# drift in the benchmark workflow weeks later.
+#
+# Two numbers per app (see .github/scripts/measure-flow-bundle.mjs for why
+# neither app emits an isolable function bundle):
+#   - Tier 1, GATED: what the workflow builders emit for the flow route.
+#   - Tier 2, informational: the framework's own build output.
+#
+# PR runs download the most recent main baseline and fail when a gated bundle
+# grew more than the threshold below. Pushes to main exist to produce those
+# baseline artifacts. Deliberately in its own workflow file rather than a job
+# in tests.yml: "E2E Required Check" asserts on each of its dependencies
+# explicitly, so a job here cannot accidentally gate the E2E aggregate.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main] # produces the baseline artifacts PR runs compare against
+  workflow_dispatch: # seeds a baseline on main without waiting for a push
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+  actions: read # gh run list / gh run download for the baseline
+  pull-requests: write
+  issues: write
+
+env:
+  # Growth beyond max(THRESHOLD_PCT, THRESHOLD_BYTES) on a gated bundle fails
+  # the job. The absolute floor stops small bundles (step registrations are
+  # ~1.7 KiB on Next.js) from tripping on percentage noise.
+  THRESHOLD_PCT: '2'
+  THRESHOLD_BYTES: '51200'
+  OVERRIDE_LABEL: allow-bundle-size-growth
+
+jobs:
+  ci-scope:
+    name: Detect CI Scope
+    runs-on: ubuntu-latest
+    outputs:
+      fast-path: ${{ steps.scope.outputs.runtime-fast-path }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Classify changed files
+        id: scope
+        uses: ./.github/actions/detect-ci-scope
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  measure:
+    name: Measure (${{ matrix.target.app }})
+    runs-on: ubuntu-latest
+    needs: ci-scope
+    if: >-
+      !startsWith(github.head_ref, 'changeset-release/') &&
+      needs.ci-scope.outputs.fast-path != 'true'
+    timeout-minutes: 25
+
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - app: nextjs-turbopack
+            package: nextjs-turbopack
+          - app: hono
+            package: '@workflow/example-hono'
+
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      # Everything below is recorded into the report's fingerprint. The
+      # renderer refuses to diff two reports whose fingerprints disagree, so
+      # changing any of these invalidates comparisons against older baselines
+      # rather than silently corrupting them. Keep them identical on the PR and
+      # push-to-main paths.
+      #
+      # Pinned and fingerprinted despite having no measured effect: local and
+      # vercel builds of nextjs-turbopack come out byte-identical, because
+      # every world the app depends on is bundled either way and the choice is
+      # made at runtime. packages/next does branch on it, so recording it means
+      # a future change that makes it matter shows up as a refused diff rather
+      # than as a phantom code change.
+      WORKFLOW_TARGET_WORLD: vercel
+      # The pin that actually moves the numbers: sourcemap mode defaults to
+      # inline outside a production build, which took nextjs-turbopack's flow
+      # bundle from 1.38 MB to 5.85 MB when measured unpinned.
+      WORKFLOW_SOURCEMAP: 'false'
+      # Set in both apps' vercel.json, so production builds have it.
+      WORKFLOW_PUBLIC_MANIFEST: '1'
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment and build packages
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'true'
+
+      # hono's workflows, plugins, turbo.json, tsconfig.json and index.html are
+      # all symlinks into ../nitro-v3. Effectively a no-op for turbopack, whose
+      # only symlink is LICENSE.md.
+      - name: Resolve workbench symlinks
+        env:
+          CI: 'true'
+        run: ./scripts/resolve-symlinks.sh "workbench/${{ matrix.target.app }}"
+
+      # Deliberately the package script rather than `turbo run build`. hono's
+      # turbo.json declares outputs `.output/**` and `.nitro/**`, but under
+      # nitro v3 the gated flow bundle lands in node_modules/.nitro/, which is
+      # not an output: a turbo cache hit would restore `.output` and leave the
+      # measured file absent. The packages still come from the turbo cache in
+      # the setup step above. Matches how packages/core/e2e/local-build.test.ts
+      # builds workbench apps.
+      - name: Build ${{ matrix.target.app }}
+        run: pnpm --filter '${{ matrix.target.package }}' run build
+
+      - name: Measure flow bundle
+        run: |
+          node .github/scripts/measure-flow-bundle.mjs \
+            --app '${{ matrix.target.app }}' \
+            --commit '${{ github.event.pull_request.head.sha || github.sha }}' \
+            --out 'size-results-${{ matrix.target.app }}.json'
+
+      # Default retention (90 days) on purpose: this artifact is the baseline
+      # every later PR compares against, so it must outlive the 1-day retention
+      # used for the shared E2E package builds.
+      - name: Upload size results
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-results-${{ matrix.target.app }}
+          path: size-results-*.json
+          if-no-files-found: error
+
+  report:
+    name: Bundle Size Report
+    runs-on: ubuntu-latest
+    needs: [ci-scope, measure]
+    if: >-
+      always() && !cancelled() &&
+      !startsWith(github.head_ref, 'changeset-release/') &&
+      needs.ci-scope.outputs.fast-path != 'true'
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Download size results
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: size-results-*
+          path: size-results
+          merge-multiple: true
+
+      # Baseline for the delta columns: results from the most recent successful
+      # run of this workflow on main. Uses gh (first-party) rather than a
+      # third-party cross-run artifact action. Filtering to push /
+      # workflow_dispatch events matters for more than tidiness: it excludes
+      # artifacts uploaded by fork PR runs, whose head branch can also be named
+      # "main" (artifact poisoning).
+      - name: Download baseline results from main
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list \
+            --repo "$GITHUB_REPOSITORY" \
+            --workflow bundle-size.yml \
+            --branch main \
+            --status success \
+            --limit 20 \
+            --json databaseId,event \
+            --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")][0].databaseId // empty')
+          if [ -z "$run_id" ]; then
+            echo "No successful bundle-size run found on main; skipping baseline"
+            exit 0
+          fi
+          echo "Using baseline artifacts from run $run_id"
+          gh run download "$run_id" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'size-results-*' \
+            --dir baseline-results \
+            || echo "Run $run_id has no size artifacts; skipping baseline"
+
+      - name: Render report
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RENDER_STATUS: ${{ needs.measure.result == 'success' && 'completed' || 'failed' }}
+        run: |
+          node .github/scripts/render-bundle-size-comment.mjs \
+            --results-dir size-results \
+            --baseline-dir baseline-results \
+            --status "$RENDER_STATUS" \
+            --threshold-pct "$THRESHOLD_PCT" \
+            --threshold-bytes "$THRESHOLD_BYTES" \
+            --commit "$HEAD_SHA" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --output "$RUNNER_TEMP/comment.md" \
+            --gate-output "$RUNNER_TEMP/gate.json" > /dev/null
+          cat "$RUNNER_TEMP/comment.md" >> "$GITHUB_STEP_SUMMARY"
+
+      # Skipped on forks, where `pull_request` grants read-only permissions and
+      # the write would fail. The step summary above is the fallback there.
+      - name: Update PR comment
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        uses: marocchino/sticky-pull-request-comment@773744901bac0e8cbb5a0dc842800d45e9b2b405 # v2.9.4
+        with:
+          header: bundle-size-results
+          path: ${{ runner.temp }}/comment.md
+
+      # Last, so the numbers are already posted when this fails.
+      - name: Enforce size threshold
+        if: github.event_name == 'pull_request'
+        env:
+          MEASURE_RESULT: ${{ needs.measure.result }}
+          # The label list is compared against $OVERRIDE_LABEL in the script
+          # below rather than in a `contains()` expression here, so the label
+          # name is defined exactly once, at the top of this workflow.
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          if [ "$MEASURE_RESULT" != "success" ]; then
+            echo "Measurement job did not succeed ($MEASURE_RESULT); it reports its own failure."
+            exit 0
+          fi
+
+          count=$(jq '.regressions | length' "$RUNNER_TEMP/gate.json")
+          if [ "$count" -eq 0 ]; then
+            echo "No gated bundle grew past the threshold."
+            exit 0
+          fi
+
+          echo "Gated bundles that grew past max(${THRESHOLD_PCT}%, ${THRESHOLD_BYTES} bytes):"
+          jq -r '.regressions[] | "  \(.app) \(.id): +\(.rawDelta) bytes (threshold \(.threshold | floor) bytes)"' \
+            "$RUNNER_TEMP/gate.json"
+
+          if jq -e --arg label "$OVERRIDE_LABEL" 'index($label) != null' \
+            <<< "$PR_LABELS" > /dev/null; then
+            echo "The '${OVERRIDE_LABEL}' label is present; accepting the growth."
+            exit 0
+          fi
+          echo "Add the '${OVERRIDE_LABEL}' label to accept this growth."
+          exit 1

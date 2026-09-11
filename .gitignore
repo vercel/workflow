@@ -49,3 +49,13 @@ event-log-race-repro-results.json
 event-log-race-repro-summary.md
 event-log-race-repro-previous-comment.md
 event-log-race-repro-server.log
+
+# Per-run e2e sidecars written to the repo root by the harness and reporter.
+# CI uploads these as short-lived artifacts; they are not source fixtures or a
+# representative health history.
+/e2e-diagnostics-*.json
+/e2e-failures-*.json
+/e2e-flaky-*.json
+/e2e-infra-*.json
+/e2e-metadata-*.json
+/e2e-runtime-logs-*.json

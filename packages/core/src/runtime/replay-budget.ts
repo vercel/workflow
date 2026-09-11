@@ -12,7 +12,7 @@ import { getWorld } from './world.js';
  * handler run: deterministic event-log replay, workflow-VM execution
  * between step boundaries, suspension handling, queue round-trips, etc.
  * Inline step bodies (`"use step"` functions invoked via `executeStep`)
- * are intentionally excluded — they are bounded by the platform's
+ * are intentionally excluded since they are bounded by the platform's
  * function `maxDuration` and the `NO_INLINE_REPLAY_AFTER_MS` early-return
  * guard.
  *
@@ -38,7 +38,7 @@ import { getWorld } from './world.js';
  *   This protects against double-counting in future refactors that nest
  *   step execution or take an early-return path between a `pause()` and
  *   the matching `resume()`.
- * - `isExhausted()` is checked at loop boundaries by the caller — the
+ * - `isExhausted()` is checked at loop boundaries by the caller; the
  *   budget itself does not arm any timers. This means an in-flight
  *   pathological `runWorkflow` call (e.g. a huge event-log replay) can
  *   overshoot the budget by up to one iteration's worth of work before
@@ -75,7 +75,7 @@ export class ReplayBudget {
   }
 
   /**
-   * Stop counting elapsed time toward the budget. Idempotent — safe to
+   * Stop counting elapsed time toward the budget. Idempotent: safe to
    * call multiple times in a row; subsequent calls are no-ops until
    * `resume()` reopens an interval.
    */
@@ -86,7 +86,7 @@ export class ReplayBudget {
   }
 
   /**
-   * Resume counting elapsed time toward the budget. Idempotent — safe to
+   * Resume counting elapsed time toward the budget. Idempotent: safe to
    * call multiple times in a row; subsequent calls re-anchor the
    * interval start to `now()`, which is fine because no time accrues
    * between back-to-back `resume()` calls.

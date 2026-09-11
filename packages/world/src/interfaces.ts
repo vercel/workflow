@@ -4,9 +4,12 @@ import type {
   ExperimentalSetAttributesResult,
 } from './attributes.js';
 import type {
+  BatchEventRequest,
+  CreateEventBatchParams,
   CreateEventParams,
   CreateEventRequest,
   Event,
+  EventBatchResult,
   EventResult,
   GetEventParams,
   ListEventsByCorrelationIdParams,
@@ -20,6 +23,7 @@ import type {
   BulkCancelWorkflowRunsResult,
   GetWorkflowRunParams,
   ListWorkflowRunsParams,
+  WaitForTerminalRunStatusParams,
   WorkflowRun,
   WorkflowRunWithoutData,
 } from './runs.js';
@@ -35,6 +39,25 @@ import type {
   Step,
   StepWithoutData,
 } from './steps.js';
+
+export interface StreamWriteSession {
+  /**
+   * Write one ordered group from this in-memory writer lifetime.
+   * `chunkSeq` is writer-local and identifies the first chunk in `chunks`.
+   */
+  write(chunkSeq: number, chunks: (string | Uint8Array)[]): Promise<void>;
+
+  /** Close this writer lifetime after all prior writes are durable. */
+  close(): Promise<void>;
+
+  /** Release transport resources without semantically closing the stream. */
+  dispose?(): Promise<void> | void;
+}
+
+export interface CreateStreamWriteSessionOptions {
+  /** Stable observational id for this in-memory writer lifetime. */
+  writerId: `wrtr_${string}`;
+}
 
 export interface Streamer {
   /**
@@ -53,6 +76,17 @@ export interface Streamer {
   streamFlushIntervalMs?: number;
 
   streams: {
+    /**
+     * Optionally create a stateful writer session. Core creates at most one
+     * session per in-memory WritableStream and otherwise uses the stateless
+     * write/writeMulti/close methods below unchanged.
+     */
+    createWriteSession?(
+      runId: string,
+      name: string,
+      options: CreateStreamWriteSessionOptions
+    ): StreamWriteSession;
+
     write(
       runId: string,
       name: string,
@@ -153,6 +187,63 @@ export interface Storage {
       id: string,
       params?: GetWorkflowRunParams
     ): Promise<WorkflowRun | WorkflowRunWithoutData>;
+
+    /**
+     * Long poll for a run to reach a terminal status (`completed`, `failed`,
+     * or `cancelled`), returning the same entity `get` returns.
+     *
+     * This is how a caller awaiting a run's outcome (`await run.returnValue`)
+     * avoids paying interval-poll quantization for it: instead of asking
+     * "is it done yet?" every second, it asks once and the World answers the
+     * moment the run finishes.
+     *
+     * The contract:
+     *
+     * - **Resolve as soon as the run is terminal**, with the run entity in
+     *   the shape `params.resolveData` asks for.
+     * - **Resolve no later than roughly `params.timeoutMs`** with the latest
+     *   snapshot, whatever its status. A timeout is a normal return, never an
+     *   error: a run that is still running is a legitimate answer.
+     * - **`timeoutMs` is an upper bound, not a lower one.** An
+     *   implementation MAY resolve earlier with a non-terminal snapshot. For
+     *   example, `@workflow/world-vercel` does when the backend it is talking
+     *   to has no long-poll route and it degrades to a plain read. Callers
+     *   must therefore pace their own retries rather than assume one call per
+     *   `timeoutMs` (the runtime's `Run#pollReturnValue` keeps consecutive
+     *   non-terminal observations at least one poll interval apart).
+     * - **Fail exactly like `get`.** A missing run throws
+     *   `WorkflowRunNotFoundError`; transport failures surface as they would
+     *   on any other read.
+     *
+     * OPTIONAL. Omit it entirely when the World has no way to wait (a
+     * deterministic simulator, a store with no change notification) and the
+     * runtime keeps interval-polling `get` on
+     * `WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS`. There is nothing to declare
+     * beyond the method's presence, and no behavior degrades when it is
+     * absent: the fast path is strictly additive.
+     *
+     * Implementations are free to satisfy this however their backend allows,
+     * such as a server-side long poll (`world-vercel` holds
+     * `GET /v2/runs/:runId/status` open), a change notification
+     * (`world-postgres` uses `LISTEN`/`NOTIFY`, `world-local` an in-process
+     * emitter), or a tight internal poll, as long as a lost or missing
+     * notification degrades to returning a snapshot rather than hanging past
+     * the budget.
+     */
+    waitForTerminalStatus?: {
+      (
+        id: string,
+        params: WaitForTerminalRunStatusParams & { resolveData: 'none' }
+      ): Promise<WorkflowRunWithoutData>;
+      (
+        id: string,
+        params?: WaitForTerminalRunStatusParams & { resolveData?: 'all' }
+      ): Promise<WorkflowRun>;
+      (
+        id: string,
+        params?: WaitForTerminalRunStatusParams
+      ): Promise<WorkflowRun | WorkflowRunWithoutData>;
+    };
 
     /**
      * Retrieves several runs as one snapshot. The result preserves the input
@@ -266,7 +357,7 @@ export interface Storage {
   /**
    * The event log, and the one part of this interface with a requirement the
    * types cannot express: **the World allocates every event id, and every id
-   * is a slot** — `evnt_` followed by the event's dense, 1-based position in
+   * is a slot**: `evnt_` followed by the event's dense, 1-based position in
    * its run's log, zero-padded to 26 characters. Use `slotToEventId()` to
    * format one.
    *
@@ -284,7 +375,7 @@ export interface Storage {
    *   taken. The World advances to the next free slot, commits there, and
    *   returns the events occupying the slots it skipped over on the success
    *   response (see {@link EventResult.events}). The writer learns its
-   *   snapshot was stale without the write being rejected — which is why no
+   *   snapshot was stale without the write being rejected, which is why no
    *   World needs a precondition guard.
    *
    * Allocating at the commit is what makes a reader's log a *prefix* of the
@@ -323,6 +414,48 @@ export interface Storage {
       params?: CreateEventParams
     ): Promise<EventResult<T['eventType']>>;
 
+    /**
+     * OPTIONAL batch write: append an ordered list of events to the run's
+     * log in one durable, atomic-per-attempt write, with a per-event outcome
+     * for each (see {@link BatchEventItemResult}). The events land in request
+     * order at consecutive slots. A concurrent writer may push the whole
+     * batch to slots above the caller's view of the log; no skipped-event
+     * report accompanies the result, so a position-tracking caller compares
+     * the committed slots against its expectation and reloads the log to
+     * observe what landed in between. Its local view stays a strict PREFIX
+     * of the log (never a hole), so replaying it stays correct and the
+     * next reload self-corrects.
+     *
+     * Presence of the method IS the capability declaration: the core runtime
+     * batches only when the World implements it (and the run's spec version
+     * supports slot identity); absent, every write takes the single-event
+     * `create` path unchanged. A World must implement it with real
+     * atomicity per attempt (a lost race must leave nothing behind) or not
+     * implement it at all.
+     *
+     * Size limits are the caller's problem: Worlds enforce their own caps
+     * (world-vercel enforces an event-count cap and a byte budget over frame
+     * meta plus inline-bound payloads) and reject an oversized batch with a
+     * request-level error. The core fold sizes its chunks accordingly.
+     *
+     * Not expressible in a batch (Worlds reject the whole batch with a
+     * request-level error): `run_created`, `run_started`, `run_cancelled`,
+     * `hook_created`, `hook_disposed`, `attr_set`, and more events targeting
+     * one entity than a single write can express (the one legal combination
+     * is `step_created` followed by `step_started` for the same step, which
+     * creates the step born-running: the step's input MUST ride the
+     * `step_created`; a `step_started` carrying a payload rejects the whole
+     * batch). Events outside this list keep their own ordering requirements:
+     * a caller mixing a batch with single writes (hook or attribute events)
+     * owns those barriers itself: the core runtime never batches a
+     * suspension that carries hook or attribute writes.
+     */
+    createBatch?(
+      runId: string,
+      events: BatchEventRequest[],
+      params?: CreateEventBatchParams
+    ): Promise<EventBatchResult>;
+
     get(
       runId: string,
       eventId: string,
@@ -358,7 +491,7 @@ export interface Storage {
  * Optional feature capabilities a World implementation declares so the core
  * runtime can enable optimizations that depend on backend behavior, instead
  * of inferring support from environment variables alone. Every capability
- * defaults to "unsupported" when absent — runtime fast paths that rely on
+ * defaults to "unsupported" when absent: runtime fast paths that rely on
  * one must fail closed (keep their conservative behavior) unless the World
  * explicitly declares it.
  */
@@ -372,7 +505,7 @@ export interface WorldCapabilities {
   };
 
   /**
-   * The World's queue supports `maxConcurrency`-limited consumption — in
+   * The World's queue supports `maxConcurrency`-limited consumption, in
    * particular the per-run flow topics consumed with `maxConcurrency: 1`
    * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's
    * orchestrator invocations. Worlds whose queue has no concurrency-limit
@@ -382,26 +515,30 @@ export interface WorldCapabilities {
    * serialization also requires the build-time half (a flow trigger emitted
    * with `maxConcurrency: 1`), which a runtime process cannot verify today.
    * The core runtime therefore does not yet take any fast path from this
-   * capability alone — it exists so a future build-verified signal can be
+   * capability alone: it exists so a future build-verified signal can be
    * combined with it (and so Worlds document the contract explicitly).
    */
   maxConcurrency?: boolean;
 
   /**
    * The World's `events.create` deduplicates concurrent `hook_received` writes
-   * that carry the same `(runId, resumeId)` — collapsing them onto a single
-   * committed event and returning the canonical one to every caller. This is
-   * the backend half of `resumeHook()`'s parallel fast path: the producer's
-   * direct write and the queue consumer's re-ensure both write the same
-   * `resumeId`, and exactly one event must survive or the run replays a
-   * duplicated `hook_received`.
+   * that carry the same `(runId, resumeId)`, collapsing them onto a single
+   * committed event and returning the canonical one to every caller. Two
+   * writers rely on it: `resumeHook()`'s durable write attaches a `resumeId` +
+   * payload digest so transport-level retries of one write converge on exactly
+   * one event, and legacy `hookInput` queue redeliveries (from older
+   * producers) converge through the same constraint.
    *
-   * The core runtime fails closed on this: the parallel path is taken ONLY
-   * when the World declares `hookResumeDedup === true` AND the target run's
-   * deployment can re-ensure from `hookInput` (see the execution-context
-   * marker `hookResumeInputVersion`). A World that accepts a `resumeId` but
-   * does not enforce the `(runId, resumeId)` constraint must leave this unset
-   * so the runtime keeps the sequential single-writer path.
+   * The core runtime fails closed on this: a `resumeId` is attached ONLY when
+   * the World declares `hookResumeDedup === true` (or the live backend attests
+   * it per-lookup, below). A World that accepts a `resumeId` but does not
+   * enforce the `(runId, resumeId)` constraint must leave this unset so the
+   * runtime keeps the plain single-shot write.
+   *
+   * Declaring this also commits the World to ROUND-TRIPPING the key:
+   * `events.list` must return `resumeId` on `hook_received` events it
+   * persisted with one, because the legacy `hookInput` consumer path detects
+   * an already-materialized resume by matching `resumeId` in the loaded log.
    *
    * Enabled statically for `world-local` (filesystem sidecar claim keyed on
    * `(runId, resumeId)`; the adapter and its backend ship together, so a static
@@ -409,8 +546,8 @@ export interface WorldCapabilities {
    * leaves this UNSET and instead attests support per-lookup via the
    * server-computed, response-only `Hook.resumeCapabilities.hookResumeDedupVersion`
    * (see `HookResumeCapabilitiesSchema`), so a server rollback or kill switch
-   * degrades new resumes to the sequential path immediately without redeploying
-   * the adapter. `world-postgres` leaves it unset for now and stays sequential.
+   * degrades new resumes to plain writes immediately without redeploying
+   * the adapter. `world-postgres` leaves it unset for now.
    *
    * The resume gate treats EITHER signal as backend support (see
    * `resume-hook.ts`): this static capability OR a current
@@ -462,7 +599,7 @@ export interface World extends Queue, Streamer, Storage {
   specVersion: number;
 
   /**
-   * Feature capabilities this World implementation supports — see
+   * Feature capabilities this World implementation supports. See
    * {@link WorldCapabilities}. Absent (or absent members) means
    * "unsupported": runtime optimizations gated on a capability fail closed.
    */
@@ -497,7 +634,7 @@ export interface World extends Queue, Streamer, Storage {
    * "production" target or same git branch for "preview" deployments) as the
    * current deployment.
    *
-   * Not all World implementations support this — it is only implemented by
+   * Not all World implementations support this: it is only implemented by
    * world-vercel where deployment routing is meaningful.
    */
   resolveLatestDeploymentId?(): Promise<string>;
@@ -512,18 +649,18 @@ export interface World extends Queue, Streamer, Storage {
    *
    * Two overloads:
    *
-   * - `getEncryptionKeyForRun(run)` — Preferred. Pass a `WorkflowRun` when
+   * - `getEncryptionKeyForRun(run)`: Preferred. Pass a `WorkflowRun` when
    *   the run entity already exists. The World reads any context it needs
    *   (e.g., `deploymentId`) directly from the run.
    *
-   * - `getEncryptionKeyForRun(runId, context?)` — Used when the run entity
+   * - `getEncryptionKeyForRun(runId, context?)`: Used when the run entity
    *   is not locally available, such as `start()` before run creation or a
    *   forwarded writable stream carrying its owning deployment context. The
    *   `context` parameter carries opaque world-specific data (e.g.,
    *   `{ deploymentId }` for world-vercel) needed to resolve the correct key.
    *   When `context` is omitted, the World assumes the current deployment.
    *
-   * When not implemented, encryption is disabled — data is stored unencrypted.
+   * When not implemented, encryption is disabled: data is stored unencrypted.
    */
   getEncryptionKeyForRun?(run: WorkflowRun): Promise<Uint8Array | undefined>;
   getEncryptionKeyForRun?(
@@ -546,8 +683,8 @@ export interface World extends Queue, Streamer, Storage {
    * @param options - The full options bag passed to `start()` (typed as
    *   `Record<string, unknown>` here to avoid a circular dependency with
    *   `@workflow/core`). Worlds should read only the fields they
-   *   recognise — for example, `@workflow/world-vercel` reads
-   *   `options.region` to embed a region identifier. Unrecognised keys
+   *   recognize. For example, `@workflow/world-vercel` reads
+   *   `options.region` to embed a region identifier. Unrecognized keys
    *   must be ignored. `start()` always passes an object (an empty one
    *   when it was called with no options), but implementations should
    *   tolerate `undefined` for direct callers.
@@ -563,7 +700,7 @@ export interface World extends Queue, Streamer, Storage {
    * network call. Return `undefined` when the environment can't be determined.
    *
    * The value MUST match the attribution the backend will actually apply to
-   * this client's writes — for `world-vercel` that means keeping it in lockstep
+   * this client's writes: for `world-vercel` that means keeping it in lockstep
    * with the `x-vercel-environment` header (proxy path) and the OIDC token's
    * `environment` claim (in-deployment path). A value that merely looks
    * plausible is worse than `undefined`, because callers use it to detect
@@ -572,7 +709,7 @@ export interface World extends Queue, Streamer, Storage {
    * `start()` stamps this into the queue message's `runInput` so the consuming
    * deployment can tell that a message it was handed was created against a
    * different environment than its own. Not all Worlds have an environment
-   * dimension — local dev and Postgres have exactly one tenant, so they omit
+   * dimension: local dev and Postgres have exactly one tenant, so they omit
    * this and the check is skipped.
    */
   getEnvironment?(): string | undefined;
@@ -580,7 +717,7 @@ export interface World extends Queue, Streamer, Storage {
   /**
    * World-specific display fields for a run.
    *
-   * Tooling — e.g. the `workflow inspect` CLI — calls this to enrich a
+   * Tooling (e.g. the `workflow inspect` CLI) calls this to enrich a
    * run's listing row / detail output with fields only the world can
    * derive: a region decoded from the run ID, placement read off the
    * run's `executionContext`, a shard, a billing tier, etc. Consumers
@@ -588,11 +725,11 @@ export interface World extends Queue, Streamer, Storage {
    * hook is absent, no extra fields appear at all.
    *
    * The contract:
-   * - **Cheap and pure.** Called once per displayed run, so avoid I/O —
-   *   prefer deriving fields from the entity you are given.
-   * - **Read only what you recognise.** The argument is the run entity
+   * - **Cheap and pure.** Called once per displayed run, so avoid I/O.
+   *   Prefer deriving fields from the entity you are given.
+   * - **Read only what you recognize.** The argument is the run entity
    *   as the caller has it (a full storage run, or a leaner analytics
-   *   row) — typed loosely for the same reason as {@link createRunId}.
+   *   row), typed loosely for the same reason as {@link createRunId}.
    *   Tolerate missing fields.
    * - **Must not throw.**
    * - A `null` field value means "applicable but undeterminable" and is

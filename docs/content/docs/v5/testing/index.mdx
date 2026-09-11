@@ -3,18 +3,18 @@ title: Testing
 description: Unit test individual steps and integration test entire workflows using Vitest.
 ---
 
-Testing is a critical part of building reliable workflows. Because steps are just functions annotated with directives, they can be unit tested like any other JavaScript function. Workflow SDK also provides a Vitest plugin that runs full workflows in-process — no running server required.
+Test steps like any other JavaScript function, or use the Workflow SDK Vitest plugin to run complete workflows in-process without a server.
 
 This guide covers two approaches:
 
-1. **Unit testing** - Test individual steps as plain functions, without the workflow runtime.
-2. **Integration testing** - Test entire workflows in-process using the `workflow()` Vitest plugin. Required when you want to test workflow specific code paths, like those using [hooks](/docs/foundations/hooks), webhooks, [`sleep()`](/docs/api-reference/workflow/sleep), retries, etc.
+1. **Unit testing**: Test individual steps as plain functions without the workflow runtime.
+2. **Integration testing**: Test entire workflows in-process using the `workflow()` Vitest plugin. Use integration tests for workflow-specific code paths that use [hooks](/docs/foundations/hooks), webhooks, [`sleep()`](/docs/api-reference/workflow/sleep), or retries.
 
-## Unit Testing Steps
+## Unit testing steps
 
-Without the workflow compiler, the `"use step"` directive is a no-op. Your step functions run as regular JavaScript functions, making them straightforward to unit test with no special configuration.
+Without the workflow compiler, the `"use step"` directive is a no-op. Your step functions run as regular JavaScript functions, so you can unit test them without special configuration.
 
-### Example Steps
+### Example steps
 
 Given a workflow file with step functions like this:
 
@@ -49,7 +49,7 @@ export async function sendOnboardingEmail(user: { id: string; email: string }) {
 }
 ```
 
-### Writing Unit Tests for Steps
+### Writing unit tests for steps
 
 You can import and test step functions directly with Vitest. No special configuration or workflow plugin is needed:
 
@@ -77,18 +77,18 @@ describe("sendWelcomeEmail step", () => {
 This approach is ideal for verifying the business logic inside individual steps in isolation.
 
 <Callout type="info">
-Unit testing works well for individual steps. A simple workflow that only calls steps can also be unit tested this way, since `"use workflow"` is similarly a no-op without the compiler. However, any workflow that uses runtime features like [`sleep()`](/docs/api-reference/workflow/sleep), [hooks](/docs/foundations/hooks), or [webhooks](/docs/foundations/hooks#understanding-webhooks) cannot be unit tested directly because those APIs require the workflow runtime. Use [integration testing](#integration-testing-with-the-vitest-plugin) for testing entire workflows, especially those that depend on workflow-only features.
+Unit testing works well for individual steps. A workflow that only calls steps can also be unit tested this way, since `"use workflow"` is similarly a no-op without the compiler. However, any workflow that uses runtime features like [`sleep()`](/docs/api-reference/workflow/sleep), [hooks](/docs/foundations/hooks), or [webhooks](/docs/foundations/hooks#understanding-webhooks) cannot be unit tested directly because those APIs require the workflow runtime. Use [integration testing](#integration-testing-with-the-vitest-plugin) for testing entire workflows, especially those that depend on workflow-only features.
 </Callout>
 
-## Integration Testing with the Vitest Plugin
+## Integration testing with the Vitest plugin
 
-For workflows that rely on runtime features like [hooks](/docs/foundations/hooks), [webhooks](/docs/foundations/hooks#understanding-webhooks), [`sleep()`](/docs/api-reference/workflow/sleep), or error retries, you need to test against a real workflow setup. The `@workflow/vitest` plugin handles everything automatically — it compiles your workflow directives, builds the runtime bundles, and executes workflows entirely in-process. No server required.
+For workflows that rely on runtime features like [hooks](/docs/foundations/hooks), [webhooks](/docs/foundations/hooks#understanding-webhooks), [`sleep()`](/docs/api-reference/workflow/sleep), or error retries, you need to test against a real workflow setup. The `@workflow/vitest` plugin handles everything automatically: it compiles your workflow directives, builds the runtime bundles, and executes workflows entirely in-process. No server required.
 
 <Callout type="warn">
 `vi.mock()` and related calls do _not_ work inside workflow functions, only step functions. Your workflow functions cannot import third party code that needs to be mocked. Mocking works for npm packages imported in step functions. If something needs to be mocked, it likely belongs inside a step function either way.
 </Callout>
 
-### Vitest Configuration
+### Vitest configuration
 
 Create a separate Vitest config for integration tests that includes the `workflow()` plugin:
 
@@ -109,13 +109,13 @@ That's it. The plugin automatically:
 
 1. Transforms `"use workflow"` and `"use step"` directives via SWC
 2. Builds workflow and step bundles before tests run
-3. Sets up an in-process workflow runtime using a fresh [Local World](/worlds/local) instance in each test worker — all workflow data is cleared automatically between test files for full isolation
+3. Sets up an in-process workflow runtime using a fresh [Local World](/worlds/local) instance in each test worker; all workflow data is cleared automatically between test files for full isolation
 
 <Callout type="info">
 Use a separate Vitest configuration and a distinct file naming convention (e.g. `*.integration.test.ts`) to keep unit tests and integration tests separate. Unit tests run with a standard Vitest config without the workflow plugin, while integration tests use the config above.
 </Callout>
 
-### Writing Integration Tests
+### Writing integration tests
 
 Use [`start()`](/docs/api-reference/workflow-api/start) to trigger a workflow and [`run.returnValue`](/docs/api-reference/workflow-api/start#returns) to get the result. `returnValue` is a promise that blocks until the workflow completes (or throws if it fails):
 
@@ -144,9 +144,9 @@ describe("calculateWorkflow", () => {
 });
 ```
 
-### Testing Hooks and Waits
+### Testing hooks and waits
 
-The real power of integration testing comes when testing workflow-only features. Hooks and waits can be resumed programmatically using the [`workflow/api`](/docs/api-reference/workflow-api) functions, making it straightforward to simulate external events in your tests.
+Integration testing is most useful for workflow-only features. You can resume hooks and waits programmatically using the [`workflow/api`](/docs/api-reference/workflow-api) functions to simulate external events in your tests.
 
 Given a workflow that waits for approval via a hook, then sleeps before publishing:
 
@@ -228,7 +228,7 @@ describe("approvalWorkflow", () => {
       reviewer: "bob",
     });
 
-    // No wakeUp() needed here — the rejected path has no sleep
+    // No wakeUp() needed here; the rejected path has no sleep
     const result = await run.returnValue;
     expect(result).toEqual({
       status: "rejected",
@@ -243,12 +243,12 @@ describe("approvalWorkflow", () => {
 </Callout>
 
 <Callout type="info">
-`waitForSleep()` returns the first **pending** sleep — one that has a `wait_created` event but no corresponding `wait_completed` event. If your workflow has multiple parallel sleeps, `waitForSleep()` returns whichever is found first. After waking one, call `waitForSleep()` again to get the next pending one. For sequential sleeps, `waitForSleep()` naturally returns each one as the workflow reaches it.
+`waitForSleep()` returns the first **pending** sleep, one that has a `wait_created` event but no corresponding `wait_completed` event. If your workflow has multiple parallel sleeps, `waitForSleep()` returns whichever is found first. After waking one, call `waitForSleep()` again to get the next pending one. For sequential sleeps, `waitForSleep()` naturally returns each one as the workflow reaches it.
 </Callout>
 
-### Testing Webhooks
+### Testing webhooks
 
-Webhooks are hooks that receive HTTP `Request` objects. In tests, resume them using [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook) with a `Request` payload — no HTTP server needed:
+Webhooks are hooks that receive HTTP `Request` objects. In tests, resume them using [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook) with a `Request` payload, with no HTTP server needed:
 
 ```typescript title="workflows/ingest.ts" lineNumbers
 import { createWebhook } from "workflow";
@@ -303,7 +303,7 @@ describe("ingestWorkflow", () => {
 });
 ```
 
-### Manual Setup
+### Manual setup
 
 If you need more control over the test lifecycle, the plugin also exports the individual setup functions:
 
@@ -354,11 +354,11 @@ afterAll(async () => {
 For advanced setups that require a running server (e.g. testing against your actual framework's HTTP layer), see [Server-based integration testing](/docs/testing/server-based).
 </Callout>
 
-## Debugging Test Runs
+## Debugging test runs
 
-When integration tests fail, the [Workflow SDK CLI and Web UI](/docs/observability) can help you inspect what happened. Because integration tests persist workflow state locally, you can use the same observability tools you would use in development.
+When integration tests fail, the [Workflow SDK CLI and web UI](/docs/observability) can help you inspect what happened. Because integration tests persist workflow state locally, you can use the same observability tools you use in development.
 
-Launch the Web UI to visually explore your test workflow runs:
+Launch the web UI to explore your test workflow runs:
 
 ```bash
 npx workflow web
@@ -374,7 +374,7 @@ npx workflow inspect runs
 npx workflow inspect run <run-id>
 ```
 
-The Web UI shows each step, its inputs and outputs, retry attempts, hook state, and timing. This is especially useful for diagnosing issues with hooks that were not resumed, steps that failed unexpectedly, or workflows that timed out.
+The web UI shows each step, its inputs and outputs, retry attempts, hook state, and timing. Use it to diagnose hooks that were not resumed, steps that failed unexpectedly, or workflows that timed out.
 
 ![Workflow SDK Web UI](/o11y-ui.png)
 
@@ -382,28 +382,28 @@ The Web UI shows each step, its inputs and outputs, retry attempts, hook state, 
 See the [Observability](/docs/observability) docs for the full set of CLI commands and Web UI features.
 </Callout>
 
-## Best Practices
+## Best practices
 
-### Separate Unit and Integration Tests
+### Separate unit and integration tests
 
 Keep two test configurations:
 
-- **Unit tests** - Standard Vitest config, no workflow plugin. Fast, no infrastructure required.
-- **Integration tests** - Vitest config with `workflow()` plugin. Tests the full workflow lifecycle including hooks, sleeps, and retries.
+- **Unit tests**: Standard Vitest config with no workflow plugin. These tests require no infrastructure.
+- **Integration tests**: Vitest config with the `workflow()` plugin. These tests cover the full workflow lifecycle, including hooks, sleeps, and retries.
 
-### Use Custom Hook Tokens for Deterministic Testing
+### Use custom hook tokens for deterministic testing
 
-When testing workflows with hooks, use [custom tokens](/docs/foundations/hooks#custom-tokens-for-deterministic-hooks) based on predictable values (like document IDs or test identifiers). This makes it easy to resume the correct hook in your test code.
+When testing workflows with hooks, use [custom tokens](/docs/foundations/hooks#custom-tokens-for-deterministic-hooks) based on predictable values (like document IDs or test identifiers). This lets you resume the correct hook in your test code.
 
-### Set Appropriate Timeouts
+### Set appropriate timeouts
 
 Workflows may take longer to execute than typical unit tests, especially when they involve multiple steps or retries. Set a generous `testTimeout` in your integration test config.
 
-### Test Error and Retry Scenarios
+### Test error and retry scenarios
 
 Integration tests are the right place to verify that your workflows handle errors correctly, including retryable errors, fatal errors, and timeout scenarios.
 
-## Further Reading
+## Further reading
 
 - [Hooks & Webhooks](/docs/foundations/hooks) - Pausing and resuming workflows with external data
 - [`start()` API Reference](/docs/api-reference/workflow-api/start) - Start workflows programmatically

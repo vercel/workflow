@@ -10,7 +10,7 @@ This package contains the core build logic for transforming workflow source file
 - `@workflow/next` - For Next.js integration
 - `@workflow/nitro` - For Nitro/Nuxt integration
 
-## Key Components
+## Key components
 
 - **BaseBuilder**: Abstract base class providing common build logic
 - **Build plugins**: esbuild plugins for workflow transformations

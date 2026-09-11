@@ -17,7 +17,7 @@ import {
  *       step   step_… · add (./workflows/x)
  *       hint:  Move the call to a step function.
  *     FatalError: …
- *         at … (trimmed stack — internals collapsed)
+ *         at … (trimmed stack, internals collapsed)
  *
  * Without this composition, callers passing `${framing}\n${stack}` as the
  * message and structured fields as the metadata object got `util.inspect`'s
@@ -26,7 +26,7 @@ import {
  *
  * The same metadata is also emitted as structured OTel span events from
  * the logger itself, so backends that want JSON-shaped data still get it.
- * web/web-shared do not consume stderr at all — they read CBOR/JSON event
+ * web/web-shared do not consume stderr at all: they read CBOR/JSON event
  * payloads from the World event log.
  */
 export function composeLogLine(
@@ -36,7 +36,7 @@ export function composeLogLine(
 ): string {
   const [framing, ...rest] = message.split('\n');
   const body = rest.join('\n');
-  const fields = renderStructuredFields(framing ?? '', metadata);
+  const fields = renderStructuredFields(framing ?? '', body, metadata);
   const trimmedBody = trimStackBody(body);
 
   const lines: string[] = [`${prefix} ${framing ?? ''}`];
@@ -47,18 +47,23 @@ export function composeLogLine(
 
 function renderStructuredFields(
   framing: string,
+  body: string,
   metadata: Record<string, unknown> | undefined
 ): string | null {
   if (!metadata || Object.keys(metadata).length === 0) return null;
 
   // Drop fields that the message already encodes. We render framings and
   // stacks into the message string itself in step executor / combined runtime, so
-  // repeating them here would be pure noise.
+  // repeating them here would be pure noise. A message with neither (a WARN
+  // whose framing is a fixed sentence and whose `errorMessage` is the only
+  // place the underlying error's text appears) keeps `errorMessage` and
+  // renders it as its own row below.
   const redundant = new Set<string>();
   redundant.add('errorStack');
+  const errorMessage = pickString(metadata, 'errorMessage');
   if (
-    typeof metadata.errorMessage === 'string' &&
-    framing.includes(metadata.errorMessage as string)
+    errorMessage &&
+    (framing.includes(errorMessage) || body.includes(errorMessage))
   ) {
     redundant.add('errorMessage');
   }
@@ -130,6 +135,10 @@ function renderStructuredFields(
     lines.push(`  ${kvKey('code')} ${Ansi.dim(errorCode)}`);
   }
 
+  if (errorMessage && !redundant.has('errorMessage')) {
+    lines.push(`  ${kvKey('error')} ${formatPassthroughValue(errorMessage)}`);
+  }
+
   const hint = pickString(metadata, 'hint');
   if (hint) {
     lines.push(`  ${Ansi.hint(hint)}`);
@@ -164,7 +173,7 @@ function renderStructuredFields(
  *
  *   1. Drop framework-internal frames (`node_modules/.pnpm/`, `node:internal/`,
  *      Turbopack-bundled `node_modules__pnpm_*` / `_next_dist_*` chunks).
- *   2. Cap the surviving frames at `MAX_VISIBLE_FRAMES` — past that, even
+ *   2. Cap the surviving frames at `MAX_VISIBLE_FRAMES`: past that, even
  *      "user-ish" frames are usually deep async wrapping that doesn't help
  *      pinpoint the throw. The user can drop into the inspect CLI for the
  *      full stack on demand.
@@ -230,7 +239,7 @@ function isFrameworkFrame(line: string): boolean {
   // Turbopack/Next bundle the same framework code into chunks like
   // `node_modules__pnpm_<hash>._.js` and `<...>_next_dist_<hash>._.js`,
   // and emits Next.js loader runtime as `0dx6_next_dist_<hash>._.js`.
-  // These are the frames that show up after Turbopack DCE — same intent
+  // These are the frames that show up after Turbopack DCE, same intent
   // as the raw `node_modules/.pnpm/` filter above.
   if (trimmed.includes('node_modules__pnpm_')) return true;
   if (trimmed.includes('_next_dist_')) return true;

@@ -1,8 +1,8 @@
 ---
 title: Vercel World
-description: Fully-managed world for Vercel deployments with automatic storage, queuing, and authentication.
+description: Fully managed World for Vercel deployments with automatic storage, queuing, and authentication.
 type: integration
-summary: Deploy workflows to Vercel with fully-managed storage, queuing, and authentication.
+summary: Deploy workflows to Vercel with fully managed storage, queuing, and authentication.
 prerequisites:
   - /docs/deploying
 related:
@@ -11,9 +11,9 @@ related:
   - /worlds/postgres
 ---
 
-The Vercel World is a fully-managed workflow backend for applications deployed on Vercel. It provides scalable storage, distributed queuing, and automatic authentication with zero configuration.
+The Vercel World is a fully managed workflow backend for applications deployed on Vercel. It provides scalable storage, distributed queuing, and automatic authentication without configuration.
 
-When you deploy to Vercel, workflows automatically use the Vercel World - no setup required.
+When you deploy to Vercel, workflows automatically use the Vercel World without requiring setup.
 
 ## Usage
 
@@ -23,7 +23,7 @@ Deploy your application to Vercel:
 vercel deploy
 ```
 
-That's it. Vercel automatically:
+Vercel automatically:
 
 - Selects the Vercel World backend
 - Configures authentication using OIDC tokens
@@ -36,9 +36,9 @@ That's it. Vercel automatically:
 
 For complete details on pricing, usage limits, and included allotments on Vercel, see the official Vercel documentation:
 
-- **[Vercel Workflow](https://vercel.com/docs/workflows)** — Pricing details, concepts, and observability for Workflow on Vercel
-- **[Vercel limits](https://vercel.com/docs/limits)** — Platform-wide limits including Workflow-specific constraints
-- **[Vercel Hobby plan](https://vercel.com/docs/plans/hobby)** — Free tier included usage for Workflow and other resources
+- **[Vercel Workflow](https://vercel.com/docs/workflows)**: Pricing details, concepts, and observability for Workflow on Vercel
+- **[Vercel limits](https://vercel.com/docs/limits)**: Platform-wide limits, including Workflow-specific constraints
+- **[Vercel Hobby plan](https://vercel.com/docs/plans/hobby)**: Free-tier included usage for Workflow and other resources
 
 For self-hosted deployments, use the [Postgres World](/worlds/postgres). For local development, use the [Local World](/worlds/local).
 
@@ -46,16 +46,16 @@ For self-hosted deployments, use the [Postgres World](/worlds/postgres). For loc
 
 <Callout type="info">
   **Multi-region support is available starting with `workflow` version
-  5.0.0-beta.33.** On 5.x, workflow runs are pinned to the region that creates them —
+  5.0.0.** On 5.x, workflow runs are pinned to the region that creates them, and
   storage, queuing, and streams are served region-locally instead of routing
   through `iad1`. See [Multi-region on the v5 version of this
   page](/v5/worlds/vercel#multi-region). The limitations
   below apply to the 4.x release line, which will not support multi-region.
 </Callout>
 
-- **Single-region deployment** - On the 4.x release line, the backend infrastructure is used only in `iad1`. Applications in other regions will route workflow requests to `iad1`, which may result in higher latency. For best performance, deploy your Vercel apps using Workflow to `iad1` — or upgrade to `workflow` 5.0.0-beta.33+ for multi-region support.
+- **Single-region deployment**: On the 4.x release line, the backend infrastructure is used only in `iad1`. Applications in other regions route workflow requests to `iad1`, which may result in higher latency. For best performance, deploy Vercel apps using Workflow to `iad1`, or upgrade to `workflow` 5.0.0 or later for multi-region support.
 
-- **Data residency** - On the 4.x release line, independently of the deployment location of your application, the data for your workflows will be stored in the `iad1` region.
+- **Data residency**: On the 4.x release line, workflow data is stored in the `iad1` region regardless of your application's deployment location.
 
 ## Observability
 
@@ -223,7 +223,7 @@ Store the token as an encrypted secret and derive `WORKFLOW_VERCEL_ENV` from the
 
 If the deployment is behind deployment protection, the job also needs a way to reach its URL. Grant the workflow `id-token: write` and mint a short-lived OIDC token from the runner for the `x-vercel-trusted-oidc-idp-token` header; that credential is for [Trusted Sources](https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources) only and is separate from the Vercel auth token above.
 
-## Testing & Compatibility
+## Testing & compatibility
 
 <WorldTestingPerformance worldId="vercel" />
 
@@ -264,6 +264,32 @@ When enabled, each run is given its own queue topic and the flow route is config
 </Callout>
 
 Because it routes each run's flow invocations through a dedicated `maxConcurrency: 1` queue topic, enabling this might lead to higher queue performance overhead.
+
+### `WORKFLOW_NODE_HTTP`
+
+Set `WORKFLOW_NODE_HTTP=1` to make the Vercel World issue its HTTP requests through Node's built-in `node:http` and `node:https` modules instead of the HTTP client library (undici) it normally uses. Off by default.
+
+This exists for deployments where that library is not usable, rather than as a tuning knob. Reach for it when:
+
+- your bundler mangles the library's internals, so requests through it fail or never settle;
+- your build pairs a bundled copy of the library with a different copy inside the runtime, which can produce errors like `Cannot read private member #… from an object whose class did not declare it`;
+- you want to rule the transport out while diagnosing event-delivery or queue problems.
+
+The symptom that most often leads here is a workflow whose steps all complete while the invocation itself never returns, and whose queue messages are delivered repeatedly and never acknowledged. A killed invocation cannot acknowledge its message, so the queue redelivers it to the same deployment and each redelivery holds a function for the full `maxDuration`. Check your project's Queues view for a topic with a high received count and a delete count near zero.
+
+Requests reached through `fetch()` are covered too, so a runtime whose `fetch()` is built on the same library still benefits.
+
+<Callout type="warn">
+  Node's modules do less than the client they replace, so enabling this drops per-call-site tuning and costs throughput on every deployment. That is why it is opt-in.
+
+  - Event-log requests lose HTTP/2, so concurrent reads and writes no longer share one connection and the enlarged HTTP/2 receive windows no longer apply. This is the largest difference and it slows replays that read a large event log.
+  - Requests lose their transport-level retry. Nothing is silently dropped, because the layers above still retry event writes and redeliver queue messages, but a failure a same-connection retry would have hidden now costs a full redelivery.
+  - Stream close loses its retry of retriable server errors, so a transient failure at close can leave a stream marked closing until the run expires.
+
+  Connection pooling, keep-alive, and the request, header, and body deadlines are preserved.
+</Callout>
+
+A `dispatcher` passed to `createVercelWorld()` still wins over this variable: supplying one is an instruction to use the library. The variable only chooses which transport the World builds when you have not supplied one.
 
 ### Programmatic configuration
 
@@ -322,15 +348,15 @@ Practically, this means:
 - Handlers receive only a message ID that must be retrieved from Vercel's backend, making it impossible to craft custom payloads
 
 <Callout>
-  This configuration is managed entirely by the Workflow SDK build step. You should not need to write this yourself. If you are writing a custom integration, see [Framework Integrations — Security](/docs/how-it-works/framework-integrations#security) for more details.
+  The Workflow SDK build step manages this configuration. If you are writing a custom integration, see [Framework integrations: Security](/docs/how-it-works/framework-integrations#security) for more details.
 </Callout>
 
-## How It Works
+## How it works
 
 The Vercel World uses Vercel's infrastructure for workflow execution:
 
-- **Storage** - Workflow data is stored in Vercel's cloud with automatic replication and [end-to-end encryption](/docs/how-it-works/encryption)
-- **Queuing** - Steps are distributed across serverless functions via [Vercel Queues](https://vercel.com/docs/queues) with automatic retries and [consumer function security](#consumer-function-security)
-- **Authentication** - OIDC tokens provide secure, automatic authentication inside deployments; clients outside one authenticate with a [Vercel auth token](#connecting-from-outside-a-deployment)
+- **Storage**: Workflow data is stored in Vercel's cloud with automatic replication and [end-to-end encryption](/docs/how-it-works/encryption)
+- **Queuing**: Steps are distributed across Vercel Functions through [Vercel Queues](https://vercel.com/docs/queues) with automatic retries and [consumer function security](#consumer-function-security)
+- **Authentication**: OIDC tokens provide secure, automatic authentication inside deployments; clients outside one authenticate with a [Vercel auth token](#connecting-from-outside-a-deployment)
 
 For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflows).

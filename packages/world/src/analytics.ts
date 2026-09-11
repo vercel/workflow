@@ -6,7 +6,7 @@ import { StepStatusSchema } from './steps.js';
 import { WaitStatusSchema } from './waits.js';
 
 /**
- * Timezone-naive datetime string, e.g. `2026-07-13 17:09:11.593` — the
+ * Timezone-naive datetime string, e.g. `2026-07-13 17:09:11.593`: the
  * shape ClickHouse-backed analytics endpoints serialize `DateTime64`
  * values as. Such values are UTC by convention but carry no designator.
  */
@@ -18,119 +18,133 @@ const NAIVE_DATETIME = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
  * `z.coerce.date()` delegates to `new Date(value)`, which interprets a
  * naive string in the **process's local timezone**. That is only correct
  * when the process runs in UTC (e.g. the deployed observability web app's
- * server actions) and is wrong by the local UTC offset everywhere else —
+ * server actions) and is wrong by the local UTC offset everywhere else:
  * the CLI on a laptop, `workflow web --localUi`, tests. Normalizing naive
  * strings to an explicit `Z` designator makes parsing timezone-independent.
  * Values that already carry timezone information (a `Z` or `±hh:mm`
  * offset), and non-string inputs (Date, epoch number), are forwarded
  * without modification before coercion.
  */
-const UTCDateSchema = z.preprocess((value) => {
-  if (typeof value === 'string' && NAIVE_DATETIME.test(value)) {
-    return `${value.replace(' ', 'T')}Z`;
-  }
-  return value;
-}, z.coerce.date());
+const UTCDateSchema = z.compile(
+  z.preprocess((value) => {
+    if (typeof value === 'string' && NAIVE_DATETIME.test(value)) {
+      return `${value.replace(' ', 'T')}Z`;
+    }
+    return value;
+  }, z.coerce.date())
+);
 
-const NullableDateSchema = UTCDateSchema.nullable().optional();
-const NullableStringSchema = z.string().nullable().optional();
-const NullableBooleanSchema = z.boolean().nullable().optional();
+const NullableDateSchema = z.compile(UTCDateSchema.nullable().optional());
+const NullableStringSchema = z.compile(z.string().nullable().optional());
+const NullableBooleanSchema = z.compile(z.boolean().nullable().optional());
 
 // Keep analytics object schemas standalone even when they mirror storage
 // metadata fields. This namespace is an explicit metadata-only read contract;
 // payload and secret fields should only appear here through deliberate opt-in.
-export const AnalyticsRunSchema = z.object({
-  runId: z.string(),
-  status: WorkflowRunStatusSchema,
-  deploymentId: z.string(),
-  workflowName: z.string(),
-  specVersion: z.coerce.number().optional(),
-  attributes: z.record(z.string(), z.string()).default({}),
-  createdAt: UTCDateSchema,
-  updatedAt: UTCDateSchema,
-  startedAt: NullableDateSchema,
-  completedAt: NullableDateSchema,
-  errorCode: NullableStringSchema,
-  workflowCoreVersion: NullableStringSchema,
-  workflowEncryptionEnabled: NullableBooleanSchema,
-});
+export const AnalyticsRunSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    status: WorkflowRunStatusSchema,
+    deploymentId: z.string(),
+    workflowName: z.string(),
+    specVersion: z.coerce.number().optional(),
+    attributes: z.record(z.string(), z.string()).default({}),
+    createdAt: UTCDateSchema,
+    updatedAt: UTCDateSchema,
+    startedAt: NullableDateSchema,
+    completedAt: NullableDateSchema,
+    errorCode: NullableStringSchema,
+    workflowCoreVersion: NullableStringSchema,
+    workflowEncryptionEnabled: NullableBooleanSchema,
+  })
+);
 
-export const AnalyticsStepSchema = z.object({
-  runId: z.string(),
-  stepId: z.string(),
-  stepName: NullableStringSchema,
-  status: StepStatusSchema,
-  attempt: z.number().optional(),
-  createdAt: UTCDateSchema,
-  updatedAt: UTCDateSchema,
-  startedAt: NullableDateSchema,
-  completedAt: NullableDateSchema,
-  retryAfter: NullableDateSchema,
-  errorCode: NullableStringSchema,
-  workflowCoreVersion: NullableStringSchema,
-  workflowEncryptionEnabled: NullableBooleanSchema,
-  /** Compute instance of the latest attempt's `step_started`. */
-  computeInstanceId: NullableStringSchema,
-});
+export const AnalyticsStepSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    stepId: z.string(),
+    stepName: NullableStringSchema,
+    status: StepStatusSchema,
+    attempt: z.number().optional(),
+    createdAt: UTCDateSchema,
+    updatedAt: UTCDateSchema,
+    startedAt: NullableDateSchema,
+    completedAt: NullableDateSchema,
+    retryAfter: NullableDateSchema,
+    errorCode: NullableStringSchema,
+    workflowCoreVersion: NullableStringSchema,
+    workflowEncryptionEnabled: NullableBooleanSchema,
+    /** Compute instance of the latest attempt's `step_started`. */
+    computeInstanceId: NullableStringSchema,
+  })
+);
 
-export const AnalyticsEventSchema = z.object({
-  runId: z.string(),
-  eventId: z.string(),
-  eventType: EventTypeSchema,
-  correlationId: NullableStringSchema,
-  entityId: NullableStringSchema,
-  stepName: NullableStringSchema,
-  workflowName: z.string(),
-  deploymentId: z.string(),
-  specVersion: z.coerce.number().optional(),
-  runCreatedAt: UTCDateSchema,
-  createdAt: UTCDateSchema,
-  region: NullableStringSchema,
-  vercelId: NullableStringSchema,
-  requestId: NullableStringSchema,
-  /** Compute instance that wrote the event. See CreateEventParams. */
-  computeInstanceId: NullableStringSchema,
-  resumeAt: NullableDateSchema,
-  retryAfter: NullableDateSchema,
-  errorCode: NullableStringSchema,
-  workflowCoreVersion: NullableStringSchema,
-  isWebhook: NullableBooleanSchema,
-  isSystem: NullableBooleanSchema,
-  workflowEncryptionEnabled: NullableBooleanSchema,
-});
+export const AnalyticsEventSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    eventId: z.string(),
+    eventType: EventTypeSchema,
+    correlationId: NullableStringSchema,
+    entityId: NullableStringSchema,
+    stepName: NullableStringSchema,
+    workflowName: z.string(),
+    deploymentId: z.string(),
+    specVersion: z.coerce.number().optional(),
+    runCreatedAt: UTCDateSchema,
+    createdAt: UTCDateSchema,
+    region: NullableStringSchema,
+    vercelId: NullableStringSchema,
+    requestId: NullableStringSchema,
+    /** Compute instance that wrote the event. See CreateEventParams. */
+    computeInstanceId: NullableStringSchema,
+    resumeAt: NullableDateSchema,
+    retryAfter: NullableDateSchema,
+    errorCode: NullableStringSchema,
+    workflowCoreVersion: NullableStringSchema,
+    isWebhook: NullableBooleanSchema,
+    isSystem: NullableBooleanSchema,
+    workflowEncryptionEnabled: NullableBooleanSchema,
+  })
+);
 
-export const AnalyticsHookSchema = z.object({
-  runId: z.string(),
-  hookId: z.string(),
-  status: z.enum(['created', 'received', 'disposed', 'conflict']),
-  createdAt: UTCDateSchema,
-  updatedAt: UTCDateSchema,
-  receivedAt: NullableDateSchema,
-  disposedAt: NullableDateSchema,
-  isWebhook: NullableBooleanSchema,
-  isSystem: NullableBooleanSchema,
-  workflowCoreVersion: NullableStringSchema,
-  workflowEncryptionEnabled: NullableBooleanSchema,
-});
+export const AnalyticsHookSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    hookId: z.string(),
+    status: z.enum(['created', 'received', 'disposed', 'conflict']),
+    createdAt: UTCDateSchema,
+    updatedAt: UTCDateSchema,
+    receivedAt: NullableDateSchema,
+    disposedAt: NullableDateSchema,
+    isWebhook: NullableBooleanSchema,
+    isSystem: NullableBooleanSchema,
+    workflowCoreVersion: NullableStringSchema,
+    workflowEncryptionEnabled: NullableBooleanSchema,
+  })
+);
 
-export const AnalyticsWaitSchema = z.object({
-  runId: z.string(),
-  waitId: z.string(),
-  status: WaitStatusSchema,
-  resumeAt: NullableDateSchema,
-  createdAt: UTCDateSchema,
-  updatedAt: UTCDateSchema,
-  completedAt: NullableDateSchema,
-  workflowCoreVersion: NullableStringSchema,
-  workflowEncryptionEnabled: NullableBooleanSchema,
-});
+export const AnalyticsWaitSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    waitId: z.string(),
+    status: WaitStatusSchema,
+    resumeAt: NullableDateSchema,
+    createdAt: UTCDateSchema,
+    updatedAt: UTCDateSchema,
+    completedAt: NullableDateSchema,
+    workflowCoreVersion: NullableStringSchema,
+    workflowEncryptionEnabled: NullableBooleanSchema,
+  })
+);
 
-export const AnalyticsAttributeKeySchema = z.object({
-  key: z.string(),
-  runCount: z.coerce.number(),
-  firstSeenAt: z.coerce.date(),
-  lastSeenAt: z.coerce.date(),
-});
+export const AnalyticsAttributeKeySchema = z.compile(
+  z.object({
+    key: z.string(),
+    runCount: z.coerce.number(),
+    firstSeenAt: UTCDateSchema,
+    lastSeenAt: UTCDateSchema,
+  })
+);
 
 export type AnalyticsRun = z.infer<typeof AnalyticsRunSchema>;
 export type AnalyticsStep = z.infer<typeof AnalyticsStepSchema>;
@@ -145,8 +159,8 @@ export interface AnalyticsListRunsParams {
   /**
    * Bound the listing to runs active between `startTime` and `endTime`
    * (ISO 8601 timestamps). Both must be provided together. A bounded window
-   * lets the backend prune its scan — the ClickHouse-backed Vercel
-   * implementation is significantly faster with one. Requesting a window
+   * lets the backend prune its scan, so the ClickHouse-backed Vercel
+   * implementation is faster with one. Requesting a window
    * older than the plan's observability lookback fails with
    * `observability-upgrade-required`.
    */
@@ -187,6 +201,10 @@ export interface AnalyticsListEventsParams
   correlationId?: string;
 }
 
+/**
+ * @deprecated Parameters of the deprecated `analytics.events.listByCorrelationId`.
+ * Use `AnalyticsListEventsParams` with `list({ runId, correlationId })`.
+ */
 export interface AnalyticsListEventsByCorrelationIdParams {
   correlationId: string;
   /** The run the correlation id belongs to; see `ListEventsByCorrelationIdParams`. */
@@ -196,6 +214,36 @@ export interface AnalyticsListEventsByCorrelationIdParams {
 
 /** Maximum number of event IDs accepted by one analytics batch lookup. */
 export const ANALYTICS_EVENTS_GET_MANY_LIMIT = 100;
+
+/**
+ * Maximum `pagination.limit` the run-scoped analytics listings accept:
+ * `events.list`, `events.listByCorrelationId`, `steps.list`, `waits.list`.
+ *
+ * Exported so a World implementation can reject an over-large page before a
+ * request goes out. The backend validates the same bound and answers 400, and
+ * a caller that wraps the listing in a `catch` — the common shape, since
+ * analytics is an optional capability — sees only a swallowed failure and an
+ * empty result. Failing in-process with the bound named is diagnosable.
+ */
+export const ANALYTICS_RUN_SCOPED_PAGE_LIMIT = 1000;
+
+/**
+ * Maximum `pagination.limit` the remaining analytics listings accept:
+ * `runs.list`, `attributes.list`, `hooks.list`.
+ *
+ * Deliberately separate from {@link ANALYTICS_RUN_SCOPED_PAGE_LIMIT}: these
+ * listings scan across runs rather than within one, and the backend caps them
+ * an order of magnitude lower. Two names beat one constant that is right for
+ * half its call sites.
+ */
+export const ANALYTICS_PAGE_LIMIT = 100;
+
+/**
+ * Maximum key=value pairs one runs listing may filter by. Each pair adds an
+ * aggregate condition to the backend's attribute prefilter, so the bound is
+ * about query complexity rather than result size.
+ */
+export const ANALYTICS_MAX_ATTRIBUTE_FILTERS = 8;
 
 export interface AnalyticsListHooksParams {
   runId: string;
@@ -244,6 +292,19 @@ export interface Analytics {
     list(
       params: AnalyticsListEventsParams
     ): Promise<PaginatedResponse<AnalyticsEvent>>;
+    /**
+     * @deprecated Use `list({ runId, correlationId })`, which issues the same
+     * request and additionally accepts an `eventType` filter.
+     *
+     * This method was the analytics counterpart of the cross-run correlation
+     * lookup, which took the correlation id alone. Requiring a `runId` (a
+     * correlation id is unique per run, not globally) left it a special case
+     * of `list` with no behaviour of its own. Scheduled for removal in the
+     * next major.
+     *
+     * Note this is unrelated to the storage `events.listByCorrelationId`,
+     * which is not deprecated and keeps a distinct endpoint.
+     */
     listByCorrelationId(
       params: AnalyticsListEventsByCorrelationIdParams
     ): Promise<PaginatedResponse<AnalyticsEvent>>;

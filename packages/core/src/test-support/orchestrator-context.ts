@@ -6,6 +6,7 @@ import { monotonicFactory } from 'ulid';
 import { vi } from 'vitest';
 import { EventsConsumer } from '../events-consumer.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
+import { describeDivergenceContext } from '../replay-divergence.js';
 import { ReplayPayloadCache } from '../replay-payload-cache.js';
 import { createContext } from '../vm/index.js';
 
@@ -23,6 +24,10 @@ export function setupWorkflowContext(
     fixedTimestamp: 1753481739458,
   });
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
+  // Real-session parity: the log-order-draws quiescence fixpoint keys its
+  // progress metric on `mintCount`. Without it the loop degrades to a single
+  // turn and these suites would only exercise a degraded variant.
+  let mintCount = 0;
   const workflowStartedAt = context.globalThis.Date.now();
   const promiseQueueHolder = { current: Promise.resolve() };
   // Forward onUnconsumedEvent through ctx.onWorkflowError so tests that wire
@@ -40,9 +45,13 @@ export function setupWorkflowContext(
       // Fake context: no deliveries are modeled, so the gate is a no-op here.
       isDeliveryIdle: () => true,
       onUnconsumedEvent: (event) => {
-        ctxRef.current?.onWorkflowError(
+        const current = ctxRef.current;
+        if (!current) return;
+        // Same detail the production path appends (see `onUnconsumedEvent` in
+        // workflow.ts), so a test can assert on what a user would read.
+        current.onWorkflowError(
           new WorkflowRuntimeError(
-            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
+            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log. ${describeDivergenceContext(event, current.invocationsQueue, current.eventsConsumer)}`
           )
         );
       },
@@ -50,7 +59,13 @@ export function setupWorkflowContext(
       getPromiseQueue: () => promiseQueueHolder.current,
     }),
     invocationsQueue: new Map(),
-    generateUlid: () => ulid(workflowStartedAt),
+    generateUlid: () => {
+      mintCount += 1;
+      return ulid(workflowStartedAt);
+    },
+    get mintCount() {
+      return mintCount;
+    },
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),

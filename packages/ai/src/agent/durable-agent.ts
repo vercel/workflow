@@ -43,12 +43,16 @@ export { Output };
 
 /**
  * Infer the type of the tools of a durable agent.
+ *
+ * @deprecated Use `InferWorkflowAgentTools` from `@ai-sdk/workflow` for Workflow 5 applications.
  */
 export type InferDurableAgentTools<DURABLE_AGENT> =
   DURABLE_AGENT extends DurableAgent<infer TOOLS> ? TOOLS : never;
 
 /**
  * Infer the UI message type of a durable agent.
+ *
+ * @deprecated Use `InferWorkflowAgentUIMessage` from `@ai-sdk/workflow` for Workflow 5 applications.
  */
 export type InferDurableAgentUIMessage<
   DURABLE_AGENT,
@@ -331,13 +335,15 @@ export type PrepareStepCallback<TTools extends ToolSet = ToolSet> = (
 
 /**
  * Configuration options for creating a {@link DurableAgent} instance.
+ *
+ * @deprecated Use `WorkflowAgentOptions` from `@ai-sdk/workflow` for Workflow 5 applications.
  */
 export interface DurableAgentOptions<TTools extends ToolSet = ToolSet>
   extends GenerationSettings {
   /**
    * The model provider to use for the agent.
    *
-   * This should be a string compatible with the Vercel AI Gateway (e.g., 'anthropic/claude-opus'),
+   * This should be a string compatible with the Vercel AI Gateway (e.g., 'spacexai/grok-4.6'),
    * or a step function that returns a LanguageModelV3 instance.
    */
   model: string | (() => Promise<CompatibleLanguageModel>);
@@ -464,6 +470,8 @@ export type StreamTextOnAbortCallback<TTools extends ToolSet = ToolSet> =
 
 /**
  * Options for the {@link DurableAgent.stream} method.
+ *
+ * @deprecated Use `WorkflowAgentStreamOptions` from `@ai-sdk/workflow` for Workflow 5 applications.
  */
 export interface DurableAgentStreamOptions<
   TTools extends ToolSet = ToolSet,
@@ -575,7 +583,7 @@ export interface DurableAgentStreamOptions<
   /**
    * Whether to include raw chunks from the provider in the stream.
    * When enabled, you will receive raw chunks with type 'raw' that contain the unprocessed data from the provider.
-   * This allows access to cutting-edge provider features not yet wrapped by the AI SDK.
+   * This allows access to provider features not yet wrapped by the AI SDK.
    * Defaults to false.
    */
   includeRawChunks?: boolean;
@@ -693,6 +701,8 @@ export interface ToolResult {
 
 /**
  * Result of the DurableAgent.stream method.
+ *
+ * @deprecated Use `WorkflowAgentStreamResult` from `@ai-sdk/workflow` for Workflow 5 applications.
  */
 export interface DurableAgentStreamResult<
   TTools extends ToolSet = ToolSet,
@@ -763,13 +773,13 @@ export interface DurableAgentStreamResult<
  *
  * DurableAgent enables you to create AI-powered agents that can maintain state
  * across workflow steps, call tools, and gracefully handle interruptions and resumptions.
- * It integrates seamlessly with the AI SDK and the Workflow SDK for
+ * It integrates with the AI SDK and the Workflow SDK for
  * production-grade reliability.
  *
  * @example
  * ```typescript
  * const agent = new DurableAgent({
- *   model: 'anthropic/claude-opus',
+ *   model: 'spacexai/grok-4.6',
  *   tools: {
  *     getWeather: {
  *       description: 'Get weather for a location',
@@ -785,6 +795,8 @@ export interface DurableAgentStreamResult<
  *   writable: getWritable<UIMessageChunk>(),
  * });
  * ```
+ *
+ * @deprecated Use `WorkflowAgent` from `@ai-sdk/workflow` for Workflow 5 applications. `DurableAgent` remains supported for Workflow 4 maintenance applications.
  */
 export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
   private model: string | (() => Promise<CompatibleLanguageModel>);
@@ -1082,7 +1094,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
 
           // Further split non-provider tool calls into executable (has execute function)
           // and client-side (no execute function, needs external resolution)
-          // Note: missing tools (!tool) are left to executeTool which will throw —
+          // Note: missing tools (!tool) are left to executeTool which will throw;
           // only tools that exist but lack execute are treated as client-side.
           const executableToolCalls = nonProviderToolCalls.filter((tc) => {
             const tool = (effectiveTools as ToolSet)[tc.toolName];
@@ -1789,7 +1801,7 @@ async function executeTool(
     attributes: {
       'ai.toolCall.name': toolCall.toolName,
       'ai.toolCall.id': toolCall.toolCallId,
-      // Gate input recording on recordOutputs (AI SDK convention — tool args
+      // Gate input recording on recordOutputs (AI SDK convention: tool args
       // are considered "output" of the model, not user input)
       ...(telemetry?.recordOutputs !== false && {
         'ai.toolCall.args': toolCall.input,

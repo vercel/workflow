@@ -11,7 +11,12 @@ import {
   start as rawStart,
   resumeHook,
 } from '../src/runtime';
-import { getWorkflowMetadata, setupWorld, trackRun } from './utils';
+import {
+  describeRunError,
+  getWorkflowMetadata,
+  setupWorld,
+  trackRun,
+} from './utils';
 
 /**
  * Deliberate reproduction harness for `CORRUPTED_EVENT_LOG`.
@@ -25,7 +30,12 @@ import { getWorkflowMetadata, setupWorld, trackRun } from './utils';
  * becomes unrecoverable rather than a benign retry.
  *
  * The `step-storm` and `hook-storm` scenarios supply all three by construction
- * (see `workflows/103_event_log_corruption_repro.ts`). `hook-sleep` is retained
+ * (see `workflows/103_event_log_corruption_repro.ts`). `blocked-branch` parks
+ * each branch on a step before its race. `wake-loop` is the sequential shape:
+ * one loop racing a reusable hook read against a heartbeat sleep, with the
+ * concurrency supplied by the driver's resumes rather than by fan-out, taken
+ * from a production run whose replays of one immutable prefix diverged
+ * non-deterministically. `hook-sleep` is retained
  * as a calibration control: it is the shape that has historically produced a
  * nonzero — but very low, ~0.1% — corruption rate, so its rate is the yardstick
  * the storms are meant to beat.
@@ -57,7 +67,12 @@ const RESULT_PATH = path.resolve(
 const STORM_WORKFLOW_FILE = 'workflows/103_event_log_corruption_repro.ts';
 const CONTROL_WORKFLOW_FILE = 'workflows/101_hook_sleep_repro.ts';
 
-type Scenario = 'step-storm' | 'hook-storm' | 'hook-sleep';
+type Scenario =
+  | 'step-storm'
+  | 'hook-storm'
+  | 'blocked-branch'
+  | 'wake-loop'
+  | 'hook-sleep';
 
 type Outcome =
   | 'completed'
@@ -76,6 +91,8 @@ type Outcome =
 interface ReproConfig {
   stepStormAttempts: number;
   hookStormAttempts: number;
+  blockedBranchAttempts: number;
+  wakeLoopAttempts: number;
   hookSleepAttempts: number;
   concurrency: number;
   /** Wall-clock budget for *launching* attempts. Once it is spent no new
@@ -103,21 +120,78 @@ interface ReproConfig {
    *  an out-of-band `hook_received` write plus an extra invocation. */
   pokeIntervalMs: number;
   pokeJitterMs: number;
-  /** `step-storm`: ceiling on poke resumes per run.
+  /** `step-storm`: how many pokes run at the full {@link pokeIntervalMs}
+   *  cadence before the pump decays to `pokeIntervalMs * pokeDecayFactor`.
    *
-   *  The pump is a wall-clock cadence, so without a ceiling a run accumulates
+   *  Unbounded, the pump is a pure wall-clock cadence, so a run accumulates
    *  pressure in proportion to how long it takes rather than to the work it
-   *  does — and the pressure is not free to carry: every poke appends a
-   *  `hook_received` that each of the run's ~N remaining replays re-reads and
-   *  re-buffers, so slow runs get more pokes, which makes them slower. On a
-   *  4-core CI runner with the default cadence that ran away to ~270 pokes per
-   *  run and none of the six concurrent runs ever finished; a healthy 6-round
-   *  run on an unloaded machine sends 35-41. This clips only the runaway. */
+   *  does — and that pressure is not free to carry: every poke appends a
+   *  `hook_received` that each of the run's remaining replays re-reads and
+   *  re-buffers, so a slow run earns more pokes, which makes it slower. On a
+   *  4-core CI runner that ran away to ~270 pokes per run and none of the six
+   *  concurrent runs ever finished.
+   *
+   *  Decaying rather than stopping keeps the loop gain below 1 without leaving
+   *  a slow run's later rounds unpressured — a hard stop at this count left the
+   *  back half of a 160s CI run with no out-of-band writes at all. The budget is
+   *  sized so a healthy 6-round run (35-41 pokes) never reaches it, and the
+   *  decayed rate lands a saturated CI run near the ~2.3s effective cadence the
+   *  Vercel lane already runs at, where each resume pays a network round trip. */
   pokeMax: number;
+  /** Multiplier applied to {@link pokeIntervalMs} once {@link pokeMax} pokes
+   *  have been sent. 1 disables the decay and restores the runaway. */
+  pokeDecayFactor: number;
   /** `hook-storm`: per-index delay between resumes inside a round's burst. Set
    *  so the burst straddles `watchdogMs` and the straggler count varies. */
   hookResumeStaggerMs: number;
   hookResumeOffsetMs: number;
+  /** `blocked-branch`: per-index spacing of the launch step's duration, so a
+   *  round's launch completions commit spread out instead of in one batch. */
+  launchStaggerMs: number;
+  /** `blocked-branch`: delay from a round's hooks existing to the resume
+   *  burst. Aim it at the tail of the launch-completion spread — the burst has
+   *  to land while a sibling's launch `step_completed` is committing, so a
+   *  hook-woken replay can hold a log that ends just before it. */
+  resumeBurstOffsetMs: number;
+  /** `blocked-branch`: uniform jitter added to the burst offset per round, so
+   *  attempts sweep the window instead of betting on one alignment. */
+  resumeBurstJitterMs: number;
+  /** `blocked-branch`: watchdog for the hook race. Sized to normally LOSE to
+   *  the resume burst — the watchdog's role here is to enter a wait entity
+   *  into the race (the entity whose ordinal gets stolen), not to fire. */
+  blockedBranchWatchdogMs: number;
+  /** `wake-loop`: fresh wakes the run processes before it returns. Each one is
+   *  a four-step cycle; the run's length in events is roughly proportional. */
+  wakeLoopWakes: number;
+  /** `wake-loop`: the heartbeat sleep raced against the hook read. The driver
+   *  aims part of its wakes at this deadline, so `hook_received` and
+   *  `wait_completed` commit next to each other. */
+  wakeLoopHeartbeatMs: number;
+  /** `wake-loop`: base duration of the cycle's drain step, and the deterministic
+   *  spread added to it. Long enough for a heartbeat completion and a wake burst
+   *  to land while replays are parked on the step. */
+  wakeLoopStepDelayMs: number;
+  wakeLoopStepDelayJitterMs: number;
+  /** `wake-loop`: bytes every step returns, so replays pay real hydration. */
+  wakeLoopStepPayloadBytes: number;
+  /** `wake-loop`: every Nth cycle's drain reports more work and the loop runs
+   *  another cycle without racing. 0 disables. */
+  wakeLoopContinueEvery: number;
+  /** `wake-loop`: share of wakes carrying `fresh: true`. A stale wake emits no
+   *  step, a fresh one emits four: the step-count amplifier of this shape. */
+  wakeLoopFreshRatio: number;
+  /** `wake-loop`: share of driver sends that are a burst of `wakeLoopBurstSize`
+   *  near-simultaneous resumes instead of one. */
+  wakeLoopBurstRatio: number;
+  wakeLoopBurstSize: number;
+  /** `wake-loop`: gap between driver sends when it is not idling. */
+  wakeLoopGapMinMs: number;
+  wakeLoopGapMaxMs: number;
+  /** `wake-loop`: share of gaps that instead idle for about one heartbeat, so
+   *  the next wake lands at the heartbeat deadline. */
+  wakeLoopIdleRatio: number;
+  /** `wake-loop`: hard cap on cycles per run. */
+  wakeLoopMaxCycles: number;
   /** `hook-sleep` control knobs. */
   iterations: number;
   sleepMs: number;
@@ -148,6 +222,18 @@ interface ReproRunResult {
     resumesSent: number;
     resumesFailed: number;
     stragglers?: number;
+    /** `wake-loop`: what the driver sent and what the run reported consuming.
+     *  A corruption with `bursts: 0` and `idles: 0` would mean neither of the
+     *  two collision patterns this scenario aims for was in play. */
+    wakeLoop?: {
+      fresh: number;
+      stale: number;
+      bursts: number;
+      idles: number;
+      cycles?: number;
+      heartbeats?: number;
+      staleConsumed?: number;
+    };
   };
   /** How far a `stuck` run actually got, read off its event log when the
    *  harness gave up on it. This is the difference between "the run is
@@ -185,6 +271,11 @@ function envBoolean(name: string, fallback: boolean) {
 const config: ReproConfig = {
   stepStormAttempts: envNumber('EVENT_LOG_RACE_REPRO_STEP_STORM_ATTEMPTS', 6),
   hookStormAttempts: envNumber('EVENT_LOG_RACE_REPRO_HOOK_STORM_ATTEMPTS', 6),
+  blockedBranchAttempts: envNumber(
+    'EVENT_LOG_RACE_REPRO_BLOCKED_BRANCH_ATTEMPTS',
+    6
+  ),
+  wakeLoopAttempts: envNumber('EVENT_LOG_RACE_REPRO_WAKE_LOOP_ATTEMPTS', 6),
   hookSleepAttempts: envNumber('EVENT_LOG_RACE_REPRO_ATTEMPTS', 2),
   // Cross-run concurrency is throughput only — the race being reproduced is
   // between concurrent replays *within* one run, driven by `rounds`/`width` and
@@ -217,6 +308,7 @@ const config: ReproConfig = {
   pokeIntervalMs: envNumber('EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS', 750),
   pokeJitterMs: envNumber('EVENT_LOG_RACE_REPRO_POKE_JITTER_MS', 250),
   pokeMax: envNumber('EVENT_LOG_RACE_REPRO_POKE_MAX', 64),
+  pokeDecayFactor: envNumber('EVENT_LOG_RACE_REPRO_POKE_DECAY_FACTOR', 8),
   hookResumeStaggerMs: envNumber(
     'EVENT_LOG_RACE_REPRO_HOOK_RESUME_STAGGER_MS',
     400
@@ -225,6 +317,63 @@ const config: ReproConfig = {
     'EVENT_LOG_RACE_REPRO_HOOK_RESUME_OFFSET_MS',
     0
   ),
+  launchStaggerMs: envNumber('EVENT_LOG_RACE_REPRO_LAUNCH_STAGGER_MS', 300),
+  // Default aim: the last launch completes at roughly
+  // `stepDelayMs + (width - 1) * launchStaggerMs` after the round's suspension
+  // (2200 + 7*300 = 4300ms at the defaults) plus dispatch latency; the jitter
+  // sweeps the burst across that tail.
+  resumeBurstOffsetMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_RESUME_BURST_OFFSET_MS',
+    4000
+  ),
+  resumeBurstJitterMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_RESUME_BURST_JITTER_MS',
+    1200
+  ),
+  blockedBranchWatchdogMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_BLOCKED_BRANCH_WATCHDOG_MS',
+    8000
+  ),
+  wakeLoopWakes: envNumber('EVENT_LOG_RACE_REPRO_WAKE_LOOP_WAKES', 12),
+  wakeLoopHeartbeatMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_WAKE_LOOP_HEARTBEAT_MS',
+    4000
+  ),
+  wakeLoopStepDelayMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_WAKE_LOOP_STEP_DELAY_MS',
+    600
+  ),
+  wakeLoopStepDelayJitterMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_WAKE_LOOP_STEP_DELAY_JITTER_MS',
+    500
+  ),
+  wakeLoopStepPayloadBytes: envNumber(
+    'EVENT_LOG_RACE_REPRO_WAKE_LOOP_STEP_PAYLOAD_BYTES',
+    8192
+  ),
+  wakeLoopContinueEvery: envNumber(
+    'EVENT_LOG_RACE_REPRO_WAKE_LOOP_CONTINUE_EVERY',
+    5
+  ),
+  wakeLoopFreshRatio: envNumber(
+    'EVENT_LOG_RACE_REPRO_WAKE_LOOP_FRESH_RATIO',
+    0.5
+  ),
+  wakeLoopBurstRatio: envNumber(
+    'EVENT_LOG_RACE_REPRO_WAKE_LOOP_BURST_RATIO',
+    0.25
+  ),
+  wakeLoopBurstSize: envNumber('EVENT_LOG_RACE_REPRO_WAKE_LOOP_BURST_SIZE', 4),
+  wakeLoopGapMinMs: envNumber('EVENT_LOG_RACE_REPRO_WAKE_LOOP_GAP_MIN_MS', 200),
+  wakeLoopGapMaxMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_WAKE_LOOP_GAP_MAX_MS',
+    1500
+  ),
+  wakeLoopIdleRatio: envNumber(
+    'EVENT_LOG_RACE_REPRO_WAKE_LOOP_IDLE_RATIO',
+    0.3
+  ),
+  wakeLoopMaxCycles: envNumber('EVENT_LOG_RACE_REPRO_WAKE_LOOP_MAX_CYCLES', 80),
   iterations: envNumber('EVENT_LOG_RACE_REPRO_ITERATIONS', 8),
   sleepMs: envNumber('EVENT_LOG_RACE_REPRO_SLEEP_MS', 5000),
   resumeDelayMs: envNumber('EVENT_LOG_RACE_REPRO_RESUME_DELAY_MS', 15_000),
@@ -448,21 +597,24 @@ async function pollTerminalRun(
 
     if (runData.status === 'failed') {
       // The machine-readable reason is the plaintext top-level `errorCode`.
-      // `error` is rehydrated into an `Error` instance carrying only
-      // `name`/`message`, so reading `error.code` misclassifies every real
-      // failure as `other` — which is exactly how earlier runs of this job
-      // reported corruptions.
-      const failure = runData as {
-        errorCode?: string;
-        error?: { name?: string; message?: string };
-      };
+      // Reading `error.code` instead misclassifies every real failure as
+      // `other` — which is exactly how earlier runs of this job reported
+      // corruptions.
+      //
+      // `errorCode` alone cannot tell two corruptions apart, and telling them
+      // apart is the whole point of a job that has to say whether a fix
+      // closed *this* class. The divergence text lives in `error`, which
+      // world-vercel hands back as un-hydrated bytes, so `describeRunError`
+      // hydrates it rather than reading a `.message` that is always
+      // `undefined` there.
+      const failure = runData as { errorCode?: string; error?: unknown };
+      const described = await describeRunError(failure.error, run.runId);
       return {
         ...base,
         outcome: classifyFailure(failure.errorCode),
         status: runData.status,
         errorCode: failure.errorCode,
-        errorMessage: failure.error?.message,
-        errorName: failure.error?.name,
+        ...described,
         durationMs: Date.now() - startedAt,
       };
     }
@@ -653,17 +805,25 @@ async function runStepStormAttempt(attempt: number): Promise<ReproRunResult> {
       scenario,
       async (driverState) => {
         const hook = await waitForHook(`${token}:poke`, run.runId, driverState);
-        while (!driverState.done && driverState.resumesSent < config.pokeMax) {
+        while (!driverState.done) {
           await tryResume(driverState, hook, {
             index: -1,
             round: -1,
             sentAt: Date.now(),
           });
+          // Full cadence until the budget is spent, a slower one after — see
+          // `pokeMax`. The pump never stops while the run is alive, so a run
+          // that outlives its budget still gets out-of-band writes in its
+          // later rounds; it just stops being able to bury itself in them.
+          const interval =
+            driverState.resumesSent >= config.pokeMax
+              ? config.pokeIntervalMs * config.pokeDecayFactor
+              : config.pokeIntervalMs;
           const jitter =
             config.pokeJitterMs > 0
               ? Math.floor(Math.random() * config.pokeJitterMs)
               : 0;
-          await sleep(config.pokeIntervalMs + jitter);
+          await sleep(interval + jitter);
         }
       }
     );
@@ -766,6 +926,106 @@ async function runHookStormAttempt(attempt: number): Promise<ReproRunResult> {
   }
 }
 
+/**
+ * `blocked-branch`: each branch parks on a launch step BEFORE racing its hook
+ * against a watchdog, so a hook-woken replay can hold a log that ends just
+ * before a sibling's launch completion — that sibling then contributes zero
+ * correlation-id draws (not even its watchdog wait), and the woken branch's
+ * finalize takes the ordinal a fresher writer gives the sibling's wait. The
+ * driver's job is to land the whole resume burst (no stagger — the production
+ * shape was near-simultaneous callbacks) at the tail of the round's
+ * launch-completion spread, jittered per round so attempts sweep the window.
+ */
+async function runBlockedBranchAttempt(
+  attempt: number
+): Promise<ReproRunResult> {
+  const scenario: Scenario = 'blocked-branch';
+  const startedAt = Date.now();
+  const token = makeToken(scenario, attempt);
+
+  try {
+    const workflow = await getWorkflowMetadata(
+      deploymentUrl,
+      STORM_WORKFLOW_FILE,
+      'blockedBranchReproWorkflow'
+    );
+    const run = await start(
+      scenario,
+      STORM_WORKFLOW_FILE,
+      'blockedBranchReproWorkflow',
+      workflow,
+      [
+        {
+          ...stormInput(token),
+          launchStaggerMs: config.launchStaggerMs,
+          watchdogMs: config.blockedBranchWatchdogMs,
+        },
+      ]
+    );
+
+    const { runResult, state } = await drive(
+      run,
+      startedAt,
+      scenario,
+      async (driverState) => {
+        for (let round = 0; round < config.rounds; round += 1) {
+          if (driverState.done) return;
+
+          // Round `n`'s hooks only exist once round `n - 1` finished, so this
+          // wait doubles as the round barrier. The hooks are created by the
+          // round's first suspension, which is also when the launch steps
+          // dispatch — so the burst offset below is measured from (roughly)
+          // launch dispatch.
+          await waitForHook(`${token}:${round}:0`, run.runId, driverState);
+          const jitter =
+            config.resumeBurstJitterMs > 0
+              ? Math.floor(Math.random() * config.resumeBurstJitterMs)
+              : 0;
+          await sleep(config.resumeBurstOffsetMs + jitter);
+          if (driverState.done) return;
+
+          // One burst, no stagger: every resume both settles a branch and
+          // wakes its own invocation, and the invocations' event loads race
+          // the last launch completions' commits.
+          await Promise.all(
+            Array.from({ length: config.width }, async (_, index) => {
+              let hook: Awaited<ReturnType<typeof getHookByToken>>;
+              try {
+                hook = await waitForHook(
+                  `${token}:${round}:${index}`,
+                  run.runId,
+                  driverState,
+                  5000
+                );
+              } catch {
+                // The branch's watchdog already fired and disposed the hook.
+                driverState.resumesFailed += 1;
+                return;
+              }
+              await tryResume(driverState, hook, {
+                index,
+                round,
+                sentAt: Date.now(),
+              });
+            })
+          );
+        }
+      }
+    );
+
+    return await finishStormAttempt(
+      run,
+      runResult,
+      state,
+      attempt,
+      scenario,
+      token
+    );
+  } catch (err) {
+    return harnessFailure(scenario, attempt, token, startedAt, err);
+  }
+}
+
 async function finishStormAttempt(
   run: Run<unknown>,
   runResult: ReproRunResult,
@@ -809,6 +1069,196 @@ async function finishStormAttempt(
     scenario,
     token,
   };
+}
+
+/**
+ * Consistency check for a `wake-loop` ledger. A run whose replay diverged but
+ * still completed would usually disagree with itself here: a wake counted that
+ * no cycle records, or a cycle attributed to a heartbeat the counters never saw.
+ */
+function validateWakeLoopReturn(value: unknown): { error?: string } {
+  if (!isRecord(value)) {
+    return { error: 'Run returned a non-object value.' };
+  }
+  const ledger = value.ledger;
+  if (!Array.isArray(ledger)) {
+    return { error: 'Run did not return a ledger.' };
+  }
+  if (ledger.length !== value.cycles) {
+    return {
+      error: `Run counted ${String(value.cycles)} cycles but recorded ${ledger.length}.`,
+    };
+  }
+  if (value.freshWakes !== config.wakeLoopWakes) {
+    return {
+      error: `Run processed ${String(value.freshWakes)} fresh wakes instead of ${config.wakeLoopWakes}.`,
+    };
+  }
+  const byCause = (cause: string) =>
+    ledger.filter((entry) => isRecord(entry) && entry.cause === cause).length;
+  if (byCause('wake') !== value.freshWakes) {
+    return {
+      error: `Run counted ${String(value.freshWakes)} fresh wakes but recorded ${byCause('wake')} wake cycles.`,
+    };
+  }
+  if (byCause('heartbeat') !== value.heartbeats) {
+    return {
+      error: `Run counted ${String(value.heartbeats)} heartbeats but recorded ${byCause('heartbeat')} heartbeat cycles.`,
+    };
+  }
+  if (byCause('start') !== 1) {
+    return { error: `Run recorded ${byCause('start')} start cycles.` };
+  }
+  return {};
+}
+
+/**
+ * `wake-loop`: one sequential loop racing a reusable hook read against a
+ * heartbeat sleep (see `wakeLoopReproWorkflow`). The driver is the only source
+ * of concurrency: every resume it sends wakes its own invocation, so it sends
+ * them the way the production caller did — single wakes at a short random
+ * cadence, bursts of several near-simultaneous wakes, and after idle gaps of
+ * about one heartbeat, so a `hook_received` commits right next to the
+ * heartbeat's `wait_completed`. Half the wakes are stale by default: the run
+ * consumes those without emitting a step, so which wake a replay pairs with
+ * which race decides how many steps it emits.
+ */
+async function runWakeLoopAttempt(attempt: number): Promise<ReproRunResult> {
+  const scenario: Scenario = 'wake-loop';
+  const startedAt = Date.now();
+  const token = makeToken(scenario, attempt);
+
+  try {
+    const workflow = await getWorkflowMetadata(
+      deploymentUrl,
+      STORM_WORKFLOW_FILE,
+      'wakeLoopReproWorkflow'
+    );
+    const run = await start(
+      scenario,
+      STORM_WORKFLOW_FILE,
+      'wakeLoopReproWorkflow',
+      workflow,
+      [
+        {
+          continueEvery: config.wakeLoopContinueEvery,
+          heartbeatMs: config.wakeLoopHeartbeatMs,
+          maxCycles: config.wakeLoopMaxCycles,
+          stepDelayJitterMs: config.wakeLoopStepDelayJitterMs,
+          stepDelayMs: config.wakeLoopStepDelayMs,
+          stepPayloadBytes: config.wakeLoopStepPayloadBytes,
+          token,
+          wakes: config.wakeLoopWakes,
+        },
+      ]
+    );
+
+    let fresh = 0;
+    let stale = 0;
+    let bursts = 0;
+    let idles = 0;
+    const { runResult, state } = await drive(
+      run,
+      startedAt,
+      scenario,
+      async (driverState) => {
+        const hook = await waitForHook(token, run.runId, driverState);
+        let seq = 0;
+        const send = async () => {
+          const isFresh = Math.random() < config.wakeLoopFreshRatio;
+          if (isFresh) fresh += 1;
+          else stale += 1;
+          seq += 1;
+          await tryResume(driverState, hook, {
+            fresh: isFresh,
+            sentAt: Date.now(),
+            seq,
+          });
+        };
+        while (!driverState.done) {
+          if (Math.random() < config.wakeLoopBurstRatio) {
+            bursts += 1;
+            await Promise.all(
+              Array.from({ length: config.wakeLoopBurstSize }, () => send())
+            );
+          } else {
+            await send();
+          }
+          if (driverState.done) return;
+          if (Math.random() < config.wakeLoopIdleRatio) {
+            // Idle for about one heartbeat, so the next wake lands at the
+            // heartbeat deadline from either side.
+            idles += 1;
+            const spread = Math.floor(config.wakeLoopHeartbeatMs * 0.2);
+            await sleep(
+              config.wakeLoopHeartbeatMs -
+                spread +
+                Math.floor(Math.random() * 2 * spread)
+            );
+          } else {
+            await sleep(
+              config.wakeLoopGapMinMs +
+                Math.floor(
+                  Math.random() *
+                    (config.wakeLoopGapMaxMs - config.wakeLoopGapMinMs)
+                )
+            );
+          }
+        }
+      }
+    );
+
+    const pressure = {
+      resumesFailed: state.resumesFailed,
+      resumesSent: state.resumesSent,
+      wakeLoop: { fresh, stale, bursts, idles },
+    };
+
+    if (runResult.outcome !== 'completed') {
+      return { ...runResult, attempt, pressure, scenario, token };
+    }
+
+    const returnValue = await withTimeout(
+      run.returnValue,
+      30_000,
+      `Timed out reading return value for run ${run.runId}`
+    );
+    const validation = validateWakeLoopReturn(returnValue);
+    if (validation.error) {
+      return {
+        ...runResult,
+        attempt,
+        errorCode: 'BAD_WAKE_LOOP_LEDGER',
+        errorMessage: validation.error,
+        outcome: 'other',
+        pressure,
+        scenario,
+        token,
+      };
+    }
+    const summary = returnValue as {
+      cycles: number;
+      heartbeats: number;
+      staleWakes: number;
+    };
+    return {
+      ...runResult,
+      attempt,
+      pressure: {
+        ...pressure,
+        wakeLoop: {
+          ...pressure.wakeLoop,
+          cycles: summary.cycles,
+          heartbeats: summary.heartbeats,
+          staleConsumed: summary.staleWakes,
+        },
+      },
+      scenario,
+      token,
+    };
+  } catch (err) {
+    return harnessFailure(scenario, attempt, token, startedAt, err);
+  }
 }
 
 /**
@@ -963,6 +1413,8 @@ function summarizeByScenario(results: ReproRunResult[]) {
     {
       'step-storm': emptyOutcomeCounts(),
       'hook-storm': emptyOutcomeCounts(),
+      'blocked-branch': emptyOutcomeCounts(),
+      'wake-loop': emptyOutcomeCounts(),
       'hook-sleep': emptyOutcomeCounts(),
     }
   );
@@ -979,6 +1431,8 @@ const collected: ReproRunResult[] = [];
 const plannedAttempts =
   config.stepStormAttempts +
   config.hookStormAttempts +
+  config.blockedBranchAttempts +
+  config.wakeLoopAttempts +
   config.hookSleepAttempts;
 let overallDeadline = Number.POSITIVE_INFINITY;
 let launchDeadline = Number.POSITIVE_INFINITY;
@@ -1097,6 +1551,45 @@ describe('event log race repro', { retry: 0 }, () => {
       );
     }
 
+    // blocked-branch: the burst must land inside the launch-completion spread
+    // (after the first completion, not after the watchdogs), or no replay can
+    // be missing a sibling's completion while holding a woken branch.
+    const lastLaunchMs =
+      config.stepDelayMs + (config.width - 1) * config.launchStaggerMs;
+    if (
+      config.resumeBurstOffsetMs + config.resumeBurstJitterMs <=
+      config.stepDelayMs
+    ) {
+      console.warn(
+        `[event-log-race-repro] blocked-branch resume burst (offset ${config.resumeBurstOffsetMs}ms ` +
+          `+ jitter ${config.resumeBurstJitterMs}ms) always lands before the first launch ` +
+          `completion (~${config.stepDelayMs}ms). No branch can be parked on a completion ` +
+          `the woken replays are missing.`
+      );
+    }
+    if (
+      config.resumeBurstOffsetMs >=
+      lastLaunchMs + config.blockedBranchWatchdogMs
+    ) {
+      console.warn(
+        `[event-log-race-repro] blocked-branch resume burst offset (${config.resumeBurstOffsetMs}ms) ` +
+          `lands after every watchdog deadline (last launch ~${lastLaunchMs}ms + ` +
+          `watchdog ${config.blockedBranchWatchdogMs}ms). Every branch will take the ` +
+          `recovery path and the resumes race nothing.`
+      );
+    }
+
+    // wake-loop: the driver's short cadence has to stay under the heartbeat, or
+    // the heartbeat never wins a race and the shape degenerates into a plain
+    // hook loop with no `wait_completed` to order against.
+    if (config.wakeLoopGapMaxMs >= config.wakeLoopHeartbeatMs) {
+      console.warn(
+        `[event-log-race-repro] wake-loop gap ceiling (${config.wakeLoopGapMaxMs}ms) is not ` +
+          `below its heartbeat (${config.wakeLoopHeartbeatMs}ms). Heartbeats will win ` +
+          `most races and wakes will rarely commit next to a wait_completed.`
+      );
+    }
+
     const sleepBudgetMs = config.iterations * config.sleepMs;
     const resumeCeilingMs = config.resumeDelayMs + config.resumeJitterMs;
     if (resumeCeilingMs >= sleepBudgetMs) {
@@ -1126,6 +1619,16 @@ describe('event log race repro', { retry: 0 }, () => {
         config.hookStormAttempts,
         config.concurrency,
         runHookStormAttempt
+      );
+      await runScenario(
+        config.blockedBranchAttempts,
+        config.concurrency,
+        runBlockedBranchAttempt
+      );
+      await runScenario(
+        config.wakeLoopAttempts,
+        config.concurrency,
+        runWakeLoopAttempt
       );
       await runScenario(
         config.hookSleepAttempts,

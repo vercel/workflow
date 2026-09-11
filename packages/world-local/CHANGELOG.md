@@ -1,5 +1,87 @@
 # @workflow/world-local
 
+## 5.0.0-beta.43
+
+### Minor Changes
+
+- [#3787](https://github.com/vercel/workflow/pull/3787) [`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an `experimental_retention` option to `start()`: `experimental_retention: 0` asks the World to delete the run's user data as soon as the run completes or fails, while keeping the run itself listable. Implemented on the Vercel, Postgres and Local Worlds. Reading a run whose data has expired now throws `RunExpiredError` instead of resolving to a placeholder.
+
+### Patch Changes
+
+- [#4051](https://github.com/vercel/workflow/pull/4051) [`9a5660f`](https://github.com/vercel/workflow/commit/9a5660fbd64165e41f6b346407b1c0a099a8123b) Thanks [@chadhietala](https://github.com/chadhietala)! - Retry transient Windows file-lock failures while reading JSON files.
+
+- Updated dependencies [[`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd), [`4547e1a`](https://github.com/vercel/workflow/commit/4547e1a7a95f273f3166edf45344dc827f1935fa)]:
+  - @workflow/errors@5.0.0-beta.21
+  - @workflow/world@5.0.0-beta.34
+
+## 5.0.0-beta.42
+
+### Patch Changes
+
+- [#3938](https://github.com/vercel/workflow/pull/3938) [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46) Thanks [@pranaygp](https://github.com/pranaygp)! - Answer the `sinceCursor` event-log delta on a `hook_conflict` write the same way as on `hook_created`.
+
+- Updated dependencies [[`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`4a18b01`](https://github.com/vercel/workflow/commit/4a18b0133aaedaf922b903818c6b0db3adc91beb), [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491), [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15)]:
+  - @workflow/world@5.0.0-beta.33
+  - @workflow/errors@5.0.0-beta.20
+
+## 5.0.0-beta.41
+
+### Patch Changes
+
+- [#3878](https://github.com/vercel/workflow/pull/3878) [`ffc5807`](https://github.com/vercel/workflow/commit/ffc58078d0c3cd2786d69bab7e41614566a9ea4e) Thanks [@pranaygp](https://github.com/pranaygp)! - Stop logging on healthy workflow execution: the breadcrumbs that only described the runtime working correctly now print under `DEBUG=workflow:*`. Warnings and errors are unchanged.
+
+- [#3824](https://github.com/vercel/workflow/pull/3824) [`3e0c18a`](https://github.com/vercel/workflow/commit/3e0c18a4cab731a80942a334a01c7e215a784694) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Abort active local queue deliveries when the World closes, including when transport timeouts are disabled.
+
+- Updated dependencies [[`855e479`](https://github.com/vercel/workflow/commit/855e47990c0da35419325da27976bae925afb0e9), [`2668e33`](https://github.com/vercel/workflow/commit/2668e3325ba89dec973c3c2f35c49efdb239de8d), [`e9d5c56`](https://github.com/vercel/workflow/commit/e9d5c56701821b090108a85b74bf8b0cbef8ea8e), [`ffc5807`](https://github.com/vercel/workflow/commit/ffc58078d0c3cd2786d69bab7e41614566a9ea4e)]:
+  - @workflow/world@5.0.0-beta.32
+  - @workflow/utils@5.0.0-beta.10
+  - @workflow/errors@5.0.0-beta.19
+
+## 5.0.0-beta.40
+
+### Patch Changes
+
+- Updated dependencies [[`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d)]:
+  - @workflow/world@5.0.0-beta.31
+  - @workflow/errors@5.0.0-beta.18
+
+## 5.0.0-beta.39
+
+### Patch Changes
+
+- Updated dependencies [[`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c)]:
+  - @workflow/world@5.0.0-beta.30
+  - @workflow/errors@5.0.0-beta.18
+
+## 5.0.0-beta.38
+
+### Minor Changes
+
+- [#3570](https://github.com/vercel/workflow/pull/3570) [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `world.runs.waitForTerminalStatus(runId, { timeoutMs, signal, resolveData })` method, which long-polls until the run reaches a terminal status. `await run.returnValue` now internally uses this, if the World supports it, instead of using a polling interval.
+
+- [#3634](https://github.com/vercel/workflow/pull/3634) [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0) Thanks [@pranaygp](https://github.com/pranaygp)! - New runs are created with the sealed-log event identity (specVersion 7). A sealed-log run's event positions are assigned by the backend before each write commits, so concurrent writers never contend for a position. A position whose writer dies is closed by the backend with a `noop` event; replay steps over those without delivering them or advancing the deterministic clock. Set `WORKFLOW_SEALED_LOG=0` to put a deployment back on the previous scheme. Every runtime reads sealed logs either way, and a run's version is fixed at creation, so the setting only affects new runs.
+
+### Patch Changes
+
+- [#3728](https://github.com/vercel/workflow/pull/3728) [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8) Thanks [@pranaygp](https://github.com/pranaygp)! - Hold process-wide state (the WebSocket transport registry, HTTP connection pools, ULID factories, caches, log-once latches) on `globalThis` instead of at module scope. This de-duplicates state across bundled packages. Fixes WebSocket transport, which was registered in one module state but looked up in another.
+
+- Updated dependencies [[`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4), [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`bf9de1c`](https://github.com/vercel/workflow/commit/bf9de1cd81eda1b1721b857364070c0ce70d1e58)]:
+  - @workflow/utils@5.0.0-beta.9
+  - @workflow/world@5.0.0-beta.29
+  - @workflow/errors@5.0.0-beta.18
+
+## 5.0.0-beta.37
+
+### Minor Changes
+
+- [#3461](https://github.com/vercel/workflow/pull/3461) [`04e060a`](https://github.com/vercel/workflow/commit/04e060a0ecc247a3291714d8396430fa9d96bccc) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `WORKFLOW_NODE_HTTP` to run the Vercel and Local World HTTP layers on Node's built-in `node:http` and `node:https` modules instead of their usual HTTP client library.
+
+### Patch Changes
+
+- Updated dependencies [[`b0adb50`](https://github.com/vercel/workflow/commit/b0adb50bce623b23252735021205e8d870a2b11f), [`37e1d9e`](https://github.com/vercel/workflow/commit/37e1d9e5a9870ef4a35e1875e7054253a9fb89c3), [`1321570`](https://github.com/vercel/workflow/commit/13215704645ea487ef6f8821016ec3f13c1cd830), [`04e060a`](https://github.com/vercel/workflow/commit/04e060a0ecc247a3291714d8396430fa9d96bccc)]:
+  - @workflow/world@5.0.0-beta.28
+  - @workflow/errors@5.0.0-beta.17
+
 ## 5.0.0-beta.36
 
 ### Patch Changes

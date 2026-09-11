@@ -133,29 +133,6 @@ describe('invariants', () => {
     ).toContain('log.monotonic-order');
   });
 
-  it('skips the order rule when the world makes no such promise', () => {
-    const a = event({
-      eventType: 'run_created',
-      eventData: {
-        deploymentId: 'd',
-        workflowName: 'w',
-        input: new Uint8Array(),
-      },
-    });
-    const b = event({ eventType: 'run_started' });
-    expect(
-      rules(
-        checkInvariants({
-          runId: RUN,
-          events: [a, b],
-          runs: [run('running')],
-          steps: [],
-          waits: [],
-        })
-      )
-    ).not.toContain('log.monotonic-order');
-  });
-
   it('catches an out-of-order log', () => {
     const a = event({
       eventType: 'run_created',

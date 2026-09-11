@@ -51,9 +51,25 @@ export async function reenqueueActiveRuns(
       cursor = page.cursor ?? undefined;
     }
   }
-  if (reenqueued > 0) {
-    console.log(
+  if (reenqueued > 0 && isDebugEnabled()) {
+    // Debug-gated: recovering active runs is what a restart is supposed to do,
+    // so on every `next dev` restart with work in flight this printed a line
+    // about the world working correctly. The re-enqueue failures above stay
+    // unconditional — those lose a run's resumption.
+    console.debug(
       `[${label}] Re-enqueued ${reenqueued} active run(s) on startup`
     );
   }
+}
+
+/**
+ * The `DEBUG` gate, inlined. This is `isWorkflowDebugEnabled()` from
+ * `@workflow/utils`, hand-rolled for the same reason `env-config.ts` hand-rolls
+ * `globalSingleton()`: this package deliberately carries no workspace
+ * dependencies, and the two are equivalent.
+ */
+function isDebugEnabled(): boolean {
+  const debug = typeof process !== 'undefined' ? process.env.DEBUG : undefined;
+  if (typeof debug !== 'string') return false;
+  return debug.includes('workflow:') || debug === '*';
 }

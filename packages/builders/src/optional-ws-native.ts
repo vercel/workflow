@@ -7,7 +7,7 @@
  * Marking them external keeps that fallback reachable. Two bundlers take it away
  * without changing the build's outcome, so the damage only shows up at runtime,
  * on the first frame big enough to reach the native masker (`ws` uses pure JS
- * below 48 bytes — small-payload smoke tests pass; CBOR event frames don't):
+ * below 48 bytes, so small-payload smoke tests pass; CBOR event frames don't):
  *
  * - **webpack** bundles the JS wrapper without its native `.node` binding.
  * - **Vite** resolves the absent peer to its own `optional-peer-dep` stub, so

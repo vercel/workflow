@@ -1,7 +1,7 @@
 import { PreconditionFailedError, WorkflowWorldError } from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { slotToEventId } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { bytesToBase64, deriveRunKeyPair, seal } from '../sealed-box.js';
 import {
   decrypt,
@@ -22,6 +22,7 @@ import {
   memoizeEncryptionKey,
   mergeReportedEvents,
   preconditionEventDelta,
+  queueMessages,
   SLOT_GAP_RECHECK_ATTEMPTS,
   settleEventSlotGap,
   slotSnapshotParams,
@@ -1066,5 +1067,117 @@ describe('health check run public key', () => {
     expect(response.healthy).toBe(true);
     expect(response.encryptionPublicKey).toBeUndefined();
     expect(response.workflowCoreVersion).toBeDefined();
+  });
+});
+
+describe('queueMessages', () => {
+  const entries = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      message: { runId: 'wrun_1', stepId: `step-${i}` },
+      opts: { idempotencyKey: `key-${i}` },
+    }));
+
+  const makeWorld = (over: Partial<World>) =>
+    ({
+      queue: vi.fn().mockResolvedValue({ messageId: null }),
+      ...over,
+    }) as unknown as World;
+
+  it('uses the World batch send when available', async () => {
+    const queueBatch = vi
+      .fn()
+      .mockResolvedValue([{ messageId: 'a' }, { messageId: 'b' }]);
+    const world = makeWorld({ queueBatch });
+
+    await queueMessages(world, '__wkf_workflow_t', entries(2));
+
+    expect(queueBatch).toHaveBeenCalledTimes(1);
+    expect(queueBatch.mock.calls[0][1]).toHaveLength(2);
+    expect(world.queue).not.toHaveBeenCalled();
+  });
+
+  it('falls back to single sends on a World with no batch support', async () => {
+    const world = makeWorld({});
+
+    await queueMessages(world, '__wkf_workflow_t', entries(3));
+
+    expect(world.queue).toHaveBeenCalledTimes(3);
+    // Each fallback send keeps its own key and payload.
+    expect(vi.mocked(world.queue).mock.calls.map((c) => c[2])).toEqual([
+      { idempotencyKey: 'key-0' },
+      { idempotencyKey: 'key-1' },
+      { idempotencyKey: 'key-2' },
+    ]);
+  });
+
+  it('rejects when any entry failed, naming the shortfall', async () => {
+    const queueBatch = vi
+      .fn()
+      .mockResolvedValue([
+        { messageId: 'a' },
+        { messageId: null, error: 'rate limited', retryable: true },
+      ]);
+    const world = makeWorld({ queueBatch });
+
+    await expect(
+      queueMessages(world, '__wkf_workflow_t', entries(2))
+    ).rejects.toThrow(/Failed to publish 1 of 2/);
+  });
+
+  it('marks the rejection retryable only when a failed entry is', async () => {
+    const world = makeWorld({
+      queueBatch: vi
+        .fn()
+        .mockResolvedValue([
+          { messageId: null, error: 'bad request', retryable: false },
+        ]),
+    });
+
+    await expect(
+      queueMessages(world, '__wkf_workflow_t', entries(1))
+    ).rejects.toMatchObject({ retryable: false });
+  });
+
+  it('treats a deferred acceptance (null id, no error) as success', async () => {
+    const world = makeWorld({
+      queueBatch: vi.fn().mockResolvedValue([{ messageId: null }]),
+    });
+
+    await expect(
+      queueMessages(world, '__wkf_workflow_t', entries(1))
+    ).resolves.toBeUndefined();
+  });
+
+  it('rejects when the World returns fewer results than messages', async () => {
+    // A short array says nothing about the messages it omits. Reading it as
+    // success would ack the delivery with those steps never dispatched, and
+    // the run would stall with no error recorded anywhere.
+    const world = makeWorld({
+      queueBatch: vi.fn().mockResolvedValue([{ messageId: 'a' }]),
+    });
+
+    await expect(
+      queueMessages(world, '__wkf_workflow_t', entries(3))
+    ).rejects.toThrow(/returned 1 result\(s\) for 3 message\(s\)/);
+  });
+
+  it('marks a short-result rejection retryable', async () => {
+    const world = makeWorld({
+      queueBatch: vi.fn().mockResolvedValue([]),
+    });
+
+    await expect(
+      queueMessages(world, '__wkf_workflow_t', entries(2))
+    ).rejects.toMatchObject({ retryable: true });
+  });
+
+  it('does not touch the World for an empty message set', async () => {
+    const queueBatch = vi.fn();
+    const world = makeWorld({ queueBatch });
+
+    await queueMessages(world, '__wkf_workflow_t', []);
+
+    expect(queueBatch).not.toHaveBeenCalled();
+    expect(world.queue).not.toHaveBeenCalled();
   });
 });

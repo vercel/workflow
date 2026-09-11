@@ -2,7 +2,7 @@
  * Shared HTTP request core for the world-vercel adapter.
  *
  * Every outgoing request from world-vercel goes through one of a few
- * higher-level clients — the v3 `makeRequest`, the v4 events client, the
+ * higher-level clients: the v3 `makeRequest`, the v4 events client, the
  * streamer, and the direct Vercel-API calls (run-key / resolve-deployment).
  * They differ in how they shape the *body* (CBOR + schema, binary frames, raw
  * chunks, JSON), but they share the same cross-cutting envelope: an OTEL client
@@ -10,24 +10,32 @@
  * `DEBUG` logging, x-vercel diagnostic headers, and the status → typed-error
  * mapping the runtime branches on.
  *
- * This module is the single source of truth for that envelope. It depends only
- * on `telemetry.js`, `@workflow/errors`, and `@vercel/oidc` so it can be
- * imported by both `utils.ts` and `events-v4.ts` without an import cycle —
- * dispatchers are passed in by the caller rather than imported here.
+ * This module is the single source of truth for that envelope. Undici
+ * dispatchers are passed in by the caller rather than resolved here, so it can
+ * be imported by both `utils.ts` and `events-v4.ts` without an import cycle.
+ * The one thing it does reach for is `http-client.js`'s shared node:http pool,
+ * which is safe: `http-client.ts` imports nothing from `utils.ts` but a type.
  */
 
-import type { Span } from '@opentelemetry/api';
+import type { Attributes, Span } from '@opentelemetry/api';
 import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
   PreconditionFailedError,
   RunExpiredError,
+  StreamError,
   StreamExpiredError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { envNumber } from '@workflow/world';
+import { nodeHttpFetch } from '@workflow/world/node-http.js';
+import {
+  getNodeHttpAgents,
+  NODE_HTTP_BODY_TIMEOUT_MS,
+  NODE_HTTP_HEADERS_TIMEOUT_MS,
+} from './http-client.js';
 import {
   ErrorType,
   getSpanKind,
@@ -41,25 +49,82 @@ import {
   ServerPort,
   trace,
   UrlFull,
+  WorkflowHttpTransport,
 } from './telemetry.js';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).
  *
  * Without this, a hung workflow-server response would keep the caller blocked
- * until the platform's `maxDuration` SIGTERM — burning compute and defeating
+ * until the platform's `maxDuration` SIGTERM, burning compute and defeating
  * upstream timeout handlers (e.g. the replay timeout).
  */
 export const REQUEST_TIMEOUT_MS = 60_000;
 
 /**
+ * Transport codes that can surface after `fetch()` fails before returning a
+ * response. The outer error is usually `TypeError: fetch failed`; undici hangs
+ * the actionable code off its `cause`, so callers must inspect the chain.
+ */
+const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
+  'UND_ERR_INFO',
+  'UND_ERR_REQ_RETRY',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CONNECT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_CLOSED',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EPIPE',
+  'ETIMEDOUT',
+]);
+
+export function getTransientTransportCode(error: unknown): string | undefined {
+  let current = error;
+  for (let depth = 0; current && depth < 8; depth++) {
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string' && TRANSIENT_TRANSPORT_ERROR_CODES.has(code)) {
+      return code;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+/**
  * Effective per-request timeout. Override via `WORKFLOW_REQUEST_TIMEOUT_MS`
- * (e.g. dialled down on an e2e deployment to exercise the timeout path).
+ * (e.g. dialed down on an e2e deployment to exercise the timeout path).
+ *
+ * Clamped to `[10s, 120s]`, with a warning when a configured value is pulled
+ * into range:
+ *
+ * - **Floor.** Below ~10s this stops being a safety net and becomes the thing
+ *   that breaks working requests: a cold workflow-server route, a large event
+ *   page, or an ordinary tail-latency blip all exceed a few seconds, and the
+ *   resulting timeout is indistinguishable from a broken backend, so the
+ *   runtime redrives via the queue instead of making progress.
+ * - **Ceiling.** 120s is twice the default and matches the longest a backend
+ *   route holds a response (the stream read). Beyond that a hung request would
+ *   outlive the callers this deadline exists to protect, which is the failure
+ *   mode described on {@link REQUEST_TIMEOUT_MS}. Paths that legitimately
+ *   outlast it opt out entirely with `timeoutMs: null` rather than raising
+ *   this (see the streamer and the v4 events transport).
+ *
+ * Note the floor interacts with the run-status long poll: its budget is this
+ * value minus the long poll's 10s of headroom, so at exactly the floor
+ * the budget clamps to zero and `waitForTerminalStatus` degrades to a plain
+ * read. That is intended, and it means 10s is the value at which long polling
+ * turns itself off rather than a value that half-works.
  */
 export const getRequestTimeoutMs = (): number =>
   envNumber('WORKFLOW_REQUEST_TIMEOUT_MS', REQUEST_TIMEOUT_MS, {
     integer: true,
-    min: 1,
+    min: 10_000,
+    max: 120_000,
   });
 
 /**
@@ -67,7 +132,7 @@ export const getRequestTimeoutMs = (): number =>
  * env var contains "workflow:" or is "*".
  *
  * Note: this does not implement full `debug` module semantics (e.g.
- * comma-separated globs, negation with `-`). It is a simple check sufficient
+ * comma-separated globs, negation with `-`). This limited check is sufficient
  * for enabling HTTP-level debug output.
  */
 export const HTTP_DEBUG_ENABLED =
@@ -77,7 +142,7 @@ export const HTTP_DEBUG_ENABLED =
 
 /** Diagnostic response headers worth surfacing in logs and error messages.
  * `x-vercel-mitigated` (`challenge` | `deny`) is set by the Vercel firewall
- * when it intercepts a request in front of the backend — surfacing it makes a
+ * when it intercepts a request in front of the backend; surfacing it makes a
  * firewall block diagnosable from the error message and DEBUG logs. */
 const DIAGNOSTIC_HEADERS = [
   'x-vercel-id',
@@ -88,7 +153,7 @@ const DIAGNOSTIC_HEADERS = [
 /**
  * The one member the diagnostic/log helpers read headers through. `Headers`
  * satisfies it, and so does the header record a WS reply frame's meta is
- * flattened into — which has no `Headers` to offer.
+ * flattened into, which has no `Headers` to offer.
  */
 export interface HeaderLookup {
   get(name: string): string | null;
@@ -188,9 +253,9 @@ export function headersToRecord(headers: Headers): Record<string, string> {
  *   - 410 → StreamExpiredError when the response code is `stream-expired`,
  *     otherwise RunExpiredError (both terminal)
  *   - 412 → PreconditionFailedError + retryAfter + details (stale precondition
- *     snapshot — the optimistic-concurrency guard on event creation; `details`
+ *     snapshot, the optimistic-concurrency guard on event creation; `details`
  *     carries the events the backend returned inline, when it did)
- *   - 425 → TooEarlyError + retryAfter (step retry pacing — see #1806 for what
+ *   - 425 → TooEarlyError + retryAfter (step retry pacing; see #1806 for what
  *     happens when a 425 degrades into an untyped error)
  *   - 429 → ThrottleError + retryAfter, EXCEPT a firewall challenge (429 +
  *     `x-vercel-mitigated: challenge`) → retryable transport WorkflowWorldError
@@ -249,7 +314,7 @@ export function errorForResponse(
   if (status === 425) return new TooEarlyError(message, { retryAfter });
   if (status === 429) {
     // A firewall challenge can't be solved by a server-to-server client, so map
-    // it to the retryable transport path instead of ThrottleError — see
+    // it to the retryable transport path instead of ThrottleError; see
     // isFirewallChallenge429. A genuine application 429 stays a ThrottleError.
     if (isFirewallChallenge429(status, mitigated)) {
       return new WorkflowWorldError(
@@ -275,10 +340,10 @@ export function errorForResponse(
  *
  * Such a 429 must NOT surface as a `ThrottleError`: on the `step_started` write
  * the runtime defers a `ThrottleError` by self-enqueuing a FRESH queue message,
- * which resets the delivery count — so it never backs off past `retryAfter` and
+ * which resets the delivery count, so it never backs off past `retryAfter` and
  * never reaches `MAX_QUEUE_DELIVERIES`, hot-looping against an already-overloaded
  * firewall. Mapping it to a retryable transport `WorkflowWorldError` (`code:
- * 'TRANSPORT'`) instead lets the runtime rethrow it to the queue handler —
+ * 'TRANSPORT'`) instead lets the runtime rethrow it to the queue handler,
  * earning the delivery-count backoff AND the delivery cap.
  */
 export function isFirewallChallenge429(
@@ -364,7 +429,7 @@ export interface HttpClientSpanOptions {
    */
   spanName?: string;
   /** Extra attributes merged on top of the standard HTTP attributes. */
-  attributes?: Record<string, string | number | string[]>;
+  attributes?: Attributes;
 }
 
 /**
@@ -373,12 +438,12 @@ export interface HttpClientSpanOptions {
  * Split out of `instrumentedFetch` so a request path that cannot go through
  * `fetch` still reports the *same* span: name, kind and the full
  * `httpClientSpanAttributes` set. The WS events transport is the reason this
- * exists — a frame on a multiplexed socket is a request in every sense the
+ * exists: a frame on a multiplexed socket is a request in every sense the
  * caller's trace cares about, but there is no `Response` and no `fetch` call to
  * hang a span off, so it synthesizes one here (see `postEventFrameOverWs`).
  *
  * `fn` runs inside the active span, so anything it injects trace context into
- * is parented to this span rather than to the caller's — which is the contract
+ * is parented to this span rather than to the caller's, which is the contract
  * CLAUDE.md's trace-propagation rule describes.
  */
 export async function withHttpClientSpan<T>(
@@ -397,7 +462,7 @@ export async function withHttpClientSpan<T>(
     { kind: await getSpanKind('CLIENT') },
     async (span) => {
       // Diagnostic (DEBUG only): named spans are created and recording here,
-      // yet never found in the backend — log the exact span identity so the
+      // yet never found in the backend, so log the exact span identity so the
       // export side can be checked for this specific span id.
       if (spanName && HTTP_DEBUG_ENABLED && span) {
         const ctx = span.spanContext();
@@ -423,7 +488,7 @@ export async function withHttpClientSpan<T>(
 /**
  * Stamp a response status onto a client span, marking a non-2xx with the same
  * `error.type` the fetch path uses. Shared so a synthesized span reports a 409
- * identically to a real one — the status → error-type contract is what
+ * identically to a real one: the status → error-type contract is what
  * dashboards filter on, and it must not depend on which transport answered.
  */
 export function recordClientSpanStatus(
@@ -474,11 +539,24 @@ export interface InstrumentedFetchOptions extends HttpClientSpanOptions {
   /**
    * Notified about the transport-level outcome of the `fetch()` call: the thrown
    * error when no response arrived, `undefined` when one did. An HTTP error
-   * status is *not* reported as a failure — the origin answered, so the transport
+   * status is *not* reported as a failure: the origin answered, so the transport
    * worked. Lets a caller that owns a shared dispatcher retire it when its
    * connections stop delivering (see noteEventsTransportOutcome).
    */
-  onTransportOutcome?: (error?: unknown) => void;
+  onTransportOutcome?: (error?: unknown, response?: Response) => void;
+  /**
+   * Delay the successful transport outcome until the caller consumes the body.
+   * Non-2xx bodies consumed by `buildError` are still reported here.
+   */
+  deferTransportSuccessUntilBody?: boolean;
+  /**
+   * Called synchronously after the request promise is created, before awaiting
+   * its response. This observes local dispatch only; it does not imply that any
+   * bytes reached the origin. Must not throw.
+   */
+  onRequestDispatched?: () => void;
+  /** Error code used when the request itself fails before a response arrived. */
+  transportErrorCode?: 'TRANSPORT' | 'STREAM_ERROR';
 }
 
 /**
@@ -486,7 +564,7 @@ export interface InstrumentedFetchOptions extends HttpClientSpanOptions {
  * observability "outgoing requests" view picks it up) with a caller-supplied
  * undici dispatcher.
  *
- * Handles the shared envelope — OTEL client span + attributes, trace-context
+ * Handles the shared envelope: OTEL client span + attributes, trace-context
  * injection, cache-bust header, timeout (mapping TimeoutError/AbortError to
  * WorkflowWorldError), `DEBUG` logging, and the non-2xx error path (span error
  * attribute + curl-repro + typed error). Returns the raw `Response` on success
@@ -512,6 +590,9 @@ export async function instrumentedFetch(
     attributes,
     durationAttribute,
     onTransportOutcome,
+    deferTransportSuccessUntilBody = false,
+    onRequestDispatched,
+    transportErrorCode = 'TRANSPORT',
   } = opts;
   const label = logLabel ?? url;
 
@@ -519,8 +600,9 @@ export async function instrumentedFetch(
     { method, url, peerService, spanName, attributes },
     async (span) => {
       // Explicitly propagate trace context so the receiving server can parent
-      // its spans to this client span — the custom undici dispatcher bypasses
-      // ambient auto-instrumentation. No-ops when no OTEL SDK is registered.
+      // its spans to this client span, since the custom undici dispatcher
+      // bypasses ambient auto-instrumentation. No-ops when no OTEL SDK is
+      // registered.
       if (injectTraceContext) await injectTraceContextIntoHeaders(headers);
 
       // Unique header per attempt to bypass RSC/Next fetch memoization (and to
@@ -538,14 +620,40 @@ export async function instrumentedFetch(
       const start = Date.now();
       let response: Response;
       try {
-        response = await fetch(url, {
-          method,
-          headers,
-          body,
-          signal,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
-          dispatcher,
-        } as any);
+        // With no dispatcher to honor, `WORKFLOW_NODE_HTTP` takes the request
+        // off undici altogether rather than leaving it on the undici behind
+        // `fetch`. A dispatcher the caller supplied is an instruction to use
+        // undici, so it keeps the request on `fetch`.
+        const nodeAgents = dispatcher ? undefined : getNodeHttpAgents();
+        // Both transports issue the same span against the same URL, so this is
+        // the only thing that tells them apart in a trace.
+        span?.setAttributes({
+          ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
+        });
+        const request = nodeAgents
+          ? nodeHttpFetch(url, {
+              method,
+              headers,
+              body,
+              signal,
+              agents: nodeAgents,
+              // Match undici's per-phase defaults (which the undici agents
+              // inherit implicitly): without these the node:http path arms no
+              // stalled-socket deadline, and a `timeoutMs: null` caller would
+              // have no deadline at all.
+              headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
+              bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
+            })
+          : fetch(url, {
+              method,
+              headers,
+              body,
+              signal,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
+              dispatcher,
+            } as any);
+        onRequestDispatched?.();
+        response = await request;
       } catch (error) {
         const elapsed = Date.now() - start;
         // Report the raw error, before the timeout mapping below rewraps it: the
@@ -558,18 +666,46 @@ export async function instrumentedFetch(
           error instanceof Error &&
           (error.name === 'TimeoutError' || error.name === 'AbortError')
         ) {
-          const timeoutError = new WorkflowWorldError(
-            `${method} ${label} timed out after ${elapsed}ms`,
-            { url, cause: error }
-          );
-          span?.setAttributes({ ...ErrorType('TIMEOUT') });
+          const message = `${method} ${label} timed out after ${elapsed}ms`;
+          const errorCode =
+            transportErrorCode === 'STREAM_ERROR' ? 'STREAM_ERROR' : 'TIMEOUT';
+          const timeoutError =
+            errorCode === 'STREAM_ERROR'
+              ? new StreamError(message, { url, cause: error })
+              : new WorkflowWorldError(message, {
+                  url,
+                  code: errorCode,
+                  cause: error,
+                });
+          span?.setAttributes({ ...ErrorType(errorCode) });
           span?.recordException?.(timeoutError);
           throw timeoutError;
+        }
+        const transportCode = getTransientTransportCode(error);
+        if (transportCode) {
+          const message = `${method} ${label} transport failure after ${elapsed}ms (${transportCode})`;
+          const errorCode =
+            transportErrorCode === 'STREAM_ERROR'
+              ? 'STREAM_ERROR'
+              : 'TRANSPORT';
+          const transportError =
+            errorCode === 'STREAM_ERROR'
+              ? new StreamError(message, { url, cause: error })
+              : new WorkflowWorldError(message, {
+                  url,
+                  code: errorCode,
+                  cause: error,
+                });
+          span?.setAttributes({ ...ErrorType(errorCode) });
+          span?.recordException?.(transportError);
+          throw transportError;
         }
         throw error;
       }
       const ms = Date.now() - start;
-      onTransportOutcome?.();
+      if (response.ok && !deferTransportSuccessUntilBody) {
+        onTransportOutcome?.(undefined, response);
+      }
 
       httpLog(method, label, response, ms);
       recordClientSpanStatus(span, response.status);
@@ -578,11 +714,40 @@ export async function instrumentedFetch(
       if (!response.ok) {
         logCurlRepro(method, url, headers);
         if (buildError) {
-          const error = await buildError(response);
+          let error: Error;
+          try {
+            error = await buildError(response);
+          } catch (cause) {
+            const transportCode = getTransientTransportCode(cause);
+            if (transportCode) {
+              onTransportOutcome?.(cause, response);
+              const message = `${method} ${label} response body transport failure (${transportCode})`;
+              const mappedError =
+                transportErrorCode === 'STREAM_ERROR'
+                  ? new StreamError(message, { url, cause })
+                  : new WorkflowWorldError(message, {
+                      url,
+                      code: 'TRANSPORT',
+                      cause,
+                    });
+              span?.setAttributes({ ...ErrorType(transportErrorCode) });
+              span?.recordException?.(mappedError);
+              throw mappedError;
+            }
+            onTransportOutcome?.(undefined, response);
+            throw cause;
+          }
+          onTransportOutcome?.(undefined, response);
           span?.recordException?.(error);
           throw error;
         }
-        const text = await response.text().catch(() => '');
+        let text = '';
+        try {
+          text = await response.text();
+          onTransportOutcome?.(undefined, response);
+        } catch (cause) {
+          onTransportOutcome?.(cause, response);
+        }
         const error = errorForResponse(
           response.status,
           `${method} ${label} -> HTTP ${response.status}: ${response.statusText}${

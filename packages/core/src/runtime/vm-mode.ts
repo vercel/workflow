@@ -29,7 +29,7 @@ export type WorkflowVmMode = (typeof WORKFLOW_VMS)[number];
  *
  * Returns the configured engine, or `undefined` if unset/empty.
  * Throws {@link WorkflowRuntimeError} if the value is set but not one of
- * the known engines — catching misconfiguration early is better than
+ * the known engines, since catching misconfiguration early is better than
  * silently falling back to the default.
  */
 export function getWorkflowVmFromEnv(
@@ -58,7 +58,9 @@ export function getWorkflowVmFromEnv(
  * Throws if `WORKFLOW_VM` or `executionContext.workflowVm` is set to an
  * unknown value.
  */
-export function useQuickJSVm(workflowRun: WorkflowRun): boolean {
+export function useQuickJSVm(
+  workflowRun: Pick<WorkflowRun, 'executionContext'>
+): boolean {
   const vmFromRun = (
     workflowRun.executionContext as { workflowVm?: string } | undefined
   )?.workflowVm;

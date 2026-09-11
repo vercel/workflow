@@ -1,21 +1,21 @@
 ---
 title: "@workflow/ai"
-description: Helpers for building AI-powered workflows with the AI SDK.
+description: Deprecated AI integration APIs kept for existing Workflow applications.
 type: overview
-summary: Explore helpers for integrating AI SDK to build durable AI-powered workflows.
+summary: Migrate legacy @workflow/ai APIs to AI SDK's WorkflowAgent and WorkflowChatTransport.
 related:
   - /docs/ai
 ---
 
-Helpers for integrating AI SDK for building AI-powered workflows.
+The `@workflow/ai` package is deprecated in Workflow 5 and remains documented for existing applications. Build new agents with [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) and [`WorkflowChatTransport`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) from `@ai-sdk/workflow`.
 
 ## Classes
 
 <Cards>
     <Card title="DurableAgent" href="/docs/api-reference/workflow-ai/durable-agent">
-      Deprecated — use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent). Reference kept for existing `@workflow/ai/agent` imports.
+      Deprecated: use AI SDK's [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent). Reference kept for existing `@workflow/ai/agent` imports.
     </Card>
     <Card title="WorkflowChatTransport" href="/docs/api-reference/workflow-ai/workflow-chat-transport">
-      Deprecated — use AI SDK's [`WorkflowChatTransport`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) from `@ai-sdk/workflow`. Reference kept for existing `@workflow/ai` imports.
+      Deprecated: use AI SDK's [`WorkflowChatTransport`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#resumable-streaming-with-workflowchattransport) from `@ai-sdk/workflow`. Reference kept for existing `@workflow/ai` imports.
     </Card>
 </Cards>

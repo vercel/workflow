@@ -9,7 +9,7 @@ prerequisites:
 
 NestJS controller that handles the well-known workflow endpoints under `.well-known/workflow/v1`. It dynamically imports the generated workflow bundles and converts between Express/Fastify requests and the Web API `Request`/`Response` objects the workflow runtime expects. Both the Express and Fastify HTTP adapters are supported.
 
-[`WorkflowModule.forRoot()`](/docs/api-reference/workflow-nest/workflow-module) registers this controller automatically — you only register it yourself if you are not using `WorkflowModule`.
+[`WorkflowModule.forRoot()`](/docs/api-reference/workflow-nest/workflow-module) registers this controller automatically. You only register it yourself if you are not using `WorkflowModule`.
 
 ## Usage
 

@@ -24,9 +24,9 @@ export default defineConfig({
 });
 ```
 
-The integration registers the workflow Vite transform plugins during `astro:config:setup` and builds the workflow bundles — locally during config setup, or via the Vercel builder after `astro:build:done` when deploying to Vercel.
+The integration registers the workflow Vite transform plugins during `astro:config:setup` and builds the workflow bundles: locally during config setup, or via the Vercel builder after `astro:build:done` when deploying to Vercel.
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -38,7 +38,7 @@ The integration registers the workflow Vite transform plugins during `astro:conf
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production (smaller function bundles — helps stay under the Vercel 250MB function size limit). Set it explicitly, or use the `WORKFLOW_SOURCEMAP` environment variable, to override in either environment. |
+| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Defaults to `'inline'` in development and `false` in production (smaller function bundles, which helps stay under the Vercel 250 MB function size limit). Set it explicitly, or use the `WORKFLOW_SOURCEMAP` environment variable, to override in either environment. |
 
 ### Returns
 

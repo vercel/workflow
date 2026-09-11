@@ -6,20 +6,11 @@
  *   pnpm sim in-flight-after-decision   # one scenario, by id
  *   pnpm sim --verbose             # include queue deliveries in the trace
  *   pnpm sim --no-color            # plain ASCII, e.g. for a golden file
- *   pnpm sim --append-only         # play against an append-only log
  *   pnpm sim --no-fence            # play with the optimistic-concurrency fence off
  *   pnpm sim --report-only         # print failures but exit 0
  *   pnpm sim --summary-file s.md   # markdown counts + table, for a PR comment
  *   pnpm sim --detail-file d.txt   # the full trace, colour-free, as an artifact
- *   pnpm sim --title 'Append-only' # heading for the summary file
- *
- * `--append-only` moves every event's position from its handler's mint to its
- * commit, which is the one change that makes a stale read impossible: the log
- * can be behind, never wrong. Six scenarios in the book fail today because it
- * is *not* how production works, so running with and without it — and diffing
- * — is how you tell which of those failures the change would actually close.
- * `--no-append-only` forces the production behaviour back on for a scenario
- * that asked for the flag itself.
+ *   pnpm sim --title 'Summary'     # heading for the summary file
  *
  * `--no-fence` turns off the optimistic-concurrency fence (both halves — the
  * count guard is evaluated inside the same predicate) for every scenario that
@@ -66,13 +57,6 @@ const color = args.includes('--no-color')
   : args.includes('--color')
     ? true
     : undefined;
-// `undefined` leaves it to each spec, which is not the same as `false` —
-// see `RunScenarioOptions.appendOnlyLog`.
-const appendOnlyLog = args.includes('--no-append-only')
-  ? false
-  : args.includes('--append-only')
-    ? true
-    : undefined;
 // Same tri-state as above, and for the same reason: a scenario that turns the
 // fence on itself is the normal case, so `undefined` has to mean "leave it to
 // the spec" rather than "off".
@@ -84,10 +68,7 @@ const preconditionGuard = args.includes('--no-fence')
 const reportOnly = args.includes('--report-only');
 const summaryFile = pathValue('--summary-file');
 const detailFile = pathValue('--detail-file');
-// Names the summary's heading. A CI job plays the book once per world and
-// concatenates the two files into one comment, where two headings reading
-// `world-sim scenario book` would leave the chips line as the only way to tell
-// which half you are looking at.
+// Names the summary's heading for CI output.
 const summaryTitle = flagValue('--title') ?? 'world-sim scenario book';
 
 /**
@@ -151,7 +132,6 @@ for (const spec of selected) {
   const result = await runScenario(spec, {
     handler,
     workflowIds: bundle.workflowIds,
-    appendOnlyLog,
     preconditionGuard,
   });
   results.push(result);
@@ -177,12 +157,7 @@ if (summaryFile) {
     summaryFile,
     renderMarkdownSummary(results, {
       title: summaryTitle,
-      // Say which world, always — including when it is the default one. A
-      // summary file outlives the command line that produced it, and two of
-      // these sitting side by side in a PR comment are only comparable if each
-      // one states its own conditions.
       chips: [
-        `log=${appendOnlyLog === true ? 'append-only' : 'mint-ordered'}`,
         `fence=${
           preconditionGuard === undefined
             ? 'per-spec'

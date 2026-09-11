@@ -467,3 +467,47 @@ describe('skipped-slot report', () => {
     }
   });
 });
+
+describe('sealed-log noop events', () => {
+  // world-local allocates positions synchronously from its own counter, so it
+  // never needs to seal a hole itself — but spec 7 makes `noop` a legal
+  // resident of any slot log, and the storage layer must round-trip one:
+  // store it at its slot, list it back in order, and keep numbering past it.
+  // (Creating one through `events.create` stands in for a backend sealer; the
+  // public CreateEventSchema excludes `noop`, which is asserted in
+  // @workflow/world's own tests.)
+  it('stores, lists, and numbers past a noop event', async () => {
+    const runId = await startRun();
+
+    await storage.events.create(runId, {
+      eventType: 'noop',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { sealed: true },
+    } as any);
+    await storage.events.create(runId, {
+      eventType: 'step_created',
+      correlationId: 'step_after_noop',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { stepName: 'afterNoop', input: serialized([]) },
+    } as any);
+
+    const result = await storage.events.list({
+      runId,
+      pagination: { limit: 100 },
+    });
+    const types = result.data.map((event) => event.eventType);
+    expect(types).toEqual([
+      'run_created',
+      'run_started',
+      'noop',
+      'step_created',
+    ]);
+    // The noop occupies a real position: slots stay dense through it.
+    expect(result.data.map((event) => event.eventId)).toEqual([
+      slotId(FIRST_EVENT_SLOT),
+      slotId(FIRST_EVENT_SLOT + 1),
+      slotId(FIRST_EVENT_SLOT + 2),
+      slotId(FIRST_EVENT_SLOT + 3),
+    ]);
+  });
+});

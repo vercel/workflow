@@ -145,6 +145,8 @@ export const StreamClickContext = createContext<
 export type DecryptClickContextValue = {
   onDecrypt: () => void;
   isDecrypting: boolean;
+  isDecryptDisabled?: boolean;
+  decryptDisabledReason?: string;
   hasEncryptedData?: boolean;
 };
 
@@ -167,7 +169,8 @@ function EncryptedInlineLabel() {
       <Button
         size="xs"
         className="align-baseline gap-x-1"
-        disabled={ctx.isDecrypting}
+        disabled={ctx.isDecrypting || ctx.isDecryptDisabled}
+        title={ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined}
         onClick={(e) => {
           e.stopPropagation();
           ctx.onDecrypt();
@@ -341,7 +344,7 @@ function BytesDisplayValue({ display }: { display: BytesDisplay }) {
 // Tree renderer
 // ---------------------------------------------------------------------------
 
-type Entry = [field: string | undefined, value: unknown];
+type Entry = [field: string | undefined, value: unknown, key?: string | number];
 
 interface NodeContext {
   level: number;
@@ -354,10 +357,51 @@ function formatField(field: string): string {
   return field === '' ? '""' : field;
 }
 
+function isGenericIterable(
+  value: unknown
+): value is object & Iterable<unknown> {
+  if (
+    value === null ||
+    (typeof value !== 'object' && typeof value !== 'function') ||
+    Array.isArray(value) ||
+    value instanceof Map ||
+    value instanceof Set
+  ) {
+    return false;
+  }
+  return (
+    typeof (value as { [Symbol.iterator]?: unknown })[Symbol.iterator] ===
+    'function'
+  );
+}
+
+function isEntryIterable(
+  value: object & Iterable<unknown>
+): value is object & Iterable<unknown> & { entries(): Iterable<unknown> } {
+  return typeof (value as { entries?: unknown }).entries === 'function';
+}
+
+function collectEntries(
+  iterable: Iterable<unknown>,
+  asPairs: boolean
+): Entry[] {
+  return Array.from(iterable, (item, index) => {
+    if (asPairs && Array.isArray(item) && item.length >= 2) {
+      return [String(item[0]), collapseRefs(item[1]), index];
+    }
+    return [undefined, collapseRefs(item), index];
+  });
+}
+
+function isSelfIterableIterator(value: object & Iterable<unknown>): boolean {
+  return Object.is(value[Symbol.iterator](), value);
+}
+
 /**
- * Describe an object/array/map/set as an expandable container. Returns null for
- * values that should render as a primitive. `prefix` carries a class name shown
- * before the opening bracket (Map/Set and named class instances).
+ * Describe an object/array/iterable as an expandable container. Returns null
+ * for values that should render as a primitive. `prefix` carries a class name
+ * shown before the opening bracket (Map/Set, generic iterables, and named class
+ * instances).
  */
 function describeContainer(
   value: unknown
@@ -386,6 +430,25 @@ function describeContainer(
       open: '[',
       close: ']',
       prefix: 'Set',
+    };
+  }
+  if (isGenericIterable(value)) {
+    const name = (value as { constructor?: { name?: string } }).constructor
+      ?.name;
+    const prefix = name && name !== 'Object' ? name : undefined;
+    if (isEntryIterable(value)) {
+      return {
+        entries: collectEntries(value.entries(), true),
+        open: '{',
+        close: '}',
+        prefix,
+      };
+    }
+    return {
+      entries: collectEntries(value, false),
+      open: '[',
+      close: ']',
+      prefix,
     };
   }
   if (value !== null && typeof value === 'object') {
@@ -613,9 +676,9 @@ function ExpandableContainer({
       {expanded ? (
         // biome-ignore lint/a11y/useSemanticElements: ARIA tree group is the correct role here
         <ul id={contentsId} className={CLS.childFields} role="group">
-          {entries.map(([childField, childValue], index) => (
+          {entries.map(([childField, childValue, entryKey], index) => (
             <DataRender
-              key={childField ?? index}
+              key={entryKey ?? childField ?? index}
               field={childField}
               value={childValue}
               isLast={index === lastIndex}
@@ -817,8 +880,8 @@ function makeBytesDisplay(display: FormattedStreamChunkDisplay): unknown {
  * non-expandable versions so the renderer doesn't show their internals.
  * Only recurses into plain objects and arrays to avoid stripping class
  * instances (Date, Error, URL, Headers, etc.) that have their own rendering.
- * Map and Set containers are preserved while their contents are prepared for
- * display.
+ * Map and Set contents are prepared here; other iterable contents are prepared
+ * when the renderer traverses them.
  *
  * Exported for testing the typed-array detection path used by hydrated
  * AI agent stream chunks (e.g. `{ delta: new Uint8Array(...) }`).
@@ -842,7 +905,7 @@ export function collapseRefs(data: unknown): unknown {
   if (data instanceof Set) {
     return new Set(Array.from(data.values(), collapseRefs));
   }
-  // Only recurse into plain objects — leave class instances untouched
+  // Only recurse into plain objects; leave class instances untouched
   const proto = Object.getPrototypeOf(data);
   if (proto !== Object.prototype && proto !== null) return data;
   const result: Record<string, unknown> = {};
@@ -871,6 +934,10 @@ export interface DataInspectorProps {
   onDecrypt?: () => void;
   /** Whether decryption is currently in progress */
   isDecrypting?: boolean;
+  /** Whether decryption is unavailable */
+  isDecryptDisabled?: boolean;
+  /** Explains why decryption is unavailable */
+  decryptDisabledReason?: string;
 }
 
 export function DataInspector({
@@ -881,6 +948,8 @@ export function DataInspector({
   onRunClick,
   onDecrypt,
   isDecrypting = false,
+  isDecryptDisabled = false,
+  decryptDisabledReason,
 }: DataInspectorProps) {
   const collapsedData = useMemo(() => collapseRefs(data), [data]);
   const stableData = useStableInspectorData(collapsedData);
@@ -912,7 +981,14 @@ export function DataInspector({
   }
   if (onDecrypt) {
     content = (
-      <DecryptClickContext.Provider value={{ onDecrypt, isDecrypting }}>
+      <DecryptClickContext.Provider
+        value={{
+          onDecrypt,
+          isDecrypting,
+          isDecryptDisabled,
+          decryptDisabledReason,
+        }}
+      >
         {content}
       </DecryptClickContext.Provider>
     );
@@ -946,7 +1022,28 @@ function isSameBytesDisplay(a: BytesDisplay, b: BytesDisplay): boolean {
   );
 }
 
-function isDeepEqual(a: unknown, b: unknown, seen = new WeakMap()): boolean {
+function haveSameIterableValues(
+  a: Iterable<unknown>,
+  b: Iterable<unknown>,
+  seen: WeakMap<object, object>
+): boolean {
+  const aIterator = a[Symbol.iterator]();
+  const bIterator = b[Symbol.iterator]();
+  while (true) {
+    const aResult = aIterator.next();
+    const bResult = bIterator.next();
+    if (aResult.done || bResult.done) {
+      return aResult.done === bResult.done;
+    }
+    if (!isDeepEqual(aResult.value, bResult.value, seen)) return false;
+  }
+}
+
+export function isDeepEqual(
+  a: unknown,
+  b: unknown,
+  seen = new WeakMap()
+): boolean {
   if (Object.is(a, b)) return true;
 
   if (isBytesDisplay(a) || isBytesDisplay(b)) {
@@ -959,6 +1056,21 @@ function isDeepEqual(a: unknown, b: unknown, seen = new WeakMap()): boolean {
 
   if (a instanceof RegExp && b instanceof RegExp) {
     return a.source === b.source && a.flags === b.flags;
+  }
+
+  if (isGenericIterable(a) || isGenericIterable(b)) {
+    if (!isGenericIterable(a) || !isGenericIterable(b)) return false;
+    if (Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
+    if (isSelfIterableIterator(a) || isSelfIterableIterator(b)) return false;
+    if (seen.get(a) === b) return true;
+    seen.set(a, b);
+    const aHasEntries = isEntryIterable(a);
+    const bHasEntries = isEntryIterable(b);
+    if (aHasEntries !== bHasEntries) return false;
+    if (aHasEntries && bHasEntries) {
+      return haveSameIterableValues(a.entries(), b.entries(), seen);
+    }
+    return haveSameIterableValues(a, b, seen);
   }
 
   if (a instanceof Map && b instanceof Map) {

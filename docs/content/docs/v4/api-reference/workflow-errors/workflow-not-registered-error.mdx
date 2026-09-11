@@ -8,7 +8,7 @@ related:
   - /docs/api-reference/workflow-errors/step-not-registered-error
 ---
 
-`WorkflowNotRegisteredError` is thrown when the runtime tries to execute a workflow function that is not registered in the current deployment. This is an infrastructure error — not a user code error. It typically means a run was started against a deployment that does not have this workflow (e.g., the workflow was renamed or moved), or there was a build/bundling issue.
+`WorkflowNotRegisteredError` is thrown when the runtime tries to execute a workflow function that is not registered in the current deployment. This is an infrastructure error, not a user code error. It typically means a run was started against a deployment that does not have this workflow (e.g., the workflow was renamed or moved), or there was a build/bundling issue.
 
 When this error occurs, the run fails with a `RUNTIME_ERROR` error code.
 
@@ -21,7 +21,7 @@ if (WorkflowNotRegisteredError.is(error)) { // [!code highlight]
 }
 ```
 
-## API Signature
+## API signature
 
 ### Properties
 
@@ -36,14 +36,14 @@ interface WorkflowNotRegisteredError {
 export default WorkflowNotRegisteredError;`}
 />
 
-### Static Methods
+### Static methods
 
 #### `WorkflowNotRegisteredError.is(value)`
 
-Type-safe check for `WorkflowNotRegisteredError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+Type-safe check for `WorkflowNotRegisteredError` instances. Preferred over `instanceof` because it works across module boundaries and virtual machine contexts.
 
 <Callout>
-The `.is()` method works in server-side Node.js code (API routes, middleware). When checking the error from `run.returnValue`, use `WorkflowRunFailedError.is()` and inspect `error.cause` — the underlying error is deserialized from the event log.
+The `.is()` method works in server-side Node.js code (API routes, middleware). When checking the error from `run.returnValue`, use `WorkflowRunFailedError.is()` and inspect `error.cause`: the underlying error is deserialized from the event log.
 </Callout>
 
 ```typescript
@@ -54,4 +54,3 @@ if (WorkflowNotRegisteredError.is(error)) {
   // error is typed as WorkflowNotRegisteredError
 }
 ```
-

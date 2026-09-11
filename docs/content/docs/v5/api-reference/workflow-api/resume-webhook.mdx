@@ -11,7 +11,7 @@ related:
 
 Resumes a workflow run by sending an HTTP `Request` to a webhook identified by its token.
 
-This function creates a `hook_received` event and re-triggers the workflow to continue execution. It's designed to be called from API routes or server actions that receive external HTTP requests.
+This function publishes a workflow invocation carrying the request; the runtime creates the `hook_received` event from it and continues execution. It's designed to be called from API routes or server actions that receive external HTTP requests.
 
 <Callout type="warn">
 `resumeWebhook` is a runtime function that must be called from outside a workflow function.
@@ -37,7 +37,7 @@ export async function POST(request: Request) {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -58,7 +58,7 @@ Returns a `Promise<Response>` that resolves to one of:
 
 Throws [`HookNotFoundError`](/docs/api-reference/workflow-errors/hook-not-found-error) if the token does not match an active webhook.
 
-## Usage Note
+## Usage note
 
 <Callout type="warn">
 In most cases, you should not need to call `resumeWebhook()` directly. When you use `createWebhook()`, the framework automatically generates a webhook token and provides a public URL at `/.well-known/workflow/v1/webhook/:token`. External systems can send HTTP requests directly to that URL.
@@ -90,7 +90,7 @@ export async function POST(request: Request) {
 }
 ```
 
-## Related Functions
+## Related functions
 
 - [`createWebhook()`](/docs/api-reference/workflow/create-webhook) - Create a webhook in a workflow
 - [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) - Resume a hook with arbitrary payload

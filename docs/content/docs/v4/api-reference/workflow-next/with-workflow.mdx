@@ -1,13 +1,13 @@
 ---
 title: withWorkflow
-description: Configure webpack/turbopack to transform workflow directives in Next.js.
+description: Configure webpack and Turbopack to transform workflow directives in Next.js.
 type: reference
 summary: Wrap your Next.js config with withWorkflow to enable workflow directive transformation.
 prerequisites:
   - /docs/getting-started/next
 ---
 
-Configures webpack/turbopack loaders to transform workflow code (`"use step"`/`"use workflow"` directives)
+Configures webpack and Turbopack loaders to transform workflow code (`"use step"` and `"use workflow"` directives).
 
 ## Usage
 
@@ -22,7 +22,7 @@ const nextConfig: NextConfig = {
 };
 
 // not required but allows configuring workflow options
-const workflowConfig = {} 
+const workflowConfig = {};
 
 export default withWorkflow(nextConfig, workflowConfig); // [!code highlight]
 ```
@@ -36,7 +36,7 @@ Remove that package from `serverExternalPackages` in your
 `next.config` to silence the warning.
 </Callout>
 
-### Monorepos and Workspace Imports
+### Monorepos and workspace imports
 
 By default, Next.js detects the correct workspace root automatically. If your Next.js app lives in a subdirectory such as `apps/web` and workspace resolution is not working correctly, you can set `outputFileTracingRoot` as a workaround:
 
@@ -83,7 +83,7 @@ export default withWorkflow(nextConfig, {
 
 ### Source maps
 
-The step bundle and intermediate workflow bundle default to `'inline'` source maps **in development** — so stack traces from step errors and workflow VM errors point at your source files — and to **`false` in production**, so function bundles stay small. The `sourcemap` option lets you change that:
+The step bundle and intermediate workflow bundle default to `'inline'` source maps **in development** (so stack traces from step errors and workflow virtual machine (VM) errors point at your source files) and to **`false` in production**, so function bundles stay small. The `sourcemap` option lets you change that:
 
 | Value | Behavior |
 | --- | --- |
@@ -93,10 +93,10 @@ The step bundle and intermediate workflow bundle default to `'inline'` source ma
 | `'both'` | Emit both inline and external source maps. |
 | `false` | Omit source maps entirely. |
 
-In production, source maps are already off by default. Setting `sourcemap: false` explicitly also turns them off in development, and it drops the inline source map from every bundle while skipping the source-map-support runtime shim on the Vercel step function (the same behavior production gets by default) — the main lever for staying under the Vercel 250MB function size limit. The tradeoff is that workflow VM stack traces will reference generated code (e.g. `evalmachine.<anonymous>`) rather than your source files.
+In production, source maps are already off by default. Setting `sourcemap: false` explicitly also turns them off in development, and it drops the inline source map from every bundle while skipping the source-map-support runtime shim on the Vercel step function (the same behavior production gets by default), the main lever for staying under the Vercel 250 MB function size limit. The tradeoff is that workflow VM stack traces will reference generated code (for example, `evalmachine.<anonymous>`) rather than your source files.
 
 <Callout type="info">
-Setting `sourcemap` explicitly affects **all** generated bundles (steps, workflows, webhook). The legacy `WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING=1` environment variable is narrower — it only toggles source maps on the final workflow wrapper and webhook bundle (which default to off). It continues to work, but new code should use the `sourcemap` option or the `WORKFLOW_SOURCEMAP` environment variable instead.
+Setting `sourcemap` explicitly affects **all** generated bundles (steps, workflows, webhook). The legacy `WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING=1` environment variable is narrower: it only toggles source maps on the final workflow wrapper and webhook bundle (which default to off). It continues to work, but new code should use the `sourcemap` option or the `WORKFLOW_SOURCEMAP` environment variable instead.
 </Callout>
 
 The option can also be set via the `WORKFLOW_SOURCEMAP` environment variable, which accepts the same values plus `'0'` / `'1'` as aliases for `false` / `true`. Precedence is: explicit config > `WORKFLOW_SOURCEMAP` > the environment-aware default (`'inline'` in development, `false` in production). Development is detected from `next dev` / `NODE_ENV=development`, so the config option and the env var both let you force either behavior in either environment.
@@ -105,7 +105,7 @@ The option can also be set via the `WORKFLOW_SOURCEMAP` environment variable, wh
 The `workflows.local` options only affect local development. When deployed to Vercel, the runtime ignores `local` settings and uses the Vercel world automatically.
 </Callout>
 
-## Exporting a Function
+## Exporting a function
 
 
 If you are exporting a function in your `next.config` you will need to ensure you call the function returned from `withWorkflow`.
@@ -134,4 +134,4 @@ export default async function config(
   }
   return nextConfig;
 }
-``` 
+```

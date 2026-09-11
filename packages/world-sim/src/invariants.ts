@@ -5,7 +5,7 @@
  * verifying: that the log is ordered, that entity rows are a pure fold of the
  * log, that a step is never restarted after it finished, that a terminal run
  * accepts nothing afterwards. The store enforces most of them at write time by
- * rejecting bad events — but "the store rejected it" and "the log is actually
+ * rejecting bad events, but "the store rejected it" and "the log is actually
  * consistent" are different claims, and only the second one is worth trusting.
  * So this module re-derives everything from the event log alone and compares.
  *
@@ -26,22 +26,10 @@ import type { InvariantViolation } from './types.js';
 
 export interface InvariantInput {
   runId: string;
-  /** The run's events in log order — the order every reader sees them in. */
+  /** The run's events in log order, the order every reader sees them in. */
   events: Event[];
-  /**
-   * The same events in the order they were *committed*, supplied only by a
-   * world that promises the two orders agree — i.e. an append-only log.
-   *
-   * Only `log.monotonic-order` reads it, and it has to: comparing the sorted
-   * array against sort order can only ever pass, which is why that rule was
-   * unfirable before. Under a mint-ordered log the field is omitted and the
-   * rule is skipped, because there an out-of-order commit is the premise the
-   * scenario deliberately injected — production mints ids at the handler
-   * boundary, so its log gains rows in the past by design. Asserting otherwise
-   * would fail every scenario that holds a write across a peer's commit, which
-   * is the setup, not the fault.
-   */
-  eventsInCommitOrder?: Event[];
+  /** The same events in the order they were committed. */
+  eventsInCommitOrder: Event[];
   runs: WorkflowRun[];
   steps: Step[];
   waits: Wait[];
@@ -78,13 +66,13 @@ export function checkInvariants(input: InvariantInput): InvariantViolation[] {
   }
 
   // `events.list` sorts by (createdAt, eventId), and replay consumes events in
-  // that order. An append-only log promises commit order *is* that order; if it
+  // that order. Commit order must be that order; if it
   // is not, the log gained a row behind a position readers had already passed,
   // so a read taken in between saw a sequence the finished log contradicts.
-  // Walking the sorted array could never notice — it is sorted, so it is
+  // Walking the sorted array could never notice: it is sorted, so it is
   // monotonic by construction. This is the check that the promise was kept.
   let previousKey = '';
-  for (const event of input.eventsInCommitOrder ?? []) {
+  for (const event of input.eventsInCommitOrder) {
     const key = `${event.createdAt.toISOString()}|${event.eventId}`;
     if (previousKey && key <= previousKey) {
       add(

@@ -5,22 +5,23 @@
  * format prefix system to mark compressed data (e.g. 'zstd' or 'gzip'
  * wrapping the inner format: 'zstd' + zstd('devl' + payload)).
  *
- * Codec selection (write side): zstd is preferred — it is markedly faster
- * than gzip at a comparable-or-better ratio (see scripts/README.md), and
- * compression runs at every step boundary so the write CPU is a per-step
- * tax. zstd requires `node:zlib` >= 22.15 (Web `CompressionStream` has no
- * zstd), so on a runtime without it we fall back to gzip via the portable
+ * Codec selection (write side): zstd is preferred because it is markedly
+ * faster than gzip at a comparable-or-better ratio (see scripts/README.md),
+ * and compression runs at every step boundary so the write CPU is a
+ * per-step tax. zstd requires `node:zlib` >= 22.15 (Web
+ * `CompressionStream` has no zstd), so on a runtime without it we fall back
+ * to gzip via the portable
  * `CompressionStream`. `WORKFLOW_COMPRESSION_CODEC=gzip` forces the
  * portable codec.
  *
  * Read side: dispatch on the format prefix, so both 'zstd' and 'gzip'
  * payloads are always decodable regardless of which codec wrote them.
- * (The browser o11y read path decodes zstd via a registered WASM decoder —
+ * (The browser o11y read path decodes zstd via a registered WASM decoder,
  * see `serialization-format.ts`; this module's `decompress` is the Node
  * runtime/replay path and uses `node:zlib`.)
  *
  * Layering order with encryption: compression is applied BEFORE
- * encryption (encr(zstd(devl))) — encrypted bytes are high-entropy and
+ * encryption (encr(zstd(devl))): encrypted bytes are high-entropy and
  * do not compress, so the reverse order would be a no-op.
  *
  * Compression is conditional:
@@ -54,7 +55,7 @@ export const COMPRESSION_MIN_BYTES = 1024;
  */
 export const COMPRESSION_MIN_SAVINGS_RATIO = 0.05;
 
-/** Default zstd compression level — the sweet spot of speed vs ratio. */
+/** Default zstd compression level: the sweet spot of speed vs ratio. */
 const ZSTD_LEVEL = 3;
 
 /** Which codec compressed a payload (or `none` when stored uncompressed). */
@@ -62,7 +63,7 @@ export type CompressionCodec = 'zstd' | 'gzip' | 'none';
 
 /**
  * Escape hatch: set WORKFLOW_DISABLE_COMPRESSION=1 to disable
- * write-side compression entirely. Reads are unaffected — payloads
+ * write-side compression entirely. Reads are unaffected: payloads
  * that were already written compressed remain readable.
  */
 function isCompressionDisabledByEnv(): boolean {
@@ -78,7 +79,7 @@ function isCompressionDisabledByEnv(): boolean {
 
 /**
  * Optional codec override (`WORKFLOW_COMPRESSION_CODEC=gzip|zstd`). Lets an
- * operator pin the portable codec (gzip) — useful for A/B comparisons or
+ * operator pin the portable codec (gzip), useful for A/B comparisons or
  * runtimes where zstd read support isn't yet everywhere.
  */
 function codecOverrideFromEnv(): 'gzip' | 'zstd' | undefined {
@@ -97,7 +98,7 @@ interface NodeZlib {
 }
 
 /**
- * Resolve `node:zlib` via `process.getBuiltinModule` — no static import, so
+ * Resolve `node:zlib` via `process.getBuiltinModule`: no static import, so
  * this module stays bundler-safe for browser/edge targets (where it returns
  * undefined and we fall back to gzip).
  */
@@ -142,7 +143,7 @@ async function pipeThroughTransform(
   }
 ): Promise<Uint8Array> {
   const writer = transform.writable.getWriter();
-  // Don't await the write before reading — the transform's internal
+  // Don't await the write before reading: the transform's internal
   // queue can fill up on large payloads, deadlocking writer vs reader.
   const writePromise = writer.write(data).then(() => writer.close());
   // If the transform errors, the reader.read() below rejects first and
@@ -202,8 +203,8 @@ function unzstdBytes(data: Uint8Array): Uint8Array {
  * Telemetry sink describing what the compression layer did to a payload.
  * Populated by {@link compress} (write) and {@link decompress} (read) when
  * a `stats` object is passed. Sizes are measured at the compression
- * boundary — i.e. before encryption is layered on the write side and after
- * decryption on the read side — so they reflect compression's effect, not
+ * boundary (i.e. before encryption is layered on the write side and after
+ * decryption on the read side), so they reflect compression's effect, not
  * the at-rest size (which also includes the `encr` envelope and, on some
  * backends, base64 expansion).
  *
@@ -260,8 +261,8 @@ function selectWriteCodec(): 'zstd' | 'gzip' | 'none' {
  * @param data - The format-prefixed serialized data (e.g. 'devl' + bytes)
  * @param enabled - Whether the target run supports compressed payloads
  *   (run specVersion >= SPEC_VERSION_SUPPORTS_COMPRESSION, and for
- *   cross-deployment writes, the target deployment's capabilities —
- *   see `getRunCapabilities` in capabilities.ts). zstd and gzip read
+ *   cross-deployment writes, the target deployment's capabilities; see
+ *   `getRunCapabilities` in capabilities.ts). zstd and gzip read
  *   support co-ship, so a single boolean is sufficient.
  * @param stats - Optional telemetry sink; populated when `data` is binary.
  * @returns The compressed data with a codec prefix, or the original data

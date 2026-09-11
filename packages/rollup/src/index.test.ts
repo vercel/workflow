@@ -3,6 +3,15 @@ import {
   WORKFLOW_OPTIONAL_WS_NATIVE_MODULES,
 } from '@workflow/builders';
 import { describe, expect, it, vi } from 'vitest';
+
+const { transformMock } = vi.hoisted(() => ({
+  transformMock: vi.fn(),
+}));
+
+vi.mock('@swc/core', () => ({
+  transform: transformMock,
+}));
+
 import { workflowTransformPlugin } from './index.js';
 
 /**
@@ -130,5 +139,31 @@ describe('workflowTransformPlugin resolveId — ws optional native accelerators'
     const { resolveId } = getResolveId();
     await expect(resolveId('bufferutil-extra')).resolves.toBeNull();
     await expect(resolveId('ws')).resolves.toBeNull();
+  });
+});
+
+describe('workflowTransformPlugin transform', () => {
+  it('does not implicitly load input source maps', async () => {
+    transformMock.mockResolvedValueOnce({ code: 'compiled', map: null });
+
+    const plugin = workflowTransformPlugin();
+    const transform = plugin.transform;
+    if (typeof transform !== 'function') {
+      throw new Error('expected transform to be a function');
+    }
+
+    const source = `export async function example() {
+  "use step";
+}`;
+    await transform.call({} as never, source, '/project/workflows/example.ts');
+
+    expect(transformMock).toHaveBeenCalledWith(
+      source,
+      expect.objectContaining({
+        inputSourceMap: false,
+        sourceMaps: true,
+        inlineSourcesContent: true,
+      })
+    );
   });
 });

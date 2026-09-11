@@ -1,6 +1,6 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
-import { envNumber } from '@workflow/world';
+import { envNumber } from '@workflow/world/env-config';
 import { STREAM_DRAIN_SYMBOL } from './symbols.js';
 
 /**
@@ -20,7 +20,7 @@ type DrainBarrier = () => Promise<void>;
  * This is deliberately distinct from the per-request batch caps below: this
  * bounds how much is *buffered*, those bound how much goes out in one
  * `writeMulti`. Raising this must never let a single request exceed a wire
- * limit — batch sizing enforces that independently.
+ * limit, since batch sizing enforces that independently.
  */
 export const MAX_INFLIGHT_CHUNKS = 1000;
 
@@ -46,7 +46,7 @@ export const getMaxChunksPerBatch = (): number =>
 
 /**
  * Wire limit: maximum cumulative bytes in a single coalesced `writeMulti`.
- * Chunk *count* alone is not enough — 1,000 small chunks are ~100KB but 1,000
+ * Chunk *count* alone is not enough: 1,000 small chunks are ~100KB but 1,000
  * file-sized chunks can be hundreds of MB, which platform request-body limits
  * reject long before the count cap matters. A batch is split once adding the
  * next chunk would exceed this (a single chunk larger than the cap still goes
@@ -61,7 +61,7 @@ export const getMaxBytesPerBatch = (): number =>
   });
 
 /**
- * Buffer bound (bytes) for the server writable's group-commit buffer — the
+ * Buffer bound (bytes) for the server writable's group-commit buffer, the
  * byte-denominated counterpart of {@link MAX_INFLIGHT_CHUNKS}. `write()`
  * blocks once this much data is buffered-but-not-durable, so a fast producer
  * of large chunks can't grow client memory without bound. Default 8 MiB
@@ -88,7 +88,7 @@ export const getMaxBufferedBytes = (): number =>
  * after each step body returns, so a coarser interval (the previous 100ms)
  * adds visible per-step latency to streaming workflows. With a uniformly
  * distributed offset between step return and the next tick, the expected
- * wait is half the interval — so 10ms means ~5ms average wait per step
+ * wait is half the interval, so 10ms means ~5ms average wait per step
  * instead of ~50ms. The per-tick work is `writable.locked` plus a
  * `getWriter()`/`releaseLock()` probe, both microsecond-scale; 10× more
  * ticks during a stream's lifetime is not measurable in practice.
@@ -119,6 +119,30 @@ const getLockPollIntervalMs = (): number =>
 export interface FlushableStreamState extends PromiseWithResolvers<void> {
   /** Number of write operations currently in flight to the server */
   pendingOps: number;
+  /** Frames emitted by this pipe's producer. */
+  producedFrames: number;
+  /** Produced frames accepted by this pipe's sink. */
+  acceptedFrames: number;
+  /** Terminal pipe error, retained for snapshots registered after failure. */
+  pipeError?: unknown;
+  /**
+   * If the user-facing writable is unlocked, enqueue an ordered checkpoint and
+   * durably drain every write ahead of it. Returns false while a writer remains
+   * locked, so lock-held streams never block step completion.
+   */
+  settleReleasedWrites?: () => Promise<boolean>;
+  /** Whether release settlement waits for explicit step-end arming. */
+  deferReleaseSettlement?: boolean;
+  /** Whether step-end processing has armed released-writer settlement. */
+  releaseSettlementArmed?: boolean;
+  /** Whether the user-facing writable has begun a normal close. */
+  userWritableClosing?: boolean;
+  /** Step-end snapshot waiters blocked until their target reaches the sink. */
+  frameWaiters: Array<{
+    target: number;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  }>;
   /** Whether the `done` promise has been resolved */
   doneResolved: boolean;
   /** Whether the underlying stream has actually closed/errored */
@@ -140,6 +164,9 @@ export function createFlushableState(): FlushableStreamState {
   const state: FlushableStreamState = {
     ...withResolvers<void>(),
     pendingOps: 0,
+    producedFrames: 0,
+    acceptedFrames: 0,
+    frameWaiters: [],
     doneResolved: false,
     streamEnded: false,
   };
@@ -213,8 +240,8 @@ function isReadableUnlockedNotClosed(readable: ReadableStream): boolean {
  *
  * Lock release means the producer is done *writing*; with a group-commit
  * sink, accepted chunks may still be client-buffered or in a request that is
- * in flight. Awaiting the barrier here keeps the completion's meaning —
- * "everything written so far is durable" — identical to the pre-batching
+ * in flight. Awaiting the barrier here keeps the completion's meaning
+ * ("everything written so far is durable") identical to the pre-batching
  * behavior where each write() was individually durable.
  */
 function resolveAfterDrain(state: FlushableStreamState): void {
@@ -227,6 +254,154 @@ function resolveAfterDrain(state: FlushableStreamState): void {
     () => state.resolve(),
     (err) => state.reject(err)
   );
+}
+
+/** Record a frame synchronously when its producer emits it into this pipe. */
+function markFlushableFrameProduced(state: FlushableStreamState): void {
+  state.producedFrames++;
+}
+
+/**
+ * Capture a step-end producer watermark, wait until the pipe has handed every
+ * frame through that watermark to its sink, then await the sink's durability
+ * barrier. Unlike {@link FlushableStreamState.promise}, this never waits for a
+ * user writer lock to be released.
+ */
+export async function drainFlushableSnapshot(
+  state: FlushableStreamState
+): Promise<void> {
+  const drainBeforeThrow = async (error: unknown): Promise<never> => {
+    // A later frame can fail after an earlier frame was early-acked by the
+    // group-commit sink. Keep the earlier accepted prefix durable before
+    // surfacing the producer error, matching flushablePipe's failure path.
+    await state.drainBarrier?.().catch(() => {});
+    throw error;
+  };
+
+  const target = state.producedFrames;
+  if (state.acceptedFrames < target) {
+    if (state.pipeError !== undefined) {
+      return drainBeforeThrow(state.pipeError);
+    }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        state.frameWaiters.push({ target, resolve, reject });
+      });
+    } catch (error) {
+      return drainBeforeThrow(error);
+    }
+  }
+  if (state.pipeError !== undefined) {
+    return drainBeforeThrow(state.pipeError);
+  }
+  await state.drainBarrier?.();
+}
+
+/**
+ * Mark byte-stream chunks at the producer side of a flushable pipe. Serialized
+ * streams should instead use `getSerializeStream`'s synchronous output hook.
+ */
+/**
+ * Wrap the user-facing producer boundary of a flushable writable. A completed
+ * write through this handle has a sequence number before step-end snapshots,
+ * while the original writable remains the input to the serialization pipe.
+ */
+export function trackFlushableWritable<T>(
+  writable: WritableStream<T>,
+  state: FlushableStreamState,
+  WritableStreamConstructor: typeof WritableStream = WritableStream
+): WritableStream<T> {
+  const targetWriter = writable.getWriter();
+  const checkpoint = Symbol('workflow-stream-release-checkpoint');
+  let trackedController: WritableStreamDefaultController;
+  const tracked = new WritableStreamConstructor({
+    start(controller) {
+      trackedController = controller;
+    },
+    async write(chunk) {
+      if (chunk === checkpoint) return;
+      markFlushableFrameProduced(state);
+      await targetWriter.write(chunk);
+    },
+    async close() {
+      state.userWritableClosing = true;
+      try {
+        await targetWriter.close();
+      } finally {
+        targetWriter.releaseLock();
+      }
+    },
+    async abort(reason) {
+      try {
+        await targetWriter.abort(reason);
+      } finally {
+        targetWriter.releaseLock();
+      }
+    },
+  }) as WritableStream<T>;
+
+  // A downstream sink can fail after its early-acknowledged write has already
+  // resolved. Forward that terminal error into the public writable even while
+  // its producer is idle, so native pipeTo() rejects and cancels its source.
+  targetWriter.closed.catch((error) => {
+    trackedController.error(error);
+  });
+
+  let settlement: Promise<boolean> | undefined;
+  state.settleReleasedWrites = (): Promise<boolean> => {
+    state.releaseSettlementArmed = true;
+    if (settlement) return settlement;
+    if (tracked.locked) return Promise.resolve(false);
+    if (state.userWritableClosing) {
+      settlement = state.promise.then(() => true);
+      return settlement;
+    }
+
+    let checkpointWriter: WritableStreamDefaultWriter<T>;
+    try {
+      checkpointWriter = tracked.getWriter();
+    } catch {
+      // Closed/errored streams settle through the pipe's normal completion.
+      return Promise.resolve(false);
+    }
+
+    settlement = (async () => {
+      try {
+        // Native writable ordering puts this behind writes queued by the
+        // released writer, including write promises it did not await.
+        try {
+          await checkpointWriter.write(checkpoint as T);
+        } catch (checkpointError) {
+          // A close can move from requested to terminal between getWriter()
+          // and write(). Its normal pipe completion already drains the sink;
+          // an errored pipe rejects here with its actual failure instead.
+          try {
+            await state.promise;
+            return true;
+          } catch (pipeError) {
+            throw pipeError ?? checkpointError;
+          }
+        }
+        await drainFlushableSnapshot(state);
+        if (!state.doneResolved) {
+          state.doneResolved = true;
+          state.resolve();
+        }
+        return true;
+      } catch (error) {
+        if (!state.doneResolved) {
+          state.doneResolved = true;
+          state.reject(error);
+        }
+        throw error;
+      } finally {
+        checkpointWriter.releaseLock();
+      }
+    })();
+    return settlement;
+  };
+
+  return tracked;
 }
 
 /**
@@ -253,6 +428,20 @@ export function pollWritableLock(
     if (state.doneResolved || state.streamEnded) {
       clearInterval(intervalId);
       state.writablePollingInterval = undefined;
+      return;
+    }
+
+    if (state.settleReleasedWrites) {
+      if (
+        (!state.deferReleaseSettlement || state.releaseSettlementArmed) &&
+        !writable.locked
+      ) {
+        clearInterval(intervalId);
+        state.writablePollingInterval = undefined;
+        void state.settleReleasedWrites().catch(() => {
+          // Failure is surfaced through state.promise.
+        });
+      }
       return;
     }
 
@@ -324,7 +513,7 @@ export function flushablePipe(
   state: FlushableStreamState
 ): Promise<void> {
   // Batching lives in the sink (`WorkflowServerWritableStream` group-commits
-  // its buffer), so this pipe is a plain per-chunk pump regardless of path —
+  // its buffer), so this pipe is a plain per-chunk pump regardless of path:
   // its only responsibilities are lock-release completion and durability
   // tracking. Group-commit sinks ack write() on buffer entry; adopt their
   // durability barrier so the lock-release completion still means
@@ -363,8 +552,8 @@ async function flushablePipePerChunk(
         return;
       }
 
-      // Read from source - don't count as pending op since we're just waiting for data
-      // The important ops are writes to the sink (server)
+      // Read from the source. Don't count this as a pending operation because
+      // reads wait for data. The important operations are writes to the sink.
       const readResult = await Promise.race([
         reader.read(),
         writer.closed.then(() => {
@@ -393,19 +582,31 @@ async function flushablePipePerChunk(
       state.pendingOps++;
       try {
         await writer.write(readResult.value);
+        state.acceptedFrames++;
+        const ready = state.frameWaiters.filter(
+          (waiter) => waiter.target <= state.acceptedFrames
+        );
+        state.frameWaiters = state.frameWaiters.filter(
+          (waiter) => waiter.target > state.acceptedFrames
+        );
+        for (const waiter of ready) waiter.resolve();
       } finally {
         state.pendingOps--;
       }
     }
   } catch (err) {
     state.streamEnded = true;
+    state.pipeError = err;
     cancelReason = err;
+    const frameWaiters = state.frameWaiters;
+    state.frameWaiters = [];
+    for (const waiter of frameWaiters) waiter.reject(err);
     // Against an early-ack sink, chunks can still be buffered or in flight
     // when the pipe fails (pendingOps only counts un-acked writes). Deliver
     // that accepted prefix before settling the failure: once the state
     // rejects, the step may persist its failure and the invocation finish,
     // and anything still client-side would be lost. The original pipe error
-    // stays primary — a drain failure is already sticky on the sink.
+    // stays primary, since a drain failure is already sticky on the sink.
     if (state.drainBarrier) {
       await state.drainBarrier().catch(() => {});
     }
@@ -422,7 +623,7 @@ async function flushablePipePerChunk(
   } finally {
     // Cancel the upstream reader so the source knows to stop generating data.
     // Uses cancelReason (set in the catch block) so the source receives context
-    // about why it was cancelled. On normal completion cancelReason is undefined,
+    // about why it was canceled. On normal completion cancelReason is undefined,
     // which is a harmless no-op on an already-done reader.
     reader.cancel(cancelReason).catch(() => {});
     reader.releaseLock();

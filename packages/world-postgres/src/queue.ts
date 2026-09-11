@@ -55,12 +55,14 @@ const graphileLogger = createGraphileLogger();
 const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
 // Core records MAX_DELIVERIES_EXCEEDED on delivery 49.
 const MAX_GRAPHILE_JOB_ATTEMPTS = 49;
-const GraphileHelpers = z.object({
-  abortSignal: z.instanceof(AbortSignal).optional(),
-  job: z.object({
-    attempts: z.number().int().positive(),
-  }),
-});
+const GraphileHelpers = z.compile(
+  z.object({
+    abortSignal: z.instanceof(AbortSignal).optional(),
+    job: z.object({
+      attempts: z.number().int().positive(),
+    }),
+  })
+);
 
 type HttpExecutionResult =
   | { type: 'completed' }
@@ -381,7 +383,7 @@ export function createQueue(
   }
 
   async function migratePgBossJobs(utils: WorkerUtils): Promise<void> {
-    // Scenario A: Drizzle migration already ran — staging table exists
+    // Scenario A: Drizzle migration already ran, so the staging table exists
     const hasStaging = await pool.query(
       `SELECT EXISTS (
         SELECT 1 FROM information_schema.tables
@@ -407,7 +409,8 @@ export function createQueue(
       return;
     }
 
-    // Scenario B: Drizzle migration didn't run — pgboss schema still exists
+    // Scenario B: Drizzle migration didn't run, so the pgboss schema still
+    // exists
     const hasPgBoss = await pool.query(
       `SELECT EXISTS (
         SELECT 1 FROM information_schema.schemata
@@ -634,8 +637,8 @@ export function createQueue(
       // workflows that use parent→child polling patterns (e.g. awaiting a
       // child workflow via `childRun.returnValue` inside the parent).
       // Every such poll holds a worker slot for the duration of the child
-      // run. Recursive workflows like `fibonacciWorkflow` fan out quickly
-      // — fib(6) produces ~24 concurrent polling steps at peak, and at
+      // run. Recursive workflows like `fibonacciWorkflow` fan out rapidly.
+      // fib(6) produces ~24 concurrent polling steps at peak, and at
       // concurrency=10 (the previous default) it would deadlock on the
       // default Postgres setup. See packages/core/src/runtime/run.ts and
       // docs/content/docs/changelog/eager-processing.mdx for context.

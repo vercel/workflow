@@ -20,28 +20,35 @@ type Files = keyof typeof manifest.workflows;
 type Workflows<F extends Files> = keyof (typeof manifest.workflows)[F];
 type NonEmptyArray<T> = [T, ...T[]];
 
-const Invoke = z
-  .object({
-    file: z.enum(Object.keys(manifest.workflows) as NonEmptyArray<Files>),
-    workflow: z.string(),
-    args: z.unknown().array().default([]),
-  })
-  .transform((obj) => {
-    const file = obj.file as keyof typeof manifest.workflows;
-    const workflow = z
-      .enum(
-        Object.keys(manifest.workflows[file]) as NonEmptyArray<
-          Workflows<typeof file>
-        >
-      )
-      .parse(obj.workflow);
-    return {
-      args: obj.args,
-      workflow: manifest.workflows[file][workflow],
-    };
-  });
+const Invoke = z.compile(
+  z
+    .object({
+      file: z.enum(Object.keys(manifest.workflows) as NonEmptyArray<Files>),
+      workflow: z.string(),
+      args: z.unknown().array().default([]),
+    })
+    .transform((obj) => {
+      const file = obj.file as keyof typeof manifest.workflows;
+      const workflow = z
+        .compile(
+          z.enum(
+            Object.keys(manifest.workflows[file]) as NonEmptyArray<
+              Workflows<typeof file>
+            >
+          )
+        )
+        .parse(obj.workflow);
+      return {
+        args: obj.args,
+        workflow: manifest.workflows[file][workflow],
+      };
+    })
+);
 
 // Track flow handler invocations per run for testing inline execution
+// per-copy-ok: this file is a standalone test server entry (it calls `serve()`
+// below), so it runs as its own process with one module instance. There is no
+// host bundler to compile it into several layers.
 const flowInvocationCounts = new Map<string, number>();
 
 const app = new Hono()
@@ -88,7 +95,8 @@ const app = new Hono()
     const hook = await getHookByToken(ctx.req.param('token'));
     const { runId } = await resumeHook(hook.token, {
       ...(await ctx.req.json()),
-      metadata: hook.metadata,
+      // `metadata` is a lazily-hydrated Promise; echo the resolved value.
+      metadata: await hook.metadata,
     });
     return ctx.json({ runId, hookId: hook.hookId });
   })
