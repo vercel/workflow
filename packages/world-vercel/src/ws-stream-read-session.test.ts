@@ -44,9 +44,14 @@ const { FakeWebSocket, sockets } = vi.hoisted(() => {
     close(code = 1000, reason = ''): void {
       this.readyState = 3;
       this.closed.push([code, reason]);
+      queueMicrotask(() => this.emit('close', code));
     }
     reply(meta: Record<string, unknown>, body = new Uint8Array()): void {
       this.emit('message', encodeFrame(meta, body));
+    }
+    peerClose(): void {
+      this.readyState = 3;
+      this.emit('close', 1000);
     }
   }
   return { FakeWebSocket: FakeSocket, sockets };
@@ -304,6 +309,26 @@ describe('stream read WebSocket session', () => {
     const { reading, socket } = await open(stream, 10);
     socket.reply({ type: 'eof', finalIndex: 4, nextIndex: 5 });
     await expect(reading).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it('does not wait the cleanup budget when close follows queued EOF', async () => {
+    const stream = createStreamReadWsSession(
+      'wrun_1',
+      'stream',
+      0,
+      { token: 'token' },
+      makeFallbacks()
+    );
+    const { reading, socket } = await open(stream);
+    socket.reply({ type: 'eof', finalIndex: -1, nextIndex: 0 });
+    socket.peerClose();
+
+    await expect(
+      Promise.race([
+        reading,
+        new Promise((resolve) => setTimeout(() => resolve('timed out'), 100)),
+      ])
+    ).resolves.toEqual({ done: true, value: undefined });
   });
 
   it('treats fatal error as terminal', async () => {

@@ -789,7 +789,10 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
           if (readStart === undefined) readStart = Date.now();
           const world = await getWorldLazy();
           const connectStart = Date.now();
-          const stream = await world.streams.get(runId, name, startIndex);
+          const getStream =
+            world.streams.getResumable?.bind(world.streams) ??
+            world.streams.get.bind(world.streams);
+          const stream = await getStream(runId, name, startIndex);
           connectMs = Date.now() - connectStart;
           reader = this.#reader = stream.getReader();
         }
@@ -930,6 +933,7 @@ export function createReconnectingFramedStream(
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let canceled = false;
   let cancelReason: unknown;
+  let worldOwnsRecovery = false;
   let buffer = new Uint8Array(0);
   // Read telemetry (same semantics as WorkflowServerReadableStream):
   // dispatch time, first-connect duration, first-frame latch, and totals.
@@ -967,7 +971,11 @@ export function createReconnectingFramedStream(
       ? currentStartIndex + consumedFrames
       : startIndex;
     const connectStart = Date.now();
-    const stream = await world.streams.get(runId, name, effectiveStartIndex);
+    const getStream =
+      world.streams.getResumable?.bind(world.streams) ??
+      world.streams.get.bind(world.streams);
+    worldOwnsRecovery = world.streams.getResumable !== undefined;
+    const stream = await getStream(runId, name, effectiveStartIndex);
     if (canceled) {
       await stream.cancel(cancelReason).catch(() => {});
       return false;
@@ -1074,7 +1082,7 @@ export function createReconnectingFramedStream(
           result = await reader!.read();
         } catch (err) {
           if (canceled) return;
-          if (!reconnectSupported) {
+          if (worldOwnsRecovery || !reconnectSupported) {
             controller.error(err);
             return;
           }
@@ -1098,7 +1106,9 @@ export function createReconnectingFramedStream(
           // EOF), and a completed stream can still be cut mid-body; both
           // would otherwise be silently read as a shorter, complete stream.
           const verifiedComplete =
-            !reconnectSupported || (await isVerifiedComplete());
+            worldOwnsRecovery ||
+            !reconnectSupported ||
+            (await isVerifiedComplete());
           if (canceled) return;
           if (!verifiedComplete) {
             try {

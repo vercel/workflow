@@ -212,6 +212,15 @@ describe('stream writer session capability', () => {
   });
 });
 
+describe('stream reader capability', () => {
+  it('exposes the resumable reader only for the exact read opt-in', async () => {
+    const { createStreamer } = await import('./streamer.js');
+    expect(createStreamer().streams.getResumable).toBeUndefined();
+    vi.stubEnv('WORKFLOW_STREAM_READS_TRANSPORT', 'ws');
+    expect(createStreamer().streams.getResumable).toBeTypeOf('function');
+  });
+});
+
 describe('session HTTP fallback', () => {
   it('paginates with the configured request-work cap', async () => {
     vi.stubEnv('WORKFLOW_MAX_CHUNKS_PER_REQUEST', '2');
@@ -232,6 +241,27 @@ describe('session HTTP fallback', () => {
         (call) => (call[1]?.body as Uint8Array).byteLength
       )
     ).toEqual([10, 5]);
+  });
+});
+
+describe('streams.getInfo', () => {
+  it('requests and parses authoritative start-index resolution', async () => {
+    const { makeRequest } = await import('./utils.js');
+    vi.mocked(makeRequest).mockResolvedValueOnce({
+      tailIndex: 5,
+      done: false,
+      resolvedStartIndex: 4,
+    });
+    const { createStreamer } = await import('./streamer.js');
+
+    await expect(
+      createStreamer().streams.getInfo('run-123', 'stream', { startIndex: -2 })
+    ).resolves.toMatchObject({ resolvedStartIndex: 4 });
+    expect(makeRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        endpoint: expect.stringContaining('startIndex=-2'),
+      })
+    );
   });
 });
 

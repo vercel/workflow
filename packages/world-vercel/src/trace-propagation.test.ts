@@ -364,6 +364,43 @@ describe('ws stream transport upgrade trace propagation', () => {
   });
 });
 
+describe('ws stream read upgrade trace propagation', () => {
+  afterEach(() => {
+    wsUpgrades.length = 0;
+  });
+
+  it('injects traceparent from its dedicated read connect span', async () => {
+    const { createStreamReadWsSession } = await import(
+      './ws-stream-read-session.js'
+    );
+    const stream = createStreamReadWsSession(
+      'wrun_1',
+      'user',
+      0,
+      { token: 'test-token' },
+      {
+        resolveStartIndex: async (startIndex) => startIndex,
+        getChunks: async () => ({
+          data: [],
+          cursor: null,
+          hasMore: false,
+          done: true,
+        }),
+        getInfo: async () => ({ tailIndex: -1, done: true }),
+      }
+    );
+    const reader = stream.getReader();
+    void reader.read();
+    await vi.waitFor(() => expect(wsUpgrades).toHaveLength(1));
+
+    expect(wsUpgrades[0]?.headers.traceparent).toMatch(
+      /^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/
+    );
+    expect(wsUpgrades[0]?.headers.authorization).toBe('Bearer test-token');
+    await reader.cancel();
+  });
+});
+
 describe('ws events transport upgrade trace propagation', () => {
   // `openWsChannel` is gated, unlike the `resolveWsTransport` lookup it
   // replaced: nothing opens a channel on the HTTP default.
