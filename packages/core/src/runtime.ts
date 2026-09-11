@@ -2773,6 +2773,31 @@ export function workflowEntrypoint(
                   // continuing in-process for each.
                   const continuedHookIds = new Set<string>();
 
+                  // Steps THIS delivery has already published a
+                  // step-execution message for, across its replay passes:
+                  // the suspension handler's resilient publishes
+                  // (`queuedStepCorrelationIds`) plus the dispatch pass's
+                  // own immediate enqueues. A fan-out that runs some steps
+                  // inline falls back into this loop once they finish,
+                  // reloads the log, and finds the queued siblings still
+                  // pending; without this set the next dispatch pass sends
+                  // every one of their messages again. The queue dedupes
+                  // them by idempotency key, but each redundant send still
+                  // costs a round-trip on the shared connection pool and
+                  // holds the invocation open past its useful work
+                  // (measured: 19-28 re-sends per pass on a 32-branch
+                  // fan-out, ~400 ms after the originals).
+                  //
+                  // Deliberately invocation-scoped, never derived from the
+                  // log: a `step_created` in the log proves the step was
+                  // created, not that its message was ever sent (the
+                  // publisher may have crashed between the two). So a
+                  // DIFFERENT invocation (crash-recovery redelivery, a
+                  // concurrent wake) re-enqueues unconditionally, exactly
+                  // as before, and only knowledge of this process's own
+                  // sends is used to skip. Dies with this delivery.
+                  const publishedStepCorrelationIds = new Set<string>();
+
                   // Main replay loop
                   while (true) {
                     loopIteration++;
@@ -3848,6 +3873,13 @@ export function workflowEntrypoint(
                         const ownedRecoverySteps: StepInvocationQueueItem[] =
                           [];
                         let backstopWakesArmed = 0;
+                        // Immediate re-enqueues suppressed because this
+                        // invocation already published the step's message
+                        // on an earlier pass. See publishedStepCorrelationIds.
+                        let republishesSkipped = 0;
+                        for (const correlationId of suspensionResult.queuedStepCorrelationIds) {
+                          publishedStepCorrelationIds.add(correlationId);
+                        }
                         // TTR hand-off. The measurement may only go to an
                         // execution that will actually ATTEMPT the next
                         // durable step, and the loop below is what decides
@@ -3894,12 +3926,14 @@ export function workflowEntrypoint(
                             continue;
                           }
                           // Already published by the suspension handler's
-                          // resilient dispatch (create + queue in parallel,
-                          // message carrying `stepInput`). A re-publish here
-                          // would dedupe on the idempotency key anyway, but
-                          // skip the wasted round-trip. Ownership never
-                          // applies to these: they were created this pass, so
-                          // no step_started stamp can exist yet.
+                          // resilient dispatch THIS pass (create + queue in
+                          // parallel, message carrying `stepInput`). A
+                          // re-publish here would dedupe on the idempotency
+                          // key anyway, but skip the wasted round-trip.
+                          // Ownership never applies to these: they were
+                          // created this pass, so no step_started stamp can
+                          // exist yet. (Earlier passes' publishes are
+                          // covered by publishedStepCorrelationIds below.)
                           if (
                             suspensionResult.queuedStepCorrelationIds.has(
                               step.correlationId
@@ -3956,6 +3990,25 @@ export function workflowEntrypoint(
                             );
                             continue;
                           }
+                          // Already published by THIS invocation on an
+                          // earlier pass (see publishedStepCorrelationIds):
+                          // the message is in the queue and the send is
+                          // joined below, so a repeat buys nothing. A
+                          // `step_retrying` observed since is a new
+                          // schedule (the retry handoff), so it is not
+                          // covered by the earlier publish and re-enqueues
+                          // as before. Checked before the TTR hand-off so a
+                          // skipped step never consumes the measurement.
+                          if (
+                            publishedStepCorrelationIds.has(
+                              step.correlationId
+                            ) &&
+                            step.sawRetrying !== true
+                          ) {
+                            republishesSkipped++;
+                            continue;
+                          }
+                          publishedStepCorrelationIds.add(step.correlationId);
                           // This step IS being attempted, by the invocation
                           // that picks the message up. Consume the tracking
                           // here, for the first such step and no other.
@@ -4098,7 +4151,8 @@ export function workflowEntrypoint(
                         // delivery of this message died mid-step-body.
                         if (
                           backstopWakesArmed > 0 ||
-                          ownedRecoverySteps.length > 0
+                          ownedRecoverySteps.length > 0 ||
+                          republishesSkipped > 0
                         ) {
                           span?.setAttributes({
                             ...(ownedRecoverySteps.length > 0
@@ -4111,7 +4165,22 @@ export function workflowEntrypoint(
                                   backstopWakesArmed
                                 )
                               : {}),
+                            ...(republishesSkipped > 0
+                              ? Attribute.WorkflowDispatchRepublishSkipped(
+                                  republishesSkipped
+                                )
+                              : {}),
                           });
+                        }
+                        if (republishesSkipped > 0) {
+                          runtimeLogger.debug(
+                            'Skipped re-publishing step messages this invocation already published on an earlier replay pass',
+                            {
+                              workflowRunId: runId,
+                              loopIteration,
+                              republishesSkipped,
+                            }
+                          );
                         }
                         if (ownedRecoverySteps.length > 0) {
                           runtimeLogger.warn(
