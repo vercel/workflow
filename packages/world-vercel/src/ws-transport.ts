@@ -23,7 +23,7 @@
  */
 
 import { getVercelOidcToken } from '@vercel/oidc';
-import { globalSingleton } from '@workflow/utils';
+import { debugLog, globalSingleton } from '@workflow/utils';
 import { WebSocket } from 'ws';
 import { type DecodedFrame, decodeFrames } from './frames.js';
 import {
@@ -580,10 +580,16 @@ class WsEventsTransport {
       // Unsolicited server push, no reqId. Informational on its own: the
       // `close` that follows is what triggers the reconnect and consumes the
       // reason recorded here.
+      //
+      // Debug-gated, because both reasons are routine rather than faults: a
+      // socket outliving the server's max duration, or its bearer approaching
+      // expiry. Neither loses a write — the drain is a heads-up ahead of a
+      // close the transport reconnects from — so on the WS default every
+      // long-lived run would otherwise print this on a healthy path.
       const reason: DrainReason =
         decoded.meta.reason === 'auth_expiry' ? 'auth_expiry' : 'max_duration';
       this.lastDrainReason = reason;
-      console.log(
+      debugLog(
         `world-vercel: ws events transport received a drain notice ` +
           `(reason: ${reason}, graceMs: ${decoded.meta.graceMs ?? 'unspecified'}); ` +
           `connection will close soon.`
@@ -812,7 +818,12 @@ export function openWsChannel(
   if (!resolved) return undefined;
   if (!wsState.loggedWsInUse) {
     wsState.loggedWsInUse = true;
-    console.log(`world-vercel: using ws events transport (${resolved}).`);
+    // Debug-gated: this said something when WS was opt-in, and says nothing now
+    // that it is the default — every deployment would print it on its first
+    // invocation after each cold start, describing the transport it was always
+    // going to use. `workflow.events.transport` on the per-write span is the
+    // durable answer to "which transport carried this run".
+    debugLog(`world-vercel: using ws events transport (${resolved}).`);
   }
   // Cheap: a URL plus a map lookup, no token mint and no I/O. The socket work
   // happens inside `open`, unawaited.
@@ -888,11 +899,19 @@ function resolveChannelUrl(
     // platform-level upgrade path, which is what surfaces as
     // "experimental_upgradeWebSocket is not available in the current runtime
     // environment". Fall back rather than fail a connection it can't serve.
+    //
+    // Debug-gated rather than a warning, and the flip to the WS default is why:
+    // "requested but unavailable" was a real mismatch to report while the
+    // transport was opt-in, because someone had asked for it. Nobody asks now,
+    // so a `projectConfig` World — every CLI command and the observability app —
+    // would warn about a fallback its caller neither chose nor can act on. The
+    // HTTP path it falls back to is the same one it used before the default
+    // flipped.
     if (!wsState.loggedWsProxyFallback) {
       wsState.loggedWsProxyFallback = true;
-      console.warn(
-        `world-vercel: ws events transport requested but a World with projectConfig ` +
-          `(api-workflow proxy, resolved baseUrl: ${baseUrl}) is active — falling back.`
+      debugLog(
+        `world-vercel: ws events transport unavailable for a World with projectConfig ` +
+          `(api-workflow proxy, resolved baseUrl: ${baseUrl}) — falling back to HTTP.`
       );
     }
     return null;

@@ -3,7 +3,17 @@
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
 /**__internal_workflows{"classes":{"input.js":{"Bash":{"classId":"class//./input//Bash"},"Shell":{"classId":"class//./input//Shell"}}}}*/;
 // Class expression with different binding name
-var Bash = class _Bash {
+var Bash = function(__wf_cls) {
+    var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
+    __wf_cls_reg.set("class//./input//Bash", __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", {
+        value: "class//./input//Bash",
+        writable: false,
+        enumerable: false,
+        configurable: false
+    });
+    return __wf_cls;
+}(class _Bash {
     constructor(command){
         this.command = command;
     }
@@ -15,9 +25,19 @@ var Bash = class _Bash {
     static [WORKFLOW_DESERIALIZE](data) {
         return new Bash(data.command);
     }
-};
+});
 // Also test anonymous class expression (no internal name)
-var Shell = class Shell {
+var Shell = function(__wf_cls) {
+    var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
+    __wf_cls_reg.set("class//./input//Shell", __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", {
+        value: "class//./input//Shell",
+        writable: false,
+        enumerable: false,
+        configurable: false
+    });
+    return __wf_cls;
+}(class Shell {
     constructor(cmd){
         this.cmd = cmd;
     }
@@ -29,25 +49,5 @@ var Shell = class Shell {
     static [WORKFLOW_DESERIALIZE](data) {
         return new Shell(data.cmd);
     }
-};
+});
 export { Bash, Shell };
-(function(__wf_cls, __wf_id) {
-    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
-    __wf_reg.set(__wf_id, __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
-        value: __wf_id,
-        writable: false,
-        enumerable: false,
-        configurable: false
-    });
-})(Bash, "class//./input//Bash");
-(function(__wf_cls, __wf_id) {
-    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
-    __wf_reg.set(__wf_id, __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
-        value: __wf_id,
-        writable: false,
-        enumerable: false,
-        configurable: false
-    });
-})(Shell, "class//./input//Shell");

@@ -12,32 +12,37 @@ export * from './attributes-validation.js';
 
 const textEncoder = new TextEncoder();
 
-export const AttributeKeySchema = z
-  .string()
-  .min(1, { error: 'Attribute key must not be empty' })
-  .max(ATTRIBUTE_KEY_MAX_LENGTH, {
-    error: `Attribute key exceeds limit ${ATTRIBUTE_KEY_MAX_LENGTH}`,
-  });
+export const AttributeKeySchema = z.compile(
+  z
+    .string()
+    .min(1, { error: 'Attribute key must not be empty' })
+    .max(ATTRIBUTE_KEY_MAX_LENGTH, {
+      error: `Attribute key exceeds limit ${ATTRIBUTE_KEY_MAX_LENGTH}`,
+    })
+);
 
-export const AttributeValueSchema = z
-  .string()
-  .refine(
-    (value) => textEncoder.encode(value).length <= ATTRIBUTE_VALUE_MAX_BYTES,
-    {
-      error: `Attribute value exceeds limit ${ATTRIBUTE_VALUE_MAX_BYTES} UTF-8 bytes`,
-    }
-  )
-  .nullable();
+export const AttributeValueSchema = z.compile(
+  z
+    .string()
+    .refine(
+      (value) => textEncoder.encode(value).length <= ATTRIBUTE_VALUE_MAX_BYTES,
+      {
+        error: `Attribute value exceeds limit ${ATTRIBUTE_VALUE_MAX_BYTES} UTF-8 bytes`,
+      }
+    )
+    .nullable()
+);
 
 /** Runtime schema for a single run-attribute change. */
-export const AttributeChangeSchema = z.object({
-  key: AttributeKeySchema,
-  value: AttributeValueSchema,
-}) satisfies z.ZodType<AttributeChange>;
+export const AttributeChangeSchema = z.compile(
+  z.object({
+    key: AttributeKeySchema,
+    value: AttributeValueSchema,
+  })
+) satisfies z.ZodType<AttributeChange>;
 
-export const AttributeChangesSchema = z
-  .array(AttributeChangeSchema)
-  .superRefine((changes, context) => {
+export const AttributeChangesSchema = z.compile(
+  z.array(AttributeChangeSchema).superRefine((changes, context) => {
     try {
       // Reserved keys are contextual: attr_set events may carry them when the
       // sibling allowReservedAttributes flag is set. Callers that prohibit the
@@ -51,7 +56,8 @@ export const AttributeChangesSchema = z
         input: changes,
       });
     }
-  });
+  })
+);
 
 /** The post-merge attribute snapshot returned by a World. */
 export interface ExperimentalSetAttributesResult {

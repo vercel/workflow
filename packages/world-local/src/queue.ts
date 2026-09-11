@@ -1,6 +1,6 @@
 import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
-import { createWorkflowUrl } from '@workflow/utils';
+import { createWorkflowUrl, debugLog } from '@workflow/utils';
 import {
   isNodeHttpEnabled,
   MessageId,
@@ -63,6 +63,7 @@ const MAX_SAFE_TIMEOUT_MS = 2147483647;
 // The local workers share the same Node.js process and event loop,
 // so we need to limit concurrency to avoid overwhelming the system.
 const DEFAULT_CONCURRENCY_LIMIT = 1000;
+
 const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
   DEFAULT_CONCURRENCY_LIMIT;
@@ -212,7 +213,10 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
       const token = semaphore.tryAcquire();
       if (!token) {
-        console.warn(
+        // Debug-gated: this is the semaphore doing its job. A fan-out wider
+        // than the limit queues behind it and every message still runs, so a
+        // per-message warning turns a healthy wide run into a wall of output.
+        debugLog(
           `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
         );
         await semaphore.acquire();
@@ -394,11 +398,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     return { messageId };
   };
 
-  const HeaderParser = z.object({
-    'x-vqs-queue-name': ValidQueueName,
-    'x-vqs-message-id': MessageId,
-    'x-vqs-message-attempt': z.coerce.number(),
-  });
+  const HeaderParser = z.compile(
+    z.object({
+      'x-vqs-queue-name': ValidQueueName,
+      'x-vqs-message-id': MessageId,
+      'x-vqs-message-attempt': z.coerce.number(),
+    })
+  );
 
   const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
     return async (req) => {

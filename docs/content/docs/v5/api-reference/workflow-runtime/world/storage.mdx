@@ -444,8 +444,10 @@ import { getWorld } from "workflow/runtime";
 
 const world = await getWorld();
 const hook = await world.hooks.getByToken(token); // [!code highlight]
-console.log(hook.runId, hook.metadata); // [!code highlight]
+console.log(hook.runId); // [!code highlight]
 ```
+
+The World-level `Hook` carries `metadata` as the raw serialized (and, on encrypting Worlds, encrypted) value, not the object the workflow passed to `createHook()`. To read the decoded value, use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token), whose `hook.metadata` is a Promise that hydrates it on first access.
 
 ### List events for audit trail
 

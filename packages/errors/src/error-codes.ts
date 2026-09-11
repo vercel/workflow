@@ -18,6 +18,8 @@ export const RUN_ERROR_CODES = {
   MAX_EVENTS_EXCEEDED: 'MAX_EVENTS_EXCEEDED',
   /** Workflow replay exceeded the maximum allowed duration */
   REPLAY_TIMEOUT: 'REPLAY_TIMEOUT',
+  /** Workflow stream infrastructure failed while reading or writing data */
+  STREAM_ERROR: 'STREAM_ERROR',
   /** World response violated the SDK contract and cannot be retried safely */
   WORLD_CONTRACT_ERROR: 'WORLD_CONTRACT_ERROR',
   /** Run was delivered to a deployment other than the one it is pinned to */

@@ -130,13 +130,18 @@ pnpm run test:e2e
 ### Event log race repro
 
 `packages/core/e2e/event-log-race-repro.test.ts` is a dedicated harness for
-`CORRUPTED_EVENT_LOG`. It drives four scenarios against one deployment:
+`CORRUPTED_EVENT_LOG`. It drives five scenarios against one deployment:
 `step-storm` and `hook-storm` (concurrent replays of a single run racing the
-per-branch watchdog; `hook-storm` is the production shape), `blocked-branch`
+per-branch watchdog; `hook-storm` is a production shape), `blocked-branch`
 (each branch parks on a launch step before its hook race, so a woken replay can
 hold a log that predates a sibling's launch completion and take the ordinal that
 sibling's wait is about to get; it covers the class the wake-order fixes miss),
-plus a `hook-sleep` control that provides the calibration baseline. Any outcome
+`wake-loop` (one sequential loop racing a reusable hook read against a
+heartbeat sleep, no fan-out; the driver supplies the concurrency with bursty
+resumes and resumes aimed at the heartbeat deadline, the shape of a production
+run whose replays of one immutable prefix diverged non-deterministically on an
+unconsumable `wait_created`), plus a `hook-sleep` control that provides the
+calibration baseline. Any outcome
 other than `completed` fails the run, except `infra`, which means the harness
 could not reach the deployment.
 
@@ -428,6 +433,7 @@ Because those PRs have no deployment of their own, CI treats them specially: the
 - To check if one is needed, run `pnpm changeset status --since=main >/dev/null 2>&1 && echo "no changeset needed" || echo "changeset needed"`
 - Create a changeset using `pnpm changeset add`
   - All changed packages should be included in the changeset. Never include unchanged packages.
+  - Never list a package from the `ignore` array in `.changeset/config.json` (private workbench and simulation packages such as `@workflow/world-sim`), even when the PR changes it. Changesets rejects a changeset that mixes ignored and published packages, and the failure only surfaces in the Release job on `main`. `node scripts/check-changesets.mjs` runs that validation locally; CI runs it in `lint.yml`.
   - Use the correct semver bump type: `patch` for bug fixes, `minor` for new features, `major` for breaking changes
   - On `main` (pre-release mode), the bump type doesn't affect beta numbering (it always increments `beta.N`) but it **does matter** when changes are backported to `stable`
 - Remember to always build any packages that get changed before running downstream tests like e2e tests in the workbench
@@ -461,6 +467,8 @@ When in doubt, AI is told to decline: a missed fix can be forced through later v
 ### Pre-release lifecycle
 
 The `main` branch uses changesets' [pre-release mode](https://github.com/changesets/changesets/blob/main/docs/prereleases.md) to publish beta versions.
+
+Changesets that a "Version Packages (beta)" merge has already turned into a beta live in `.changeset/pre/` (changesets v3 keeps them there instead of listing their ids in `pre.json`, which now holds only `mode` and `tag`). Only the `.md` files directly under `.changeset/` are pending. Do not edit or delete anything under `.changeset/pre/`: those files become the final stable release's changelog when pre mode exits.
 
 **Starting a new pre-release cycle:**
 1. Create a changeset with the desired base bump (e.g. `major` for a new major version)

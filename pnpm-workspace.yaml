@@ -24,10 +24,7 @@ catalog:
   ulid: ~3.0.1
   undici: 7.29.0
   vitest: ^4.1.10
-  zod: ~4.3.6
-
-onlyBuiltDependencies:
-  - esbuild
+  zod: ~4.5.4
 
 overrides:
   # `@vercel/queue` accepts any `@vercel/oidc` in the 3.x line, and 3.3+ pulls in
@@ -43,7 +40,7 @@ overrides:
   # spans were silently dropped this way while core's flowed (#2900).
   '@opentelemetry/api': 1.9.1
   rfc6902: 5.1.2
-  devalue: 5.9.0
+  devalue: 5.9.2
   '@sveltejs/acorn-typescript': 1.0.10
   # postcss < 8.5.18 is vulnerable to CVE-2026-45623 and GHSA-r28c-9q8g-f849
   # (arbitrary file read / .map disclosure via attacker-controlled
@@ -52,6 +49,14 @@ overrides:
   'postcss@<8.5.18': 8.5.22
 
 savePrefix: ""
+
+# Keep the lockfile single-document for tools such as Turborepo. CI installs
+# the exact packageManager pin through pnpm/setup.
+pmOnFail: ignore
+
+# pnpm 11 requires Node.js 22 or newer. This replaces the two project-local
+# engine-strict .npmrc files, which pnpm 11 no longer reads from repositories.
+engineStrict: true
 
 minimumReleaseAge: 2880
 
@@ -64,9 +69,22 @@ minimumReleaseAgeExclude:
   - '@esbuild/*'
   - '@sveltejs/load-config'
   - 'quickjs-wasi'
+  - 'devalue'
   # The CI canary lanes pin `next` to a fresh canary at install time
   # (see "Setup canary" in .github/workflows/tests.yml); canaries are
   # usually younger than the 48h gate, and next and its @next/* companion
   # packages (published in lockstep) are Vercel-published.
   - 'next'
   - '@next/*'
+allowBuilds:
+  '@parcel/watcher': false
+  '@swc/core': false
+  '@tailwindcss/oxide': false
+  better-sqlite3: false
+  bun: false
+  cbor-extract: false
+  cpu-features: false
+  esbuild: true
+  protobufjs: false
+  sharp: false
+  ssh2: false
