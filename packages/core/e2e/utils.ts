@@ -603,11 +603,13 @@ export const cliInspectJson = async (args: string) => {
 export const cliCancel = async (runId: string) => {
   const cliAppPath = getWorkbenchAppPath();
   const cliArgs = splitArgs(getCliArgs());
+  // Use the shared CLI budget. Windows startup plus local-world filesystem
+  // contention can consume most of 10 seconds before cancellation runs; the
+  // shared 20-second default still leaves ample room inside the test timeout.
   const result = await awaitCommand(
     'node',
     ['./node_modules/workflow/bin/run.js', 'cancel', runId, ...cliArgs],
-    cliAppPath,
-    10_000
+    cliAppPath
   );
   return result;
 };
