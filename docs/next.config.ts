@@ -223,6 +223,35 @@ const config: NextConfig = {
         destination: '/cookbook/agent-patterns/agent-cancellation',
         permanent: true,
       },
+      // The v5 "How it works" section was renamed to "Advanced" when Dynamic
+      // Workflows joined it: the section is where the build-time execution
+      // model is explained, and dynamic source is the escape hatch from it —
+      // "Advanced" describes both, "How it works" only the first.
+      //
+      // Only the /v5-prefixed paths move. v4 still serves its own
+      // `how-it-works` section at the unversioned /docs/how-it-works/*, so
+      // redirecting those would break the current default docs. Add the
+      // unversioned pair as part of making v5 the default.
+      //
+      // Page slugs are unchanged, so the wildcard covers every child page —
+      // and, because the `.md` text alternates are a path segment, their
+      // links too (`/v5/docs/how-it-works/encryption.md` → `.../advanced/
+      // encryption.md`). The section root gets its own two entries.
+      {
+        source: '/v5/docs/how-it-works',
+        destination: '/v5/docs/advanced',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/how-it-works.md',
+        destination: '/v5/docs/advanced.md',
+        permanent: true,
+      },
+      {
+        source: '/v5/docs/how-it-works/:path*',
+        destination: '/v5/docs/advanced/:path*',
+        permanent: true,
+      },
       // setAttributes graduated from experimental_setAttributes; the API
       // reference page moved with it.
       {

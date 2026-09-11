@@ -921,6 +921,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             attributes?: Record<string, string>;
             allowReservedAttributes?: true;
             encryptionPublicKey?: string;
+            dynamicWorkflowCode?: SerializedData;
           };
           if (
             runInputData.deploymentId &&
@@ -955,6 +956,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                 // run from the queued message, which is exactly when the key
                 // would otherwise be lost for the rest of the run's life.
                 encryptionPublicKey: runInputData.encryptionPublicKey,
+                // Same reasoning for a dynamic run's own workflow code: a run
+                // recreated without it would be created unable to replay.
+                dynamicWorkflowCode: runInputData.dynamicWorkflowCode,
                 status: 'pending',
               })
               .onConflictDoNothing()
@@ -979,6 +983,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   attributes: runInputData.attributes,
                   allowReservedAttributes: runInputData.allowReservedAttributes,
                   encryptionPublicKey: runInputData.encryptionPublicKey,
+                  dynamicWorkflowCode: runInputData.dynamicWorkflowCode,
                 },
                 specVersion: effectiveSpecVersion,
               });
@@ -1222,6 +1227,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           attributes?: Record<string, string>;
           allowReservedAttributes?: true;
           encryptionPublicKey?: string;
+          dynamicWorkflowCode?: SerializedData;
         };
         validateAttributeChanges(
           Object.entries(eventData.attributes ?? {}).map(([key, value]) => ({
@@ -1246,6 +1252,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               | undefined,
             attributes: eventData.attributes,
             encryptionPublicKey: eventData.encryptionPublicKey,
+            // A dynamic run's own workflow code. Stored on the run row
+            // because that is what replay reads it back from; there is no
+            // separate blob layer here, so the bytes sit in the row.
+            dynamicWorkflowCode: eventData.dynamicWorkflowCode,
             status: 'pending',
           })
           .onConflictDoNothing()

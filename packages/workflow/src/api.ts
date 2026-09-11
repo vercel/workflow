@@ -29,6 +29,9 @@ export {
   type WorkflowRunWritableStreamOptions,
 } from '@workflow/core/runtime/run';
 export {
+  type DynamicStartOptions,
+  type DynamicWorkflowOptions,
+  type DynamicWorkflowStepReference,
   type StartOptions,
   start,
 } from '@workflow/core/runtime/start';

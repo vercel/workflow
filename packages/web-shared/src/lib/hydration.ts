@@ -443,6 +443,20 @@ function toDisplayMarker(value: unknown): unknown {
 }
 
 /**
+ * Top-level fields of a run, step, or hook that hold serialized (and possibly
+ * encrypted) payloads. `dynamicWorkflowCode` is a run's own workflow code,
+ * present only on runs started from source; it is stored through the same
+ * pipeline as `input` and is gated behind the same decrypt flow.
+ */
+const TOP_LEVEL_SERIALIZED_FIELDS = [
+  'input',
+  'output',
+  'metadata',
+  'error',
+  'dynamicWorkflowCode',
+] as const;
+
+/**
  * Post-process hydrated resource data: replace encrypted Uint8Array values
  * and expired stubs with display-friendly marker objects in known data fields.
  */
@@ -451,7 +465,7 @@ function replaceEncryptedAndExpiredWithMarkers<T>(resource: T): T {
   const r = resource as Record<string, unknown>;
   const result = { ...r };
 
-  for (const key of ['input', 'output', 'metadata', 'error']) {
+  for (const key of TOP_LEVEL_SERIALIZED_FIELDS) {
     result[key] = toDisplayMarker(result[key]);
   }
 
@@ -535,7 +549,7 @@ export async function hydrateResourceIOAsync<T>(
   const result = { ...r };
 
   // Decrypt + hydrate top-level serialized fields (runs, steps, hooks)
-  for (const field of ['input', 'output', 'metadata', 'error']) {
+  for (const field of TOP_LEVEL_SERIALIZED_FIELDS) {
     if (field in result) {
       result[field] = await hydrateField(result[field]);
     }
@@ -568,7 +582,7 @@ export function hasEncryptedFields(resource: unknown): boolean {
   if (!resource || typeof resource !== 'object') return false;
   const r = resource as Record<string, unknown>;
 
-  for (const key of ['input', 'output', 'metadata', 'error']) {
+  for (const key of TOP_LEVEL_SERIALIZED_FIELDS) {
     if (isEncryptedMarker(r[key])) return true;
   }
 

@@ -43,10 +43,12 @@ describe('run retention (world-local)', () => {
   const STEP_INPUT = new Uint8Array([7, 7, 7]);
   const STEP_OUTPUT = new Uint8Array([8, 8, 8]);
   const HOOK_METADATA = new Uint8Array([9, 9, 9]);
+  const DYNAMIC_CODE = new Uint8Array([10, 10, 10]);
 
   /** A run carrying `attributes`, one completed step, and one stream. */
   async function startRun(
-    attributes?: Record<string, string>
+    attributes?: Record<string, string>,
+    extraRunData: Record<string, unknown> = {}
   ): Promise<WorkflowRun> {
     const created = await storage.events.create(null, {
       eventType: 'run_created',
@@ -56,6 +58,7 @@ describe('run retention (world-local)', () => {
         workflowName: 'retention-workflow',
         input: RUN_INPUT,
         ...(attributes ? { attributes, allowReservedAttributes: true } : {}),
+        ...extraRunData,
       },
     });
     const run = created.run;
@@ -127,6 +130,24 @@ describe('run retention (world-local)', () => {
       expect(expiredAt).toBeInstanceOf(Date);
       expect(expiredAt?.getTime()).toBeGreaterThanOrEqual(before);
       expect(expiredAt?.getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
+    it("drops a dynamic run's stored workflow code", async () => {
+      // The code is application source stored on the run record, as much
+      // user data as the input it ran on.
+      const run = await startRun(
+        { [RETENTION_ATTRIBUTE]: '0' },
+        { dynamicWorkflowCode: DYNAMIC_CODE }
+      );
+      expect((await storage.runs.get(run.runId)).dynamicWorkflowCode).toEqual(
+        DYNAMIC_CODE
+      );
+
+      await complete(run.runId);
+
+      const persisted = await storage.runs.get(run.runId);
+      expect(persisted.dynamicWorkflowCode).toBeUndefined();
+      expect(persisted.expiredAt).toBeInstanceOf(Date);
     });
 
     it('keeps the run listable, with its metadata intact', async () => {

@@ -1,4 +1,5 @@
 import { z } from 'zod/v4';
+import { SerializedDataSchema } from './serialization.js';
 
 export type QueueKind = 'workflow';
 
@@ -103,6 +104,32 @@ export const RunInputSchema = z.object({
   workflowName: z.string(),
   specVersion: z.number(),
   executionContext: z.record(z.string(), z.any()).optional(),
+  /**
+   * A dynamic run's serialized workflow VM code (see
+   * `WorkflowRunBaseSchema.dynamicWorkflowCode`).
+   *
+   * Carried for the same two reasons `input` is. Resilient start needs it: if
+   * the `run_created` write failed, the consumer's `run_started` is what
+   * creates the run, and a run created without its code can never replay. And
+   * the turbo path synthesizes the run snapshot from this message rather than
+   * waiting for a read, so without it the first delivery of a dynamic run
+   * would have no code to execute.
+   *
+   * Mutually exclusive with {@link dynamicWorkflowCodeRef}, which carries a
+   * pre-uploaded ref instead of the bytes.
+   */
+  dynamicWorkflowCode: SerializedDataSchema.optional(),
+  /**
+   * Ref key of dynamic workflow code the client streamed to the World's blob
+   * storage before starting, for definitions too large to ride the wire
+   * inline. Resilient start forwards it so the consumer's `run_started`
+   * attaches the same object.
+   *
+   * The turbo path cannot execute from a ref alone (it holds no bytes), so a
+   * deferred-ref run reads its code back from the run instead — see
+   * `resolveWorkflowCodeForRun` in the core runtime.
+   */
+  dynamicWorkflowCodeRef: z.string().optional(),
   /** Initial plaintext run attributes, for resilient run creation. */
   attributes: z.record(z.string(), z.string()).optional(),
   /**

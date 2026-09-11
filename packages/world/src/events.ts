@@ -483,6 +483,24 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
     attributes: z.record(z.string(), z.string()).optional(),
     allowReservedAttributes: z.literal(true).optional(),
     /**
+     * A dynamic run's serialized workflow VM code (see
+     * `WorkflowRunBaseSchema.dynamicWorkflowCode`). The World materializes it
+     * onto the run record — which is the durable home it is read back from —
+     * and does not keep a second copy on the event.
+     *
+     * Mutually exclusive with {@link dynamicWorkflowCodeRef}: the bytes are
+     * the inline path for a small definition, the ref the deferred path for a
+     * large one.
+     */
+    dynamicWorkflowCode: SerializedDataSchema.optional(),
+    /**
+     * Ref key of dynamic workflow code the client uploaded to the World's
+     * blob storage before this write, for definitions too large to send
+     * inline. Worlds validate it against the caller's tenant and this run
+     * before attaching it.
+     */
+    dynamicWorkflowCodeRef: z.string().optional(),
+    /**
      * The run's X25519 public key (base64), stamped by SDKs that support
      * sealed (`encp`) envelopes. Persisted onto the run entity so that
      * cross-run writers can seal payloads to this run without holding its
@@ -518,6 +536,14 @@ const RunStartedEventSchema = BaseEventSchema.extend({
        * the run would silently lose its ability to receive sealed writes.
        */
       encryptionPublicKey: z.string().optional(),
+      /**
+       * Mirrors `run_created.eventData.dynamicWorkflowCode` / `...Ref`, for
+       * the same reason as `encryptionPublicKey` above: on the resilient-start
+       * path this event is what creates the run, and a dynamic run created
+       * without its code can never replay.
+       */
+      dynamicWorkflowCode: SerializedDataSchema.optional(),
+      dynamicWorkflowCodeRef: z.string().optional(),
     })
     .optional(),
 });

@@ -6,7 +6,7 @@ summary: Explore the design decisions behind "use workflow" and "use step" direc
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
-  - /docs/how-it-works/code-transform
+  - /docs/advanced/code-transform
 ---
 
 import { File, Folder, Files } from "fumadocs-ui/components/files";
@@ -55,7 +55,7 @@ export async function onboardUser(userId: string) {
 }
 ```
 
-**The key insight:** Workflows resume from suspension by replaying their code using cached step results from the [event log](/docs/how-it-works/event-sourcing). When a step like `await fetchUserData(userId)` is called:
+**The key insight:** Workflows resume from suspension by replaying their code using cached step results from the [event log](/docs/advanced/event-sourcing). When a step like `await fetchUserData(userId)` is called:
 
 - **If already executed:** Returns the cached result immediately from the event log
 - **If not yet executed:** Suspends the workflow, executes the step (usually inline in the same invocation, or through the queue when the invocation runs out of inline budget or nears its timeout), then resumes with the result
@@ -581,7 +581,7 @@ export async function processOrder(orderId: string) {
 By requiring explicit `"use step"` directives, developers have fine-grained control over what becomes a durable, retryable step versus what runs inline in the workflow sandbox.
 
 <Callout>
-To understand how directives are transformed at compile time, see [How the Code Transform Works](/docs/how-it-works/code-transform).
+To understand how directives are transformed at compile time, see [How the Code Transform Works](/docs/advanced/code-transform).
 </Callout>
 
 ## What directives enable

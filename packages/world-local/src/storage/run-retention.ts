@@ -55,6 +55,10 @@ export function withRunPayloadsPurged<T extends WorkflowRun>(
     input: undefined,
     output: undefined,
     error: undefined,
+    // A dynamic run's stored workflow code is application source, and as
+    // much user data as the input it ran on. The run is terminal, so nothing
+    // replays it again.
+    dynamicWorkflowCode: undefined,
     expiredAt: purgedAt,
   };
 }

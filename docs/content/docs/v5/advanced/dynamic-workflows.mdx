@@ -1,0 +1,221 @@
+---
+title: Dynamic Workflows
+description: Start a workflow run from source code that was not part of your build, for workflow builders and AI-generated orchestration.
+type: conceptual
+summary: Pass workflow source to start() to run orchestration whose shape is only known after deployment.
+prerequisites:
+  - /docs/foundations/starting-workflows
+  - /docs/advanced/code-transform
+related:
+  - /docs/api-reference/workflow-api/start
+  - /docs/advanced/encryption
+  - /docs/ai
+---
+
+<Callout type="warning">
+Dynamic workflows are **experimental**. The API may change without a major version bump. They also require a World with dynamic-source storage — see [World support](#world-support).
+</Callout>
+
+Normally a workflow function is compiled into your build: the [code transform](/docs/advanced/code-transform) rewrites every `"use workflow"` function, the build bundles them, and `start()` names one by importing it.
+
+A dynamic workflow skips that. You hand `start()` a string of JavaScript, and it runs — no build, no deploy:
+
+```ts
+import { start } from 'workflow/api';
+import { fetchUser, sendEmail } from './steps';
+
+const run = await start(
+  `
+async function workflow(input) {
+  "use workflow";
+
+  const user = await steps.fetchUser(input.userId);
+  await steps.sendEmail(user.email);
+
+  return { ok: true };
+}
+`,
+  [{ userId: 'user_123' }],
+  {
+    dynamic: {
+      steps: { fetchUser, sendEmail },
+    },
+  }
+);
+
+console.log(await run.status); // 'running'
+```
+
+Only the *orchestration* is dynamic. Every step the source can call was deployed with your app — you choose which ones by passing them in `dynamic.steps`. There is no way to define a new step from source.
+
+## When to use this
+
+Reach for dynamic workflows when the **shape** of the orchestration is only known after you deploy:
+
+- **Workflow builder UIs** — a customer drags boxes together; you generate the source that connects them.
+- **Customer-defined automations** — each tenant has a different sequence over the same catalog of actions.
+- **AI-generated plans** — a model writes the orchestration for a request it was given. See [AI-generated workflows](#ai-generated-workflows).
+- **Experiments** — try a new composition of existing steps without shipping a build.
+
+If your workflows are known at build time, use a normal workflow function. It has better types, better errors, no source validation, and no size limits.
+
+## What the source can use
+
+Dynamic source has no imports. Instead, the generated code predefines a small runtime surface:
+
+| Binding | What it is |
+| --- | --- |
+| `steps` | Frozen object of the aliases you passed in `dynamic.steps`. Calling one dispatches that registered step. |
+| `sleep` | The [durable sleep](/docs/api-reference/workflow/sleep) primitive. |
+| `createHook` | The [hook](/docs/foundations/hooks) primitive, for waiting on an external signal. |
+
+The source also runs inside the normal deterministic workflow VM, so the usual [workflow globals](/docs/api-reference/workflow-globals) — `Date`, `Math.random`, `crypto`, `URL`, `TextEncoder`, `structuredClone`, and the rest — are available with the same determinism guarantees as a static workflow.
+
+`createWebhook` and `getWritable` are **not** available to dynamic source.
+
+Here is a longer example using a timer and a hook to wait for an approval:
+
+```ts
+import { start } from 'workflow/api';
+import { sendEmail } from './steps';
+
+const run = await start(
+  `
+async function workflow(input) {
+  "use workflow";
+
+  await sleep("15m");
+
+  const approval = createHook({ token: "approval-" + input.userId });
+  const result = await Promise.race([
+    approval,
+    sleep("1d").then(() => ({ approved: false, timedOut: true })),
+  ]);
+
+  if (result.approved) {
+    await steps.sendEmail(input.email);
+  }
+
+  return result;
+}
+`,
+  [{ userId: 'user_123', email: 'ada@example.com' }],
+  {
+    dynamic: {
+      steps: { sendEmail },
+    },
+  }
+);
+```
+
+## Rules for the source
+
+`start()` validates the source before it writes anything, so a definition that could never run fails at the call site rather than on a queue delivery:
+
+- It must declare `async function workflow(...)`. Pass `dynamic.exportName` to use a different name.
+- The function's first statement must be the `"use workflow"` directive.
+- No `import` or `export`. Reach steps through `steps`, not through modules.
+- JavaScript only — no TypeScript syntax, no npm dependencies, no bundling.
+- No inline `"use step"` functions. Steps come from `dynamic.steps`.
+- At most 128 KB of source.
+
+Everything a static workflow must obey still applies: the body has to be [deterministic](/docs/foundations/workflows-and-steps), and any side effect belongs in a step.
+
+## Workflow IDs
+
+You do not choose the workflow ID. It is derived from the source and its step bindings:
+
+```
+workflow//dynamic/<source-hash>//<exportName>
+```
+
+Two consequences worth knowing:
+
+- **The same definition always gets the same ID.** Runs of one generated workflow group together in [observability](/docs/observability) and share a queue topic, even across processes.
+- **A caller cannot claim an ID.** Because the hash covers the source *and* the step bindings, arbitrary source cannot be made to run under a static workflow's name — or under another definition's.
+
+Changing the source, or pointing an alias at a different step, produces a different workflow.
+
+## How the code is stored
+
+A dynamic run's workflow function is not in your deployment's bundle, so the run carries its own compiled workflow code — and replaying the run means replaying *that* code, not whatever your deployment contains now.
+
+That code is stored with the run the same way your workflow inputs are: compressed, then **encrypted with the run's key** (see [Encryption](/docs/advanced/encryption)). At rest it is ciphertext. Generated orchestration routinely names internal step IDs, prompts, and business rules, so observability surfaces show it as a locked placeholder until you choose to decrypt — exactly like a workflow input.
+
+On Vercel it is stored behind a ref rather than inline on the run record, and the size decides where:
+
+- **Small definitions** (the overwhelming majority) ride the run-creation request and are stored inline in the run's row. No extra round-trip, and no object-storage read on any replay.
+- **Larger definitions** are uploaded separately and stored in object storage, with the run holding a reference. Costs one extra request at `start()`.
+
+Both are transparent — there is nothing to configure. The split exists because a dynamic replay needs the code *before* it can evaluate anything, so keeping the common case out of object storage keeps it off the critical path of every delivery.
+
+Alongside the encrypted code, the run records small plaintext metadata: the source hash, the export name, and the alias-to-step-ID map. That is what lets a run be identified as dynamic — and its step allowlist audited — without decrypting anything.
+
+## World support
+
+Dynamic workflows need a World that can store the run's workflow code.
+
+| World | Support |
+| --- | --- |
+| [Vercel](/worlds/vercel) | Encrypted, ref-backed storage (inline for small definitions, object storage for large ones). |
+| [Local](/worlds/local) | Stored on the run record in the local filesystem store. |
+| Others | Whatever the World implements — `start()` fails immediately if the run comes back without its code. |
+
+If you call `start()` with source against a backend that cannot store it, the call throws rather than creating a run that could never replay. The error names the cause.
+
+## AI-generated workflows
+
+The pattern that works: give the model an explicit catalog of steps, constrain it to one function, and validate before you run it.
+
+```ts
+import { generateText } from 'ai';
+import { start } from 'workflow/api';
+import { lookupCustomer, createTicket, sendSlackMessage } from './steps';
+
+const stepCatalog = { lookupCustomer, createTicket, sendSlackMessage };
+
+const { text: source } = await generateText({
+  model: myModel,
+  system: `
+Generate one JavaScript async function named workflow.
+The first statement inside the function must be "use workflow".
+Use only these predefined runtime globals: steps, sleep, createHook.
+Available steps: ${Object.keys(stepCatalog).join(', ')}.
+Only call step functions through the injected steps object.
+Do not use import, export, TypeScript syntax, inline step functions,
+createWebhook, or getWritable.
+`,
+  prompt:
+    'When a customer reports a billing issue, look them up, create a ticket, and notify Slack.',
+});
+
+const run = await start(source, [{ customerId: 'cus_123' }], {
+  dynamic: { steps: stepCatalog },
+});
+```
+
+Two things to get right:
+
+**Review the source before you run it.** `start()`'s validation checks *shape*, not intent — see the security note below.
+
+**Pin the source you approved.** The workflow ID is a hash of the source, so storing it lets you tell whether a run executed the definition a human signed off on. Re-generating for every request means every request runs code nobody reviewed.
+
+## Security
+
+<Callout type="warning">
+Dynamic source is **trusted application code**. The workflow VM is a determinism sandbox, not a security sandbox for hostile JavaScript. Do not pass source that came straight from an untrusted user.
+</Callout>
+
+The `steps` object is an allowlist: it contains only the aliases you passed, and it is frozen, so ordinary generated code that calls `steps.somethingElse()` fails the run instead of dispatching a step it was not given. That is a useful guardrail against a model inventing a step name — it is **not** a boundary against code actively trying to escape one.
+
+Treat dynamic source the way you would treat code in a pull request: generated under constraints you control, reviewed, or both.
+
+## Limitations
+
+- Experimental — the API may change without a major version bump.
+- JavaScript only. No TypeScript syntax, npm dependencies, or bundling.
+- Steps must already be registered in the deployment; no runtime step registration.
+- No inline `"use step"` functions, `createWebhook`, or `getWritable`.
+- No caller-provided workflow IDs.
+- Source is validated by pattern matching, not a full parser, so validation is conservative: a rejected definition is not always invalid JavaScript.
+- Requires a World with dynamic-source storage.
