@@ -115,6 +115,10 @@ When `pool` is omitted, `maxPoolSize` precedence is: `createWorld({ maxPoolSize 
 
 For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` to `10` or `queueConcurrency + 2`, whichever is larger.
 
+### Queue logging
+
+Graphile Worker writes errors to stderr and warnings to stdout. Error metadata includes the error name, message, stack, and nested cause. Set `DEBUG` to enable info and debug output. `WORKFLOW_JSON_MODE=1` suppresses Graphile Worker output for CLI JSON mode.
+
 ## Database setup
 
 This package uses PostgreSQL with the following components:
