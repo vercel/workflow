@@ -289,6 +289,14 @@ Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, an
 - Experimental stream-write transport capability. Set to exactly `ws` to attempt `workflow-stream-ws/v1`. The server authoritatively accepts or declines each upgrade; a decline uses HTTP directly for that writer lifetime. Stream reads remain HTTP and demand-driven.
 - This is not tenant rollout policy or a package-version check. HTTP remains the compatibility path. `/websockets/v1` is independent of REST v2/v4 and persisted workflow `specVersion` values.
 
+### `WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH`
+
+- Factory option: none
+- CLI flag: none
+- Default: `1`
+- Experimental WebSocket stream-write request depth. Supported exact values are `1`, `2`, and `4`; invalid values fail closed to `1`. HTTP writers remain serial.
+- Depths above `1` require a coordinated server batch-flush experiment. The current server accepts at most four pending messages but commits frames serially, and client-only pipelining can regress grouping and latency. Unknown sent outcomes poison all unresolved writes and are never replayed.
+
 ### `WORKFLOW_DISABLE_ANALYTICS_READS`
 
 - Factory option: none

@@ -206,9 +206,15 @@ Experimental stream-write transport capability. Default: `http`. Set `WORKFLOW_S
 
 This setting does not own tenant rollout policy and does not infer server support from package versions. HTTP remains the compatibility path. The protocol route (`/websockets/v1`) is versioned independently from REST v2/v4 and persisted workflow `specVersion` values.
 
-Writes and close requests execute serially. The first operation waits up to 250 ms for an opted-in socket to open; this is an implementation-level measurement knob, not protocol semantics. If the budget expires, or the upgrade fails or is declined before acceptance, the writer uses HTTP without racing the same operation over both transports. After the socket accepts a write, a missing acknowledgement has an unknown outcome: the writer fails rather than replaying the write over HTTP and risking a duplicate append.
+### `WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH`
 
-Before routine authentication expiry or server max duration, the server sends a v1 `drain` control. The client stops sending, lets an already-admitted request receive its reply, and reconnects after the server closes with code 1001. Authentication drains re-resolve a fresh bearer. A request that was sent but receives no reply before close still has an unknown outcome and is never replayed.
+Experimental WebSocket writer request depth. Default: `1`. Supported exact values are `1`, `2`, and `4`; invalid values fail closed to `1`. HTTP writers remain serial. Any unknown outcome poisons the writer and is never replayed.
+
+Depths above `1` are intended only for coordinated experiments with server-side batch flush support; the current server accepts up to four pending messages but still commits frames serially. Client-only pipelining can fragment groups and regress latency, so keep depth `1` outside a paired experiment.
+
+The first group uses HTTP without constructing a socket. The second HTTP request starts the background connection at dispatch, and complete groups continue over HTTP until the socket opens. The writer switches only after the sealed HTTP prefix succeeds. A missing acknowledgement after a frame is sent has an unknown outcome: the writer fails rather than replaying the write over HTTP and risking a duplicate append.
+
+Before routine authentication expiry or server max duration, the server sends a v1 `drain` control. The client stops sending, lets admitted requests receive their replies, and reconnects after the server closes with code 1001. Authentication drains re-resolve a fresh bearer. Any request that was sent but receives no reply before close still has an unknown outcome and is never replayed.
 
 ### `WORKFLOW_EVENTS_TRANSPORT`
 

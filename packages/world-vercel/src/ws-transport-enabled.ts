@@ -70,3 +70,11 @@ export function isWsEventsTransportStrict(): boolean {
 export function isWsStreamsTransportEnabled(): boolean {
   return process.env.WORKFLOW_STREAMS_TRANSPORT === 'ws';
 }
+
+/** Experimental bounded write depth; invalid values fail closed to serial. */
+export function getWsStreamWritePipelineDepth(): 1 | 2 | 4 {
+  const raw = process.env.WORKFLOW_STREAM_WRITE_PIPELINE_DEPTH;
+  if (raw === '2') return 2;
+  if (raw === '4') return 4;
+  return 1;
+}
