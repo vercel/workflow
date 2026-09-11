@@ -45,13 +45,19 @@ const WorldCachePromise = Symbol.for('@workflow/world//cachePromise');
 const StubbedWorldCachePromise = Symbol.for(
   '@workflow/world//stubbedCachePromise'
 );
+const WorldCacheGeneration = Symbol.for('@workflow/world//cacheGeneration');
 
 const globalSymbols: typeof globalThis & {
   [WorldCache]?: World;
   [StubbedWorldCache]?: World;
   [WorldCachePromise]?: Promise<World>;
   [StubbedWorldCachePromise]?: Promise<World>;
+  [WorldCacheGeneration]?: number;
 } = globalThis;
+
+export function getWorldGeneration(): number {
+  return globalSymbols[WorldCacheGeneration] ?? 0;
+}
 
 export type WorldFactoryModule = {
   createWorld?: () => World | Promise<World>;
@@ -243,14 +249,21 @@ export const getWorld = async (): Promise<World> => {
   // Store the promise immediately to prevent race conditions with concurrent calls.
   // Clear on rejection so subsequent calls can retry instead of caching the failure.
   if (!globalSymbols[WorldCachePromise]) {
-    globalSymbols[WorldCachePromise] = createWorld().catch((err) => {
-      globalSymbols[WorldCachePromise] = undefined;
+    let pendingWorld!: Promise<World>;
+    pendingWorld = createWorld().catch((err) => {
+      if (globalSymbols[WorldCachePromise] === pendingWorld) {
+        globalSymbols[WorldCachePromise] = undefined;
+      }
       throw err;
     });
+    globalSymbols[WorldCachePromise] = pendingWorld;
   }
-  globalSymbols[WorldCache] = await globalSymbols[WorldCachePromise];
-  assertWorldSupportsRuntimeProtocol(globalSymbols[WorldCache]);
-  return globalSymbols[WorldCache];
+  const worldPromise = globalSymbols[WorldCachePromise];
+  const world = await worldPromise;
+  if (globalSymbols[WorldCachePromise] !== worldPromise) return getWorld();
+  globalSymbols[WorldCache] = world;
+  assertWorldSupportsRuntimeProtocol(world);
+  return world;
 };
 
 /**
@@ -258,6 +271,7 @@ export const getWorld = async (): Promise<World> => {
  * variables change and you need to reinitialize the world with new config.
  */
 export const setWorld = (world: World | undefined): void => {
+  globalSymbols[WorldCacheGeneration] = getWorldGeneration() + 1;
   globalSymbols[WorldCache] = world;
   globalSymbols[StubbedWorldCache] = world;
   globalSymbols[WorldCachePromise] = undefined;
