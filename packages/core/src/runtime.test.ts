@@ -20,6 +20,7 @@ import {
   DEPLOYMENT_MISMATCH_MAX_RETRIES,
   REPLAY_DIVERGENCE_MAX_RETRIES,
 } from './runtime/constants.js';
+import { stepDispatchIdempotencyKey } from './runtime/helpers.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
 import {
@@ -44,6 +45,31 @@ vi.mock('@vercel/functions', () => ({
     waitUntilPromises.push(p);
   }),
 }));
+
+// Pass-through wrap of the suspension handler that lets a test observe (and,
+// for the rebinding test, adjust) what the engine hands the runtime after each
+// suspension. Inert unless a test installs `onResult`.
+const suspensionResultTap = vi.hoisted(() => ({
+  onResult: undefined as
+    | ((
+        result: import('./runtime/suspension-handler.js').SuspensionHandlerResult
+      ) => void)
+    | undefined,
+}));
+vi.mock('./runtime/suspension-handler.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('./runtime/suspension-handler.js')>();
+  return {
+    ...actual,
+    handleSuspension: async (
+      ...args: Parameters<typeof actual.handleSuspension>
+    ) => {
+      const result = await actual.handleSuspension(...args);
+      suspensionResultTap.onResult?.(result);
+      return result;
+    },
+  };
+});
 
 /**
  * Resolves true if any promise handed to `waitUntil` rejects. Reports whether
@@ -1870,7 +1896,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
   it("counts the suspension handler's resilient publishes as already published", async () => {
     // With resilient step dispatch the suspension handler publishes the
     // queued step itself (create + queue in parallel, message carrying
-    // stepInput) and reports it in queuedStepCorrelationIds. That publish
+    // stepInput) and reports it in queuedStepDispatchKeys. That publish
     // must seed the invocation's published set too, so the post-inline
     // replay pass does not send it again.
     process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = '1';
@@ -1904,7 +1930,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // Regression test for the seeding point of the invocation's published
     // set. The suspension handler publishes the queued step (resilient
     // dispatch, create + queue in parallel) and reports it in
-    // queuedStepCorrelationIds, but the same suspension's hook_created came
+    // queuedStepDispatchKeys, but the same suspension's hook_created came
     // back as a hook_conflict, so the runtime replays in-process without
     // reaching the dispatch pass. On the next pass the step already exists
     // and the handler no longer reports it; if the set was only seeded at the
@@ -1943,6 +1969,72 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       expect(stepSends[0][1]).toHaveProperty('stepInput');
       expect(stepIdSends).toHaveLength(1);
     } finally {
+      delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
+    }
+  });
+
+  it('still dispatches a step a later pass bound to a correlation id published under another name', async () => {
+    // The invocation's published set is keyed by step identity
+    // (correlationId + stepName, the dispatch idempotency key), not by
+    // correlation id alone. Pass 1's suspension handler publishes the queued
+    // step as (id, addB); if the post-inline replay bound that id to a
+    // DIFFERENT step, a set keyed by id alone would read "already published"
+    // and skip the only dispatch that step ever gets.
+    //
+    // A workflow cannot stage the rebinding by itself within one delivery:
+    // events reach the VM one macrotask at a time, so a pass that published
+    // ordinal n never observed any state a later pass could branch on before
+    // n. The engine's output is therefore tapped: the second pass's pending
+    // item for the queued step is renamed, which is exactly what a corrected
+    // replay that derived the id for another step would hand the runtime.
+    process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = '1';
+    let suspensions = 0;
+    suspensionResultTap.onResult = (result) => {
+      suspensions++;
+      if (suspensions === 1) return;
+      for (const step of result.pendingSteps) {
+        if (step.stepName === 'addB') step.stepName = 'addB_rebound';
+      }
+    };
+    try {
+      const { handlerPromise, eventsList, stepIdSends, queue } =
+        await driveHandler({
+          runId: 'wrun_rebound_correlation_id_dispatched',
+          queueImpl: async () => ({ messageId: null }),
+          runSpecVersion: SPEC_VERSION_CURRENT,
+        });
+
+      const res = (await handlerPromise) as Response;
+      expect(res.status).toBe(204);
+      expect(suspensions).toBeGreaterThanOrEqual(2);
+      expect(eventsList.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+      const stepSends = queue.mock.calls.filter(
+        ([, message]: any[]) =>
+          message && typeof message === 'object' && 'stepId' in message
+      );
+      // One correlation id, two step identities, two sends: the handler's
+      // resilient publish of (id, addB) on pass 1 and the dispatch pass's
+      // (id, addB_rebound) on pass 2.
+      expect(stepIdSends).toHaveLength(2);
+      expect(new Set(stepIdSends).size).toBe(1);
+      const [id] = stepIdSends;
+      expect(stepSends.map(([, message]: any[]) => message.stepName)).toEqual([
+        'addB',
+        'addB_rebound',
+      ]);
+      expect(
+        stepSends.map(([, , opts]: any[]) => opts?.idempotencyKey)
+      ).toEqual([
+        stepDispatchIdempotencyKey(id, 'addB'),
+        stepDispatchIdempotencyKey(id, 'addB_rebound'),
+      ]);
+      // Pass 1's send came from the handler (it carries stepInput); pass 2's
+      // is the dispatch pass's bare message.
+      expect(stepSends[0][1]).toHaveProperty('stepInput');
+      expect(stepSends[1][1]).not.toHaveProperty('stepInput');
+    } finally {
+      suspensionResultTap.onResult = undefined;
       delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
     }
   });
