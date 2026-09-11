@@ -11,6 +11,7 @@ import {
 import {
   envNumber,
   type GetChunksOptions,
+  type GetStreamInfoOptions,
   type StreamChunksResponse,
   type Streamer,
   type StreamInfoResponse,
@@ -182,6 +183,7 @@ export { encodeMultiChunks } from './stream-chunks.js';
 const StreamInfoResponseSchema = z.object({
   tailIndex: z.number(),
   done: z.boolean(),
+  resolvedStartIndex: z.number().int().nonnegative().optional(),
 });
 
 /**
@@ -451,8 +453,24 @@ export function createStreamer(config?: APIConfig): Streamer {
         if (options?.limit != null) {
           params.set('limit', String(options.limit));
         }
+        if (options?.cursor && options.startIndex !== undefined) {
+          throw new Error(
+            'stream chunks cursor and startIndex are mutually exclusive'
+          );
+        }
         if (options?.cursor) {
           params.set('cursor', options.cursor);
+        }
+        if (options?.startIndex !== undefined) {
+          if (
+            !Number.isSafeInteger(options.startIndex) ||
+            options.startIndex < 0
+          ) {
+            throw new Error(
+              'stream chunks startIndex must be a nonnegative safe integer'
+            );
+          }
+          params.set('startIndex', String(options.startIndex));
         }
         const qs = params.toString();
         const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/chunks${qs ? `?${qs}` : ''}`;
@@ -470,8 +488,16 @@ export function createStreamer(config?: APIConfig): Streamer {
         }
       },
 
-      async getInfo(runId: string, name: string): Promise<StreamInfoResponse> {
-        const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/info`;
+      async getInfo(
+        runId: string,
+        name: string,
+        options?: GetStreamInfoOptions
+      ): Promise<StreamInfoResponse> {
+        const query =
+          options?.startIndex === undefined
+            ? ''
+            : `?startIndex=${encodeURIComponent(String(options.startIndex))}`;
+        const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/info${query}`;
         try {
           return await makeRequest({
             endpoint,
