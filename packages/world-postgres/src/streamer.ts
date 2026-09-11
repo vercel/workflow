@@ -374,6 +374,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
                 return;
               }
 
+              lastChunkId = msg.id;
               if (offset > 0) {
                 offset--;
                 return;
@@ -385,7 +386,6 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
               if (msg.eof) {
                 controller.close();
               }
-              lastChunkId = msg.id;
             }
 
             function onData(data: StreamChunkEvent) {
