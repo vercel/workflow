@@ -343,7 +343,9 @@ export class Run<TResult> {
   get workflowName(): Promise<string> {
     'use step';
     return this.#lazyWorldPromise.then((world) =>
-      world.runs.get(this.runId).then((run) => run.workflowName)
+      world.runs
+        .get(this.runId, { resolveData: 'none' })
+        .then((run) => run.workflowName)
     );
   }
 
@@ -353,7 +355,9 @@ export class Run<TResult> {
   get createdAt(): Promise<Date> {
     'use step';
     return this.#lazyWorldPromise.then((world) =>
-      world.runs.get(this.runId).then((run) => run.createdAt)
+      world.runs
+        .get(this.runId, { resolveData: 'none' })
+        .then((run) => run.createdAt)
     );
   }
 
@@ -364,7 +368,9 @@ export class Run<TResult> {
   get startedAt(): Promise<Date | undefined> {
     'use step';
     return this.#lazyWorldPromise.then((world) =>
-      world.runs.get(this.runId).then((run) => run.startedAt)
+      world.runs
+        .get(this.runId, { resolveData: 'none' })
+        .then((run) => run.startedAt)
     );
   }
 
@@ -375,7 +381,9 @@ export class Run<TResult> {
   get completedAt(): Promise<Date | undefined> {
     'use step';
     return this.#lazyWorldPromise.then((world) =>
-      world.runs.get(this.runId).then((run) => run.completedAt)
+      world.runs
+        .get(this.runId, { resolveData: 'none' })
+        .then((run) => run.completedAt)
     );
   }
 

@@ -3,4 +3,4 @@
 'workflow': minor
 ---
 
-Add `registerLifecycleHooks` (exported from `workflow/api`) for registering global `onRunCompleted`/`onRunFailed` handlers that receive the lazily-hydrated `Run` instance (and, for failures, a `WorkflowRunFailedError` with the hydrated cause and error code), enabling centralized reporting (e.g. to Sentry) from `instrumentation.ts`.
+Add `registerLifecycleHooks` from `workflow/api` for best-effort completion and failure reporting with a read-free workflow name, lazy `Run` instance, and failure cause hydrated from the persisted payload. Run metadata getters avoid resolving input/output payloads.

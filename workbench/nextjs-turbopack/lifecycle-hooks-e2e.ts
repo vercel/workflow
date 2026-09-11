@@ -14,11 +14,10 @@ import { registerLifecycleHooks, resumeHook } from 'workflow/api';
  */
 export function registerE2eLifecycleHooks(): void {
   registerLifecycleHooks({
-    async onRunCompleted({ run }) {
+    async onRunCompleted({ run, workflowName }) {
       // Fires for every completed run in the app, so filter cheaply by
-      // workflow name (a metadata read) before touching the return value.
-      const workflowName = await run.workflowName;
-      if (!workflowName?.includes('lifecycleHookTargetCompleted')) {
+      // workflow name without a metadata read before touching the return value.
+      if (!workflowName.includes('lifecycleHookTargetCompleted')) {
         return;
       }
       // Lazy hydration: the return value is only fetched for matching runs.
@@ -33,7 +32,10 @@ export function registerE2eLifecycleHooks(): void {
         returnedOutcome: returnValue.outcome,
       });
     },
-    async onRunFailed({ run, error }) {
+    async onRunFailed({ run, workflowName, error }) {
+      if (!workflowName.includes('lifecycleHookTargetFailed')) {
+        return;
+      }
       // The hydrated thrown value is already on the error, so filtering
       // needs no backend reads.
       const cause = error.cause;

@@ -10,26 +10,31 @@ related:
   - /docs/api-reference/workflow-api/get-run
 ---
 
-Registers global workflow lifecycle handlers, invoked by the runtime on the compute that records a run's terminal transition. Use it for centralized reporting, such as forwarding every failed run to Sentry, without wrapping each workflow body.
+Registers global workflow lifecycle handlers, invoked by the runtime on the compute that records a run's terminal transition. Use it for best-effort centralized reporting, such as forwarding failed runs to Sentry, without wrapping each workflow body.
 
 Register early in the process lifecycle (in Next.js, `instrumentation.ts`) so handlers exist before the first run finishes. See the [lifecycle hooks guide](/docs/observability/lifecycle-hooks) for semantics and a full Sentry example.
 
 ```typescript title="instrumentation.ts" lineNumbers
-import { registerLifecycleHooks } from "workflow/api";
-
-export function register() {
+export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { registerLifecycleHooks } = await import("workflow/api");
+
     registerLifecycleHooks({
-      async onRunCompleted({ run }) {
-        console.log(`Run ${run.runId} completed`);
+      async onRunCompleted({ run, workflowName }) {
+        console.log(`Run ${run.runId} (${workflowName}) completed`);
       },
-      async onRunFailed({ run, error }) {
-        console.error(`Run ${run.runId} failed (${error.errorCode})`, error.cause);
+      async onRunFailed({ run, workflowName, error }) {
+        console.error(
+          `Run ${run.runId} (${workflowName}) failed (${error.errorCode})`,
+          error.cause
+        );
       },
     });
   }
 }
 ```
+
+Keep the dynamic import inside the `NEXT_RUNTIME === "nodejs"` guard. Next.js also compiles `instrumentation.ts` for the Edge runtime. A top-level static import of `workflow/api` pulls Node.js-only dependencies into that compilation and breaks webpack Edge builds, even if the registration call is guarded.
 
 ## API Signature
 
@@ -48,7 +53,7 @@ Returns a function that unregisters these hooks.
 
 ## Handlers
 
-Both handlers receive the run as a lazily-hydrated [`Run`](/docs/api-reference/workflow-api/get-run) instance. Accessors like `run.workflowName` and `run.returnValue` only fetch from the backend when used.
+Both handlers receive a `workflowName` string and a lazily hydrated [`Run`](/docs/api-reference/workflow-api/get-run) instance. Use the `workflowName` parameter to filter without a backend read; `run.runId` also requires no read. Accessors such as `run.workflowName`, `run.status`, and `run.returnValue` still fetch from the backend when used. Lazy access defers those reads rather than eliminating them.
 
 ### `onRunCompleted`
 
@@ -57,6 +62,7 @@ Invoked when a workflow run completes successfully.
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `params.run` | `Run` | The completed run. |
+| `params.workflowName` | `string` | The machine-readable workflow identifier, such as `workflow//./src/workflows/order//processOrder`. Available without a backend read. |
 
 ### `onRunFailed`
 
@@ -65,11 +71,15 @@ Invoked when a workflow run fails terminally (after any retries).
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `params.run` | `Run` | The failed run. |
+| `params.workflowName` | `string` | The machine-readable workflow identifier, such as `workflow//./src/workflows/order//processOrder`. Available without a backend read. |
 | `params.error` | `WorkflowRunFailedError` | The failure, in the same shape `run.returnValue` rejects with: `error.errorCode` carries the classification (e.g. `USER_ERROR`) and `error.cause` is the hydrated thrown value. |
+
+`error.cause` is hydrated from the persisted error data, with streamed values loaded lazily when consumed. Abort signals reflect their persisted state without live subscriptions. If hydration fails, the cause is a generic `Error`, matching `run.returnValue`'s fallback. In `onRunFailed`, `run.returnValue` rejects because the run failed. Use `error.cause` to inspect or report the thrown value instead.
 
 ## Behavior
 
 - Handlers run on the host (full Node.js), never inside the workflow VM. Calling `registerLifecycleHooks` from workflow code throws.
-- Handlers are fire-and-forget: they cannot delay or change the run's outcome, and the runtime logs and swallows a throwing handler. On serverless platforms, the runtime keeps the invocation alive with `waitUntil`.
+- Handlers are fire-and-forget. They cannot delay or change the run's outcome, and the runtime logs and swallows a throwing handler. On Vercel, `waitUntil` keeps the invocation alive while handlers finish, subject to the invocation's duration limit. On other hosts, handlers run as detached work and may not complete if the host freezes or terminates the process after the response.
+- Delivery is best effort. Each registered handler is invoked at most once by the invocation that writes the terminal event. Callbacks are not retried if they throw or the process dies, so they may never run or may stop before completing. The [event log](/docs/how-it-works/event-sourcing) is the system of record.
 - Handlers fire only on the invocation that wrote the terminal event. Transitions recorded outside your app's compute (e.g. a run cancelled from the CLI or dashboard) do not fire handlers.
 - You can register multiple hook sets, and handlers run in registration order.
