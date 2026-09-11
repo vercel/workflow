@@ -11,7 +11,12 @@ import {
   start as rawStart,
   resumeHook,
 } from '../src/runtime';
-import { getWorkflowMetadata, setupWorld, trackRun } from './utils';
+import {
+  describeRunError,
+  getWorkflowMetadata,
+  setupWorld,
+  trackRun,
+} from './utils';
 
 /**
  * Deliberate reproduction harness for `CORRUPTED_EVENT_LOG`.
@@ -592,21 +597,24 @@ async function pollTerminalRun(
 
     if (runData.status === 'failed') {
       // The machine-readable reason is the plaintext top-level `errorCode`.
-      // `error` is rehydrated into an `Error` instance carrying only
-      // `name`/`message`, so reading `error.code` misclassifies every real
-      // failure as `other` — which is exactly how earlier runs of this job
-      // reported corruptions.
-      const failure = runData as {
-        errorCode?: string;
-        error?: { name?: string; message?: string };
-      };
+      // Reading `error.code` instead misclassifies every real failure as
+      // `other` — which is exactly how earlier runs of this job reported
+      // corruptions.
+      //
+      // `errorCode` alone cannot tell two corruptions apart, and telling them
+      // apart is the whole point of a job that has to say whether a fix
+      // closed *this* class. The divergence text lives in `error`, which
+      // world-vercel hands back as un-hydrated bytes, so `describeRunError`
+      // hydrates it rather than reading a `.message` that is always
+      // `undefined` there.
+      const failure = runData as { errorCode?: string; error?: unknown };
+      const described = await describeRunError(failure.error, run.runId);
       return {
         ...base,
         outcome: classifyFailure(failure.errorCode),
         status: runData.status,
         errorCode: failure.errorCode,
-        errorMessage: failure.error?.message,
-        errorName: failure.error?.name,
+        ...described,
         durationMs: Date.now() - startedAt,
       };
     }
