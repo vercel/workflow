@@ -1262,6 +1262,21 @@ export async function queueMessages(
     },
     async () => {
       const results = await batch(queueName, messages);
+      // A World that answers with the wrong number of results has told us
+      // nothing about the messages it left out. Treated as a failure of the
+      // whole batch rather than read as success for the entries that ARE
+      // present: republishing under the same idempotency keys is safe,
+      // silently never dispatching a step is not (the run makes no progress
+      // and nothing surfaces an error).
+      if (results.length !== messages.length) {
+        throw Object.assign(
+          new Error(
+            `Queue batch for ${queueName} returned ${results.length} ` +
+              `result(s) for ${messages.length} message(s)`
+          ),
+          { retryable: true }
+        );
+      }
       const failures = results.filter((result) => result.error !== undefined);
       if (failures.length === 0) return;
       const retryable = failures.some(
@@ -1271,8 +1286,12 @@ export async function queueMessages(
         `Failed to publish ${failures.length} of ${messages.length} queue ` +
           `message(s) to ${queueName}: ${failures[0]?.error}`
       );
-      // Surfaced so a caller (and the delivery-level retry above it) can tell
-      // a transient partial batch from a permanent rejection.
+      // Carried on the error so a caller CAN tell a transient partial batch
+      // from a permanent rejection. Nothing reads it yet: today every caller
+      // rejects the delivery either way, so a permanently rejected entry
+      // still costs the full redelivery budget. Left in place because the
+      // information is only available here, and a fast-fail on
+      // `retryable: false` needs it.
       Object.assign(error, { retryable });
       throw error;
     }

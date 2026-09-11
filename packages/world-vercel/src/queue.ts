@@ -595,6 +595,16 @@ export function createQueue(config?: APIConfig): Queue {
     // every message lands in one group, so this is one request per
     // MAX_QUEUE_SEND_BATCH messages. Mixed input still works, it just costs
     // one request per distinct route.
+    //
+    // `topic` is one of those dimensions, which makes this a no-op under
+    // WORKFLOW_SEQUENTIAL_REPLAYS=1: step dispatches ride the flow topic,
+    // `getPhysicalQueueName` gives each one a per-step physical topic, and
+    // every message therefore lands in a group of its own. The fan-out still
+    // publishes correctly, just at one request per step as before, and each
+    // goes through the batch endpoint rather than `send()` — which does not
+    // map 502 `consumer_discovery_failed` to ConsumerDiscoveryError (only
+    // 503). No caller on this path classifies that error today, so nothing
+    // changes behaviorally; worth knowing before one starts.
     const groups = new Map<
       string,
       {

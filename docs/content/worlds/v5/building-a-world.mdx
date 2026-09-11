@@ -248,6 +248,8 @@ interface Queue {
 
 Its contract differs from `queue` in one important way: **a message that fails is reported, not thrown.** Return one result per input message, in input order, where `error` is set on the entries that were rejected and `retryable` says whether republishing might succeed. Reject the promise only for a request-level failure, where you cannot say what happened to any individual message.
 
+The count must match: return exactly as many results as you were given messages. The runtime rejects the whole batch if it does not, because an omitted result is indistinguishable from a message that was never published, and treating it as success would strand that step with nothing reporting an error.
+
 {/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
 type QueueBatchResult =

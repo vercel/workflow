@@ -507,7 +507,11 @@ export interface Queue {
    *
    * Contract:
    *
-   * - Results are returned in input order, one per input message.
+   * - Results are returned in input order, one per input message. Returning
+   *   a different number of results than there were messages is a contract
+   *   violation the runtime rejects the whole batch on: an omitted result is
+   *   indistinguishable from a message that was never published, and reading
+   *   it as success would strand that step with no error anywhere.
    * - Partial failure is normal. A rejected entry reports `error`; a
    *   `retryable` entry may succeed if the whole batch is published again.
    *   Implementations MUST NOT throw for a per-entry failure — reserve

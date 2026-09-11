@@ -1148,6 +1148,29 @@ describe('queueMessages', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('rejects when the World returns fewer results than messages', async () => {
+    // A short array says nothing about the messages it omits. Reading it as
+    // success would ack the delivery with those steps never dispatched, and
+    // the run would stall with no error recorded anywhere.
+    const world = makeWorld({
+      queueBatch: vi.fn().mockResolvedValue([{ messageId: 'a' }]),
+    });
+
+    await expect(
+      queueMessages(world, '__wkf_workflow_t', entries(3))
+    ).rejects.toThrow(/returned 1 result\(s\) for 3 message\(s\)/);
+  });
+
+  it('marks a short-result rejection retryable', async () => {
+    const world = makeWorld({
+      queueBatch: vi.fn().mockResolvedValue([]),
+    });
+
+    await expect(
+      queueMessages(world, '__wkf_workflow_t', entries(2))
+    ).rejects.toMatchObject({ retryable: true });
+  });
+
   it('does not touch the World for an empty message set', async () => {
     const queueBatch = vi.fn();
     const world = makeWorld({ queueBatch });

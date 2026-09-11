@@ -1314,7 +1314,7 @@ describe('queueBatch', () => {
     process.env.VERCEL_DEPLOYMENT_ID = 'dpl_batch';
   });
   afterEach(() => {
-    process.env.VERCEL_DEPLOYMENT_ID = undefined;
+    delete process.env.VERCEL_DEPLOYMENT_ID;
   });
 
   const entries = (n: number, runId = RUN) =>
