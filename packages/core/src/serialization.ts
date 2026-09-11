@@ -4124,10 +4124,11 @@ export async function hydrateStepError(
  * step ids, prompts, and business rules, and observability surfaces must not
  * read it without going through the decrypt flow.
  *
- * The code is a string, so this skips the devalue graph walk that
- * `dehydrateRunError` needs and encodes it directly. The format prefix is
- * still `DEVALUE_V1`: a JSON-quoted string *is* valid devalue, so anything
- * that already knows how to hydrate a prefixed payload keeps working.
+ * The code is a plain string, so it needs none of the reducers the other
+ * payloads go through, but it is still written as real devalue under the
+ * `DEVALUE_V1` prefix: the generic hydrators (`hydrateData` behind the CLI
+ * and the observability UI) trust that prefix and hand the bytes to
+ * devalue's `parse`, which rejects a bare JSON string as invalid input.
  *
  * @param code - Generated workflow VM code.
  * @param key - Encryption key (undefined to skip encryption).
@@ -4139,7 +4140,7 @@ export async function dehydrateDynamicWorkflowCode(
   compression = false
 ): Promise<Uint8Array> {
   try {
-    const payload = new TextEncoder().encode(JSON.stringify(code));
+    const payload = new TextEncoder().encode(stringify(code));
     const serialized = encodeWithFormatPrefix(
       SerializationFormat.DEVALUE_V1,
       payload
@@ -4200,7 +4201,15 @@ export async function hydrateDynamicWorkflowCode(
     );
   }
 
-  const code = JSON.parse(new TextDecoder().decode(payload));
+  let code: unknown;
+  try {
+    code = parse(new TextDecoder().decode(payload));
+  } catch (cause) {
+    throw new SerializationError(
+      'Dynamic workflow code payload is not valid devalue.',
+      { cause }
+    );
+  }
   if (typeof code !== 'string') {
     throw new SerializationError(
       `Dynamic workflow code decoded to ${typeof code}, expected a string.`

@@ -1,10 +1,12 @@
 ---
-'@workflow/core': patch
-'@workflow/world': patch
-'@workflow/world-vercel': patch
-'@workflow/world-local': patch
-'@workflow/world-postgres': patch
-'workflow': patch
+'@workflow/core': minor
+'@workflow/world': minor
+'@workflow/world-vercel': minor
+'@workflow/world-local': minor
+'@workflow/world-postgres': minor
+'@workflow/web-shared': minor
+'@workflow/cli': minor
+'workflow': minor
 ---
 
-Add experimental dynamic workflows: `start()` now accepts workflow source as a string, for orchestration whose shape is only known after deployment (workflow-builder UIs, customer-defined automations, AI-generated plans). The source is compiled to workflow VM code, stored with the run — compressed and encrypted with the run's key, behind a blob ref on worlds that have one — and replayed from there, so a run always executes the exact code it started on. Steps must already be registered in the deployment and are exposed to the source through an explicit `dynamic.steps` allowlist.
+Add experimental dynamic workflows: `start()` accepts workflow source as a string, compiled and stored encrypted with the run and replayed from there. Steps are exposed to the source through an explicit `dynamic.steps` allowlist.

@@ -72,6 +72,9 @@ export async function purgeRunUserData(
         outputJson: NULL,
         error: NULL,
         errorJson: NULL,
+        // A dynamic run's stored workflow code is application source, and
+        // as much user data as the input it ran on.
+        dynamicWorkflowCode: NULL,
       })
       .where(eq(runs.runId, runId));
 

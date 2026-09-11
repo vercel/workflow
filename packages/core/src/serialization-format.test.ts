@@ -200,6 +200,27 @@ describe('hydrateResourceIO', () => {
     expect(hydrated.output).toEqual({ status: 'completed' });
   });
 
+  it("should hydrate a dynamic run's workflow code alongside its input", () => {
+    const code = 'async function workflow() { "use workflow"; }';
+    const run = {
+      runId: 'wrun_dyn',
+      input: makeDevlPayload(['arg']),
+      dynamicWorkflowCode: makeDevlPayload(code),
+    };
+
+    const hydrated = hydrateResourceIO(run, testRevivers);
+    expect(hydrated.input).toEqual(['arg']);
+    expect(hydrated.dynamicWorkflowCode).toBe(code);
+  });
+
+  it('should not add dynamicWorkflowCode to a static run', () => {
+    const hydrated = hydrateResourceIO(
+      { runId: 'wrun_static', input: makeDevlPayload(['arg']) },
+      testRevivers
+    );
+    expect('dynamicWorkflowCode' in hydrated).toBe(false);
+  });
+
   it('should hydrate event eventData.result', () => {
     const resultPayload = makeDevlPayload({ key: 'value' });
 
