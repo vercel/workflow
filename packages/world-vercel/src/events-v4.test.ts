@@ -322,6 +322,93 @@ describe('getWorkflowRunEventsV4 over HTTP', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('accepts a lazy step_completed frame whose payload metadata is unavailable', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true&remoteRefBehavior=lazy',
+        method: 'GET',
+      })
+      .reply(
+        200,
+        Buffer.concat([
+          encodeFrame(
+            {
+              eventId: 'evnt_53',
+              runId: 'wrun_1',
+              eventType: 'step_completed',
+              correlationId: 'step_1',
+              createdAt: CREATED_AT,
+              eventData: { stepName: 'capture' },
+            },
+            new Uint8Array()
+          ),
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_53', hasMore: false },
+            new Uint8Array()
+          ),
+        ]),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    const result = await getWorkflowRunEventsV4(
+      'wrun_1',
+      { remoteRefBehavior: 'lazy' },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        eventId: 'evnt_53',
+        eventType: 'step_completed',
+        eventData: { stepName: 'capture' },
+      }),
+    ]);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('still rejects a resolved step_completed frame without event data', async () => {
+    const origin =
+      WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    agent
+      .get(origin)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events?returnAll=true&remoteRefBehavior=resolve',
+        method: 'GET',
+      })
+      .reply(
+        200,
+        encodeFrame(
+          {
+            eventId: 'evnt_53',
+            runId: 'wrun_1',
+            eventType: 'step_completed',
+            correlationId: 'step_1',
+            createdAt: CREATED_AT,
+          },
+          new Uint8Array()
+        ),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    await expect(
+      getWorkflowRunEventsV4(
+        'wrun_1',
+        { remoteRefBehavior: 'resolve' },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toMatchObject({ code: 'SCHEMA_VALIDATION' });
+    agent.assertNoPendingInterceptors();
+  });
+
   // A permanently missing payload arrives as a terminal frame rather than a
   // truncated body, because a truncated body is what a dropped socket looks
   // like: the runtime cannot tell "retry me" from "this can never work" and
