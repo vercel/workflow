@@ -342,6 +342,16 @@ export const StepLatencyOptimizations = SemanticConvention<string[]>(
   'step.latency_optimizations'
 );
 
+/**
+ * How the step's initial `step_started` claim was made. Only present for
+ * inline create claims; ordinary background starts and owned recovery remain
+ * unlabeled.
+ */
+export type StepStartStrategy = 'awaited' | 'optimistic' | 'batch_preclaimed';
+export const StepStartStrategy = SemanticConvention<StepStartStrategy>(
+  'workflow.step_start.strategy'
+);
+
 /** Whether the step was skipped during execution */
 export const StepSkipped = SemanticConvention<boolean>('step.skipped');
 

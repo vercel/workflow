@@ -280,6 +280,21 @@ Connection pooling, keep-alive, and the request, header, and body deadlines are 
 
 A `dispatcher` passed to `createVercelWorld()` still wins over this variable. The variable chooses which transport the World builds when you have not supplied one.
 
+### `WORKFLOW_VERCEL_QUEUE_TIMEOUT_MS`
+
+- Default: `30000`
+- Total deadline for one request the Vercel World's queue client makes, measured from the moment it is handed to the transport, so it also covers time the request spends waiting for a free connection.
+- Clamped to `[5000, 120000]`.
+- This is the only request path the World cannot bound with `WORKFLOW_REQUEST_TIMEOUT_MS`, because the queue client makes its own calls and accepts no override for them. Without a deadline here, a queue acknowledgement that never completes holds the invocation until the platform kills it, and a killed invocation never acknowledges, so the message is redelivered.
+- Keep it below the queue's visibility-renewal interval (60 seconds) so a failed call has room to surface and be retried before the message lease lapses.
+
+### `WORKFLOW_VERCEL_QUEUE_CONNECTIONS`
+
+- Default: `64`
+- Connections the Vercel World's queue client may open to the queue service.
+- Clamped to `[1, 1024]`.
+- Sized much higher than the World's other connection pools on purpose. The queue client makes roughly two small requests per invocation, so its concurrency tracks how many invocations a compute instance is serving at once rather than any per-request fan-out. Lower it only if you have a reason to cap sockets; too low turns invocation concurrency into the limit on how fast messages can be acknowledged.
+
 ## Queue namespace
 
 ### `WORKFLOW_QUEUE_NAMESPACE`

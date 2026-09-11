@@ -74,6 +74,8 @@ import {
   WorkflowClientVersion,
   WorkflowEventsTransport,
   WorkflowEventType,
+  WorkflowStepStartMode,
+  WorkflowStepStartOwnerStamped,
   WorkflowWsRequestId,
   WorkflowWsUrl,
 } from './telemetry.js';
@@ -113,7 +115,7 @@ async function fetchV4(
   init: { method: string; headers: Headers; body?: Uint8Array },
   config: APIConfig | undefined,
   opName: string,
-  attributes?: Record<string, string | number | string[]>
+  attributes?: Record<string, string | number | boolean | string[]>
 ): Promise<Response> {
   const dispatcher = getEventsDispatcher(config);
   const response = await instrumentedFetch({
@@ -800,6 +802,20 @@ async function postWorkflowRunEventV4(
       ...WorkflowEventsTransport('http'),
       ...WorkflowEventType(input.eventType),
       ...WorkflowClientVersion(`@workflow/world-vercel/${version}`),
+      ...(input.eventType === 'step_started'
+        ? {
+            ...WorkflowStepStartMode(
+              input.payload === undefined
+                ? input.ownerMessageId !== undefined
+                  ? 'single_owned_recovery'
+                  : 'single_bare'
+                : 'single_lazy_create_claim'
+            ),
+            ...WorkflowStepStartOwnerStamped(
+              input.ownerMessageId !== undefined
+            ),
+          }
+        : {}),
       ...(input.stso !== undefined ? StepStsoMs(input.stso) : {}),
       ...(input.optimizations !== undefined
         ? StepLatencyOptimizations(input.optimizations)
@@ -1055,6 +1071,18 @@ export async function createWorkflowRunEventsBatchV4(
     {
       ...WorkflowEventsTransport('http'),
       'workflow.batch.bytes': body.byteLength,
+      ...(input.events.some((event) => event.eventType === 'step_started')
+        ? {
+            ...WorkflowStepStartMode(
+              input.events.some((event) => event.eventType === 'step_created')
+                ? 'batch_create_claim'
+                : 'batch_bare'
+            ),
+            ...WorkflowStepStartOwnerStamped(
+              input.events.some((event) => event.ownerMessageId !== undefined)
+            ),
+          }
+        : {}),
     }
   );
 
@@ -1266,6 +1294,20 @@ async function postEventFrameOverWs(
         ...(input.stso !== undefined ? StepStsoMs(input.stso) : {}),
         ...(input.optimizations !== undefined
           ? StepLatencyOptimizations(input.optimizations)
+          : {}),
+        ...(input.eventType === 'step_started'
+          ? {
+              ...WorkflowStepStartMode(
+                input.payload === undefined
+                  ? input.ownerMessageId !== undefined
+                    ? 'single_owned_recovery'
+                    : 'single_bare'
+                  : 'single_lazy_create_claim'
+              ),
+              ...WorkflowStepStartOwnerStamped(
+                input.ownerMessageId !== undefined
+              ),
+            }
           : {}),
         ...NetworkProtocolName('websocket'),
         ...WorkflowWsUrl(wsUrl),

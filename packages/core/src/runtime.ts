@@ -157,6 +157,7 @@ export {
 } from './runtime/helpers.js';
 export {
   getHookByToken,
+  type Hook,
   type ResumedHook,
   resumeHook,
   resumeWebhook,
@@ -4953,25 +4954,71 @@ export function workflowEntrypoint(
                         }
 
                         let replayDivergenceCountForFailure: number | undefined;
+                        // Populated for a divergence so the terminal log below
+                        // carries the same context the WARN does.
+                        let divergenceFields: Record<string, unknown> = {};
                         if (ReplayDivergenceError.is(err)) {
                           const divergenceCount =
                             (replayDivergence?.count ?? 0) + 1;
                           const maxRecoveryReplays =
                             getReplayDivergenceMaxRetries();
+                          // Every divergence in this recovery chain, oldest
+                          // first, bounded by the chain's own length: a
+                          // recovery replay is queued at most
+                          // `maxRecoveryReplays` times, so the terminal one
+                          // reads `maxRecoveryReplays + 1` ids. A producer that
+                          // predates the field, or one whose value failed to
+                          // parse, contributes nothing and the history restarts
+                          // at the prior message's `eventId`.
+                          const divergenceEventIds = [
+                            ...(replayDivergence?.eventIds ??
+                              (replayDivergence
+                                ? [replayDivergence.eventId]
+                                : [])),
+                            err.eventId,
+                          ].slice(-(maxRecoveryReplays + 1));
+                          // Which pass of which invocation diverged, and what
+                          // that pass was working from. All of it is already
+                          // in scope; none of it is another round trip. The
+                          // point is that a divergence on a cold replay of a
+                          // full log and one on a retained-VM resume of a
+                          // delta are different bugs, and the message alone
+                          // does not say which this was.
+                          divergenceFields = {
+                            errorCode: RUN_ERROR_CODES.REPLAY_DIVERGENCE,
+                            divergenceEventId: err.eventId,
+                            priorDivergenceEventId: replayDivergence?.eventId,
+                            divergenceEventIds,
+                            divergenceCount,
+                            deliveryAttempt: metadata.attempt,
+                            maxRecoveryReplays,
+                            loopIteration,
+                            servedByRetainedSession,
+                            eventLogState: eventLog.type,
+                            eventLogLength:
+                              eventLog.type === 'loadAll'
+                                ? undefined
+                                : eventLog.events.length,
+                            eventLogLastEventId:
+                              eventLog.type === 'loadAll'
+                                ? undefined
+                                : eventLog.events.at(-1)?.eventId,
+                            cursor:
+                              eventLog.type === 'ready'
+                                ? (eventLog.cursor ?? undefined)
+                                : eventLog.type === 'loadAfter'
+                                  ? eventLog.cursor
+                                  : undefined,
+                            hasHookInput: hookInput !== undefined,
+                            hasWaitContinuation: waitContinuation !== undefined,
+                            isRecoveryReplay: replayDivergence !== undefined,
+                            setupSource: resumeTracking?.setupSource,
+                          };
 
                           if (divergenceCount <= maxRecoveryReplays) {
                             runLogger.warn(
                               'Workflow replay diverged; queueing a recovery replay before declaring the event log corrupted',
-                              {
-                                errorCode: RUN_ERROR_CODES.REPLAY_DIVERGENCE,
-                                divergenceEventId: err.eventId,
-                                priorDivergenceEventId:
-                                  replayDivergence?.eventId,
-                                divergenceCount,
-                                deliveryAttempt: metadata.attempt,
-                                maxRecoveryReplays,
-                                errorMessage: err.message,
-                              }
+                              { ...divergenceFields, errorMessage: err.message }
                             );
                             await queueMessage(
                               world,
@@ -4983,6 +5030,7 @@ export function workflowEntrypoint(
                                 replayDivergence: {
                                   eventId: err.eventId,
                                   count: divergenceCount,
+                                  eventIds: divergenceEventIds,
                                 },
                               }
                             );
@@ -4991,7 +5039,7 @@ export function workflowEntrypoint(
 
                           replayDivergenceCountForFailure = divergenceCount;
                           terminalError = new CorruptedEventLogError(
-                            `Workflow replay diverged ${divergenceCount} times after ${maxRecoveryReplays} recovery replays; latest divergent event was ${err.eventId}. Last divergence: ${err.message}`,
+                            `Workflow replay diverged ${divergenceCount} times after ${maxRecoveryReplays} recovery replays; latest divergent event was ${err.eventId}; divergent event ids: ${divergenceEventIds.join(', ')}. Last divergence: ${err.message}`,
                             { cause: err }
                           );
                         } else if (replayStart > 0) {
@@ -5028,9 +5076,17 @@ export function workflowEntrypoint(
                         const errorCode = classifyRunError(terminalError);
 
                         runtimeLogger.error('Error while running workflow', {
+                          // Divergence context first so the classified code
+                          // and name of the terminal error win.
+                          ...divergenceFields,
                           workflowRunId: runId,
                           errorCode,
                           errorName,
+                          // The console renderer drops `errorStack` on the
+                          // assumption that the message body carries it, and
+                          // this message has no body, so without this row the
+                          // terminal error's text never reaches the console.
+                          errorMessage,
                           errorStack,
                         });
 

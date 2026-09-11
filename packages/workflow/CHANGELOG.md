@@ -1,5 +1,46 @@
 # workflow
 
+## 5.0.0-beta.50
+
+### Major Changes
+
+- [#3988](https://github.com/vercel/workflow/pull/3988) [`efbdc21`](https://github.com/vercel/workflow/commit/efbdc213a0a70f8be2a147a0af195a4d9d82f0fe) Thanks [@pranaygp](https://github.com/pranaygp)! - **Breaking:** `hook.metadata` on hooks returned by `getHookByToken()` and `resumeHook()` is now a lazy getter that returns a Promise, like `run.returnValue`, and needs to be awaited. Looking a hook up by token no longer pays for hydrating metadata that is never read.
+
+### Patch Changes
+
+- Updated dependencies [[`efbdc21`](https://github.com/vercel/workflow/commit/efbdc213a0a70f8be2a147a0af195a4d9d82f0fe)]:
+  - @workflow/core@5.0.0-beta.50
+  - @workflow/cli@5.0.0-beta.50
+  - @workflow/next@5.0.0-beta.50
+  - @workflow/nitro@5.0.0-beta.50
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.50
+  - @workflow/nest@5.0.0-beta.50
+  - @workflow/rollup@5.0.0-beta.50
+  - @workflow/sveltekit@5.0.0-beta.50
+  - @workflow/nuxt@5.0.0-beta.50
+
+## 5.0.0-beta.49
+
+### Minor Changes
+
+- [#3972](https://github.com/vercel/workflow/pull/3972) [`c340820`](https://github.com/vercel/workflow/commit/c3408204110f5e8fbb53cefedf136caf00ee452d) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add `Run#getWritable()` and `run.writable` to append to an existing run's stream.
+
+### Patch Changes
+
+- Updated dependencies [[`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd), [`c340820`](https://github.com/vercel/workflow/commit/c3408204110f5e8fbb53cefedf136caf00ee452d), [`4547e1a`](https://github.com/vercel/workflow/commit/4547e1a7a95f273f3166edf45344dc827f1935fa)]:
+  - @workflow/core@5.0.0-beta.49
+  - @workflow/errors@5.0.0-beta.21
+  - @workflow/astro@5.0.0-beta.49
+  - @workflow/cli@5.0.0-beta.49
+  - @workflow/nest@5.0.0-beta.49
+  - @workflow/next@5.0.0-beta.49
+  - @workflow/nitro@5.0.0-beta.49
+  - @workflow/rollup@5.0.0-beta.49
+  - @workflow/sveltekit@5.0.0-beta.49
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/nuxt@5.0.0-beta.49
+
 ## 5.0.0-beta.48
 
 ### Minor Changes

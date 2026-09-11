@@ -687,7 +687,7 @@ describe.concurrent('e2e', () => {
     expect(hook.runId).toBe(run.runId);
     await resumeHook(hook, {
       message: 'one',
-      customData: (hook.metadata as any)?.customData,
+      customData: ((await hook.metadata) as any)?.customData,
     });
 
     // Invalid token test
@@ -698,7 +698,7 @@ describe.concurrent('e2e', () => {
     expect(hook.runId).toBe(run.runId);
     await resumeHook(hook, {
       message: 'two',
-      customData: (hook.metadata as any)?.customData,
+      customData: ((await hook.metadata) as any)?.customData,
     });
 
     // Resume with third (final) payload
@@ -707,7 +707,7 @@ describe.concurrent('e2e', () => {
     await resumeHook(hook, {
       message: 'three',
       done: true,
-      customData: (hook.metadata as any)?.customData,
+      customData: ((await hook.metadata) as any)?.customData,
     });
 
     const returnValue = await run.returnValue;
@@ -748,7 +748,7 @@ describe.concurrent('e2e', () => {
       // Now resume via server-side resumeHook() — should work
       await resumeHook(hook, {
         message: 'via-server',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
         done: true,
       });
 
@@ -2067,7 +2067,7 @@ describe.concurrent('e2e', () => {
       expect(hook.runId).toBe(run1.runId);
       await resumeHook(hook, {
         message: 'test-message-1',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Get first workflow result
@@ -2091,7 +2091,7 @@ describe.concurrent('e2e', () => {
       expect(hook.runId).toBe(run2.runId);
       await resumeHook(hook, {
         message: 'test-message-2',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Get second workflow result
@@ -2153,7 +2153,7 @@ describe.concurrent('e2e', () => {
       const hook = await getHookByToken(token);
       await resumeHook(hook, {
         message: 'test-concurrent',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Verify workflow 1 completed successfully
@@ -2310,7 +2310,7 @@ describe.concurrent('e2e', () => {
 
       await resumeHook(hook, {
         message: 'ready-conflict-holder',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       const run1Result = await run1.returnValue;
@@ -2648,7 +2648,7 @@ describe.concurrent('e2e', () => {
       // Send payload to first workflow - this will trigger it to dispose the hook
       await resumeHook(hook, {
         message: 'first-payload',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Wait for workflow 1 to release the token before starting workflow 2.
@@ -2670,7 +2670,7 @@ describe.concurrent('e2e', () => {
       // Send payload to workflow 2
       await resumeHook(hook, {
         message: 'second-payload',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Wait for both workflows to complete
@@ -4822,83 +4822,95 @@ describe.concurrent('e2e', () => {
    * also true for the Postgres lane. The Local and Postgres Worlds implement
    * retention too, but their coverage lives in their own package tests where
    * the storage can be inspected directly.
+   *
+   * Also gated on `isJsApp()`: the padding below deliberately crosses the JS
+   * client's compression threshold, and the Python SDK cannot read the `zstd`
+   * payload that produces, so the run fails deserializing its own input. The
+   * gate belongs here rather than in an app's `unsupported` map, because a
+   * `describe` skipped at collection time never reaches `requireSupported`
+   * and the entry would read as stale to `assertUnsupportedTestsExist`.
    */
-  describe.skipIf(!process.env.WORKFLOW_VERCEL_ENV)('retention', () => {
-    test(
-      'experimental_retention: 0 purges the run payloads once the run finishes',
-      { timeout: 240_000 },
-      async () => {
-        // Padded past the ~422-byte inline-ref cutoff on purpose. Below it a
-        // payload lives inside the database row and is scrubbed in place;
-        // above it the World writes a blob and has to delete the object. A
-        // small payload exercises only the first path, and this feature's
-        // whole claim is about the second. `metadataFromHelperWorkflow`
-        // echoes its label, so one big argument puts a blob behind the run's
-        // input, its output, and the step's on both sides.
-        const label = `retention-purge-${'x'.repeat(2048)}`;
-        const run = await start(
-          await e2e('metadataFromHelperWorkflow'),
-          [label],
-          {
-            experimental_retention: 0,
+  describe.skipIf(!process.env.WORKFLOW_VERCEL_ENV || !isJsApp())(
+    'retention',
+    () => {
+      test(
+        'experimental_retention: 0 purges the run payloads once the run finishes',
+        { timeout: 240_000 },
+        async () => {
+          // Padded past the ~422-byte inline-ref cutoff on purpose. Below it a
+          // payload lives inside the database row and is scrubbed in place;
+          // above it the World writes a blob and has to delete the object. A
+          // small payload exercises only the first path, and this feature's
+          // whole claim is about the second. `metadataFromHelperWorkflow`
+          // echoes its label, so one big argument puts a blob behind the run's
+          // input, its output, and the step's on both sides.
+          const label = `retention-purge-${'x'.repeat(2048)}`;
+          const run = await start(
+            await e2e('metadataFromHelperWorkflow'),
+            [label],
+            {
+              experimental_retention: 0,
+            }
+          );
+
+          // The purge races the caller's own read of the result and generally
+          // wins, so `returnValue` resolves after the data is already gone.
+          // What it must NOT do is hand back the expired-data placeholder as
+          // though the workflow had returned it — that is indistinguishable
+          // from a real result. It throws instead, carrying whatever metadata
+          // outlived the payloads so a caller can still tell success from
+          // failure.
+          //
+          // Accepting either outcome would make this assertion worthless, so it
+          // insists on the throw. If the client ever starts winning the race
+          // this test fails loudly, which is the right way to find out.
+          await expect(run.returnValue).rejects.toMatchObject({
+            name: 'RunExpiredError',
+            runId: run.runId,
+            runStatus: 'completed',
+          });
+
+          // That same race is why nothing is asserted about the payloads
+          // *before* the purge: there is no reliable window in which to read
+          // them.
+          const afterPurge = await cliInspectJsonUntil(
+            `runs ${run.runId} --withData`,
+            (json) => json?.output === EXPIRED_DATA_JSON,
+            { timeoutMs: 180_000, intervalMs: 5_000 }
+          );
+          expect(afterPurge).toMatchObject({
+            runId: run.runId,
+            input: EXPIRED_DATA_JSON,
+            output: EXPIRED_DATA_JSON,
+            // Only user data goes. The run itself survives on the World's
+            // default retention so it stays listable in observability.
+            status: 'completed',
+          });
+
+          // Step payloads go with it, not just the run's own input/output.
+          const steps = await cliInspectJsonUntil(
+            `steps --runId ${run.runId} --withData`,
+            (json) =>
+              Array.isArray(json) &&
+              json.length > 0 &&
+              json.every((step: any) => step.output === EXPIRED_DATA_JSON),
+            { timeoutMs: 60_000, intervalMs: 5_000 }
+          );
+          expect(steps.length).toBeGreaterThan(0);
+          for (const step of steps) {
+            expect(step.output).toBe(EXPIRED_DATA_JSON);
           }
-        );
 
-        // The purge races the caller's own read of the result and generally
-        // wins, so `returnValue` resolves after the data is already gone.
-        // What it must NOT do is hand back the expired-data placeholder as
-        // though the workflow had returned it — that is indistinguishable
-        // from a real result. It throws instead, carrying whatever metadata
-        // outlived the payloads so a caller can still tell success from
-        // failure.
-        //
-        // Accepting either outcome would make this assertion worthless, so it
-        // insists on the throw. If the client ever starts winning the race
-        // this test fails loudly, which is the right way to find out.
-        await expect(run.returnValue).rejects.toMatchObject({
-          name: 'RunExpiredError',
-          runId: run.runId,
-          runStatus: 'completed',
-        });
-
-        // That same race is why nothing is asserted about the payloads
-        // *before* the purge: there is no reliable window in which to read
-        // them.
-        const afterPurge = await cliInspectJsonUntil(
-          `runs ${run.runId} --withData`,
-          (json) => json?.output === EXPIRED_DATA_JSON,
-          { timeoutMs: 180_000, intervalMs: 5_000 }
-        );
-        expect(afterPurge).toMatchObject({
-          runId: run.runId,
-          input: EXPIRED_DATA_JSON,
-          output: EXPIRED_DATA_JSON,
-          // Only user data goes. The run itself survives on the World's
-          // default retention so it stays listable in observability.
-          status: 'completed',
-        });
-
-        // Step payloads go with it, not just the run's own input/output.
-        const steps = await cliInspectJsonUntil(
-          `steps --runId ${run.runId} --withData`,
-          (json) =>
-            Array.isArray(json) &&
-            json.length > 0 &&
-            json.every((step: any) => step.output === EXPIRED_DATA_JSON),
-          { timeoutMs: 60_000, intervalMs: 5_000 }
-        );
-        expect(steps.length).toBeGreaterThan(0);
-        for (const step of steps) {
-          expect(step.output).toBe(EXPIRED_DATA_JSON);
+          // And the run carries the marker the CLI and web UI gate their
+          // "<data expired>" rendering on: an `expiredAt` in the past.
+          const world = await getWorld();
+          const persisted = await world.runs.get(run.runId);
+          expect(persisted.expiredAt).toBeInstanceOf(Date);
+          expect(persisted.expiredAt?.getTime()).toBeLessThanOrEqual(
+            Date.now()
+          );
         }
-
-        // And the run carries the marker the CLI and web UI gate their
-        // "<data expired>" rendering on: an `expiredAt` in the past.
-        const world = await getWorld();
-        const persisted = await world.runs.get(run.runId);
-        expect(persisted.expiredAt).toBeInstanceOf(Date);
-        expect(persisted.expiredAt?.getTime()).toBeLessThanOrEqual(Date.now());
-      }
-    );
-  });
+      );
+    }
+  );
 });
