@@ -64,7 +64,7 @@ On Vercel, `run.readable` and `run.getReadable()` reconnect to Workflow's stream
 
 For streaming routes using the Node.js runtime, opt in to [request cancellation](https://vercel.com/docs/functions/functions-api-reference#enable-cancellation) in `vercel.json`:
 
-```json filename="vercel.json"
+```json title="vercel.json"
 {
   "functions": {
     "app/api/stream/route.ts": {

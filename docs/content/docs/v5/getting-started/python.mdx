@@ -24,7 +24,7 @@ You can build durable workflows in Python using the [`vercel-workflow` SDK](http
 
 Add the `vercel-workflow` package and workflow entrypoint to `pyproject.toml`:
 
-```toml filename="pyproject.toml"
+```toml title="pyproject.toml"
 [project]
 requires-python = ">=3.12"
 dependencies = ["vercel-workflow"]
@@ -39,7 +39,7 @@ The workflow `entrypoint` uses the `module:object` format and points to the expo
 
 A workflow is a stateful function that coordinates multi-step logic over time. Create a `Workflows` instance and use the `@wf.workflow` decorator to mark a function as durable:
 
-```python filename="app/workflow.py"
+```python title="app/workflow.py"
 from vercel import workflow
 
 wf = workflow.Workflows(
@@ -49,7 +49,7 @@ wf = workflow.Workflows(
 
 `share_sandboxes=True` reuses a sandbox across workflow runs for faster startup. Module globals are shared between those runs, so workflow code should not mutate global state.
 
-```python filename="app/workflows/ai_content_workflow.py"
+```python title="app/workflows/ai_content_workflow.py"
 from app.workflow import wf
 from app.steps.generate_draft import generate_draft, summarize_draft
 
@@ -66,7 +66,7 @@ async def ai_content_workflow(*, topic: str):
 
 Export the registry from the workflow package and import the module containing your workflow so its definitions are registered:
 
-```python filename="app/workflows/__init__.py"
+```python title="app/workflows/__init__.py"
 from app.workflow import wf
 from app.workflows import ai_content_workflow
 
@@ -79,7 +79,7 @@ Under the hood, the workflow compiles into a route that orchestrates execution. 
 
 A step is a stateless function that runs a unit of durable work inside a workflow. Use `@wf.step` to mark a function as a step:
 
-```python filename="app/steps/generate_draft.py"
+```python title="app/steps/generate_draft.py"
 import random
 from app.workflow import wf
 
@@ -104,7 +104,7 @@ Each step executes separately from the workflow orchestrator. While the step exe
 
 Pass `cancellable=True` when a workflow may need to stop a running step. This makes normal Python `asyncio` cancellation apply to the step: if a task awaiting the step is cancelled in the workflow, then the task running the step will be cancelled as well. For example, `asyncio.timeout()` cancels the step if it does not finish within the allotted time:
 
-```python filename="app/workflows/report.py"
+```python title="app/workflows/report.py"
 import asyncio
 from datetime import timedelta
 
@@ -131,7 +131,7 @@ Cancellation is a request, so the workflow waits for the step to terminate befor
 
 Call `workflow.start()` from server-side code to start a workflow. It returns a `Run` that you can use to identify the run, check its status, and wait for its result:
 
-```python filename="app/api/generate.py"
+```python title="app/api/generate.py"
 from app.workflows.ai_content_workflow import ai_content_workflow
 from vercel import workflow
 
@@ -152,7 +152,7 @@ Starting a workflow only waits until the run has been created and queued. Await 
 
 Sleep pauses a workflow for a specified duration without consuming compute resources:
 
-```python filename="app/workflows/ai_refine.py"
+```python title="app/workflows/ai_refine.py"
 from datetime import timedelta
 
 from app.workflow import wf
@@ -216,7 +216,7 @@ A hook lets a workflow wait for external events such as user actions, webhooks, 
 
 Define a hook model with Pydantic and `workflow.BaseHook`:
 
-```python filename="app/workflows/approval.py"
+```python title="app/workflows/approval.py"
 import typing
 
 import pydantic
@@ -245,7 +245,7 @@ async def ai_approval_workflow(*, topic: str) -> None:
 
 Resume the workflow when data arrives:
 
-```python filename="app/api/resume.py"
+```python title="app/api/resume.py"
 from app.workflows.approval import Approval
 
 @app.post("/api/resume")
@@ -263,7 +263,7 @@ When a hook receives data, the workflow resumes automatically. You don&apos;t ne
 
 Steps can stream progress while a workflow is running. Streams are assoicated with workflow runs, can be acquired from inside a workflow or inside a step, and can be passed to workflows and steps as arguments. If a type is specified when getting the stream (or on the type annotation of a step or workflow it is passed to), then Pydantic will be used to encode and decode the type.
 
-```python filename="app/workflows/streaming.py"
+```python title="app/workflows/streaming.py"
 import pydantic
 
 from app.workflow import wf
@@ -291,7 +291,7 @@ async def streaming_workflow():
 
 Read and validate the typed values from the returned `Run` as they arrive:
 
-```python filename="app/api/stream.py"
+```python title="app/api/stream.py"
 from app.workflows.streaming import Progress, streaming_workflow
 from vercel import workflow
 
