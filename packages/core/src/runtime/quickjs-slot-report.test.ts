@@ -131,7 +131,7 @@ afterEach(() => {
 });
 
 describe('QuickJS engine: log position on writes', () => {
-  it('names the loaded position on a suspension write and feeds the VM from the response', async () => {
+  it('names the loaded position on a suspension write and lists for the event itself', async () => {
     const setup = await setupRun();
     const resumeAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     startQuickJSWorkflow.mockResolvedValue({
@@ -163,11 +163,19 @@ describe('QuickJS engine: log position on writes', () => {
     // at position 2.
     expect(waitCreated?.params?.eventCount).toBe(2);
 
-    // The VM got the wait_created (position 3) off the write's own response.
-    // No listing was needed: the preload covered the log and the response
-    // carried the write.
+    // The VM got the wait_created (position 3) from a listing, not off the
+    // write's response: a create response may carry the event with its
+    // payload unresolved, so the created event is never fed from there. The
+    // listing read forward from the preload's cursor rather than from the
+    // top of the log.
     expect(setup.fed.map(slotsOf)).toEqual([[3]]);
-    expect(setup.listSpy).not.toHaveBeenCalled();
+    expect(setup.listSpy.mock.calls[0][0].pagination?.cursor).toBe(
+      setup.preload.cursor
+    );
+    // No listing before the write: the preload was the whole log.
+    expect(setup.sequence.indexOf('list')).toBeGreaterThan(
+      setup.sequence.indexOf('write:wait_created')
+    );
 
     // The run-terminal write names nothing: nothing replays the log after it.
     const runCompleted = setup.writes.find(
@@ -206,7 +214,24 @@ describe('QuickJS engine: log position on writes', () => {
         },
         continueWithEvents: vi.fn(async (events: Event[]) => {
           setup.fed.push(events);
-          return { completed: { result: setup.completedResult } };
+          // Suspend again until the VM has been given the wait it asked for.
+          const sawOwnWait = setup.fed
+            .flat()
+            .some((e) => e.correlationId === 'wait_1');
+          return sawOwnWait
+            ? { completed: { result: setup.completedResult } }
+            : {
+                suspended: {
+                  pendingOperations: [
+                    {
+                      type: 'wait',
+                      correlationId: 'wait_1',
+                      resumeAt,
+                      hasCreatedEvent: true,
+                    },
+                  ],
+                },
+              };
         }),
         dispose: vi.fn(),
       };
@@ -221,10 +246,18 @@ describe('QuickJS engine: log position on writes', () => {
     );
     // Still names position 2: the foreign write at 3 was not in its view.
     expect(waitCreated?.params?.eventCount).toBe(2);
-    // The write landed at 4 and the World reported 3 back; the VM receives
-    // both in position order, foreign event first, from the response alone.
-    expect(setup.fed.map(slotsOf)).toEqual([[3, 4]]);
-    expect(setup.listSpy).not.toHaveBeenCalled();
+    // The write landed at 4 and the World reported 3 back. The foreign event
+    // is fed off the response, ahead of anything else; the write itself
+    // (which this World's report excludes) follows from a listing. The VM
+    // saw them in position order.
+    expect(setup.fed.map(slotsOf)).toEqual([[3], [4]]);
+    // The foreign event was fed before any listing ran.
+    expect(setup.sequence.indexOf('write:wait_created')).toBeLessThan(
+      setup.sequence.indexOf('list')
+    );
+    expect(setup.listSpy.mock.calls[0][0].pagination?.cursor).toBe(
+      setup.preload.cursor
+    );
   });
 
   it('asks a single inline step for the inline delta and feeds the VM from it', async () => {

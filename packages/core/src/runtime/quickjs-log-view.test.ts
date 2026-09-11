@@ -44,9 +44,26 @@ describe('QuickJSLogView', () => {
     expect(view.takeContiguous()).toEqual([]);
   });
 
+  it('does not deliver the created event itself, only its position', () => {
+    const view = new QuickJSLogView([slotEvent(1), slotEvent(2)], 'c2');
+    // A create response may carry the event with its payload unresolved, so
+    // it is not what a listing would deliver. Its position still counts.
+    view.absorb({ event: slotEvent(3) });
+    expect(view.bufferedCount).toBe(0);
+    expect(view.takeContiguous()).toEqual([]);
+    expect(view.snapshotParams()).toEqual({ eventCount: 3 });
+    // A write whose event carries nothing a VM reads can opt in.
+    view.absorb({ event: slotEvent(4) }, { deliverEvent: true });
+    expect(view.bufferedCount).toBe(1);
+    // 3 is not in hand, so 4 waits for the listing that delivers 3.
+    expect(view.takeContiguous()).toEqual([]);
+    view.markFed([slotEvent(3)]);
+    expect(slots(view.takeContiguous())).toEqual([4]);
+  });
+
   it('holds back a queued event above a position it does not have', () => {
     const view = new QuickJSLogView([slotEvent(1)], 'c1');
-    view.absorb({ event: slotEvent(3) });
+    view.absorb({ event: slotEvent(3) }, { deliverEvent: true });
     // Position 2 is not in hand, so 3 cannot be fed: the VM must not see it
     // before whatever lands at 2.
     expect(view.takeContiguous()).toEqual([]);
@@ -56,22 +73,23 @@ describe('QuickJSLogView', () => {
     expect(slots(view.takeContiguous())).toEqual([3]);
   });
 
-  it('drops a truncated report whole but keeps the write itself', () => {
+  it('drops a truncated report whole', () => {
     const view = new QuickJSLogView([slotEvent(1)], 'c1');
     const absorbed = view.absorb({
       event: slotEvent(10),
       events: [slotEvent(2), slotEvent(3)],
       hasMore: true,
     });
-    expect(absorbed).toEqual({ queued: 1, truncated: true });
-    // 10 is queued and waits for a listing to fill 2..9.
-    expect(view.bufferedCount).toBe(1);
-    expect(view.takeContiguous()).toEqual([]);
+    expect(absorbed).toEqual({ queued: 0, truncated: true });
+    expect(view.bufferedCount).toBe(0);
+    // The write's position is still known, so the next write names 10 and a
+    // listing fills 2..10.
+    expect(view.snapshotParams()).toEqual({ eventCount: 10 });
   });
 
   it('drops an event a listing already delivered', () => {
     const view = new QuickJSLogView([slotEvent(1)], 'c1');
-    view.absorb({ event: slotEvent(3) });
+    view.absorb({ event: slotEvent(3) }, { deliverEvent: true });
     // The listing raced ahead and delivered 2 and 3 itself.
     view.markFed([slotEvent(2), slotEvent(3)]);
     expect(view.bufferedCount).toBe(0);
@@ -106,8 +124,8 @@ describe('QuickJSLogView', () => {
 
   it('keeps the cursor when the delta leaves a hole below its end', () => {
     const view = new QuickJSLogView([slotEvent(1)], 'c1');
-    // Position 4 is known (an own write) but 2 and 3 are not in hand.
-    view.absorb({ event: slotEvent(4) });
+    // Position 4 is in hand (an own write) but 2 and 3 are not.
+    view.absorb({ event: slotEvent(4) }, { deliverEvent: true });
     const advanced = view.absorbDelta('c1', {
       events: [slotEvent(5)],
       cursor: 'c5',
@@ -121,7 +139,7 @@ describe('QuickJSLogView', () => {
 
   it('turns tracking off for good on an id that is not a position', () => {
     const view = new QuickJSLogView([slotEvent(1)], 'c1');
-    view.absorb({ event: slotEvent(2) });
+    view.absorb({ event: slotEvent(2) }, { deliverEvent: true });
     expect(view.bufferedCount).toBe(1);
     view.absorb({
       event: { ...slotEvent(3), eventId: 'evnt_01ARZ3NDEKTSV4RRFFQ69G5FAV' },
@@ -131,7 +149,7 @@ describe('QuickJSLogView', () => {
     expect(view.bufferedCount).toBe(0);
     expect(view.takeContiguous()).toEqual([]);
     // Nothing queues again afterwards.
-    view.absorb({ event: slotEvent(4) });
+    view.absorb({ event: slotEvent(4) }, { deliverEvent: true });
     expect(view.bufferedCount).toBe(0);
   });
 });

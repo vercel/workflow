@@ -1071,7 +1071,12 @@ export async function runWorkflowWithQuickJS(params: {
       ...eventParams,
       ...logView.snapshotParams(),
     });
-    const absorbed = logView.absorb(result);
+    // The created event is delivered off the response only when it carries
+    // no payload a VM reads; every other type waits for a page or a listing,
+    // which return it with its refs resolved. See QuickJSLogView.
+    const absorbed = logView.absorb(result, {
+      deliverEvent: data.eventType === 'wait_completed',
+    });
     if (absorbed.truncated) {
       runtimeLogger.debug(
         'QuickJS runtime: dropped a truncated skipped-slot report',
