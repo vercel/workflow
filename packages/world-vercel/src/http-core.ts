@@ -281,11 +281,11 @@ export function errorForResponse(
   } = {}
 ): Error {
   const { retryAfter, code, url, mitigated, details } = opts;
-  // Never translate an actor assertion to a legacy catch-and-repair conflict.
-  if (code === 'ACTOR_INVARIANT_VIOLATION') {
+  // Never translate an execution assertion to a legacy catch-and-repair conflict.
+  if (code === 'EXECUTION_INVARIANT_VIOLATION') {
     return Object.assign(new Error(message), {
-      name: 'ActorInvariantError',
-      code: 'ACTOR_INVARIANT_VIOLATION',
+      name: 'ExecutionInvariantError',
+      code: 'EXECUTION_INVARIANT_VIOLATION',
     });
   }
   if (status === 409) return new EntityConflictError(message);

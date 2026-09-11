@@ -1,5 +1,3 @@
-export * from './actor-execution.js';
-export * from './actor-projection.js';
 export type * from './analytics.js';
 export {
   ANALYTICS_EVENTS_GET_MANY_LIMIT,
@@ -77,6 +75,8 @@ export {
   TerminalRunEventTypeSchema,
   WAIT_EVENT_TYPES,
 } from './events.js';
+export * from './execution.js';
+export * from './execution-projection.js';
 export type * from './hooks.js';
 export {
   HOOK_RESUME_DEDUP_VERSION,

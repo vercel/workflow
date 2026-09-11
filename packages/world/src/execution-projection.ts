@@ -1,14 +1,17 @@
-import type { ActorSnapshot } from './actor-execution.js';
-import { ActorInvariantError, assertActorSnapshot } from './actor-execution.js';
 import type { Event, EventResult } from './events.js';
+import type { ExecutionSnapshot } from './execution.js';
+import {
+  assertExecutionSnapshot,
+  ExecutionInvariantError,
+} from './execution.js';
 import type { Hook } from './hooks.js';
 import { type WorkflowRunBaseSchema, WorkflowRunSchema } from './runs.js';
 import type { Step } from './steps.js';
 import type { Wait } from './waits.js';
 
-/** Read model for the isolated actor POC journal. Never repairs its history. */
-export function projectActorSnapshot(snapshot: ActorSnapshot) {
-  assertActorSnapshot(snapshot);
+/** Materialize a single-owner execution log. Never repairs its history. */
+export function projectExecutionSnapshot(snapshot: ExecutionSnapshot) {
+  assertExecutionSnapshot(snapshot);
   let run: ReturnType<typeof WorkflowRunBaseSchema.parse> | undefined;
   const steps = new Map<string, Step>();
   const hooks = new Map<string, Hook>();
@@ -29,9 +32,9 @@ export function projectActorSnapshot(snapshot: ActorSnapshot) {
         updatedAt: at,
       };
     } else {
-      if (!run) throw new ActorInvariantError('Missing run_created');
+      if (!run) throw new ExecutionInvariantError('Missing run_created');
       if (['completed', 'failed', 'cancelled'].includes(run.status)) {
-        throw new ActorInvariantError('Event after terminal run');
+        throw new ExecutionInvariantError('Event after terminal run');
       }
       switch (event.eventType) {
         case 'run_started':
@@ -72,7 +75,7 @@ export function projectActorSnapshot(snapshot: ActorSnapshot) {
           break;
         case 'step_created': {
           if (steps.has(correlationId!))
-            throw new ActorInvariantError('Duplicate step creation');
+            throw new ExecutionInvariantError('Duplicate step creation');
           steps.set(correlationId!, {
             runId: snapshot.runId,
             stepId: correlationId!,
@@ -95,7 +98,9 @@ export function projectActorSnapshot(snapshot: ActorSnapshot) {
             !step ||
             ['completed', 'failed', 'cancelled'].includes(step.status)
           ) {
-            throw new ActorInvariantError('Invalid step lifecycle transition');
+            throw new ExecutionInvariantError(
+              'Invalid step lifecycle transition'
+            );
           }
           const next = { ...step, updatedAt: at };
           if (event.eventType === 'step_started') {
@@ -123,7 +128,7 @@ export function projectActorSnapshot(snapshot: ActorSnapshot) {
         }
         case 'hook_created':
           if (hooks.has(correlationId!))
-            throw new ActorInvariantError('Duplicate hook creation');
+            throw new ExecutionInvariantError('Duplicate hook creation');
           hooks.set(correlationId!, {
             ...event.eventData,
             hookId: correlationId!,
@@ -143,15 +148,17 @@ export function projectActorSnapshot(snapshot: ActorSnapshot) {
           break;
         case 'hook_received':
           if (!hooks.has(correlationId!))
-            throw new ActorInvariantError('Input for missing or disposed hook');
+            throw new ExecutionInvariantError(
+              'Input for missing or disposed hook'
+            );
           break;
         case 'hook_disposed':
           if (!hooks.delete(correlationId!))
-            throw new ActorInvariantError('Disposal of missing hook');
+            throw new ExecutionInvariantError('Disposal of missing hook');
           break;
         case 'wait_created':
           if (waits.has(correlationId!))
-            throw new ActorInvariantError('Duplicate wait creation');
+            throw new ExecutionInvariantError('Duplicate wait creation');
           waits.set(correlationId!, {
             runId: snapshot.runId,
             waitId: correlationId!,
@@ -164,7 +171,7 @@ export function projectActorSnapshot(snapshot: ActorSnapshot) {
         case 'wait_completed': {
           const wait = waits.get(correlationId!);
           if (!wait || wait.status !== 'waiting')
-            throw new ActorInvariantError('Completion of missing wait');
+            throw new ExecutionInvariantError('Completion of missing wait');
           waits.set(correlationId!, {
             ...wait,
             status: 'completed',
@@ -174,8 +181,8 @@ export function projectActorSnapshot(snapshot: ActorSnapshot) {
           break;
         }
         default:
-          throw new ActorInvariantError(
-            `Unsupported actor event ${event.eventType}`
+          throw new ExecutionInvariantError(
+            `Unsupported execution event ${event.eventType}`
           );
       }
     }
@@ -188,18 +195,18 @@ export function projectActorSnapshot(snapshot: ActorSnapshot) {
     } as EventResult;
     results.set(event.eventId, result);
   }
-  if (!run) throw new ActorInvariantError('Empty actor journal');
+  if (!run) throw new ExecutionInvariantError('Empty execution journal');
   return { run: WorkflowRunSchema.parse(run), steps, hooks, waits, results };
 }
 
-export function actorEventResult(
-  snapshot: ActorSnapshot,
+export function executionEventResult(
+  snapshot: ExecutionSnapshot,
   event: Event
 ): EventResult {
-  const result = projectActorSnapshot(snapshot).results.get(event.eventId);
+  const result = projectExecutionSnapshot(snapshot).results.get(event.eventId);
   if (!result)
-    throw new ActorInvariantError(
-      'Committed receipt is absent from actor snapshot'
+    throw new ExecutionInvariantError(
+      'Committed receipt is absent from execution snapshot'
     );
   return result;
 }

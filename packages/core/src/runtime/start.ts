@@ -660,11 +660,13 @@ export async function start<TArgs extends unknown[], TResult>(
           : {}),
       };
 
-      if (world.execution?.profile === 'actor-owner-v1') {
+      if (world.execution) {
         if (workflowVm && workflowVm !== 'node')
-          throw new Error('Actor POC supports only the Node workflow VM');
+          throw new Error(
+            'The execution API currently supports only the Node workflow VM'
+          );
         // Creation and argument durability precede delivery. No resilient-start
-        // fallback is valid for the actor protocol.
+        // fallback is valid for this execution protocol.
         await Promise.all(ops);
         await world.execution.create(runId, {
           eventType: 'run_created',
@@ -675,7 +677,7 @@ export async function start<TArgs extends unknown[], TResult>(
             input: workflowArguments,
             executionContext: {
               ...executionContext,
-              executionProfile: 'actor-owner-v1',
+              executionProfile: world.execution.profile,
             },
             ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
             ...attributeSeed,

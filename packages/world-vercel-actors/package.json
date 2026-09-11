@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@workflow/errors": "workspace:*",
+    "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
     "@workflow/world-vercel": "workspace:*",
     "zod": "catalog:"

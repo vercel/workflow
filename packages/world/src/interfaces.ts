@@ -1,4 +1,3 @@
-import type { ActorExecution } from './actor-execution.js';
 import type { Analytics } from './analytics.js';
 import type {
   AttributeChange,
@@ -17,6 +16,7 @@ import type {
   ListEventsParams,
   RunCreatedEventRequest,
 } from './events.js';
+import type { ExecutionStorage } from './execution.js';
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
 import type { Queue } from './queue.js';
 import type {
@@ -576,8 +576,8 @@ export interface WorldCapabilities {
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
 export interface World extends Queue, Streamer, Storage {
-  /** Opt-in root-only affinity execution. Legacy Worlds leave this absent. */
-  execution?: ActorExecution;
+  /** Optional single-owner execution API. Legacy Worlds leave this absent. */
+  execution?: ExecutionStorage;
   /**
    * Optional analytics read namespace for observability surfaces.
    *

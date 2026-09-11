@@ -5,17 +5,18 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
-  ACTOR_EXECUTION_PROFILE,
-  type ActorExecution,
-  ActorReceiptSchema,
-  type ActorSnapshot,
-  ActorSnapshotSchema,
-  actorEventResult,
-  assertActorSnapshot,
+  assertExecutionSnapshot,
   type CreateEventRequest,
   type EventResult,
+  EXECUTION_PROFILE,
+  ExecutionInvariantError,
+  ExecutionReceiptSchema,
+  type ExecutionSnapshot,
+  ExecutionSnapshotSchema,
+  type ExecutionStorage,
+  executionEventResult,
   getQueueTopicPrefix,
-  projectActorSnapshot,
+  projectExecutionSnapshot,
   type RunCreatedEventRequest,
   resolveQueueNamespace,
   type World,
@@ -28,6 +29,7 @@ import {
 } from '@workflow/world-vercel';
 import { makeRequest } from '@workflow/world-vercel/actor-client';
 import { z } from 'zod';
+import { createActorHandler } from './actor.js';
 
 /** The platform header name is deliberately not guessed. */
 export const AFFINITY_HEADER_ENV = 'WORKFLOW_ACTOR_AFFINITY_HEADER';
@@ -62,15 +64,15 @@ export function createWorld(config: ActorWorldConfig = {}): World {
   const base = createVercelWorld(config);
   const prefix = (runId: string) =>
     `/v1/actor-executions/${encodeURIComponent(runId)}`;
-  const read = async (runId: string): Promise<ActorSnapshot> => {
+  const read = async (runId: string): Promise<ExecutionSnapshot> => {
     try {
       const snapshot = await makeRequest({
         endpoint: `${prefix(runId)}/snapshot`,
         options: { method: 'GET' },
         config,
-        schema: ActorSnapshotSchema,
+        schema: ExecutionSnapshotSchema,
       });
-      assertActorSnapshot(snapshot);
+      assertExecutionSnapshot(snapshot);
       return snapshot;
     } catch (error) {
       if (WorkflowWorldError.is(error) && error.status === 404)
@@ -100,8 +102,16 @@ export function createWorld(config: ActorWorldConfig = {}): World {
       },
     });
   };
-  const execution: ActorExecution = {
-    profile: ACTOR_EXECUTION_PROFILE,
+  const execution: ExecutionStorage = {
+    profile: EXECUTION_PROFILE,
+    createHandler(factory, options) {
+      return createActorHandler(
+        world,
+        factory,
+        () => config.affinityHeader ?? process.env[AFFINITY_HEADER_ENV],
+        options?.namespace
+      );
+    },
     async create(runId, event) {
       affinityHeaders(runId, config.affinityHeader); // Fail configuration before persistence.
       if (regionForRunId(runId) !== 'iad1')
@@ -117,18 +127,29 @@ export function createWorld(config: ActorWorldConfig = {}): World {
           expectedHead: 0,
           events: [event],
         },
-        schema: ActorReceiptSchema,
+        schema: ExecutionReceiptSchema,
       });
       return read(runId);
     },
-    acquire: read,
+    async acquire(runId) {
+      const snapshot = await read(runId);
+      if (snapshot.deploymentId !== (await base.getDeploymentId())) {
+        const message = 'Primary reached the wrong deployment';
+        await execution.quarantine(runId, {
+          code: 'EXECUTION_INVARIANT_VIOLATION',
+          message,
+        });
+        throw new ExecutionInvariantError(message);
+      }
+      return snapshot;
+    },
     async exchange({ runId, ...data }) {
       return makeRequest({
         endpoint: `${prefix(runId)}/exchange`,
         options: { method: 'POST' },
         config,
         data,
-        schema: ActorReceiptSchema,
+        schema: ExecutionReceiptSchema,
       });
     },
     async receipt(runId, operationId) {
@@ -137,7 +158,7 @@ export function createWorld(config: ActorWorldConfig = {}): World {
           endpoint: `${prefix(runId)}/receipts/${encodeURIComponent(operationId)}`,
           options: { method: 'GET' },
           config,
-          schema: ActorReceiptSchema,
+          schema: ExecutionReceiptSchema,
         });
       } catch (error) {
         if (WorkflowWorldError.is(error) && error.status === 404)
@@ -148,11 +169,11 @@ export function createWorld(config: ActorWorldConfig = {}): World {
     async submit(runId, event, params) {
       const snapshot = await read(runId);
       const operationId = params?.resumeId ?? randomUUID();
-      const run = projectActorSnapshot(snapshot).run;
+      const run = projectExecutionSnapshot(snapshot).run;
       const queueName = `${getQueueTopicPrefix('workflow', resolveQueueNamespace())}${run.workflowName}`;
       await wake(
         queueName as Parameters<World['queue']>[0],
-        { runId, actorCommand: { operationId, event } },
+        { runId, executionInput: { operationId, event } },
         { deploymentId: run.deploymentId }
       );
       const expires = Date.now() + (config.submitTimeoutMs ?? 60_000);
@@ -162,10 +183,10 @@ export function createWorld(config: ActorWorldConfig = {}): World {
             endpoint: `${prefix(runId)}/receipts/${encodeURIComponent(operationId)}`,
             options: { method: 'GET' },
             config,
-            schema: ActorReceiptSchema,
+            schema: ExecutionReceiptSchema,
           });
           const current = await read(runId);
-          return actorEventResult(
+          return executionEventResult(
             current,
             receipt.events[receipt.events.length - 1]
           ) as EventResult<typeof event.eventType>;
@@ -191,7 +212,7 @@ export function createWorld(config: ActorWorldConfig = {}): World {
     },
   };
   const unsupported = async (): Promise<never> => {
-    throw new Error('Not supported by the actor-owner-v1 POC');
+    throw new Error('Not supported by the world-vercel-actors POC');
   };
   const world: World = {
     ...base,
@@ -203,20 +224,20 @@ export function createWorld(config: ActorWorldConfig = {}): World {
     capabilities: { deploymentAffinity: true },
     // Reads come from the same journal, never stale legacy projections.
     runs: {
-      get: async (id: string) => projectActorSnapshot(await read(id)).run,
+      get: async (id: string) => projectExecutionSnapshot(await read(id)).run,
       list: unsupported,
     } as World['runs'],
     events: {
       create: async (
         runId: string | null,
         event: CreateEventRequest | RunCreatedEventRequest,
-        params?: Parameters<ActorExecution['submit']>[2]
+        params?: Parameters<ExecutionStorage['submit']>[2]
       ) => {
         if (!runId)
           throw new Error('Actor runs require client-generated run IDs');
         if (event.eventType === 'run_created') {
           const snapshot = await execution.create(runId, event);
-          return actorEventResult(snapshot, snapshot.events[0]);
+          return executionEventResult(snapshot, snapshot.events[0]);
         }
         return execution.submit(runId, event, params);
       },
@@ -245,13 +266,15 @@ export function createWorld(config: ActorWorldConfig = {}): World {
     } as World['events'],
     steps: {
       get: async (runId, stepId) => {
-        const step = projectActorSnapshot(await read(runId)).steps.get(stepId);
+        const step = projectExecutionSnapshot(await read(runId)).steps.get(
+          stepId
+        );
         if (!step)
           throw new WorkflowWorldError('Actor step not found', { status: 404 });
         return step;
       },
       list: async ({ runId }) => ({
-        data: [...projectActorSnapshot(await read(runId)).steps.values()],
+        data: [...projectExecutionSnapshot(await read(runId)).steps.values()],
         cursor: null,
         hasMore: false,
       }),
@@ -265,7 +288,7 @@ export function createWorld(config: ActorWorldConfig = {}): World {
           config,
           schema: z.object({ runId: z.string(), hookId: z.string() }),
         });
-        const view = projectActorSnapshot(await read(binding.runId));
+        const view = projectExecutionSnapshot(await read(binding.runId));
         const hook = view.hooks.get(binding.hookId);
         if (!hook || !['pending', 'running'].includes(view.run.status))
           throw new HookNotFoundError(token);
@@ -274,7 +297,7 @@ export function createWorld(config: ActorWorldConfig = {}): World {
       list: async ({ runId }) => {
         if (!runId) throw new Error('Actor hook listing requires a run ID');
         return {
-          data: [...projectActorSnapshot(await read(runId)).hooks.values()],
+          data: [...projectExecutionSnapshot(await read(runId)).hooks.values()],
           cursor: null,
           hasMore: false,
         };

@@ -1,11 +1,11 @@
 import {
-  ActorInvariantError,
-  type ActorSnapshot,
+  ExecutionInvariantError,
+  type ExecutionSnapshot,
   type World,
 } from '@workflow/world';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { replayWorkflow, resumeWorkflow } from '../workflow.js';
-import { ActorCoordinator } from './actor.js';
+import { ExecutionCoordinator, executionWorkflowHandler } from './execution.js';
 import { executeStep } from './step-executor.js';
 import { handleSuspension } from './suspension-handler.js';
 
@@ -22,8 +22,8 @@ vi.mock('./world.js', () => ({
 beforeEach(() => vi.clearAllMocks());
 
 function fixture() {
-  const snapshot: ActorSnapshot = {
-    profile: 'actor-owner-v1',
+  const snapshot: ExecutionSnapshot = {
+    profile: 'single-owner-v1',
     runId: 'wrun_test',
     deploymentId: 'dpl_test',
     head: 1,
@@ -49,11 +49,12 @@ function fixture() {
   };
   const receipts = new Map<string, any>();
   const exchange = vi.fn(async (request) => {
-    if (snapshot.fault) throw new ActorInvariantError(snapshot.fault.message);
+    if (snapshot.fault)
+      throw new ExecutionInvariantError(snapshot.fault.message);
     if (receipts.has(request.operationId))
       return structuredClone(receipts.get(request.operationId));
     if (request.expectedHead !== snapshot.head)
-      throw new ActorInvariantError('expected head mismatch');
+      throw new ExecutionInvariantError('expected head mismatch');
     const events = request.events.map((event: object, i: number) => ({
       ...event,
       runId: snapshot.runId,
@@ -75,7 +76,7 @@ function fixture() {
   });
   const world = {
     execution: {
-      profile: 'actor-owner-v1',
+      profile: 'single-owner-v1',
       acquire: vi.fn(async () => structuredClone(snapshot)),
       exchange,
       quarantine,
@@ -91,14 +92,14 @@ function fixture() {
   return { world, snapshot, exchange, quarantine };
 }
 
-describe('actor coordinator commits', () => {
+describe('platform-neutral execution coordinator', () => {
   it('serializes concurrent appends against successive heads', async () => {
     const f = fixture();
-    const actor = new ActorCoordinator(f.world, 'wrun_test', '');
-    await actor.initialize();
+    const session = new ExecutionCoordinator(f.world, 'wrun_test', '');
+    await session.initialize();
     await Promise.all([
-      actor.append({ eventType: 'run_started', specVersion: 7 }),
-      actor.append({
+      session.append({ eventType: 'run_started', specVersion: 7 }),
+      session.append({
         eventType: 'wait_created',
         correlationId: 'wait_1',
         specVersion: 7,
@@ -112,42 +113,50 @@ describe('actor coordinator commits', () => {
   });
   it('quarantines an unexpected head and never retries at another slot', async () => {
     const f = fixture();
-    const actor = new ActorCoordinator(f.world, 'wrun_test', '');
-    await actor.initialize();
+    const session = new ExecutionCoordinator(f.world, 'wrun_test', '');
+    await session.initialize();
     f.snapshot.head = 2;
     await expect(
-      actor.append({ eventType: 'run_started', specVersion: 7 })
+      session.append({ eventType: 'run_started', specVersion: 7 })
     ).rejects.toThrow('head mismatch');
     await expect(
-      actor.append({ eventType: 'run_started', specVersion: 7 })
+      session.append({ eventType: 'run_started', specVersion: 7 })
     ).rejects.toThrow();
     expect(f.exchange).toHaveBeenCalledTimes(1);
     expect(f.quarantine).toHaveBeenCalledTimes(1);
-    const replacement = new ActorCoordinator(f.world, 'wrun_test', '');
+    const replacement = new ExecutionCoordinator(f.world, 'wrun_test', '');
     await expect(replacement.initialize()).rejects.toThrow();
   });
   it('returns an exact duplicate submission without appending twice', async () => {
     const f = fixture();
-    const actor = new ActorCoordinator(f.world, 'wrun_test', '');
-    await actor.initialize();
+    const session = new ExecutionCoordinator(f.world, 'wrun_test', '');
+    await session.initialize();
     const event = { eventType: 'run_started' as const, specVersion: 7 };
-    const first = await actor.append(event, 'op1');
-    expect(await actor.append(event, 'op1')).toEqual(first);
+    const first = await session.append(event, 'op1');
+    expect(await session.append(event, 'op1')).toEqual(first);
     expect(f.exchange).toHaveBeenCalledTimes(1);
   });
-  it('rejects the wrong deployment before running workflow code', async () => {
+  it('delegates ingress and lifetime to a non-affinity World', async () => {
     const f = fixture();
-    f.world.getDeploymentId = async () => 'dpl_other';
-    await expect(
-      new ActorCoordinator(f.world, 'wrun_test', '').initialize()
-    ).rejects.toThrow('wrong deployment');
-    expect(f.exchange).not.toHaveBeenCalled();
-    expect(f.quarantine).toHaveBeenCalledOnce();
+    f.world.getDeploymentId = vi.fn(() => {
+      throw new Error('Core must not inspect platform placement');
+    });
+    const createHandler = vi.fn((factory) => async (_req: Request) => {
+      await factory('wrun_test').initialize();
+      return new Response('loaded');
+    });
+    f.world.execution!.createHandler = createHandler;
+    const handler = executionWorkflowHandler('', f.world);
+    expect(
+      await (await handler(new Request('http://local/execute'))).text()
+    ).toBe('loaded');
+    expect(createHandler).toHaveBeenCalledOnce();
+    expect(f.world.getDeploymentId).not.toHaveBeenCalled();
   });
 
   it('shares initialization and a workflow driver across concurrent arrivals', async () => {
     const f = fixture();
-    const actor = new ActorCoordinator(f.world, 'wrun_test', '');
+    const coordinator = new ExecutionCoordinator(f.world, 'wrun_test', '');
     vi.mocked(replayWorkflow).mockResolvedValueOnce({
       type: 'suspended',
       session: {},
@@ -158,7 +167,11 @@ describe('actor coordinator commits', () => {
       lazyInlineSteps: [],
       serializationBlockerCount: 0,
     } as any);
-    await Promise.all([actor.receive(), actor.receive(), actor.receive()]);
+    await Promise.all([
+      coordinator.receive(),
+      coordinator.receive(),
+      coordinator.receive(),
+    ]);
     expect(f.world.execution!.acquire).toHaveBeenCalledTimes(1);
     expect(replayWorkflow).toHaveBeenCalledTimes(1);
     expect(f.exchange).toHaveBeenCalledTimes(1); // run_started only
@@ -166,7 +179,7 @@ describe('actor coordinator commits', () => {
 
   it('creates the step before inline execution and retains the VM to completion', async () => {
     const f = fixture();
-    const actor = new ActorCoordinator(f.world, 'wrun_test', '');
+    const coordinator = new ExecutionCoordinator(f.world, 'wrun_test', '');
     const session = {};
     vi.mocked(replayWorkflow).mockResolvedValueOnce({
       type: 'suspended',
@@ -207,7 +220,7 @@ describe('actor coordinator commits', () => {
       output: new Uint8Array(),
       resultType: 'object',
     });
-    await actor.receive();
+    await coordinator.receive();
     expect(f.snapshot.events.map((e) => e.eventType)).toEqual([
       'run_created',
       'run_started',
@@ -222,7 +235,7 @@ describe('actor coordinator commits', () => {
 
   it('does not cold-replay or execute bodies when a retained session declines', async () => {
     const f = fixture();
-    const actor = new ActorCoordinator(f.world, 'wrun_test', '');
+    const coordinator = new ExecutionCoordinator(f.world, 'wrun_test', '');
     vi.mocked(replayWorkflow).mockResolvedValueOnce({
       type: 'suspended',
       session: {},
@@ -233,9 +246,9 @@ describe('actor coordinator commits', () => {
       lazyInlineSteps: [],
       serializationBlockerCount: 0,
     } as any);
-    await actor.receive();
+    await coordinator.receive();
     vi.mocked(resumeWorkflow).mockResolvedValueOnce({ type: 'replay' });
-    await expect(actor.receive()).rejects.toThrow(
+    await expect(coordinator.receive()).rejects.toThrow(
       'automatic replay is forbidden'
     );
     expect(replayWorkflow).toHaveBeenCalledTimes(1);

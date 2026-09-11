@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
-  ActorInvariantError,
-  type ActorSnapshot,
-  assertActorSnapshot,
-} from './actor-execution.js';
-import { projectActorSnapshot } from './actor-projection.js';
+  assertExecutionSnapshot,
+  ExecutionInvariantError,
+  type ExecutionSnapshot,
+} from './execution.js';
+import { projectExecutionSnapshot } from './execution-projection.js';
 
-function snapshot(): ActorSnapshot {
+function snapshot(): ExecutionSnapshot {
   const at = new Date('2026-01-01T00:00:00Z');
   return {
-    profile: 'actor-owner-v1',
+    profile: 'single-owner-v1',
     runId: 'wrun_test',
     deploymentId: 'dpl_test',
     head: 1,
@@ -35,28 +35,28 @@ function snapshot(): ActorSnapshot {
   };
 }
 
-describe('actor-owner-v1 journal contract', () => {
+describe('single-owner-v1 journal contract', () => {
   it('loads a dense committed prefix without changing it', () => {
     const s = snapshot();
     const original = structuredClone(s);
-    expect(projectActorSnapshot(s).run.deploymentId).toBe('dpl_test');
+    expect(projectExecutionSnapshot(s).run.deploymentId).toBe('dpl_test');
     expect(s).toEqual(original);
   });
   it('rejects holes instead of normalizing the log', () => {
     const s = snapshot();
     s.events[0].eventId = `evnt_${'2'.padStart(26, '0')}`;
-    expect(() => assertActorSnapshot(s)).toThrow(ActorInvariantError);
+    expect(() => assertExecutionSnapshot(s)).toThrow(ExecutionInvariantError);
   });
   it('rejects a changed deployment and a persisted quarantine', () => {
     const s = snapshot();
     s.deploymentId = 'dpl_wrong';
-    expect(() => assertActorSnapshot(s)).toThrow(/immutable deployment/);
+    expect(() => assertExecutionSnapshot(s)).toThrow(/immutable deployment/);
     const stopped = snapshot();
     stopped.fault = {
-      code: 'ACTOR_INVARIANT_VIOLATION',
+      code: 'EXECUTION_INVARIANT_VIOLATION',
       message: 'two writers',
     };
-    expect(() => projectActorSnapshot(stopped)).toThrow('two writers');
+    expect(() => projectExecutionSnapshot(stopped)).toThrow('two writers');
   });
   it('does not accept lifecycle completion without creation', () => {
     const s = snapshot();
@@ -69,6 +69,6 @@ describe('actor-owner-v1 journal contract', () => {
       correlationId: 'step_missing',
       eventData: { result: new Uint8Array() },
     });
-    expect(() => projectActorSnapshot(s)).toThrow(/step lifecycle/);
+    expect(() => projectExecutionSnapshot(s)).toThrow(/step lifecycle/);
   });
 });

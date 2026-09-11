@@ -8,16 +8,16 @@ import type {
 import { CreateEventSchema, EventSchema } from './events.js';
 
 /** Experimental, root-only protocol. No durable pending inbox or body leases. */
-export const ACTOR_EXECUTION_PROFILE = 'actor-owner-v1' as const;
+export const EXECUTION_PROFILE = 'single-owner-v1' as const;
 
-export const ActorFaultSchema = z.object({
-  code: z.literal('ACTOR_INVARIANT_VIOLATION'),
+export const ExecutionFaultSchema = z.object({
+  code: z.literal('EXECUTION_INVARIANT_VIOLATION'),
   message: z.string(),
   activationId: z.string().optional(),
 });
 
-export const ActorSnapshotSchema = z.object({
-  profile: z.literal(ACTOR_EXECUTION_PROFILE),
+export const ExecutionSnapshotSchema = z.object({
+  profile: z.literal(EXECUTION_PROFILE),
   runId: z.string(),
   deploymentId: z.string(),
   tenant: z.object({
@@ -27,17 +27,17 @@ export const ActorSnapshotSchema = z.object({
   }),
   head: z.number().int().nonnegative(),
   events: z.array(EventSchema),
-  fault: ActorFaultSchema.optional(),
+  fault: ExecutionFaultSchema.optional(),
 });
-export type ActorSnapshot = z.infer<typeof ActorSnapshotSchema>;
+export type ExecutionSnapshot = z.infer<typeof ExecutionSnapshotSchema>;
 
-export const ActorCommandSchema = z.object({
+export const ExecutionInputSchema = z.object({
   operationId: z.string().min(1).max(128),
   event: CreateEventSchema.transform((event, ctx): CreateEventRequest => {
     if (event.eventType === 'run_created') {
       ctx.addIssue({
         code: 'custom',
-        message: 'Creation is not an actor submission',
+        message: 'Creation is not an external submission',
       });
       return z.NEVER;
     }
@@ -48,17 +48,16 @@ export const ActorCommandSchema = z.object({
     ) {
       ctx.addIssue({
         code: 'custom',
-        message:
-          'Actor submission must be an external input, not an owner event',
+        message: 'Submission must be an external input, not an owner event',
       });
       return z.NEVER;
     }
     return event;
   }),
 });
-export type ActorCommand = z.infer<typeof ActorCommandSchema>;
+export type ExecutionInput = z.infer<typeof ExecutionInputSchema>;
 
-export interface ActorExchange {
+export interface ExecutionExchange {
   runId: string;
   deploymentId: string;
   activationId: string;
@@ -67,45 +66,59 @@ export interface ActorExchange {
   events: CreateEventRequest[];
 }
 
-export const ActorReceiptSchema = z.object({
+export const ExecutionReceiptSchema = z.object({
   operationId: z.string(),
   head: z.number().int().positive(),
   events: z.array(EventSchema).min(1),
 });
-export type ActorReceipt = z.infer<typeof ActorReceiptSchema>;
+export type ExecutionReceipt = z.infer<typeof ExecutionReceiptSchema>;
 
 /** A fatal assertion, never a stale-snapshot signal to catch and repair. */
-export class ActorInvariantError extends Error {
-  readonly code = 'ACTOR_INVARIANT_VIOLATION';
+export class ExecutionInvariantError extends Error {
+  readonly code = 'EXECUTION_INVARIANT_VIOLATION';
   constructor(message: string) {
     super(message);
-    this.name = 'ActorInvariantError';
+    this.name = 'ExecutionInvariantError';
   }
-  static is(error: unknown): error is ActorInvariantError {
+  static is(error: unknown): error is ExecutionInvariantError {
     return (
       !!error &&
       typeof error === 'object' &&
       'code' in error &&
-      error.code === 'ACTOR_INVARIANT_VIOLATION'
+      error.code === 'EXECUTION_INVARIANT_VIOLATION'
     );
   }
 }
 
 /**
- * Client/storage boundary for the affinity POC. acquire loads, it does not elect
+ * Platform-neutral execution boundary. acquire loads, it does not elect
  * an owner. claim is an ordered step_started exchange; renew is intentionally
  * absent because this profile implements no independent body lease.
  */
-export interface ActorExecution {
-  readonly profile: typeof ACTOR_EXECUTION_PROFILE;
-  create(runId: string, event: RunCreatedEventRequest): Promise<ActorSnapshot>;
-  acquire(runId: string): Promise<ActorSnapshot>;
-  exchange(request: ActorExchange): Promise<ActorReceipt>;
+export interface ExecutionStorage {
+  readonly profile: typeof EXECUTION_PROFILE;
+  create(
+    runId: string,
+    event: RunCreatedEventRequest
+  ): Promise<ExecutionSnapshot>;
+  acquire(runId: string): Promise<ExecutionSnapshot>;
+  exchange(request: ExecutionExchange): Promise<ExecutionReceipt>;
+  /**
+   * Adapter-owned ingress and session lifetime. The adapter validates delivery,
+   * selects the run, and maintains a single session under its ownership model.
+   * Core supplies only the platform-neutral workflow session implementation.
+   */
+  createHandler(
+    factory: (runId: string) => ExecutionSession,
+    options?: {
+      namespace?: string;
+    }
+  ): (request: Request) => Promise<Response>;
   /** Durable retry lookup; undefined means this operation has not committed. */
   receipt(
     runId: string,
     operationId: string
-  ): Promise<ActorReceipt | undefined>;
+  ): Promise<ExecutionReceipt | undefined>;
   submit<T extends CreateEventRequest>(
     runId: string,
     event: T,
@@ -113,22 +126,26 @@ export interface ActorExecution {
   ): Promise<EventResult<T['eventType']>>;
   quarantine(
     runId: string,
-    fault: z.infer<typeof ActorFaultSchema>
+    fault: z.infer<typeof ExecutionFaultSchema>
   ): Promise<void>;
 }
 
-export function assertActorSnapshot(snapshot: ActorSnapshot): void {
-  if (snapshot.fault) throw new ActorInvariantError(snapshot.fault.message);
+export interface ExecutionSession {
+  receive(input?: ExecutionInput): Promise<void>;
+}
+
+export function assertExecutionSnapshot(snapshot: ExecutionSnapshot): void {
+  if (snapshot.fault) throw new ExecutionInvariantError(snapshot.fault.message);
   if (snapshot.head !== snapshot.events.length || snapshot.head < 1) {
-    throw new ActorInvariantError(
-      'Actor snapshot is not a complete committed prefix'
+    throw new ExecutionInvariantError(
+      'Execution snapshot is not a complete committed prefix'
     );
   }
   for (const [index, event] of snapshot.events.entries()) {
     const expected = `evnt_${String(index + 1).padStart(26, '0')}`;
     if (event.runId !== snapshot.runId || event.eventId !== expected) {
-      throw new ActorInvariantError(
-        `Actor journal is not contiguous at ${expected}`
+      throw new ExecutionInvariantError(
+        `Execution journal is not contiguous at ${expected}`
       );
     }
   }
@@ -137,8 +154,8 @@ export function assertActorSnapshot(snapshot: ActorSnapshot): void {
     first.eventType !== 'run_created' ||
     first.eventData.deploymentId !== snapshot.deploymentId
   ) {
-    throw new ActorInvariantError(
-      'Actor journal does not match its immutable deployment'
+    throw new ExecutionInvariantError(
+      'Execution journal does not match its immutable deployment'
     );
   }
 }

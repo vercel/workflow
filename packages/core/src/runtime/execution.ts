@@ -1,20 +1,17 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { RunExpiredError } from '@workflow/errors';
-import { globalSingleton } from '@workflow/utils';
 import {
-  type ActorCommand,
-  ActorCommandSchema,
-  ActorInvariantError,
-  type ActorSnapshot,
-  actorEventResult,
-  assertActorSnapshot,
+  assertExecutionSnapshot,
   type CreateEventRequest,
   type Event,
   type EventResult,
+  type ExecutionInput,
+  ExecutionInvariantError,
+  type ExecutionSnapshot,
+  executionEventResult,
   getQueueTopicPrefix,
-  projectActorSnapshot,
+  projectExecutionSnapshot,
   resolveQueueNamespace,
   type World,
 } from '@workflow/world';
@@ -30,23 +27,17 @@ import { executeStep } from './step-executor.js';
 import { handleSuspension } from './suspension-handler.js';
 import { runWithWorld } from './world.js';
 
-const coordinators = globalSingleton(
-  '@workflow/core//actor-coordinators',
-  1,
-  () => new WeakMap<World, Map<string, ActorCoordinator>>()
-);
-
-/** One primary per run, with a commit lane distinct from awaited user bodies. */
-export class ActorCoordinator {
+/** Platform-neutral single-owner execution. The World owns session placement. */
+export class ExecutionCoordinator {
   readonly activationId = `${COMPUTE_INSTANCE_ID}:${randomUUID()}`;
-  private snapshot?: ActorSnapshot;
+  private snapshot?: ExecutionSnapshot;
   private loading?: Promise<void>;
   private commits: Promise<unknown> = Promise.resolve();
   private driving?: Promise<void>;
   private fault?: Error;
   private session?: WorkflowSession;
   private readonly ingress: Array<{
-    command: ActorCommand;
+    command: ExecutionInput;
     resolve(value: EventResult): void;
     reject(error: unknown): void;
   }> = [];
@@ -60,8 +51,7 @@ export class ActorCoordinator {
     private readonly code: string,
     private readonly namespace?: string
   ) {
-    if (!world.execution)
-      throw new Error('Actor execution adapter is required');
+    if (!world.execution) throw new Error('World execution API is required');
     this.boundWorld = {
       ...world,
       events: {
@@ -88,7 +78,9 @@ export class ActorCoordinator {
           if (id !== runId) return world.steps.get(id, stepId);
           const step = this.view().steps.get(stepId);
           if (!step)
-            throw new ActorInvariantError('Step missing from primary journal');
+            throw new ExecutionInvariantError(
+              'Step missing from execution journal'
+            );
           return step;
         }) as World['steps']['get'],
       },
@@ -97,18 +89,15 @@ export class ActorCoordinator {
 
   private view() {
     if (!this.snapshot)
-      throw new ActorInvariantError('Primary used before initialization');
-    return projectActorSnapshot(this.snapshot);
+      throw new ExecutionInvariantError('Session used before initialization');
+    return projectExecutionSnapshot(this.snapshot);
   }
 
   async initialize(): Promise<void> {
     this.check();
     this.loading ??= (async () => {
       const snapshot = await this.world.execution!.acquire(this.runId);
-      assertActorSnapshot(snapshot);
-      if (snapshot.deploymentId !== (await this.world.getDeploymentId())) {
-        throw new ActorInvariantError('Primary reached the wrong deployment');
-      }
+      assertExecutionSnapshot(snapshot);
       this.snapshot = snapshot;
       this.view();
     })().catch(async (error) => {
@@ -125,9 +114,11 @@ export class ActorCoordinator {
   private async stop(error: unknown): Promise<void> {
     if (this.fault) return;
     this.fault =
-      error instanceof Error ? error : new ActorInvariantError(String(error));
+      error instanceof Error
+        ? error
+        : new ExecutionInvariantError(String(error));
     for (const item of this.ingress.splice(0)) item.reject(this.fault);
-    console.error('[workflow actor stopped]', {
+    console.error('[workflow execution stopped]', {
       runId: this.runId,
       activationId: this.activationId,
       computeInstanceId: COMPUTE_INSTANCE_ID,
@@ -135,7 +126,7 @@ export class ActorCoordinator {
     });
     // Persist independently of the broken journal. No terminal append or repair.
     await this.world.execution!.quarantine(this.runId, {
-      code: 'ACTOR_INVARIANT_VIOLATION',
+      code: 'EXECUTION_INVARIANT_VIOLATION',
       message: this.fault.message.slice(0, 1000),
       activationId: this.activationId,
     });
@@ -161,7 +152,7 @@ export class ActorCoordinator {
               ...request
             } = recorded;
             if (!isDeepStrictEqual(request, event))
-              throw new ActorInvariantError(
+              throw new ExecutionInvariantError(
                 'Submission ID reused with different input'
               );
             if (
@@ -170,17 +161,17 @@ export class ActorCoordinator {
                 recorded
               )
             ) {
-              throw new ActorInvariantError(
+              throw new ExecutionInvariantError(
                 'Submission receipt is not in the primary committed prefix'
               );
             }
-            return actorEventResult(snapshot, recorded);
+            return executionEventResult(snapshot, recorded);
           }
         }
         if (
           ['completed', 'failed', 'cancelled'].includes(this.view().run.status)
         ) {
-          throw new RunExpiredError('Actor run is terminal');
+          throw new RunExpiredError('Execution is terminal');
         }
         // Validate our proposed history before writing it; never repair after failure.
         const proposed = {
@@ -189,7 +180,7 @@ export class ActorCoordinator {
           eventId: `evnt_${String(snapshot.head + 1).padStart(26, '0')}`,
           createdAt: new Date(),
         } as Event;
-        projectActorSnapshot({
+        projectExecutionSnapshot({
           ...snapshot,
           head: snapshot.head + 1,
           events: [...snapshot.events, proposed],
@@ -203,7 +194,7 @@ export class ActorCoordinator {
           events: [event],
         });
         if (receipt.operationId !== operationId)
-          throw new ActorInvariantError('Receipt identity mismatch');
+          throw new ExecutionInvariantError('Receipt identity mismatch');
         if (receipt.head <= snapshot.head) {
           for (const existing of receipt.events) {
             if (
@@ -212,19 +203,19 @@ export class ActorCoordinator {
                 existing
               )
             ) {
-              throw new ActorInvariantError(
+              throw new ExecutionInvariantError(
                 'Duplicate receipt disagrees with committed history'
               );
             }
           }
         } else {
           if (receipt.head !== snapshot.head + receipt.events.length)
-            throw new ActorInvariantError('Unexpected committed head');
+            throw new ExecutionInvariantError('Unexpected committed head');
           snapshot.events.push(...receipt.events);
           snapshot.head = receipt.head;
-          assertActorSnapshot(snapshot);
+          assertExecutionSnapshot(snapshot);
         }
-        return actorEventResult(
+        return executionEventResult(
           snapshot,
           receipt.events[receipt.events.length - 1]
         );
@@ -242,7 +233,7 @@ export class ActorCoordinator {
     return task;
   }
 
-  async receive(command?: ActorCommand): Promise<void> {
+  async receive(command?: ExecutionInput): Promise<void> {
     await this.initialize();
     this.check();
     let submitted: Promise<unknown> = Promise.resolve();
@@ -251,7 +242,7 @@ export class ActorCoordinator {
         submitted = this.append(command.event, command.operationId);
       else {
         if (this.ingress.length >= 128)
-          throw new Error('Actor ingress capacity exceeded');
+          throw new Error('Execution ingress capacity exceeded');
         submitted = new Promise((resolve, reject) =>
           this.ingress.push({ command, resolve, reject })
         );
@@ -336,8 +327,8 @@ export class ActorCoordinator {
           });
       this.check();
       if (result.type === 'replay')
-        throw new ActorInvariantError(
-          'Retained actor session declined; automatic replay is forbidden'
+        throw new ExecutionInvariantError(
+          'Retained execution session declined; automatic replay is forbidden'
         );
       if (result.type === 'completed') {
         await this.append({
@@ -355,8 +346,8 @@ export class ActorCoordinator {
         run: this.view().run,
       });
       if (handled.serializationBlockerCount)
-        throw new ActorInvariantError(
-          'Actor POC does not support retention-unsafe serialization'
+        throw new ExecutionInvariantError(
+          'Single-owner execution does not support retention-unsafe serialization'
         );
       // Make every creation durable before any body starts. No lazy speculative
       // start and no queue overflow. The POC runs a bounded sequential body lane.
@@ -379,7 +370,7 @@ export class ActorCoordinator {
         if (!['pending', 'running'].includes(this.view().run.status)) return;
         const step = this.view().steps.get(stepId);
         if (!step)
-          throw new ActorInvariantError(
+          throw new ExecutionInvariantError(
             'Scheduled step has no committed creation'
           );
         if (step.retryAfter && step.retryAfter.getTime() > Date.now()) continue;
@@ -400,7 +391,7 @@ export class ActorCoordinator {
           authoritativeAttempt: step.attempt + 1,
         });
         if (outcome.type === 'skipped' || outcome.type === 'throttled') {
-          throw new ActorInvariantError(
+          throw new ExecutionInvariantError(
             `Unexpected inline body outcome: ${outcome.type}`
           );
         }
@@ -437,61 +428,14 @@ export class ActorCoordinator {
   }
 }
 
-export function actorWorkflowHandler(
+export function executionWorkflowHandler(
   code: string,
   world: World,
   namespace?: string
 ) {
-  const deliveryAffinity = new AsyncLocalStorage<string>();
-  let registry = coordinators.get(world);
-  if (!registry) {
-    registry = new Map();
-    coordinators.set(world, registry);
-  }
-  const handler = world.createQueueHandler(
-    getQueueTopicPrefix('workflow', resolveQueueNamespace(namespace)),
-    async (payload) => {
-      if (
-        !payload ||
-        typeof payload !== 'object' ||
-        !('runId' in payload) ||
-        typeof payload.runId !== 'string'
-      )
-        throw new Error('Actor delivery requires runId');
-      const runId = payload.runId;
-      if (deliveryAffinity.getStore() !== runId) {
-        const fault = {
-          code: 'ACTOR_INVARIANT_VIOLATION' as const,
-          message: 'Delivered affinity ID does not equal run ID',
-          activationId: COMPUTE_INSTANCE_ID,
-        };
-        await world.execution!.quarantine(runId, fault);
-        throw new ActorInvariantError(fault.message);
-      }
-      let coordinator = registry!.get(runId);
-      if (!coordinator) {
-        if (registry!.size >= 128)
-          throw new Error('Actor POC coordinator capacity exceeded');
-        coordinator = new ActorCoordinator(world, runId, code, namespace);
-        registry!.set(runId, coordinator);
-      }
-      await coordinator.receive(
-        'actorCommand' in payload && payload.actorCommand !== undefined
-          ? ActorCommandSchema.parse(payload.actorCommand)
-          : undefined
-      );
-    }
+  if (!world.execution) throw new Error('World execution API is required');
+  return world.execution.createHandler(
+    (runId) => new ExecutionCoordinator(world, runId, code, namespace),
+    { namespace }
   );
-  return async (request: Request) => {
-    const header = process.env.WORKFLOW_ACTOR_AFFINITY_HEADER;
-    if (!header || !request.headers.get(header))
-      throw new ActorInvariantError(
-        'Actor invocation is missing its configured affinity header'
-      );
-    // The callback body is decoded/authenticated by the VQS handler. Bind the
-    // received header to the run inside the callback via a per-request wrapper.
-    return deliveryAffinity.run(request.headers.get(header)!, () =>
-      handler(request)
-    );
-  };
 }

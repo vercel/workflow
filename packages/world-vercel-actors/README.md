@@ -1,7 +1,7 @@
 # Vercel actor World (experimental POC)
 
 `@workflow/world-vercel-actors` tests one affinity-routed primary per workflow
-run. It uses the root-only `actor-owner-v1` execution protocol and executes steps
+run. It implements the platform-neutral root-only `single-owner-v1` execution protocol and executes steps
 inline. It is not a production replacement for `@workflow/world-vercel`.
 
 ## Configuration
@@ -74,6 +74,18 @@ This World adapts the newer execution boundary rather than falsely implementing
 body leases: `create`, `acquire` (load, not election), `exchange`, and `submit`
 are supported, with receipt lookup and quarantine control. Inline admission is
 an ordered `step_started`; there is no fake `renew` success or durable RAM inbox.
+
+## Package boundary
+
+Core knows only `World.execution` and its generic execution sessions. It does
+not import the actor World, inspect an affinity header, or manage Vercel cell
+placement. `world.execution.createHandler(factory)` lets the adapter own ingress
+and session lifetime while core supplies workflow-driving logic.
+
+`src/actor.ts` in this package owns VQS ingress, run/affinity validation and the
+process-wide session registry. Deployment checks run in this adapter's acquire
+implementation. Shared types use `ExecutionSnapshot`, `ExecutionStorage`, and
+`ExecutionInvariantError`; actor-specific names are not part of core's contract.
 
 ## Validation
 
