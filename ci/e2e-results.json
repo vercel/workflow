@@ -1,9 +1,27 @@
 {
-  "lastUpdated": "2026-09-11T21:00:52.935Z",
-  "commit": "fb9e27589d4a4ee984667b5c21974a27cac43ac6",
+  "lastUpdated": "2026-09-11T21:21:00.859Z",
+  "commit": "3dad0a9d673316bd70643ea3053f2d0bf36603f7",
   "branch": "main",
   "type": "e2e",
   "worlds": {
+    "local": {
+      "status": "passing",
+      "total": 9338,
+      "passed": 8316,
+      "failed": 0,
+      "skipped": 1022,
+      "frameworks": {},
+      "progress": 89
+    },
+    "postgres": {
+      "status": "passing",
+      "total": 4508,
+      "passed": 3998,
+      "failed": 0,
+      "skipped": 510,
+      "frameworks": {},
+      "progress": 89
+    },
     "vercel": {
       "status": "passing",
       "total": 4347,
@@ -12,15 +30,6 @@
       "skipped": 685,
       "frameworks": {},
       "progress": 84
-    },
-    "local": {
-      "status": "passing",
-      "total": 322,
-      "passed": 320,
-      "failed": 0,
-      "skipped": 2,
-      "frameworks": {},
-      "progress": 99
     }
   }
 }
