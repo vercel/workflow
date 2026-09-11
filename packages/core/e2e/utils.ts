@@ -12,6 +12,9 @@ import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-heade
 import type { Run } from '../src/runtime';
 import { getWorld, start as runtimeStart, setWorld } from '../src/runtime';
 import { hydrateRunError } from '../src/serialization';
+import { getWorkbenchAppPath } from './workbench-path';
+
+export { getWorkbenchAppPath } from './workbench-path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultCliTimeoutMs = Number(
@@ -96,22 +99,6 @@ function splitArgs(raw: string): string[] {
   const value = raw.trim();
   if (!value) return [];
   return value.split(/\s+/);
-}
-
-export function getWorkbenchAppPath(overrideAppName?: string): string {
-  const explicitWorkbenchPath = process.env.WORKBENCH_APP_PATH;
-  const appName = process.env.APP_NAME ?? overrideAppName;
-  if (
-    explicitWorkbenchPath &&
-    (!overrideAppName || !appName || overrideAppName === appName)
-  ) {
-    return path.resolve(explicitWorkbenchPath);
-  }
-
-  if (!appName) {
-    throw new Error('`APP_NAME` environment variable is not set');
-  }
-  return path.join(__dirname, '../../../workbench', appName);
 }
 
 export function isLocalDeployment(): boolean {
