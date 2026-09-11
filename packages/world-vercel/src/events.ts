@@ -43,7 +43,6 @@ import {
   type EventBatchResult,
   type EventDataPayloadField,
   type EventResult,
-  EventSchema,
   type GetEventParams,
   getEventDataPayloadField,
   isHookEventRequiringExistence,
@@ -63,6 +62,7 @@ import {
   getEventV4,
   getWorkflowRunEventsV4,
   type ListEventsV4Params,
+  VercelEventWireSchema,
 } from './events-v4.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
@@ -684,7 +684,12 @@ async function createWorkflowRunEventInner(
       options: { method: 'POST' },
       data,
       config,
-      schema: EventSchema,
+      // Match the v4 sites: parse legacy event responses with the
+      // omitted-payload-tolerant wire schema. A `hook_received` response can
+      // omit the required `payload` key (e.g. a resume with an `undefined`
+      // payload the server never echoes back), which bare `EventSchema.parse`
+      // now rejects under Zod 4.5.
+      schema: VercelEventWireSchema,
     });
     return { event: wireResult };
   }

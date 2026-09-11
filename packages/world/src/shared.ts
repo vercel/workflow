@@ -25,13 +25,15 @@ export interface PaginationOptions {
   sortOrder?: 'asc' | 'desc';
 }
 
-export const PageInfoSchema = z.object({
-  currentLookbackDays: z.number(),
-  maxLookbackDays: z.number(),
-  currentWindowStart: z.coerce.date(),
-  maxWindowStart: z.coerce.date(),
-  upgradeAvailable: z.boolean(),
-});
+export const PageInfoSchema = z.compile(
+  z.object({
+    currentLookbackDays: z.number(),
+    maxLookbackDays: z.number(),
+    currentWindowStart: z.coerce.date(),
+    maxWindowStart: z.coerce.date(),
+    upgradeAvailable: z.boolean(),
+  })
+);
 
 export type PageInfo = z.infer<typeof PageInfoSchema>;
 
@@ -39,12 +41,14 @@ export type PageInfo = z.infer<typeof PageInfoSchema>;
 export const PaginatedResponseSchema = <T extends z.ZodTypeAny>(
   dataSchema: T
 ) =>
-  z.object({
-    data: z.array(dataSchema),
-    cursor: z.string().nullable(),
-    hasMore: z.boolean(),
-    pageInfo: PageInfoSchema.optional(),
-  });
+  z.compile(
+    z.object({
+      data: z.array(dataSchema),
+      cursor: z.string().nullable(),
+      hasMore: z.boolean(),
+      pageInfo: PageInfoSchema.optional(),
+    })
+  );
 
 // Inferred type from schema
 export type PaginatedResponse<T> = z.infer<
@@ -61,11 +65,13 @@ export type ResolveData = 'none' | 'all';
 /**
  * A standard error schema shape for propogating errors from runs and steps
  */
-export const StructuredErrorSchema = z.object({
-  message: z.string(),
-  stack: z.string().optional(),
-  code: z.string().optional(), // Populated with RunErrorCode values (USER_ERROR, RUNTIME_ERROR, etc.) for run_failed events
-});
+export const StructuredErrorSchema = z.compile(
+  z.object({
+    message: z.string(),
+    stack: z.string().optional(),
+    code: z.string().optional(), // Populated with RunErrorCode values (USER_ERROR, RUNTIME_ERROR, etc.) for run_failed events
+  })
+);
 
 export type StructuredError = z.infer<typeof StructuredErrorSchema>;
 

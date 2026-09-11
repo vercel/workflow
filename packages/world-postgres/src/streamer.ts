@@ -12,10 +12,12 @@ import * as z from 'zod';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import { Mutex } from './util.js';
 
-const StreamPublishMessage = z.object({
-  streamId: z.string(),
-  chunkId: z.templateLiteral(['chnk_', z.string()]),
-});
+const StreamPublishMessage = z.compile(
+  z.object({
+    streamId: z.string(),
+    chunkId: z.templateLiteral(['chnk_', z.string()]),
+  })
+);
 
 interface StreamChunkEvent {
   id: `chnk_${string}`;
@@ -372,6 +374,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
                 return;
               }
 
+              lastChunkId = msg.id;
               if (offset > 0) {
                 offset--;
                 return;
@@ -383,7 +386,6 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
               if (msg.eof) {
                 controller.close();
               }
-              lastChunkId = msg.id;
             }
 
             function onData(data: StreamChunkEvent) {

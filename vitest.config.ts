@@ -3,15 +3,14 @@ import { configDefaults, defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     testTimeout: 60_000,
-    // The e2e suites drive real deployments, so individual tests can lose
-    // timing races (queue delays, cold starts, watcher latency) that a
-    // second attempt absorbs. One CI retry keeps a single racy test from
-    // failing a 20+ minute matrix job; retried tests stay visible — the
-    // github-reporter annotates them and the PR comment lists them — so
-    // real races still get looked at. Harnesses where a failure is itself
-    // the signal (event-log-race-repro, benchmarks) pin `retry: 0` locally.
-    // Local runs keep retry at 0 so races reproduce while debugging.
-    retry: process.env.CI ? 1 : 0,
+    // Deployment e2e suites can lose timing races to queue delays, cold
+    // starts, and watcher latency. They always set DEPLOYMENT_URL, so keep
+    // their one visible retry without masking deterministic unit/integration
+    // failures elsewhere in `turbo test`. The github-reporter annotates
+    // retried e2e tests and includes them in the PR summary. Harnesses where
+    // a failure is itself the signal (event-log-race-repro, benchmarks) pin
+    // `retry: 0` locally. Local runs also keep retry at 0 for reproduction.
+    retry: process.env.CI && process.env.DEPLOYMENT_URL ? 1 : 0,
     // How many concurrent tests vitest runs from a `describe.concurrent`
     // suite (vitest's own default is 5). Only the e2e conformance suite is
     // concurrent, so this is effectively its dial. Tunable because the right

@@ -101,6 +101,27 @@ if (process.platform === 'win32') {
       FIRST_EVENT_SLOT + 2,
       FIRST_EVENT_SLOT + 3,
     ]);
+
+    // Leave the direct-storage fixture terminal. The conformance tests below
+    // start a real queue worker against the same database; an unfinished run
+    // would be recovered and replayed even though its synthetic workflow is
+    // intentionally not registered by that server.
+    await world.events.create(runId, {
+      eventType: 'step_started',
+      correlationId: 'step_after_noop',
+      specVersion: SPEC_VERSION_CURRENT,
+    } as any);
+    await world.events.create(runId, {
+      eventType: 'step_completed',
+      correlationId: 'step_after_noop',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { result: serialized(null) },
+    } as any);
+    await world.events.create(runId, {
+      eventType: 'run_completed',
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { output: serialized(null) },
+    } as any);
     await pool.end();
   }, 60_000);
 

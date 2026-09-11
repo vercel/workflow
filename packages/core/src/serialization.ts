@@ -13,6 +13,7 @@ import { monotonicFactory } from 'ulid';
 import { importKey } from './encryption.js';
 import {
   createFlushableState,
+  type FlushableStreamState,
   flushablePipe,
   getMaxBufferedBytes,
   getMaxBytesPerBatch,
@@ -20,6 +21,7 @@ import {
   getMaxInflightChunks,
   pollReadableLock,
   pollWritableLock,
+  trackFlushableWritable,
 } from './flushable-stream.js';
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
@@ -3314,7 +3316,8 @@ function getStepRevivers(
   ops: Promise<void>[],
   runId: string,
   cryptoKey: EncryptionKeyParam,
-  deploymentId?: string
+  deploymentId?: string,
+  streamStates?: FlushableStreamState[]
 ): Partial<Revivers> {
   return {
     ...getCommonRevivers(global),
@@ -3536,6 +3539,8 @@ function getStepRevivers(
 
       // Create flushable state for this stream
       const state = createFlushableState();
+      state.deferReleaseSettlement = streamStates !== undefined;
+      streamStates?.push(state);
       ops.push(state.promise);
 
       // Start the flushable pipe in the background
@@ -3543,8 +3548,13 @@ function getStepRevivers(
         // Errors are handled via state.reject
       });
 
-      // Start polling to detect when user releases lock
-      pollWritableLock(serialize.writable, state);
+      // Track completed user writes independently of lock release.
+      const writable = trackFlushableWritable(
+        serialize.writable,
+        state,
+        global.WritableStream
+      );
+      pollWritableLock(writable, state);
 
       // Record the underlying `(runId, name)` so downstream reducers can
       // recognize that this writable is already backed by a workflow
@@ -3552,23 +3562,19 @@ function getStepRevivers(
       // the child passes this writable on to a grandchild), the
       // external reducer needs both to emit the original `runId` in
       // the descriptor.
-      Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+      Object.defineProperty(writable, STREAM_NAME_SYMBOL, {
         value: value.name,
         writable: false,
       });
-      Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+      Object.defineProperty(writable, STREAM_SERVER_RUN_ID_SYMBOL, {
         value: targetRunId,
         writable: false,
       });
       if (targetDeploymentId) {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
-          {
-            value: targetDeploymentId,
-            writable: false,
-          }
-        );
+        Object.defineProperty(writable, STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, {
+          value: targetDeploymentId,
+          writable: false,
+        });
       }
       // Keep the owner's public key on the handle so a further forward stays on
       // the zero-lookup sealed path.
@@ -3592,27 +3598,19 @@ function getStepRevivers(
         targetRunId === runId &&
         isRunPayloadKeys(cryptoKey)
       ) {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
-          {
-            value: bytesToBase64(cryptoKey.keyPair.publicKey),
-            writable: false,
-          }
-        );
+        Object.defineProperty(writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
+          value: bytesToBase64(cryptoKey.keyPair.publicKey),
+          writable: false,
+        });
       }
       if (typeof value.encryptionPublicKey === 'string') {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
-          {
-            value: value.encryptionPublicKey,
-            writable: false,
-          }
-        );
+        Object.defineProperty(writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
+          value: value.encryptionPublicKey,
+          writable: false,
+        });
       }
 
-      return serialize.writable;
+      return writable;
     },
 
     AbortController: (value) => reviveAbortController(value, ops, runId),
@@ -3968,14 +3966,15 @@ export async function hydrateStepArguments(
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
-  deploymentId?: string
+  deploymentId?: string,
+  streamStates?: FlushableStreamState[]
 ): Promise<any> {
   const compressionStats: CompressionStats = {};
   const result = await stepModule.deserialize(value, key, {
     global,
     extraRevivers: {
       ...getStreamAndRequestRevivers(
-        getStepRevivers(global, ops, runId, key, deploymentId)
+        getStepRevivers(global, ops, runId, key, deploymentId, streamStates)
       ),
       ...extraRevivers,
     },

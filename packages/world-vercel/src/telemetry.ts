@@ -186,13 +186,29 @@ export async function getSpanKind(
 export async function injectTraceContextIntoHeaders(
   headers: Headers
 ): Promise<void> {
-  const otel = await getOtelApi();
-  if (!otel) return;
-  const carrier: Record<string, string> = {};
-  otel.propagation.inject(otel.context.active(), carrier);
-  for (const [key, value] of Object.entries(carrier)) {
+  for (const [key, value] of Object.entries(await getTraceContextHeaders())) {
     headers.set(key, value);
   }
+}
+
+/**
+ * The active W3C trace context as a plain header record.
+ *
+ * The same source as {@link injectTraceContextIntoHeaders}, shaped for APIs
+ * that take a header map rather than a `Headers` — a batched queue send
+ * carries its context on each message's own headers, not on the request's.
+ *
+ * Empty when `@opentelemetry/api` is unavailable or no propagator is
+ * registered, so callers can spread it unconditionally.
+ */
+export async function getTraceContextHeaders(): Promise<
+  Record<string, string>
+> {
+  const otel = await getOtelApi();
+  if (!otel) return {};
+  const carrier: Record<string, string> = {};
+  otel.propagation.inject(otel.context.active(), carrier);
+  return carrier;
 }
 
 // Semantic conventions for World/Storage tracing
@@ -305,6 +321,22 @@ export const WorkflowHttpTransport = SemanticConvention<'undici' | 'node-http'>(
 /** Event type of a single event write (workflow.event.type), e.g. `step_started`. */
 export const WorkflowEventType = SemanticConvention<string>(
   'workflow.event.type'
+);
+
+/** Server-side classification of a step_started write. */
+export type WorkflowStepStartMode =
+  | 'single_lazy_create_claim'
+  | 'single_owned_recovery'
+  | 'single_bare'
+  | 'batch_create_claim'
+  | 'batch_bare';
+export const WorkflowStepStartMode = SemanticConvention<WorkflowStepStartMode>(
+  'workflow.step_start.mode'
+);
+
+/** Whether a step_started write carries an inline ownership stamp. */
+export const WorkflowStepStartOwnerStamped = SemanticConvention<boolean>(
+  'workflow.step_start.owner_stamped'
 );
 
 /** Version of the Workflow client package issuing the request. */

@@ -9,6 +9,7 @@ import type {
   Event,
   EventResult,
   HealthCheckPayload,
+  RunDispatchContext,
   ValidQueueName,
   WorkflowRun,
   World,
@@ -18,6 +19,7 @@ import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
+  ROOT_RUN_ID_ATTRIBUTE,
   requireEventSlot,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
@@ -1032,6 +1034,53 @@ export interface SlotSnapshotParams {
  * Empty for an empty log, which is the state a `run_created` write is issued
  * from: there is no position held yet to name.
  *
+ * ## Who names a position
+ *
+ * A World can hand events back on a write's success response through two
+ * params (`CreateEventParams` in `@workflow/world`): `eventCount`, which is
+ * answered with the events on the positions the write skipped over (the
+ * skipped-slot report), and `sinceCursor`, which is answered with everything
+ * after that cursor (the inline delta). Both exist to save the writer a
+ * reload. So the rule for which writes send them is not about the event type;
+ * it is about whether **the process that writes holds a loaded log it will
+ * keep deciding from**, its own next writes or the replay it resumes. A writer
+ * with no log has nothing to merge a page into, and whoever decides next is a
+ * fresh replay that loads the log anyway.
+ *
+ * Three gates, all of which must pass for a page to come back:
+ *
+ * 1. The writer names a position. Only the replay loop's `createEvent` seam
+ *    (runtime.ts) and the suspension handler's `createGuarded` do; the QuickJS
+ *    engine's `createEvent` (quickjs-entrypoint.ts) follows the same rule. Raw
+ *    `world.events.create` calls send nothing.
+ * 2. The World reads a page for that event type. A World may decline for types
+ *    whose writer never holds a log (step executor writes, run-terminal
+ *    writes), whatever the client sent.
+ * 3. There is something to hand back: the report only when the write landed
+ *    more than one position above `eventCount`; the delta always.
+ *
+ * | Event | Writer | Sends | Why |
+ * |---|---|---|---|
+ * | `run_created` | `start()` | nothing | no log exists yet |
+ * | `run_started` | replay loop, first write of a delivery | `eventCount` when a log is loaded; no cursor, the `run_started` preload owns the response fields | the preload already returns the full log |
+ * | `step_created`, `wait_created`, `hook_disposed`, `attr_set` | suspension handler (`createGuarded`) | `eventCount` | the handler keeps writing from, and resumes replay from, this log |
+ * | `step_created` | queue-consumer re-ensure (raw) | nothing | runs from a queue message, no log |
+ * | `hook_created` | suspension handler (node), `dispatchPendingOps` (QuickJS) | `eventCount` + `sinceCursor` (only when the suspension creates exactly one hook) | the delta is how an already-received hook resolves without a re-invocation; two creates against one cursor would give two deltas of which only the first could be taken |
+ * | `hook_received` | replay loop lazy resume; handler in-suspension resume | `eventCount` (preload owns the cursor fields) | both replay from the log right after |
+ * | `hook_received` | webhook / `resumeHook` (raw) | nothing | out-of-band, enqueues a delivery that loads the log |
+ * | `wait_completed` | replay loop timer path | `eventCount` | the loop keeps replaying from the log |
+ * | `wait_completed` | `runs.*` out-of-band (raw) | nothing | no log |
+ * | `step_started`, `step_retrying` | step executor | nothing | no log; the next decision is a replay that reloads or receives the delta below |
+ * | `step_completed`, `step_failed` | step executor | `sinceCursor` only, outside turbo, single inline step | this is where the inline execution loop gets its log back; in turbo or from a queued delivery a fresh replay loads it anyway |
+ * | `step_failed` | suspension handler, unserializable input | `eventCount` | the handler holds a log; rare, and follows a `step_created` that drew the page |
+ * | `attr_set` | `setAttributes()` API (raw) | nothing | out-of-band |
+ * | `run_completed`, `run_failed`, `run_cancelled` | replay loop, replay budget, `runs.cancel` | `eventCount` where the node loop's seam stamps it (the QuickJS engine sends nothing); never `sinceCursor` (`deltaRequestCursor` excludes terminal types) | terminal: nothing replays the log afterwards, so a World reads no page for them |
+ *
+ * Batched writes (`events.createBatch`) are outside all of this: a batch carries
+ * no per-event position and gets no page. The user-facing version of this table
+ * is in `docs/content/docs/v5/how-it-works/event-sourcing.mdx`; keep the two in
+ * step.
+ *
  * The maximum rather than the length, for the reason {@link maxEventSlot}
  * gives: a partially-read log holds fewer events than its highest position, and
  * counting those would make the write claim to have seen less than it has, so
@@ -1144,6 +1193,37 @@ export function withHealthCheck(
   };
 }
 
+/**
+ * The lineage root of a loaded run: its `$rootRunId` attribute, or its own id
+ * when it is itself a root.
+ */
+export function rootRunIdFrom(
+  attributes: Record<string, string> | undefined,
+  runId: string
+): string {
+  return attributes?.[ROOT_RUN_ID_ATTRIBUTE] ?? runId;
+}
+
+/**
+ * The immutable run identity a step-execution message carries so its consumer
+ * can start the step without a blocking `runs.get` — see
+ * `RunDispatchContextSchema` in @workflow/world. Built at dispatch time from
+ * the run row the producer already holds.
+ */
+export function runDispatchContext(
+  run: Pick<
+    WorkflowRun,
+    'runId' | 'deploymentId' | 'specVersion' | 'startedAt' | 'attributes'
+  >
+): RunDispatchContext {
+  return {
+    deploymentId: run.deploymentId,
+    specVersion: run.specVersion ?? 0,
+    ...(run.startedAt ? { startedAt: +run.startedAt } : {}),
+    rootRunId: rootRunIdFrom(run.attributes, run.runId),
+  };
+}
+
 /** FNV-1a 32-bit hash of a string, as 8 hex chars. Tiny, deterministic, and
  *  dependency-free. Used only to scope idempotency keys, not for security. */
 function fnv1a32Hex(value: string): string {
@@ -1212,6 +1292,88 @@ export async function queueMessage(
       if (messageId) {
         span?.setAttributes(Attribute.MessagingMessageId(messageId));
       }
+    }
+  );
+}
+
+/**
+ * Publishes several messages to one logical queue, using the World's batch
+ * send when it has one and falling back to concurrent single sends when it
+ * does not.
+ *
+ * Rejects if ANY message failed to publish, because every caller so far wants
+ * all-or-nothing: the recovery is to fail the delivery and let redelivery
+ * republish the whole set, deduped by the per-message `idempotencyKey`. That
+ * means a partial batch can leave some messages already out — which is
+ * exactly why the keys are required rather than advisory.
+ */
+export async function queueMessages(
+  world: World,
+  queueName: Parameters<typeof world.queue>[0],
+  messages: readonly {
+    message: Parameters<typeof world.queue>[1];
+    opts?: Parameters<typeof world.queue>[2];
+  }[]
+): Promise<void> {
+  if (messages.length === 0) return;
+  const batch = world.queueBatch?.bind(world);
+  if (!batch) {
+    await Promise.all(
+      messages.map((entry) =>
+        queueMessage(world, queueName, entry.message, entry.opts)
+      )
+    );
+    return;
+  }
+  await trace(
+    'queue.publish',
+    {
+      attributes: {
+        ...Attribute.MessagingSystem('vercel-queue'),
+        ...Attribute.MessagingDestinationName(queueName),
+        ...Attribute.MessagingOperationType('publish'),
+        ...Attribute.MessagingBatchMessageCount(messages.length),
+        ...Attribute.PeerService('vercel-queue'),
+        ...Attribute.RpcSystem('vercel-queue'),
+        ...Attribute.RpcService('vqs'),
+        ...Attribute.RpcMethod('publishBatch'),
+      },
+      kind: await getSpanKind('PRODUCER'),
+    },
+    async () => {
+      const results = await batch(queueName, messages);
+      // A World that answers with the wrong number of results has told us
+      // nothing about the messages it left out. Treated as a failure of the
+      // whole batch rather than read as success for the entries that ARE
+      // present: republishing under the same idempotency keys is safe,
+      // silently never dispatching a step is not (the run makes no progress
+      // and nothing surfaces an error).
+      if (results.length !== messages.length) {
+        throw Object.assign(
+          new Error(
+            `Queue batch for ${queueName} returned ${results.length} ` +
+              `result(s) for ${messages.length} message(s)`
+          ),
+          { retryable: true }
+        );
+      }
+      const failures = results.filter((result) => result.error !== undefined);
+      if (failures.length === 0) return;
+      const retryable = failures.some(
+        (failure) => failure.error !== undefined && failure.retryable
+      );
+      const error = new Error(
+        `Failed to publish ${failures.length} of ${messages.length} queue ` +
+          `message(s) to ${queueName}: ${failures[0]?.error}`
+      );
+      // Carried on the error so a caller CAN tell a transient partial batch
+      // from a permanent rejection. Nothing reads it yet: today every caller
+      // rejects the delivery either way, so a permanently rejected entry
+      // still costs the full redelivery budget. Left in place because the
+      // information is only available here, and a fast-fail on
+      // `retryable: false` needs it.
+      Object.assign(error, { retryable });
+      throw error;
     }
   );
 }

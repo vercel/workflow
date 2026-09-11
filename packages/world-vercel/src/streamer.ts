@@ -1,3 +1,4 @@
+import type { Attributes } from '@opentelemetry/api';
 import {
   EntityConflictError,
   PreconditionFailedError,
@@ -179,33 +180,39 @@ function createStreamRequestError(
 
 export { encodeMultiChunks } from './stream-chunks.js';
 
-const StreamInfoResponseSchema = z.object({
-  tailIndex: z.number(),
-  done: z.boolean(),
-});
+const StreamInfoResponseSchema = z.compile(
+  z.object({
+    tailIndex: z.number(),
+    done: z.boolean(),
+  })
+);
 
 /**
  * Zod schema for the paginated stream chunks response from the server.
  * When using CBOR (the default for makeRequest), chunk data arrives as
  * native Uint8Array byte strings, so no base64 decoding is required.
  */
-const StreamChunksResponseSchema = z.object({
-  data: z.array(
-    z.object({
-      index: z.number(),
-      data: z.instanceof(Uint8Array),
-    })
-  ),
-  cursor: z.string().nullable(),
-  hasMore: z.boolean(),
-  done: z.boolean(),
-});
+const StreamChunksResponseSchema = z.compile(
+  z.object({
+    data: z.array(
+      z.object({
+        index: z.number(),
+        data: z.instanceof(Uint8Array),
+      })
+    ),
+    cursor: z.string().nullable(),
+    hasMore: z.boolean(),
+    done: z.boolean(),
+  })
+);
 
 export async function writeStreamSessionOverHttp(
   runId: string,
   name: string,
   chunks: (string | Uint8Array)[],
-  config?: APIConfig
+  config?: APIConfig,
+  attributes?: Attributes,
+  onRequestDispatched?: () => void
 ): Promise<void> {
   const httpConfig = await getHttpConfig(config);
   httpConfig.headers.set('X-Stream-Multi', 'true');
@@ -225,11 +232,15 @@ export async function writeStreamSessionOverHttp(
       logLabel: url.pathname,
       spanName: 'workflow.stream.write',
       durationAttribute: 'workflow.stream.write.chunk_rtt',
-      attributes: streamSpanAttributes({
-        runId,
-        name,
-        operation: 'write_multi',
-      }),
+      onRequestDispatched: offset === 0 ? onRequestDispatched : undefined,
+      attributes: {
+        ...streamSpanAttributes({
+          runId,
+          name,
+          operation: 'write_multi',
+        }),
+        ...(offset === 0 ? attributes : undefined),
+      },
       buildError: async (res) =>
         createStreamRequestError('write', url, res, await res.text()),
     });
@@ -273,8 +284,15 @@ export function createStreamer(config?: APIConfig): Streamer {
                 name,
                 writerId,
                 config,
-                (chunks) =>
-                  writeStreamSessionOverHttp(runId, name, chunks, config),
+                (chunks, attributes, onRequestDispatched) =>
+                  writeStreamSessionOverHttp(
+                    runId,
+                    name,
+                    chunks,
+                    config,
+                    attributes,
+                    onRequestDispatched
+                  ),
                 () => closeStreamSessionOverHttp(runId, name, config)
               );
             },
