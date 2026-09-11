@@ -3,19 +3,13 @@ import { type SerializedData, SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
 
 // Workflow run schemas
-export const WorkflowRunStatusSchema = z.enum([
-  'pending',
-  'running',
-  'completed',
-  'failed',
-  'cancelled',
-]);
+export const WorkflowRunStatusSchema = z.compile(
+  z.enum(['pending', 'running', 'completed', 'failed', 'cancelled'])
+);
 export type WorkflowRunStatus = z.infer<typeof WorkflowRunStatusSchema>;
-export const TerminalWorkflowRunStatusSchema = WorkflowRunStatusSchema.extract([
-  'completed',
-  'failed',
-  'cancelled',
-] as const);
+export const TerminalWorkflowRunStatusSchema = z.compile(
+  WorkflowRunStatusSchema.extract(['completed', 'failed', 'cancelled'] as const)
+);
 export type TerminalWorkflowRunStatus = z.infer<
   typeof TerminalWorkflowRunStatusSchema
 >;
@@ -38,126 +32,130 @@ export function isTerminalWorkflowRunStatus(
  * - specVersion >= 2: Uint8Array (binary devalue format)
  * - specVersion 1: any (legacy JSON format)
  */
-export const WorkflowRunBaseSchema = z.object({
-  runId: z.string(),
-  status: WorkflowRunStatusSchema,
-  deploymentId: z.string(),
-  /**
-   * The machine-readable name of the workflow function.
-   *
-   * This field contains a structured identifier like `workflow//./src/workflows/order//processOrder`
-   * that encodes the workflow's module specifier and function name.
-   *
-   * Use `parseWorkflowName()` from `@workflow/utils/parse-name` to extract:
-   * - `shortName`: User-friendly display name (e.g., `"processOrder"`)
-   * - `moduleSpecifier`: The module path or package (e.g., `"./src/workflows/order"`)
-   * - `functionName`: The full function path (e.g., `"processOrder"`)
-   *
-   * @example
-   * ```ts
-   * import { parseWorkflowName } from "@workflow/utils/parse-name";
-   *
-   * const parsed = parseWorkflowName(run.workflowName);
-   * // parsed.shortName → "processOrder"
-   * // parsed.moduleSpecifier → "./src/workflows/order"
-   * ```
-   */
-  workflowName: z.string(),
-  // Optional in database for backward compatibility, defaults to 1 (legacy) when reading
-  specVersion: z.number().optional(),
-  executionContext: z.record(z.string(), z.any()).optional(),
-  input: SerializedDataSchema.optional(),
-  output: SerializedDataSchema.optional(),
-  /**
-   * The thrown value from a run_failed event, serialized via the workflow
-   * serialization pipeline. To display the error to a user, hydrate it via
-   * `hydrateRunError` (with the encryption key if encryption is enabled).
-   * Observability tools cannot view the error without going through the
-   * decryption + hydration pipeline.
-   */
-  error: SerializedDataSchema.optional(),
-  /**
-   * The high-level error category (USER_ERROR, RUNTIME_ERROR, etc.) from a
-   * run_failed event. Kept as plaintext metadata for routing and filtering
-   * without needing to decrypt the full error payload.
-   */
-  errorCode: z.string().optional(),
-  /**
-   * Plaintext string-string metadata attached to the run via
-   * `setAttributes()` (or, in the future, materialized
-   * from `attr_set` events). Stored unencrypted alongside other
-   * plaintext fields so observability surfaces can read it without
-   * going through the decryption pipeline.
-   *
-   * Defaults to `{}` after schema parsing so consumers always receive
-   * a record regardless of world. World adapters need not initialize
-   * the field on disk: `world-local` JSON files written before this
-   * field existed, and rows from any other adapter that omits the
-   * column, both read as `{}` after Zod parses them.
-   *
-   * EXPERIMENTAL (MVP): the full Workflow Attributes feature replaces
-   * the direct-mutation MVP path with an event-sourced model. See
-   * the attributes-mvp changelog entry.
-   */
-  attributes: z.record(z.string(), z.string()).default({}),
-  /**
-   * The run's X25519 public key, base64-encoded (~44 chars).
-   *
-   * Lets any party that can read this run seal a payload *to* it without
-   * being able to read the run's data. This is used for cross-run writes
-   * such as a hook resumption from another deployment, or a child workflow
-   * writing into a forwarded stream. The matching private scalar is never
-   * stored: it is re-derived on demand from the deployment's own key
-   * material, so this field is not secret and its presence does not weaken
-   * the run's confidentiality.
-   *
-   * Stamped at run creation by SDKs that support sealed (`encp`) envelopes.
-   * **Presence is the writer-side gate**: a run only carries a public key if
-   * the runtime that created it could also open sealed payloads, and runs are
-   * pinned to their creating deployment. Writers therefore seal iff this
-   * field is set, and otherwise fall back to fetching the symmetric per-run
-   * key. Absent on runs created by older SDKs, and on worlds that do not
-   * implement `getEncryptionKeyForRun` (encryption disabled).
-   */
-  encryptionPublicKey: z.string().optional(),
-  expiredAt: z.coerce.date().optional(),
-  startedAt: z.coerce.date().optional(),
-  completedAt: z.coerce.date().optional(),
-  createdAt: z.coerce.date(),
-  updatedAt: z.coerce.date(),
-});
+export const WorkflowRunBaseSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    status: WorkflowRunStatusSchema,
+    deploymentId: z.string(),
+    /**
+     * The machine-readable name of the workflow function.
+     *
+     * This field contains a structured identifier like `workflow//./src/workflows/order//processOrder`
+     * that encodes the workflow's module specifier and function name.
+     *
+     * Use `parseWorkflowName()` from `@workflow/utils/parse-name` to extract:
+     * - `shortName`: User-friendly display name (e.g., `"processOrder"`)
+     * - `moduleSpecifier`: The module path or package (e.g., `"./src/workflows/order"`)
+     * - `functionName`: The full function path (e.g., `"processOrder"`)
+     *
+     * @example
+     * ```ts
+     * import { parseWorkflowName } from "@workflow/utils/parse-name";
+     *
+     * const parsed = parseWorkflowName(run.workflowName);
+     * // parsed.shortName → "processOrder"
+     * // parsed.moduleSpecifier → "./src/workflows/order"
+     * ```
+     */
+    workflowName: z.string(),
+    // Optional in database for backward compatibility, defaults to 1 (legacy) when reading
+    specVersion: z.number().optional(),
+    executionContext: z.record(z.string(), z.any()).optional(),
+    input: SerializedDataSchema.optional(),
+    output: SerializedDataSchema.optional(),
+    /**
+     * The thrown value from a run_failed event, serialized via the workflow
+     * serialization pipeline. To display the error to a user, hydrate it via
+     * `hydrateRunError` (with the encryption key if encryption is enabled).
+     * Observability tools cannot view the error without going through the
+     * decryption + hydration pipeline.
+     */
+    error: SerializedDataSchema.optional(),
+    /**
+     * The high-level error category (USER_ERROR, RUNTIME_ERROR, etc.) from a
+     * run_failed event. Kept as plaintext metadata for routing and filtering
+     * without needing to decrypt the full error payload.
+     */
+    errorCode: z.string().optional(),
+    /**
+     * Plaintext string-string metadata attached to the run via
+     * `setAttributes()` (or, in the future, materialized
+     * from `attr_set` events). Stored unencrypted alongside other
+     * plaintext fields so observability surfaces can read it without
+     * going through the decryption pipeline.
+     *
+     * Defaults to `{}` after schema parsing so consumers always receive
+     * a record regardless of world. World adapters need not initialize
+     * the field on disk: `world-local` JSON files written before this
+     * field existed, and rows from any other adapter that omits the
+     * column, both read as `{}` after Zod parses them.
+     *
+     * EXPERIMENTAL (MVP): the full Workflow Attributes feature replaces
+     * the direct-mutation MVP path with an event-sourced model. See
+     * the attributes-mvp changelog entry.
+     */
+    attributes: z.record(z.string(), z.string()).default({}),
+    /**
+     * The run's X25519 public key, base64-encoded (~44 chars).
+     *
+     * Lets any party that can read this run seal a payload *to* it without
+     * being able to read the run's data. This is used for cross-run writes
+     * such as a hook resumption from another deployment, or a child workflow
+     * writing into a forwarded stream. The matching private scalar is never
+     * stored: it is re-derived on demand from the deployment's own key
+     * material, so this field is not secret and its presence does not weaken
+     * the run's confidentiality.
+     *
+     * Stamped at run creation by SDKs that support sealed (`encp`) envelopes.
+     * **Presence is the writer-side gate**: a run only carries a public key if
+     * the runtime that created it could also open sealed payloads, and runs are
+     * pinned to their creating deployment. Writers therefore seal iff this
+     * field is set, and otherwise fall back to fetching the symmetric per-run
+     * key. Absent on runs created by older SDKs, and on worlds that do not
+     * implement `getEncryptionKeyForRun` (encryption disabled).
+     */
+    encryptionPublicKey: z.string().optional(),
+    expiredAt: z.coerce.date().optional(),
+    startedAt: z.coerce.date().optional(),
+    completedAt: z.coerce.date().optional(),
+    createdAt: z.coerce.date(),
+    updatedAt: z.coerce.date(),
+  })
+);
 
 // Discriminated union based on status
-export const WorkflowRunSchema = z.discriminatedUnion('status', [
-  // Non-final states
-  WorkflowRunBaseSchema.extend({
-    status: z.enum(['pending', 'running']),
-    output: z.undefined().optional(),
-    error: z.undefined().optional(),
-    completedAt: z.undefined().optional(),
-  }),
-  // Cancelled state
-  WorkflowRunBaseSchema.extend({
-    status: z.literal('cancelled'),
-    output: z.undefined().optional(),
-    error: z.undefined().optional(),
-    completedAt: z.coerce.date(),
-  }),
-  // Completed state - output can be v1 or v2 format
-  WorkflowRunBaseSchema.extend({
-    status: z.literal('completed'),
-    output: SerializedDataSchema.optional(),
-    error: z.undefined().optional(),
-    completedAt: z.coerce.date(),
-  }),
-  // Failed state
-  WorkflowRunBaseSchema.extend({
-    status: z.literal('failed'),
-    output: z.undefined().optional(),
-    error: SerializedDataSchema.optional(),
-    completedAt: z.coerce.date(),
-  }),
-]);
+export const WorkflowRunSchema = z.compile(
+  z.discriminatedUnion('status', [
+    // Non-final states
+    WorkflowRunBaseSchema.extend({
+      status: z.enum(['pending', 'running']),
+      output: z.undefined().optional(),
+      error: z.undefined().optional(),
+      completedAt: z.undefined().optional(),
+    }),
+    // Cancelled state
+    WorkflowRunBaseSchema.extend({
+      status: z.literal('cancelled'),
+      output: z.undefined().optional(),
+      error: z.undefined().optional(),
+      completedAt: z.coerce.date(),
+    }),
+    // Completed state - output can be v1 or v2 format
+    WorkflowRunBaseSchema.extend({
+      status: z.literal('completed'),
+      output: SerializedDataSchema.optional(),
+      error: z.undefined().optional(),
+      completedAt: z.coerce.date(),
+    }),
+    // Failed state
+    WorkflowRunBaseSchema.extend({
+      status: z.literal('failed'),
+      output: z.undefined().optional(),
+      error: SerializedDataSchema.optional(),
+      completedAt: z.coerce.date(),
+    }),
+  ])
+);
 
 // Inferred types
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
@@ -235,16 +233,18 @@ export const BULK_CANCEL_MAX_RUN_IDS = 500;
  * `cancelReason` (max 512 chars) is recorded on each run_cancelled event,
  * mirroring the single-run {@link CancelRunOptions.cancelReason}.
  */
-export const BulkCancelWorkflowRunsRequestSchema = z.object({
-  runIds: z
-    .array(z.string())
-    .min(1)
-    .max(BULK_CANCEL_MAX_RUN_IDS)
-    .refine((ids) => new Set(ids).size === ids.length, {
-      message: 'runIds must not contain duplicates',
-    }),
-  cancelReason: z.string().max(512).optional(),
-});
+export const BulkCancelWorkflowRunsRequestSchema = z.compile(
+  z.object({
+    runIds: z
+      .array(z.string())
+      .min(1)
+      .max(BULK_CANCEL_MAX_RUN_IDS)
+      .refine((ids) => new Set(ids).size === ids.length, {
+        message: 'runIds must not contain duplicates',
+      }),
+    cancelReason: z.string().max(512).optional(),
+  })
+);
 export type BulkCancelWorkflowRunsRequest = z.infer<
   typeof BulkCancelWorkflowRunsRequestSchema
 >;
@@ -260,9 +260,8 @@ export type BulkCancelWorkflowRunsRequest = z.infer<
  * - `failed`: cancellation failed; `code` is a machine-readable error code
  *   and `retryable` indicates whether retrying may succeed.
  */
-export const BulkCancelWorkflowRunResultSchema = z.discriminatedUnion(
-  'outcome',
-  [
+export const BulkCancelWorkflowRunResultSchema = z.compile(
+  z.discriminatedUnion('outcome', [
     z.object({ runId: z.string(), outcome: z.literal('cancelled') }),
     z.object({ runId: z.string(), outcome: z.literal('already_cancelled') }),
     z.object({
@@ -277,7 +276,7 @@ export const BulkCancelWorkflowRunResultSchema = z.discriminatedUnion(
       code: z.string(),
       retryable: z.boolean(),
     }),
-  ]
+  ])
 );
 export type BulkCancelWorkflowRunResult = z.infer<
   typeof BulkCancelWorkflowRunResultSchema
@@ -287,17 +286,19 @@ export type BulkCancelWorkflowRunResult = z.infer<
  * Aggregate result of a bulk cancellation. `results` preserves the order of
  * the requested `runIds`; `summary` counts each outcome.
  */
-export const BulkCancelWorkflowRunsResultSchema = z.object({
-  summary: z.object({
-    requested: z.number(),
-    cancelled: z.number(),
-    alreadyCancelled: z.number(),
-    notCancellable: z.number(),
-    notFound: z.number(),
-    failed: z.number(),
-  }),
-  results: z.array(BulkCancelWorkflowRunResultSchema),
-});
+export const BulkCancelWorkflowRunsResultSchema = z.compile(
+  z.object({
+    summary: z.object({
+      requested: z.number(),
+      cancelled: z.number(),
+      alreadyCancelled: z.number(),
+      notCancellable: z.number(),
+      notFound: z.number(),
+      failed: z.number(),
+    }),
+    results: z.array(BulkCancelWorkflowRunResultSchema),
+  })
+);
 export type BulkCancelWorkflowRunsResult = z.infer<
   typeof BulkCancelWorkflowRunsResultSchema
 >;
