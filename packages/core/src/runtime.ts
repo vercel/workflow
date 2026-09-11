@@ -2910,6 +2910,13 @@ export function workflowEntrypoint(
                               ? eventLog.events
                               : undefined,
                           preloadedEventsComplete: eventLog.type === 'ready',
+                          // Where that log was read to, so the engine reads
+                          // forward from it and can ask for an inline delta
+                          // against it.
+                          preloadedCursor:
+                            eventLog.type === 'ready'
+                              ? eventLog.cursor
+                              : undefined,
                           runInput,
                           parentSpan: span,
                           maxEventsLimit,

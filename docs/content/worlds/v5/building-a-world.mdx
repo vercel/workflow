@@ -197,6 +197,8 @@ The version a World stamps comes from `mintedSpecVersion()`: 7 by default or the
 
 `events.create()` params carry `eventCount`: how many events the writer held in the log it replayed from, which is the position it expects to land on minus one. Attempt `eventCount + 1`. When that position is taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped over on the success response, in `events` with a matching `cursor` and `hasMore`. The writer merges them into its own log and replays once, rather than paying a second round trip to discover it was behind. A caller with a stale count is the normal case for a fan-out, and rejecting it would serialize writes the runtime issues in parallel.
 
+Not every write carries `eventCount`, and a World is free to skip the report read for event types whose writer never holds a log to merge it into (the step executor's `step_started`, `step_retrying`, `step_completed`, and `step_failed`, and the run-terminal `run_completed`, `run_failed`, and `run_cancelled`). Which writes send `eventCount` or `sinceCursor`, and why, is tabulated in [Events returned on a write](/docs/how-it-works/event-sourcing#events-returned-on-a-write). When a write carries both, the `sinceCursor` delta is a superset of the report, so return the delta and skip the report.
+
 ### Optional: rejecting a stale write
 
 A replay writes events derived from the event log it loaded, so a write made from an event log that no longer matches the store can commit events no correct replay would produce. Rejecting one means answering `events.create()` with a `PreconditionFailedError` when the run's log already holds more events than the caller's `eventCount` says it had loaded.
