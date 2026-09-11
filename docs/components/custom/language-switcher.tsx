@@ -25,9 +25,8 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { rewriteHrefForVersion } from '@/lib/geistdocs/version-href';
 import { getVersionFromPathname } from '@/lib/geistdocs/versions';
+import { LANGUAGE_QUERY_PARAM, resolveLanguage } from '@/lib/language';
 import { cn } from '@/lib/utils';
-
-const QUERY_PARAM = 'language';
 
 const listeners = new Set<() => void>();
 let currentLanguage: string | null = null;
@@ -172,7 +171,7 @@ function useLanguageStore(
       setLanguage(value);
 
       const params = new URLSearchParams(window.location.search);
-      params.set(QUERY_PARAM, value);
+      params.set(LANGUAGE_QUERY_PARAM, value);
       const query = params.toString();
       router.replace(
         `${pathname}${query ? `?${query}` : ''}${window.location.hash}`,
@@ -185,15 +184,42 @@ function useLanguageStore(
   return [selected, updateSelected];
 }
 
-function LanguageUrlSyncer(): null {
+function LanguageUrlSyncer({
+  languages,
+  defaultValue,
+}: {
+  languages: readonly string[];
+  defaultValue: string;
+}): null {
   const searchParams = useSearchParams();
-  const urlLanguage = searchParams.get(QUERY_PARAM);
+  const pathname = usePathname();
+  const router = useRouter();
+  const urlLanguage = searchParams.get(LANGUAGE_QUERY_PARAM);
+  const languageValues = JSON.stringify(languages);
 
   useEffect(() => {
-    if (urlLanguage && urlLanguage !== currentLanguage) {
-      setLanguage(urlLanguage);
+    const available: string[] = JSON.parse(languageValues);
+    const fallback = resolveLanguage(available, defaultValue);
+    const requested = urlLanguage || currentLanguage;
+    const selected =
+      requested && available.includes(requested) ? requested : fallback;
+    if (selected !== currentLanguage) setLanguage(selected);
+
+    // A selection survives client-side navigation. Keep the next page's URL
+    // in sync so its View as Markdown and Copy page actions export that language.
+    // Read the store only on URL changes; an in-flight router.replace must not
+    // undo a selection made by the user before the new URL arrives.
+    if (
+      selected !== urlLanguage &&
+      (urlLanguage !== null || selected !== fallback)
+    ) {
+      const params = new URLSearchParams(window.location.search);
+      params.set(LANGUAGE_QUERY_PARAM, selected);
+      router.replace(`${pathname}?${params}${window.location.hash}`, {
+        scroll: false,
+      });
     }
-  }, [urlLanguage]);
+  }, [defaultValue, languageValues, pathname, router, urlLanguage]);
 
   return null;
 }
@@ -291,7 +317,10 @@ export function LanguageSwitcher({
   return (
     <>
       <Suspense fallback={null}>
-        <LanguageUrlSyncer />
+        <LanguageUrlSyncer
+          defaultValue={defaultValue}
+          languages={availableValues}
+        />
       </Suspense>
       <Tabs
         className={cn('my-4 gap-0', className)}
@@ -342,7 +371,10 @@ function PageLanguageSwitcherImpl({
   return (
     <div className={cn('mb-6', className)} data-page-language-switcher>
       <Suspense fallback={null}>
-        <LanguageUrlSyncer />
+        <LanguageUrlSyncer
+          defaultValue={languages[0] ?? 'ts'}
+          languages={languages}
+        />
       </Suspense>
       <Select onValueChange={setSelected} value={selected}>
         <SelectTrigger

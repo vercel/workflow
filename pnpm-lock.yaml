@@ -263,9 +263,15 @@ importers:
         specifier: 'catalog:'
         version: 4.3.6
     devDependencies:
+      '@types/mdast':
+        specifier: ^4.0.4
+        version: 4.0.4
       bun:
         specifier: ^1.3.0
         version: 1.3.0
+      mdast-util-mdx-jsx:
+        specifier: ^3.2.0
+        version: 3.2.0(supports-color@10.2.2)
       postcss:
         specifier: ^8.5.18
         version: 8.5.22
@@ -281,6 +287,9 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@24.6.2)(@vitest/coverage-v8@4.1.10)(jsdom@26.1.0(supports-color@10.2.2))(vite@8.1.3(@types/node@24.6.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.9.0))
 
   packages/ai:
     dependencies:

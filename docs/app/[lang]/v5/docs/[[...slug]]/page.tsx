@@ -1,5 +1,8 @@
 import { MobileDocsBar } from '@vercel/geistdocs/mobile-docs-bar';
-import { createDocsPage } from '@vercel/geistdocs/pages/docs';
+import {
+  createDocsPage,
+  resolvePageMarkdownUrl,
+} from '@vercel/geistdocs/pages/docs';
 import { Card, type CardProps } from 'fumadocs-ui/components/card';
 import { permanentRedirect } from 'next/navigation';
 import type { ComponentProps, ComponentType } from 'react';
@@ -13,6 +16,7 @@ import { source, v5GeistdocsSource } from '@/lib/geistdocs/source';
 import { rewriteHrefForVersion } from '@/lib/geistdocs/version-href';
 import { getDocsTreeForVersion } from '@/lib/geistdocs/version-source';
 import { PRE_RELEASE_VERSION } from '@/lib/geistdocs/versions';
+import { LANGUAGE_QUERY_PARAM, resolveLanguage } from '@/lib/language';
 
 const VERSION_PREFIX = '/v5';
 const DEFAULT_LANG = config.defaultLanguage ?? 'en';
@@ -36,7 +40,7 @@ function V5Card(props: CardProps) {
   return <Card {...props} href={v5Href(props.href)} />;
 }
 
-function createV5DocsPage(languageSwitcher?: string[]) {
+function createV5DocsPage(languageSwitcher?: string[], language?: string) {
   return createDocsPage({
     config: {
       ...config,
@@ -47,6 +51,15 @@ function createV5DocsPage(languageSwitcher?: string[]) {
     },
     source: v5GeistdocsSource,
     getPageUrl,
+    getMarkdownUrl: (context) => {
+      const url = resolvePageMarkdownUrl({
+        ...context,
+        basePath: config.basePath,
+      });
+      return language
+        ? `${url}?${new URLSearchParams({ [LANGUAGE_QUERY_PARAM]: language })}`
+        : url;
+    },
     mdx: ({ link, page }) =>
       getMDXComponents({
         a: link,
@@ -132,8 +145,19 @@ const Page = async (props: PageProps<'/[lang]/v5/docs/[[...slug]]'>) => {
 
   const page = v5GeistdocsSource.source.getPage(slug, lang);
   const pageData = page?.data as LanguageSwitcherFrontmatter | undefined;
+  const languages = pageData?.languageSwitcher;
+  const searchParams = languages ? await props.searchParams : {};
+  const requestedLanguage = searchParams[LANGUAGE_QUERY_PARAM];
+  const language = languages
+    ? resolveLanguage(
+        languages,
+        Array.isArray(requestedLanguage)
+          ? requestedLanguage[0]
+          : requestedLanguage
+      )
+    : undefined;
 
-  return createV5DocsPage(pageData?.languageSwitcher).Page(props);
+  return createV5DocsPage(languages, language).Page(props);
 };
 
 export default Page;

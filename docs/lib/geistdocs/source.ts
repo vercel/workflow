@@ -6,6 +6,10 @@ import {
 import type { Node, Root } from 'fumadocs-core/page-tree';
 import { v4docs, v5docs, worldsV4Docs, worldsV5Docs } from '@/.source/server';
 import { config } from './config';
+import {
+  type LanguageMarkdownSource,
+  withLanguageMarkdown,
+} from './language-markdown';
 import { hasPathPrefix, replacePathPrefix } from './path-prefix';
 import { resolveSectionChildren } from './section-children';
 
@@ -147,13 +151,13 @@ const versionedSources = createVersionedSources({
 const createDocsRouteSource = (
   bundle: GeistdocsSourceBundle,
   options: { id: string; label: string; versionPrefix?: string }
-): GeistdocsSourceBundle => {
+): LanguageMarkdownSource => {
   const { id, label, versionPrefix = '' } = options;
   const baseSource = bundle.source;
   const mapPage = (page: Page) =>
     versionPrefix ? withUrl(page, `${versionPrefix}${page.url}`) : page;
 
-  return {
+  return withLanguageMarkdown({
     ...bundle,
     id,
     label,
@@ -180,7 +184,7 @@ const createDocsRouteSource = (
               !(Array.isArray(params.slug) && params.slug[0] === 'cookbook')
           )) as unknown as Source['generateParams'],
     },
-  };
+  });
 };
 
 const resolveCookbookSlug = (slug?: string[]) => {
@@ -194,13 +198,13 @@ const resolveCookbookSlug = (slug?: string[]) => {
 const createCookbookRouteSource = (
   bundle: GeistdocsSourceBundle,
   options: { id: string; label: string; versionPrefix?: string }
-): GeistdocsSourceBundle => {
+): LanguageMarkdownSource => {
   const { id, label, versionPrefix = '' } = options;
   const baseSource = bundle.source;
   const mapPage = (page: Page) =>
     withUrl(page, rewriteCookbookUrlForVersion(page.url, versionPrefix));
 
-  return {
+  return withLanguageMarkdown({
     ...bundle,
     id,
     label,
@@ -231,7 +235,7 @@ const createCookbookRouteSource = (
               : params.slug,
           }))) as unknown as Source['generateParams'],
     },
-  };
+  });
 };
 
 export const versions = versionedSources;
@@ -272,13 +276,15 @@ export const v5CookbookSource = createCookbookRouteSource(
 // routes (not the docs layout), but the bundles are included in the source
 // lists so they stay covered by search, llms.txt, sitemap(.md), and the
 // markdown export routes.
-export const worldsSourceBundle = createSource({
-  config,
-  docs: worldsV4Docs,
-  baseUrl: '/worlds',
-  id: 'worlds',
-  label: 'Worlds',
-});
+export const worldsSourceBundle = withLanguageMarkdown(
+  createSource({
+    config,
+    docs: worldsV4Docs,
+    baseUrl: '/worlds',
+    id: 'worlds',
+    label: 'Worlds',
+  })
+);
 
 const v5WorldsBundleRaw = createSource({
   config,
@@ -296,7 +302,7 @@ const v5WorldsBundleRaw = createSource({
 // Route/list surfaces see the v5 worlds pages in their public /v5/worlds/...
 // URL space (the raw loader keeps /worlds/... URLs, mirroring how the v5 docs
 // source is wrapped by createDocsRouteSource).
-export const v5WorldsSourceBundle: GeistdocsSourceBundle = {
+export const v5WorldsSourceBundle = withLanguageMarkdown({
   ...v5WorldsBundleRaw,
   baseUrl: '/v5/worlds',
   source: {
@@ -310,7 +316,7 @@ export const v5WorldsSourceBundle: GeistdocsSourceBundle = {
         .getPages(lang)
         .map((page) => withUrl(page, `/v5${page.url}`))) as Source['getPages'],
   },
-};
+});
 
 export const worldsSource = worldsSourceBundle.source;
 export const v5WorldsSource = v5WorldsBundleRaw.source;
@@ -332,4 +338,4 @@ export const allSources = [
 export const source = versionedSources.current.source;
 export const v5Source = versionedSources.byId.v5.source;
 export const getPageImage = versionedSources.current.getPageImage;
-export const getLLMText = versionedSources.current.getPageMarkdown;
+export const getLLMText = geistdocsSource.getPageMarkdown;
