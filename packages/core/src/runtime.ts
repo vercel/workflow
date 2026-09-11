@@ -90,6 +90,10 @@ import {
   withHealthCheck,
 } from './runtime/helpers.js';
 import {
+  hasImminentOpenWait,
+  openHookAndWaitState,
+} from './runtime/open-hook-wait-state.js';
+import {
   handleReplayBudgetExhausted,
   ReplayBudget,
 } from './runtime/replay-budget.js';
@@ -486,49 +490,6 @@ function rootRunIdFrom(
   runId: string
 ): string {
   return attributes?.[ROOT_RUN_ID_ATTRIBUTE] ?? runId;
-}
-
-/**
- * Whether the run has a hook and/or wait that an out-of-band writer could
- * append an event for between an inline step's `step_completed` write and
- * the next replay, namely an open hook (a `hook_created` not yet
- * `hook_disposed`, which a webhook receiver can resolve with
- * `hook_received`) or an open wait (a `wait_created` not yet
- * `wait_completed`, which the wait timer can resolve with
- * `wait_completed`).
- *
- * Open waits block inline deltas. Open hooks and waits disable turbo's forced
- * optimistic start. Open hooks additionally suppress operator-enabled
- * optimistic start until the `step_started` claim succeeds; open waits leave
- * that explicit, idempotency-only opt-in alone.
- *
- * Step-body `attr_set` writes are NOT a concern: they land before the
- * step's terminal write and are therefore already inside the returned
- * delta.
- */
-function openHookAndWaitState(events: Event[]): {
-  openHook: boolean;
-  openWait: boolean;
-} {
-  const hooks = new Set<string>();
-  const waits = new Set<string>();
-  for (const event of events) {
-    switch (event.eventType) {
-      case 'hook_created':
-        hooks.add(event.correlationId);
-        break;
-      case 'hook_disposed':
-        hooks.delete(event.correlationId);
-        break;
-      case 'wait_created':
-        waits.add(event.correlationId);
-        break;
-      case 'wait_completed':
-        waits.delete(event.correlationId);
-        break;
-    }
-  }
-  return { openHook: hooks.size > 0, openWait: waits.size > 0 };
 }
 
 type RetentionDecision =
@@ -4230,8 +4191,16 @@ export function workflowEntrypoint(
                         }
 
                         // Open hooks/waits are consulted by all three gates
-                        // below; resolve the memoized scan once here.
+                        // below; resolve the memoized scan once here. Wait
+                        // imminence is read against this gate's own clock:
+                        // the delta and turbo gates care whether a
+                        // `wait_completed` can land during the boundary that
+                        // starts now, not whether a wait exists at all.
                         const openHookWaitState = openHookWait.value;
+                        const imminentOpenWait = hasImminentOpenWait(
+                          openHookWaitState,
+                          Date.now()
+                        );
 
                         // Inline-delta fast path gate. We request the delta
                         // (and on the next iteration consume it in place of the
@@ -4248,12 +4217,21 @@ export function workflowEntrypoint(
                         //    siblings queued to background handlers, and no other
                         //    inline step writing its own events out of band).
                         //  - No pending wait timer from THIS suspension, and no
-                        //    open wait in the cumulative log. A `wait_completed`
-                        //    is a resolution the replay is waiting on rather
-                        //    than an event it can observe one iteration late,
-                        //    so consuming a delta that predates it would settle
+                        //    open wait in the cumulative log that is due within
+                        //    the imminence horizon. A `wait_completed` is a
+                        //    resolution the replay is waiting on rather than
+                        //    an event it can observe one iteration late, so
+                        //    consuming a delta that predates it would settle
                         //    the sleep from a view that does not contain its
-                        //    completion.
+                        //    completion. A wait due far in the future cannot
+                        //    produce one during this step boundary, and since
+                        //    nothing disposes a wait, a `sleep()` that lost a
+                        //    race against a hook would otherwise hold every
+                        //    later boundary of the run on the fetch path. See
+                        //    `IMMINENT_WAIT_HORIZON_MS` for the window and why
+                        //    a `wait_completed` that lands anyway (an operator
+                        //    force-completing the wait) is absorbed by the
+                        //    next read rather than lost.
                         //  - An open (or this-suspension-created) hook is
                         //    fine, and that is the gate this used to carry.
                         //    The delta snapshots the log at the step_completed
@@ -4297,7 +4275,7 @@ export function workflowEntrypoint(
                           lazyInlineSteps.length === 1 &&
                           ownedRecoverySteps.length === 0 &&
                           !suspensionResult.waitTimeout &&
-                          !openHookWaitState.openWait;
+                          !imminentOpenWait;
 
                         // Stale-sensitive batch: a hook is open in the run (or
                         // was created by this suspension, so its hook_received
@@ -4340,11 +4318,22 @@ export function workflowEntrypoint(
                         // in an earlier iteration of the same delivery (e.g. a
                         // fire-and-forget `createHook(...)` that doesn't block the
                         // workflow, letting the replay loop continue to later pure
-                        // step suspensions). Once any hook or wait is open in the
+                        // step suspensions). Once any hook is open in the
                         // cumulative log, resume/parallel invocations are possible
                         // for the rest of the run, so turbo must latch off
                         // permanently, checked here via `openHookAndWaitState`
                         // over the cumulative event log.
+                        //
+                        // An open wait latches turbo off only while its
+                        // `resumeAt` is within the imminence horizon. The
+                        // invocation a wait can spawn is its timer's resume,
+                        // which does not exist before the deadline, and by the
+                        // time a far-future one arrives this batch's
+                        // `step_started` claims have long since landed, so it
+                        // replays over them instead of racing for them. A
+                        // far-future wait therefore leaves turbo on until its
+                        // deadline comes within the horizon; only hooks latch
+                        // permanently. See `IMMINENT_WAIT_HORIZON_MS`.
                         //
                         // NOTE: `WORKFLOW_SEQUENTIAL_REPLAYS=1` (per-run flow
                         // topics consumed with `maxConcurrency: 1`) would in
@@ -4367,7 +4356,7 @@ export function workflowEntrypoint(
                           !suspensionResult.hasHookEvents &&
                           !suspensionResult.hasAwaitedHookCreation &&
                           !openHookWaitState.openHook &&
-                          !openHookWaitState.openWait;
+                          !imminentOpenWait;
 
                         // Execute the inline steps in parallel. The replay
                         // budget is paused for the whole batch (step duration is
