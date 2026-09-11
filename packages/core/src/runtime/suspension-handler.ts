@@ -1134,8 +1134,9 @@ export async function handleSuspension({
       // Deterministic position in the batched fold (assigned in stepItems
       // order, before the concurrent dehydration runs). A pair-folded inline
       // step occupies two consecutive positions (created row then started
-      // row), which the flush keeps adjacent and never splits across chunks,
-      // so a World can fold them into one born-running create.
+      // row), which the flush keeps adjacent, never splits across chunks,
+      // and commits in a pair-only chunk ahead of the plain creates, so a
+      // World can fold them into one born-running create.
       const pairFolded =
         inlinePairFoldEligible &&
         lazyInlineCorrelationIds.has(queueItem.correlationId);
@@ -1424,7 +1425,9 @@ export async function handleSuspension({
   // delivery the way a single-path rejection would.
   //
   // Latency shape: only the chunk carrying the pre-claimed inline pairs
-  // gates the handler's return (the caller starts bodies off its claims).
+  // gates the handler's return (the caller starts bodies off its claims),
+  // and that chunk carries NOTHING else, so its commit is as small as the
+  // inline slice (see the chunking below).
   // Every other chunk's commit (and every chunk's step-message publishes,
   // which fire the moment ITS creates are durable) rides
   // `deferredBatchWork` when the caller opted in, joined before ack. A slow
@@ -1485,17 +1488,32 @@ export async function handleSuspension({
         const expectedFirstSlot = eventLog
           ? (maxEventSlot(eventLog.events) ?? 0) + 1
           : undefined;
-        // Pair-aware chunking: a pre-claimed pair's two rows must land in
-        // the same createBatch call (adjacent, so a World can fold them
-        // into one born-running create) and never straddle a chunk
-        // boundary, which would turn the started row into a standalone
-        // claim racing its own create's commit.
-        const chunks: (typeof entries)[] = [];
-        {
+        // Pair-aware chunking. Two rules:
+        //
+        // 1. A pre-claimed pair's two rows must land in the same createBatch
+        //    call (adjacent, so a World can fold them into one born-running
+        //    create) and never straddle a chunk boundary, which would turn
+        //    the started row into a standalone claim racing its own
+        //    create's commit.
+        // 2. The pairs commit in chunk(s) of THEIR OWN, ahead of the plain
+        //    `step`/`wait` creates, which fill the subsequent chunks. The
+        //    pair chunk is the one commit the inline bodies wait for (see
+        //    `pairCommits` below), and on the Vercel backend its latency
+        //    scales with the transaction's item count: measured on 32-branch
+        //    fan-outs, batches of <=8 events commit in ~56 ms p50 server-side
+        //    where batches of 24-32 events take ~110 ms. Padding the pair
+        //    chunk with plain creates up to the cap therefore held the
+        //    bodies for the plain creates' commit, which nothing else
+        //    needed: a plain create gates only its own queue publish, and
+        //    that fires off whichever sibling chunk carries it. Splitting
+        //    them keeps the pair chunk small (two rows per inline step) and
+        //    lets the plain creates commit concurrently beside it.
+        const chunkEntries = (list: typeof entries): (typeof entries)[] => {
+          const out: (typeof entries)[] = [];
           let current: typeof entries = [];
-          for (let index = 0; index < entries.length; index++) {
-            const entry = entries[index];
-            const next = entries[index + 1];
+          for (let index = 0; index < list.length; index++) {
+            const entry = list[index];
+            const next = list[index + 1];
             const pairLead =
               entry.kind === 'inline-created' &&
               next?.kind === 'inline-started' &&
@@ -1505,7 +1523,7 @@ export async function handleSuspension({
               current.length > 0 &&
               current.length + take > MAX_BATCH_FANOUT_EVENTS
             ) {
-              chunks.push(current);
+              out.push(current);
               current = [];
             }
             current.push(entry);
@@ -1514,8 +1532,18 @@ export async function handleSuspension({
               index++;
             }
           }
-          if (current.length > 0) chunks.push(current);
-        }
+          if (current.length > 0) out.push(current);
+          return out;
+        };
+        // Both partitions keep `entries`' order, so a pair's two rows
+        // (consecutive `order` values, enqueued together) stay adjacent in
+        // the pair partition.
+        const isPairRow = (entry: (typeof entries)[number]): boolean =>
+          entry.kind === 'inline-created' || entry.kind === 'inline-started';
+        const chunks: (typeof entries)[] = [
+          ...chunkEntries(entries.filter((entry) => isPairRow(entry))),
+          ...chunkEntries(entries.filter((entry) => !isPairRow(entry))),
+        ];
         // Steps whose queue messages THIS FLUSH will publish (the eager
         // creates), recorded before any chunk settles so the caller's
         // dispatch pass (which runs off the handler's return) skips them.
@@ -1773,11 +1801,11 @@ export async function handleSuspension({
         // a pair whose commit the caller has not seen yields no
         // `inlineClaims` entry, so the caller falls back to a lazy
         // `step_started` that would race this same fold's still-in-flight
-        // pair for the same step. Today pairs always land in one chunk
-        // (they sort first, and two rows per inline step fit inside one
-        // chunk, pinned by constants.test.ts), so this is at most one
-        // commit; the filter is what keeps the property true if either cap
-        // moves.
+        // pair for the same step. The pairs occupy their own leading
+        // chunk(s), and today that is exactly ONE chunk (two rows per
+        // inline step fit inside one chunk, pinned by constants.test.ts),
+        // so this is at most one commit; the filter is what keeps the
+        // property true if either cap moves.
         const pairCommits = chunks.flatMap((chunk, index) =>
           chunk.some((entry) => entry.kind === 'inline-started')
             ? [commits[index]]
