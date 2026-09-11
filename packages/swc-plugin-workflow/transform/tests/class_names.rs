@@ -71,6 +71,15 @@ fn assert_class_names(mode: TransformMode) {
             Ok(tester.print(&program, &tester.comments.clone()))
         });
 
+        // Step mode imports `registerStepFunction` from the `workflow`
+        // package, which is not resolvable from a bare `node --eval`. Stub
+        // the import so the output stays self-contained; the class-registry
+        // IIFE under test has no module dependencies of its own.
+        let code = code.replace(
+            "import { registerStepFunction } from \"workflow/internal/private\";",
+            "const registerStepFunction = () => {};",
+        );
+
         // Execute both the original and freshly transformed source, rather
         // than relying on snapshots of the generated class identifiers.
         let registered = format!(
