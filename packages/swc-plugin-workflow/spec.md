@@ -390,11 +390,11 @@ export class Counter {
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
 })(Counter, "class//./input//Counter");
 ```
 
-Note: Instance methods use `#` in the step ID (e.g., `Counter#add`) and are registered via `ClassName.prototype["methodName"]`.
+Note: Instance methods use `#` in the step ID (e.g., `Counter#add`) and are registered via `ClassName.prototype["methodName"]`. The `hasOwnProperty` guard before `classId` is defined is explained under [Custom serialization](#custom-serialization).
 
 ### Module-level directive
 
@@ -568,7 +568,7 @@ export class MyService {
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
 })(MyService, "class//./input//MyService");
 ```
 
@@ -581,7 +581,7 @@ MyService.process = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
 })(MyService, "class//./input//MyService");
 ```
 
@@ -651,11 +651,13 @@ export class Point {
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
 })(Point, "class//./input//Point");
 ```
 
 The registration is **inlined as a self-contained IIFE** that uses `Symbol.for("workflow-class-registry")` on `globalThis`. This approach works for third-party packages that don't depend on the `workflow` package directly and requires no module imports.
+
+The `Object.defineProperty` call is guarded by `hasOwnProperty`, making it idempotent: `classId` is defined non-configurable, so visiting the same class a second time would otherwise throw `Cannot redefine property: classId` and crash the bundle at module load. This is not merely defensive: some bundler pipelines legitimately re-run this transform over its own output for the same module. Observed case: a Vite/Nitro SSR build reaching a dependency (`@ai-sdk/gateway`, which ships its own `WORKFLOW_SERIALIZE`/`WORKFLOW_DESERIALIZE` methods) through more than one build stage, where the second stage's input is the first stage's already-registered output. On a named class expression (`var Foo = class _Foo {}`) the second pass also can't recover the binding name `Foo` — the class is no longer a bare initializer, it is now the argument of the first pass's registration call — so it falls back to the class expression's own inner name `_Foo` (see [Class names for IDs](#class-names-for-ids)) and would otherwise nest a second, differently-named registration around the first. The registry `.set()` call stays unconditional: a class visited under two different names is registered under both, and either resolves it.
 
 You can also use imported symbols from `@workflow/serde`:
 
@@ -740,7 +742,7 @@ var FileSystem = function(__wf_cls) {
     Object.defineProperty(__wf_fn, "name", { value: "readFile", configurable: true });
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//FileSystem", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", { value: "class//./input//FileSystem", writable: false, enumerable: false, configurable: false });
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", { value: "class//./input//FileSystem", writable: false, enumerable: false, configurable: false });
     return __wf_cls;
 }(class FileSystem {
     constructor(sandbox) { this.sandbox = sandbox; }
@@ -755,7 +757,7 @@ var FileSystem = function(__wf_cls) {
     __wf_cls.prototype["readFile"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//FileSystem#readFile");
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//FileSystem", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", { /* ... */ });
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", { /* ... */ });
     return __wf_cls;
 }(class FileSystem {
     constructor(sandbox) { this.sandbox = sandbox; }
