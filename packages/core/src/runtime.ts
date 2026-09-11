@@ -11,6 +11,7 @@ import {
   RUN_ERROR_CODES,
   type RunErrorCode,
   RunExpiredError,
+  WorkflowNotRegisteredError,
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -703,11 +704,49 @@ async function getMaxInlineDurationMs(
  * The handler loops: replay workflow → execute step inline → replay → ...
  * until the workflow completes, times out, or encounters non-step suspensions.
  *
- * @param workflowCode - The workflow bundle code containing all workflow functions
+ * @param workflowCode - A legacy workflow bundle or lazy loaders keyed by workflow ID
  * @returns A function that can be used as a Vercel API route
  */
+export type WorkflowCode =
+  | string
+  | Readonly<Record<string, () => Promise<string>>>;
+
+type WorkflowBundleModule = Readonly<{ default: string }>;
+
+/** Decode and memoize one content-addressed workflow VM sidecar. */
+export function createWorkflowBundleLoader(
+  loadModule: () => Promise<WorkflowBundleModule>
+): () => Promise<string> {
+  let workflowCode: Promise<string> | undefined;
+  return () =>
+    (workflowCode ??= loadModule().then(({ default: encoded }) =>
+      Buffer.from(encoded, 'base64').toString('utf8')
+    ));
+}
+
+async function loadWorkflowCode(
+  workflowCode: WorkflowCode,
+  workflowName: string
+): Promise<string> {
+  if (typeof workflowCode === 'string') return workflowCode;
+  // Avoid treating Object.prototype members as lazy workflow loaders.
+  if (!Object.hasOwn(workflowCode, workflowName)) {
+    throw new WorkflowNotRegisteredError(workflowName);
+  }
+  const load = workflowCode[workflowName];
+  if (!load) throw new WorkflowNotRegisteredError(workflowName);
+  try {
+    return await load();
+  } catch (error) {
+    throw new WorkflowRuntimeError(
+      `Failed to load workflow bundle for "${workflowName}"`,
+      { cause: error }
+    );
+  }
+}
+
 export function workflowEntrypoint(
-  workflowCode: string,
+  workflowCode: WorkflowCode,
   options?: {
     namespace?: string;
     routeModuleBodyStartedAt?: number;
@@ -902,6 +941,20 @@ export function workflowEntrypoint(
           return await withWorkflowBaggage(
             { workflowRunId: runId, workflowName },
             async () => {
+              let loadedWorkflowCode: string | undefined;
+              let workflowCodeLoad: Promise<string> | undefined;
+              const startWorkflowCodeLoad = (): Promise<string> => {
+                workflowCodeLoad ??= trace('workflow.bundle.load', () =>
+                  loadWorkflowCode(workflowCode, workflowName)
+                ).then((code) => {
+                  loadedWorkflowCode = code;
+                  return code;
+                });
+                void workflowCodeLoad.catch(() => {});
+                return workflowCodeLoad;
+              };
+              if (incomingStepId === undefined) startWorkflowCodeLoad();
+
               const world = await trace('workflow.route.get_world', async () =>
                 getWorld()
               );
@@ -978,9 +1031,9 @@ export function workflowEntrypoint(
                       if (!workflow || useQuickJSVm(workflow)) return;
                       if (compiledWorkflowName !== workflow.workflowName) {
                         compiledWorkflowName = workflow.workflowName;
-                        compiledWorkflowScripts = compileWorkflowBundle(
-                          workflowCode,
-                          workflow.workflowName
+                        compiledWorkflowScripts = startWorkflowCodeLoad().then(
+                          (code) =>
+                            compileWorkflowBundle(code, workflow.workflowName)
                         );
                         // Terminal runs can return without awaiting compilation.
                         void compiledWorkflowScripts.catch(() => {});
@@ -2040,6 +2093,11 @@ export function workflowEntrypoint(
                     }
                   }
 
+                  // Queue-only step deliveries usually return above and never
+                  // replay. Start loading only once this invocation is known to
+                  // need the workflow VM, while run/event setup is still ahead.
+                  const workflowCodePromise = startWorkflowCodeLoad();
+
                   // Deployment-affinity pre-check for the lazy hook fast
                   // path below. New lazy-resume messages carry the run's
                   // pinned deployment (`hookInput.deploymentId`), so a
@@ -2877,7 +2935,7 @@ export function workflowEntrypoint(
                           './runtime/quickjs-entrypoint.js'
                         );
                         const quickjsResult = await runWorkflowWithQuickJS({
-                          workflowCode,
+                          workflowCode: await workflowCodePromise,
                           workflowName,
                           workflowRun,
                           preloadedEvents:
@@ -3212,7 +3270,7 @@ export function workflowEntrypoint(
                           'Node workflow replay requires compiled scripts'
                         );
                         workflowResult = await replayWorkflow({
-                          workflowCode,
+                          workflowCode: await workflowCodePromise,
                           workflowRun,
                           events: eventLog.events,
                           encryptionKey: await encryptionKey.value,
@@ -4939,14 +4997,14 @@ export function workflowEntrypoint(
                         let errorStack =
                           normalizedError.stack || getErrorStack(terminalError);
 
-                        if (errorStack) {
+                        if (errorStack && loadedWorkflowCode) {
                           const parsedName = parseWorkflowName(workflowName);
                           const filename =
                             parsedName?.moduleSpecifier || workflowName;
                           errorStack = remapErrorStack(
                             errorStack,
                             filename,
-                            workflowCode
+                            loadedWorkflowCode
                           );
                         }
 

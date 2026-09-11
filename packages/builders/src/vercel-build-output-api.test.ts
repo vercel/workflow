@@ -84,7 +84,11 @@ async function writeWorkflowRuntimeStub(workingDir: string): Promise<void> {
   );
   await write(
     join(packageDir, 'runtime.js'),
-    'export function workflowEntrypoint() { return async function POST() { return new Response(null, { status: 204 }); }; }\n'
+    `export function workflowEntrypoint() { return async function POST() { return new Response(null, { status: 204 }); }; }
+export function createWorkflowBundleLoader(loadModule) {
+  let promise;
+  return () => (promise ??= loadModule().then(({ default: encoded }) => Buffer.from(encoded, 'base64').toString('utf8')));
+}\n`
   );
 }
 

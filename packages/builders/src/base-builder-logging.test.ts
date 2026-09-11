@@ -5,6 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkflowManifest } from './apply-swc-transform.js';
 import { BaseBuilder } from './base-builder.js';
 import type { StandaloneConfig } from './types.js';
+import {
+  serializeWorkflowBundle,
+  WORKFLOW_BUNDLE_DIRECTORY,
+  workflowBundleFileName,
+} from './workflow-bundle-module.js';
 
 class TestBuilder extends BaseBuilder {
   async build(): Promise<void> {
@@ -95,9 +100,23 @@ describe('base builder logging', () => {
 
   it('emits Next-like workflow compile summaries when manifests are created', async () => {
     const workflowBundlePath = join(testRoot, 'workflow.js');
+    const workflowBundleDir = join(testRoot, WORKFLOW_BUNDLE_DIRECTORY);
     const manifestDir = join(testRoot, '.well-known/workflow/v1');
     mkdirSync(manifestDir, { recursive: true });
-    writeFileSync(workflowBundlePath, '', 'utf-8');
+    mkdirSync(workflowBundleDir, { recursive: true });
+    const workflowCode = `async function run() {}
+run.workflowId = "workflow//src/workflow.ts//run";`;
+    const workflowBundleFile = workflowBundleFileName(workflowCode);
+    writeFileSync(
+      workflowBundlePath,
+      `const load = () => import('./${WORKFLOW_BUNDLE_DIRECTORY}/${workflowBundleFile}');`,
+      'utf-8'
+    );
+    writeFileSync(
+      join(workflowBundleDir, workflowBundleFile),
+      serializeWorkflowBundle(workflowCode),
+      'utf-8'
+    );
 
     const builder = createBuilder(testRoot);
     const manifest: WorkflowManifest = {

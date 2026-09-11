@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   mkdir,
+  readdir,
   readFile,
   realpath,
   rename,
@@ -47,7 +48,16 @@ import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
-import { extractWorkflowGraphs } from './workflows-extractor.js';
+import {
+  isWorkflowBundleFileName,
+  serializeWorkflowBundle,
+  WORKFLOW_BUNDLE_DIRECTORY,
+  workflowBundleFileName,
+} from './workflow-bundle-module.js';
+import {
+  extractWorkflowGraphs,
+  type WorkflowGraphCache,
+} from './workflows-extractor.js';
 import { hasSameContent, writeFileIfChanged } from './write-if-changed.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
@@ -97,6 +107,13 @@ const VALID_SOURCEMAP_STRINGS = new Set([
   'external',
   'both',
 ]);
+
+// Keep lazy VM sidecars out of the final route bundle. The generated import()
+// calls must remain runtime boundaries so a replay loads only its source file.
+const COMBINED_ROUTE_EXTERNALS = [
+  '@aws-sdk/credential-provider-web-identity',
+  `./${WORKFLOW_BUNDLE_DIRECTORY}/*`,
+];
 
 /**
  * Parse the value of the `WORKFLOW_SOURCEMAP` environment variable into a
@@ -190,6 +207,65 @@ function moduleIdentityKey(file: string, moduleSpecifierRoot: string): string {
   return file.replace(/\\/g, '/');
 }
 
+type CanonicalModuleEntry = {
+  file: string;
+  paths: readonly string[];
+  identities: readonly string[];
+};
+
+/**
+ * Plan one build entry per physical module while retaining every identity that
+ * the transformer may report for it. esbuild resolves symlinks before running
+ * transforms, so deduplicating only the discovered path can create an output
+ * slot whose manifest is owned by another alias of the same module.
+ */
+async function planCanonicalModuleEntries(
+  files: Iterable<string>,
+  moduleSpecifierRoot: string
+): Promise<CanonicalModuleEntry[]> {
+  const candidates = await Promise.all(
+    [...files].sort().map(async (file) => {
+      const paths = await withRealpaths([file]);
+      const identities = [
+        ...new Set(
+          paths.map((path) => moduleIdentityKey(path, moduleSpecifierRoot))
+        ),
+      ];
+      return {
+        file,
+        paths,
+        identities,
+        // withRealpaths() appends the physical path when it differs.
+        canonicalIdentity:
+          identities.at(-1) ?? moduleIdentityKey(file, moduleSpecifierRoot),
+      };
+    })
+  );
+  const entriesByIdentity = new Map<
+    string,
+    { file: string; paths: readonly string[]; identities: Set<string> }
+  >();
+  for (const candidate of candidates) {
+    const entry = entriesByIdentity.get(candidate.canonicalIdentity);
+    if (entry) {
+      for (const identity of candidate.identities) {
+        entry.identities.add(identity);
+      }
+      continue;
+    }
+    entriesByIdentity.set(candidate.canonicalIdentity, {
+      file: candidate.file,
+      paths: candidate.paths,
+      identities: new Set(candidate.identities),
+    });
+  }
+  return [...entriesByIdentity.values()].map(({ file, paths, identities }) => ({
+    file,
+    paths,
+    identities: [...identities],
+  }));
+}
+
 type CachedManifestTransform = {
   size: number;
   mtimeMs: number;
@@ -201,6 +277,52 @@ type CachedManifestTransform = {
    */
   contentHash: string;
 };
+
+type WorkflowBundle = {
+  /** JavaScript evaluated inside the workflow VM. */
+  code: string;
+  /** Content-addressed sidecar filename derived from `code`. */
+  fileName: string;
+  /** Workflow IDs registered when this source bundle is evaluated. */
+  workflowIds: string[];
+};
+
+/** State shared between the initial build and subsequent watch rebuilds. */
+type WorkflowBundleBuild = {
+  context: esbuild.BuildContext;
+  manifest: WorkflowManifest;
+  readBundles(result: esbuild.BuildResult): WorkflowBundle[];
+  startedAt: number;
+};
+
+function getWorkflowIds(manifest: WorkflowManifest): string[] {
+  return Object.values(manifest.workflows ?? {}).flatMap((workflows) =>
+    Object.values(workflows).map(({ workflowId }) => workflowId)
+  );
+}
+
+/**
+ * Generate the small route-side lookup from workflow ID to lazy VM code.
+ * Workflows from the same source share one memoized import/decode promise.
+ */
+function createWorkflowBundleLoaders(bundles: WorkflowBundle[]): string {
+  const loaders = bundles
+    .map(({ fileName }, index) => {
+      const modulePath = `./${WORKFLOW_BUNDLE_DIRECTORY}/${fileName}`;
+      return `const loadWorkflowBundle${index} = /* @__PURE__ */ createWorkflowBundleLoader(() => import('${modulePath}'));`;
+    })
+    .join('\n');
+  const entries = bundles
+    .flatMap(({ workflowIds }, index) =>
+      workflowIds.map(
+        (workflowId) =>
+          `  ${JSON.stringify(workflowId)}: loadWorkflowBundle${index},`
+      )
+    )
+    .join('\n');
+
+  return `${loaders}\nconst workflowCode = {\n${entries}\n};`;
+}
 
 /**
  * Base class for workflow builders. Provides common build logic for transforming
@@ -218,6 +340,8 @@ export abstract class BaseBuilder {
   private warnedExternalPackages = new Set<string>();
   private workflowBuildStartTime: number | undefined;
   private manifestTransformCache = new Map<string, CachedManifestTransform>();
+  private readonly workflowGraphCache: WorkflowGraphCache = new Map();
+  private readonly cleanedWatchWorkflowBundleDirs = new Set<string>();
 
   constructor(config: WorkflowConfig) {
     this.config = config;
@@ -1238,133 +1362,190 @@ export const __steps_registered = true;
     return { context: undefined, manifest: workflowManifest };
   }
 
-  /**
-   * Creates a bundle for workflow orchestration functions.
-   * Workflows run in a sandboxed VM and coordinate step execution.
-   *
-   * @param bundleFinalOutput - If false, skips the final bundling step (used by Next.js)
-   */
-  protected async createWorkflowsBundle({
-    inputFiles,
-    format = 'esm',
-    outfile,
-    bundleFinalOutput = true,
-    keepInterimBundleContext = this.config.watch,
-    includeMetafile = false,
-    tsconfigPath,
-    discoveredEntries,
-  }: {
-    tsconfigPath?: string;
-    inputFiles: string[];
-    outfile: string;
-    format?: 'cjs' | 'esm';
-    bundleFinalOutput?: boolean;
-    keepInterimBundleContext?: boolean;
-    includeMetafile?: boolean;
-    discoveredEntries?: DiscoveredEntries;
-  }): Promise<{
-    manifest: WorkflowManifest;
-    interimBundleCtx?: esbuild.BuildContext;
-    bundleFinal?: (interimBundleResult: string) => Promise<void>;
-    /** The raw workflow VM code (before wrapping with entrypoint) */
-    interimBundleText?: string;
-    /** The initial workflow VM build graph, when requested by a caller. */
-    interimBundleMetafile?: esbuild.Metafile;
-  }> {
-    const discovered =
-      discoveredEntries ??
-      (await this.discoverEntries(inputFiles, dirname(outfile), tsconfigPath));
-    const workflowFiles = [...discovered.discoveredWorkflows].sort();
-    const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
+  private async writeConfiguredWorkflowManifest(
+    manifest: WorkflowManifest
+  ): Promise<void> {
+    if (!this.config.workflowManifestPath) return;
 
-    // Include serde files that aren't already workflow files for cross-context class registration.
-    // Classes need to be registered in the workflow bundle so they can be deserialized
-    // when receiving data from steps or when serializing data to send to steps.
-    const workflowFilesSet = new Set(workflowFiles);
-    const serdeOnlyFiles = serdeFiles.filter((f) => !workflowFilesSet.has(f));
+    const resolvedPath = resolve(
+      process.cwd(),
+      this.config.workflowManifestPath
+    );
+    let prefix = '';
+    if (resolvedPath.endsWith('.cjs')) {
+      prefix = 'module.exports = ';
+    } else if (resolvedPath.endsWith('.js') || resolvedPath.endsWith('.mjs')) {
+      prefix = 'export default ';
+    }
 
-    // log the workflow files for debugging
-    await this.writeDebugFile(outfile, { workflowFiles, serdeOnlyFiles });
+    await mkdir(dirname(resolvedPath), { recursive: true });
+    await writeFile(resolvedPath, prefix + JSON.stringify(manifest, null, 2));
+  }
 
-    // Helper to create import statement from file path
-    // For packages, uses the package name so esbuild will resolve through
-    // package.json exports with conditions: ['workflow']
-    const createImport = (file: string) => {
-      const { importPath, isPackage } = getImportPath(
-        file,
-        this.config.workingDir
-      );
+  private async warnAboutSerdeCompliance(
+    manifest: WorkflowManifest,
+    bundles: WorkflowBundle[]
+  ): Promise<void> {
+    if (!manifest.classes || Object.keys(manifest.classes).length === 0) return;
 
-      if (isPackage) {
-        // Use package name - esbuild will resolve via package.json exports
-        // and apply the 'workflow' condition
-        return `import '${importPath}';`;
+    const { analyzeSerdeCompliance } = await import('./serde-checker.js');
+    const serdeResult = analyzeSerdeCompliance({
+      sourceCode: '',
+      // Every source bundle registers the complete serializer set.
+      workflowCode: bundles[0]?.code ?? '',
+      manifest,
+    });
+    const issuesToClasses = new Map<string, Set<string>>();
+    for (const cls of serdeResult.classes) {
+      if (cls.compliant) continue;
+      for (const issue of cls.issues) {
+        let affectedClasses = issuesToClasses.get(issue);
+        if (!affectedClasses) {
+          affectedClasses = new Set<string>();
+          issuesToClasses.set(issue, affectedClasses);
+        }
+        affectedClasses.add(cls.className);
       }
+    }
+    for (const [issue, affectedClasses] of issuesToClasses) {
+      const classNames = [...affectedClasses];
+      const classLabel =
+        classNames.length === 1
+          ? `class "${classNames[0]}"`
+          : `classes ${classNames.map((name) => `"${name}"`).join(', ')}`;
+      console.warn(chalk.yellow(`⚠ Serde warning for ${classLabel}: `) + issue);
+    }
+  }
 
-      // Local app file - use relative path
-      // Normalize both paths to forward slashes before calling relative()
-      // This is critical on Windows where relative() can produce unexpected results with mixed path formats
-      const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
-      const normalizedFile = file.replace(/\\/g, '/');
-      // Calculate relative path from working directory to the file
-      let relativePath = relative(normalizedWorkingDir, normalizedFile).replace(
-        /\\/g,
-        '/'
-      );
-      // Ensure relative paths start with ./ so esbuild resolves them correctly.
-      // Paths like ".output/..." are not valid relative specifiers and must
-      // become "./.output/...".
-      if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
-        relativePath = `./${relativePath}`;
-      }
-      return `import '${relativePath}';`;
-    };
+  private createWorkflowBundlePublisher(
+    outfile: string
+  ): (bundles: WorkflowBundle[]) => Promise<void> {
+    const workflowBundleDir = join(dirname(outfile), WORKFLOW_BUNDLE_DIRECTORY);
+    const publishedFiles = new Set<string>();
+    return async (bundles) => {
+      await mkdir(workflowBundleDir, { recursive: true });
 
-    // Create a virtual entry that imports all workflow files. Dedupe by
-    // canonical module identity so source/dist copies of the same workspace
-    // package export don't both get imported (which would make the swc
-    // plugin generate duplicate workflow IDs).
-    const emittedImportIdentities = new Set<string>();
-    const buildImports = (files: string[]): string =>
-      files
-        .filter((file) => {
-          const identity = moduleIdentityKey(file, this.moduleSpecifierRoot);
-          if (emittedImportIdentities.has(identity)) return false;
-          emittedImportIdentities.add(identity);
-          return true;
+      // A filename is the hash of its code, so a matching file is already the
+      // exact immutable artifact we need. Once this publisher has verified a
+      // hash, later watch rebuilds can skip its encode/stat/read work entirely.
+      await Promise.all(
+        bundles.map(async ({ fileName, code }) => {
+          if (publishedFiles.has(fileName)) return;
+          await this.writeGeneratedFile(
+            join(workflowBundleDir, fileName),
+            serializeWorkflowBundle(code)
+          );
+          publishedFiles.add(fileName);
         })
-        .map(createImport)
+      );
+    };
+  }
+
+  private async removeObsoleteWorkflowBundles(
+    outfile: string,
+    bundles: WorkflowBundle[]
+  ): Promise<void> {
+    const workflowBundleDir = join(dirname(outfile), WORKFLOW_BUNDLE_DIRECTORY);
+    if (
+      this.config.watch &&
+      this.cleanedWatchWorkflowBundleDirs.has(workflowBundleDir)
+    ) {
+      return;
+    }
+    const desiredFiles = new Set(bundles.map(({ fileName }) => fileName));
+    const generatedFiles = (await readdir(workflowBundleDir)).filter(
+      isWorkflowBundleFileName
+    );
+    await Promise.all(
+      generatedFiles
+        .filter((file) => !desiredFiles.has(file))
+        .map((file) => rm(join(workflowBundleDir, file), { force: true }))
+    );
+    if (this.config.watch) {
+      this.cleanedWatchWorkflowBundleDirs.add(workflowBundleDir);
+    }
+  }
+
+  private async prepareWorkflowBundleBuild({
+    discovered,
+    outfile,
+    includeMetafile,
+    tsconfigPath,
+  }: {
+    discovered: DiscoveredEntries;
+    outfile: string;
+    includeMetafile: boolean;
+    tsconfigPath?: string;
+  }): Promise<WorkflowBundleBuild> {
+    const workflowEntries = await planCanonicalModuleEntries(
+      discovered.discoveredWorkflows,
+      this.moduleSpecifierRoot
+    );
+    const workflowFiles = workflowEntries.map(({ file }) => file);
+    const workflowIndexByIdentity = new Map<string, number>();
+    workflowEntries.forEach(({ identities }, index) => {
+      for (const identity of identities) {
+        workflowIndexByIdentity.set(identity, index);
+      }
+    });
+    const serdeEntries = await planCanonicalModuleEntries(
+      discovered.discoveredSerdeFiles,
+      this.moduleSpecifierRoot
+    );
+    const serdeFiles = serdeEntries.map(({ file }) => file);
+
+    await this.writeDebugFile(outfile, { workflowFiles, serdeFiles });
+
+    const createImport = (file: string) =>
+      `import '${this.createRouteImportSpecifier(file, this.config.workingDir)}';`;
+
+    // esbuild needs at least one entry point. The placeholder entry also runs
+    // serde-only imports through SWC so their class metadata is still emitted.
+    const bundleFiles =
+      workflowEntries.length > 0 ? workflowEntries : [undefined];
+    const bundleEntries = bundleFiles.map((workflowEntry) => {
+      const workflowImport = workflowEntry
+        ? createImport(workflowEntry.file)
+        : '';
+      const workflowIdentities = new Set(workflowEntry?.identities);
+      const serdeImports = serdeEntries
+        .filter(
+          ({ identities }) =>
+            !identities.some((identity) => workflowIdentities.has(identity))
+        )
+        .map(({ file }) => createImport(file))
         .join('\n');
-
-    // The SWC plugin in workflow mode emits `globalThis.__private_workflows.set(workflowId, fn)`
-    // calls directly, so we only need to import the files (Map is initialized via banner)
-    const workflowImports = buildImports(workflowFiles);
-
-    // Include serde-only files for class registration side effects
-    const serdeImports = buildImports(serdeOnlyFiles);
-
-    const imports = serdeImports
-      ? `${workflowImports}\n// Serde files for cross-context class registration\n${serdeImports}`
-      : workflowImports;
-
-    const bundleStartTime = Date.now();
-    const workflowManifest: WorkflowManifest = {};
+      return serdeImports
+        ? `${workflowImport}\n// Serde files for cross-context class registration\n${serdeImports}`
+        : workflowImport;
+    });
+    const startedAt = Date.now();
+    const manifest: WorkflowManifest = {};
+    const workflowIdsByBundleIndex = new Map<number, string[]>();
     const esbuildTsconfigOptions =
       await getEsbuildTsconfigOptions(tsconfigPath);
-    const normalizedWorkflowSideEffectEntries = await withRealpaths([
-      ...workflowFiles,
-      ...serdeOnlyFiles,
-    ]);
+    const normalizedWorkflowSideEffectEntries = [
+      ...new Set(
+        [...workflowEntries, ...serdeEntries].flatMap(({ paths }) => paths)
+      ),
+    ];
 
-    // Bundle with esbuild and our custom SWC plugin in workflow mode.
-    // this bundle will be run inside a vm isolate
-    const interimBundleCtx = await esbuild.context({
-      stdin: {
-        contents: imports,
-        resolveDir: this.config.workingDir,
-        sourcefile: 'virtual-entry.js',
-        loader: 'js',
-      },
+    // Give esbuild one virtual entry per workflow source. The entry imports its
+    // workflow plus every serializer registration required inside a fresh VM.
+    const entryPoints = Object.fromEntries(
+      bundleEntries.map((_, index) => [
+        `workflow-${index}`,
+        `workflow-entry:${index}`,
+      ])
+    );
+    const workflowResolveDir = this.config.workingDir;
+
+    // Bundle each workflow source independently. A source may register several
+    // workflow functions, which all share one lazy VM bundle.
+    const context = await esbuild.context({
+      entryPoints,
+      entryNames: '[name]',
+      outdir: join(dirname(outfile), '.workflow-vm'),
       bundle: true,
       absWorkingDir: this.config.workingDir,
       format: 'cjs', // Runs inside the VM which expects cjs
@@ -1377,23 +1558,14 @@ export const __steps_registered = true;
       keepNames: true,
       minify: false,
       metafile: includeMetafile,
-      // Initialize the workflow registry at the beginning of the bundle
-      // This must be in banner (not the virtual entry) because esbuild's bundling
-      // can reorder code, and the .set() calls need the Map to exist first
+      // Initialize the workflow registry at the beginning of the bundle. This
+      // must be a banner because esbuild can reorder virtual-entry code.
       banner: {
         js: 'globalThis.__private_workflows = new Map();',
       },
-      // Source maps for better stack traces in workflow VM execution. This
-      // intermediate bundle is executed via runInContext() in a VM, so inline
-      // source maps give meaningful stack traces instead of
-      // "evalmachine.<anonymous>". Defaults to inline in development and off in
-      // production (see `defaultSourcemapMode`) to keep production function
-      // bundles small; override with the `sourcemap` config option or the
-      // `WORKFLOW_SOURCEMAP` env var. The runtime remaps stacks only when a
-      // map is present, so disabling maps degrades gracefully.
+      // Source maps improve workflow VM stack traces. Production defaults to
+      // no map; development defaults to inline unless configured otherwise.
       sourcemap: this.resolveSourcemap(this.defaultSourcemapMode),
-      // Use tsconfig for path alias resolution.
-      // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.
       ...esbuildTsconfigOptions,
       resolveExtensions: [
         '.ts',
@@ -1406,32 +1578,133 @@ export const __steps_registered = true;
         '.cjs',
       ],
       plugins: [
-        // Handle pseudo-packages like 'server-only' and 'client-only' by providing
-        // empty modules. Must run first to intercept these before other resolution.
+        {
+          name: 'workflow-entries',
+          setup(build) {
+            build.onResolve({ filter: /^workflow-entry:/ }, ({ path }) => ({
+              path,
+              namespace: 'workflow-entry',
+            }));
+            build.onLoad(
+              { filter: /.*/, namespace: 'workflow-entry' },
+              ({ path }) => ({
+                contents:
+                  bundleEntries[Number(path.slice(path.indexOf(':') + 1))],
+                loader: 'js',
+                resolveDir: workflowResolveDir,
+              })
+            );
+          },
+        },
         createPseudoPackagePlugin(),
         createSwcPlugin({
           mode: 'workflow',
           projectRoot: this.transformProjectRoot,
           moduleSpecifierRoot: this.moduleSpecifierRoot,
-          workflowManifest,
-          onAfterTransform: this.config.onAfterTransform,
+          workflowManifest: manifest,
+          onAfterTransform: async (result) => {
+            // SWC assigns workflow IDs while transforming the source. Record
+            // which virtual entry owns them so the route can select one loader.
+            const sourceIdentity = moduleIdentityKey(
+              result.absolutePath,
+              this.moduleSpecifierRoot
+            );
+            const bundleIndex = workflowIndexByIdentity.get(sourceIdentity);
+            if (bundleIndex !== undefined) {
+              workflowIdsByBundleIndex.set(
+                bundleIndex,
+                getWorkflowIds(result.workflowManifest)
+              );
+            }
+            await this.config.onAfterTransform?.(result);
+          },
           sideEffectEntries: normalizedWorkflowSideEffectEntries,
         }),
-        // This plugin must run after the swc plugin to ensure dead code elimination
-        // happens first, preventing false positives on Node.js imports in unused code paths
         createNodeModuleErrorPlugin(),
       ],
-      // NOTE: We intentionally do NOT use the external option here for workflow bundles.
-      // When packages are marked external with format: 'cjs', esbuild generates require() calls.
-      // However, the workflow VM (vm.runInContext) does not have require() defined - it only
-      // provides module.exports and exports. External packages would fail at runtime with:
-      //   ReferenceError: require is not defined
-      // Instead, we bundle everything and rely on:
-      // - createPseudoPackagePlugin() to handle server-only/client-only with empty modules
-      // - createNodeModuleErrorPlugin() to catch Node.js builtin imports at build time
     });
+
+    return {
+      context,
+      manifest,
+      startedAt,
+      readBundles(result) {
+        // Convert esbuild's in-memory outputs into stable, content-addressed
+        // sidecars and attach the workflow IDs collected during transformation.
+        const outputFiles = new Map(
+          result.outputFiles?.map((output) => [basename(output.path), output])
+        );
+        return bundleEntries.map((_, index) => {
+          const output = outputFiles.get(`workflow-${index}.js`);
+          if (!output) {
+            throw new WorkflowBuildError(
+              `No output generated for workflow bundle ${index}`
+            );
+          }
+          const workflowEntry = workflowEntries[index];
+          const workflowIds = workflowEntry
+            ? workflowIdsByBundleIndex.get(index)
+            : [];
+          if (!workflowIds) {
+            throw new WorkflowBuildError(
+              `No workflow manifest generated for workflow bundle ${index}`
+            );
+          }
+          return {
+            code: output.text,
+            fileName: workflowBundleFileName(output.text),
+            workflowIds,
+          };
+        });
+      },
+    };
+  }
+
+  /**
+   * Creates one VM bundle per workflow source.
+   * Workflows run in a sandboxed VM and coordinate step execution.
+   */
+  protected async createWorkflowsBundle({
+    inputFiles,
+    outfile,
+    keepInterimBundleContext = this.config.watch,
+    includeMetafile = false,
+    tsconfigPath,
+    discoveredEntries,
+  }: {
+    tsconfigPath?: string;
+    inputFiles: string[];
+    outfile: string;
+    keepInterimBundleContext?: boolean;
+    includeMetafile?: boolean;
+    discoveredEntries?: DiscoveredEntries;
+  }): Promise<{
+    manifest: WorkflowManifest;
+    interimBundleCtx?: esbuild.BuildContext;
+    bundleFinal?: (
+      interimBundleResult: esbuild.BuildResult
+    ) => Promise<WorkflowBundle[]>;
+    workflowBundles: WorkflowBundle[];
+    /** The initial workflow VM build graph, when requested by a caller. */
+    interimBundleMetafile?: esbuild.Metafile;
+  }> {
+    const discovered =
+      discoveredEntries ??
+      (await this.discoverEntries(inputFiles, dirname(outfile), tsconfigPath));
+    const build = await this.prepareWorkflowBundleBuild({
+      discovered,
+      outfile,
+      includeMetafile,
+      tsconfigPath,
+    });
+    const interimBundleCtx = build.context;
+    const workflowManifest = build.manifest;
+    const readWorkflowBundles = build.readBundles;
+    const writeWorkflowBundles = this.createWorkflowBundlePublisher(outfile);
     let shouldDisposeInterimBundleCtx = !keepInterimBundleContext;
     try {
+      // The intermediate build produces raw VM JavaScript in memory; publishing
+      // it as sidecars is a separate step so the route stays small.
       const interimBundle = await interimBundleCtx.rebuild();
 
       this.logEsbuildMessages(
@@ -1444,159 +1717,23 @@ export const __steps_registered = true;
       );
       this.logCreateWorkflowsBundleInfo(
         'Created intermediate workflow bundle',
-        `${Date.now() - bundleStartTime}ms`
+        `${Date.now() - build.startedAt}ms`
       );
 
-      if (this.config.workflowManifestPath) {
-        const resolvedPath = resolve(
-          process.cwd(),
-          this.config.workflowManifestPath
-        );
-        let prefix = '';
-
-        if (resolvedPath.endsWith('.cjs')) {
-          prefix = 'module.exports = ';
-        } else if (
-          resolvedPath.endsWith('.js') ||
-          resolvedPath.endsWith('.mjs')
-        ) {
-          prefix = 'export default ';
-        }
-
-        await mkdir(dirname(resolvedPath), { recursive: true });
-        await writeFile(
-          resolvedPath,
-          prefix + JSON.stringify(workflowManifest, null, 2)
-        );
-      }
-
+      await this.writeConfiguredWorkflowManifest(workflowManifest);
       await this.ensureSwcIgnored();
 
-      if (
-        !interimBundle.outputFiles ||
-        interimBundle.outputFiles.length === 0
-      ) {
-        throw new WorkflowBuildError('No output files generated from esbuild', {
-          hint: 'This usually indicates a misconfigured entry point or an empty workflow directory. Check that your workflow files contain a `"use workflow"` or `"use step"` directive.',
-        });
-      }
+      const workflowBundles = readWorkflowBundles(interimBundle);
+      await this.warnAboutSerdeCompliance(workflowManifest, workflowBundles);
 
-      // Serde compliance warnings: check if workflow bundle has Node.js imports
-      // alongside serde-registered classes (these will fail at runtime in the sandbox)
-      if (
-        workflowManifest.classes &&
-        Object.keys(workflowManifest.classes).length > 0
-      ) {
-        const { analyzeSerdeCompliance } = await import('./serde-checker.js');
-        const bundleText = interimBundle.outputFiles[0].text;
-        const serdeResult = analyzeSerdeCompliance({
-          sourceCode: '',
-          workflowCode: bundleText,
-          manifest: workflowManifest,
-        });
-        // De-dupe warnings: group identical issues across classes
-        const issuesToClasses = new Map<string, Set<string>>();
-        for (const cls of serdeResult.classes) {
-          if (!cls.compliant) {
-            for (const issue of cls.issues) {
-              let affectedClasses = issuesToClasses.get(issue);
-              if (!affectedClasses) {
-                affectedClasses = new Set<string>();
-                issuesToClasses.set(issue, affectedClasses);
-              }
-              affectedClasses.add(cls.className);
-            }
-          }
-        }
-        for (const [issue, affectedClasses] of issuesToClasses) {
-          const classNames = [...affectedClasses];
-          const classLabel =
-            classNames.length === 1
-              ? `class "${classNames[0]}"`
-              : `classes ${classNames.map((name) => `"${name}"`).join(', ')}`;
-          console.warn(
-            chalk.yellow(`⚠ Serde warning for ${classLabel}: `) + issue
-          );
-        }
-      }
-
-      const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode(
-        {
-          basePath: this.config.basePath,
-          routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
-        }
-      );
-
-      const bundleFinal = async (interimBundle: string) => {
-        const workflowBundleCode = interimBundle;
-
-        const workflowFunctionCode = `// biome-ignore-all lint: generated file
-/* eslint-disable */
-import { workflowEntrypoint } from 'workflow/runtime';
-
-const workflowRouteModuleBodyStartedAt = Date.now();
-const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
-
-${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
-
-        // we skip the final bundling step for Next.js so it can bundle itself
-        if (!bundleFinalOutput) {
-          if (!outfile) {
-            throw new Error(`Invariant: missing outfile for workflow bundle`);
-          }
-          // Ensure the output directory exists
-          const outputDir = dirname(outfile);
-          await mkdir(outputDir, { recursive: true });
-
-          await this.writeGeneratedFile(outfile, workflowFunctionCode);
-          return;
-        }
-
-        const bundleStartTime = Date.now();
-
-        // Now bundle this so we can resolve the @workflow/core dependency
-        // we could remove this if we do nft tracing or similar instead
-        const finalEsmRequireBanner = this.getEsmRequireBanner(format);
-        const finalWorkflowResult = await esbuild.build({
-          banner: {
-            js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${finalEsmRequireBanner}`,
-          },
-          stdin: {
-            contents: workflowFunctionCode,
-            resolveDir: this.config.workingDir,
-            sourcefile: 'virtual-entry.js',
-            loader: 'js',
-          },
-          outfile,
-          // Source maps for the final workflow bundle wrapper (not important since this code
-          // doesn't run in the VM - only the intermediate bundle sourcemap is relevant)
-          sourcemap: this.resolveSourcemap(EMIT_SOURCEMAPS_FOR_DEBUGGING),
-          absWorkingDir: this.config.workingDir,
-          bundle: true,
-          format,
-          platform: 'node',
-          target: 'es2022',
-          write: true,
-          keepNames: true,
-          minify: false,
-          external: ['@aws-sdk/credential-provider-web-identity'],
-        });
-
-        this.logEsbuildMessages(
-          finalWorkflowResult,
-          'final workflow bundle',
-          true,
-          {
-            suppressWarnings: this.config.suppressCreateWorkflowsBundleWarnings,
-          }
-        );
-        this.logCreateWorkflowsBundleInfo(
-          'Created final workflow bundle',
-          `${Date.now() - bundleStartTime}ms`
-        );
+      // Watch mode reuses the esbuild context. Each rebuild publishes any new
+      // immutable hashes before returning their route metadata to the caller.
+      const bundleFinal = async (result: esbuild.BuildResult) => {
+        const bundles = readWorkflowBundles(result);
+        await writeWorkflowBundles(bundles);
+        return bundles;
       };
-      const interimBundleText = interimBundle.outputFiles[0].text;
-      await bundleFinal(interimBundleText);
+      await writeWorkflowBundles(workflowBundles);
 
       if (keepInterimBundleContext) {
         shouldDisposeInterimBundleCtx = false;
@@ -1604,13 +1741,13 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
           manifest: workflowManifest,
           interimBundleCtx,
           bundleFinal,
-          interimBundleText,
+          workflowBundles,
           interimBundleMetafile: interimBundle.metafile,
         };
       }
       return {
         manifest: workflowManifest,
-        interimBundleText,
+        workflowBundles,
         interimBundleMetafile: interimBundle.metafile,
       };
     } catch (error) {
@@ -1667,7 +1804,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
     manifest: WorkflowManifest;
     stepsContext?: esbuild.BuildContext;
     interimBundleCtx?: esbuild.BuildContext;
-    bundleFinal?: (interimBundleResult: string) => Promise<void>;
+    bundleFinal?: (interimBundleResult: esbuild.BuildResult) => Promise<void>;
     discoveredEntries: DiscoveredEntries;
     stepsManifest: WorkflowManifest;
     workflowsManifest: WorkflowManifest;
@@ -1706,52 +1843,42 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       });
 
     // 2. Build workflow VM code
-    const tempWorkflowOutfile = `${flowOutfile}.__wf_tmp.js`;
     const workflowsResult = await this.createWorkflowsBundle({
       inputFiles,
-      outfile: tempWorkflowOutfile,
-      format,
-      bundleFinalOutput: false,
+      outfile: flowOutfile,
       tsconfigPath,
       discoveredEntries: effectiveDiscoveredEntries,
     });
 
-    const workflowVMCode = workflowsResult.interimBundleText;
-    if (!workflowVMCode) {
-      throw new Error('createWorkflowsBundle did not return interimBundleText');
-    }
-
-    // Clean up the wrapper file
-    try {
-      const { unlink } = await import('node:fs/promises');
-      await unlink(tempWorkflowOutfile);
-    } catch {
-      // Ignore cleanup errors
-    }
-
     // 3. Generate combined route file
     const stepsRelativePath = `./${basename(stepsOutfile).replace(/\\/g, '/')}`;
-    const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
     const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode({
       basePath: this.config.basePath,
       routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
     });
 
-    const combinedFunctionCode = `// biome-ignore-all lint: generated file
+    const createCombinedFunctionCode = (
+      bundles: WorkflowBundle[]
+    ) => `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { __steps_registered } from '${stepsRelativePath}';
-import { workflowEntrypoint } from 'workflow/runtime';
+import { createWorkflowBundleLoader, workflowEntrypoint } from 'workflow/runtime';
 
 const workflowRouteModuleBodyStartedAt = Date.now();
 
 // Prevent rollup from tree-shaking the steps side-effect import
 void __steps_registered;
 
-const workflowCode = \`${escapedVMCode}\`;
+${createWorkflowBundleLoaders(bundles)}
 
 ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
+    const combinedFunctionCode = createCombinedFunctionCode(
+      workflowsResult.workflowBundles
+    );
 
     if (!bundleFinalOutput) {
+      // Framework bundlers consume this source route themselves. Its sidecar
+      // imports stay dynamic and are resolved relative to the generated route.
       await this.writeGeneratedFile(flowOutfile, combinedFunctionCode);
     } else {
       // Bundle the combined code for standalone use
@@ -1782,7 +1909,8 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         keepNames: true,
         minify: false,
         define: importMetaDefine,
-        external: ['@aws-sdk/credential-provider-web-identity'],
+        // Preserve lazy sidecar imports while bundling the route and runtime.
+        external: COMBINED_ROUTE_EXTERNALS,
       });
       this.logEsbuildMessages(finalResult, 'combined bundle', true);
       this.logBaseBuilderInfo(
@@ -1790,6 +1918,14 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         `${Date.now() - bundleStartTime}ms`
       );
     }
+
+    // Prune hashes from earlier processes. A watch session does this only on
+    // its first generation, then retains its immutable hashes because an old
+    // handler may start a lazy import after a later rebuild publishes its route.
+    await this.removeObsoleteWorkflowBundles(
+      flowOutfile,
+      workflowsResult.workflowBundles
+    );
 
     // Merge manifests
     const manifest: WorkflowManifest = {
@@ -1805,30 +1941,17 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
     };
 
     // Create a custom bundleFinal for watch mode that uses workflowEntrypoint
-    const combinedBundleFinal = async (interimBundleText: string) => {
-      const escaped = interimBundleText.replace(/[\\`$]/g, '\\$&');
-      const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode(
-        {
-          basePath: this.config.basePath,
-          routeModuleBodyStartedAt: 'workflowRouteModuleBodyStartedAt',
-        }
+    const combinedBundleFinal = async (interimBundle: esbuild.BuildResult) => {
+      if (!workflowsResult.bundleFinal) {
+        throw new Error('Invariant: missing workflow bundle finalizer');
+      }
+      const bundles = await workflowsResult.bundleFinal(interimBundle);
+
+      // Sidecars are published before the route and retained for old handlers.
+      await this.writeGeneratedFile(
+        flowOutfile,
+        createCombinedFunctionCode(bundles)
       );
-      const code = `// biome-ignore-all lint: generated file
-/* eslint-disable */
-import { __steps_registered } from '${stepsRelativePath}';
-import { workflowEntrypoint } from 'workflow/runtime';
-
-const workflowRouteModuleBodyStartedAt = Date.now();
-
-void __steps_registered;
-
-const workflowCode = \`${escaped}\`;
-
-${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
-
-      const outputDir = dirname(flowOutfile);
-      await mkdir(outputDir, { recursive: true });
-      await this.writeGeneratedFile(flowOutfile, code);
     };
 
     if (this.config.watch) {
@@ -2322,7 +2445,14 @@ export const OPTIONS = handler;`;
     this.logCreateManifestInfo('Creating manifest...');
 
     try {
-      const workflowGraphs = await extractWorkflowGraphs(workflowBundlePath);
+      const hasWorkflows = getWorkflowIds(manifest).length > 0;
+      if (!hasWorkflows) this.workflowGraphCache.clear();
+      const workflowGraphs = hasWorkflows
+        ? await extractWorkflowGraphs(
+            workflowBundlePath,
+            this.workflowGraphCache
+          )
+        : {};
 
       const steps = this.convertStepsManifest(manifest.steps);
       const workflows = this.convertWorkflowsManifest(
@@ -2377,16 +2507,18 @@ export const OPTIONS = handler;`;
           })
         );
       }
-      this.resetWorkflowBuildTimer();
-
       return manifestJson;
     } catch (error) {
+      if (WorkflowBuildError.is(error)) {
+        throw error;
+      }
       console.warn(
         'Failed to create manifest:',
         error instanceof Error ? error.message : String(error)
       );
-      this.resetWorkflowBuildTimer();
       return undefined;
+    } finally {
+      this.resetWorkflowBuildTimer();
     }
   }
 

@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import type {
   ArrowFunctionExpression,
   BlockStatement,
@@ -13,6 +14,12 @@ import type {
   VariableDeclaration,
 } from '@swc/core';
 import { parseSync } from '@swc/core';
+import { WorkflowBuildError } from '@workflow/errors';
+import {
+  deserializeWorkflowBundle,
+  referencedWorkflowBundleFileNames,
+  WORKFLOW_BUNDLE_DIRECTORY,
+} from './workflow-bundle-module.js';
 
 // ============================================================================
 // Constants
@@ -220,6 +227,14 @@ export interface Manifest {
   };
 }
 
+export type WorkflowGraphs = Record<
+  string,
+  Record<string, ManifestWorkflowEntry>
+>;
+
+/** Parsed graphs keyed by their immutable, content-addressed sidecar name. */
+export type WorkflowGraphCache = Map<string, WorkflowGraphs>;
+
 // =============================================================================
 // Extraction Functions
 // =============================================================================
@@ -228,71 +243,69 @@ export interface Manifest {
  * Extracts workflow graphs from a bundled workflow file.
  * Returns workflow entries organized by file path, ready for merging into Manifest.
  */
-export async function extractWorkflowGraphs(bundlePath: string): Promise<{
-  [filePath: string]: {
-    [workflowName: string]: ManifestWorkflowEntry;
-  };
-}> {
-  const bundleCode = await readFile(bundlePath, 'utf-8');
-
-  try {
-    let actualWorkflowCode = bundleCode;
-
-    const bundleAst = parseSync(bundleCode, {
-      syntax: 'ecmascript',
-      target: 'es2022',
-    });
-
-    const workflowCodeValue = extractWorkflowCodeFromBundle(bundleAst);
-    if (workflowCodeValue) {
-      actualWorkflowCode = workflowCodeValue;
+export async function extractWorkflowGraphs(
+  bundlePath: string,
+  cache: WorkflowGraphCache = new Map()
+): Promise<WorkflowGraphs> {
+  const lazyBundleDir = join(dirname(bundlePath), WORKFLOW_BUNDLE_DIRECTORY);
+  const routeCode = await readFile(bundlePath, 'utf8').catch(
+    (error: NodeJS.ErrnoException) => {
+      throw new WorkflowBuildError(
+        `Failed to read workflow route "${bundlePath}"`,
+        { cause: error }
+      );
     }
-
-    const ast = parseSync(actualWorkflowCode, {
-      syntax: 'ecmascript',
-      target: 'es2022',
-    });
-
-    const stepDeclarations = extractStepDeclarations(actualWorkflowCode);
-    const functionMap = buildFunctionMap(ast, stepDeclarations);
-    const variableMap = buildVariableMap(ast);
-
-    return extractWorkflows(ast, stepDeclarations, functionMap, variableMap);
-  } catch (error) {
-    console.error('Failed to extract workflow graphs from bundle:', error);
-    return {};
+  );
+  const lazyBundleFiles = referencedWorkflowBundleFileNames(routeCode);
+  if (lazyBundleFiles.length === 0) {
+    throw new WorkflowBuildError(
+      `No lazy workflow bundles referenced by "${bundlePath}"`
+    );
   }
-}
 
-/**
- * Extract the workflowCode string value from a parsed bundle AST
- */
-function extractWorkflowCodeFromBundle(ast: Program): string | null {
-  for (const item of ast.body) {
-    if (item.type === 'VariableDeclaration') {
-      for (const decl of item.declarations) {
-        if (
-          decl.id.type === 'Identifier' &&
-          decl.id.value === 'workflowCode' &&
-          decl.init
-        ) {
-          if (decl.init.type === 'TemplateLiteral') {
-            return decl.init.quasis
-              .map((q) => decodeEscapedWorkflowCode(q.raw))
-              .join('');
-          }
-          if (decl.init.type === 'StringLiteral') {
-            return decl.init.value;
-          }
-        }
+  const activeBundleFiles = new Set(lazyBundleFiles);
+  for (const cachedFile of cache.keys()) {
+    if (!activeBundleFiles.has(cachedFile)) cache.delete(cachedFile);
+  }
+
+  const lazyBundleGraphs = await Promise.all(
+    lazyBundleFiles.map(async (file) => {
+      const cached = cache.get(file);
+      if (cached) return cached;
+
+      try {
+        const moduleCode = await readFile(join(lazyBundleDir, file), 'utf8');
+        const workflowCode = deserializeWorkflowBundle(moduleCode);
+        const ast = parseSync(workflowCode, {
+          syntax: 'ecmascript',
+          target: 'es2022',
+        });
+        const stepDeclarations = extractStepDeclarations(workflowCode);
+        const graphs = extractWorkflows(
+          ast,
+          stepDeclarations,
+          buildFunctionMap(ast, stepDeclarations),
+          buildVariableMap(ast)
+        );
+        cache.set(file, graphs);
+        return graphs;
+      } catch (error) {
+        throw new WorkflowBuildError(
+          `Failed to extract workflow graph from lazy bundle "${file}"`,
+          { cause: error }
+        );
       }
+    })
+  );
+
+  const graphs: WorkflowGraphs = {};
+  for (const bundleGraphs of lazyBundleGraphs) {
+    for (const [filePath, workflows] of Object.entries(bundleGraphs)) {
+      graphs[filePath] = { ...graphs[filePath], ...workflows };
     }
   }
-  return null;
-}
 
-function decodeEscapedWorkflowCode(rawTemplateElement: string): string {
-  return rawTemplateElement.replace(/\\([\\`$])/g, '$1');
+  return graphs;
 }
 
 /**
