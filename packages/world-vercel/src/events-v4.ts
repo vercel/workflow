@@ -463,9 +463,61 @@ function decodeLegacyStructuredError(payload: Uint8Array): unknown {
   }
 }
 
-function decodeEventFrame({ meta, body }: DecodedFrame): Event {
+/**
+ * Validate a metadata-only frame without requiring its omitted payload field.
+ *
+ * A lazy v4 listing is an observability read: old or expired event rows can
+ * legitimately retain the event metadata after their payload descriptor is no
+ * longer available. `EventSchema` describes a materialized runtime event and
+ * therefore still requires fields such as `step_completed.eventData.result`.
+ * Validate the rest of the event by temporarily supplying an empty payload,
+ * then remove it again before returning the metadata-only event.
+ */
+function decodeLazyEventMeta(
+  meta: Record<string, unknown>,
+  eventType: EventType
+): Event {
+  const payloadField = getEventDataPayloadField(eventType);
+  if (!payloadField) return EventSchema.parse(meta);
+
+  const eventData =
+    meta.eventData && typeof meta.eventData === 'object'
+      ? (meta.eventData as Record<string, unknown>)
+      : undefined;
+  if (eventData?.[payloadField] !== undefined) {
+    return EventSchema.parse(meta);
+  }
+
+  const parsed = EventSchema.parse({
+    ...meta,
+    eventData: {
+      ...eventData,
+      [payloadField]: new Uint8Array(),
+    },
+  });
+  const parsedEventData = {
+    ...(parsed.eventData as Record<string, unknown>),
+  };
+  delete parsedEventData[payloadField];
+
+  return {
+    ...parsed,
+    ...(Object.keys(parsedEventData).length > 0
+      ? { eventData: parsedEventData }
+      : { eventData: undefined }),
+  } as Event;
+}
+
+function decodeEventFrame(
+  { meta, body }: DecodedFrame,
+  remoteRefBehavior: 'resolve' | 'lazy' = 'resolve'
+): Event {
   const eventType = EventTypeSchema.parse(meta.eventType);
-  if (body.byteLength === 0) return EventSchema.parse(meta);
+  if (body.byteLength === 0) {
+    return remoteRefBehavior === 'lazy'
+      ? decodeLazyEventMeta(meta, eventType)
+      : EventSchema.parse(meta);
+  }
 
   const payloadField = getEventDataPayloadField(eventType);
   assert(payloadField, `Event type ${eventType} cannot carry a payload body`);
@@ -1507,7 +1559,7 @@ export async function getEventV4(
       if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
         throw new Error('v4 getEvent: unexpected control frame');
       }
-      return decodeEventFrame(frame);
+      return decodeEventFrame(frame, remoteRefBehavior);
     }
   } catch (cause) {
     if (cause instanceof IncompleteFrameError && StreamError.is(cause.cause)) {
@@ -1609,6 +1661,7 @@ function partialEventFrameStream(
 async function consumeEventFrameStream(
   response: Response,
   opName: string,
+  remoteRefBehavior: 'resolve' | 'lazy' = 'resolve',
   replayEventObserver?: (event: Event) => void
 ): Promise<EventFrameStreamResult> {
   const contentType = response.headers.get('content-type');
@@ -1642,7 +1695,7 @@ async function consumeEventFrameStream(
       if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
         throw new Error(`v4 ${opName}: unexpected control frame`);
       }
-      const event = decodeEventFrame(frame);
+      const event = decodeEventFrame(frame, remoteRefBehavior);
       events.push(event);
       try {
         replayEventObserver?.(event);
@@ -1700,6 +1753,7 @@ async function consumeReplayLogResponse(
   const page = await consumeEventFrameStream(
     response,
     'createEvent',
+    'resolve',
     replayEventObserver
   );
   if (!page.hasMore) {
@@ -1743,6 +1797,7 @@ async function consumeListFrameStream(
   headers: Headers,
   config: APIConfig | undefined,
   opName: string,
+  remoteRefBehavior: 'resolve' | 'lazy',
   replayEventObserver?: (event: Event) => void
 ): Promise<EventFrameStreamResult> {
   const response = await fetchV4(
@@ -1751,7 +1806,12 @@ async function consumeListFrameStream(
     config,
     opName
   );
-  return consumeEventFrameStream(response, opName, replayEventObserver);
+  return consumeEventFrameStream(
+    response,
+    opName,
+    remoteRefBehavior,
+    replayEventObserver
+  );
 }
 
 /**
@@ -1809,6 +1869,7 @@ export async function getWorkflowRunEventsV4(
       headers,
       config,
       'listEvents',
+      params.remoteRefBehavior ?? 'resolve',
       replayEventObserver
     );
     const cursorAdvanced = !!consumed.cursor && consumed.cursor !== cursor;
@@ -1873,7 +1934,8 @@ export async function getEventsByCorrelationIdV4(
     url,
     headers,
     config,
-    'listEventsByCorrelationId'
+    'listEventsByCorrelationId',
+    params.remoteRefBehavior ?? 'resolve'
   );
   if (consumed.kind === 'partial') throw consumed.error;
   return {
