@@ -799,8 +799,10 @@ export interface CreateEventParams {
   /**
    * How many events the writer held in its loaded log when it decided to write
    * this one: equivalently, the slot it expects to land on minus one. Sent by
-   * every replay-context create; omitted by callers with no loaded log to be
-   * stale against.
+   * the replay loop and the suspension handler, which merge the report below
+   * back into their loaded log. Omitted by callers with no loaded log to be
+   * stale against, the step executor included: for those the report would be
+   * a read the World does for no one.
    *
    * A World's slots are dense and 1-based (see `Storage.events`), so a count
    * and a position are the same number. An id that is not a position does not

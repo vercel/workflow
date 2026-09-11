@@ -25,7 +25,6 @@ import type {
   World,
 } from '@workflow/world';
 import {
-  requireEventSlot,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
 } from '@workflow/world';
@@ -57,11 +56,7 @@ import {
   isOptimisticInlineStartExplicitlyDisabled,
 } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
-import {
-  maxEventSlot,
-  memoizeEncryptionKey,
-  type SlotSnapshotParams,
-} from './helpers.js';
+import { memoizeEncryptionKey } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import {
   computeResumeTtrAttributes,
@@ -220,26 +215,6 @@ export interface StepExecutorParams {
    * handler is the sole inline writer for the run on this iteration.
    */
   inlineDeltaSinceCursor?: string;
-  /**
-   * How much of the run's log the caller's replay had loaded when it scheduled
-   * this step, as the highest slot that log occupies. Seeds the snapshot every
-   * write this executor makes carries; each committed event advances it to its
-   * own slot, so a later write never names a position that predates an earlier
-   * one from the same step.
-   *
-   * It matters most on the lazy inline path, where the `step_started` claim is
-   * the step's FIRST durable write (its `step_created` is deferred): without a
-   * seed the claim would name no position at all, and a replay working from a
-   * stale view could claim (and then commit) a step scheduled without
-   * observing an event it never loaded.
-   *
-   * A World that fences rejects a stale claim with `PreconditionFailedError`
-   * (412); executeStep does NOT translate that rejection (re-claiming in place
-   * would still commit the stale schedule), so it propagates for the caller to
-   * abandon the batch and restart its replay. Undefined for a caller with
-   * nothing loaded.
-   */
-  slotSnapshot?: SlotSnapshotParams;
   /**
    * Suppress optimistic inline start for this step regardless of
    * `WORKFLOW_OPTIMISTIC_INLINE_START` / `forceOptimisticStart`: take the
@@ -405,59 +380,22 @@ export async function executeStep(
     (params.runSpecVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION;
   const replayRecoveryReporter =
     params.replayRecoveryReporter ?? ReplayRecoveryReporter.inert();
-  /**
-   * The highest log slot this executor knows about, seeded from the view its
-   * caller scheduled the step against and advanced by every event it commits.
-   *
-   * Advancing is what keeps the snapshot honest across a step's own writes. A
-   * step commits `step_started` and then `step_completed`; if the second still
-   * named the caller's original position, the World would report the first one
-   * back as an event this writer had not seen, on every step, forever.
-   *
-   * This reads a report for its highest position and then discards it, where
-   * the replay loop and the suspension handler merge theirs with
-   * `absorbSkippedSlotReport`. That is the difference between the callers, not
-   * an oversight: an executor holds no loaded log to merge into. It runs from a
-   * queued delivery whose only view of the log is the integer its caller passed
-   * in, so the position is the entire value the report has to it. Whoever
-   * replays next loads the log and gets the events themselves.
-   */
-  let knownSlot = params.slotSnapshot?.eventCount;
-  const observeSlot = (result: { event?: Event; events?: Event[] }): void => {
-    if (knownSlot === undefined) {
-      // The caller scheduled this step without naming a position, so there is
-      // no snapshot to advance and the writes below send none. Not the same as
-      // a run without positions: every run has them, this executor was not
-      // told which one it started from.
-      return;
-    }
-    const observed: number[] = [];
-    if (result.event) {
-      observed.push(requireEventSlot(result.event.eventId));
-    }
-    const reported = maxEventSlot(result.events ?? []);
-    if (reported !== undefined) {
-      observed.push(reported);
-    }
-    for (const slot of observed) {
-      if (slot > knownSlot) {
-        knownSlot = slot;
-      }
-    }
-  };
+  // Executor writes carry no slot snapshot (`CreateEventParams.eventCount`).
+  // The only thing a World does with one is bump-and-report: when the write
+  // lands above the position named, it reads the events in between and hands
+  // them back. The replay loop and the suspension handler merge that page into
+  // their loaded log; this executor has no log to merge into, so the page was
+  // read only to be discarded, and in production that read fell on a third of
+  // all `step_started` writes. Omitting the count is the documented shape for
+  // a caller with no loaded log to be stale against, and the conditional
+  // write on (runId, correlationId) remains the ownership fence.
   const createEvent = async <T extends CreateEventRequest>(
     data: T,
     eventParams?: CreateEventParams
-  ) => {
-    const result = await replayRecoveryReporter.withEventCreate(
-      knownSlot === undefined
-        ? eventParams
-        : { eventCount: knownSlot, ...eventParams },
-      (p) => world.events.create(workflowRunId, data, p)
+  ) =>
+    replayRecoveryReporter.withEventCreate(eventParams, (p) =>
+      world.events.create(workflowRunId, data, p)
     );
-    observeSlot(result);
-    return result;
-  };
 
   // `step_started` identifies the invocation that performed this attempt.
   // Keep request and compute provenance independent: world-vercel serializes
@@ -766,9 +704,7 @@ export async function executeStep(
     }
 
     let step: StartedStep;
-    // Params for the `step_started` create on either path below. The slot
-    // snapshot is not spread here: `createEvent` attaches it to every write,
-    // this one included.
+    // Params for the `step_started` create on either path below.
     const startEventParams = stepStartedEventParams;
     // `Date.now()` taken immediately before the `step_started` create is
     // issued (either path below); anchors RSFS's end point. See
@@ -842,10 +778,9 @@ export async function executeStep(
                   : {}),
               },
             },
-            // Guard the claim; see StepExecutorParams.slotSnapshot. A
-            // stale (412) rejection surfaces via reconcileOptimisticStart as a
-            // non-translatable error: the body result is discarded and the
-            // rejection propagates to the caller.
+            // A 412 rejection from a fencing World surfaces via
+            // reconcileOptimisticStart as a non-translatable error: the body
+            // result is discarded and the rejection propagates to the caller.
             startEventParams
           );
         }
@@ -902,10 +837,9 @@ export async function executeStep(
                   }
                 : { stepName, ...ownershipStamp },
           },
-          // Guard the claim; see StepExecutorParams.slotSnapshot. A
-          // stale (412) rejection is intentionally NOT translated by
-          // startErrorToResult below, so it propagates to the caller for a
-          // fresh replay.
+          // A 412 rejection from a fencing World is intentionally NOT
+          // translated by startErrorToResult below, so it propagates to the
+          // caller for a fresh replay.
           startEventParams
         );
         stepClaimCompletedAtMs = Date.now();

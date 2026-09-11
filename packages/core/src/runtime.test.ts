@@ -2802,17 +2802,18 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     // The handler responds normally: the rejection restarts the replay inside
     // this delivery, never a run_failed.
     expect(res.status).toBe(204);
-    // Step B's claim was issued from a loaded (non-empty) log, so it named the
-    // position it was decided against. (The very first batch of a run loads an
-    // empty log and has no position to name; reporting is best-effort there,
-    // matching the suspension creates.)
+    // Step B's claim names no log position: the executor has no loaded log
+    // to merge a skipped-slot report into, so it sends no `eventCount` and
+    // the World reads no page for it. The fence this test exercises does not
+    // depend on one either; a World that rejects a claim does so from its own
+    // view of the log, as the scripted rejection above does.
     const rejectedClaim = eventsCreate.mock.calls.find(
       (c) =>
         (c[1] as any).eventType === 'step_started' &&
         ((c[1] as any).eventData as { stepName?: string })?.stepName ===
           'deltaGateStepB'
     );
-    expect(typeof (rejectedClaim?.[2] as any)?.eventCount).toBe('number');
+    expect((rejectedClaim?.[2] as any)?.eventCount).toBeUndefined();
     // The fenced claim's body never ran: step B executes exactly once, on the
     // restarted replay whose claim the backend accepted.
     expect(deltaGateBodyRuns).toEqual(['B']);

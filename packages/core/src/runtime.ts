@@ -4334,36 +4334,6 @@ export function workflowEntrypoint(
                           retained: servedByRetainedSession,
                         });
 
-                        // Slot snapshot for the inline step_started claims: the
-                        // lazy claim is the first durable write of a hot-path
-                        // step (its step_created is deferred), so without a
-                        // snapshot it would name no position at all and a stale
-                        // replay could claim (and commit) a step scheduled off
-                        // a view that misses an event it never loaded.
-                        //
-                        // Taken here rather than inside the executor because
-                        // this is the view the scheduling decision was made
-                        // against. The executor advances from it as its own
-                        // writes land; see `slotSnapshot` in step-executor.
-                        const loadedSlotSnapshot = slotSnapshotParams(
-                          eventLog.events
-                        );
-                        // The batched fan-out's own events are not in the
-                        // loaded log yet (the next iteration reloads), but
-                        // this invocation wrote them, so fold the batch's
-                        // ceiling in, or every inline terminal write would
-                        // name a pre-batch position and be answered with a
-                        // skipped-slot report echoing the events this
-                        // suspension just committed.
-                        const batchSlotCeiling =
-                          suspensionResult.batchCommittedSlotCeiling;
-                        const inlineClaimSnapshot =
-                          batchSlotCeiling !== undefined &&
-                          batchSlotCeiling >
-                            (loadedSlotSnapshot.eventCount ?? 0)
-                            ? { eventCount: batchSlotCeiling }
-                            : loadedSlotSnapshot;
-
                         // TTR: consumed by this batch. Every step is handed
                         // the SAME tracking object and its one-shot
                         // `reported` latch picks the single step that
@@ -4464,7 +4434,6 @@ export function workflowEntrypoint(
                                 // See suppressOptimisticStart above.
                                 suppressOptimisticStart,
                                 runReadyBarrier,
-                                slotSnapshot: inlineClaimSnapshot,
                                 ...(stepIndex === 0 &&
                                 (s.lazyStepInput !== undefined ||
                                   s.preclaimedStart !== undefined) &&

@@ -233,28 +233,6 @@ export interface SuspensionHandlerResult {
    */
   inlineClaims: Map<string, PreclaimedInlineStart>;
   /**
-   * The highest slot the batched fan-out committed, when it ran. The batch's
-   * own events are not in the caller's loaded log (the next reload picks
-   * them up), so the caller folds this ceiling into the slot snapshot it
-   * hands the inline executions; otherwise every inline terminal write
-   * would name a pre-batch position and be answered with a skipped-slot
-   * report echoing the events this suspension just wrote. Under
-   * {@link SuspensionHandlerParams.allowDeferredBatchWork} this covers the
-   * chunks that had committed by the handler's return (always the pair
-   * chunk); a trailing chunk that commits later is echoed back on the
-   * terminal writes like any foreign event: reports the executor reads for
-   * position and discards.
-   *
-   * So the echo is only fully suppressed for a SINGLE-chunk fold. On a
-   * multi-chunk fan-out the bodies start off the pair chunk while trailing
-   * chunks are still in flight, and an inline terminal write issued in that
-   * window still names a position below them and still draws a report for
-   * their events. Bounded (trailing chunks only, large fan-outs only) and
-   * self-correcting on the next reload, and recorded so a report seen there
-   * reads as expected rather than as a bug.
-   */
-  batchCommittedSlotCeiling?: number;
-  /**
    * The batched fan-out's deferred work, present only when the caller opted
    * in via {@link SuspensionHandlerParams.allowDeferredBatchWork} and
    * trailing work exists: the commits of every chunk except the pair chunk,
@@ -1133,7 +1111,6 @@ export async function handleSuspension({
         uncreatedWaitCount >=
         1);
   const inlineClaims: SuspensionHandlerResult['inlineClaims'] = new Map();
-  let batchCommittedSlotCeiling: number | undefined;
 
   // The trace carrier for resilient step dispatches, resolved at most once per
   // suspension (the per-step ops run concurrently and share it).
@@ -1686,22 +1663,13 @@ export async function handleSuspension({
               { status: item.status }
             );
           }
-          // Highest slot this chunk committed: the ceiling the caller folds
-          // into the inline executions' slot snapshot (see
-          // SuspensionHandlerResult.batchCommittedSlotCeiling) and one input
-          // of the interleaving diagnostic.
+          // Highest slot this chunk committed: one input of the interleaving
+          // diagnostic.
           const chunkMaxSlot = maxEventSlot(
             results.flatMap((item) =>
               item.error === undefined && item.event ? [item.event] : []
             )
           );
-          if (
-            chunkMaxSlot !== undefined &&
-            (batchCommittedSlotCeiling === undefined ||
-              chunkMaxSlot > batchCommittedSlotCeiling)
-          ) {
-            batchCommittedSlotCeiling = chunkMaxSlot;
-          }
           committedCount += results.filter(
             (item) => item.error === undefined
           ).length;
@@ -1963,7 +1931,6 @@ export async function handleSuspension({
     queuedStepCorrelationIds,
     lazyInlineSteps,
     inlineClaims,
-    batchCommittedSlotCeiling,
     deferredBatchWork,
     // On hook conflict the caller advances the workflow over the conflict
     // before scheduling anything and never reads the wait timeout, so don't
