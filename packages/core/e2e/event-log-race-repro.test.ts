@@ -72,6 +72,7 @@ type Scenario =
   | 'hook-storm'
   | 'blocked-branch'
   | 'wake-loop'
+  | 'cycle-hook'
   | 'hook-sleep';
 
 type Outcome =
@@ -93,6 +94,7 @@ interface ReproConfig {
   hookStormAttempts: number;
   blockedBranchAttempts: number;
   wakeLoopAttempts: number;
+  cycleHookAttempts: number;
   hookSleepAttempts: number;
   concurrency: number;
   /** Wall-clock budget for *launching* attempts. Once it is spent no new
@@ -192,6 +194,25 @@ interface ReproConfig {
   wakeLoopIdleRatio: number;
   /** `wake-loop`: hard cap on cycles per run. */
   wakeLoopMaxCycles: number;
+  /** `cycle-hook`: hook wins to process before the run returns. Each win
+   *  abandons that cycle's sleep, so the NEXT cycle's `hook_created` commits
+   *  under an open wait — the state this scenario exists to exercise. */
+  cycleHookWakes: number;
+  /** `cycle-hook`: the per-cycle sleep raced against that cycle's hook. */
+  cycleHookHeartbeatMs: number;
+  /** `cycle-hook`: base duration of the cycle's drain step, and the
+   *  deterministic spread added to it. */
+  cycleHookStepDelayMs: number;
+  cycleHookStepDelayJitterMs: number;
+  /** `cycle-hook`: bytes every step returns, so replays pay real hydration. */
+  cycleHookStepPayloadBytes: number;
+  /** `cycle-hook`: share of cycles the driver resumes at the heartbeat
+   *  deadline (a hook win). The rest are left to the sleep, which disposes the
+   *  hook and closes the wait, so the ratio decides how often the loop sits in
+   *  the open-wait state. */
+  cycleHookWinRatio: number;
+  /** `cycle-hook`: hard cap on cycles, so a run whose hooks never land ends. */
+  cycleHookMaxCycles: number;
   /** `hook-sleep` control knobs. */
   iterations: number;
   sleepMs: number;
@@ -225,6 +246,17 @@ interface ReproRunResult {
     /** `wake-loop`: what the driver sent and what the run reported consuming.
      *  A corruption with `bursts: 0` and `idles: 0` would mean neither of the
      *  two collision patterns this scenario aims for was in play. */
+    /** `cycle-hook`: how many cycles the driver actually won at the heartbeat
+     *  deadline, and how many minted no reachable hook. A corruption with
+     *  `createsUnderOpenWait: 0` never reached the state the scenario is for. */
+    cycleHook?: {
+      resumed: number;
+      missedCycles: number;
+      cycles?: number;
+      hookWins?: number;
+      heartbeatWins?: number;
+      createsUnderOpenWait?: number;
+    };
     wakeLoop?: {
       fresh: number;
       stale: number;
@@ -276,6 +308,7 @@ const config: ReproConfig = {
     6
   ),
   wakeLoopAttempts: envNumber('EVENT_LOG_RACE_REPRO_WAKE_LOOP_ATTEMPTS', 6),
+  cycleHookAttempts: envNumber('EVENT_LOG_RACE_REPRO_CYCLE_HOOK_ATTEMPTS', 6),
   hookSleepAttempts: envNumber('EVENT_LOG_RACE_REPRO_ATTEMPTS', 2),
   // Cross-run concurrency is throughput only — the race being reproduced is
   // between concurrent replays *within* one run, driven by `rounds`/`width` and
@@ -374,6 +407,31 @@ const config: ReproConfig = {
     0.3
   ),
   wakeLoopMaxCycles: envNumber('EVENT_LOG_RACE_REPRO_WAKE_LOOP_MAX_CYCLES', 80),
+  cycleHookWakes: envNumber('EVENT_LOG_RACE_REPRO_CYCLE_HOOK_WAKES', 8),
+  cycleHookHeartbeatMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_CYCLE_HOOK_HEARTBEAT_MS',
+    4000
+  ),
+  cycleHookStepDelayMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_CYCLE_HOOK_STEP_DELAY_MS',
+    400
+  ),
+  cycleHookStepDelayJitterMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_CYCLE_HOOK_STEP_DELAY_JITTER_MS',
+    400
+  ),
+  cycleHookStepPayloadBytes: envNumber(
+    'EVENT_LOG_RACE_REPRO_CYCLE_HOOK_STEP_PAYLOAD_BYTES',
+    8192
+  ),
+  cycleHookWinRatio: envNumber(
+    'EVENT_LOG_RACE_REPRO_CYCLE_HOOK_WIN_RATIO',
+    0.7
+  ),
+  cycleHookMaxCycles: envNumber(
+    'EVENT_LOG_RACE_REPRO_CYCLE_HOOK_MAX_CYCLES',
+    60
+  ),
   iterations: envNumber('EVENT_LOG_RACE_REPRO_ITERATIONS', 8),
   sleepMs: envNumber('EVENT_LOG_RACE_REPRO_SLEEP_MS', 5000),
   resumeDelayMs: envNumber('EVENT_LOG_RACE_REPRO_RESUME_DELAY_MS', 15_000),
@@ -1267,6 +1325,146 @@ async function runWakeLoopAttempt(attempt: number): Promise<ReproRunResult> {
  * delay. Kept at low attempt counts purely so each run reports a rate for the
  * one scenario with a known historical baseline (~0.1%).
  */
+async function runCycleHookAttempt(attempt: number): Promise<ReproRunResult> {
+  const scenario: Scenario = 'cycle-hook';
+  const startedAt = Date.now();
+  const token = makeToken(scenario, attempt);
+
+  try {
+    const workflow = await getWorkflowMetadata(
+      deploymentUrl,
+      STORM_WORKFLOW_FILE,
+      'cycleHookReproWorkflow'
+    );
+    const run = await start(
+      scenario,
+      STORM_WORKFLOW_FILE,
+      'cycleHookReproWorkflow',
+      workflow,
+      [
+        {
+          heartbeatMs: config.cycleHookHeartbeatMs,
+          maxCycles: config.cycleHookMaxCycles,
+          stepDelayJitterMs: config.cycleHookStepDelayJitterMs,
+          stepDelayMs: config.cycleHookStepDelayMs,
+          stepPayloadBytes: config.cycleHookStepPayloadBytes,
+          token,
+          wakes: config.cycleHookWakes,
+        },
+      ]
+    );
+
+    let resumed = 0;
+    let missed = 0;
+    const { runResult, state } = await drive(
+      run,
+      startedAt,
+      scenario,
+      async (driverState) => {
+        // Each cycle mints its own hook, so the driver walks the cycle index
+        // rather than holding one hook for the whole run.
+        for (
+          let cycle = 0;
+          cycle < config.cycleHookMaxCycles && !driverState.done;
+          cycle += 1
+        ) {
+          const hook = await waitForHook(
+            `${token}:c${cycle}`,
+            run.runId,
+            driverState,
+            // A cycle whose sleep wins disposes its hook and moves on, so a
+            // token that never appears is a normal outcome, not a failure.
+            // Bound the wait at roughly one heartbeat plus the cycle's steps.
+            config.cycleHookHeartbeatMs * 2
+          ).catch(() => undefined);
+          if (!hook || driverState.done) {
+            missed += 1;
+            continue;
+          }
+          // Aim at the heartbeat deadline: landing a `hook_received` next to
+          // the `wait_completed` is what the production log shows at every
+          // cycle boundary. A share of cycles is deliberately left to the
+          // sleep, since a hook win is what leaves the next cycle's
+          // `hook_created` sitting under an open wait.
+          if (Math.random() < config.cycleHookWinRatio) {
+            const spread = Math.floor(config.cycleHookHeartbeatMs * 0.15);
+            await sleep(
+              Math.max(
+                0,
+                config.cycleHookHeartbeatMs -
+                  spread +
+                  Math.floor(Math.random() * 2 * spread)
+              )
+            );
+            if (driverState.done) return;
+            resumed += 1;
+            await tryResume(driverState, hook, {
+              fresh: true,
+              sentAt: Date.now(),
+              seq: cycle,
+            });
+          } else {
+            // Let this cycle's sleep win; wait it out before the next token.
+            await sleep(config.cycleHookHeartbeatMs);
+          }
+        }
+      }
+    );
+
+    const pressure = {
+      resumesFailed: state.resumesFailed,
+      resumesSent: state.resumesSent,
+      cycleHook: { missedCycles: missed, resumed },
+    };
+
+    if (runResult.outcome !== 'completed') {
+      return { ...runResult, attempt, pressure, scenario, token };
+    }
+
+    const returnValue = await withTimeout(
+      run.returnValue,
+      30_000,
+      `Timed out reading return value for run ${run.runId}`
+    );
+    const summary = returnValue as {
+      cycles?: number;
+      hookWins?: number;
+      heartbeatWins?: number;
+      createsUnderOpenWait?: number;
+    };
+    if (typeof summary?.cycles !== 'number') {
+      return {
+        ...runResult,
+        attempt,
+        errorCode: 'BAD_CYCLE_HOOK_LEDGER',
+        errorMessage: 'Run returned no cycle-hook ledger.',
+        outcome: 'other',
+        pressure,
+        scenario,
+        token,
+      };
+    }
+    return {
+      ...runResult,
+      attempt,
+      pressure: {
+        ...pressure,
+        cycleHook: {
+          ...pressure.cycleHook,
+          createsUnderOpenWait: summary.createsUnderOpenWait,
+          cycles: summary.cycles,
+          heartbeatWins: summary.heartbeatWins,
+          hookWins: summary.hookWins,
+        },
+      },
+      scenario,
+      token,
+    };
+  } catch (err) {
+    return harnessFailure(scenario, attempt, token, startedAt, err);
+  }
+}
+
 async function runHookSleepAttempt(attempt: number): Promise<ReproRunResult> {
   const scenario: Scenario = 'hook-sleep';
   const startedAt = Date.now();
@@ -1415,6 +1613,7 @@ function summarizeByScenario(results: ReproRunResult[]) {
       'hook-storm': emptyOutcomeCounts(),
       'blocked-branch': emptyOutcomeCounts(),
       'wake-loop': emptyOutcomeCounts(),
+      'cycle-hook': emptyOutcomeCounts(),
       'hook-sleep': emptyOutcomeCounts(),
     }
   );
@@ -1433,6 +1632,7 @@ const plannedAttempts =
   config.hookStormAttempts +
   config.blockedBranchAttempts +
   config.wakeLoopAttempts +
+  config.cycleHookAttempts +
   config.hookSleepAttempts;
 let overallDeadline = Number.POSITIVE_INFINITY;
 let launchDeadline = Number.POSITIVE_INFINITY;
@@ -1629,6 +1829,11 @@ describe('event log race repro', { retry: 0 }, () => {
         config.wakeLoopAttempts,
         config.concurrency,
         runWakeLoopAttempt
+      );
+      await runScenario(
+        config.cycleHookAttempts,
+        config.concurrency,
+        runCycleHookAttempt
       );
       await runScenario(
         config.hookSleepAttempts,
