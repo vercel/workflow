@@ -22,6 +22,7 @@ export function projectExecutionSnapshot(snapshot: ExecutionSnapshot) {
     const correlationId = event.correlationId;
     let result: EventResult = { event } as EventResult;
     if (event.eventType === 'run_created') {
+      if (run) throw new ExecutionInvariantError('Duplicate run creation');
       run = {
         ...event.eventData,
         runId: snapshot.runId,
@@ -38,6 +39,8 @@ export function projectExecutionSnapshot(snapshot: ExecutionSnapshot) {
       }
       switch (event.eventType) {
         case 'run_started':
+          if (run.status !== 'pending')
+            throw new ExecutionInvariantError('Duplicate run start');
           run = {
             ...run,
             status: 'running',
@@ -104,10 +107,14 @@ export function projectExecutionSnapshot(snapshot: ExecutionSnapshot) {
           }
           const next = { ...step, updatedAt: at };
           if (event.eventType === 'step_started') {
+            if (step.status !== 'pending')
+              throw new ExecutionInvariantError('Step already running');
             next.status = 'running';
             next.attempt++;
             next.startedAt ??= at;
           } else if (event.eventType === 'step_completed') {
+            if (step.status !== 'running')
+              throw new ExecutionInvariantError('Step completed before start');
             next.status = 'completed';
             next.output = event.eventData.result;
             next.completedAt = at;
@@ -116,6 +123,8 @@ export function projectExecutionSnapshot(snapshot: ExecutionSnapshot) {
             next.error = event.eventData.error;
             next.completedAt = at;
           } else {
+            if (step.status !== 'running')
+              throw new ExecutionInvariantError('Step retry before start');
             next.status = 'pending';
             next.error = event.eventData.error;
             next.retryAfter =

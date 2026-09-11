@@ -136,7 +136,7 @@ describe('platform-neutral execution coordinator', () => {
     expect(await session.append(event, 'op1')).toEqual(first);
     expect(f.exchange).toHaveBeenCalledTimes(1);
   });
-  it('delegates ingress and lifetime to a non-affinity World', async () => {
+  it('delegates ingress and lifetime to the World', async () => {
     const f = fixture();
     f.world.getDeploymentId = vi.fn(() => {
       throw new Error('Core must not inspect platform placement');

@@ -111,6 +111,10 @@ export class ExecutionCoordinator {
     if (this.fault) throw this.fault;
   }
 
+  invalidate(error: Error): Promise<void> {
+    return this.stop(error);
+  }
+
   private async stop(error: unknown): Promise<void> {
     if (this.fault) return;
     this.fault =
@@ -193,6 +197,7 @@ export class ExecutionCoordinator {
           expectedHead: snapshot.head,
           events: [event],
         });
+        this.check();
         if (receipt.operationId !== operationId)
           throw new ExecutionInvariantError('Receipt identity mismatch');
         if (receipt.head <= snapshot.head) {
@@ -248,10 +253,17 @@ export class ExecutionCoordinator {
         );
       }
     }
-    // Share one drive promise across concurrent VQS requests. Never replay another
-    // orchestrator just because a second message arrives on the same cell.
+    // Share one drive promise across concurrent deliveries. Never replay another
+    // orchestrator just because a second message arrives at this session.
     this.driving ??= runWithWorld(this.boundWorld, () => this.drive())
       .catch(async (error) => {
+        // A cancellation committed during a body makes its eventual terminal
+        // write obsolete. It is an ordinary terminal outcome, not corruption.
+        if (
+          RunExpiredError.is(error) &&
+          ['completed', 'failed', 'cancelled'].includes(this.view().run.status)
+        )
+          return;
         await this.stop(error);
         throw error;
       })
@@ -390,6 +402,11 @@ export class ExecutionCoordinator {
           suppressOptimisticStart: true,
           authoritativeAttempt: step.attempt + 1,
         });
+        this.check();
+        if (
+          ['completed', 'failed', 'cancelled'].includes(this.view().run.status)
+        )
+          return;
         if (outcome.type === 'skipped' || outcome.type === 'throttled') {
           throw new ExecutionInvariantError(
             `Unexpected inline body outcome: ${outcome.type}`

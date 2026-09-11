@@ -132,6 +132,8 @@ export interface ExecutionStorage {
 
 export interface ExecutionSession {
   receive(input?: ExecutionInput): Promise<void>;
+  /** Stop execution immediately when the backend loses its ownership grant. */
+  invalidate(error: Error): Promise<void>;
 }
 
 export function assertExecutionSnapshot(snapshot: ExecutionSnapshot): void {

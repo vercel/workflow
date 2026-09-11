@@ -23,6 +23,10 @@
     "directory": "packages/world-postgres"
   },
   "exports": {
+    "./execution": {
+      "types": "./dist/execution.d.ts",
+      "default": "./dist/execution.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"

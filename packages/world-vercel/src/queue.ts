@@ -402,10 +402,7 @@ type QueueFunction = (
   opts?: QueueOptions
 ) => ReturnType<Queue['queue']>;
 
-export function createQueue(
-  config?: APIConfig,
-  options: { eventsChannel?: boolean } = {}
-): Queue {
+export function createQueue(config?: APIConfig): Queue {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
 
@@ -532,14 +529,11 @@ export function createQueue(
         // handshake happens here instead of on the runtime's first event write
         // (which would record a `step_started` later than the work it
         // timestamps). This path also absorbs `ws`'s module init.
-        const wsEvents =
-          options.eventsChannel === false
-            ? undefined
-            : wsEventsChannelForInvocation(
-                getRunIdFromPayload(payload),
-                config
-              );
-        wsEvents?.open();
+        const wsEvents = wsEventsChannelForInvocation(
+          getRunIdFromPayload(payload),
+          config
+        );
+        wsEvents.open();
 
         try {
           const result = await handler(payload, {
@@ -567,7 +561,7 @@ export function createQueue(
           // The only point in the SDK that knows an invocation has no writes
           // left. In a `finally` so a failed handler closes too, since the
           // retry arrives as a new invocation and opens its own channel.
-          await wsEvents?.close();
+          await wsEvents.close();
         }
       },
       {

@@ -281,13 +281,6 @@ export function errorForResponse(
   } = {}
 ): Error {
   const { retryAfter, code, url, mitigated, details } = opts;
-  // Never translate an execution assertion to a legacy catch-and-repair conflict.
-  if (code === 'EXECUTION_INVARIANT_VIOLATION') {
-    return Object.assign(new Error(message), {
-      name: 'ExecutionInvariantError',
-      code: 'EXECUTION_INVARIANT_VIOLATION',
-    });
-  }
   if (status === 409) return new EntityConflictError(message);
   if (status === 410) {
     if (code === 'stream-expired') {
