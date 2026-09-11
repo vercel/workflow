@@ -12,9 +12,9 @@ import { createSleep } from './sleep.js';
 
 function attributeData(bytes: number, allowReservedAttributes: boolean) {
   const eventData = {
-    changes: Array.from({ length: 15 }, (_, i) => ({
+    changes: Array.from({ length: 30 }, (_, i) => ({
       key: `k${i}`.padEnd(240, 'k'),
-      value: '',
+      value: i === 1 ? 'x'.repeat(128) : '',
     })),
     writer: { type: 'workflow' as const },
     ...(allowReservedAttributes ? { allowReservedAttributes: true } : {}),
@@ -36,7 +36,7 @@ describe.each([
     const setAttributes = createSetAttributes(ctx);
     const { error } = await runWithDiscontinuation(ctx, () =>
       setAttributes(
-        attributeData(4096, allowReservedAttributes).changes,
+        attributeData(8192, allowReservedAttributes).changes,
         options
       )
     );
@@ -51,7 +51,7 @@ describe.each([
     const { result, error } = await runWithDiscontinuation(ctx, async () => {
       try {
         await setAttributes(
-          attributeData(4097, allowReservedAttributes).changes,
+          attributeData(8193, allowReservedAttributes).changes,
           options
         );
       } catch (cause) {
@@ -60,14 +60,14 @@ describe.each([
       return 'continued';
     });
     expect(caught).toBeInstanceOf(FatalError);
-    expect((caught as Error).message).toMatch(/4096.*4097.*Split/);
+    expect((caught as Error).message).toMatch(/8192.*8193.*Split/);
     expect(error).toBeUndefined();
     expect(result).toBe('continued');
     expect(ctx.invocationsQueue.size).toBe(0);
   });
 
   it('replays an oversized event persisted before write validation was added', async () => {
-    const eventData = attributeData(4097, allowReservedAttributes);
+    const eventData = attributeData(8193, allowReservedAttributes);
     const event: EventOfType<'attr_set'> = {
       eventType: 'attr_set',
       eventId: 'evnt_0',
@@ -101,7 +101,7 @@ describe.each([
     const sleep = createSleep(ctx);
     const { result, error } = await runWithDiscontinuation(ctx, async () => {
       await setAttributes(
-        attributeData(4097, allowReservedAttributes).changes,
+        attributeData(8193, allowReservedAttributes).changes,
         options
       ).catch(() => {});
       await sleep(resumeAt);
@@ -119,7 +119,7 @@ describe.each([
     let continued = false;
     const { error } = await runWithDiscontinuation(ctx, async () => {
       await setAttributes(
-        attributeData(4097, allowReservedAttributes).changes,
+        attributeData(8193, allowReservedAttributes).changes,
         options
       ).catch(() => {});
       await setAttributes(changes);

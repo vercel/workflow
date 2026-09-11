@@ -37,7 +37,7 @@ export interface SetAttributesOptions {
  * empty record is a no-op. `value: undefined` removes the key from the
  * run's attribute map.
  *
- * Each call's complete eventData must fit in 4096 UTF-8 JSON bytes, including
+ * Each call's complete eventData must fit in 8192 UTF-8 JSON bytes, including
  * keys, escaped values, and writer metadata. Split larger updates into smaller
  * calls; the per-value and per-run attribute limits still apply.
  *

@@ -441,7 +441,7 @@ describe('fresh attribute validation', () => {
         async function setAttributes(changes) { await dispatcher(changes); }
         async function workflow() {
           var pendingStep = step();
-          var changes = Array.from({ length: 16 }, function(_, i) {
+          var changes = Array.from({ length: 32 }, function(_, i) {
             return { key: "key" + i, value: "x".repeat(256) };
           });
           var attributePromise = ${asyncWrapper ? 'setAttributes' : 'dispatcher'}(changes);
@@ -493,17 +493,17 @@ describe('fresh attribute validation', () => {
     false,
     true,
   ])('checks the exact UTF-8 eventData boundary (reserved flag: %s)', async (allowReservedAttributes) => {
-    const changes = Array.from({ length: 15 }, (_, i) => ({
+    const changes = Array.from({ length: 29 }, (_, i) => ({
       key: `key${i}`,
-      value: i === 14 ? '' : '\u00e9'.repeat(128),
+      value: i === 28 ? '' : '\u00e9'.repeat(128),
     }));
     const eventData = {
       changes,
       writer: { type: 'workflow' },
       ...(allowReservedAttributes ? { allowReservedAttributes: true } : {}),
     };
-    changes[14].value = 'x'.repeat(
-      4096 - new TextEncoder().encode(JSON.stringify(eventData)).length
+    changes[28].value = 'x'.repeat(
+      8192 - new TextEncoder().encode(JSON.stringify(eventData)).length
     );
     const run = makeRun();
     const options = {
@@ -532,7 +532,7 @@ describe('fresh attribute validation', () => {
       changes,
     });
 
-    changes[14].value += 'x';
+    changes[28].value += 'x';
     const rejected = await runQuickJSWorkflow({
       ...options,
       events: [runCreatedEvent(run, [changes])],
@@ -540,7 +540,7 @@ describe('fresh attribute validation', () => {
     assert(rejected.completed);
     expect(unwrapResult(rejected.completed.result)).toEqual({
       name: 'FatalError',
-      message: expect.stringContaining('received 4097 bytes'),
+      message: expect.stringContaining('received 8193 bytes'),
       isError: true,
     });
     expect(rejected.completed.drainOperations).toBeUndefined();
@@ -548,7 +548,7 @@ describe('fresh attribute validation', () => {
 
   it('preserves oversized history and IDs while rejecting fresh writes on replay and live continuation', async () => {
     const run = makeRun();
-    const oversized = Array.from({ length: 16 }, (_, i) => ({
+    const oversized = Array.from({ length: 32 }, (_, i) => ({
       key: `key${i}`,
       value: 'x'.repeat(256),
     }));

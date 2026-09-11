@@ -192,9 +192,9 @@ describe('setAttributes (host-side)', () => {
     const context = stepContext();
     context.stepMetadata.stepId = 'step_actual_id_longer_than_placeholder';
     context.stepMetadata.attempt = 12;
-    const changes = Array.from({ length: 15 }, (_, i) => ({
+    const changes = Array.from({ length: 30 }, (_, i) => ({
       key: `k${i}`.padEnd(240, 'k'),
-      value: '',
+      value: i === 1 ? 'x'.repeat(128) : '',
     }));
     const eventData = {
       changes,
@@ -206,7 +206,7 @@ describe('setAttributes (host-side)', () => {
       ...(allowReservedAttributes ? { allowReservedAttributes: true } : {}),
     };
     changes[0].value = 'x'.repeat(
-      4096 - Buffer.byteLength(JSON.stringify(eventData))
+      8192 - Buffer.byteLength(JSON.stringify(eventData))
     );
     const attrs = Object.fromEntries(
       changes.map(({ key, value }) => [key, value])

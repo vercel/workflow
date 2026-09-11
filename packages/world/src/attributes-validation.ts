@@ -115,8 +115,8 @@ export function purgesUserDataOnFinish(
 export const ATTRIBUTE_KEY_MAX_LENGTH = 256;
 export const ATTRIBUTE_VALUE_MAX_BYTES = 256;
 export const ATTRIBUTE_MAX_PER_RUN = 64;
-/** World limit for JSON-serialized inline eventData, not just attribute values. */
-export const ATTRIBUTE_EVENT_DATA_MAX_BYTES = 4096;
+/** World attr_set limit for JSON-serialized eventData, not just attribute values. */
+export const ATTRIBUTE_EVENT_DATA_MAX_BYTES = 8192;
 
 const textEncoder = new TextEncoder();
 

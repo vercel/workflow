@@ -796,7 +796,7 @@ describe('attr_set eventData size limit', () => {
     // Each value stays within 256 bytes; the aggregate JSON reaches the cap.
     const eventData = {
       changes: [
-        ...Array.from({ length: 14 }, (_, i) => ({
+        ...Array.from({ length: 28 }, (_, i) => ({
           key: `key${i}`,
           value: '\u00e9'.repeat(128),
         })),
@@ -816,21 +816,21 @@ describe('attr_set eventData size limit', () => {
     } satisfies AnyEventRequest;
   }
 
-  it('accepts exactly 4096 UTF-8 JSON bytes and rejects 4097 including writer metadata', () => {
-    const accepted = attributeEvent(4096);
-    expect(Buffer.byteLength(JSON.stringify(accepted.eventData))).toBe(4096);
+  it('accepts exactly 8192 UTF-8 JSON bytes and rejects 8193 including writer metadata', () => {
+    const accepted = attributeEvent(8192);
+    expect(Buffer.byteLength(JSON.stringify(accepted.eventData))).toBe(8192);
     expect(splitEventDataForV4(accepted)).toEqual({
       payload: undefined,
       meta: accepted.eventData,
     });
 
-    const rejected = attributeEvent(4097);
-    expect(Buffer.byteLength(JSON.stringify(rejected.eventData))).toBe(4097);
+    const rejected = attributeEvent(8193);
+    expect(Buffer.byteLength(JSON.stringify(rejected.eventData))).toBe(8193);
     expect(() => splitEventDataForV4(rejected)).toThrow(
       expect.objectContaining({
         name: 'WorkflowWorldError',
         status: 400,
-        message: expect.stringContaining('received 4097 bytes'),
+        message: expect.stringContaining('received 8193 bytes'),
       })
     );
   });
@@ -862,7 +862,7 @@ describe('attr_set eventData size limit', () => {
       expect(resolveWsTransport('wrun_1', config)?.transport).toBe(transport);
       const result = createWorkflowRunEvent(
         'wrun_1',
-        attributeEvent(4097),
+        attributeEvent(8193),
         undefined,
         config
       ).catch((error) => error);
@@ -872,7 +872,7 @@ describe('attr_set eventData size limit', () => {
       expect(error).toBeInstanceOf(WorkflowWorldError);
       expect(error).toMatchObject({
         status: 400,
-        message: expect.stringContaining('received 4097 bytes'),
+        message: expect.stringContaining('received 8193 bytes'),
       });
       expect(fetchSpy).not.toHaveBeenCalled();
       expect(requestSpy).not.toHaveBeenCalled();
@@ -888,7 +888,7 @@ describe('attr_set eventData size limit', () => {
   });
 
   it('still parses persisted attr_set events larger than the write limit', () => {
-    const event = attributeEvent(4097);
+    const event = attributeEvent(8193);
     expect(
       EventSchema.parse({
         ...event,

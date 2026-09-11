@@ -27,9 +27,9 @@ describe('normalizeAttributeChanges', () => {
       options: {},
     },
   ])('counts $writer and $options only for attr_set', ({ writer, options }) => {
-    const changes = Array.from({ length: 15 }, (_, i) => ({
+    const changes = Array.from({ length: 30 }, (_, i) => ({
       key: `k${i}`.padEnd(240, 'k'),
-      value: '',
+      value: i === 1 ? 'x'.repeat(128) : '',
     }));
     const eventData = {
       changes,
@@ -39,7 +39,7 @@ describe('normalizeAttributeChanges', () => {
         : {}),
     };
     changes[0].value = 'x'.repeat(
-      4096 - Buffer.byteLength(JSON.stringify(eventData))
+      8192 - Buffer.byteLength(JSON.stringify(eventData))
     );
     const attrs = Object.fromEntries(
       changes.map(({ key, value }) => [key, value])
@@ -53,12 +53,12 @@ describe('normalizeAttributeChanges', () => {
       Buffer.byteLength(
         JSON.stringify({ ...eventData, changes: initialChanges })
       )
-    ).toBe(4097);
+    ).toBe(8193);
     expect(() => normalizeAttributeChanges(attrs, options, writer)).toThrow(
       FatalError
     );
     expect(() => normalizeAttributeChanges(attrs, options, writer)).toThrow(
-      /4096.*4097.*Split/
+      /8192.*8193.*Split/
     );
   });
 
