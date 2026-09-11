@@ -194,8 +194,6 @@ describe('executeStep — compute instance stamping', () => {
     // persist — so observe the call itself rather than the stored event.
     const createSpy = vi.spyOn(world.events, 'create');
 
-    const slotSnapshot = { eventCount: 7 };
-
     await executeStep({
       world,
       workflowRunId: runId,
@@ -204,7 +202,6 @@ describe('executeStep — compute instance stamping', () => {
       requestId: 'req_step_executor',
       stepId,
       stepName,
-      slotSnapshot,
     });
 
     const started = createSpy.mock.calls.filter(
@@ -215,8 +212,9 @@ describe('executeStep — compute instance stamping', () => {
       requestId: 'req_step_executor',
       computeInstanceId: COMPUTE_INSTANCE_ID,
     });
-    // All dimensions ride the same params object and neither may clobber another.
-    expect(started[0]?.[2]?.eventCount).toBe(slotSnapshot.eventCount);
+    // An executor write names no log position: it has no log to merge a
+    // skipped-slot report into, so it must not ask the World to read one.
+    expect(started[0]?.[2]?.eventCount).toBeUndefined();
   });
 
   it('stamps provenance when a lazy unregistered step is materialized', async () => {
@@ -307,10 +305,12 @@ describe('executeStep — compute instance stamping', () => {
     expect(started?.[2]?.requestId).toBeUndefined();
   });
 
-  it('advances the snapshot it sends as its own writes land', async () => {
-    // The executor writes twice for one step. If the second write still named
-    // the position its caller scheduled against, the World would report the
-    // first one back to it on every step, forever.
+  it('sends no slot snapshot on any of its writes', async () => {
+    // The only thing a World does with `eventCount` is bump-and-report: read
+    // the events between the named position and the committed one and hand
+    // them back. The executor has no loaded log to merge that page into, so
+    // naming a position would make the World read a page nobody consumes, on
+    // every contended step_started.
     const world = makeWorld();
     const stepName = uniqueStepName();
     const { runId, stepId } = await setupRunningStep({
@@ -318,13 +318,6 @@ describe('executeStep — compute instance stamping', () => {
       stepName,
       onBody: () => {},
     });
-
-    // The position the caller would have scheduled against, taken from the log
-    // rather than written down, so the seed stays below the slots the executor
-    // is about to commit at. Seeding it above them would leave `observeSlot`
-    // with nothing to raise and the test would pass without exercising it.
-    const { data: seeded } = await world.events.list({ runId });
-    const scheduledAt = seeded.length;
 
     const createSpy = vi.spyOn(world.events, 'create');
 
@@ -335,18 +328,11 @@ describe('executeStep — compute instance stamping', () => {
       workflowStartedAt: Date.now(),
       stepId,
       stepName,
-      slotSnapshot: { eventCount: scheduledAt },
     });
 
-    // world-local mints slots for a run created on this scheme, so every write
-    // reads back as a position and each one has to name the position its
-    // predecessor landed on.
     const counts = createSpy.mock.calls.map((call) => call[2]?.eventCount);
     expect(counts.length).toBeGreaterThan(1);
-    expect(counts[0]).toBe(scheduledAt);
-    for (let i = 1; i < counts.length; i++) {
-      expect(counts[i]).toBeGreaterThan(counts[i - 1] as number);
-    }
+    expect(counts.every((count) => count === undefined)).toBe(true);
   });
 });
 

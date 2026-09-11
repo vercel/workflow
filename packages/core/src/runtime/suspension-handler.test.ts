@@ -1584,7 +1584,6 @@ describe('handleSuspension batched fan-out', () => {
 
     expect(result.inlineClaims.size).toBe(0);
     expect(result.deferredBatchWork).toBeUndefined();
-    expect(result.batchCommittedSlotCeiling).toBeUndefined();
     // The deferred inline step still carries its input for the lazy start.
     expect(result.lazyInlineSteps).toHaveLength(1);
     expect(result.lazyInlineSteps[0].correlationId).toBe('s1');
@@ -1788,8 +1787,6 @@ describe('handleSuspension batched fan-out', () => {
         's1',
         's2',
       ]);
-      // 6 events at slots 10..15.
-      expect(result.batchCommittedSlotCeiling).toBe(15);
       expect(eventsCreate).not.toHaveBeenCalled();
     });
 
