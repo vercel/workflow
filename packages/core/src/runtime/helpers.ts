@@ -1063,7 +1063,7 @@ export interface SlotSnapshotParams {
  * | `run_started` | replay loop, first write of a delivery | `eventCount` when a log is loaded; no cursor, the `run_started` preload owns the response fields | the preload already returns the full log |
  * | `step_created`, `wait_created`, `hook_disposed`, `attr_set` | suspension handler (`createGuarded`) | `eventCount` | the handler keeps writing from, and resumes replay from, this log |
  * | `step_created` | queue-consumer re-ensure (raw) | nothing | runs from a queue message, no log |
- * | `hook_created` | suspension handler | `eventCount` + `sinceCursor` (at most one hook write per suspension) | the delta is how an already-received hook resolves without a re-invocation |
+ * | `hook_created` | suspension handler (node), `dispatchPendingOps` (QuickJS) | `eventCount` + `sinceCursor` (only when the suspension creates exactly one hook) | the delta is how an already-received hook resolves without a re-invocation; two creates against one cursor would give two deltas of which only the first could be taken |
  * | `hook_received` | replay loop lazy resume; handler in-suspension resume | `eventCount` (preload owns the cursor fields) | both replay from the log right after |
  * | `hook_received` | webhook / `resumeHook` (raw) | nothing | out-of-band, enqueues a delivery that loads the log |
  * | `wait_completed` | replay loop timer path | `eventCount` | the loop keeps replaying from the log |
@@ -1072,7 +1072,7 @@ export interface SlotSnapshotParams {
  * | `step_completed`, `step_failed` | step executor | `sinceCursor` only, outside turbo, single inline step | this is where the inline execution loop gets its log back; in turbo or from a queued delivery a fresh replay loads it anyway |
  * | `step_failed` | suspension handler, unserializable input | `eventCount` | the handler holds a log; rare, and follows a `step_created` that drew the page |
  * | `attr_set` | `setAttributes()` API (raw) | nothing | out-of-band |
- | `run_completed`, `run_failed`, `run_cancelled` | replay loop, replay budget, `runs.cancel` | `eventCount` where the node loop's seam stamps it (the QuickJS engine sends nothing); never `sinceCursor` (`deltaRequestCursor` excludes terminal types) | terminal: nothing replays the log afterwards, so a World reads no page for them |
+ * | `run_completed`, `run_failed`, `run_cancelled` | replay loop, replay budget, `runs.cancel` | `eventCount` where the node loop's seam stamps it (the QuickJS engine sends nothing); never `sinceCursor` (`deltaRequestCursor` excludes terminal types) | terminal: nothing replays the log afterwards, so a World reads no page for them |
  *
  * Batched writes (`events.createBatch`) are outside all of this: a batch carries
  * no per-event position and gets no page. The user-facing version of this table

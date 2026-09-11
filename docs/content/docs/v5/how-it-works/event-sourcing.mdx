@@ -281,7 +281,7 @@ Both save a reload, so the rule for which writes send them is not about the even
 | `run_created` | `start()` | Nothing | No log exists yet. |
 | `run_started` | Replay, first write of a delivery | `eventCount` when a log is loaded; no cursor | The `run_started` response already carries the full log as a preload. |
 | `step_created`, `wait_created`, `hook_disposed`, `attr_set` | Suspension handler | `eventCount` | The handler keeps writing from this log and the replay resumes from it. |
-| `hook_created` | Suspension handler | `eventCount` and `sinceCursor` (one hook write per suspension) | The delta is how a hook whose payload already arrived resolves without another invocation. |
+| `hook_created` | Suspension handler | `eventCount` and `sinceCursor` (only when the suspension creates exactly one hook) | The delta is how a hook whose payload already arrived resolves without another invocation. Two creates diffing against one cursor would give two deltas of which only the first could be taken. |
 | `hook_received` | Replay resuming a hook | `eventCount` | The replay continues from the log right after. |
 | `hook_received` | Webhook or `resumeHook()` | Nothing | Out-of-band. It enqueues a delivery that loads the log. |
 | `wait_completed` | Replay completing an elapsed wait | `eventCount` | The replay continues from the log right after. |

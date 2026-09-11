@@ -260,6 +260,46 @@ describe('QuickJS engine: log position on writes', () => {
     );
   });
 
+  it('asks a lone hook_created for the inline delta and feeds the VM from it', async () => {
+    const setup = await setupRun();
+    startQuickJSWorkflow.mockResolvedValue({
+      result: {
+        suspended: {
+          pendingOperations: [
+            {
+              type: 'hook',
+              correlationId: 'hook_1',
+              token: 'tok-1',
+              isWebhook: false,
+              hasCreatedEvent: false,
+            },
+          ],
+        },
+      },
+      continueWithEvents: vi.fn(async (events: Event[]) => {
+        setup.fed.push(events);
+        return { completed: { result: setup.completedResult } };
+      }),
+      dispose: vi.fn(),
+    });
+
+    await runEngine(setup);
+
+    const hookCreated = setup.writes.find(
+      (w) => w.request.eventType === 'hook_created'
+    );
+    // The one hook create of the suspension names its position and asks for
+    // the delta against the cursor the engine held, as the node engine's
+    // suspension handler does for a single-hook suspension.
+    expect(hookCreated?.params?.eventCount).toBe(2);
+    expect(hookCreated?.params?.sinceCursor).toBe(setup.preload.cursor);
+    // The hook_created (position 3) reached the VM off the delta; no listing
+    // ran before it was fed.
+    expect(setup.fed.map(slotsOf)).toEqual([[3]]);
+    expect(setup.fed[0][0].eventType).toBe('hook_created');
+    expect(setup.sequence.indexOf('list')).toBe(-1);
+  });
+
   it('asks a single inline step for the inline delta and feeds the VM from it', async () => {
     const setup = await setupRun();
     const stepName = `step//./quickjs-slot-report//inline${counter}`;

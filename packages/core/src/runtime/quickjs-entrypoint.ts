@@ -238,6 +238,19 @@ async function dispatchPendingOps(params: {
    * the run is ending and nothing reads its log afterwards.
    */
   createEvent: EventCreator;
+  /**
+   * The cursor this invocation's log was read to, when the caller wants a lone
+   * `hook_created` to ask for the inline delta against it (`sinceCursor`).
+   * The hook's awaiters are settled by the event that write commits and by
+   * nothing else (a `hook_created`, or the `hook_conflict` a claimed token
+   * commits instead), so the delta hands the VM that event, plus anything
+   * another writer landed meanwhile, without a listing. Same gate as the node
+   * engine's `hookDeltaCursor`: asked for only when exactly one hook needs
+   * creating, since two creates diffing against one cursor would produce two
+   * deltas of which only the first could be taken. Omitted by the terminal
+   * drain.
+   */
+  deltaCursor?: string;
   workflowRun: WorkflowRun;
   encryptionKey: RunPayloadKeys | undefined;
   pendingOperations: PendingOperation[];
@@ -338,6 +351,11 @@ async function dispatchPendingOps(params: {
   // same pattern as an elapsed wait.
   let createdAttributeEvent = false;
   const opsPromises: Promise<void>[] = [];
+  const hooksNeedingCreation = pendingOperations.filter(
+    (op) => op.type === 'hook' && !op.hasCreatedEvent
+  ).length;
+  const hookDeltaCursor =
+    hooksNeedingCreation === 1 ? params.deltaCursor : undefined;
 
   const processHookOp = async (hook: PendingHook): Promise<void> => {
     runtimeLogger.debug('QuickJS runtime: processing hook op', {
@@ -368,26 +386,31 @@ async function dispatchPendingOps(params: {
           typeof hook.metadata === 'undefined'
             ? undefined
             : await encryptSerializedData(hook.metadata, encryptionKey);
-        const result = await createEvent({
-          eventType: 'hook_created',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: hook.correlationId,
-          eventData: {
-            token: hook.token,
-            tokenRetentionUntil:
-              hook.tokenRetentionUntil === undefined
-                ? undefined
-                : new Date(hook.tokenRetentionUntil),
-            metadata: encryptedMetadata,
-            // Always include isWebhook explicitly. Worlds default it to
-            // `true` when absent, which would break the public webhook
-            // endpoint's 404 guard for hooks created via createHook().
-            isWebhook: hook.isWebhook,
-            // System hooks (AbortController) are exempt from user
-            // token namespace conflict checks.
-            ...(hook.isSystem ? { isSystem: true } : {}),
-          } as any,
-        });
+        const result = await createEvent(
+          {
+            eventType: 'hook_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: hook.correlationId,
+            eventData: {
+              token: hook.token,
+              tokenRetentionUntil:
+                hook.tokenRetentionUntil === undefined
+                  ? undefined
+                  : new Date(hook.tokenRetentionUntil),
+              metadata: encryptedMetadata,
+              // Always include isWebhook explicitly. Worlds default it to
+              // `true` when absent, which would break the public webhook
+              // endpoint's 404 guard for hooks created via createHook().
+              isWebhook: hook.isWebhook,
+              // System hooks (AbortController) are exempt from user
+              // token namespace conflict checks.
+              ...(hook.isSystem ? { isSystem: true } : {}),
+            } as any,
+          },
+          hookDeltaCursor !== undefined
+            ? { sinceCursor: hookDeltaCursor }
+            : undefined
+        );
 
         // If storage detected a real token conflict with another
         // workflow's hook, re-queue so the workflow handler can
@@ -822,7 +845,8 @@ async function dispatchPendingOps(params: {
  *   pair for an unserializable input) carry `eventCount`, and the page a
  *   World hands back is queued for the live VM through {@link QuickJSLogView}.
  * - A single inline step's terminal write asks for the inline delta
- *   (`sinceCursor`) through `executeStep`, and the delta is queued the same
+ *   (`sinceCursor`) through `executeStep`, and so does a lone `hook_created`
+ *   (see `dispatchPendingOps.deltaCursor`); the delta is queued the same
  *   way. The step executor's other writes carry nothing: it holds no log.
  * - Run-terminal writes (`run_completed`, `run_failed`) and the terminal drain
  *   of pending ops carry nothing: nothing reads the log afterwards.
@@ -1071,6 +1095,28 @@ export async function runWorkflowWithQuickJS(params: {
       ...eventParams,
       ...logView.snapshotParams(),
     });
+    if (
+      typeof eventParams?.sinceCursor === 'string' &&
+      result.events !== undefined
+    ) {
+      // The write asked for the inline delta and got one: everything after
+      // the cursor, this write included, read with refs resolved. Taken
+      // through the delta path so the cursor moves with it when that is
+      // safe; the created event's position is noted either way.
+      logView.absorb({ event: result.event });
+      const advanced = logView.absorbDelta(eventParams.sinceCursor, {
+        events: result.events,
+        cursor: result.cursor ?? null,
+        hasMore: result.hasMore ?? false,
+      });
+      wfdiag('inline_delta_absorbed', {
+        eventType: data.eventType,
+        events: result.events.length,
+        hasMore: result.hasMore ?? false,
+        cursorAdvanced: advanced,
+      });
+      return result;
+    }
     // The created event is delivered off the response only when it carries
     // no payload a VM reads; every other type waits for a page or a listing,
     // which return it with its refs resolved. See QuickJSLogView.
@@ -1455,6 +1501,9 @@ export async function runWorkflowWithQuickJS(params: {
         namespace,
         nextTraceCarrier,
         createEvent,
+        ...(logView.tracking && typeof logView.logCursor === 'string'
+          ? { deltaCursor: logView.logCursor }
+          : {}),
         pendingOperations: opsToDispatch,
         skipStepCreation: inlineClaimCids,
         queueStepCids: new Set(overflowSteps.map((s) => s.correlationId)),
@@ -1532,8 +1581,14 @@ export async function runWorkflowWithQuickJS(params: {
 
       // 2. Cheap progress first: feed newly recorded events into the live
       // VM before blocking on step bodies. What the writes above handed back
-      // is delivered first; a listing runs only when that does not reach the
-      // next position.
+      // is delivered first, and a listing runs when the queue does not reach
+      // the next position. A report changes what is fed first, not whether
+      // this listing happens: after a queued page is fed, this branch
+      // `continue`s, and the next iteration finds the queue empty and lists
+      // from a cursor a report does not advance (re-reading the reported
+      // span, deduped on `seenEventIds`). Only the inline delta below, which
+      // does advance the cursor, saves a listing outright. Same shape as the
+      // node engine.
       {
         const queued = takeQueuedEvents();
         const newEvents =
@@ -1725,12 +1780,30 @@ export async function runWorkflowWithQuickJS(params: {
       // Inline delta: a single inline step's terminal write asks the World
       // for everything after the cursor this view holds, so the step's own
       // events (and anything interleaved) arrive on the write's response and
-      // the feed below needs no listing. Only for a batch of one, as in the
-      // node engine: several steps would each get a delta from the same
-      // cursor, and only one could be taken. Not requested when the log has
-      // no cursor to name (tracking off, or nothing read yet).
+      // the feed below needs no listing. Same gate as the node engine's
+      // `requestInlineDelta` (runtime.ts), translated to this loop's terms:
+      //
+      // - This step is the only step outstanding: no overflow sibling queued
+      //   this iteration, no unserializable sibling, no step from an earlier
+      //   invocation handed to the queue above. Several writers each diffing
+      //   against the same cursor would produce deltas of which only the
+      //   first could be taken.
+      // - No wait is pending. A `wait_completed` is a resolution the
+      //   workflow is waiting on rather than an event it can observe one
+      //   iteration late, so a delta that predates it would settle the
+      //   sleep from a view that does not hold its completion; the listing
+      //   after the step is what reads it in order.
+      // - The log has a cursor to name (tracking on, something read).
+      const hasPendingWait = pendingOperations.some(
+        (op) =>
+          op.type === 'wait' &&
+          !completedWaitIds2.has((op as PendingWait).correlationId)
+      );
       const inlineDeltaSinceCursor =
+        stepOps.length === 1 &&
+        freshSteps.length === 1 &&
         inlineCandidates.length === 1 &&
+        !hasPendingWait &&
         logView.tracking &&
         typeof logView.logCursor === 'string'
           ? logView.logCursor
