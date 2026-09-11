@@ -206,7 +206,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
     private readonly writerId: StreamWriterId,
     private readonly config: APIConfig | undefined,
     private readonly writeHttp: (
-      chunks: (string | Uint8Array)[]
+      chunks: (string | Uint8Array)[],
+      attributes?: Attributes
     ) => Promise<void>,
     private readonly closeHttp: () => Promise<void>
   ) {
@@ -229,6 +230,25 @@ class VercelStreamWriteSession implements StreamWriteSession {
     timing: WriteTiming
   ): Promise<void> {
     this.assertUsable();
+    if (this.mode === 'connecting' && this.connectionAttempt === 1) {
+      // Assign complete groups to HTTP while the initial socket opens in the
+      // background. The serial operation chain prevents later WS work from
+      // overtaking this request, and a failed HTTP request poisons the writer:
+      // its outcome may be unknown, so it must never be replayed over WS.
+      try {
+        await this.writeHttp(chunks, {
+          'workflow.stream.ws.session_first_write': timing.sessionFirstWrite,
+          'workflow.stream.ws.connection_attempt': this.connectionAttempt,
+          'workflow.stream.ws.connecting_at_write': true,
+          'workflow.stream.ws.session_to_write_ms':
+            timing.startedAt - this.sessionCreatedAt,
+        });
+      } catch (error) {
+        this.failUnknown(error);
+        throw this.poisonError;
+      }
+      return;
+    }
     await this.transportDecision;
     this.assertUsable();
     if (this.mode === 'http') {
@@ -773,7 +793,10 @@ export function createStreamWriteSession(
   name: string,
   writerId: string,
   config: APIConfig | undefined,
-  writeHttp: (chunks: (string | Uint8Array)[]) => Promise<void>,
+  writeHttp: (
+    chunks: (string | Uint8Array)[],
+    attributes?: Attributes
+  ) => Promise<void>,
   closeHttp: () => Promise<void>
 ): StreamWriteSession {
   return new VercelStreamWriteSession(
