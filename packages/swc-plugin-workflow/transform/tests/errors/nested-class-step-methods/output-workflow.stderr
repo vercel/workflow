@@ -1,0 +1,32 @@
+  x Classes using "use step" methods must be declared at the top level of the module, not inside a function. Registration runs at module load and cannot reach a class declared in an inner scope
+    ,-[input.js:10:1]
+  9 |       class Service {
+ 10 | ,->     async fetch() {
+ 11 | |         'use step';
+ 12 | |         return 'data';
+ 13 | `->     }
+ 14 |       }
+    `----
+  x Classes using "use step" methods must be declared at the top level of the module, not inside a function. Registration runs at module load and cannot reach a class declared in an inner scope
+    ,-[input.js:23:1]
+ 22 |       Lazy = class {
+ 23 | ,->     static async load() {
+ 24 | |         'use step';
+ 25 | |         return 'lazy';
+ 26 | `->     }
+ 27 |       };
+    `----
+  x Classes using custom serialization (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE) must be declared at the top level of the module, not inside a function. Registration runs at module load and cannot
+  | reach a class declared in an inner scope
+    ,-[input.js:32:1]
+ 31 |     export const factory = () => {
+ 32 | ,->   const Point = class {
+ 33 | |       static [WORKFLOW_SERIALIZE](inst) {
+ 34 | |         return { x: inst.x };
+ 35 | |       }
+ 36 | |       static [WORKFLOW_DESERIALIZE](data) {
+ 37 | |         return new Point(data.x);
+ 38 | |       }
+ 39 | `->   };
+ 40 |       return Point;
+    `----

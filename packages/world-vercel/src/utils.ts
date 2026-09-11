@@ -16,6 +16,7 @@ import {
   errorForResponse,
   formatVercelDiagnostics,
   getRequestTimeoutMs,
+  getTransientTransportCode,
   HTTP_DEBUG_ENABLED,
   httpClientSpanAttributes,
   httpLog,
@@ -63,76 +64,6 @@ export const MAX_BODY_PARSE_RETRIES = 2;
 
 /** Base delay for the exponential backoff between body-parse retries. */
 const BODY_PARSE_RETRY_BASE_MS = 100;
-
-/**
- * Transient transport failure codes. When a request to workflow-server cannot
- * complete, the request throws rather than returning a response, and the code
- * it carries depends on which transport issued it.
- *
- * Over undici (`fetch` plus the shared dispatcher): the `RetryAgent` exhausted
- * its retries (`UND_ERR_REQ_RETRY`, e.g. the firewall in front of
- * workflow-server shedding load with sustained 429/503, which the RetryAgent
- * retries internally and never surfaces to us), the socket dropped, or
- * connect/DNS failed.
- *
- * Over `node:http` / `node:https` (`WORKFLOW_NODE_HTTP`): there is no undici in
- * the path, so no `UND_ERR_*` code ever appears. Node's own socket and DNS
- * codes are raised instead, plus `ETIMEDOUT` from the client's own header and
- * body deadlines, which stand in for `UND_ERR_HEADERS_TIMEOUT` /
- * `UND_ERR_BODY_TIMEOUT`.
- *
- * Either way these are retryable infrastructure failures, not contract or user
- * errors, so we map them to a typed `WorkflowWorldError` (`code: 'TRANSPORT'`)
- * that the runtime recognizes as retryable and bubbles to the queue for a fast
- * redrive, instead of crashing the invocation or failing the run.
- *
- * The set is consulted on both paths, so adding `ETIMEDOUT` for the node:http
- * deadlines also classifies it on the undici path, where it is near
- * unreachable, since undici's 10s `connectTimeout` fires long before the OS
- * raises `ETIMEDOUT` on a connect, and its own stalls surface as `UND_ERR_*`.
- * Deliberate either way: a socket that timed out is transient under any client.
- */
-const TRANSIENT_TRANSPORT_ERROR_CODES = new Set([
-  'UND_ERR_REQ_RETRY',
-  'UND_ERR_SOCKET',
-  'UND_ERR_CONNECT',
-  'UND_ERR_CONNECT_TIMEOUT',
-  'UND_ERR_HEADERS_TIMEOUT',
-  'UND_ERR_BODY_TIMEOUT',
-  'UND_ERR_CLOSED',
-  'ECONNRESET',
-  'ECONNREFUSED',
-  'ENOTFOUND',
-  'EAI_AGAIN',
-  'EPIPE',
-  'ETIMEDOUT',
-]);
-
-/**
- * Walks the `cause` chain of a thrown value looking for a transient transport
- * error code. `fetch()` wraps the underlying undici error in a
- * `TypeError: fetch failed` whose `cause` carries the real `.code`, so the
- * code we care about is usually one level down (sometimes two). The
- * `node:http` client throws the socket error itself, so there the code is on
- * the top-level value. Bounded depth guards against pathological or cyclic
- * `cause` chains.
- */
-function getTransientTransportCode(error: unknown): string | undefined {
-  let current: unknown = error;
-  for (let depth = 0; current != null && depth < 5; depth++) {
-    if (typeof current === 'object' && 'code' in current) {
-      const code = (current as { code?: unknown }).code;
-      if (
-        typeof code === 'string' &&
-        TRANSIENT_TRANSPORT_ERROR_CODES.has(code)
-      ) {
-        return code;
-      }
-    }
-    current = (current as { cause?: unknown })?.cause;
-  }
-  return undefined;
-}
 
 /**
  * Effective workflow-server URL override. The inline constant wins when

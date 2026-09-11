@@ -802,6 +802,25 @@ export interface CreateEventParams {
    * point there is to keep the first invocation's writes as cheap as
    * possible, and it has no loaded log to extend.
    *
+   * The suspension handler sets it too, on the hook create of a single-hook
+   * suspension. That write is the whole continuation for the hook's own
+   * awaiter — the event it commits is what settles it — so a delta lets the
+   * runtime advance the workflow in the same process instead of enqueueing a
+   * message whose only job is to read back the event it just wrote. It is
+   * asked for on one hook create per suspension because two creates issued
+   * from the same cursor each diff against it, and only one of the returned
+   * deltas can be folded into the log.
+   *
+   * A World that answers it on `hook_created` MUST answer it on the
+   * `hook_conflict` a create whose token is already claimed commits instead.
+   * That event settles the same awaiter — a payload await rejects, a
+   * `hook.getConflict()` resolves with the conflicting run — and the runtime
+   * continues over it in-process just the same, so withholding the delta
+   * there would silently cost a delivery on exactly the path the caller
+   * asked to avoid one on. The delta is keyed on the requested event type,
+   * not the committed one; there is nothing extra to compute, since it is the
+   * same slice of the log either way.
+   *
    * The cursor MUST share `events.list` semantics: the returned `events`
    * are everything sorted strictly after `sinceCursor`, `cursor` is the
    * position past the last returned event, and `hasMore` indicates a
@@ -911,7 +930,7 @@ export type EventResult<T extends EventType = EventType> = {
 } & (
   | {
       /**
-       * Events with data resolved. Four producers populate this:
+       * Events with data resolved. Five producers populate this:
        *
        * - On a `run_started` response: all events up to this point, so the
        *   runtime can skip the initial `events.list` call and reduce TTFB.
@@ -919,6 +938,12 @@ export type EventResult<T extends EventType = EventType> = {
        *   the caller passed {@link CreateEventParams.sinceCursor}: the delta
        *   of events written strictly after that cursor, so the inline loop
        *   can skip the per-step incremental `events.list` round-trip.
+       * - On a hook-create write when the caller passed
+       *   {@link CreateEventParams.sinceCursor}: the same delta, which
+       *   includes the event the create committed — the `hook_created`, or
+       *   the `hook_conflict` of an already-claimed token — so the hook's
+       *   awaiter can be settled in the writing process rather than by a
+       *   re-invocation that reads the event back.
        * - On a `hook_received` response when the caller passed
        *   {@link CreateEventParams.preloadEvents}: the run's current replay
        *   log through the canonical `hook_received`, so the lazy hook queue

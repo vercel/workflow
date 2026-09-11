@@ -134,6 +134,13 @@ export interface SerializableSpecial {
     cause?: unknown;
     context?: RuntimeDecryptionErrorContext;
   };
+  StreamError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    status?: number;
+    url?: string;
+  };
   Request: {
     method: string;
     url: string;

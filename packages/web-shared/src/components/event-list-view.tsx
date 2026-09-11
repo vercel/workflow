@@ -1,7 +1,11 @@
 'use client';
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, WorkflowRun } from '@workflow/world';
+import {
+  type Event,
+  getEventDataRefFields,
+  type WorkflowRun,
+} from '@workflow/world';
 import { Check, ChevronRight, Copy } from 'lucide-react';
 import type {
   KeyboardEvent as ReactKeyboardEvent,
@@ -924,7 +928,17 @@ export function EventRow({
   const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
     ? createdAt
     : getEffectiveEventDate(event);
-  const hasExistingEventData = 'eventData' in event && event.eventData != null;
+  // List endpoints resolve events with `resolveData: 'none'`, which strips the
+  // ref/payload fields (input, result, error, …) and leaves a partial stub
+  // (stepName, timings, …). Rendering that stub while the full payload loads
+  // flashes an incomplete JSON document whose missing fields pop in after a
+  // skeleton, so only trust inline eventData when it can't be a stub: either
+  // there is no loader to fetch the full payload, or the event type carries
+  // no ref fields (its eventData is never stripped).
+  const hasExistingEventData =
+    'eventData' in event &&
+    event.eventData != null &&
+    (!onLoadEventData || getEventDataRefFields(event.eventType).length === 0);
   const isRun = isRunLevel(event.eventType);
   const eventName = isRun
     ? (workflowName ?? '-')
@@ -957,6 +971,12 @@ export function EventRow({
     }
     if (cachedEventData !== null) {
       setLoadedEventData(cachedEventData);
+      setHasAttemptedLoad(true);
+      return;
+    }
+    // Inline eventData of a ref-less event type is already complete (ref
+    // fields are the only ones ever stripped), so there is nothing to fetch.
+    if (hasExistingEventData) {
       setHasAttemptedLoad(true);
       return;
     }
@@ -995,6 +1015,7 @@ export function EventRow({
     encryptionKey,
     onEncryptedDataDetected,
     cachedEventData,
+    hasExistingEventData,
   ]);
 
   // Auto-load event data when remounting in expanded state without cached data

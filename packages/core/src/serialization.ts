@@ -1,10 +1,12 @@
 import {
   RuntimeDecryptionError,
   SerializationError,
+  StreamError,
   StreamExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { once } from '@workflow/utils';
+import type { StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
@@ -699,6 +701,29 @@ function recordReadTimeToFirstChunk(
 }
 
 /**
+ * Record speculative run-key resolution independently from raw stream TTFC.
+ * This phase never carries key material and is intentionally separate from
+ * `workflow.stream.read`, whose endpoint remains the first raw frame.
+ */
+function recordStreamReadKeyResolution(
+  startEpochMs: number,
+  runId: string,
+  name: string,
+  succeeded: boolean
+): void {
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.read.resolve_key', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.read.key_succeeded': succeeded,
+      },
+    });
+  })();
+}
+
+/**
  * Emit the client-observed read-completion span when a stream read drains:
  * back-dated to the read dispatch, so its duration is the total read, with
  * chunk/byte counts for throughput. Cancelled reads emit nothing. Fire-and-
@@ -891,7 +916,9 @@ const getFramedStreamMaxTotalReconnects = (): number =>
 export function createReconnectingFramedStream(
   runId: string,
   name: string,
-  startIndex?: number
+  startIndex?: number,
+  prefetchEncryptionKey: () => Promise<PayloadKey | undefined> = async () =>
+    undefined
 ): ReadableStream<Uint8Array> {
   const reconnectSupported = startIndex === undefined || startIndex >= 0;
   let currentStartIndex = startIndex ?? 0;
@@ -909,6 +936,26 @@ export function createReconnectingFramedStream(
   let firstChunkReported = false;
   let chunksDelivered = 0;
   let bytesDelivered = 0;
+  let keyPrefetched = false;
+
+  function prefetchKey(): void {
+    if (keyPrefetched) return;
+    keyPrefetched = true;
+    const keyStart = Date.now();
+    // The raw stream and key lookup deliberately race. Observe a speculative
+    // failure here: if the stream is cancelled or fails before an encrypted
+    // frame reaches the deserialize transform, this promise otherwise has no
+    // consumer and would become an unhandled rejection. The transform still
+    // awaits the same promise and surfaces the original error on consumption.
+    void prefetchEncryptionKey().then(
+      (key) => {
+        // Unencrypted runs do not need a key-resolution span. Their resolver
+        // still runs speculatively so an encrypted frame can join it.
+        if (key) recordStreamReadKeyResolution(keyStart, runId, name, true);
+      },
+      () => recordStreamReadKeyResolution(keyStart, runId, name, false)
+    );
+  }
 
   async function connect(): Promise<boolean> {
     if (canceled) return false;
@@ -972,12 +1019,12 @@ export function createReconnectingFramedStream(
       reconnectCount++;
       totalReconnectCount++;
       if (reconnectCount > maxReconnects) {
-        throw new Error(
+        throw new StreamError(
           `Stream "${name}" exceeded maximum reconnection attempts (${maxReconnects})`
         );
       }
       if (totalReconnectCount > maxTotalReconnects) {
-        throw new Error(
+        throw new StreamError(
           `Stream "${name}" exceeded maximum total reconnection attempts (${maxTotalReconnects})`
         );
       }
@@ -1000,6 +1047,11 @@ export function createReconnectingFramedStream(
     pull: async (controller) => {
       if (canceled) return;
       if (readStart === undefined) readStart = Date.now();
+      // Begin resolving the key before awaiting streams.get()/the first raw
+      // frame. This is intentionally not awaited: buffered raw frames remain
+      // bounded by the Web Streams backpressure chain while the deserialize
+      // transform joins this promise only if an encrypted frame needs it.
+      prefetchKey();
       // Loop until we emit something, hit EOF, or fatally error. Reads that
       // only extend the in-flight-frame buffer don't enqueue anything; we
       // keep reading rather than returning empty-handed.
@@ -1259,6 +1311,20 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       }
     };
 
+    // One stable identity and sequence space per in-memory sink. Start session
+    // construction as soon as the run-ready barrier permits, so transports may
+    // negotiate eagerly without allowing a write to overtake run creation.
+    // This eager chain cannot strand a new rejection: ensureRunReady absorbs its
+    // ordering-only failure, and every path that can observe worldPromise also
+    // awaits this session promise before it writes, closes, or disposes.
+    const writerId = `wrtr_${defaultUlid()}` as const;
+    const writeSessionPromise: Promise<StreamWriteSession | undefined> =
+      ensureRunReady().then(async () => {
+        const world = await worldPromise;
+        return world.streams.createWriteSession?.(runId, name, { writerId });
+      });
+    let nextChunkSeq = 0;
+
     // ------------------------------------------------------------------
     // Group-commit buffering.
     //
@@ -1376,8 +1442,14 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     ): Promise<void> => {
       await ensureRunReady();
       const world = await worldPromise;
+      const session = await writeSessionPromise;
       const dispatchAt = Date.now();
-      if (typeof world.streams.writeMulti === 'function' && group.length > 1) {
+      if (session) {
+        await session.write(nextChunkSeq, group);
+      } else if (
+        typeof world.streams.writeMulti === 'function' &&
+        group.length > 1
+      ) {
         await world.streams.writeMulti(runId, name, group);
       } else {
         // Fall back to sequential writes
@@ -1385,6 +1457,9 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
           await world.streams.write(runId, name, chunk);
         }
       }
+      // `inFlight` admits only one dispatch loop, so no second group can read
+      // this sequence space until the current group has advanced it.
+      nextChunkSeq += group.length;
       if (groupT0 !== undefined) {
         recordStreamWriteFlush(
           groupT0,
@@ -1584,8 +1659,13 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         await ensureRunReady();
 
         const world = await worldPromise;
+        const session = await writeSessionPromise;
         const closeStart = Date.now();
-        await world.streams.close(runId, name);
+        if (session) {
+          await session.close();
+        } else {
+          await world.streams.close(runId, name);
+        }
         recordStreamClose(closeStart, runId, name);
       },
       async abort(reason) {
@@ -1620,6 +1700,11 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // Reject blocked writers and drain waiters so nothing leaks or
         // hangs on a promise whose timer was just cleared.
         rejectWaiters(sinkError);
+        // Abort is transport cleanup, not semantic stream completion. A
+        // stateful World releases its socket without sending close; stateless
+        // Worlds keep the existing no-op behavior.
+        const session = await writeSessionPromise.catch(() => undefined);
+        await session?.dispose?.();
       },
     });
 
@@ -2702,24 +2787,11 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 }
 
 /**
- * Resolve the write-only key a run needs when writing into another run's
- * forwarded stream.
- *
- * Three tiers, cheapest first:
- *
- * 1. The descriptor carries the owner's X25519 public key: seal to it with
- *    no I/O whatsoever. The owner published the key when it created the
- *    stream, so this is the zero-round-trip path.
- * 2. The descriptor carries the owner's deployment ID: resolve the owner's
- *    symmetric key, which cross-deployment means a key-API round trip.
- * 3. Neither (descriptors written by older SDKs): load the owning run first,
- *    then resolve its symmetric key.
- *
- * Tiers 2 and 3 import the key encrypt-only, which is an honor-system
- * restriction: the same bytes could decrypt. Tier 1 makes it a cryptographic
- * guarantee: a public key cannot read anything.
+ * Resolves the owner's encryption key, preferring its public key, then its
+ * deployment, and finally its run record.
+ * @internal
  */
-async function getForwardedWritableEncryptionKey(
+export async function getForwardedWritableEncryptionKey(
   runId: string,
   deploymentId: string | undefined,
   encryptionPublicKey: string | undefined
@@ -2736,6 +2808,147 @@ async function getForwardedWritableEncryptionKey(
   return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
 }
 
+/** Tags a forwarded writable with its owner's metadata. @internal */
+export function tagForwardedWritableTarget(
+  writable: WritableStream,
+  {
+    deploymentId,
+    encryptionPublicKey,
+  }: { deploymentId?: string; encryptionPublicKey?: string }
+): void {
+  if (typeof deploymentId === 'string') {
+    Object.defineProperty(writable, STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, {
+      value: deploymentId,
+      writable: false,
+    });
+  }
+  if (typeof encryptionPublicKey === 'string') {
+    Object.defineProperty(writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
+      value: encryptionPublicKey,
+      writable: false,
+    });
+  }
+}
+
+/** Creates and tags a forwarded writable targeting the owner run. @internal */
+export function createForwardedWritable<W = any>({
+  global,
+  ops,
+  runId,
+  name,
+  key,
+  deploymentId,
+  encryptionPublicKey,
+  runReadyBarrier,
+}: {
+  global: Record<string, any>;
+  ops: Promise<any>[];
+  runId: string;
+  name: string;
+  key: EncryptionKeyParam;
+  deploymentId?: string;
+  encryptionPublicKey?: string;
+  runReadyBarrier?: Promise<unknown>;
+}): WritableStream<W> {
+  const serialize = getSerializeStream(
+    getExternalReducers(global, ops, runId, key),
+    key
+  );
+  const serverWritable = new WorkflowServerWritableStream(
+    runId,
+    name,
+    runReadyBarrier
+  );
+
+  // Lock release must settle the flush promise; contributors do not close.
+  const state = createFlushableState();
+  ops.push(state.promise);
+
+  flushablePipe(serialize.readable, serverWritable, state).catch(() => {
+    // Errors are handled via state.reject
+  });
+
+  pollWritableLock(serialize.writable, state);
+
+  Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+    value: name,
+    writable: false,
+  });
+  Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+    value: runId,
+    writable: false,
+  });
+  tagForwardedWritableTarget(serialize.writable, {
+    deploymentId,
+    encryptionPublicKey,
+  });
+
+  return serialize.writable as WritableStream<W>;
+}
+
+/**
+ * Create a run's object readable without dispatching its stream GET or
+ * encryption-key lookup until the caller reads it. The external reviver starts
+ * its background pipe immediately, so this boundary belongs here—next to the
+ * source/transform assembly—rather than in `Run`.
+ *
+ * @internal
+ */
+export function getRunReadableStream<T>(
+  global: Record<string, any>,
+  ops: Promise<void>[],
+  runId: string,
+  name: string,
+  startIndex: number | undefined,
+  cryptoKey: EncryptionKeyParam
+): ReadableStream<T> {
+  let reader: ReadableStreamDefaultReader<T> | undefined;
+  let lockState: ReturnType<typeof createFlushableState> | undefined;
+  let lockPollingStarted = false;
+  let userReadable: ReadableStream<T>;
+
+  userReadable = new ReadableStream<T>(
+    {
+      async pull(controller) {
+        try {
+          if (!reader) {
+            const stream = getExternalRevivers(global, ops, runId, cryptoKey, {
+              onReadableState: (state) => {
+                lockState = state;
+              },
+            }).ReadableStream!({ name, startIndex }) as ReadableStream<T>;
+            reader = stream.getReader();
+            if (lockState && !lockPollingStarted) {
+              lockPollingStarted = true;
+              // The caller owns this wrapper's reader, so polling it preserves
+              // the documented releaseLock() completion signal.
+              pollReadableLock(userReadable, lockState);
+            }
+          }
+          const result = await reader.read();
+          if (result.done) controller.close();
+          else controller.enqueue(result.value);
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+      async cancel(reason) {
+        await reader?.cancel(reason).catch(() => {});
+      },
+    },
+    // A positive default high-water mark would run pull at construction to
+    // fill the queue, turning an unread Run.getReadable() into I/O.
+    { highWaterMark: 0 }
+  );
+  return userReadable;
+}
+
+/** Options for externally revived object streams. @internal */
+type ExternalReviverOptions = {
+  /** Receives completion state when a wrapper owns the public readable. */
+  onReadableState?: (state: ReturnType<typeof createFlushableState>) => void;
+};
+
 /**
  * Revivers for deserialization boundary from the client side,
  * receiving the return value from the workflow handler.
@@ -2748,7 +2961,8 @@ export function getExternalRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  options?: ExternalReviverOptions
 ): Partial<Revivers> {
   return {
     ...getCommonRevivers(global),
@@ -2840,33 +3054,47 @@ export function getExternalRevivers(
           // Errors are handled via state.reject
         });
 
-        // Start polling to detect when user releases lock
-        pollReadableLock(userReadable, state);
+        // Direct reviver callers hold this readable. A future public wrapper
+        // can provide the state and poll the readable it hands to the caller.
+        if (options?.onReadableState) options.onReadableState(state);
+        else pollReadableLock(userReadable, state);
 
         return userReadable;
       } else {
         // Non-byte streams carry length-prefixed frames, so we can count
         // completed frames and transparently reconnect when the server
         // stream connection times out mid-run.
+        // Memoize this resolver per readable session. The first raw pull
+        // starts it concurrently with the stream GET; getDeserializeStream
+        // joins the same promise when an encrypted frame arrives. This also
+        // avoids invoking arbitrary EncryptionKeyParam callbacks twice.
+        let keyPromise: Promise<PayloadKey | undefined> | undefined;
+        const resolveKey = (): Promise<PayloadKey | undefined> => {
+          keyPromise ??= resolveEncryptionKey(cryptoKey);
+          return keyPromise;
+        };
         const readable = createReconnectingFramedStream(
           runId,
           value.name,
-          value.startIndex
+          value.startIndex,
+          resolveKey
         );
         const transform = getDeserializeStream(
-          getExternalRevivers(global, ops, runId, cryptoKey),
-          cryptoKey
+          getExternalRevivers(global, ops, runId, resolveKey),
+          resolveKey
         );
         const state = createFlushableState();
         ops.push(state.promise);
 
-        // Start the flushable pipe in the background
+        // Start the flushable pipe in the background.
         flushablePipe(readable, transform.writable, state).catch(() => {
           // Errors are handled via state.reject
         });
 
-        // Start polling to detect when user releases lock
-        pollReadableLock(transform.readable, state);
+        // Direct reviver callers hold this readable. The public Run factory
+        // wraps it for first-pull laziness and polls that wrapper instead.
+        if (options?.onReadableState) options.onReadableState(state);
+        else pollReadableLock(transform.readable, state);
 
         return transform.readable;
       }
@@ -2885,59 +3113,15 @@ export function getExternalRevivers(
               value.encryptionPublicKey
             );
 
-      const serialize = getSerializeStream(
-        getExternalReducers(global, ops, targetRunId, targetKey),
-        targetKey
-      );
-      const serverWritable = new WorkflowServerWritableStream(
-        targetRunId,
-        value.name
-      );
-
-      // Create flushable state for this stream
-      const state = createFlushableState();
-      ops.push(state.promise);
-
-      // Start the flushable pipe in the background
-      flushablePipe(serialize.readable, serverWritable, state).catch(() => {
-        // Errors are handled via state.reject
+      return createForwardedWritable({
+        global,
+        ops,
+        runId: targetRunId,
+        name: value.name,
+        key: targetKey,
+        deploymentId: value.deploymentId,
+        encryptionPublicKey: value.encryptionPublicKey,
       });
-
-      // Start polling to detect when user releases lock
-      pollWritableLock(serialize.writable, state);
-
-      Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
-        value: value.name,
-        writable: false,
-      });
-      Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
-        value: targetRunId,
-        writable: false,
-      });
-      if (typeof value.deploymentId === 'string') {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
-          {
-            value: value.deploymentId,
-            writable: false,
-          }
-        );
-      }
-      // Keep the owner's public key on the handle so a further forward stays on
-      // the zero-lookup sealed path.
-      if (typeof value.encryptionPublicKey === 'string') {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
-          {
-            value: value.encryptionPublicKey,
-            writable: false,
-          }
-        );
-      }
-
-      return serialize.writable;
     },
 
     AbortController: (value) => reviveAbortController(value, ops, runId),

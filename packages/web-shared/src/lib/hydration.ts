@@ -228,6 +228,18 @@ export function getWebRevivers(): Revivers {
       if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
+    StreamError: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const error = new Error(value.message, opts) as Error & {
+        status?: number;
+        url?: string;
+      };
+      error.name = 'StreamError';
+      if (value.status !== undefined) error.status = value.status;
+      if (value.url !== undefined) error.url = value.url;
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
     DOMException: (value) => {
       // Modern browsers and Node 18+ expose `DOMException` on globalThis.
       // `AbortController.abort()` with no argument synthesizes one as the

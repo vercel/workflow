@@ -4,7 +4,9 @@ import {
   FatalError,
   HookConflictError,
   RetryableError,
+  RUN_ERROR_CODES,
   RuntimeDecryptionError,
+  StreamError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
@@ -4712,6 +4714,34 @@ describe('dehydrate/hydrateRunError', () => {
     // The underlying DOMException cause is preserved too.
     const cause = (hydrated as Error).cause as Error;
     expect(cause?.name).toBe('OperationError');
+  });
+
+  it('should round-trip StreamError as a catchable error type', async () => {
+    const original = new StreamError('stream write failed', {
+      cause: new Error('HTTP 500'),
+      status: 503,
+      url: 'https://workflow.example/stream',
+    });
+    const serialized = await dehydrateRunError(
+      original,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateRunError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as StreamError;
+
+    expect(StreamError.is(hydrated)).toBe(true);
+    expect(hydrated).toBeInstanceOf(StreamError);
+    expect(hydrated).toMatchObject({
+      message: 'stream write failed',
+      status: 503,
+      url: 'https://workflow.example/stream',
+      code: RUN_ERROR_CODES.STREAM_ERROR,
+    });
+    expect((hydrated.cause as Error).message).toBe('HTTP 500');
   });
 
   it('should produce DEVALUE_V1-prefixed binary output', async () => {
