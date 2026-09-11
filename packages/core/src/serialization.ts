@@ -710,15 +710,23 @@ export function createReconnectingFramedStream(
   let reconnectCount = 0;
   let totalReconnectCount = 0;
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let canceled = false;
+  let cancelReason: unknown;
   let buffer = new Uint8Array(0);
 
-  async function connect(): Promise<void> {
+  async function connect(): Promise<boolean> {
+    if (canceled) return false;
     const world = getWorld();
     const effectiveStartIndex = reconnectSupported
       ? currentStartIndex + consumedFrames
       : startIndex;
     const stream = await world.readFromStream(name, effectiveStartIndex);
+    if (canceled) {
+      await stream.cancel(cancelReason).catch(() => {});
+      return false;
+    }
     reader = stream.getReader();
+    return true;
   }
 
   /**
@@ -739,11 +747,13 @@ export function createReconnectingFramedStream(
     }
   }
 
-  async function reconnect(): Promise<void> {
+  async function reconnect(): Promise<boolean> {
+    if (canceled) return false;
     if (reader) {
       await reader.cancel().catch(() => {});
       reader = undefined;
     }
+    if (canceled) return false;
     // Advance the resume position past the frames already delivered, then
     // drop any partial-frame bytes — the reopened connection re-sends from a
     // frame boundary at the new index.
@@ -771,9 +781,10 @@ export function createReconnectingFramedStream(
         );
       }
       try {
-        await connect();
-        return;
+        if (!(await connect())) return false;
+        return true;
       } catch {
+        if (canceled) return false;
         // Reopen failed transiently; loop to retry, counting against the
         // budget so a server that never recovers still terminates the stream.
       }
@@ -782,14 +793,16 @@ export function createReconnectingFramedStream(
 
   return new ReadableStream<Uint8Array>({
     pull: async (controller) => {
+      if (canceled) return;
       // Loop until we emit something, hit EOF, or fatally error. Reads that
       // only extend the in-flight-frame buffer don't enqueue anything — we
       // keep reading rather than returning empty-handed.
       for (;;) {
         if (!reader) {
           try {
-            await connect();
+            if (!(await connect())) return;
           } catch (err) {
+            if (canceled) return;
             controller.error(err);
             return;
           }
@@ -800,12 +813,13 @@ export function createReconnectingFramedStream(
           // biome-ignore lint/style/noNonNullAssertion: connect() guarantees reader
           result = await reader!.read();
         } catch (err) {
+          if (canceled) return;
           if (!reconnectSupported) {
             controller.error(err);
             return;
           }
           try {
-            await reconnect();
+            if (!(await reconnect())) return;
           } catch (reconnectErr) {
             controller.error(reconnectErr);
             return;
@@ -813,6 +827,7 @@ export function createReconnectingFramedStream(
           continue;
         }
 
+        if (canceled) return;
         if (result.done || !result.value) {
           reader = undefined;
           // A clean EOF is only trustworthy if the stream is actually
@@ -822,9 +837,12 @@ export function createReconnectingFramedStream(
           // errored body, but on some paths it reaches the client as a clean
           // EOF), and a completed stream can still be cut mid-body — both
           // would otherwise be silently read as a shorter, complete stream.
-          if (reconnectSupported && !(await isVerifiedComplete())) {
+          const verifiedComplete =
+            !reconnectSupported || (await isVerifiedComplete());
+          if (canceled) return;
+          if (!verifiedComplete) {
             try {
-              await reconnect();
+              if (!(await reconnect())) return;
             } catch (reconnectErr) {
               controller.error(reconnectErr);
               return;
@@ -873,12 +891,15 @@ export function createReconnectingFramedStream(
         // Only partial bytes — read more.
       }
     },
-    cancel: async () => {
-      if (reader) {
-        await reader.cancel().catch((err) => {
+    cancel: async (reason) => {
+      canceled = true;
+      cancelReason = reason;
+      const currentReader = reader;
+      reader = undefined;
+      if (currentReader) {
+        await currentReader.cancel(reason).catch((err) => {
           console.warn('Error closing ReadableStream reader:', err);
         });
-        reader = undefined;
       }
     },
   });
