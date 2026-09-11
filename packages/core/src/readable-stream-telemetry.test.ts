@@ -107,6 +107,109 @@ describe('WorkflowServerReadableStream read telemetry', () => {
     expect(connect as number).toBeLessThanOrEqual((ttfc as number) + 1);
   });
 
+  it('summarizes raw reader wait and downstream demand phases at EOF', async () => {
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      streams: {
+        get: vi.fn().mockResolvedValue(
+          new ReadableStream<Uint8Array>({
+            async pull(controller) {
+              await new Promise((resolve) => setTimeout(resolve, 260));
+              controller.enqueue(new Uint8Array([1, 2, 3]));
+              controller.close();
+            },
+          })
+        ),
+      },
+    } as any);
+    const reader = new WorkflowServerReadableStream(
+      'run-123',
+      'test-stream'
+    ).getReader();
+
+    expect((await reader.read()).value).toEqual(new Uint8Array([1, 2, 3]));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect((await reader.read()).done).toBe(true);
+
+    const [span] = await waitForSpans('workflow.stream.read.complete', 1);
+    expect(span.attributes).toMatchObject({
+      'workflow.stream.read.first_data_observed': true,
+      'workflow.stream.read.source_chunks': 1,
+      'workflow.stream.read.source_empty_chunks': 0,
+      'workflow.stream.read.source_bytes': 3,
+      'workflow.stream.read.source_interarrival_count': 0,
+      'workflow.stream.read.source_read_wait_count': 2,
+      'workflow.stream.read.source_read_wait_over_250ms_count': 1,
+    });
+    expect(
+      span.attributes['workflow.stream.read.source_read_wait_max_ms'] as number
+    ).toBeGreaterThanOrEqual(250);
+    expect(
+      span.attributes[
+        'workflow.stream.read.enqueue_to_next_pull_max_ms'
+      ] as number
+    ).toBeGreaterThanOrEqual(20);
+    expect(
+      span.attributes[
+        'workflow.stream.read.stream_handle_to_first_data_ms'
+      ] as number
+    ).toBeGreaterThanOrEqual(250);
+    expect(
+      span.attributes[
+        'workflow.stream.read.source_read_wait_total_ms'
+      ] as number
+    ).toBeGreaterThanOrEqual(250);
+    expect(
+      span.attributes[
+        'workflow.stream.read.read_resolution_to_enqueue_max_ms'
+      ] as number
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      span.attributes['workflow.stream.read.source_interarrival_max_ms']
+    ).toBeUndefined();
+  });
+
+  it('does not treat the empty header sentinel as first data', async () => {
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      streams: {
+        get: vi.fn().mockResolvedValue(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array());
+              setTimeout(() => {
+                controller.enqueue(new Uint8Array([1]));
+                controller.close();
+              }, 20);
+            },
+          })
+        ),
+      },
+    } as any);
+    const reader = new WorkflowServerReadableStream(
+      'run-123',
+      'test-stream'
+    ).getReader();
+
+    for (let i = 0; i < 5; i++) {
+      if ((await reader.read()).done) break;
+    }
+
+    const [span] = await waitForSpans('workflow.stream.read.complete', 1);
+    expect(span.attributes).toMatchObject({
+      'workflow.stream.read.first_data_observed': true,
+      'workflow.stream.read.source_chunks': 2,
+      'workflow.stream.read.source_empty_chunks': 1,
+      'workflow.stream.read.source_bytes': 1,
+      'workflow.stream.read.source_interarrival_count': 1,
+    });
+    expect(
+      span.attributes[
+        'workflow.stream.read.stream_handle_to_first_data_ms'
+      ] as number
+    ).toBeGreaterThanOrEqual(15);
+  });
+
   it('emits a workflow.stream.read.complete span with totals when the read drains', async () => {
     const stream = new WorkflowServerReadableStream('run-123', 'test-stream');
     const reader = stream.getReader();

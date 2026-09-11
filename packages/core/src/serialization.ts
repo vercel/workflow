@@ -731,13 +731,30 @@ function recordStreamReadKeyResolution(
  * chunk/byte counts for throughput. Cancelled reads emit nothing. Fire-and-
  * forget; no-op without OTEL.
  */
+type StreamReadPhaseSummary = {
+  streamHandleToFirstDataMs?: number;
+  sourceChunks: number;
+  sourceEmptyChunks: number;
+  sourceBytes: number;
+  sourceInterarrivalCount: number;
+  sourceInterarrivalMaxMs: number;
+  sourceReadWaitCount: number;
+  sourceReadWaitTotalMs: number;
+  sourceReadWaitMaxMs: number;
+  sourceReadWaitOver250MsCount: number;
+  readResolutionToEnqueueTotalMs: number;
+  readResolutionToEnqueueMaxMs: number;
+  enqueueToNextPullMaxMs: number;
+};
+
 function recordStreamReadComplete(
   startEpochMs: number,
   runId: string,
   name: string,
   chunkCount: number,
   byteCount: number,
-  reconnects?: number
+  reconnects?: number,
+  phases?: StreamReadPhaseSummary
 ): void {
   void (async () => {
     await recordElapsedSpan('workflow.stream.read.complete', startEpochMs, {
@@ -751,6 +768,44 @@ function recordStreamReadComplete(
         'workflow.stream.read.bytes': byteCount,
         ...(typeof reconnects === 'number'
           ? { 'workflow.stream.read.reconnects': reconnects }
+          : {}),
+        ...(phases
+          ? {
+              'workflow.stream.read.first_data_observed':
+                phases.streamHandleToFirstDataMs !== undefined,
+              ...(phases.streamHandleToFirstDataMs === undefined
+                ? {}
+                : {
+                    'workflow.stream.read.stream_handle_to_first_data_ms':
+                      phases.streamHandleToFirstDataMs,
+                  }),
+              'workflow.stream.read.source_chunks': phases.sourceChunks,
+              'workflow.stream.read.source_empty_chunks':
+                phases.sourceEmptyChunks,
+              'workflow.stream.read.source_bytes': phases.sourceBytes,
+              'workflow.stream.read.source_interarrival_count':
+                phases.sourceInterarrivalCount,
+              ...(phases.sourceInterarrivalCount === 0
+                ? {}
+                : {
+                    'workflow.stream.read.source_interarrival_max_ms':
+                      phases.sourceInterarrivalMaxMs,
+                  }),
+              'workflow.stream.read.source_read_wait_count':
+                phases.sourceReadWaitCount,
+              'workflow.stream.read.source_read_wait_total_ms':
+                phases.sourceReadWaitTotalMs,
+              'workflow.stream.read.source_read_wait_max_ms':
+                phases.sourceReadWaitMaxMs,
+              'workflow.stream.read.source_read_wait_over_250ms_count':
+                phases.sourceReadWaitOver250MsCount,
+              'workflow.stream.read.read_resolution_to_enqueue_total_ms':
+                phases.readResolutionToEnqueueTotalMs,
+              'workflow.stream.read.read_resolution_to_enqueue_max_ms':
+                phases.readResolutionToEnqueueMaxMs,
+              'workflow.stream.read.enqueue_to_next_pull_max_ms':
+                phases.enqueueToNextPullMaxMs,
+            }
           : {}),
       },
     });
@@ -779,11 +834,36 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
     // emitted when the stream drains.
     let chunksDelivered = 0;
     let bytesDelivered = 0;
+    let connectCompletedAt: number | undefined;
+    let firstDataAt: number | undefined;
+    let previousSourceChunkAt: number | undefined;
+    let lastEnqueueAt: number | undefined;
+    const phases: StreamReadPhaseSummary = {
+      sourceChunks: 0,
+      sourceEmptyChunks: 0,
+      sourceBytes: 0,
+      sourceInterarrivalCount: 0,
+      sourceInterarrivalMaxMs: 0,
+      sourceReadWaitCount: 0,
+      sourceReadWaitTotalMs: 0,
+      sourceReadWaitMaxMs: 0,
+      sourceReadWaitOver250MsCount: 0,
+      readResolutionToEnqueueTotalMs: 0,
+      readResolutionToEnqueueMaxMs: 0,
+      enqueueToNextPullMaxMs: 0,
+    };
     super({
       // @ts-expect-error Not sure why TypeScript is complaining about this
       type: 'bytes',
 
       pull: async (controller) => {
+        const pullAt = performance.now();
+        if (lastEnqueueAt !== undefined) {
+          phases.enqueueToNextPullMaxMs = Math.max(
+            phases.enqueueToNextPullMaxMs,
+            pullAt - lastEnqueueAt
+          );
+        }
         let reader = this.#reader;
         if (!reader) {
           if (readStart === undefined) readStart = Date.now();
@@ -791,6 +871,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
           const connectStart = Date.now();
           const stream = await world.streams.get(runId, name, startIndex);
           connectMs = Date.now() - connectStart;
+          connectCompletedAt = performance.now();
           reader = this.#reader = stream.getReader();
         }
         if (!reader) {
@@ -798,7 +879,32 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
           return;
         }
 
-        const result = await reader.read();
+        let result: Awaited<ReturnType<typeof reader.read>>;
+        let resolvedAt: number;
+        while (true) {
+          const readerWaitStartedAt = performance.now();
+          result = await reader.read();
+          resolvedAt = performance.now();
+          const readerWaitMs = resolvedAt - readerWaitStartedAt;
+          phases.sourceReadWaitCount++;
+          phases.sourceReadWaitTotalMs += readerWaitMs;
+          phases.sourceReadWaitMaxMs = Math.max(
+            phases.sourceReadWaitMaxMs,
+            readerWaitMs
+          );
+          if (readerWaitMs > 250) phases.sourceReadWaitOver250MsCount++;
+          if (result.done || result.value.byteLength > 0) break;
+          phases.sourceChunks++;
+          phases.sourceEmptyChunks++;
+          if (previousSourceChunkAt !== undefined) {
+            phases.sourceInterarrivalCount++;
+            phases.sourceInterarrivalMaxMs = Math.max(
+              phases.sourceInterarrivalMaxMs,
+              resolvedAt - previousSourceChunkAt
+            );
+          }
+          previousSourceChunkAt = resolvedAt;
+        }
         if (result.done) {
           this.#reader = undefined;
           if (readStart !== undefined) {
@@ -807,11 +913,30 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
               runId,
               name,
               chunksDelivered,
-              bytesDelivered
+              bytesDelivered,
+              undefined,
+              phases
             );
           }
           controller.close();
         } else {
+          phases.sourceChunks++;
+          phases.sourceBytes += result.value.byteLength;
+          if (previousSourceChunkAt !== undefined) {
+            phases.sourceInterarrivalCount++;
+            phases.sourceInterarrivalMaxMs = Math.max(
+              phases.sourceInterarrivalMaxMs,
+              resolvedAt - previousSourceChunkAt
+            );
+          }
+          previousSourceChunkAt = resolvedAt;
+          if (result.value.byteLength > 0) {
+            firstDataAt ??= resolvedAt;
+            if (connectCompletedAt !== undefined) {
+              phases.streamHandleToFirstDataMs =
+                firstDataAt - connectCompletedAt;
+            }
+          }
           // The server flushes a leading zero-length chunk (v3+) to commit
           // response headers before any data; skip empties so TTFC measures to
           // the first real chunk.
@@ -834,6 +959,13 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
           // Forward raw bytes; encryption/decryption is handled at the
           // framing level by getSerializeStream/getDeserializeStream.
           controller.enqueue(result.value);
+          lastEnqueueAt = performance.now();
+          const resolutionToEnqueueMs = lastEnqueueAt - resolvedAt;
+          phases.readResolutionToEnqueueTotalMs += resolutionToEnqueueMs;
+          phases.readResolutionToEnqueueMaxMs = Math.max(
+            phases.readResolutionToEnqueueMaxMs,
+            resolutionToEnqueueMs
+          );
         }
       },
       cancel: async (reason) => {
