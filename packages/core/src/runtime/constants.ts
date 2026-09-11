@@ -503,6 +503,48 @@ export function getReplayDivergenceMaxRetries(): number {
   );
 }
 
+// An open wait (a `wait_created` with no `wait_completed`) suppresses the
+// per-step inline event delta and turbo's forced optimistic start only while
+// its `resumeAt` falls within this many milliseconds of the gate's own clock
+// reading. A wait due further out cannot ordinarily produce a `wait_completed`
+// during the window either fast path is exposed to, so it does not gate.
+//
+// The exposure windows are short. For the inline delta it is the gap between a
+// step's terminal write (the delta is taken at that commit) and the moment the
+// fallback `events.list` would otherwise have run: milliseconds inside one
+// invocation. For forced optimistic start it is the time the batch's
+// `step_started` claim takes to land, after which a wait-triggered resume
+// invocation replays over the claim instead of racing for it. On top of those
+// sit two clocks that are not this process's: the wait timer's queue may
+// deliver a continuation early (`NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS` tolerates
+// 2s of that), and the host that writes `wait_completed` has its own skew.
+// Those are seconds at most; 30s covers them with an order of magnitude to
+// spare, while still leaving a `sleep('1m')` racing a hook on the fast path
+// for its first half.
+//
+// The guarantee is on the timer's writer, not on every writer: an operator
+// force-completing a pending wait ignores `resumeAt`. Such a `wait_completed`
+// that lands after the step's terminal write is absent from that write's delta
+// and is observed by the next read instead; the events consumer parks it until
+// the replay reaches the wait and refuses a second resolution for the same
+// id, so it is absorbed late rather than lost.
+export const IMMINENT_WAIT_HORIZON_MS = 30_000;
+
+/**
+ * Effective horizon under which an open wait counts as imminent. Override via
+ * `WORKFLOW_IMMINENT_WAIT_HORIZON_MS`; a very large value restores the
+ * unconditional gating of any open wait.
+ */
+export function getImminentWaitHorizonMs(): number {
+  return envNumber(
+    'WORKFLOW_IMMINENT_WAIT_HORIZON_MS',
+    IMMINENT_WAIT_HORIZON_MS,
+    {
+      integer: true,
+    }
+  );
+}
+
 // A stale-snapshot rejection (412) means the replay's event log was missing an
 // event the World had already recorded, so the replay is re-derived from a
 // corrected log inside the same invocation. Bounded because a persistently
