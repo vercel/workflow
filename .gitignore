@@ -56,6 +56,7 @@ event-log-race-repro-server.log
 /e2e-diagnostics-*.json
 /e2e-failures-*.json
 /e2e-flaky-*.json
+/e2e-*.flaky.json
 /e2e-infra-*.json
 /e2e-metadata-*.json
 /e2e-runtime-logs-*.json

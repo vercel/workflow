@@ -62,9 +62,9 @@ export default class GithubAnnotationReporter implements Reporter {
       this.writeFailuresSidecar();
     }
 
-    if (this.flakyTests.length > 0) {
-      this.writeFlakySidecar();
-    }
+    // Always write the paired sidecar so history generation can distinguish a
+    // clean run from missing retry telemetry.
+    this.writeFlakySidecar();
 
     // Emit GitHub Actions annotations — this runs after vitest's own
     // output is done, so ::error commands won't be mangled by ANSI codes.
@@ -197,6 +197,22 @@ export default class GithubAnnotationReporter implements Reporter {
   }
 
   private writeFlakySidecar() {
+    // Pair retry telemetry with the exact Vitest JSON report so parallel lane,
+    // VM, and backend artifacts cannot overwrite one another when merged.
+    const outputArg = process.argv.find((arg) =>
+      arg.startsWith('--outputFile=')
+    );
+    const outputFile = outputArg?.slice('--outputFile='.length);
+    if (outputFile) {
+      const filePath = path.resolve(
+        process.cwd(),
+        outputFile.replace(/\.json$/, '.flaky.json')
+      );
+      fs.writeFileSync(filePath, JSON.stringify(this.flakyTests, null, 2));
+      return;
+    }
+
+    // Preserve the legacy name for manual invocations without a JSON output.
     const appName = process.env.APP_NAME || 'unknown';
     const isVercel = !!process.env.WORKFLOW_VERCEL_ENV;
     const backend = isVercel ? 'vercel' : 'local';
@@ -204,7 +220,6 @@ export default class GithubAnnotationReporter implements Reporter {
       process.cwd(),
       `e2e-flaky-${appName}-${backend}.json`
     );
-
     fs.writeFileSync(filePath, JSON.stringify(this.flakyTests, null, 2));
   }
 }
