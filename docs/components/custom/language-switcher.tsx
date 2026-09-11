@@ -3,6 +3,7 @@
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   Children,
+  createElement,
   isValidElement,
   type JSX,
   type ReactElement,
@@ -89,6 +90,44 @@ interface LanguageContentProps {
 }
 
 type LanguageTextProps = Record<string, ReactNode>;
+
+// TOCs are compiled independently of LanguageContent. Match their links to the
+// rendered heading IDs so both the sidebar and the portaled mobile TOC follow
+// the same `hidden` state as the body, including nested language blocks.
+function syncLanguageToc(element: Element | null): (() => void) | undefined {
+  if (!element) return;
+
+  const style = document.createElement('style');
+  const update = () => {
+    const selectors = Array.from(
+      element.querySelectorAll('h2[id], h3[id], h4[id], h5[id], h6[id]'),
+      (heading) => {
+        const id = CSS.escape(heading.id);
+        const href = CSS.escape(`#${heading.id}`);
+        return `:root:has([data-language][hidden] #${id}) :is(#nd-toc, [data-geistdocs-mobile-toc]) a[href="${href}"]`;
+      }
+    );
+    style.textContent = selectors.length
+      ? `${selectors.join(',\n')} { display: none; }`
+      : '';
+  };
+
+  update();
+  document.head.append(style);
+  // MDX can stream or replace descendants after the language block mounts.
+  const observer = new MutationObserver(update);
+  observer.observe(element, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['id'],
+  });
+
+  return () => {
+    observer.disconnect();
+    style.remove();
+  };
+}
 
 interface PageLanguageSwitcherProps {
   languages: readonly string[];
@@ -335,14 +374,15 @@ export function LanguageContent({
   const selected = useSharedLanguage() ?? 'ts';
   const Component = as ?? 'div';
 
-  return (
-    <Component
-      className={className}
-      data-language={value}
-      hidden={selected !== value}
-    >
-      {children}
-    </Component>
+  return createElement(
+    Component,
+    {
+      ref: syncLanguageToc,
+      className,
+      'data-language': value,
+      hidden: selected !== value,
+    },
+    children
   );
 }
 
