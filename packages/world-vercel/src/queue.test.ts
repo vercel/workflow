@@ -1,6 +1,16 @@
+import { context, trace as otelTrace, propagation } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import { W3CTraceContextPropagator } from '@opentelemetry/core';
 import {
+  BasicTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
+import {
+  afterAll,
   afterEach,
   assert,
+  beforeAll,
   beforeEach,
   describe,
   expect,
@@ -1444,5 +1454,101 @@ describe('queueBatch', () => {
       []
     );
     expect(mockSendBatch).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A batched message carries its producer context on its OWN headers. The SDK
+ * injects into the multipart request's headers, which VQS does not store per
+ * message, so world-vercel injects per entry; without it a consumer's
+ * `vqs.process` span has no link back to the producer (vqs-server re-emits a
+ * stored `traceparent` as `x-vercel-queue-traceparent` at delivery).
+ */
+describe('queueBatch trace propagation', () => {
+  const exporter = new InMemorySpanExporter();
+  const provider = new BasicTracerProvider();
+  const contextManager = new AsyncLocalStorageContextManager();
+
+  beforeAll(() => {
+    provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
+    contextManager.enable();
+    context.setGlobalContextManager(contextManager);
+    propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+    otelTrace.setGlobalTracerProvider(provider);
+  });
+
+  afterAll(async () => {
+    await provider.shutdown();
+    context.disable();
+    propagation.disable();
+    otelTrace.disable();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VERCEL_DEPLOYMENT_ID = 'dpl_trace';
+  });
+
+  afterEach(() => {
+    delete process.env.VERCEL_DEPLOYMENT_ID;
+    delete process.env.VERCEL_QUEUE_TRACE_PROPAGATION;
+  });
+
+  const entries = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      message: { runId: 'wrun_trace', stepId: `step-${i}` },
+      opts: { idempotencyKey: `key-${i}` },
+    }));
+
+  /** Publishes inside an active span and returns the sent message headers. */
+  async function publishInSpan(
+    count: number
+  ): Promise<
+    { headers: Record<string, string> | undefined; spanId: string }[]
+  > {
+    mockSendBatch.mockResolvedValueOnce(
+      Array.from({ length: count }, (_, i) => ({
+        status: 'sent' as const,
+        messageId: `m${i}`,
+      }))
+    );
+    const queue = createQueue();
+    assert(queue.queueBatch);
+    const span = provider.getTracer('test').startSpan('publish');
+    const spanId = span.spanContext().spanId;
+    await context.with(otelTrace.setSpan(context.active(), span), async () => {
+      await queue.queueBatch?.('__wkf_workflow_test', entries(count));
+    });
+    span.end();
+    const sent = mockSendBatch.mock.calls[0]?.[1] as
+      | { headers?: Record<string, string> }[]
+      | undefined;
+    return (sent ?? []).map((m) => ({ headers: m.headers, spanId }));
+  }
+
+  it('puts the producer traceparent on EVERY message in the batch', async () => {
+    const sent = await publishInSpan(64);
+
+    expect(sent).toHaveLength(64);
+    for (const { headers, spanId } of sent) {
+      // Same span on every entry: one publish, one producer context.
+      expect(headers?.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-/);
+      expect(headers?.traceparent).toContain(spanId);
+    }
+    // The payload-derived headers the single send also carries survive it.
+    expect(sent[0].headers?.['x-vercel-workflow-run-id']).toBe('wrun_trace');
+    expect(sent[0].headers?.['x-vercel-workflow-step-id']).toBe('step-0');
+  });
+
+  it('honors VERCEL_QUEUE_TRACE_PROPAGATION=off, like the SDK does', async () => {
+    process.env.VERCEL_QUEUE_TRACE_PROPAGATION = 'off';
+    const sent = await publishInSpan(2);
+
+    expect(sent).toHaveLength(2);
+    for (const { headers } of sent) {
+      expect(headers?.traceparent).toBeUndefined();
+      // The kill switch is trace-only; message routing headers stay.
+      expect(headers?.['x-vercel-workflow-run-id']).toBe('wrun_trace');
+    }
   });
 });

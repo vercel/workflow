@@ -19,6 +19,7 @@ import { missingDeploymentIdMessage } from './deployment-id.js';
 import { getQueueDispatcher } from './http-client.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
+import { getTraceContextHeaders } from './telemetry.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
@@ -28,6 +29,16 @@ import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
  * than a tuning knob; `queueBatch` splits anything larger.
  */
 const MAX_QUEUE_SEND_BATCH = 100;
+
+/**
+ * Mirrors `@vercel/queue`'s own kill switch. `queueBatch` injects trace
+ * context itself (see below), so without this check `off` would still
+ * disable it on the single send and not on the batched one.
+ */
+function isQueueTracePropagationDisabled(): boolean {
+  const value = process.env.VERCEL_QUEUE_TRACE_PROPAGATION?.toLowerCase();
+  return value === 'off' || value === '0' || value === 'false';
+}
 
 /**
  * Maps one `experimental_sendBatch` outcome onto the World's
@@ -590,6 +601,24 @@ export function createQueue(config?: APIConfig): Queue {
     const results = new Array<QueueBatchResult>(messages.length);
     if (messages.length === 0) return results;
 
+    // Trace context has to be attached per MESSAGE here, not per request.
+    //
+    // `send()` gets this for free: the SDK injects into the headers it is
+    // about to send, and for a single message those headers ARE the message's
+    // headers, so VQS stores the `traceparent` and re-emits it at delivery as
+    // `x-vercel-queue-traceparent` — which is what lets a consumer attach a
+    // span link back to this producer. `experimental_sendBatch` injects into
+    // the multipart REQUEST headers instead, and the per-part headers it
+    // builds never see it, so a batched message would arrive with no producer
+    // context and the consumer's `vqs.process` span would have no link.
+    //
+    // One injection for the whole call: every message in a batch is published
+    // under the same active span, which is exactly what the single send would
+    // have recorded on each of them.
+    const traceHeaders = isQueueTracePropagationDisabled()
+      ? {}
+      : await getTraceContextHeaders();
+
     // Group by the routing dimensions a single VQS request cannot span. In
     // the case this exists for — one run's fan-out to one logical queue —
     // every message lands in one group, so this is one request per
@@ -626,7 +655,13 @@ export function createQueue(config?: APIConfig): Queue {
       group.entries.push({
         index,
         topic: prepared.topic,
-        message: { payload: prepared.wrapper, ...prepared.sendOptions },
+        message: {
+          payload: prepared.wrapper,
+          ...prepared.sendOptions,
+          // Trace headers last, matching the single send: the SDK injects
+          // after it has applied the caller's `opts.headers`.
+          headers: { ...prepared.sendOptions.headers, ...traceHeaders },
+        },
       });
       groups.set(key, group);
     }
