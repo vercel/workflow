@@ -237,6 +237,16 @@ export const WorkflowBackstopWakesArmed = SemanticConvention<number>(
   'workflow.inline_ownership.backstop_wakes_armed'
 );
 
+/**
+ * Number of pending steps whose immediate step-execution enqueue this replay
+ * pass skipped because THIS invocation already published that step's message
+ * on an earlier pass (a fan-out that ran inline steps and replayed again).
+ * Invocation-local knowledge only: a fresh delivery never skips.
+ */
+export const WorkflowDispatchRepublishSkipped = SemanticConvention<number>(
+  'workflow.dispatch.republish_skipped'
+);
+
 // Route attributes
 
 /** The workflow runtime route being handled */

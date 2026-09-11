@@ -1468,8 +1468,20 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       queueName: string,
       message: any
     ) => Promise<{ messageId: null }>;
+    /**
+     * Record a `step_retrying` for the QUEUED step right after its eager
+     * `step_created`, so the post-inline replay pass observes the step as
+     * `sawRetrying` (a retry handoff happened since this invocation
+     * published it).
+     */
+    retryingQueuedStep?: boolean;
+    /** `specVersion` to stamp on the run (gates resilient step dispatch). */
+    runSpecVersion?: number;
   }) {
     const workflowRun = await makeRunningRun(opts.runId);
+    if (opts.runSpecVersion !== undefined) {
+      (workflowRun as any).specVersion = opts.runSpecVersion;
+    }
     const order: string[] = [];
 
     // Start from a clean slate so the rejection check only observes promises
@@ -1512,7 +1524,16 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
           // It must be durably created before its dispatch send — the ordering
           // assertion below checks step_created precedes queue_dispatch_start.
           order.push('step_created');
-          return { event: recordEvent(data) };
+          const created = recordEvent(data);
+          if (opts.retryingQueuedStep) {
+            recordEvent({
+              eventType: 'step_retrying',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: data.correlationId,
+              eventData: { stepName: data.eventData?.stepName },
+            });
+          }
+          return { event: created };
         }
         if (data.eventType === 'step_started') {
           // The inline step's lazy step_started creates the step on the fly:
@@ -1549,9 +1570,12 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       }
     );
 
+    // Every step-execution send (message carrying a stepId), in order.
+    const stepIdSends: string[] = [];
     const queue = vi.fn(async (queueName: string, message: any) => {
       // Only the step-dispatch send carries a stepId; ignore other sends.
       if (message && typeof message === 'object' && 'stepId' in message) {
+        stepIdSends.push(message.stepId);
         order.push('queue_dispatch_start');
         const result = await opts.queueImpl(queueName, message);
         order.push('queue_dispatch_done');
@@ -1559,6 +1583,16 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       }
       return { messageId: null };
     });
+
+    // Return the accumulated event log so replay converges: a later loop
+    // iteration sees the inline step completed and the queued step already
+    // created (so neither is re-run), and the handler returns instead of
+    // re-suspending forever.
+    const eventsList = vi.fn(async () => ({
+      data: [...durableEvents],
+      hasMore: false,
+      cursor: 'cursor_test',
+    }));
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
@@ -1587,15 +1621,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       ),
       events: {
         create: eventsCreate,
-        // Return the accumulated event log so replay converges: a later loop
-        // iteration sees the inline step completed and the queued step already
-        // created (so neither is re-run), and the handler returns instead of
-        // re-suspending forever.
-        list: vi.fn(async () => ({
-          data: [...durableEvents],
-          hasMore: false,
-          cursor: 'cursor_test',
-        })),
+        list: eventsList,
       },
       runs: {
         get: vi.fn(async () => workflowRun),
@@ -1618,6 +1644,8 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       handlerPromise,
       order,
       queue,
+      eventsList,
+      stepIdSends,
       createdEventParams,
       stepStartedParams,
     };
@@ -1713,6 +1741,83 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // promise (queue re-drive), never through an unconsumed `waitUntil`
     // promise (which would become an unhandled rejection / process exit 128).
     expect(await anyWaitUntilPromiseRejected()).toBe(false);
+  });
+
+  it('publishes each queued step message once per invocation: the post-inline replay pass re-publishes nothing', async () => {
+    // Pass 1 queues `addB` (one step-execution send) and runs `add` inline.
+    // Once `add` completes the loop reloads the log and replays again; the
+    // second pass finds `addB` still pending. That pass must NOT send its
+    // message a second time: this invocation already did, and the queue
+    // would only dedupe the repeat after a wasted round-trip.
+    const { handlerPromise, order, eventsList, stepIdSends } =
+      await driveHandler({
+        runId: 'wrun_no_republish',
+        queueImpl: async () => ({ messageId: null }),
+      });
+
+    const res = (await handlerPromise) as Response;
+    expect(res.status).toBe(204);
+
+    // The second replay pass really happened (a fresh events.list after the
+    // inline step completed), and it observed the queued step as pending
+    // (eagerly created, never completed).
+    expect(eventsList.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(order).toContain('step_created');
+    // Exactly one step-execution publish for the whole invocation.
+    expect(stepIdSends).toHaveLength(1);
+  });
+
+  it('still re-enqueues a step it published once a step_retrying has been observed', async () => {
+    // A `step_retrying` recorded after this invocation's publish means the
+    // step is now on a retry schedule the earlier message does not cover, so
+    // the invocation-local "already published" knowledge must not suppress
+    // the later pass's enqueue (the idempotency key still dedupes if the
+    // handoff message is in flight).
+    const { handlerPromise, stepIdSends } = await driveHandler({
+      runId: 'wrun_republish_after_retrying',
+      queueImpl: async () => ({ messageId: null }),
+      retryingQueuedStep: true,
+    });
+
+    const res = (await handlerPromise) as Response;
+    expect(res.status).toBe(204);
+    // Pass 1 publish + the pass-2 re-enqueue for the retrying step, same
+    // correlation id both times.
+    expect(stepIdSends).toHaveLength(2);
+    expect(new Set(stepIdSends).size).toBe(1);
+  });
+
+  it("counts the suspension handler's resilient publishes as already published", async () => {
+    // With resilient step dispatch the suspension handler publishes the
+    // queued step itself (create + queue in parallel, message carrying
+    // stepInput) and reports it in queuedStepCorrelationIds. That publish
+    // must seed the invocation's published set too, so the post-inline
+    // replay pass does not send it again.
+    process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = '1';
+    try {
+      const { handlerPromise, eventsList, stepIdSends, queue } =
+        await driveHandler({
+          runId: 'wrun_no_republish_resilient',
+          queueImpl: async () => ({ messageId: null }),
+          runSpecVersion: SPEC_VERSION_CURRENT,
+        });
+
+      const res = (await handlerPromise) as Response;
+      expect(res.status).toBe(204);
+
+      expect(eventsList.mock.calls.length).toBeGreaterThanOrEqual(2);
+      // The one send came from the suspension handler (it carries the
+      // resilient stepInput), and nothing re-published it afterwards.
+      const stepSends = queue.mock.calls.filter(
+        ([, message]: any[]) =>
+          message && typeof message === 'object' && 'stepId' in message
+      );
+      expect(stepSends).toHaveLength(1);
+      expect(stepSends[0][1]).toHaveProperty('stepInput');
+      expect(stepIdSends).toHaveLength(1);
+    } finally {
+      delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
+    }
   });
 
   it('runs BOTH parallel steps inline (none queued) when the inline cap allows it', async () => {
