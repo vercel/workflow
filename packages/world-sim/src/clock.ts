@@ -13,11 +13,11 @@
  * Timers are deliberately NOT patched: `@workflow/core` uses
  * `setTimeout(fn, 0)` as a macrotask barrier in several ordering-sensitive
  * places (`events-consumer.ts`, `private.ts`), and swapping those for fake
- * timers would change the very interleavings the simulation exists to
+ * timers would change the exact interleavings the simulation exists to
  * observe. Real zero-delay timers stay real; only the *readings* of wall
  * time move under our control.
  *
- * The clock never moves on its own — only `advanceTo`/`advanceBy` move it,
+ * The clock never moves on its own. Only `advanceTo`/`advanceBy` move it,
  * and only the scheduler calls those. Two runs of the same scenario see the
  * exact same sequence of timestamps.
  */
@@ -76,7 +76,7 @@ export function createVirtualClock(epochMs = DEFAULT_EPOCH_MS): VirtualClock {
       // A Proxy, deliberately not a subclass.
       //
       // Subclassing works right up until two clocks are installed in
-      // succession — a scenario's, then the replay check's. Every `Date` the
+      // succession: a scenario's, then the replay check's. Every `Date` the
       // first clock produced is an instance of *that* subclass, so once the
       // second one is installed `x instanceof Date` is false for all of them,
       // and any code branching on it (a structural clone, a serializer)

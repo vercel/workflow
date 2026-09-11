@@ -8,9 +8,9 @@
   <h1>Workflow SDK</h1>
 
 <a href="https://vercel.com"><img alt="Vercel logo" src="https://img.shields.io/badge/MADE%20BY%20Vercel-000000.svg?style=for-the-badge&logo=Vercel&labelColor=000"></a>
-<a href="https://www.npmjs.com/package/workflow"><img alt="NPM version" src="https://img.shields.io/npm/v/workflow?style=for-the-badge&labelColor=000000"></a>
+<a href="https://www.npmjs.com/package/workflow"><img alt="npm version" src="https://img.shields.io/npm/v/workflow?style=for-the-badge&labelColor=000000"></a>
 <a href="https://github.com/vercel/workflow/blob/main/LICENSE.md"><img alt="License" src="https://img.shields.io/npm/l/workflow.svg?style=for-the-badge&labelColor=000000"></a>
-<a href="https://github.com/vercel/workflow/discussions"><img alt="Join the community on GitHub" src="https://img.shields.io/badge/Join%20the%20community-blueviolet.svg?style=for-the-badge&logo=Github&labelColor=000000&logoWidth=20"></a>
+<a href="https://github.com/vercel/workflow/discussions"><img alt="Join the community on GitHub" src="https://img.shields.io/badge/Join%20the%20community-blueviolet.svg?style=for-the-badge&logo=GitHub&labelColor=000000&logoWidth=20"></a>
 
 </div>
 
@@ -70,7 +70,9 @@ Vercel for managed storage, queuing, scaling, and observability. To self-host,
 use the Postgres backend or implement a custom
 [World](https://workflow-sdk.dev/docs/deploying).
 
-There are many third-party Worlds (both self-hosted or managed), see [the Worlds page](https://workflow-sdk.dev/worlds) for a list of maintainer-curated third party worlds. Submit your world by opening updating the [Worlds Manifest](https://github.com/vercel/workflow/blob/main/worlds-manifest.json).
+The [Worlds page](https://workflow-sdk.dev/worlds) lists maintainer-curated
+third-party Worlds, including self-hosted and managed options. Submit your World
+by updating the [Worlds Manifest](https://github.com/vercel/workflow/blob/main/worlds-manifest.json).
 
 ## Community
 
@@ -88,7 +90,7 @@ with the team and wider community. By participating, you agree to our
 
 ## Security
 
-If you believe you have found a security vulnerability in Workflow SDK, we encourage you to **_responsibly disclose this and not open a public issue_**.
+If you find a security vulnerability in Workflow SDK, **_disclose it responsibly instead of opening a public issue_**.
 
 To participate in our Open Source Software Bug Bounty program, please email
 [responsible.disclosure@vercel.com](mailto:responsible.disclosure@vercel.com).

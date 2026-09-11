@@ -7,7 +7,7 @@ import {
   computeSpanMarkers,
   computeSpanSegments,
   computeTimeMarkers,
-  getResourceColor,
+  getResourceClassNames,
 } from './utils';
 
 /** Build a high-res timestamp tuple ([seconds, nanoseconds]) for a given ms. */
@@ -153,8 +153,10 @@ describe('computeSpanMarkers', () => {
       attrSetMs: [10_000, 70_000],
     });
 
-    expect(computeSpanMarkers(span).map((m) => m.timeMs)).toEqual([
-      10_000, 50_000, 70_000,
+    expect(computeSpanMarkers(span)).toEqual([
+      { timeMs: 10_000, kind: 'attr_set' },
+      { timeMs: 50_000, kind: 'hook_received' },
+      { timeMs: 70_000, kind: 'attr_set' },
     ]);
   });
 
@@ -165,7 +167,7 @@ describe('computeSpanMarkers', () => {
 });
 
 describe('computeOffscreenMarkers', () => {
-  const mk = (timeMs: number) => ({ timeMs });
+  const mk = (timeMs: number) => ({ timeMs, kind: 'hook_received' as const });
 
   it('partitions markers by side with the nearest one per side', () => {
     const markers = [mk(5), mk(8), mk(50), mk(92), mk(99)];
@@ -248,13 +250,11 @@ describe('computeTimeMarkers', () => {
   });
 });
 
-describe('getResourceColor', () => {
+describe('getResourceClassNames', () => {
   it('uses gray for hooks (passive spans), not amber', () => {
-    expect(getResourceColor('hook')).toEqual({
-      bg: 'var(--ds-gray-200)',
-      border: 'var(--ds-gray-500)',
-      errorBg: 'var(--ds-red-200)',
-      errorBorder: 'var(--ds-red-500)',
+    expect(getResourceClassNames('hook')).toEqual({
+      className: 'border-gray-500 bg-gray-200',
+      errorClassName: 'border-red-500 bg-red-200',
     });
   });
 });

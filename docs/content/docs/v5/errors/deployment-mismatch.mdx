@@ -15,30 +15,30 @@ Every run is pinned to a single deployment when it starts. When a queued workflo
 
 This is an SDK/runtime signal, not an error thrown by your workflow code, and it is not catchable inside a workflow function.
 
-## Error Message
+## Error message
 
-```
+```text
 Workflow run "wrun_..." is pinned to deployment "dpl_A", but was received by deployment "dpl_B". The runtime re-routed the message to "dpl_A" 3 times and it kept arriving elsewhere, so the run was stopped to protect against code-skew errors. Verify that the run's deployment is still available and that queue callbacks are routed to it.
 ```
 
-When the queue definitively reports that the run's deployment cannot be reached — it was deleted, or aged out of its retention window — no re-route is possible and the message omits the re-routing clause. Transient or unknown publishing failures leave the current delivery unacknowledged so the queue can redeliver it; they do not fail the run or consume this recovery budget.
+When the queue definitively reports that the run's deployment cannot be reached (it was deleted, or aged out of its retention window), no re-route is possible and the message omits the re-routing clause. Transient or unknown publishing failures leave the current delivery unacknowledged so the queue can redeliver it; they do not fail the run or consume this recovery budget.
 
-## Why A Run Is Pinned
+## Why a run is pinned
 
 A run's deployment is chosen once, at [`start()`](/docs/api-reference/workflow-api/start):
 
-- By default it is the deployment that called `start()` — see [Versioning](/docs/foundations/versioning) for why runs are pinned this way.
+- By default it is the deployment that called `start()`. See [Versioning](/docs/foundations/versioning) for why runs are pinned this way.
 - With `start(workflow, args, { deploymentId })` it is the id you pass, so a run can deliberately target a deployment other than the one that created it.
 - With `deploymentId: "latest"` it is the most recent deployment for the current environment, resolved at start time.
 
 Whichever it is, that `deploymentId` is recorded on the run, and every subsequent workflow replay and step execution must happen on that deployment. Continuing on a different one is unsafe:
 
 1. **Code skew.** The workflow and step bundles on the receiving deployment may not match the code that produced the run's recorded history, so replay could diverge or produce incorrect results.
-2. **Encryption.** Step inputs and other event-log payloads are encrypted with a per-run key derived from the pinned deployment's key material. A different deployment derives the wrong key and cannot decrypt them — previously the source of a confusing [runtime-decryption-failed](/docs/errors/runtime-decryption-failed) that exhausted retries with no clear cause.
+2. **Encryption.** Step inputs and other event-log payloads are encrypted with a per-run key derived from the pinned deployment's key material. A different deployment derives the wrong key and cannot decrypt them, previously the source of a confusing [runtime-decryption-failed](/docs/errors/runtime-decryption-failed) that exhausted retries with no clear cause.
 
-So the runtime checks the pinned deployment before it executes anything, and `DEPLOYMENT_MISMATCH` names the result — instead of the mismatch surfacing later as an unrelated decryption failure.
+So the runtime checks the pinned deployment before it executes anything, and `DEPLOYMENT_MISMATCH` names the result, instead of the mismatch surfacing later as an unrelated decryption failure.
 
-## Automatic Recovery
+## Automatic recovery
 
 A deployment that receives a run it does not own first tries to fix the delivery rather than fail the run:
 
@@ -46,19 +46,19 @@ A deployment that receives a run it does not own first tries to fix the delivery
 2. Delivery is delayed with a short exponential backoff (1s, 2s, 4s).
 3. If the run keeps arriving at the wrong deployment, the run is failed with `DEPLOYMENT_MISMATCH` after `WORKFLOW_DEPLOYMENT_MISMATCH_MAX_RETRIES` attempts (default `3`). Set it to `0` to fail on the first misrouted delivery instead.
 
-Nothing is executed on the wrong deployment during recovery: no workflow code, no step body, no `step_started`, and no hook resume. Whatever the delivery was carrying travels with it, so a pending step keeps its identity and a hook resume keeps its payload — they run on the deployment that can actually decrypt them.
+Nothing is executed on the wrong deployment during recovery: no workflow code, no step body, no `step_started`, and no hook resume. Whatever the delivery was carrying travels with it, so a pending step keeps its identity and a hook resume keeps its payload: they run on the deployment that can actually decrypt them.
 
 Recovery attempts do not create events on the run, so a run that self-heals looks completely normal. They are reported on the invocation's trace span (`workflow.deployment.pinned_id`, `workflow.deployment_mismatch.retry_count`, `workflow.deployment_mismatch.recovered`) and as a runtime warning in your function logs.
 
-## What To Do
+## What to do
 
 - **Re-run from the current deployment.** Trigger the workflow again from your latest deployment (or use the **Re-run** button in the Workflow Dashboard). The new run is pinned to the current deployment.
-- **Keep a run's deployment available** for the lifetime of that run. A run whose deployment has been deleted or has aged out cannot be resumed and must be re-run — recovery cannot help, so these fail on the first misrouted delivery. This applies to runs started with an explicit `deploymentId` too: pinning a run to an older deployment keeps it dependent on that deployment for its whole lifetime.
-- **Report it** if the pinned deployment was still available. Include both deployment ids and the run id from the error message, plus the trace span attributes above — a run that failed this way despite a reachable target is a routing fault worth investigating rather than something to work around.
+- **Keep a run's deployment available** for the lifetime of that run. A run whose deployment has been deleted or has aged out cannot be resumed and must be re-run: recovery cannot help, so these fail on the first misrouted delivery. This applies to runs started with an explicit `deploymentId` too: pinning a run to an older deployment keeps it dependent on that deployment for its whole lifetime.
+- **Report it** if the pinned deployment was still available. Include both deployment IDs and the run ID from the error message, plus the trace span attributes above. A run that failed this way despite a reachable target is a routing fault worth investigating rather than something to work around.
 
-## This Error Cannot Be Caught
+## This error cannot be caught
 
-Like other runtime signals, `DEPLOYMENT_MISMATCH` is **not catchable** inside your workflow function — the run is failed before any workflow or step code executes on the receiving deployment. Check the run status from outside instead:
+Like other runtime signals, `DEPLOYMENT_MISMATCH` is **not catchable** inside your workflow function: the run is failed before any workflow or step code executes on the receiving deployment. Check the run status from outside instead:
 
 ```typescript lineNumbers
 import { getRun } from "workflow/api";

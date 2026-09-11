@@ -9,7 +9,7 @@ related:
   - /docs/errors/hook-conflict
 ---
 
-`HookConflictError` is thrown when creating a hook with a token that is already in use by another active workflow run. Hook tokens must be unique across all running workflows — see the [hook-conflict](/docs/errors/hook-conflict) error guide for resolution strategies.
+`HookConflictError` is thrown when creating a hook with a token that is already in use by another active workflow run. Hook tokens must be unique across all running workflows. See the [hook-conflict](/docs/errors/hook-conflict) error guide for resolution strategies.
 
 ```typescript lineNumbers
 import { HookConflictError } from "workflow/errors"
@@ -27,7 +27,7 @@ try {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Properties
 
@@ -44,11 +44,11 @@ interface HookConflictError {
 export default HookConflictError;`}
 />
 
-### Static Methods
+### Static methods
 
 #### `HookConflictError.is(value)`
 
-Type-safe check for `HookConflictError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+Type-safe check for `HookConflictError` instances. Preferred over `instanceof` because it works across module boundaries and virtual machine contexts.
 
 ```typescript
 import { HookConflictError } from "workflow/errors"

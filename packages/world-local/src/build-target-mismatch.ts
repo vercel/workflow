@@ -1,6 +1,7 @@
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 
 /**
  * How to get out of a deployment running against the wrong world. The world is
@@ -51,11 +52,18 @@ export function isUnwritableDirCode(code: string | undefined): boolean {
   return code !== undefined && UNWRITABLE_DIR_CODES.has(code);
 }
 
-let warnedAboutVercelDeployment = false;
+// Warned at most once per process; a field rather than a module-level `let`
+// because a bundler can put several copies of this file in one process and
+// "once" should not become once per copy (see `globalSingleton`).
+const warnings = globalSingleton(
+  '@workflow/world-local//buildTargetWarnings',
+  1,
+  () => ({ warnedAboutVercelDeployment: false })
+);
 
 /** Test seam: the warning is emitted once per process. */
 export function resetVercelDeploymentWarning(): void {
-  warnedAboutVercelDeployment = false;
+  warnings.warnedAboutVercelDeployment = false;
 }
 
 /**
@@ -75,7 +83,10 @@ export function resetVercelDeploymentWarning(): void {
  * deliberate choice rather than a misconfiguration.
  */
 export function warnIfRunningInVercelDeployment(dataDir: string): void {
-  if (warnedAboutVercelDeployment || !process.env.VERCEL_DEPLOYMENT_ID) {
+  if (
+    warnings.warnedAboutVercelDeployment ||
+    !process.env.VERCEL_DEPLOYMENT_ID
+  ) {
     return;
   }
   const resolvedDataDir = path.resolve(dataDir);
@@ -86,7 +97,7 @@ export function warnIfRunningInVercelDeployment(dataDir: string): void {
   ) {
     return;
   }
-  warnedAboutVercelDeployment = true;
+  warnings.warnedAboutVercelDeployment = true;
   console.warn(
     `[workflow] Warning: the local (filesystem) world is running inside a Vercel deployment, writing to ${resolvedDataDir}. ` +
       'That filesystem is read-only, so workflow runs will fail before their first step. ' +

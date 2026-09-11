@@ -1,4 +1,4 @@
-import { EntityConflictError } from '@workflow/errors';
+import { EntityConflictError, StreamError } from '@workflow/errors';
 import {
   BULK_CANCEL_MAX_RUN_IDS,
   type BulkCancelWorkflowRunResult,
@@ -20,9 +20,9 @@ export interface RecreateRunOptions {
    * Queue namespace of the target deployment (e.g. `'eve'` for topics like
    * `__eve_wkf_workflow_*`). Falls back to `WORKFLOW_QUEUE_NAMESPACE` in
    * the calling process. Cross-context callers (e.g. the observability
-   * dashboard) must pass the target deployment's namespace explicitly —
-   * a run enqueued to a topic the target deployment has no consumer for
-   * is never picked up.
+   * dashboard) must pass the target deployment's namespace explicitly,
+   * since a run enqueued to a topic the target deployment has no consumer
+   * for is never picked up.
    */
   namespace?: string;
 }
@@ -171,7 +171,7 @@ const CANCEL_RUNS_FALLBACK_CONCURRENCY = 20;
  * `cancelRun()` calls with at most {@link CANCEL_RUNS_FALLBACK_CONCURRENCY}
  * in flight at a time. Fallback successes are reported as `cancelled`;
  * failures are reported as `failed` with `code: 'internal_error'` and
- * `retryable: true` — deliberately without per-world error classification.
+ * `retryable: true`, deliberately without per-world error classification.
  *
  * @throws if `runIds` is empty, contains duplicates, or exceeds
  *   {@link BULK_CANCEL_MAX_RUN_IDS}.
@@ -409,7 +409,8 @@ export async function readStream(
   try {
     return await world.streams.get(runId, streamId, options?.startIndex);
   } catch (err) {
-    throw new Error(
+    if (StreamError.is(err)) throw err;
+    throw new StreamError(
       `Failed to read stream ${streamId}: ${err instanceof Error ? err.message : String(err)}`,
       { cause: err }
     );
@@ -426,7 +427,8 @@ export async function listStreams(
   try {
     return await world.streams.list(runId);
   } catch (err) {
-    throw new Error(
+    if (StreamError.is(err)) throw err;
+    throw new StreamError(
       `Failed to list streams for run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
       { cause: err }
     );

@@ -14,12 +14,14 @@ import type { TypedHook } from 'workflow';
 import * as z from 'zod';
 import type manifest from '../.well-known/workflow/v1/manifest.json';
 
-export const Control = z.object({
-  state: z.literal('listening'),
-  info: z.object({
-    port: z.number(),
-  }),
-});
+export const Control = z.compile(
+  z.object({
+    state: z.literal('listening'),
+    info: z.object({
+      port: z.number(),
+    }),
+  })
+);
 type Control = z.infer<typeof Control>;
 
 type Files = keyof typeof manifest.workflows;
@@ -121,7 +123,7 @@ export async function startServer(opts: {
   throw new Error('Server did not start correctly');
 }
 
-const Invoke = z.object({ runId: z.coerce.string() });
+const Invoke = z.compile(z.object({ runId: z.coerce.string() }));
 
 export function createFetcher(control: Control) {
   return {
@@ -142,6 +144,32 @@ export function createFetcher(control: Control) {
         console.error('Workflow run:', data.runId);
       });
       return data;
+    },
+    /**
+     * Every event of a run, oldest first, as the World stored it.
+     *
+     * Ids included on purpose: they are the one part of the storage contract a
+     * World can get wrong while every workflow still appears to work, right
+     * up until a replay reads one (see `eventIds`).
+     */
+    async getEvents(runId: string): Promise<
+      {
+        eventId: string;
+        eventType: string;
+        correlationId?: string;
+      }[]
+    > {
+      const x = await fetch(
+        `http://localhost:${control.info.port}/runs/${encodeURIComponent(runId)}/events`
+      );
+      const data = (await x.json()) as {
+        events: {
+          eventId: string;
+          eventType: string;
+          correlationId?: string;
+        }[];
+      };
+      return data.events;
     },
     async getFlowInvocationCount(runId: string): Promise<number> {
       const x = await fetch(

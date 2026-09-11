@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { globalSingleton } from '@workflow/utils';
 import type {
   GetChunksOptions,
   StreamChunksResponse,
@@ -15,18 +16,28 @@ import {
   readFirstByte,
   readJSONWithFallback,
   taggedPath,
+  withWindowsRetry,
   write,
   writeJSON,
 } from './fs.js';
 
-// Create a monotonic ULID factory that ensures ULIDs are always increasing
-// even when generated within the same millisecond
-const monotonicUlid = monotonicFactory(() => Math.random());
+// Monotonic ULID source for chunk IDs: always increasing even within one
+// millisecond. On `globalThis` rather than at module scope because a bundler
+// can put several copies of this file in one process (see `globalSingleton`),
+// and two copies advancing their own sequences can mint the same `chnk_` ID.
+const chunkIds = globalSingleton(
+  '@workflow/world-local//streamerMonotonicUlid',
+  1,
+  () => ({ next: monotonicFactory(() => Math.random()) })
+);
+const monotonicUlid = (seedTime?: number): string => chunkIds.next(seedTime);
 
 // Schema for the run-to-streams mapping file
-const RunStreamsSchema = z.object({
-  streams: z.array(z.string()),
-});
+const RunStreamsSchema = z.compile(
+  z.object({
+    streams: z.array(z.string()),
+  })
+);
 
 /**
  * A chunk consists of a boolean `eof` indicating if it's the last chunk,
@@ -91,7 +102,7 @@ function addChunkFilesByExtension(
  * per stream (`streams/chunks/<streamName>/`) so that listing a stream's
  * chunks costs O(chunks in that stream) rather than O(chunks in the whole
  * world). A tail reader polling for new chunks would otherwise `readdir` the
- * entire global chunks directory every 100ms — see vercel/workflow#2797.
+ * entire global chunks directory every 100ms. See vercel/workflow#2797.
  */
 function chunkDirForStream(chunksBaseDir: string, name: string): string {
   // Name becomes a path segment below; validate it can't escape chunksBaseDir.
@@ -106,7 +117,8 @@ function chunkDirForStream(chunksBaseDir: string, name: string): string {
  * the files live in. Handles tagged and legacy (.json) formats.
  *
  * Files are stored per-stream (`<chunkDir>/<chunkId><tagSuffix>.bin`), so the
- * key returned here is already the chunk id — no stream-name prefix to strip.
+ * key returned here is already the chunk id, with no stream-name prefix to
+ * strip.
  */
 async function listChunkFilesForStream(
   chunksBaseDir: string,
@@ -133,6 +145,94 @@ async function listChunkFilesForStream(
   const files = [...extMap.keys()].sort();
 
   return { files, extMap, dir };
+}
+
+/**
+ * Chunk id of the end-of-stream tombstone a zero-retention purge leaves in
+ * place of a stream's contents.
+ *
+ * All zeros because chunks are ordered by the plain lexical sort of their ids
+ * and `0` is the lowest character of the ULID alphabet: this id sorts before
+ * every real `chnk_` in the directory. That is what makes it a *tombstone*
+ * and not just another chunk — every reader walks it first, sees EOF, and
+ * stops, so the stream reads as empty-and-finished from the instant the
+ * tombstone lands, before a single byte behind it has been deleted.
+ */
+const PURGED_STREAM_TOMBSTONE_ID = `chnk_${'0'.repeat(26)}`;
+
+/**
+ * Replace a run's stream contents with an end-of-stream tombstone.
+ *
+ * A stream's chunks are user data, so a zero-retention run's streams have to
+ * go with its payloads. They cannot simply be unlinked, though: EOF is itself
+ * a chunk, and a stream with no chunks at all is indistinguishable from one
+ * whose writer has not started, so a reader would poll it forever. Writing
+ * the tombstone first and deleting afterwards turns the stream into a
+ * definite, empty, finished answer — the local analogue of the expiry error a
+ * server-side read of a purged stream raises.
+ *
+ * The ordering is the point: the tombstone makes the data unreadable strictly
+ * before the deletes make it unrecoverable, so no reader can be mid-walk over
+ * a chunk file that is disappearing under it.
+ *
+ * The run → streams mapping is left alone. The stream still exists; only what
+ * was in it is gone.
+ *
+ * Failures are logged and skipped, never thrown: this runs after the run is
+ * already terminal, where nothing retries, and a stream that resists cleanup
+ * must not fail the run.
+ */
+export async function purgeRunStreamData(
+  basedir: string,
+  runId: string,
+  tag?: string
+): Promise<void> {
+  const chunksBaseDir = path.join(basedir, 'streams', 'chunks');
+  const tagSuffix = tag ? `.${tag}` : '';
+  let names: string[];
+  try {
+    assertSafeEntityId('runId', runId);
+    const mapping = await readJSONWithFallback(
+      basedir,
+      'streams/runs',
+      runId,
+      RunStreamsSchema,
+      tag
+    );
+    names = mapping?.streams ?? [];
+  } catch (error) {
+    logStreamPurgeFailure(`streams of ${runId}`, error);
+    return;
+  }
+
+  for (const name of names) {
+    try {
+      const dir = chunkDirForStream(chunksBaseDir, name);
+      await write(
+        path.join(dir, `${PURGED_STREAM_TOMBSTONE_ID}${tagSuffix}.bin`),
+        serializeChunk({ chunk: Buffer.from([]), eof: true }),
+        { overwrite: true }
+      );
+      for (const entry of await listChunkEntries(dir)) {
+        if (entry.startsWith(PURGED_STREAM_TOMBSTONE_ID)) continue;
+        if (!entry.endsWith('.bin') && !entry.endsWith('.json')) continue;
+        await withWindowsRetry(() => fs.unlink(path.join(dir, entry))).catch(
+          (error: NodeJS.ErrnoException) => {
+            if (error.code !== 'ENOENT') logStreamPurgeFailure(entry, error);
+          }
+        );
+      }
+    } catch (error) {
+      logStreamPurgeFailure(name, error);
+    }
+  }
+}
+
+function logStreamPurgeFailure(target: string, error: unknown): void {
+  console.warn(
+    `[world-local] Failed to purge stream data for ${target}:`,
+    error instanceof Error ? error.message : error
+  );
 }
 
 export function createStreamer(basedir: string, tag?: string): Streamer {
@@ -378,7 +478,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             continue;
           }
 
-          // Collected enough data chunks — peek at the next file for EOF/hasMore
+          // Collected enough data chunks: peek at the next file for EOF/hasMore
           if (resultChunks.length >= limit) {
             if (isEofByte(await readFirstByte(filePath))) {
               streamDone = true;
@@ -450,8 +550,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         // Tears down everything the reader holds open: both emitter listeners
         // and the filesystem poll interval. Assigned once listeners are wired
         // up in start(); called on cancel() and on terminal (EOF/close) paths.
-        // Kept robust (unconditional) so a cancel() while still reading from
-        // disk can't leak a listener/poll — a signal-bearing step opens one of
+        // Kept unconditional so a cancel() while still reading from
+        // disk can't leak a listener/poll: a signal-bearing step opens one of
         // these readers per invocation, so any leak accumulates fast.
         let teardown = () => {};
         let pollInterval: ReturnType<typeof setInterval> | null = null;
@@ -641,7 +741,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
 
             // If the reader was already cancelled/closed while we were reading
             // from disk above (start() yields at every await), don't arm the
-            // poll — cancel()'s teardown ran before this point and would leave
+            // poll: cancel()'s teardown ran before this point and would leave
             // the freshly-created interval orphaned.
             if (streamClosed) {
               teardown();

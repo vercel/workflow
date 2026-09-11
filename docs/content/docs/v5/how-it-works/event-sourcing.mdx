@@ -1,5 +1,5 @@
 ---
-title: Event Sourcing
+title: Event sourcing
 description: Learn how Workflow SDK uses event sourcing internally for debugging and observability.
 type: conceptual
 summary: Understand the event log that powers workflow replay and debugging.
@@ -10,14 +10,12 @@ related:
 ---
 
 <Callout>
-This guide explores how the Workflow SDK uses event sourcing internally. Understanding these concepts is helpful for debugging and building observability tools, but is not required to use workflows. For getting started with workflows, see the [getting started](/docs/getting-started) guides for your framework.
+Workflow SDK uses event sourcing internally for debugging and observability tools. To start using workflows, see the [getting started](/docs/getting-started) guide for your framework.
 </Callout>
 
 The Workflow SDK uses event sourcing to track all state changes in workflow executions. Every mutation creates an event that is persisted to the event log, and entity state is derived by replaying these events.
 
-This page explains the event sourcing model and entity lifecycles.
-
-## Event Sourcing Overview
+## Event sourcing overview
 
 Event sourcing is a persistence pattern where state changes are stored as a sequence of events rather than by updating records in place. The current state of any entity is reconstructed by replaying its events from the beginning.
 
@@ -35,15 +33,15 @@ In the Workflow SDK, the following entity types are managed through events:
 - **Hooks**: Suspension points that can receive external data (materialized in storage)
 - **Waits**: Sleep or delay operations (materialized in storage)
 
-## Entity Lifecycles
+## Entity lifecycles
 
-Each entity type follows a specific lifecycle defined by the events that can affect it. Events transition entities between states, and certain states are terminal—once reached, no further transitions are possible.
+Each entity type follows a specific lifecycle defined by the events that can affect it. Events transition entities between states. Once an entity reaches a terminal state, no further transitions are possible.
 
 <Callout type="info">
 In the diagrams below, <span style={{color: '#8b5cf6', fontWeight: 'bold'}}>purple nodes</span> indicate terminal states that cannot be transitioned out of.
 </Callout>
 
-### Run Lifecycle
+### Run lifecycle
 
 A run represents a single execution of a workflow function. Runs begin in `pending` state when created, transition to `running` when execution starts, and end in one of three terminal states.
 
@@ -67,9 +65,9 @@ flowchart TD
 - `running`: Actively executing workflow code
 - `completed`: Finished successfully with an output value
 - `failed`: Terminated due to an unrecoverable error
-- `cancelled`: Explicitly cancelled by the user or system
+- `cancelled`: Explicitly canceled by the user or system
 
-### Step Lifecycle
+### Step lifecycle
 
 A step represents a single invocation of a step function. Steps can retry on failure, either transitioning back to `pending` via `step_retrying` or being re-executed directly with another `step_started` event.
 
@@ -94,7 +92,7 @@ flowchart TD
 - `cancelled`: Reserved for future use (not currently emitted)
 
 <Callout type="info">
-The `step_retrying` event is optional. Steps can retry without it - the retry mechanism works regardless of whether this event is emitted. You may see back-to-back `step_started` events in logs when a step retries after a timeout or when the error is not explicitly captured. See [Errors and Retries](/docs/foundations/errors-and-retries) for more on how retries work.
+The `step_retrying` event is optional. Steps can retry without it, regardless of whether the event is emitted. You may see consecutive `step_started` events when a step retries after a timeout, when the error isn't explicitly captured, or when concurrent replays each commit one. See [Duplicate events](#duplicate-events) and [Errors and retries](/docs/foundations/errors-and-retries) for more information.
 </Callout>
 
 When present, the `step_retrying` event moves a step back to `pending` state and records the error that caused the retry. This provides two benefits:
@@ -102,7 +100,7 @@ When present, the `step_retrying` event moves a step back to `pending` state and
 - **Cleaner observability**: The event log explicitly shows retry transitions rather than consecutive `step_started` events
 - **Error history**: The error that triggered the retry is preserved for debugging
 
-### Hook Lifecycle
+### Hook lifecycle
 
 A hook represents a suspension point that can receive external data, created by [`createHook()`](/docs/api-reference/workflow/create-hook). Hooks enable workflows to pause and wait for external events, user interactions, or HTTP requests. Webhooks (created with [`createWebhook()`](/docs/api-reference/workflow/create-webhook)) are a higher-level abstraction built on hooks that adds automatic HTTP request/response handling.
 
@@ -125,15 +123,15 @@ flowchart TD
 - `disposed`: No longer accepting payloads
 - `conflicted`: Hook creation failed because the token is already in use by another workflow
 
-Unlike other entities, hooks don't have a `status` field—the states above are conceptual. When a `hook_disposed` event is created, the hook record is removed rather than updated.
+Unlike other entities, hooks don't have a `status` field. The states above are conceptual. When a `hook_disposed` event is created, the hook record is removed rather than updated.
 
-While a hook is active, its token is reserved and cannot be used by other workflows. If a workflow attempts to create a hook with a token reserved by another run — either by an active hook or by `experimental_minRetention` after its run ended — a `hook_conflict` event is recorded instead of `hook_created`. Current worlds include the token and the run ID that owns it, though older persisted events or world implementations may only include the token. This causes `hook.getConflict()` to resolve with the conflicting run and the hook's payload promise to reject with a `HookConflictError`, which you can detect with `HookConflictError.is(error)`. See the [hook-conflict error](/docs/errors/hook-conflict) documentation for more details.
+While a hook is active, its token is reserved and cannot be used by other workflows. If a workflow attempts to create a hook with a token reserved by another run, either by an active hook or by `experimental_minRetention` after its run ended, a `hook_conflict` event is recorded instead of `hook_created`. Current Worlds include the token and the run ID that owns it, though older persisted events or World implementations may only include the token. This causes `hook.getConflict()` to resolve with the conflicting run and the hook's payload promise to reject with a `HookConflictError`, which you can detect with `HookConflictError.is(error)`. See the [hook-conflict error](/docs/errors/hook-conflict) documentation for more details.
 
-When a workflow ends, its Hooks can no longer be resumed. They are normally removed and their tokens become available again. With `experimental_minRetention`, a Hook remains readable and its token remains unavailable until retention ends. A `hook_disposed` event removes the Hook and makes its token available immediately.
+When a workflow ends, its hooks can no longer be resumed. They are normally removed, and their tokens become available again. With `experimental_minRetention`, a hook remains readable, and its token remains unavailable until retention ends. A `hook_disposed` event removes the hook and makes its token available immediately.
 
-See [Hooks & Webhooks](/docs/foundations/hooks) for more on how hooks and webhooks work.
+See [Hooks and webhooks](/docs/foundations/hooks) for more on how hooks and webhooks work.
 
-### Wait Lifecycle
+### Wait lifecycle
 
 A wait represents a sleep operation created by [`sleep()`](/docs/api-reference/workflow/sleep). Waits track when a delay period has elapsed.
 
@@ -151,10 +149,10 @@ flowchart TD
 - `completed`: Delay period has elapsed, workflow can resume
 
 <Callout type="info">
-Like Runs, Steps, and Hooks, waits are materialized as entities in storage. When a `wait_created` event is processed, a wait entity is created with status `waiting`. When a `wait_completed` event is processed, the wait entity is atomically transitioned to `completed` — this guarantees that a wait can only be completed exactly once, even if multiple concurrent invocations attempt to complete it simultaneously.
+Like runs, steps, and hooks, waits are materialized as entities in storage. Processing a `wait_created` event creates a wait entity with the `waiting` status. Processing a `wait_completed` event atomically transitions the wait entity to `completed`. This process guarantees that a wait can only be completed once, even if multiple concurrent invocations attempt to complete it simultaneously.
 </Callout>
 
-## Event Types Reference
+## Event types reference
 
 Events are categorized by the entity type they affect. Each event contains metadata including a timestamp and a `correlationId` that links the event to a specific entity:
 
@@ -163,7 +161,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 - Wait events use the `waitId` as the correlation ID
 - Run events do not require a correlation ID since the `runId` itself identifies the entity
 
-### Run Events
+### Run events
 
 | Event | Description |
 |-------|-------------|
@@ -173,7 +171,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 | `run_failed` | Transitions the run to `failed` state with error details and optional error code. |
 | `run_cancelled` | Transitions the run to `cancelled` state. Can be triggered from `pending` or `running` states. |
 
-### Step Events
+### Step events
 
 | Event | Description |
 |-------|-------------|
@@ -183,7 +181,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 | `step_failed` | Transitions the step to `failed` state with error details. The step will not be retried. |
 | `step_retrying` | (Optional) Transitions the step back to `pending` state for retry. Contains the error that caused the retry and optional delay before the next attempt. When not emitted, retries appear as consecutive `step_started` events. |
 
-### Hook Events
+### Hook events
 
 | Event | Description |
 |-------|-------------|
@@ -192,14 +190,20 @@ Events are categorized by the entity type they affect. Each event contains metad
 | `hook_received` | Records that a payload was delivered to the hook. The hook remains `active` and can receive more payloads. |
 | `hook_disposed` | Deletes the hook from storage (conceptually transitioning to `disposed` state). The token is released for reuse by future workflows. |
 
-### Wait Events
+### Wait events
 
 | Event | Description |
 |-------|-------------|
 | `wait_created` | Creates a new wait in `waiting` state. Contains the timestamp when the wait should complete. |
 | `wait_completed` | Transitions the wait to `completed` state when the delay period has elapsed. |
 
-## Terminal States
+### System events
+
+| Event | Description |
+|-------|-------------|
+| `noop` | Seals an abandoned log position (`specVersion` 7 and above). Only the backend writes this event; the create endpoints reject it. See [Sealed positions](#sealed-positions-noop-events). |
+
+## Terminal states
 
 Terminal states represent the end of an entity's lifecycle. Once an entity reaches a terminal state, no further events can transition it to another state.
 
@@ -207,7 +211,7 @@ Terminal states represent the end of an entity's lifecycle. Once an entity reach
 
 - `completed`: Workflow finished successfully
 - `failed`: Workflow encountered an unrecoverable error
-- `cancelled`: Workflow was explicitly cancelled
+- `cancelled`: Workflow was explicitly canceled
 
 **Step terminal states:**
 
@@ -225,7 +229,59 @@ Terminal states represent the end of an entity's lifecycle. Once an entity reach
 
 Attempting to create an event that would transition an entity out of a terminal state will result in an error. This prevents inconsistent state and ensures the integrity of the event log.
 
-## Event Correlation
+That guard sits on the write path. Replay handles duplicates that the write path permits, such as a second `step_created` for a step that isn't terminal.
+
+## Duplicate events
+
+Concurrent invocations replaying the same run share one event log. An invocation working from a stale prefix that predates another invocation's write can commit its own `step_created`, `step_started`, or `wait_created` for an entity that already has one in the log. These writes pass the terminal-state guard, so the write path commits them even when a backend validates transitions atomically with the insert.
+
+Those duplicates are committed but inert. The outcome was decided by the first event of its kind at a lower position in the log, and every replay reads that same event at that same position, so a later copy cannot change what the workflow observes.
+
+To prevent an inert copy from failing an otherwise healthy run, the runtime groups event types into **classes**. For each entity, it tracks which classes the current replay has consumed. If no registered consumer accepts an event and its class is already recorded for that entity, replay skips it instead of reporting a [replay divergence](/docs/errors/replay-divergence). After exhausting the recovery budget, a replay divergence ends the run with [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log).
+
+| Class | Event types |
+|-------|-------------|
+| `run_started` | `run_started` |
+| `step_created` | `step_created` |
+| `step_started` | `step_started` |
+| `step_retrying` | `step_retrying` |
+| `step_terminal` | `step_completed`, `step_failed` |
+| `wait_created` | `wait_created` |
+| `wait_completed` | `wait_completed` |
+| `hook_created` | `hook_created` |
+| `hook_disposed` | `hook_disposed` |
+
+Types that share a class are the mutually exclusive outcomes of one decision. A step either completes or fails, and the first recorded outcome counts. Classes are independent, so skipping one doesn't suppress another. A step whose result is already in the log has still recorded exactly one `step_created`, making a second one independently ignorable.
+
+The two hook classes cover the same shape of duplicate, and replay reaches them less often because the write path resolves most hook duplicates before they reach the log: a run re-creating a hook it already owns converges on the existing `hook_created` rather than appending a second one, and a second `hook_disposed` for the same hook is refused as an idempotent no-op. A log that holds either anyway is read past like any other repeat.
+
+The remaining event types belong to no class and are never skipped:
+
+- `hook_received`: a hook legitimately receives many payloads under one ID, so a second `hook_received` is not a repeat of anything.
+- `hook_conflict`: records a failed acquisition of a hook's token, which the same run can hit repeatedly over its lifetime as other runs take and release that token. The hook's own consumer stays registered and claims every copy it is offered, so a repeat is consumed rather than reaching the class check.
+- `attr_set`: written on every [`setAttributes()`](/docs/api-reference/workflow/set-attributes) call, so a second write of the same key is a new fact rather than a repeat.
+- `run_created` precedes every replay and is always consumed.
+- `run_completed`, `run_failed`, and `run_cancelled` never reach the check. The runtime exits before replaying the workflow body once the log holds one of them, so no consumer ever takes one and no class is ever recorded for them.
+
+Both kinds of skip are logged at `debug`, so neither reaches the console unless you run with `DEBUG=workflow:runtime:*`. A duplicate is a permanent part of the log. Every later replay reads it and reaches the same check, so an unconditional message would print once per replay for the life of the run without requiring action. A repeat that decides a class differently, such as a `step_failed` after a `step_completed` or the reverse, gets its own message. Unlike a recommit of the same outcome, both writers cannot be correct.
+
+The observability UI grays out events it can identify this way and shows the reason on hover. Its set is narrower than the runtime's because it reads the log without consumer state. A consumer for an entity that is still open can legitimately claim a repeat because each step retry writes another `step_started`. The UI marks a repeat only when no consumer can remain for it: after a terminal event for the same entity or at a second `run_started`, of which the log records one per run. The UI marks nothing on a partial log view, such as one page of a paginated list or search results, because identifying the first copy requires the entire log.
+
+## Sealed positions (noop events)
+
+Runs at `specVersion` 7 and above use a *sealed log*. The backend gives each write its position from a per-run sequencer **before** the write commits, so concurrent writers hold distinct positions and never race for a slot. New runs use this behavior by default. [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) returns a deployment to the previous scheme. Every runtime reads a sealed log regardless, and a run's version is fixed at creation, so changing the setting never affects an in-flight run. However, a writer can claim a position and then stop because of a crashed process or canceled transaction. This leaves a hole that no writer will fill, and a hole looks like an event the reader failed to load.
+
+The backend restores the dense log at read time by **sealing** these positions. Once a hole is provably abandoned, bounded by the commit time of later positions, the backend writes a `noop` event into it. Positions are assigned in order, so a committed later position proves how long the hole has been open. A `noop` occupies its position, and length-based completeness checks, cursors, and pagination all count it. It has no other effect:
+
+- It is **never offered to any consumer** during replay. The walk steps over it in the same synchronous pass that delivers the events around it, so its presence cannot perturb delivery order, promise scheduling, or which branch of a `Promise.all` resumes first.
+- It **never advances the deterministic clock**. A `noop`'s `createdAt` is the *sealer's* wall clock and can postdate events at higher positions. Allowing it to feed the replay clock would make a log containing a seal replay differently from one whose original writer filled the hole. This behavior uses the same rule and mechanism as skipped duplicates.
+- Its `correlationId` is `noop_` followed by the sealed position's zero-padded digits. This deterministic format ensures that two sealers racing for the same hole create an identical event that is recognizable in the log.
+
+A sealed position races its original writer at the same uniqueness fence as every other write. Losing that race means the real event landed first, so readers receive it instead. A live writer that gets sealed over derives a new position and commits there, using the same recovery as any other lost write race. Sealing can require a retry but cannot produce an incorrect log.
+
+`noop` is not user-creatable: it does not exist in the create schemas, and backends reject it on every create endpoint. Only a backend's own read path writes one.
+
+## Event correlation
 
 Events use a `correlationId` to link related events together. For step, hook, and wait events, the correlation ID identifies the specific entity instance:
 
@@ -241,7 +297,7 @@ This correlation enables:
 - Building timelines of entity lifecycle transitions
 - Debugging by tracing the complete history of any entity
 
-### Request ID Correlation
+### Request ID correlation
 
 Some `World` implementations also attach a `requestId` to events for platform-log correlation. This is different from `correlationId`:
 
@@ -273,7 +329,7 @@ All entities in the Workflow SDK use a consistent ID format: a 4-character prefi
 
 **Why this format?**
 
-- **Prefixes enable introspection**: Given any ID, you can immediately identify what type of entity it refers to. This makes debugging, logging, and cross-referencing entities across the system straightforward.
+- **Prefixes enable introspection**: Given any ID, you can immediately identify what type of entity it refers to. This helps you debug, log, and cross-reference entities across the system.
 
 - **Fixed-width bodies enable ordering**: Unlike UUIDs, these bodies sort lexicographically in creation order, so the event log is stored and retrieved in the correct order by sorting IDs alone. Slot numbers get that from counting at a fixed width, which makes string order the same as numeric order. ULIDs get it from the timestamp in their first 48 bits, which also makes a ULID's creation time recoverable from the ID itself.
 

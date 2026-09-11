@@ -1,4 +1,9 @@
-import type { Event, Step, WorkflowRun } from '@workflow/world';
+import {
+  type Event,
+  type Step,
+  slotToEventId,
+  type WorkflowRun,
+} from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import { checkInvariants, type InvariantInput } from './invariants.js';
 
@@ -25,7 +30,7 @@ function event(partial: Partial<Event> & Pick<Event, 'eventType'>): Event {
   counter++;
   return {
     runId: RUN,
-    eventId: `evnt_${String(counter).padStart(4, '0')}`,
+    eventId: slotToEventId(counter),
     createdAt: new Date(BASE.getTime() + counter),
     specVersion: 5,
     ...partial,
@@ -126,29 +131,6 @@ describe('invariants', () => {
         })
       )
     ).toContain('log.monotonic-order');
-  });
-
-  it('skips the order rule when the world makes no such promise', () => {
-    const a = event({
-      eventType: 'run_created',
-      eventData: {
-        deploymentId: 'd',
-        workflowName: 'w',
-        input: new Uint8Array(),
-      },
-    });
-    const b = event({ eventType: 'run_started' });
-    expect(
-      rules(
-        checkInvariants({
-          runId: RUN,
-          events: [a, b],
-          runs: [run('running')],
-          steps: [],
-          waits: [],
-        })
-      )
-    ).not.toContain('log.monotonic-order');
   });
 
   it('catches an out-of-order log', () => {

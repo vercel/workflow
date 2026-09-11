@@ -47,7 +47,7 @@ function reviveArrayBuffer(value: string): ArrayBuffer {
 
 // Creates a reducer for a built-in Error subclass whose serialized shape
 // is exactly { message, stack, cause? }. Matches by `value.name`
-// (instance property) for cross-realm + bundler-output robustness — see
+// (instance property) for cross-realm + bundler-output robustness; see
 // the host-side common.ts for full rationale.
 function makeNamedErrorSubclassReducer(subclassName: string) {
   return (
@@ -68,7 +68,7 @@ function makeNamedErrorSubclassReducer(subclassName: string) {
 // constructor on globalThis so the resulting object passes
 // `instanceof TypeError` etc. in the consuming realm. Falls back to
 // a base Error with the right `.name` if the constructor is not
-// available (defensive — built-ins always exist).
+// available (defensive: built-ins always exist).
 function makeNamedErrorSubclassReviver(subclassName: string) {
   return (value: { message: string; stack?: string; cause?: unknown }) => {
     const Cls = (globalThis as any)[subclassName];
@@ -198,10 +198,20 @@ export function getCommonReducers(): Partial<Reducers> {
       if ('cause' in value) reduced.cause = (value as any).cause;
       return reduced;
     },
+    StreamError: (value) => {
+      const base = makeNamedErrorSubclassReducer('StreamError')(value);
+      if (!base) return false;
+      const reduced: SerializableSpecial['StreamError'] = { ...base };
+      const status = (value as any).status;
+      const url = (value as any).url;
+      if (typeof status === 'number') reduced.status = status;
+      if (typeof url === 'string') reduced.url = url;
+      return reduced;
+    },
     SyntaxError: makeNamedErrorSubclassReducer('SyntaxError'),
     TypeError: makeNamedErrorSubclassReducer('TypeError'),
     URIError: makeNamedErrorSubclassReducer('URIError'),
-    // Base Error reducer — catch-all. Matched LAST after subclass-specific
+    // Base Error reducer: catch-all. Matched LAST after subclass-specific
     // reducers above. Preserves `name` so user Error subclasses without
     // dedicated reducers retain their identity through the round-trip.
     Error: (value) => {
@@ -228,7 +238,7 @@ export function getCommonReducers(): Partial<Reducers> {
         source: value.source,
         flags: value.flags,
       },
-    // Request/Response/Headers — serialize using the polyfill constructors
+    // Request/Response/Headers: serialize using the polyfill constructors
     Headers: (value) => {
       const H = (globalThis as any).Headers;
       if (!H || !(value instanceof H)) return false;
@@ -293,7 +303,7 @@ export function getCommonReducers(): Partial<Reducers> {
         const type = value[Symbol.for('WORKFLOW_STREAM_TYPE')];
         if (type) s.type = type;
         // Preserve wire framing so the step-side reviver can unframe
-        // byte streams (framed-v1) — dropping it turns a framed webhook
+        // byte streams (framed-v1); dropping it turns a framed webhook
         // body into raw length-prefixed bytes for the consumer.
         const framing = value[Symbol.for('WORKFLOW_STREAM_FRAMING')];
         if (framing) s.framing = framing;
@@ -331,7 +341,7 @@ export function getCommonReducers(): Partial<Reducers> {
     WorkflowFunction: (value) => {
       // Only match function references with a workflowId property (set by
       // the SWC compiler on workflow functions). Plain { workflowId } objects
-      // are NOT matched — this prevents infinite recursion since the reduced
+      // are NOT matched; this prevents infinite recursion since the reduced
       // form { workflowId } is a plain object, not a function.
       if (typeof value !== 'function') return false;
       const workflowId = (value as any).workflowId;
@@ -463,6 +473,27 @@ export function getCommonRevivers(): Partial<Revivers> {
       if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },
+    StreamError: (value) => {
+      const Cls = (globalThis as any)[
+        Symbol.for('@workflow/errors//StreamError')
+      ];
+      let error: Error;
+      if (typeof Cls === 'function') {
+        error = new Cls(value.message, {
+          ...('cause' in value ? { cause: value.cause } : {}),
+          status: value.status,
+          url: value.url,
+        });
+      } else {
+        error = new Error(value.message);
+        error.name = 'StreamError';
+        if ('cause' in value) (error as any).cause = value.cause;
+        if (value.status !== undefined) (error as any).status = value.status;
+        if (value.url !== undefined) (error as any).url = value.url;
+      }
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
     SyntaxError: makeNamedErrorSubclassReviver('SyntaxError'),
     TypeError: makeNamedErrorSubclassReviver('TypeError'),
     URIError: makeNamedErrorSubclassReviver('URIError'),
@@ -497,7 +528,7 @@ export function getCommonRevivers(): Partial<Revivers> {
       new Uint8ClampedArray(reviveArrayBuffer(value)),
     Uint16Array: (value: string) => new Uint16Array(reviveArrayBuffer(value)),
     Uint32Array: (value: string) => new Uint32Array(reviveArrayBuffer(value)),
-    // Web API types — revived as plain objects in the VM since the real
+    // Web API types: revived as plain objects in the VM since the real
     // constructors (Headers, Request, Response) are not available in QuickJS.
     // The workflow code can access the properties but not call Web API methods.
     Headers: (value) => {
@@ -517,7 +548,7 @@ export function getCommonRevivers(): Partial<Revivers> {
       return value;
     },
     Response: (value: any) => {
-      // Don't use Object.setPrototypeOf — devalue continues to set properties
+      // Don't use Object.setPrototypeOf: devalue continues to set properties
       // on the object after the reviver runs, and getter-only properties
       // (like 'ok') on the prototype would cause "no setter" errors.
       // Instead, copy methods directly onto the object.
@@ -538,11 +569,11 @@ export function getCommonRevivers(): Partial<Revivers> {
       const RS = (globalThis as any).ReadableStream;
       const stream = Object.create(RS ? RS.prototype : {});
       if (value && 'bodyInit' in value) {
-        // Body from Response/Request constructor — store the raw data
+        // Body from Response/Request constructor: store the raw data
         stream[Symbol.for('BODY_INIT')] = value.bodyInit;
       } else if (value && 'name' in value) {
-        // Named stream reference — preserve the name/type for re-serialization.
-        // Streams are opaque pointers in the VM — they can be passed to steps
+        // Named stream reference: preserve the name/type for re-serialization.
+        // Streams are opaque pointers in the VM; they can be passed to steps
         // but not consumed directly.
         stream[Symbol.for('WORKFLOW_STREAM_NAME')] = value.name;
         if (value.type) stream[Symbol.for('WORKFLOW_STREAM_TYPE')] = value.type;

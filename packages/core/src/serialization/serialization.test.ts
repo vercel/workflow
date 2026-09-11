@@ -1151,6 +1151,17 @@ describe('devalue codec', () => {
     expect(result).toEqual(value);
   });
 
+  it('should reject oversized sparse arrays while decoding', () => {
+    const payload = new TextEncoder().encode('[[-7,4294967295]]');
+
+    expect(() => devalueCodec.deserialize(payload, 'workflow')).toThrow(
+      /exceeds the maximum/
+    );
+    expect(() =>
+      devalueCodec.deserializeLegacy!([[-7, 4_294_967_295]], 'workflow')
+    ).toThrow(/exceeds the maximum/);
+  });
+
   it('should produce Uint8Array output from serialize', () => {
     const serialized = devalueCodec.serialize(42, 'workflow');
     expect(serialized).toBeInstanceOf(Uint8Array);

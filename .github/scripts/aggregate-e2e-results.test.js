@@ -52,6 +52,23 @@ function renderAggregate(files) {
   }
 }
 
+// Same, but the per-job summary one CI job posts for itself (no `--mode`).
+function renderJob(files) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-agg-'));
+  for (const [name, contents] of Object.entries(files)) {
+    fs.writeFileSync(path.join(dir, name), contents);
+  }
+  try {
+    return execFileSync(
+      process.execPath,
+      [SCRIPT, dir, '--job-name', 'E2E Python Conformance'],
+      { encoding: 'utf8' }
+    );
+  } catch (error) {
+    return error.stdout;
+  }
+}
+
 test('few failures list inline above a collapsed summary section', () => {
   const body = renderAggregate({
     'e2e-vercel-prod-nextjs-turbopack.json': resultJson('a', 40, [
@@ -128,4 +145,26 @@ test('Details by Category has no nested collapsibles', () => {
   assert.strictEqual(nestedDetails, 0, 'no nested <details> inside the block');
   assert.match(block, /\*\*❌ ▲ Vercel Production\*\*/);
   assert.match(block, /\*\*✅ 💻 Local Development\*\*/);
+});
+
+test('conformance declarations are not mistaken for result files', () => {
+  // Per-job mode, because that is where a stray file shows up: it lists one row
+  // per report file it found.
+  const body = renderJob({
+    'e2e-conformance-python.json': resultJson('a', 2),
+    // Both of these live in the repo, match `e2e-*.json`, and are conformance
+    // declarations rather than vitest reports.
+    'e2e-conformance.json': JSON.stringify({
+      language: 'python',
+      fixtures: ['nullByteWorkflow'],
+    }),
+    'e2e-conformance.example.json': JSON.stringify({ fixtures: [] }),
+  });
+
+  // The one real report is the only one found, so there is no by-file table at
+  // all. With the strays counted there was, listing them as 0/0/0 rows.
+  assert.doesNotMatch(body, /Results by File/);
+  assert.match(body, /\| \*\*Total\*\* \| \*\*2\*\* \|/);
+  assert.doesNotMatch(body, /e2e-conformance\.json/);
+  assert.doesNotMatch(body, /e2e-conformance\.example\.json/);
 });

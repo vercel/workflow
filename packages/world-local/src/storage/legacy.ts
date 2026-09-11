@@ -23,6 +23,12 @@ import {
   runTerminalMarkerPath,
 } from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
+import {
+  purgeRunEntityData,
+  purgesUserDataOnFinish,
+  withRunPayloadsPurged,
+} from './run-retention.js';
+import { signalRunTerminal } from './run-status-signal.js';
 
 /**
  * Terminal-run guard + publish for a legacy `hook_received`, mirroring the
@@ -57,7 +63,7 @@ async function publishLegacyHookReceived(
     }
     const promoted = await promoteExclusive(stagedPath, eventPath);
     if (promoted !== 'linked') {
-      // 'missing': a terminal transition reaped the staged file — the
+      // 'missing': a terminal transition reaped the staged file, the
       // atomic loss of the arbitration. 'exists' cannot happen for a
       // freshly generated ULID; treat it the same way rather than report
       // a publish that did not happen.
@@ -127,14 +133,38 @@ export async function handleLegacyEvent(
         updatedAt: now,
         attributes: currentRun.attributes,
       };
+      // Zero retention (`$retention: '0'`) on the legacy shortcut too.
+      //
+      // Believed unreachable: `start({ experimental_retention })` refuses to
+      // seed the attribute below spec version 4, and a legacy run is spec
+      // version 1. But that argument lives in another package, and the cost
+      // of not relying on it is one branch — so the guarantee is enforced
+      // here rather than reasoned about across a package boundary.
+      //
+      // Same ordering as the current-spec path: the run's own payloads and
+      // its `expiredAt` go in this one atomic replace, and everything else
+      // is deleted strictly afterwards. There is no terminal event to wait
+      // for here — this shortcut deliberately writes none.
+      const purged = purgesUserDataOnFinish(run.attributes);
+      const stored = purged ? withRunPayloadsPurged(run, now) : run;
       const runPath = resolveWithinBase(basedir, 'runs', `${runId}.json`);
-      await writeJSON(runPath, run, { overwrite: true });
+      await writeJSON(runPath, stored, { overwrite: true });
+      // Wake `runs.waitForTerminalStatus` waiters. This shortcut writes the
+      // run directly rather than through `writeRunUnderLifecycleLock`, so
+      // without this a legacy run's cancellation is only noticed by the
+      // backstop re-read.
+      signalRunTerminal(runId);
       await deleteAllHooksForRun(basedir, runId);
+      if (purged) {
+        // Legacy runs predate tags, so this is the untagged view (see the
+        // note on this function).
+        await purgeRunEntityData(basedir, runId, undefined);
+      }
       // Return without event (legacy behavior skips event storage)
       // Type assertion: EventResult expects WorkflowRun, filterRunData may return WorkflowRunWithoutData
       return {
         event: undefined,
-        run: filterRunData(run, resolveData) as WorkflowRun,
+        run: filterRunData(stored, resolveData) as WorkflowRun,
       };
     }
 
@@ -142,7 +172,7 @@ export async function handleLegacyEvent(
     case 'hook_received': {
       // Legacy: Store event only (no entity mutation)
       // - wait_completed: for replay purposes
-      // - hook_received: hooks exist via old system, just record the event
+      // - hook_received: hooks exist via the old system; record the event
       const eventId = `evnt_${monotonicUlid()}`;
       const now = new Date();
       const event: Event = {

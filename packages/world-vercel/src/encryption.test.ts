@@ -139,7 +139,10 @@ describe('fetchRunKey', () => {
       fetchRunKey(deploymentId, testProjectId, testRunId, {
         token: 'test-token',
       })
-    ).rejects.toThrow('HTTP 404');
+    ).rejects.toMatchObject({
+      message: expect.stringContaining('HTTP 404'),
+      status: 404,
+    });
   });
 });
 

@@ -670,6 +670,75 @@ describe('deterministic replay clock', () => {
     });
     expect(unwrapResult(r3.completed!.result)).toEqual(result);
   });
+
+  it('does not let a sealed-log noop move the clock', async () => {
+    // A noop's createdAt is the SEALER's wall clock, and a seal can happen
+    // long after the events at higher positions committed. Feeding it to the
+    // clock would make a log whose hole was sealed replay differently from
+    // the same log whose hole its own writer filled — and, because the clock
+    // is monotonic, would poison every later Date.now() in the run. The
+    // node:vm engine gets this from EventsConsumer's noop skip; this pins the
+    // same rule for the QuickJS event loop, which advances the clock in its
+    // own pass over the log.
+    const run = makeRun();
+
+    const probe = await runQuickJSWorkflow({
+      workflowCode: sleepTimingWorkflow,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [],
+    });
+    const waitCid = probe.suspended!.pendingOperations[0].correlationId;
+
+    const waitCreatedAt = new Date('2025-01-01T00:00:01Z');
+    const waitCompletedAt = new Date('2025-01-01T00:00:11Z');
+    const sealedAt = new Date('2025-01-01T01:00:00Z');
+
+    // The hole sits BETWEEN wait_created and wait_completed, which is where a
+    // fanout leaves one: the position was handed out, its writer died, and the
+    // events above it committed on their own clocks.
+    const withSeal = [
+      runCreatedEvent(run),
+      {
+        eventId: 'evnt_002',
+        runId: run.runId,
+        eventType: 'wait_created' as const,
+        correlationId: waitCid,
+        eventData: { resumeAt: waitCompletedAt },
+        createdAt: waitCreatedAt,
+      },
+      {
+        eventId: 'evnt_003',
+        runId: run.runId,
+        eventType: 'noop' as const,
+        correlationId: 'noop_00000000000000000000000003',
+        eventData: { sealed: true },
+        createdAt: sealedAt,
+      },
+      {
+        eventId: 'evnt_004',
+        runId: run.runId,
+        eventType: 'wait_completed' as const,
+        correlationId: waitCid,
+        createdAt: waitCompletedAt,
+      },
+    ];
+
+    const sealed = await runQuickJSWorkflow({
+      workflowCode: sleepTimingWorkflow,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: withSeal as never,
+    });
+    const result = unwrapResult(sealed.completed!.result) as {
+      startTime: number;
+      endTime: number;
+    };
+
+    // The wait completed at its own timestamp, not the seal's.
+    expect(result.endTime).toBe(+waitCompletedAt);
+    expect(result.endTime).toBeLessThan(+sealedAt);
+  });
 });
 
 describe('AbortController (hook-backed)', () => {
@@ -797,6 +866,86 @@ describe('AbortController (hook-backed)', () => {
     expect(value.aborted).toBe(true);
     expect(value.reason).toBe('stop it');
     expect(value.observed).toEqual(['listener:stop it']);
+  });
+
+  it('carries the system hook token into the completion-drain disposal', async () => {
+    // The completion drain synthesizes a `hook_dispose` for a durable system
+    // hook the workflow never aborted, and the entrypoint turns that op into a
+    // `hook_disposed` event. The op therefore has to carry the token: the
+    // node:vm engine sends one here (its drain marks the queue item disposed
+    // and reuses it, token included), and a world that releases a hook's token
+    // claim alongside the hook needs to be told which token this is.
+    const code = `
+      var checkStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//check");
+      async function workflow() {
+        // Never aborted and never explicitly disposed: exactly the hook the
+        // completion drain has to clean up.
+        var controller = new AbortController();
+        await checkStep(1);
+        return controller.signal.aborted;
+      }
+      workflow.workflowId = "workflow//test//workflow";
+      globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+    `;
+    const run = makeRun();
+
+    const r1 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [],
+    });
+    const hookOp = r1.suspended!.pendingOperations.find(
+      (o) => o.type === 'hook'
+    ) as any;
+    const stepOp = r1.suspended!.pendingOperations.find(
+      (o) => o.type === 'step'
+    ) as any;
+    expect(hookOp.isSystem).toBe(true);
+    expect(hookOp.token).toBeTruthy();
+
+    // Replay with the hook durably created and the step done, so the workflow
+    // returns and the drain runs.
+    const r2 = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      events: [
+        runCreatedEvent(run),
+        {
+          eventId: 'evnt_001',
+          runId: run.runId,
+          eventType: 'hook_created',
+          correlationId: hookOp.correlationId,
+          eventData: { token: hookOp.token, isWebhook: false, isSystem: true },
+          createdAt: new Date('2025-01-01T00:00:01Z'),
+        },
+        {
+          eventId: 'evnt_002',
+          runId: run.runId,
+          eventType: 'step_created',
+          correlationId: stepOp.correlationId,
+          eventData: { stepName: 'step//test//check' },
+          createdAt: new Date('2025-01-01T00:00:02Z'),
+        },
+        {
+          eventId: 'evnt_003',
+          runId: run.runId,
+          eventType: 'step_completed',
+          correlationId: stepOp.correlationId,
+          eventData: { output: serialize(1) },
+          createdAt: new Date('2025-01-01T00:00:03Z'),
+        },
+      ],
+    });
+
+    expect(r2.completed).toBeDefined();
+    const disposal = r2.completed!.drainOperations?.find(
+      (o) => o.type === 'hook_dispose'
+    ) as any;
+    expect(disposal).toBeDefined();
+    expect(disposal.correlationId).toBe(hookOp.correlationId);
+    expect(disposal.token).toBe(hookOp.token);
   });
 
   it('AbortSignal statics work in the VM', async () => {

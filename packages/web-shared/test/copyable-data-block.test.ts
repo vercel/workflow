@@ -7,9 +7,11 @@ import {
   serializeForClipboard,
 } from '../src/components/sidebar/copyable-data-block.js';
 import {
+  DataInspector,
   DecryptClickContext,
   type DecryptClickContextValue,
 } from '../src/components/ui/data-inspector.js';
+import { DecryptButton } from '../src/components/ui/decrypt-button.js';
 
 /**
  * `serializeForClipboard` is the helper behind the copy button on the JSON-style
@@ -138,5 +140,56 @@ describe('EncryptedDataBlock', () => {
 
     expect(markup).toContain('Decrypt');
     expect(markup).toContain('disabled=""');
+  });
+
+  it('disables the Decrypt button with a reason when decryption is unavailable', () => {
+    const ctx: DecryptClickContextValue = {
+      onDecrypt: () => {},
+      isDecrypting: false,
+      isDecryptDisabled: true,
+      decryptDisabledReason: 'Requires decrypt access',
+    };
+
+    const markup = renderToStaticMarkup(
+      createElement(
+        DecryptClickContext.Provider,
+        { value: ctx },
+        createElement(EncryptedDataBlock)
+      )
+    );
+
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain('title="Requires decrypt access"');
+  });
+});
+
+describe('decrypt controls', () => {
+  it('disables the shared Decrypt button with a reason', () => {
+    const markup = renderToStaticMarkup(
+      createElement(DecryptButton, {
+        disabled: true,
+        disabledReason: 'Requires decrypt access',
+      })
+    );
+
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain('title="Requires decrypt access"');
+  });
+
+  it('disables inline Decrypt buttons with a reason', () => {
+    // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
+    const Encrypted = { Encrypted: function () {} }.Encrypted;
+    const encryptedMarker = Object.create(Encrypted.prototype);
+    const markup = renderToStaticMarkup(
+      createElement(DataInspector, {
+        data: encryptedMarker,
+        onDecrypt: () => {},
+        isDecryptDisabled: true,
+        decryptDisabledReason: 'Requires decrypt access',
+      })
+    );
+
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain('title="Requires decrypt access"');
   });
 });

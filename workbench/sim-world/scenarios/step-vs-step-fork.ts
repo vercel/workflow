@@ -2,9 +2,9 @@ import type { ScenarioSpec } from '@workflow/world-sim';
 
 export const scenario: ScenarioSpec = {
   id: 'step-vs-step-fork',
-  name: 'corrupt: two racing STEPS, no hook anywhere',
+  name: 'two racing STEPS, no hook anywhere',
   description:
-    'Answers "does this need an out-of-band event type?" — no. The fork is ' +
+    'Green since slot-numbered event ids: a read missing an event the log already holds is a gap in a numbered sequence, so the runtime re-reads and decides the fork the way the log records it. Kept as the regression test for that. Answers "does this need an out-of-band event type?" — no. The fork is ' +
     "decided by two of the run's own step_completed events, and withholding " +
     'one of them from the deciding read is enough. Two inline step bodies in ' +
     'ONE invocation are already two concurrent writers to the same log; no ' +

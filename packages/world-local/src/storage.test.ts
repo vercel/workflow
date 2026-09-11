@@ -9,6 +9,7 @@ import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fsModule from './fs.js';
 import { promoteExclusive, writeExclusive, writeJSON } from './fs.js';
+import { MAX_CACHED_EVENT_ENTRIES } from './storage/events-storage.js';
 import * as helpers from './storage/helpers.js';
 import {
   hashToken,
@@ -25,6 +26,7 @@ import {
   createStep,
   createWait,
   disposeHook,
+  permissionEnforcement,
   updateRun,
   updateStep,
 } from './test-helpers.js';
@@ -1281,13 +1283,30 @@ describe('Storage', () => {
         expect(fileExists).toBe(true);
       });
 
+      // Sized one event past the event cache so the preload cannot be served
+      // from cached entries alone and has to go back to the JSON files for at
+      // least one of them. Below the ceiling this still passes, and would stop
+      // covering that fallback, so the count tracks the ceiling rather than
+      // restating it.
+      //
+      // Those writes are sequential and each one is a file write, which is the
+      // whole cost of the test: ~1s on a developer machine, but two minutes on
+      // the Windows CI runner, where per-write latency is orders of magnitude
+      // worse. Batching them with `Promise.all` is slower, not faster: writers
+      // then contend for the same event slot and re-probe. Hence the timeout
+      // well past any other test in this file.
       it('returns the complete preload when run_started is retried', async () => {
+        const total = MAX_CACHED_EVENT_ENTRIES + 1;
+
         await storage.events.create(testRunId, {
           eventType: 'run_started',
           specVersion: SPEC_VERSION_CURRENT,
         });
 
-        for (let index = 0; index < 999; index++) {
+        // `run_created` from the fixture and the first `run_started` are
+        // already on the log, and the retry below is idempotent and appends
+        // nothing, so the fill is two short of `total`.
+        for (let index = 0; index < total - 2; index++) {
           await storage.events.create(testRunId, {
             eventType: 'attr_set',
             specVersion: SPEC_VERSION_CURRENT,
@@ -1304,16 +1323,16 @@ describe('Storage', () => {
         });
         assert(preloaded.events);
         assert(preloaded.cursor);
-        expect(preloaded.events).toHaveLength(1001);
+        expect(preloaded.events).toHaveLength(total);
         expect(preloaded.hasMore).toBe(false);
 
         const all = await storage.events.list({
           runId: testRunId,
-          pagination: { sortOrder: 'asc', limit: 2000 },
+          pagination: { sortOrder: 'asc', limit: total * 2 },
         });
 
         expect(preloaded.events).toEqual(all.data);
-      }, 120_000);
+      }, 300_000);
 
       it('returns a resumable partial preload at the event ceiling', async () => {
         await storage.events.create(testRunId, {
@@ -1638,6 +1657,62 @@ describe('Storage', () => {
           )
         ).toBe(true);
         expect(result.hasMore).toBe(false);
+      });
+
+      it('returns a delta for a create that committed hook_conflict', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        await storage.events.create(testRunId, {
+          eventType: 'hook_created' as const,
+          correlationId: 'corr_hook_owner',
+          eventData: { token: 'delta-conflict-token' },
+        });
+        const sinceCursor = await currentCursor();
+
+        // A create whose token is taken commits `hook_conflict` and returns
+        // early, ahead of the shared delta block — but the conflict is the
+        // event the create's awaiters settle on, so the caller has to get it
+        // here or pay a re-invocation to read back an event this response
+        // already held.
+        const result = await storage.events.create(
+          testRunId,
+          {
+            eventType: 'hook_created' as const,
+            correlationId: 'corr_hook_loser',
+            eventData: { token: 'delta-conflict-token' },
+          },
+          { sinceCursor }
+        );
+
+        expect(result.event?.eventType).toBe('hook_conflict');
+        const expected = await storage.events.list({
+          runId: testRunId,
+          pagination: { sortOrder: 'asc', cursor: sinceCursor },
+        });
+        expect(result.events?.map((e) => e.eventId)).toEqual(
+          expected.data.map((e) => e.eventId)
+        );
+        expect(result.events?.at(-1)?.eventType).toBe('hook_conflict');
+        expect(result.cursor).toBe(expected.cursor);
+        expect(result.hasMore).toBe(expected.hasMore);
+      });
+
+      it('does not return a delta on a hook_conflict when sinceCursor is omitted', async () => {
+        await updateRun(storage, testRunId, 'run_started');
+        await storage.events.create(testRunId, {
+          eventType: 'hook_created' as const,
+          correlationId: 'corr_hook_owner2',
+          eventData: { token: 'no-delta-conflict-token' },
+        });
+
+        const result = await storage.events.create(testRunId, {
+          eventType: 'hook_created' as const,
+          correlationId: 'corr_hook_loser2',
+          eventData: { token: 'no-delta-conflict-token' },
+        });
+
+        expect(result.event?.eventType).toBe('hook_conflict');
+        expect(result.events).toBeUndefined();
+        expect(result.cursor).toBeUndefined();
       });
     });
 
@@ -4743,6 +4818,71 @@ describe('Storage', () => {
     });
   });
 
+  describe('terminal-run step_started fencing', () => {
+    describe.each([
+      ['run_completed', { output: new Uint8Array([3]) }],
+      ['run_failed', { error: 'run failed' }],
+      ['run_cancelled', undefined],
+    ] as const)('%s', (terminalEvent, terminalData) => {
+      it.each([
+        ['step_completed', { result: new Uint8Array([1]) }, 'completed'],
+        ['step_failed', { error: 'step failed' }, 'failed'],
+      ] as const)('rejects restarting a running step but accepts %s', async (stepEvent, stepData, stepStatus) => {
+        const run = await createRun(storage, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
+        await updateRun(storage, run.runId, 'run_started');
+        const stepId = 'step_in_progress';
+        await createStep(storage, run.runId, {
+          stepId,
+          stepName: 'test-step',
+          input: new Uint8Array(),
+        });
+        const started = await updateStep(
+          storage,
+          run.runId,
+          stepId,
+          'step_started'
+        );
+        expect(started.status).toBe('running');
+        const terminal = await storage.events.create(run.runId, {
+          eventType: terminalEvent,
+          eventData: terminalData,
+        });
+        const eventsBefore = await storage.events.list({ runId: run.runId });
+
+        // Redelivery must not claim another attempt, even while the step is running.
+        await expect(
+          updateStep(storage, run.runId, stepId, 'step_started')
+        ).rejects.toMatchObject({ name: 'RunExpiredError' });
+        expect(await storage.steps.get(run.runId, stepId)).toEqual(started);
+        expect(await storage.events.list({ runId: run.runId })).toEqual(
+          eventsBefore
+        );
+
+        const finished = await updateStep(
+          storage,
+          run.runId,
+          stepId,
+          stepEvent,
+          stepData
+        );
+        expect(finished.status).toBe(stepStatus);
+        expect(finished.attempt).toBe(started.attempt);
+        expect(await storage.steps.get(run.runId, stepId)).toEqual(finished);
+        expect(await storage.runs.get(run.runId)).toEqual(terminal.run);
+        const eventsAfter = await storage.events.list({ runId: run.runId });
+        expect(eventsAfter.data).toHaveLength(eventsBefore.data.length + 1);
+        expect(eventsAfter.data.at(-1)).toMatchObject({
+          eventType: stepEvent,
+          correlationId: stepId,
+        });
+      });
+    });
+  });
+
   describe('allowed operations on terminal runs', () => {
     it('should allow step_completed on completed run for in-progress step', async () => {
       const run = await createRun(storage, {
@@ -5381,8 +5521,10 @@ describe('Storage', () => {
     });
 
     // chmod-based permission simulation is a no-op for directories on
-    // Windows, so these two abort-path tests only run on POSIX platforms.
-    it.skipIf(process.platform === 'win32')(
+    // Windows, and is bypassed outright by root / CAP_DAC_OVERRIDE, so these
+    // two abort-path tests only run where the permission bits are actually
+    // enforced — see `permissionEnforcement`.
+    it.skipIf(!permissionEnforcement.write)(
       'should abort the terminal transition when the staging reap fails',
       async () => {
         // The reap is the correctness-critical half of the arbitration: if
@@ -5431,7 +5573,7 @@ describe('Storage', () => {
       }
     );
 
-    it.skipIf(process.platform === 'win32')(
+    it.skipIf(!permissionEnforcement.read)(
       'should abort the terminal transition when the dominance scan fails',
       async () => {
         // mintRunDominantEventKey's ordering guarantee depends on seeing

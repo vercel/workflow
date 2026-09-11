@@ -78,7 +78,7 @@ export function clampViewportToRoot(
 }
 
 // ---------------------------------------------------------------------------
-// Wheel gestures — shared between the timeline and the minimap
+// Wheel gestures: shared between the timeline and the minimap
 // ---------------------------------------------------------------------------
 
 /** Convert a wheel delta to pixel units (line-mode deltas arrive in lines). */
@@ -164,7 +164,7 @@ export function computeTimeMarkers(
 }
 
 // ---------------------------------------------------------------------------
-// Span gaps — time deltas between consecutive spans (Alt-key overlay)
+// Span gaps: time deltas between consecutive spans (Alt-key overlay)
 // ---------------------------------------------------------------------------
 
 export interface SpanGap {
@@ -254,8 +254,8 @@ export function computeSpanDelta(
   const deltaMs = laterStart - originMs;
 
   // Entirely outside the viewport. Compared in time-space (not clamped
-  // fractions) so a zero-delta point sitting exactly on a viewport edge —
-  // e.g. the root span selected at default zoom — still renders.
+  // fractions) so a zero-delta point sitting exactly on a viewport edge
+  // (e.g. the root span selected at default zoom) still renders.
   if (laterStart < viewStart || originMs > viewEnd) {
     return null;
   }
@@ -279,59 +279,45 @@ export function computeSpanDelta(
 // Resource colors
 // ---------------------------------------------------------------------------
 
-export const RESOURCE_COLORS: Record<
+export const RESOURCE_CLASS_NAMES: Record<
   string,
   {
-    bg: string;
-    border: string;
-    errorBg?: string;
-    errorBorder?: string;
+    className: string;
+    errorClassName?: string;
   }
 > = {
   run: {
-    bg: 'var(--ds-blue-200)',
-    border: 'var(--ds-blue-500)',
-    errorBg: 'var(--ds-red-200)',
-    errorBorder: 'var(--ds-red-500)',
+    className: 'border-blue-500 bg-blue-200',
+    errorClassName: 'border-red-500 bg-red-200',
   },
   step: {
-    bg: 'var(--ds-green-200)',
-    border: 'var(--ds-green-500)',
-    errorBg: 'var(--ds-red-200)',
-    errorBorder: 'var(--ds-red-500)',
+    className: 'border-green-500 bg-green-200',
+    errorClassName: 'border-red-500 bg-red-200',
   },
-  // Passive spans (hooks) stay gray — matches event-list icons and the minimap.
+  // Passive spans (hooks) stay gray; matches event-list icons and the minimap.
   hook: {
-    bg: 'var(--ds-gray-200)',
-    border: 'var(--ds-gray-500)',
-    errorBg: 'var(--ds-red-200)',
-    errorBorder: 'var(--ds-red-500)',
+    className: 'border-gray-500 bg-gray-200',
+    errorClassName: 'border-red-500 bg-red-200',
   },
   sleep: {
-    bg: 'var(--ds-purple-200)',
-    border: 'var(--ds-purple-500)',
-    errorBg: 'var(--ds-red-200)',
-    errorBorder: 'var(--ds-red-500)',
+    className: 'border-purple-500 bg-purple-200',
+    errorClassName: 'border-red-500 bg-red-200',
   },
   default: {
-    bg: 'var(--ds-gray-200)',
-    border: 'var(--ds-gray-500)',
-    errorBg: 'var(--ds-red-200)',
-    errorBorder: 'var(--ds-red-500)',
+    className: 'border-gray-500 bg-gray-200',
+    errorClassName: 'border-red-500 bg-red-200',
   },
 };
 
-export function getResourceColor(resource: string): {
-  bg: string;
-  border: string;
-  errorBg?: string;
-  errorBorder?: string;
+export function getResourceClassNames(resource: string): {
+  className: string;
+  errorClassName?: string;
 } {
-  return RESOURCE_COLORS[resource] ?? RESOURCE_COLORS.default;
+  return RESOURCE_CLASS_NAMES[resource] ?? RESOURCE_CLASS_NAMES.default;
 }
 
 // ---------------------------------------------------------------------------
-// Span segments — split a timeline bar into colored sections by event state
+// Span segments: split a timeline bar into colored sections by event state
 // ---------------------------------------------------------------------------
 
 export type SegmentStatus =
@@ -617,11 +603,14 @@ export function computeSpanSegments(span: Span): Segment[] {
 }
 
 // ---------------------------------------------------------------------------
-// Span markers — point-in-time events rendered as ticks on top of a bar
+// Span markers: point-in-time events rendered as ticks on top of a bar
 // ---------------------------------------------------------------------------
+
+export type SpanMarkerKind = 'hook_received' | 'attr_set';
 
 export interface SpanMarker {
   timeMs: number;
+  kind: SpanMarkerKind;
 }
 
 // `hook_received` = a resumption; `attr_set` = attributes written mid-span.
@@ -630,12 +619,13 @@ const MARKER_EVENT_NAMES = ['hook_received', 'attr_set'];
 export function computeSpanMarkers(span: Span): SpanMarker[] {
   return sortedEventMarks(span.events, MARKER_EVENT_NAMES).map((mark) => ({
     timeMs: mark.time,
+    kind: mark.type as SpanMarkerKind,
   }));
 }
 
 export interface OffscreenSide {
   count: number;
-  /** Nearest off-screen marker — the one a reveal jumps to. */
+  /** Nearest off-screen marker: the one a reveal jumps to. */
   nearestMs: number;
 }
 

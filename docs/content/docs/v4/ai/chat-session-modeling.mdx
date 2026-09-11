@@ -22,7 +22,7 @@ Chat sessions in AI agents can be modeled at different layers of your architectu
 
 While there are many ways to model chat sessions, the two most common categories are single-turn and multi-turn.
 
-## Single-Turn Workflows
+## Single-turn workflows
 
 Each user message triggers a new workflow run. The client or API route owns the conversation history and sends the full message array with each request.
 
@@ -81,7 +81,7 @@ export async function POST(req: Request) {
 
 <Tab value="Client">
 
-Chat messages need to be stored somewhere—typically a database. In this example, we assume a route like `/chats/:id` passes the session ID, allowing us to fetch existing messages and persist new ones.
+Chat messages need to be stored somewhere, typically a database. In this example, we assume a route like `/chats/:id` passes the session ID, allowing us to fetch existing messages and persist new ones.
 
 ```typescript title="app/chats/[id]/page.tsx" lineNumbers
 "use client";
@@ -138,14 +138,13 @@ This is the pattern used in the [Building Durable AI Agents](/docs/ai) guide.
 
 In this pattern, the client owns conversation state, with the latest turn managed by the AI SDK's `useChat`, and past turns persisted to a user-managed database.
 
-Persisting the turn is usually done through either:
+Persist the turn through one of these methods:
 
-- A step on the workflow that runs after `agent.stream()` and takes the message history from the agent return value (either `messages: ModelMessage[]` or `uiMessages: UIMessage[]`)
-- A hook on `useChat`in the client that calls an API to persist state (or localStorage, etc.), either on every new message, or `onFinish`
-- The resumable stream attached to the workflow (see [Resumable Streams](/docs/ai/resumable-streams))
-  - Note that user messages are not persisted to the stream by default, and need to be explicitly persisted separately
+- Run a workflow step after `agent.stream()` that takes the message history from the agent return value (either `messages: ModelMessage[]` or `uiMessages: UIMessage[]`).
+- Use a `useChat` client hook that calls an API to persist state, such as on every new message or in `onFinish`.
+- Use the resumable stream attached to the workflow (see [Resumable streams](/docs/ai/resumable-streams)). User messages are not persisted to the stream by default, so persist them separately.
 
-## Multi-Turn Workflows
+## Multi-turn workflows
 
 A single workflow handles the entire conversation session across multiple turns, and owns the current conversation state. The clients/API routes inject new messages via hooks. The workflow run ID serves as the session identifier.
 
@@ -191,7 +190,7 @@ export async function chat(initialMessages: UIMessage[]) {
     tools: flightBookingTools,
   });
 
-  // Use run ID as the hook token for easy resumption
+  // Use run ID as the hook token for resumption
   const hook = chatMessageHook.create({ token: runId });
   let turnNumber = 0;
 
@@ -254,7 +253,7 @@ export async function writeStreamClose(writable: WritableStream<UIMessageChunk>)
 
 <Tab value="API Routes">
 
-Three endpoints: start a session, send follow-up messages, and reconnect to the stream.
+Use three endpoints to start a session, send follow-up messages, and reconnect to the stream.
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
 import { createUIMessageStreamResponse, type UIMessage } from "ai";
@@ -493,13 +492,13 @@ In this pattern, the workflow owns the entire conversation session. All messages
 
 The client hook processes these markers by:
 
-1. Iterating through message parts in order
-2. When a `user-message` marker is found, flushing any accumulated assistant content and inserting the user message
-3. Deduplicating against optimistic sends from the initial message
+1. Iterate through message parts in order.
+2. When a `user-message` marker is found, flush any accumulated assistant content and insert the user message.
+3. Deduplicate against optimistic sends from the initial message.
 
 This ensures the conversation displays as User → AI → User → AI regardless of whether viewing live or replaying from the stream.
 
-## Choosing a Pattern
+## Choosing a pattern
 
 | Consideration | Single-Turn | Multi-Turn |
 |--------------|-------------|------------|
@@ -509,13 +508,13 @@ This ensures the conversation displays as User → AI → User → AI regardless
 | Workflow time horizon | Minutes | Hours to indefinitely |
 | Observability scope | Per-turn traces | Full session traces |
 
-**Multi-turn is recommended for most production use-cases.** If you're starting fresh, go with multi-turn. It's more flexible and grows with your requirements. You don't need to maintain the chat history yourself and can offload all that to the workflow's built in persistence. It also enables native message injection and full session observability, which becomes increasingly valuable as your agent matures.
+**Multi-turn is recommended for most production use cases.** For new applications, use multi-turn workflows. The workflow's built-in persistence maintains the chat history and supports native message injection and full-session observability.
 
-**Single-turn works well when adapting existing architectures.** If you already have a system for managing message state, and want to adopt durable agents incrementally, single-turn workflows slot in with minimal changes. Each turn maps cleanly to an independent workflow run.
+**Single-turn works well when adapting existing architectures.** If you already have a system for managing message state and want to adopt durable agents incrementally, single-turn workflows require fewer changes. Each turn maps to an independent workflow run.
 
-## Multiplayer Chat Sessions
+## Multiplayer chat sessions
 
-The multi-turn pattern also easily enables multi-player chat sessions. New messages can come from system events, external services, and other users. Since a `hook` injects messages into workflow at any point, and the entire history is a single stream that clients can reconnect to, it doesn't matter where the injected messages come from. Here are different use-cases for multi-player chat sessions:
+The multi-turn pattern also enables multiplayer chat sessions. Messages can come from system events, external services, and other users. A `hook` can inject messages into a workflow at any point, while clients reconnect to one stream containing the entire history.
 
 <Tabs items={['System Event', 'External Service', 'Multiple Users']}>
 
@@ -542,7 +541,7 @@ export async function POST(req: Request) {
 
 <Tab value="External Service">
 
-External webhooks from third-party services (Stripe, Twilio, etc.) can notify the conversation of events.
+External webhooks from third-party services, such as Stripe and Twilio, can notify the conversation of events.
 
 ```typescript title="app/api/webhooks/payment/route.ts" lineNumbers
 import { chatMessageHook } from "@/workflows/chat/hooks/chat-message";
@@ -591,9 +590,9 @@ export async function POST(
 
 </Tabs>
 
-## Related Documentation
+## Related documentation
 
-- [Building Durable AI Agents](/docs/ai) - Foundation guide for durable agents
-- [Message Queueing](/docs/ai/message-queueing) - Queueing messages during tool execution
-- [`defineHook()` API Reference](/docs/api-reference/workflow/define-hook) - Hook configuration options
-- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent) - AI SDK API for durable, resumable agents
+- [Building Durable AI Agents](/docs/ai): Foundation guide for durable agents
+- [Message Queueing](/docs/ai/message-queueing): Queueing messages during tool execution
+- [`defineHook()` API reference](/docs/api-reference/workflow/define-hook): Hook configuration options
+- [`WorkflowAgent`](https://ai-sdk.dev/v7/docs/agents/workflow-agent#workflowagent): AI SDK API for durable, resumable agents

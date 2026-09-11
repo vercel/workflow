@@ -47,7 +47,7 @@ async function writeToStream(writable: WritableStream) {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -69,7 +69,7 @@ export default getWritable;`}
 
 Returns a `WritableStream<W>` where `W` is the type of data you plan to write to the stream.
 
-## Good to Know
+## Good to know
 
 - **Workflow functions can only obtain the stream** - Call `getWritable()` in a workflow to get the stream reference, but you cannot call methods like `getWriter()`, `write()`, or `close()` directly in the workflow context.
 - **Step functions can interact with streams** - Steps can receive the stream as an argument or call `getWritable()` directly, and they can freely interact with it (write, close, etc.).
@@ -81,9 +81,9 @@ Returns a `WritableStream<W>` where `W` is the type of data you plan to write to
 
 ## Examples
 
-### Basic Text Streaming
+### Basic text streaming
 
-Here's a simple example streaming text data:
+This example streams text data:
 
 ```typescript lineNumbers
 import { sleep, getWritable } from "workflow";
@@ -118,7 +118,7 @@ async function stepCloseOutputStream(writable: WritableStream) {
 }
 ```
 
-### Calling `getWritable()` Inside Steps
+### Calling `getWritable()` inside steps
 
 You can also call `getWritable()` directly inside step functions without passing it as a parameter:
 
@@ -157,7 +157,7 @@ async function stepCloseOutputStreamInside() {
 }
 ```
 
-### Using Namespaced Streams in Steps
+### Using namespaced streams in steps
 
 You can also use namespaced streams when calling `getWritable()` from steps:
 
@@ -201,7 +201,7 @@ async function closeStreams() {
 }
 ```
 
-### Advanced Chat Streaming
+### Advanced chat streaming
 
 Here's a more complex example showing how you might stream AI chat responses:
 

@@ -1,4 +1,9 @@
-import { type Event, envNumber } from '@workflow/world';
+import type { Event } from '@workflow/world';
+import { envNumber } from '@workflow/world/env-config';
+import {
+  classifyEntityEvent,
+  isSealedNoopEvent,
+} from '@workflow/world/event-metadata';
 import { eventsLogger } from './logger.js';
 
 /**
@@ -58,7 +63,7 @@ const getDeferredCheckDelayMs = (): number =>
  * waits, and tolerating a stray one is the cheaper direction to be wrong in.
  *
  * An allowlist rather than the complement of the ordered set, so a type this
- * file has not been taught about keeps the strict old behaviour.
+ * file has not been taught about keeps the strict old behavior.
  *
  * `hook_disposed` is deliberately absent despite being about a hook: it is
  * written when the workflow's own `using` scope exits, so it is replay-origin.
@@ -73,6 +78,12 @@ const getDeferredCheckDelayMs = (): number =>
  * is the failure this file exists to stop, so the whole type is tolerated. The
  * cost is that a divergence involving `attr_set` surfaces at the end of the
  * replay, through `strandedEvent`, rather than at the offending event.
+ *
+ * Parking here is for an `attr_set` the walk reaches *before* the body has made
+ * the call that claims it. A second event under an id already claimed is a
+ * different thing: `attr_set` has an entity event class, so the duplicate skip
+ * takes it before this set is consulted, and a copy that parked ahead of any
+ * consumption is released by {@link dropParkedDuplicates} once one lands.
  */
 const PARKABLE_EVENT_TYPES: ReadonlySet<Event['eventType']> = new Set([
   'hook_received',
@@ -146,6 +157,16 @@ export interface EventsConsumerOptions {
    */
   onUnconsumedEvent: (event: Event) => void;
   /**
+   * Callback invoked when an event is skipped because it repeats an event
+   * class the walk already consumed for the same entity. `firstEventType` is
+   * the type that recorded the class, which is the one the workflow observed.
+   * Diagnostics only: skipping is a normal outcome, not an error, though a
+   * `firstEventType` differing from `event.eventType` says the two writers
+   * decided the entity's outcome differently, which is worth more than an
+   * info log.
+   */
+  onDuplicateEvent?: (event: Event, firstEventType: Event['eventType']) => void;
+  /**
    * Returns the current promise queue. The unconsumed event check is chained
    * onto this queue so it only fires after all pending async work (e.g.,
    * deserialization) has completed. This prevents false positives when async
@@ -159,12 +180,20 @@ export interface EventsConsumerOptions {
    * claimed yet is an event it has not reached yet.
    *
    * Required rather than defaulting to always-idle: always-idle is exactly the
-   * pre-gate behaviour, so a defaulted option would let a construction site opt
+   * pre-gate behavior, so a defaulted option would let a construction site opt
    * a whole replay path back out without saying so. Tests that drive a consumer
    * with no orchestrator context pass `() => true` to keep the pre-existing
    * timing, and say so at the call site.
    */
   isDeliveryIdle: () => boolean;
+}
+
+/** See {@link EventsConsumer.describe}. */
+export interface EventsConsumerSnapshot {
+  index: number;
+  length: number;
+  parked: number;
+  lastConsumedEventId: string | undefined;
 }
 
 export class EventsConsumer {
@@ -188,13 +217,32 @@ export class EventsConsumer {
    * rather than parked for a consumer that cannot exist.
    */
   private readonly resolved = new Set<string>();
+  /**
+   * `<class>:<correlationId>` for every event class the walk has already
+   * consumed, mapped to the event type that recorded it. The type is kept so a
+   * repeat that decided the same class *differently* (a `step_failed` behind a
+   * `step_completed`) can be reported as more than a re-commit. See
+   * {@link EventsConsumer.firstEventTypeOfClass}.
+   */
+  private readonly seenEventClasses = new Map<string, Event['eventType']>();
   private onConsumedEvent?: (event: Event) => void;
   private onUnconsumedEvent: (event: Event) => void;
+  private onDuplicateEvent?: (
+    event: Event,
+    firstType: Event['eventType']
+  ) => void;
   private getPromiseQueue: () => Promise<void>;
   private isDeliveryIdle: () => boolean;
   private pendingUnconsumedCheck: Promise<void> | null = null;
   private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
   private unconsumedCheckVersion = 0;
+  /**
+   * The event a callback most recently claimed, for {@link describe}. Tracked
+   * separately from {@link eventIndex} because the walk also steps over events
+   * (parked, sealed no-ops, duplicates) without anyone consuming them, so
+   * `events[eventIndex - 1]` does not say what replay last acted on.
+   */
+  private lastConsumed: Event | undefined;
 
   constructor(events: Event[], options: EventsConsumerOptions) {
     // Own copy: the runtime mutates its event array in place, and a retained
@@ -204,6 +252,7 @@ export class EventsConsumer {
     this.eventIndex = 0;
     this.onConsumedEvent = options.onConsumedEvent;
     this.onUnconsumedEvent = options.onUnconsumedEvent;
+    this.onDuplicateEvent = options.onDuplicateEvent;
     this.getPromiseQueue = options.getPromiseQueue;
     this.isDeliveryIdle = options.isDeliveryIdle;
   }
@@ -211,8 +260,8 @@ export class EventsConsumer {
   /**
    * The oldest event the walk stepped over that no consumer has claimed yet,
    * if any. Parking is a bet that a consumer will be registered later, so at
-   * any point where no consumer ever will be again — the replay finishing is
-   * the definitive one — this answers which event the bet lost on.
+   * any point where no consumer ever will be again (the replay finishing is
+   * the definitive one), this answers which event the bet lost on.
    */
   get strandedEvent(): Event | undefined {
     return this.parked[0]?.event;
@@ -240,6 +289,26 @@ export class EventsConsumer {
       count: this.parked.length,
       eventId: oldest.eventId,
       eventType: oldest.eventType,
+    };
+  }
+
+  /**
+   * Where the walk stands, for a divergence message. Everything here is
+   * already known to the consumer; the point of the method is that the
+   * orchestrator can print it without reaching into private state.
+   *
+   * `index` is the ordered walk's position (the offset of the event it is
+   * stuck on, when it is stuck), `length` the log as this consumer holds it,
+   * `parked` how many events the walk stepped over and still holds, and
+   * `lastConsumedEventId` the id of the event a callback most recently
+   * claimed, `undefined` before the first claim.
+   */
+  describe(): EventsConsumerSnapshot {
+    return {
+      index: this.eventIndex,
+      length: this.events.length,
+      parked: this.parked.length,
+      lastConsumedEventId: this.lastConsumed?.eventId,
     };
   }
 
@@ -298,7 +367,7 @@ export class EventsConsumer {
     // delivery `resolve()`; none of the callbacks here call `subscribe()`
     // synchronously. So within one pass `this.callbacks` is mutated only by
     // this loop (the `Finished` splice), and the next event's consumer is
-    // either already present (advance now) or not yet registered — in which
+    // either already present (advance now) or not yet registered, in which
     // case no callback consumes the event and we fall through to the
     // cross-VM-safe deferred unconsumed-event check below, exactly as before.
     while (true) {
@@ -308,6 +377,10 @@ export class EventsConsumer {
       // event's by the index it holds.
       this.drainParked();
       const currentEvent = this.events[this.eventIndex] ?? null;
+      if (currentEvent !== null && isSealedNoopEvent(currentEvent)) {
+        this.skipSealedNoop(currentEvent);
+        continue;
+      }
       const consumed = this.offer(currentEvent);
       if (consumed) {
         this.eventIndex++;
@@ -325,10 +398,19 @@ export class EventsConsumer {
         return;
       }
       if (!consumed) {
+        // Nobody wanted it. If it repeats a class this walk already consumed
+        // for the same entity it is a straggler from a concurrent replay:
+        // step over it in this pass rather than paying the deferred window for
+        // a consumer that cannot come (see `firstEventTypeOfClass`).
+        const firstType = this.firstEventTypeOfClass(currentEvent);
+        if (firstType !== undefined) {
+          this.skipDuplicateEvent(currentEvent, firstType);
+          continue;
+        }
         this.scheduleUnconsumedCheck(currentEvent, true);
         return;
       }
-      // A real event was consumed — advance to the next in the same pass.
+      // A real event was consumed, so advance to the next in the same pass.
     }
   };
 
@@ -361,6 +443,8 @@ export class EventsConsumer {
             resolutionKey(currentEvent.eventType, currentEvent.correlationId)
           );
         }
+        this.recordEventClass(currentEvent);
+        this.lastConsumed = currentEvent;
         this.notifyConsumedEvent(currentEvent);
       }
       // remove the callback if it has finished
@@ -384,6 +468,7 @@ export class EventsConsumer {
     let progressed = this.parked.length > 0;
     while (progressed) {
       progressed = false;
+      this.dropParkedDuplicates();
       for (let i = 0; i < this.parked.length; i++) {
         const entry = this.parked[i];
         const walkIndex = this.eventIndex;
@@ -401,6 +486,55 @@ export class EventsConsumer {
           progressed = this.parked.length > 0;
           break;
         }
+      }
+    }
+  }
+
+  /**
+   * Release anything parked whose class a consumption has since recorded for
+   * the same entity, on the same terms as {@link skipDuplicateEvent}.
+   *
+   * The ordered walk decides a straggler at the event, but only for one of the
+   * two orders the copies can arrive in. When neither copy has a consumer yet,
+   * both park — the walk steps over the first and re-enters immediately, so
+   * the second is offered in the same tick, with no class recorded because
+   * nothing has been *consumed*. The drain then claims the first and the
+   * second is left held by a consumer list that will never grow the callback
+   * it needs, which the workflow function returning reports through
+   * {@link strandedEvent} as a replay divergence.
+   *
+   * Run before each offer pass rather than once, because the consumption that
+   * records the class happens inside the drain itself.
+   *
+   * Not specific to `attr_set`: `wait_completed` reaches the same state, and
+   * {@link ONE_SHOT_EVENT_TYPES} only covers it in the order where the
+   * consumption came first.
+   */
+  private dropParkedDuplicates(): void {
+    for (let i = this.parked.length - 1; i >= 0; i--) {
+      const event = this.parked[i].event;
+      const firstType = this.firstEventTypeOfClass(event);
+      if (firstType === undefined) {
+        continue;
+      }
+      this.parked.splice(i, 1);
+      // The walk index moved past this event when it was parked, so unlike
+      // `skipDuplicateEvent` there is nothing to advance here.
+      eventsLogger.debug(
+        'Releasing a parked event that repeats a class already in the log',
+        {
+          eventId: event.eventId,
+          eventType: event.eventType,
+          firstEventType: firstType,
+          correlationId: event.correlationId,
+        }
+      );
+      try {
+        this.onDuplicateEvent?.(event, firstType);
+      } catch (error) {
+        eventsLogger.error('onDuplicateEvent callback threw an error', {
+          error,
+        });
       }
     }
   }
@@ -432,9 +566,128 @@ export class EventsConsumer {
     return true;
   }
 
+  /**
+   * The key `event`'s class is tracked under, or `undefined` for the events
+   * that belong to no class and are therefore never skipped: the types with no
+   * entry at all (`hook_received`, `hook_conflict`, `run_created`), and a
+   * classed type carrying no entity to track it under.
+   *
+   * {@link classifyEntityEvent} owns that rule, because the observability UI
+   * decides the same question about the same log and the two must not drift.
+   */
+  private eventClassKey(event: Event): string | undefined {
+    const classification = classifyEntityEvent(event);
+    return classification === undefined
+      ? undefined
+      : `${classification.eventClass}:${classification.entity}`;
+  }
+
+  /**
+   * Remembers that `event`'s class is now decided for its entity, if the type
+   * belongs to a class. First writer wins: the recorded type is the one the
+   * workflow observed, and a later repeat is measured against it.
+   */
+  private recordEventClass(event: Event) {
+    const key = this.eventClassKey(event);
+    if (key !== undefined && !this.seenEventClasses.has(key)) {
+      this.seenEventClasses.set(key, event.eventType);
+    }
+  }
+
+  /**
+   * The type that already decided `event`'s class for the same entity, or
+   * `undefined` when nothing has: a second `step_created` for one step, a
+   * second terminal outcome, a second `step_started` after the step's result is
+   * already in the log.
+   *
+   * Such an event is committed but inert. Concurrent replays write into one
+   * log without a currency guard, so a replay working from a prefix that
+   * predates another replay's write can commit its own copy of work the log
+   * already records. That copy cannot change what the workflow observed: the
+   * outcome was decided by the first event of the class and every later replay
+   * reads that same event at the same log position, so ignoring the straggler
+   * is deterministic across replays.
+   *
+   * Classes are tracked separately, so passing one does not suppress another.
+   * A step whose result is in the log still reaches its `step_created` and
+   * `step_started` consumers if it has yet to see those classes.
+   *
+   * Consulted only after every registered callback has declined the event, so
+   * it can never take an event a consumer wanted. A retry's `step_started` is
+   * claimed by the step's live consumer and counts as an attempt exactly as
+   * before, and a second `step_created` reaching a step that has not finished
+   * is likewise consumed rather than skipped; only the copies nobody claims are
+   * skipped.
+   *
+   * Unlike the divergence report, this does *not* wait out the deferred window
+   * first, and it does not need to. The window buys time for a consumer that
+   * has yet to register, and no such consumer can want this event: the class
+   * was recorded by a consumption in this same replay, which means the entity's
+   * consumer was registered and took an event of this class, and correlation
+   * ids are minted from a monotonic ULID per body position, so nothing later in
+   * the body registers a second consumer under this id. Waiting would cost
+   * `getDeferredCheckDelayMs()` per straggler per replay for information that
+   * cannot arrive: 0.75% of production runs carry at least one straggler, and
+   * the p99 among those carries 155.
+   *
+   * The invariant to preserve if hook identity ever becomes caller-supplied
+   * (an idempotency key rather than a minted id): two `createHook` calls in one
+   * body could then share a correlation id, and the second consumer's
+   * `hook_created` would be a repeat of a class this replay already recorded.
+   * That would make skipping wrong for `hook_created`, and is the reason the
+   * class map lives next to the event types rather than being inferred.
+   */
+  private firstEventTypeOfClass(event: Event): Event['eventType'] | undefined {
+    const key = this.eventClassKey(event);
+    return key === undefined ? undefined : this.seenEventClasses.get(key);
+  }
+
+  /**
+   * Steps the walk over a sealed-log `noop` (specVersion >= 7): the World's
+   * backend wrote it to occupy a slot whose writer allocated the position and
+   * died, so the log's density arithmetic holds. It is invisible to the
+   * workflow: no consumer is offered it, no event class is recorded, and the
+   * deterministic clock does not advance, exactly as with
+   * {@link skipDuplicateEvent}, so a log that happens to contain one produces the same
+   * timestamps as a log that does not. (Its `createdAt` is the seal time,
+   * which can even postdate later slots' events; letting it touch the clock
+   * would leak the sealer's wall clock into replay.)
+   */
+  private skipSealedNoop(event: Event) {
+    this.eventIndex++;
+    eventsLogger.debug('Skipping sealed-log noop event', {
+      eventId: event.eventId,
+    });
+  }
+
+  /** Steps the walk over a repeat of an already-consumed class. */
+  private skipDuplicateEvent(event: Event, firstType: Event['eventType']) {
+    this.eventIndex++;
+    // Deliberately not routed through `notifyConsumedEvent`: the deterministic
+    // clock advances only on events the workflow actually observed. A skipped
+    // event is invisible to the workflow body, and a log that happens to
+    // contain one must produce the same timestamps as a log that does not.
+    eventsLogger.debug(
+      'Skipping event that repeats a class already in the log',
+      {
+        eventId: event.eventId,
+        eventType: event.eventType,
+        firstEventType: firstType,
+        correlationId: event.correlationId,
+      }
+    );
+    try {
+      this.onDuplicateEvent?.(event, firstType);
+    } catch (error) {
+      eventsLogger.error('onDuplicateEvent callback threw an error', {
+        error,
+      });
+    }
+  }
+
   private handleEndOfLog() {
     // Everything still parked is waiting for a consumer some later replay will
-    // register, which is the whole point of parking — except once the log
+    // register, which is the whole point of parking, except once the log
     // already holds the run's terminal event, because then there is no later
     // replay and no consumer will ever come.
     if (this.parked.length === 0) {
@@ -464,7 +717,7 @@ export class EventsConsumer {
     // Schedule a deferred check. We chain onto the promiseQueue so that any
     // pending async work (e.g., deserialization/decryption that triggers
     // resolve() → user code → subscribe()) completes first. If the event
-    // is still unconsumed after the queue drains, it's truly orphaned — or,
+    // is still unconsumed after the queue drains, it's truly orphaned, or,
     // when its type carries no ordering claim, parked for a later consumer.
     const checkVersion = ++this.unconsumedCheckVersion;
     this.pendingUnconsumedCheck = this.getPromiseQueue()
@@ -495,21 +748,42 @@ export class EventsConsumer {
               return;
             }
             this.pendingUnconsumedCheck = null;
-            if (mayPark) {
-              if (this.events[this.eventIndex] !== currentEvent) {
-                // An append() drain claimed it while the check was in flight.
-                // Only subscribe() cancels the check, so this is reachable.
-                return;
-              }
-              if (this.park(currentEvent)) {
-                this.consume();
-                return;
-              }
-            }
-            this.onUnconsumedEvent(currentEvent);
+            this.resolveUnconsumedEvent(currentEvent, mayPark);
           }, getDeferredCheckDelayMs());
         });
       });
+  }
+
+  /**
+   * Decide what a still-unconsumed event is, now that the promise queue has
+   * drained and the delivery gate says the VM is not mid-reaction.
+   *
+   * `mayPark` is false only for the end-of-log recheck of an event {@link park}
+   * already holds. Nothing in the first branch applies to one of those: it is
+   * not the event at the cursor, so the identity guard is not meaningful, and
+   * it is parked already.
+   *
+   * A duplicate class never arrives here. {@link consume} steps over one in the
+   * pass that offered it, before this check is ever scheduled, and a class
+   * recorded while the check was in flight can only have been recorded by a
+   * consumption inside {@link consume}, whose next pass re-offers this event
+   * and steps over it there, leaving the identity guard above to drop the
+   * in-flight check. One that parks before any consumption records its class
+   * is released later by {@link dropParkedDuplicates} instead.
+   */
+  private resolveUnconsumedEvent(currentEvent: Event, mayPark: boolean) {
+    if (mayPark) {
+      if (this.events[this.eventIndex] !== currentEvent) {
+        // An append() drain claimed it while the check was in flight.
+        // Only subscribe() cancels the check, so this is reachable.
+        return;
+      }
+      if (this.park(currentEvent)) {
+        this.consume();
+        return;
+      }
+    }
+    this.onUnconsumedEvent(currentEvent);
   }
 
   /**
@@ -533,7 +807,7 @@ export class EventsConsumer {
    * loses it, and no measurement of a delivery outrunning 100ms exists either
    * way. So read this as retiring the bet rather than as repairing an observed
    * failure of that number: the delay is a user-settable env override, which
-   * leaves the old behaviour one configuration away from losing on any backend.
+   * leaves the old behavior one configuration away from losing on any backend.
    *
    * Termination is `hasParkedCommittedDelivery`'s: it counts only deliveries
    * that resolve on their own, so nothing here can gate its own retirement. A

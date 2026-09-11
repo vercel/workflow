@@ -15,16 +15,15 @@ import type {
   World,
 } from '@workflow/world';
 import {
-  eventIdToSlot,
   FIRST_EVENT_SLOT,
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
   ROOT_RUN_ID_ATTRIBUTE,
+  requireEventSlot,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
-  ulidToDate,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
@@ -92,7 +91,7 @@ export interface HealthCheckResult {
   /**
    * `@workflow/core` version of the responding deployment, used for
    * capability detection (see `getRunCapabilities`). Omitted when the
-   * responding deployment did not provide the field as a string —
+   * responding deployment did not provide the field as a string:
    * for example, an older `@workflow/core` that predates this field,
    * or a non-JSON plain-text health response.
    */
@@ -107,15 +106,15 @@ export interface HealthCheckResult {
    */
   encryptionPublicKey?: string;
   /**
-   * The responding deployment's `HOOK_RESUME_INPUT_VERSION` — the protocol
-   * version at which the *consumer* (queue-message target) re-ensures the
+   * The responding deployment's `HOOK_RESUME_INPUT_VERSION`: the protocol
+   * version at which the *consumer* (queue-message target) materializes the
    * `hook_received` event from `hookInput` on replay. A cross-deployment
    * `start()` stamps the *target's* value (not the caller's) into the new
-   * run's `executionContext.hookResumeInputVersion` so that `resumeHook()`
-   * only takes the parallel path when the deployment that will actually
-   * consume the queue message is known to honor `hookInput`. Omitted when the
-   * responding deployment predates this field (an older consumer that ignores
-   * `hookInput`), which fails the gate closed.
+   * run's `executionContext.hookResumeInputVersion`. Current producers write
+   * the event durably before publishing the wake and do not read the marker;
+   * OLDER producers still gate their lazy path on it, so it keeps being
+   * stamped. Omitted when the responding deployment predates this field,
+   * which fails that gate closed.
    */
   hookResumeInputVersion?: number;
 }
@@ -165,7 +164,7 @@ export async function handleHealthCheckMessage(
   //
   // Only a *public* key may travel this way: the probe response stream is
   // deliberately unauthenticated, so anything secret would be exposed.
-  // Best-effort — a failure here must not fail the health check itself, which
+  // Best-effort: a failure here must not fail the health check itself, which
   // callers also rely on for plain capability detection.
   let encryptionPublicKey: string | undefined;
   if (healthCheck.runId) {
@@ -193,7 +192,7 @@ export async function handleHealthCheckMessage(
     specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
     workflowCoreVersion,
     // We are executing inside the target deployment, so this constant reflects
-    // the *consumer's* hook-resume protocol version — exactly what a
+    // the *consumer's* hook-resume protocol version, exactly what a
     // cross-deployment caller needs to gate its parallel resume path on.
     hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
@@ -222,7 +221,7 @@ export interface HealthCheckOptions {
    * Queue namespace of the target deployment (e.g. `'eve'` for topics like
    * `__eve_wkf_workflow_*`). Falls back to `WORKFLOW_QUEUE_NAMESPACE` in the
    * calling process. Cross-context callers (e.g. the observability
-   * dashboard) must pass the target deployment's namespace explicitly —
+   * dashboard) must pass the target deployment's namespace explicitly:
    * the env fallback resolves in the caller's process, and a message
    * published to a mismatched topic has no consumer, so the check would
    * always time out.
@@ -257,7 +256,7 @@ const HEALTH_CHECK_READ_TIMEOUT = 500;
  * health-check poll loop: some worlds hold that request open until the
  * stream has data (e.g. workflow-server holds unwritten streams open for
  * ~2 minutes), which would otherwise blow through the configured health
- * check timeout — the `while` condition is only re-checked between
+ * check timeout, since the `while` condition is only re-checked between
  * iterations.
  */
 function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -492,13 +491,11 @@ function recordRequestedEventCursor(
  * same array. The set is updated alongside `target`.
  *
  * Events are appended in the order the World returned them, and are not
- * re-sorted: a World's canonical order is its own, and the runtime cannot
- * reproduce it from event ids alone. `world-vercel` orders by event id, while
- * `world-local` orders by `(createdAt, eventId)` and deliberately re-mints keys
- * so that the two diverge. Every append source is already in canonical order
- * relative to the tail (a cursor-delimited page, or a write-response delta), so
- * receipt order is the order to keep. Nothing downstream may assume the tail is
- * the newest event — see {@link latestEventStateUpdatedAt}.
+ * re-sorted. Every append source is already in canonical order relative to the
+ * tail (a cursor-delimited page, or a write-response delta), so receipt order is
+ * the order to keep, and re-sorting here would only cost a pass over the log.
+ * Nothing downstream may assume the tail is the newest event. See
+ * {@link maxEventSlot}.
  */
 export function appendUniqueEvents(
   target: Event[],
@@ -526,9 +523,13 @@ export function appendUniqueEvents(
  *
  * `preloadedEvents` is loaded `sortOrder: 'asc'` and is never re-sorted
  * client-side, so a `hook_received` spliced in by the lazy-resume consumer must
- * land in `eventId` order — a plain `push` would place a late-committing
- * earlier event after events that sort before it, corrupting replay. Event IDs
- * are ULIDs, so lexicographic string order matches commit order.
+ * land in `eventId` order: a plain `push` would place a late-committing
+ * earlier event after events that sort before it, corrupting replay.
+ *
+ * Lexicographic string order is the log's order: a slot id is a fixed-width
+ * zero-padded position, so comparing the strings compares the positions. This
+ * needs no parse of its own for that reason, and the comparison is exact rather
+ * than a reconstruction.
  */
 export function insertEventByEventId(target: Event[], event: Event): void {
   // Linear scan from the end: the spliced event is almost always the newest
@@ -538,7 +539,7 @@ export function insertEventByEventId(target: Event[], event: Event): void {
   while (i > 0) {
     const existing = target[i - 1];
     if (existing.eventId === event.eventId) {
-      // Already present — keep the splice idempotent.
+      // Already present: keep the splice idempotent.
       return;
     }
     if (existing.eventId < event.eventId) {
@@ -598,108 +599,107 @@ export async function loadWorkflowRunEvents(
   afterCursor?: string
 ): Promise<LoadedEventLog> {
   const incremental = afterCursor !== undefined;
-  return trace(
-    incremental ? 'workflow.loadNewEvents' : 'workflow.loadEvents',
-    async (span) => {
-      span?.setAttributes({
-        ...Attribute.WorkflowRunId(runId),
-      });
+  return trace('workflow.replay.load', async (span) => {
+    span?.setAttributes({
+      ...Attribute.WorkflowRunId(runId),
+      ...Attribute.WorkflowReplayLoadSource(
+        incremental ? 'events_list_incremental' : 'events_list'
+      ),
+    });
 
-      const loadedEvents: Event[] = [];
-      const loadedEventIds = new Set<string>();
-      const requestedCursors = new Set<string>();
-      let cursor: string | null = afterCursor ?? null;
-      let hasMore = true;
-      let pagesLoaded = 0;
-      let retriedWithoutCursor = false;
+    const loadedEvents: Event[] = [];
+    const loadedEventIds = new Set<string>();
+    const requestedCursors = new Set<string>();
+    let cursor: string | null = afterCursor ?? null;
+    let hasMore = true;
+    let pagesLoaded = 0;
+    let retriedWithoutCursor = false;
+    const world = await getWorldLazy();
+    const loadStart = Date.now();
+    while (hasMore) {
+      // TODO: we're currently loading all the data with resolveRef behavior. We need to update this
+      // to lazyload the data from the world instead so that we can optimize and make the event log loading
+      // much faster and memory efficient
+      const pageStart = Date.now();
+      const requestedCursor = cursor;
+      recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
 
-      const world = await getWorldLazy();
-      const loadStart = Date.now();
-      while (hasMore) {
-        // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
-        // to lazyload the data from the world instead so that we can optimize and make the event log loading
-        // much faster and memory efficient
-        const pageStart = Date.now();
-        const requestedCursor = cursor;
-        recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
-
-        let response: Awaited<ReturnType<typeof world.events.list>>;
-        try {
-          response = await world.events.list({
-            runId,
-            pagination: {
-              sortOrder: 'asc',
-              cursor: requestedCursor ?? undefined,
-            },
-          });
-        } catch (error) {
-          if (
-            shouldRetryWithoutEventCursor(
-              error,
-              requestedCursor,
-              retriedWithoutCursor
-            )
-          ) {
-            runtimeLogger.warn(
-              'Event cursor was rejected; retrying with a full event reload.',
-              { workflowRunId: runId }
-            );
-            loadedEvents.length = 0;
-            loadedEventIds.clear();
-            requestedCursors.clear();
-            cursor = null;
-            retriedWithoutCursor = true;
-            continue;
-          }
-          throw error;
-        }
-
-        appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
-        hasMore = response.hasMore;
-        assertEventPaginationProgress(
+      let response: Awaited<ReturnType<typeof world.events.list>>;
+      try {
+        response = await world.events.list({
           runId,
-          hasMore,
-          response.cursor,
-          requestedCursors
-        );
-        // Preserve the last non-null cursor across pages. A World may
-        // legitimately return `{ data: [], cursor: null, hasMore: false }`
-        // on a trailing empty page — for example when the previous page's
-        // underlying DB query hit the limit exactly and returned a
-        // `LastEvaluatedKey` "just in case". Overwriting with that null
-        // would lose the position past the last real event we loaded and
-        // force the runtime into the "no cursor after initial load" full-
-        // reload fallback on every subsequent replay iteration.
-        cursor = response.cursor ?? cursor;
-        pagesLoaded++;
-
-        runtimeLogger.debug('Loaded event page', {
-          workflowRunId: runId,
-          incremental,
-          page: pagesLoaded,
-          pageEvents: response.data.length,
-          totalEvents: loadedEvents.length,
-          hasMore,
-          pageMs: Date.now() - pageStart,
+          pagination: {
+            sortOrder: 'asc',
+            cursor: requestedCursor ?? undefined,
+          },
         });
+      } catch (error) {
+        if (
+          shouldRetryWithoutEventCursor(
+            error,
+            requestedCursor,
+            retriedWithoutCursor
+          )
+        ) {
+          runtimeLogger.warn(
+            'Event cursor was rejected; retrying with a full event reload.',
+            { workflowRunId: runId }
+          );
+          loadedEvents.length = 0;
+          loadedEventIds.clear();
+          requestedCursors.clear();
+          cursor = null;
+          retriedWithoutCursor = true;
+          continue;
+        }
+        throw error;
       }
 
-      runtimeLogger.debug('Event load complete', {
+      appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
+      hasMore = response.hasMore;
+      assertEventPaginationProgress(
+        runId,
+        hasMore,
+        response.cursor,
+        requestedCursors
+      );
+      // Preserve the last non-null cursor across pages. A World may
+      // legitimately return `{ data: [], cursor: null, hasMore: false }`
+      // on a trailing empty page, for example when the previous page's
+      // underlying DB query hit the limit exactly and returned a
+      // precautionary `LastEvaluatedKey`. Overwriting with that null
+      // would lose the position past the last real event we loaded and
+      // force the runtime into the "no cursor after initial load" full-
+      // reload fallback on every subsequent replay iteration.
+      cursor = response.cursor ?? cursor;
+      pagesLoaded++;
+
+      runtimeLogger.debug('Loaded event page', {
         workflowRunId: runId,
         incremental,
+        page: pagesLoaded,
+        pageEvents: response.data.length,
         totalEvents: loadedEvents.length,
-        pagesLoaded,
-        totalMs: Date.now() - loadStart,
+        hasMore,
+        pageMs: Date.now() - pageStart,
       });
-
-      span?.setAttributes({
-        ...Attribute.WorkflowEventsCount(loadedEvents.length),
-        ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
-      });
-
-      return { events: loadedEvents, cursor };
     }
-  );
+
+    runtimeLogger.debug('Event load complete', {
+      workflowRunId: runId,
+      incremental,
+      totalEvents: loadedEvents.length,
+      pagesLoaded,
+      totalMs: Date.now() - loadStart,
+    });
+
+    span?.setAttributes({
+      ...Attribute.WorkflowEventsCount(loadedEvents.length),
+      ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
+    });
+
+    return { events: loadedEvents, cursor };
+  });
 }
 
 /**
@@ -713,15 +713,20 @@ export interface LoadedEventLog {
 }
 
 /**
- * Whether the optimistic-concurrency guard for event creation is enabled.
- * **On by default** where the runtime executes: replay-context creates send a
- * `stateUpdatedAt` snapshot (and can be rejected with 412 by a supporting
- * backend) unless `WORKFLOW_PRECONDITION_GUARD` is set to `0`. Backends without
- * guard support ignore the snapshot, so enabling by default is
- * backward-compatible.
+ * Extend a loaded log with a page that continues it — a listed page, or the
+ * inline delta a write handed back — and move its read position with it.
+ *
+ * The cursor is only advanced when the page carries one, so a source with no
+ * position of its own (a skipped-slot report) cannot walk the read position
+ * past events it did not carry. Appending does not re-sort; see
+ * {@link appendUniqueEvents} for why receipt order is the order to keep.
  */
-export function isPreconditionGuardEnabled(): boolean {
-  return process.env.WORKFLOW_PRECONDITION_GUARD !== '0';
+export function appendEventLog(
+  log: LoadedEventLog,
+  appended: { events: readonly Event[]; cursor?: string | null }
+): void {
+  appendUniqueEvents(log.events, appended.events);
+  log.cursor = appended.cursor ?? log.cursor;
 }
 
 /**
@@ -729,69 +734,50 @@ export function isPreconditionGuardEnabled(): boolean {
  * {@link findEventSlotGap}). **On by default**; set
  * `WORKFLOW_SLOT_GAP_CHECK=0` to replay across holes instead.
  *
- * The switch exists because the check trades one failure for another. A hole is
- * a position claimed by a write that then failed, so most of them stand for an
- * event that never happened and replaying past one is correct. But a hole
- * standing for an event that *did* happen is indistinguishable from that, and
- * replaying past that one produces a run whose result is wrong with nothing to
- * show for it. Failing loudly is the recoverable side of the trade, and this is
- * the way back out if a fleet turns out to carry benign holes.
+ * A World that allocates a position at the moment it commits leaves no hole
+ * behind when a write fails, so density is a property the log has by
+ * construction rather than one this check maintains. What the check is for is
+ * the reads and the Worlds where that does not hold, and by the time it runs
+ * the benign explanations are spent: a position missing because a concurrent
+ * commit is not visible yet clears on a re-read, which is what
+ * {@link settleEventSlotGap} does first.
+ *
+ * What is left is a hole that persists, and its two causes are
+ * indistinguishable from the log. Either a World allocated the position outside
+ * the commit and lost the write, in which case nothing happened there and
+ * replaying past it is correct, or an event that did happen is missing, in
+ * which case replaying past it decides a branch on absence and produces a wrong
+ * result with nothing to show for it. Failing is the recoverable side of that
+ * trade, and this is the way back out if a fleet turns out to carry holes of
+ * the first kind.
  */
 export function isSlotGapCheckEnabled(): boolean {
   return process.env.WORKFLOW_SLOT_GAP_CHECK !== '0';
 }
 
-/**
- * The `stateUpdatedAt` value to send with a replay-context event creation: the
- * *maximum* ULID time (epoch ms) over the events the runtime has loaded. Returns
- * `undefined` when there are no events or that id is not a decodable ULID.
+/*
+ * Merging into a log a replay is midway through reading.
  *
- * It is the maximum rather than the tail's because the loaded log is in the
- * World's canonical order, which is not necessarily event-id order (see
- * {@link appendUniqueEvents}). The maximum is what lets the count sent alongside
- * it be read as "events at or below this watermark": every loaded event is at or
- * below it, so the count is exactly `events.length`. Reading the tail instead
- * would understate the watermark on a World whose order is not id-ordered, which
- * is safe (it can only weaken detection) but needlessly imprecise.
+ * Three paths add events to a loaded log after the replay has started: a
+ * bump-and-report write hands back the slots it skipped ({@link
+ * mergeReportedEvents}), an inline delta extends the tail (`absorbCreateDelta`
+ * in `runtime.ts`), and a listed page appends ({@link appendUniqueEvents}).
+ * They look alarming (the replay is reading an array while something else
+ * writes to it) and they are safe for one reason worth stating plainly, since
+ * every correctness argument in this file leans on it.
  *
- * The maximum is found by lexicographic id comparison, decoding only once: the
- * 26-character Crockford ULID encodes its timestamp in the leading 10
- * characters, so the greatest id also carries the greatest time.
+ * **An event in the log is a fact, and a longer log cannot retract one.** The
+ * log is append-only and positions are never reused, so a replay that produced
+ * event E from the prefix it had loaded has made E true for every replay that
+ * follows. A later replay reading a fuller log does not get to decide E should
+ * not be there; it consumes E and reconciles to it, which is what the events
+ * consumer does when it walks a log holding writes from a replay that raced it.
  *
- * Granularity: snapshots are epoch-milliseconds, and the backend allows an
- * equal-timestamp snapshot (an up-to-date client must not be rejected). Two
- * out-of-band events landing in the same millisecond where only the first was
- * loaded therefore pass this half of the guard undetected — that is exactly
- * the hole `stateEventCount` closes, since the count of events at or below the
- * watermark differs even when the watermarks are equal.
+ * Merging is therefore monotone: it can only add facts this replay has yet to
+ * reconcile to, never remove one it already has. That is why absorbing is
+ * always optional and never wrong to decline (an unabsorbed event is one the
+ * next read returns), and why the guards below can afford to be strict.
  */
-export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
-  let latest: string | undefined;
-  for (const event of events) {
-    if (latest === undefined || event.eventId > latest) {
-      latest = event.eventId;
-    }
-  }
-  if (latest === undefined) {
-    return undefined;
-  }
-  // Event IDs are prefixed ULIDs (e.g. `evnt_01ARYZ...`); ulidToDate only
-  // decodes the bare 26-char ULID, so strip the prefix first.
-  const eventId = latest;
-  const underscore = eventId.lastIndexOf('_');
-  const rawUlid = underscore === -1 ? eventId : eventId.slice(underscore + 1);
-  const time = ulidToDate(rawUlid)?.getTime();
-  if (time === undefined) {
-    // Fail open: a non-decodable id disarms the guard for this create (no
-    // snapshot sent). Log so a fleet-wide silent disarm is diagnosable.
-    runtimeLogger.debug(
-      'Precondition guard: latest event id is not a decodable ULID; sending no snapshot',
-      { eventId }
-    );
-    return undefined;
-  }
-  return time;
-}
 
 /**
  * Merge the events a bump-and-report write handed back into the log it was
@@ -799,10 +785,8 @@ export function latestEventStateUpdatedAt(events: Event[]): number | undefined {
  *
  * Unlike {@link appendUniqueEvents}, this re-sorts. The reported events occupy
  * slots *below* the write that reported them, so appending them would put them
- * after events they precede — and on a slot-numbered run the id order is the
- * World's canonical order, so restoring it is well defined rather than a guess.
- * A run that is not slot-numbered cannot produce this report in the first
- * place; the sort is skipped rather than applied to ids it cannot order.
+ * after events they precede. Sorting by id restores the World's canonical order
+ * rather than guessing at it: a slot id is that order, written down.
  */
 export function mergeReportedEvents(
   target: Event[],
@@ -811,7 +795,7 @@ export function mergeReportedEvents(
   const before = target.length;
   appendUniqueEvents(target, events);
   const added = target.length - before;
-  if (added > 0 && maxEventSlot(target) !== undefined) {
+  if (added > 0) {
     target.sort((a, b) =>
       a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0
     );
@@ -819,10 +803,58 @@ export function mergeReportedEvents(
   return added;
 }
 
+/** What {@link absorbSkippedSlotReport} did with a write's report. */
+export interface SkippedSlotReport {
+  /** How many of the reported events were new to the log. Zero if dropped. */
+  added: number;
+  /** How many events the report offered, whether or not they were taken. */
+  offered: number;
+  /** The report was truncated, so it was dropped whole instead of merged. */
+  truncated: boolean;
+}
+
 /**
- * The highest slot the loaded log occupies, or `undefined` when the run is not
- * slot-numbered. A run keeps the id scheme it was created under, so one event
- * settles it for the whole log.
+ * Apply a write's skipped-slot report to the log it was derived from, deciding
+ * whether the report may be taken at all.
+ *
+ * Every replay-context write can come back carrying the events on the slots it
+ * skipped over, and every caller wants the same thing from them: fold them in
+ * so the writes that follow name a position above them, and so the replay
+ * resuming from this log sees them without a reload.
+ *
+ * The one policy is that a **truncated report is dropped whole**. It covers a
+ * span of positions but carries only some of the events on them, so merging it
+ * would raise the log's highest position past a position whose event is
+ * missing. Later writes read that maximum to say what they have seen, so each
+ * would claim a position it never saw, and the World only reports the span a
+ * write skips: it would never send the missing one. Dropping costs one more
+ * round of the same events on the next write and keeps the log a prefix of the
+ * truth, which the note above {@link mergeReportedEvents} explains is always an
+ * available answer.
+ *
+ * Callers that log do so from the returned counts; the decision is not theirs
+ * to re-derive.
+ */
+export function absorbSkippedSlotReport(
+  target: Event[],
+  result: { events?: readonly Event[]; hasMore?: boolean }
+): SkippedSlotReport {
+  const offered = result.events?.length ?? 0;
+  if (offered === 0) {
+    return { added: 0, offered: 0, truncated: false };
+  }
+  if (result.hasMore === true) {
+    return { added: 0, offered, truncated: true };
+  }
+  return {
+    added: mergeReportedEvents(target, result.events ?? []),
+    offered,
+    truncated: false,
+  };
+}
+
+/**
+ * The highest slot the loaded log occupies, or `undefined` for an empty log.
  *
  * The maximum, not the count, and the two are not interchangeable even though
  * a healthy log makes them equal. A World hands a position to the insert that
@@ -835,14 +867,16 @@ export function mergeReportedEvents(
  *
  * A hole below the maximum is therefore a property of the read, not of the log,
  * which is what lets {@link settleEventSlotGap} re-read instead of giving up.
+ *
+ * @throws if any event id carries no slot. Every World the runtime replays
+ * against numbers events by slot, so an id that does not is a broken log rather
+ * than an older one, and a maximum derived by skipping it would understate the
+ * log to every write that reads it.
  */
-export function maxEventSlot(events: Event[]): number | undefined {
+export function maxEventSlot(events: readonly Event[]): number | undefined {
   let max: number | undefined;
   for (const event of events) {
-    const slot = eventIdToSlot(event.eventId);
-    if (slot === null) {
-      return undefined;
-    }
+    const slot = requireEventSlot(event.eventId);
     if (max === undefined || slot > max) {
       max = slot;
     }
@@ -863,8 +897,8 @@ export interface EventSlotGap {
 /**
  * The hole in a loaded log, or `undefined` when there is none to find.
  *
- * On a slot-numbered run the World allocates every position, so a log that
- * holds `n` events below slot `n` is missing one. That matters before a replay
+ * The World allocates every position, so a log that holds `n` events below slot
+ * `n` is missing one. That matters before a replay
  * and nowhere else: the replay reads the log as the complete record of what has
  * happened, and an absent position is indistinguishable from an event that
  * never occurred. The branch it would have decided gets decided the other way,
@@ -881,8 +915,10 @@ export interface EventSlotGap {
  * legitimately begins at the second slot and fills in on its own. Every replay
  * that races a run's own start would otherwise report a hole.
  *
- * Returns `undefined` for a log this cannot read as slots at all: an empty one,
- * or a run numbered by ULID, where positions carry no density to check.
+ * Returns `undefined` for an empty log, which has no density to check.
+ *
+ * @throws if any event id carries no slot, for the reason {@link maxEventSlot}
+ * gives.
  */
 export function findEventSlotGap(
   events: readonly Event[]
@@ -890,10 +926,7 @@ export function findEventSlotGap(
   const occupied = new Set<number>();
   let maxSlot = 0;
   for (const event of events) {
-    const slot = eventIdToSlot(event.eventId);
-    if (slot === null) {
-      return undefined;
-    }
+    const slot = requireEventSlot(event.eventId);
     occupied.add(slot);
     if (slot > maxSlot) {
       maxSlot = slot;
@@ -931,7 +964,7 @@ export function findEventSlotGap(
  *
  * A hole can be transient. The World allocates a slot inside the insert that
  * occupies it, so two concurrent writers can collide, one retry past the other,
- * and the higher slot commit first — leaving a window in which the lower one is
+ * and the higher slot commit first, leaving a window in which the lower one is
  * genuinely absent from a strongly-consistent read and fills in a moment later.
  * The window is one commit wide, so a short backoff clears it; anything that
  * survives all three re-reads is a position no write will ever occupy.
@@ -944,7 +977,7 @@ const SLOT_GAP_RECHECK_BASE_DELAY_MS = 25;
  * out, and return the settled log alongside the hole that survived.
  *
  * Reads are strongly consistent, so a hole is not an artifact of *when* the log
- * was read — but it can be an artifact of a write that had not committed yet
+ * was read, but it can be an artifact of a write that had not committed yet
  * (see {@link SLOT_GAP_RECHECK_ATTEMPTS}). Distinguishing the two costs a
  * re-read, which is only ever paid by a replay that already found a hole.
  *
@@ -973,80 +1006,58 @@ export async function settleEventSlotGap(
 }
 
 /**
- * The precondition snapshot a replay-context event creation sends, describing
- * the event log the replay derived the event from.
+ * How much of its run's log a replay-context event creation had loaded when it
+ * decided to write, as the highest slot that log occupies.
  *
- * On a slot-numbered run this is `eventCount`, optionally with the set of
- * correlation ids the writer is blocked on. On a ULID-numbered run it is the
- * `stateUpdatedAt` / `stateEventCount` / `stateCursor` triple, whose three
- * fields are one indivisible unit: the backend reads the count only relative to
- * the watermark, and returns its inline delta only relative to the cursor.
- * Passing them as a single object is what keeps them from drifting apart at a
- * call site.
+ * One integer says it because the World keeps its positions dense: a writer
+ * that names slot N is claiming to hold every event from 1 to N and nothing
+ * above. The World answers by numbering the write above whatever the log has
+ * actually reached and handing back the events on the slots in between: the
+ * ones this writer decided without.
+ *
+ * Density is the World's invariant, not a claim about this particular read. A
+ * reader that is short of a position it holds no event for names a lower N,
+ * which understates what it has seen and only costs it a wider report. Naming
+ * a position it cannot account for is the direction that is unsafe, which is
+ * why {@link slotSnapshotParams} takes the maximum rather than the count.
+ *
+ * Its own object rather than a bare number so a call site cannot half-send it,
+ * and so the empty case spreads to nothing.
  */
-export interface PreconditionSnapshotParams {
-  stateUpdatedAt?: number;
-  stateEventCount?: number;
-  stateCursor?: string;
+export interface SlotSnapshotParams {
   eventCount?: number;
 }
 
 /**
- * Build the precondition snapshot to attach to a replay-context event creation.
+ * Build the slot snapshot to attach to a replay-context event creation.
  *
- * Returns an empty object — no guard, backend behaves as before — when the
- * guard is disabled or the watermark is not derivable. All three fields fail
- * open together: a count without a watermark is meaningless to the backend, and
- * a cursor without either would invite a delta nobody asked for.
+ * Empty for an empty log, which is the state a `run_created` write is issued
+ * from: there is no position held yet to name.
  *
- * `stateEventCount` is `events.length` because the watermark is the log's
- * *maximum* ULID time, so every loaded event is at or below it regardless of the
- * order the World returned them in.
- *
- * Both fields are therefore invariant under permutation of the log: a maximum is
- * order-independent, and the length is set cardinality once `appendUniqueEvents`
- * has deduped by event id. Two replays that consume the same events in different
- * orders send an identical snapshot, so this guard detects that a log is missing
- * an event and can never detect that a replay consumed one in a different order.
+ * The maximum rather than the length, for the reason {@link maxEventSlot}
+ * gives: a partially-read log holds fewer events than its highest position, and
+ * counting those would make the write claim to have seen less than it has, so
+ * the World would report the same events back on every attempt.
  */
-export function preconditionSnapshotParams(
-  events: Event[],
-  cursor?: string | null
-): PreconditionSnapshotParams {
-  if (!isPreconditionGuardEnabled()) {
-    return {};
-  }
-  // A slot-numbered run says with one integer everything the triple was
-  // approximating, so the two are alternatives rather than a pair. Sending the
-  // triple here would also be futile: a slot id carries no time, so
-  // `latestEventStateUpdatedAt` would fail open on every single write.
+export function slotSnapshotParams(
+  events: readonly Event[]
+): SlotSnapshotParams {
   const eventCount = maxEventSlot(events);
-  if (eventCount !== undefined) {
-    return { eventCount };
-  }
-  const stateUpdatedAt = latestEventStateUpdatedAt(events);
-  if (stateUpdatedAt === undefined) {
-    return {};
-  }
-  return {
-    stateUpdatedAt,
-    stateEventCount: events.length,
-    ...(cursor ? { stateCursor: cursor } : {}),
-  };
+  return eventCount === undefined ? {} : { eventCount };
 }
 
 /**
  * The events a rejecting World attached to a `PreconditionFailedError`, when it
  * returned the ones the client's snapshot was missing inline.
  *
- * Returns `null` for anything else — no details, a World that did not implement
+ * Returns `null` for anything else: no details, a World that did not implement
  * this, or a payload that does not narrow cleanly. Callers fall back to
  * reloading the event log, which is always correct; this is untrusted-shaped
  * data on a failure path, so nothing here is repaired.
  *
  * `runId` is the caller's run. Every event must belong to it: the delta is
  * merged straight into the replay's log, and one foreign event there is a
- * corrupt log rather than a corrected one — the replay would consume a
+ * corrupt log rather than a corrected one: the replay would consume a
  * correlation id for an event that does not exist on this run.
  */
 export function preconditionEventDelta(
@@ -1167,7 +1178,7 @@ export function runDispatchContext(
 }
 
 /** FNV-1a 32-bit hash of a string, as 8 hex chars. Tiny, deterministic, and
- *  dependency-free — used only to scope idempotency keys, not for security. */
+ *  dependency-free. Used only to scope idempotency keys, not for security. */
 function fnv1a32Hex(value: string): string {
   let hash = 0x811c9dc5;
   for (let i = 0; i < value.length; i++) {
@@ -1179,19 +1190,19 @@ function fnv1a32Hex(value: string): string {
 
 /**
  * Idempotency key for a step's background-dispatch queue message, scoped to
- * the step's IDENTITY — correlation id plus (hashed) step name — rather than
+ * the step's IDENTITY, correlation id plus (hashed) step name, rather than
  * the bare correlation id.
  *
  * The scoping matters for resilient step dispatch under the precondition
  * guard: a guard-rejected `step_created` leaves its (revoked) step message in
  * flight, and the corrected replay may re-derive the same correlation id for
  * a DIFFERENT step. Under a bare-correlationId key the corrected replay's
- * dispatch would silently dedupe against the revoked in-flight message —
+ * dispatch would silently dedupe against the revoked in-flight message,
  * which then resolves `skipped` against the re-created entity (the server's
- * stepName fence rejects its bare start) — and the legitimate step would
+ * stepName fence rejects its bare start), and the legitimate step would
  * never be executed. Scoping by step name keeps every dedup property that
  * matters (crash recovery re-dispatch, concurrent handlers, the delayed
- * retry sharing the suspension re-dispatch's key — all name the same step)
+ * retry sharing the suspension re-dispatch's key: all name the same step)
  * while letting the corrected schedule's dispatch through.
  *
  * Every producer of a step-dispatch (or step-retry) message must use this
@@ -1239,6 +1250,88 @@ export async function queueMessage(
 }
 
 /**
+ * Publishes several messages to one logical queue, using the World's batch
+ * send when it has one and falling back to concurrent single sends when it
+ * does not.
+ *
+ * Rejects if ANY message failed to publish, because every caller so far wants
+ * all-or-nothing: the recovery is to fail the delivery and let redelivery
+ * republish the whole set, deduped by the per-message `idempotencyKey`. That
+ * means a partial batch can leave some messages already out — which is
+ * exactly why the keys are required rather than advisory.
+ */
+export async function queueMessages(
+  world: World,
+  queueName: Parameters<typeof world.queue>[0],
+  messages: readonly {
+    message: Parameters<typeof world.queue>[1];
+    opts?: Parameters<typeof world.queue>[2];
+  }[]
+): Promise<void> {
+  if (messages.length === 0) return;
+  const batch = world.queueBatch?.bind(world);
+  if (!batch) {
+    await Promise.all(
+      messages.map((entry) =>
+        queueMessage(world, queueName, entry.message, entry.opts)
+      )
+    );
+    return;
+  }
+  await trace(
+    'queue.publish',
+    {
+      attributes: {
+        ...Attribute.MessagingSystem('vercel-queue'),
+        ...Attribute.MessagingDestinationName(queueName),
+        ...Attribute.MessagingOperationType('publish'),
+        ...Attribute.MessagingBatchMessageCount(messages.length),
+        ...Attribute.PeerService('vercel-queue'),
+        ...Attribute.RpcSystem('vercel-queue'),
+        ...Attribute.RpcService('vqs'),
+        ...Attribute.RpcMethod('publishBatch'),
+      },
+      kind: await getSpanKind('PRODUCER'),
+    },
+    async () => {
+      const results = await batch(queueName, messages);
+      // A World that answers with the wrong number of results has told us
+      // nothing about the messages it left out. Treated as a failure of the
+      // whole batch rather than read as success for the entries that ARE
+      // present: republishing under the same idempotency keys is safe,
+      // silently never dispatching a step is not (the run makes no progress
+      // and nothing surfaces an error).
+      if (results.length !== messages.length) {
+        throw Object.assign(
+          new Error(
+            `Queue batch for ${queueName} returned ${results.length} ` +
+              `result(s) for ${messages.length} message(s)`
+          ),
+          { retryable: true }
+        );
+      }
+      const failures = results.filter((result) => result.error !== undefined);
+      if (failures.length === 0) return;
+      const retryable = failures.some(
+        (failure) => failure.error !== undefined && failure.retryable
+      );
+      const error = new Error(
+        `Failed to publish ${failures.length} of ${messages.length} queue ` +
+          `message(s) to ${queueName}: ${failures[0]?.error}`
+      );
+      // Carried on the error so a caller CAN tell a transient partial batch
+      // from a permanent rejection. Nothing reads it yet: today every caller
+      // rejects the delivery either way, so a permanently rejected entry
+      // still costs the full redelivery budget. Left in place because the
+      // information is only available here, and a fast-fail on
+      // `retryable: false` needs it.
+      Object.assign(error, { retryable });
+      throw error;
+    }
+  );
+}
+
+/**
  * Calculates the queue overhead time in milliseconds for a given message.
  */
 export function getQueueOverhead(message: { requestedAt?: Date }) {
@@ -1253,34 +1346,26 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
 }
 
 /**
- * Returns a memoized accessor for a run's full encryption capability.
- *
- * The first call resolves the run's key material via
- * `world.getEncryptionKeyForRun` (which may do HKDF derivation locally on
- * Vercel, or a network fetch from external contexts) and derives a
- * {@link PayloadKey} from it; subsequent calls await the same cached promise.
- * If the world doesn't support encryption or the run has no key configured,
- * the cached value is `undefined`.
- *
- * The resolved value is deliberately the *full* capability — the symmetric AES
- * key plus the run's X25519 keypair — not just a `CryptoKey`. A run reading
- * its own event log can encounter sealed (`encp`) payloads that another run
- * wrote to it (a cross-deployment hook resumption, say), and opening those
- * needs the keypair. Resolving only the symmetric key would leave those
- * payloads unopenable and wedge the run.
- *
- * Used by step / workflow handlers to defer the (potentially expensive)
- * key fetch until the first code path that actually needs it — typically
- * input hydration on the success path, or error dehydration on a failure
- * path. Both paths can race-call the accessor without triggering duplicate
- * fetches.
- *
- * Errors thrown by `getEncryptionKeyForRun` propagate to every caller
- * (the cached promise rejects). This is intentional: when encryption is
- * configured, we never want to silently fall back to plaintext
- * serialization. A propagated error in an event-emission path leaves the
- * outer try/catch to log and surface the issue; the queue's redelivery
- * semantics will retry the key fetch on the next attempt.
+ * Resolve the run's full payload-encryption capability. This includes the
+ * symmetric key and X25519 keypair needed to open cross-run sealed payloads.
+ * Missing world support or key material resolves to `undefined`; lookup and
+ * derivation failures propagate rather than silently falling back to plaintext.
+ */
+export async function resolveRunEncryptionKey(
+  world: World,
+  runOrId: WorkflowRun | string,
+  context?: Record<string, unknown>
+): Promise<PayloadKey | undefined> {
+  const rawKey =
+    typeof runOrId === 'string'
+      ? await world.getEncryptionKeyForRun?.(runOrId, context)
+      : await world.getEncryptionKeyForRun?.(runOrId);
+  return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
+}
+
+/**
+ * Return a lazy, memoized accessor around {@link resolveRunEncryptionKey}.
+ * Concurrent callers share the same promise, including its rejection.
  */
 export function memoizeEncryptionKey(
   world: World,
@@ -1289,20 +1374,7 @@ export function memoizeEncryptionKey(
   let cached: Promise<PayloadKey | undefined> | undefined;
   return () => {
     if (!cached) {
-      cached = (async () => {
-        // The `getEncryptionKeyForRun` overload set takes either a
-        // `WorkflowRun` or a `runId: string` (with optional context). Branch
-        // here so TypeScript picks the right overload for each shape.
-        const rawKey =
-          typeof runOrId === 'string'
-            ? await world.getEncryptionKeyForRun?.(runOrId)
-            : await world.getEncryptionKeyForRun?.(runOrId);
-        // Resolve the *full* capability, not just the symmetric key: a run
-        // reading its own event log may encounter sealed (`encp`) payloads
-        // that another run wrote to it, and opening those needs the run's
-        // X25519 scalar as well.
-        return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
-      })();
+      cached = resolveRunEncryptionKey(world, runOrId);
     }
     return cached;
   };

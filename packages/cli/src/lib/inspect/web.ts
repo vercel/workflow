@@ -22,7 +22,8 @@ interface DashboardRegistryEntry {
  * Find embedded dashboards (e.g. a framework integration serving `/_workflow`)
  * that are currently live for this project. Reads the best-effort registry and
  * health-checks each entry, since stale entries are expected (a SIGKILL'd dev
- * server can't clean up). Returns [] on any error — coordination is optional.
+ * server can't clean up). Returns [] on any error, since coordination is
+ * optional.
  */
 async function findLiveEmbeddedDashboards(): Promise<DashboardRegistryEntry[]> {
   let entries: DashboardRegistryEntry[];
@@ -53,7 +54,7 @@ async function findLiveEmbeddedDashboards(): Promise<DashboardRegistryEntry[]> {
       // Any non-5xx response means something is serving that route.
       if (res.status < 500) live.push(entry);
     } catch {
-      // unreachable — treat as dead
+      // unreachable, so treat as dead
     }
   }
   return live;
@@ -317,7 +318,7 @@ export function buildDeepLinkUrl(
 }
 
 /**
- * Resolve and print a shareable deep-link URL to stdout, then return — without
+ * Resolve and print a shareable deep-link URL to stdout, then return, without
  * opening a browser or starting the local web server. Intended for scripting
  * and agents that need the link rather than a rendered dashboard.
  *

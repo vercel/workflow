@@ -22,8 +22,8 @@ const decoder = new TextDecoder();
 // Mirrors the node:vm engine's workflow-context abort reducers/revivers in
 // serialization.ts: reduce by reading the stream/hook symbols stamped at
 // controller construction; revive to the bootstrap's WorkflowAbortSignal
-// class (looked up lazily on globalThis — the serde bundle is evaluated
-// before the bootstrap defines it).
+// class (looked up lazily on globalThis, since the serde bundle is
+// evaluated before the bootstrap defines it).
 const ABORT_STREAM_NAME = Symbol.for('WORKFLOW_ABORT_STREAM_NAME');
 const ABORT_HOOK_TOKEN = Symbol.for('WORKFLOW_ABORT_HOOK_TOKEN');
 
@@ -144,7 +144,7 @@ function getReviversForMode(mode: SerializationMode): Partial<Revivers> {
 }
 
 /**
- * The workflow-mode reducer/reviver key sets — exported for the QuickJS
+ * The workflow-mode reducer/reviver key sets, exported for the QuickJS
  * host serde's exhaustiveness test (quickjs-serde.test.ts), which pins
  * that the handle-space codec implements exactly these.
  */

@@ -1,8 +1,4 @@
-import {
-  FatalError,
-  ReplayDivergenceError,
-  WorkflowRuntimeError,
-} from '@workflow/errors';
+import { FatalError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -150,11 +146,14 @@ describe('createUseStep', () => {
     expect((error as WorkflowSuspension).message).toBe(
       '1 step has not been run yet'
     );
-    // Compare Map values with WorkflowSuspension.steps array
+    // Compare Map values with WorkflowSuspension.items array
     expect([...ctx.invocationsQueue.values()]).toEqual(
-      (error as WorkflowSuspension).steps
+      (error as WorkflowSuspension).items
     );
-    expect((error as WorkflowSuspension).steps).toMatchInlineSnapshot(`
+    expect((error as WorkflowSuspension).steps).toBe(
+      (error as WorkflowSuspension).items
+    );
+    expect((error as WorkflowSuspension).items).toMatchInlineSnapshot(`
       [
         {
           "args": [
@@ -196,11 +195,11 @@ describe('createUseStep', () => {
     expect((error as WorkflowSuspension).message).toBe(
       '3 steps have not been run yet'
     );
-    // Compare Map values with WorkflowSuspension.steps array
+    // Compare Map values with WorkflowSuspension.items array
     expect([...ctx.invocationsQueue.values()]).toEqual(
-      (error as WorkflowSuspension).steps
+      (error as WorkflowSuspension).items
     );
-    expect((error as WorkflowSuspension).steps).toMatchInlineSnapshot(`
+    expect((error as WorkflowSuspension).items).toMatchInlineSnapshot(`
       [
         {
           "args": [
@@ -942,10 +941,11 @@ describe('AbortController hook integration', () => {
       const WorkflowAbortController = createCreateAbortController(ctx);
       const controller = new WorkflowAbortController();
 
-      // The events consumer processes events via process.nextTick, and the
-      // hook_received handler chains through promiseQueue. We need to let
-      // multiple ticks pass for _setAborted to be called.
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      // Wait until the events consumer has delivered hook_received and
+      // removed its hook subscriber, then drain the hydration work it queued.
+      // A fixed delay races loaded CI runners and can read signal state before
+      // the process.nextTick delivery has even updated promiseQueue.
+      await vi.waitFor(() => expect(ctx.invocationsQueue.size).toBe(0));
       await ctx.promiseQueue;
 
       // After replay event processing, signal.aborted is true — the
@@ -1014,7 +1014,7 @@ describe('AbortController hook integration', () => {
       );
 
       // The suspension should contain the hook with abortRequested
-      const hookItem = suspension.steps.find((s) => s.type === 'hook');
+      const hookItem = suspension.items.find((s) => s.type === 'hook');
       expect(hookItem).toBeDefined();
       expect(hookItem?.type).toBe('hook');
       if (hookItem?.type === 'hook') {
@@ -1116,7 +1116,7 @@ describe('AbortController hook integration', () => {
       );
 
       // The handler should see a hook that needs both creation and abort
-      const hookItem = suspension.steps.find((s) => s.type === 'hook');
+      const hookItem = suspension.items.find((s) => s.type === 'hook');
       expect(hookItem).toBeDefined();
       if (hookItem?.type === 'hook') {
         expect(hookItem.hasCreatedEvent).toBeFalsy();

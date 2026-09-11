@@ -1,10 +1,10 @@
 import { Skeleton } from './ui/skeleton';
 
 const STREAM_SKELETON_ROWS = [
-  { id: 'stream-skeleton-row-1', width: '72%' },
-  { id: 'stream-skeleton-row-2', width: '58%' },
-  { id: 'stream-skeleton-row-3', width: '80%' },
-  { id: 'stream-skeleton-row-4', width: '64%' },
+  { id: 'stream-skeleton-row-1', widthClassName: 'w-[72%]' },
+  { id: 'stream-skeleton-row-2', widthClassName: 'w-[58%]' },
+  { id: 'stream-skeleton-row-3', widthClassName: 'w-4/5' },
+  { id: 'stream-skeleton-row-4', widthClassName: 'w-[64%]' },
 ];
 
 export function StreamViewerSkeleton() {
@@ -24,7 +24,7 @@ export function StreamViewerSkeleton() {
             key={row.id}
             className="flex h-10 items-center gap-2 border-b border-gray-alpha-400 px-3"
           >
-            <Skeleton className="h-3" style={{ width: row.width }} />
+            <Skeleton className={`h-3 ${row.widthClassName}`} />
             <Skeleton className="h-4 w-4 shrink-0 rounded-sm" />
           </div>
         ))}

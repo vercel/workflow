@@ -1,5 +1,106 @@
 # @workflow/world-testing
 
+## 5.0.0-beta.50
+
+### Patch Changes
+
+- [#3988](https://github.com/vercel/workflow/pull/3988) [`efbdc21`](https://github.com/vercel/workflow/commit/efbdc213a0a70f8be2a147a0af195a4d9d82f0fe) Thanks [@pranaygp](https://github.com/pranaygp)! - **Breaking:** `hook.metadata` on hooks returned by `getHookByToken()` and `resumeHook()` is now a lazy getter that returns a Promise, like `run.returnValue`, and needs to be awaited. Looking a hook up by token no longer pays for hydrating metadata that is never read.
+
+- Updated dependencies [[`efbdc21`](https://github.com/vercel/workflow/commit/efbdc213a0a70f8be2a147a0af195a4d9d82f0fe)]:
+  - @workflow/core@5.0.0-beta.50
+  - workflow@5.0.0-beta.50
+  - @workflow/cli@5.0.0-beta.50
+
+## 5.0.0-beta.49
+
+### Patch Changes
+
+- Updated dependencies [[`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd), [`c340820`](https://github.com/vercel/workflow/commit/c3408204110f5e8fbb53cefedf136caf00ee452d), [`4547e1a`](https://github.com/vercel/workflow/commit/4547e1a7a95f273f3166edf45344dc827f1935fa)]:
+  - @workflow/core@5.0.0-beta.49
+  - @workflow/world@5.0.0-beta.34
+  - workflow@5.0.0-beta.49
+  - @workflow/cli@5.0.0-beta.49
+
+## 5.0.0-beta.48
+
+### Patch Changes
+
+- [#3901](https://github.com/vercel/workflow/pull/3901) [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Upgrade repository tooling and CI from pnpm 10 to pnpm 11.
+
+- Updated dependencies [[`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762), [`564ad39`](https://github.com/vercel/workflow/commit/564ad3966c5d16d73fd6fd88acdf01e6f92843aa), [`f9073d0`](https://github.com/vercel/workflow/commit/f9073d073990c7eb834a0ad660f1796e19356c0d), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`4a18b01`](https://github.com/vercel/workflow/commit/4a18b0133aaedaf922b903818c6b0db3adc91beb), [`3c08778`](https://github.com/vercel/workflow/commit/3c0877890500257fb19e9575d57399ec4bb159c9), [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491), [`31dabce`](https://github.com/vercel/workflow/commit/31dabce0c87fa48af210362061324ff0369e094f), [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15)]:
+  - @workflow/world@5.0.0-beta.33
+  - @workflow/core@5.0.0-beta.48
+  - @workflow/cli@5.0.0-beta.48
+  - workflow@5.0.0-beta.48
+
+## 5.0.0-beta.47
+
+### Patch Changes
+
+- Updated dependencies [[`855e479`](https://github.com/vercel/workflow/commit/855e47990c0da35419325da27976bae925afb0e9), [`2668e33`](https://github.com/vercel/workflow/commit/2668e3325ba89dec973c3c2f35c49efdb239de8d), [`07ec212`](https://github.com/vercel/workflow/commit/07ec212fe762e0659d4528913716c59870fd6c7d), [`ee6f917`](https://github.com/vercel/workflow/commit/ee6f917cdbfcf50a5fd697c7a9cb70dd1294f931), [`e9d5c56`](https://github.com/vercel/workflow/commit/e9d5c56701821b090108a85b74bf8b0cbef8ea8e), [`ffc5807`](https://github.com/vercel/workflow/commit/ffc58078d0c3cd2786d69bab7e41614566a9ea4e), [`1c28eec`](https://github.com/vercel/workflow/commit/1c28eeca159f022c73912326baf78d69152db876)]:
+  - @workflow/world@5.0.0-beta.32
+  - @workflow/core@5.0.0-beta.47
+  - @workflow/cli@5.0.0-beta.47
+  - workflow@5.0.0-beta.47
+
+## 5.0.0-beta.46
+
+### Patch Changes
+
+- Updated dependencies [[`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`d9e0777`](https://github.com/vercel/workflow/commit/d9e0777eb8b1ce5f3be3fe865bc5a17fdbdb9d5d), [`82e2678`](https://github.com/vercel/workflow/commit/82e267893917e06f5d3ce316baefc27cd024a912), [`556f3f0`](https://github.com/vercel/workflow/commit/556f3f080a33f8673cf3c08805997dba4e4d865e)]:
+  - @workflow/core@5.0.0-beta.46
+  - @workflow/world@5.0.0-beta.31
+  - @workflow/cli@5.0.0-beta.46
+  - workflow@5.0.0-beta.46
+
+## 5.0.0-beta.45
+
+### Patch Changes
+
+- Updated dependencies [[`d62b444`](https://github.com/vercel/workflow/commit/d62b44473b43e183e71386fe84b33f5e7bb5445c), [`27cab14`](https://github.com/vercel/workflow/commit/27cab14adcc6f748500fca19cf78feeb60a125e7), [`f7fb012`](https://github.com/vercel/workflow/commit/f7fb0126528fac2168492c3143fe0379b6f5ef1a), [`5841558`](https://github.com/vercel/workflow/commit/584155897f75e712a1c2bc199d6d12027cd18dab)]:
+  - @workflow/core@5.0.0-beta.45
+  - @workflow/world@5.0.0-beta.30
+  - @workflow/cli@5.0.0-beta.45
+  - workflow@5.0.0-beta.45
+
+## 5.0.0-beta.44
+
+### Patch Changes
+
+- [#3728](https://github.com/vercel/workflow/pull/3728) [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8) Thanks [@pranaygp](https://github.com/pranaygp)! - Annotate the test server's per-run invocation counter as deliberately per-copy, so it passes the module-scope state rule.
+
+- [#3737](https://github.com/vercel/workflow/pull/3737) [`7e48e7b`](https://github.com/vercel/workflow/commit/7e48e7b4de5e26a4ea18a1a0d8c9c819cf878ee4) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - The event-id conformance test now floors a run's stamped `specVersion` at `mintedSpecVersion()` rather than `SPEC_VERSION_CURRENT`, so a World is not failed for stamping the version it was told to stamp while a spec bump is staged.
+
+- Updated dependencies [[`5b5a926`](https://github.com/vercel/workflow/commit/5b5a926f8850ec5d967e090cc0500028fd53e2ef), [`9b1b8c7`](https://github.com/vercel/workflow/commit/9b1b8c711104fd507327aafc8cb965738f315e29), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`f771585`](https://github.com/vercel/workflow/commit/f771585486b3019c8d68211b158dfeffc9e5ebe8), [`9454d51`](https://github.com/vercel/workflow/commit/9454d51db0d52d6be9bafea9c70ab6fc3a1ceba4), [`7b79ba3`](https://github.com/vercel/workflow/commit/7b79ba37cc97e858ceb8b2474e03bbc404b555a0), [`bf9de1c`](https://github.com/vercel/workflow/commit/bf9de1cd81eda1b1721b857364070c0ce70d1e58)]:
+  - @workflow/core@5.0.0-beta.44
+  - workflow@5.0.0-beta.44
+  - @workflow/world@5.0.0-beta.29
+  - @workflow/cli@5.0.0-beta.44
+
+## 5.0.0-beta.43
+
+### Patch Changes
+
+- Updated dependencies [[`b0adb50`](https://github.com/vercel/workflow/commit/b0adb50bce623b23252735021205e8d870a2b11f), [`37e1d9e`](https://github.com/vercel/workflow/commit/37e1d9e5a9870ef4a35e1875e7054253a9fb89c3), [`1321570`](https://github.com/vercel/workflow/commit/13215704645ea487ef6f8821016ec3f13c1cd830), [`234d3dd`](https://github.com/vercel/workflow/commit/234d3dd7b852129e189d321314c4f749f12711d8), [`04e060a`](https://github.com/vercel/workflow/commit/04e060a0ecc247a3291714d8396430fa9d96bccc), [`707dfe6`](https://github.com/vercel/workflow/commit/707dfe6a063564cd1c146742e90661abc49534b3), [`a074259`](https://github.com/vercel/workflow/commit/a074259166819121579ffbb5b9f8da60853ae57b), [`ac51658`](https://github.com/vercel/workflow/commit/ac51658d39649e7d8e290924c3bf7b2c7df78b00), [`c5f9177`](https://github.com/vercel/workflow/commit/c5f9177be3c58a2b5616f798932061b67e0b54a5), [`880801b`](https://github.com/vercel/workflow/commit/880801bd4521a0cfd76e8c46ebf560c388ecf30c)]:
+  - @workflow/world@5.0.0-beta.28
+  - @workflow/core@5.0.0-beta.43
+  - workflow@5.0.0-beta.43
+  - @workflow/cli@5.0.0-beta.43
+
+## 5.0.0-beta.42
+
+### Patch Changes
+
+- [#3542](https://github.com/vercel/workflow/pull/3542) [`de2a86c`](https://github.com/vercel/workflow/commit/de2a86c61c843a04c292e54e9c439553b3da02c5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **Breaking**: New runs are created at spec version 6, and a World that declares an older spec version is now rejected before the first run rather than failing partway through one.
+
+- [#3519](https://github.com/vercel/workflow/pull/3519) [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Slot-numbered event ids are a requirement of the World contract, not a capability. The `slotEventIds` flag is gone, and the conformance suite now fails a World whose event ids are not positions.
+
+- Updated dependencies [[`600b096`](https://github.com/vercel/workflow/commit/600b096d2fa5423b742683fcd047010a1f1bfcd6), [`9add9d7`](https://github.com/vercel/workflow/commit/9add9d782d0cbf41ce447175c7b9fe47846d794d), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`efbc408`](https://github.com/vercel/workflow/commit/efbc408c4e98178dc8c8151764f308e9e4b6fd58), [`c041d3d`](https://github.com/vercel/workflow/commit/c041d3d231f8a75236311df56a68bd4ca104be22), [`60dd206`](https://github.com/vercel/workflow/commit/60dd2065f368f10ba5c0b1ae98240749c1d29dc3), [`a0ccfe0`](https://github.com/vercel/workflow/commit/a0ccfe0f50df1e6726b033e91c41257065e20edd), [`3560218`](https://github.com/vercel/workflow/commit/3560218937ab76cf631ffe200489f337ba843a40), [`de2a86c`](https://github.com/vercel/workflow/commit/de2a86c61c843a04c292e54e9c439553b3da02c5), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`7683130`](https://github.com/vercel/workflow/commit/7683130461a1a3de16c13be52d8aee96590b3814), [`dc85865`](https://github.com/vercel/workflow/commit/dc85865718fdf5e4abdb5ad8edf715ec956bf07d), [`b589460`](https://github.com/vercel/workflow/commit/b589460ce873bad3ddd7bda4a9bff147ddccac49), [`c1a5c74`](https://github.com/vercel/workflow/commit/c1a5c74edb2fad84eb5bbc2036bf73cbd16ca28d)]:
+  - @workflow/world@5.0.0-beta.27
+  - @workflow/core@5.0.0-beta.42
+  - @workflow/cli@5.0.0-beta.42
+  - workflow@5.0.0-beta.42
+
 ## 5.0.0-beta.41
 
 ### Patch Changes

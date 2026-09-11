@@ -15,23 +15,35 @@
  */
 import type * as api from '@opentelemetry/api';
 import type { Span, SpanKind, SpanOptions } from '@opentelemetry/api';
+import { globalSingleton } from '@workflow/utils';
 
-// Lazy load OpenTelemetry API to make it optional
-let otelApiPromise: Promise<typeof api | null> | null = null;
+/**
+ * This module's process-wide state: the lazily-imported OpenTelemetry API and
+ * the tracer built from it.
+ *
+ * On `globalThis` rather than at module scope because a bundler can put several
+ * copies of this file in one process (see `globalSingleton`); per-copy caches
+ * would import `@opentelemetry/api` and build a tracer once per copy.
+ */
+const otel = globalSingleton('@workflow/world-vercel//telemetry', 1, () => ({
+  // Lazy load OpenTelemetry API to make it optional
+  apiPromise: null as Promise<typeof api | null> | null,
+  tracerPromise: null as Promise<api.Tracer | null> | null,
+}));
 
 async function getOtelApi(): Promise<typeof api | null> {
-  if (!otelApiPromise) {
+  if (!otel.apiPromise) {
     // Static specifier is intentional: esbuild-bundled targets (the CLI's
     // `vercel-build-output-api` build, Nitro, Astro) ship a self-contained
     // bundle with no node_modules, so `@opentelemetry/api` (an optional peer)
-    // must be inlined at build time — a runtime-built specifier is opaque to
+    // must be inlined at build time. A runtime-built specifier is opaque to
     // esbuild and would silently disable tracing there. Bundlers that reject
     // an unresolvable static `import()` when the peer is absent (Rollup/Vite,
     // e.g. SvelteKit) externalize it in the framework integration instead.
-    otelApiPromise = import('@opentelemetry/api').catch((error) => {
-      // A missing module is expected for apps without OTEL — but the same
+    otel.apiPromise = import('@opentelemetry/api').catch((error) => {
+      // A missing module is expected for apps without OTEL, but the same
       // silent null also swallows bundler/resolution failures in apps that
-      // DO register a tracer, which then just lose every world-vercel span.
+      // DO register a tracer, which then lose every world-vercel span.
       // Surface the reason under DEBUG so that failure mode is diagnosable.
       if (
         typeof process !== 'undefined' &&
@@ -46,10 +58,8 @@ async function getOtelApi(): Promise<typeof api | null> {
       return null;
     });
   }
-  return otelApiPromise;
+  return otel.apiPromise;
 }
-
-let tracerPromise: Promise<api.Tracer | null> | null = null;
 
 function workflowDebugEnabled(): boolean {
   return (
@@ -59,14 +69,17 @@ function workflowDebugEnabled(): boolean {
   );
 }
 
+// per-copy-ok: this diagnostic reports how THIS module instance sees the
+// global OTel registration, so "once" is deliberately once per copy. With
+// several copies in a process, each one's view is the thing worth seeing.
 let otelDiagLogged = false;
 
 /**
  * One-shot runtime diagnostic (DEBUG=workflow:* only): prints how THIS module
- * instance of `@opentelemetry/api` sees the global registration — enough to
- * tell a noop tracer from a registered provider, and a missing registration
- * from an incompatible one. @workflow/core emits the same shape tagged
- * `core`, so a single deployment's logs show both views side by side.
+ * instance of `@opentelemetry/api` sees the global registration, which is
+ * enough to tell a noop tracer from a registered provider, and a missing
+ * registration from an incompatible one. @workflow/core emits the same shape
+ * tagged `core`, so a single deployment's logs show both views side by side.
  */
 function logOtelDiagnosticOnce(otel: typeof api, tracer: api.Tracer): void {
   if (otelDiagLogged || !workflowDebugEnabled()) return;
@@ -100,15 +113,15 @@ function logOtelDiagnosticOnce(otel: typeof api, tracer: api.Tracer): void {
 }
 
 async function getTracer(): Promise<api.Tracer | null> {
-  if (!tracerPromise) {
-    tracerPromise = getOtelApi().then((otel) => {
-      if (!otel) return null;
-      const tracer = otel.trace.getTracer('workflow');
-      logOtelDiagnosticOnce(otel, tracer);
+  if (!otel.tracerPromise) {
+    otel.tracerPromise = getOtelApi().then((otelApi) => {
+      if (!otelApi) return null;
+      const tracer = otelApi.trace.getTracer('workflow');
+      logOtelDiagnosticOnce(otelApi, tracer);
       return tracer;
     });
   }
-  return tracerPromise;
+  return otel.tracerPromise;
 }
 
 /**
@@ -173,13 +186,29 @@ export async function getSpanKind(
 export async function injectTraceContextIntoHeaders(
   headers: Headers
 ): Promise<void> {
-  const otel = await getOtelApi();
-  if (!otel) return;
-  const carrier: Record<string, string> = {};
-  otel.propagation.inject(otel.context.active(), carrier);
-  for (const [key, value] of Object.entries(carrier)) {
+  for (const [key, value] of Object.entries(await getTraceContextHeaders())) {
     headers.set(key, value);
   }
+}
+
+/**
+ * The active W3C trace context as a plain header record.
+ *
+ * The same source as {@link injectTraceContextIntoHeaders}, shaped for APIs
+ * that take a header map rather than a `Headers` — a batched queue send
+ * carries its context on each message's own headers, not on the request's.
+ *
+ * Empty when `@opentelemetry/api` is unavailable or no propagator is
+ * registered, so callers can spread it unconditionally.
+ */
+export async function getTraceContextHeaders(): Promise<
+  Record<string, string>
+> {
+  const otel = await getOtelApi();
+  if (!otel) return {};
+  const carrier: Record<string, string> = {};
+  otel.propagation.inject(otel.context.active(), carrier);
+  return carrier;
 }
 
 // Semantic conventions for World/Storage tracing
@@ -210,6 +239,16 @@ export const HttpResponseStatusCode = SemanticConvention<number>(
 
 /** Error type when request fails (standard OTEL: error.type) */
 export const ErrorType = SemanticConvention<string>('error.type');
+
+/**
+ * Application-layer protocol the request was carried over (standard OTEL:
+ * network.protocol.name). Only set on the WS events transport, whose client
+ * span is synthesized rather than produced by a real `fetch`. It is the
+ * attribute that keeps such a span honest about what actually went on the wire.
+ */
+export const NetworkProtocolName = SemanticConvention<string>(
+  'network.protocol.name'
+);
 
 /** Format used for parsing response body (cbor or json) */
 export const WorldParseFormat = SemanticConvention<'cbor' | 'json'>(
@@ -253,4 +292,88 @@ export const WorkflowStreamOperation = SemanticConvention<string>(
 /** Requested start index for a live stream read (workflow.stream.start_index) */
 export const WorkflowStreamStartIndex = SemanticConvention<number>(
   'workflow.stream.start_index'
+);
+
+/**
+ * Transport an event write was carried over (workflow.events.transport):
+ * `http` | `ws`. Set on BOTH paths, deliberately: the two emit the same
+ * `http POST` client span against the same `url.full`, which is what keeps
+ * per-event traces and latency dashboards working across
+ * `WORKFLOW_EVENTS_TRANSPORT`, and this attribute is then the only way to slice
+ * one against the other.
+ */
+export const WorkflowEventsTransport = SemanticConvention<'http' | 'ws'>(
+  'workflow.events.transport'
+);
+
+/**
+ * HTTP client library the request was issued through
+ * (workflow.http.transport): `undici` | `node-http`. Set on BOTH paths, for
+ * the same reason as {@link WorkflowEventsTransport}: the two emit the same
+ * client span against the same `url.full`, so without this attribute a trace
+ * cannot say which transport carried the request, and `WORKFLOW_NODE_HTTP`
+ * is an opt-in whose whole point is being verified in a real deployment.
+ */
+export const WorkflowHttpTransport = SemanticConvention<'undici' | 'node-http'>(
+  'workflow.http.transport'
+);
+
+/** Event type of a single event write (workflow.event.type), e.g. `step_started`. */
+export const WorkflowEventType = SemanticConvention<string>(
+  'workflow.event.type'
+);
+
+/** Server-side classification of a step_started write. */
+export type WorkflowStepStartMode =
+  | 'single_lazy_create_claim'
+  | 'single_owned_recovery'
+  | 'single_bare'
+  | 'batch_create_claim'
+  | 'batch_bare';
+export const WorkflowStepStartMode = SemanticConvention<WorkflowStepStartMode>(
+  'workflow.step_start.mode'
+);
+
+/** Whether a step_started write carries an inline ownership stamp. */
+export const WorkflowStepStartOwnerStamped = SemanticConvention<boolean>(
+  'workflow.step_start.owner_stamped'
+);
+
+/** Version of the Workflow client package issuing the request. */
+export const WorkflowClientVersion = SemanticConvention<string>(
+  'workflow.client.version'
+);
+
+/** Client-measured step-to-step overhead in milliseconds. */
+export const StepStsoMs = SemanticConvention<number>('step.stso_ms');
+
+/** Runtime optimizations active for the step latency measurement. */
+export const StepLatencyOptimizations = SemanticConvention<string[]>(
+  'step.latency_optimizations'
+);
+
+/**
+ * The socket a WS event write actually travelled over
+ * (workflow.events.ws.url). `url.full` names the v4 REST endpoint the frame is
+ * forwarded into, so this is where the real wire destination is recorded.
+ */
+export const WorkflowWsUrl = SemanticConvention<string>(
+  'workflow.events.ws.url'
+);
+
+/**
+ * Per-connection request id this write was multiplexed under
+ * (workflow.events.ws.req_id). The join key between a client span and the
+ * server's log line for the same frame.
+ */
+export const WorkflowWsRequestId = SemanticConvention<number>(
+  'workflow.events.ws.req_id'
+);
+
+/**
+ * Which eager-reconnect attempt opened this socket
+ * (workflow.events.ws.reconnect_attempt); 0 for the invocation's first connect.
+ */
+export const WorkflowWsReconnectAttempt = SemanticConvention<number>(
+  'workflow.events.ws.reconnect_attempt'
 );

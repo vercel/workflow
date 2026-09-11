@@ -19,7 +19,7 @@ export class ReplayRecoveryReporter {
    * it, so `withEventCreate` always passes writes through untouched. Lets every
    * call site hold a non-optional reporter instead of branching on one.
    *
-   * Structurally inert rather than a zero-count reporter on purpose — the
+   * Structurally inert rather than a zero-count reporter on purpose: the
    * server rejects a count below 1 as out-of-range and emits a
    * `telemetry_rejected` metric, so a reporter that *can* report zero is a
    * live footgun.

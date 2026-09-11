@@ -90,7 +90,7 @@ function matcherWithout(entry: GitignoreMatcher, dropped: Set<string>): Ignore {
  * applies them: a rule in a deeper `.gitignore` overrides a conflicting rule
  * from a shallower one.
  *
- * Nested `.gitignore` files *below* `workingDir` are intentionally not read —
+ * Nested `.gitignore` files *below* `workingDir` are intentionally not read;
  * the {@link WATCH_IGNORED_PATHS_ENV} env var backstops anything they'd cover.
  */
 function loadGitignoreMatchers(
@@ -196,7 +196,7 @@ export function createWatchIgnorePredicate(
   ) => {
     const matcher = dropped ? matcherWithout(entry, dropped) : entry.matcher;
     // Test the trailing-slash form too so a directory node itself matches a
-    // `dir/` gitignore rule (not just its children) — this lets the walk and
+    // `dir/` gitignore rule (not just its children); this lets the walk and
     // chokidar prune the directory instead of descending into it.
     const asFile = matcher.test(rel);
     const asDir = matcher.test(`${rel}/`);

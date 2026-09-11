@@ -1,9 +1,11 @@
 /**
- * Spec version utilities for backwards compatibility.
+ * Spec version utilities for backward compatibility.
  *
  * Uses a branded type to ensure packages import the version constants
  * from @workflow/world rather than using arbitrary numbers.
  */
+
+import { envFlag } from './env-config.js';
 
 declare const SpecVersionBrand: unique symbol;
 
@@ -17,7 +19,7 @@ export type SpecVersion = number & {
 
 /**
  * Legacy spec version (pre-event-sourcing). Also used for runs without specVersion.
- * This is the only true legacy version — specVersion 2+ all use the event-sourced model.
+ * This is the only true legacy version: specVersion 2+ all use the event-sourced model.
  */
 export const SPEC_VERSION_LEGACY = 1 as SpecVersion;
 
@@ -42,39 +44,127 @@ export const SPEC_VERSION_SUPPORTS_COMPRESSION = 5 as SpecVersion;
  * and the spec version stamped on `run_created` is what carries it. A run
  * created before the backend adopted slots stays on ULIDs for its whole life
  * because its stamped version is below this one.
+ *
+ * Slots are no longer optional for a World: the runtime reads a position out
+ * of every event id it loads (`requireEventSlot`) and fails the run if it
+ * cannot. That makes this version the lowest one this runtime can serve at
+ * all. See `SPEC_VERSION_CURRENT`.
  */
 export const SPEC_VERSION_SUPPORTS_SLOT_IDENTITY = 6 as SpecVersion;
 
 /**
- * Current spec version (event-sourced architecture with native attributes
- * and compressed payloads).
+ * Runs at this spec version or later live in a "sealed log": their slot
+ * positions are pre-assigned by a per-run sequencer on the World's backend,
+ * so concurrent writers never race each other for a position. A position
+ * whose writer died is filled ("sealed") by the backend with a `noop` event.
+ * What the version gates is the READER contract that makes that safe: a
+ * reader at this version knows a `noop` occupies its slot and carries no
+ * workflow meaning, and skips it during replay without advancing the
+ * deterministic clock (see `EventsConsumer`). A reader below this version
+ * would fail to parse the unknown event type, which is exactly what
+ * `requiresNewerWorld` exists to catch.
  *
- * Deliberately NOT bumped for slot-numbered event ids. Slot numbering is a
- * property of a run's whole log rather than of an individual event, and it is
- * already self-describing: a run's scheme is readable from the shape of its
- * own first event id (see `isSlotEventId`), so a World that owns its own id
- * allocation needs no version negotiation to pin one. Bumping this constant
- * would stamp the new version on every World
- * including ones that have not adopted slots yet, which is exactly the
- * cross-version breakage the pin exists to avoid. A World that does allocate
- * slots declares the higher version itself (see `world-vercel`), and
- * `SPEC_VERSION_MAX_SUPPORTED` is what keeps this reader from rejecting the
- * runs it produces.
+ * Note this is the READER contract only, so a World is spec-7 compliant by
+ * construction if it allocates each position at the commit that occupies it:
+ * no write can then leave a position empty, so it has no holes to seal and
+ * will never emit a `noop`. Pre-assigning positions ahead of the commit is
+ * what creates the obligation (see `building-a-world.mdx`), and only a World
+ * that does so needs the sealing half.
+ */
+export const SPEC_VERSION_SUPPORTS_SEALED_LOG = 7 as SpecVersion;
+
+/**
+ * Current spec version: event-sourced architecture with native attributes,
+ * compressed payloads, slot-numbered event ids, and sealed-log sequencing.
+ *
+ * This is both the version a World stamps on the runs it creates and the
+ * *lowest* one this runtime accepts from a World (see
+ * `assertWorldSupportsRuntimeProtocol`). Slot numbering is a requirement of
+ * the World contract rather than a capability to opt into: a World declaring
+ * anything below this allocates event ids the runtime cannot read positions
+ * out of, so admitting it would only move the failure from startup to the
+ * middle of a run.
+ *
+ * This is the FLOOR, not necessarily what gets stamped. Sealed-log runs sit
+ * one version above it and are opt-in, so what a World actually stamps comes
+ * from {@link mintedSpecVersion}; this is what that falls back to.
+ *
+ * A World therefore declares this constant rather than a literal, so a bump
+ * moves the declaration and the floor together. Pinning a literal would leave
+ * the adapter one version behind the next bump and get it rejected by the
+ * runtime it ships alongside.
+ *
+ * Bumping this does not touch runs already created: their stamped version is
+ * persisted, every version test in the runtime is `>=`, and a World resolves a
+ * run's identity scheme from what is stored rather than from this constant.
  */
 export const SPEC_VERSION_CURRENT =
-  SPEC_VERSION_SUPPORTS_COMPRESSION as SpecVersion;
+  SPEC_VERSION_SUPPORTS_SEALED_LOG as SpecVersion;
+
+/**
+ * Environment variable that opts new runs OUT of the sealed log.
+ *
+ * Read per `createWorld()` call rather than at module load, so a test or a
+ * single process can create worlds in both modes.
+ */
+export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
+
+/**
+ * The spec version a World should stamp on the runs it creates: the sealed log
+ * unless {@link SEALED_LOG_ENV_VAR} switches it off, in which case the
+ * slot-identity version it supersedes.
+ *
+ * Same shape, and the same reasoning, as the flag slot identity itself shipped
+ * behind before going unconditional: default on, with one env var to put a
+ * deployment back on the previous scheme without a release.
+ *
+ * What default-on rests on is the density requirement in
+ * `Storage['events']`: a reader's log must be a PREFIX of the run's log, so
+ * that the number of events it holds tells it whether it has the whole thing.
+ * A sealed log satisfies that by repair rather than by construction — a
+ * position is handed out before its write commits, so a read can land while
+ * one is still empty — and it is only equivalent if a read that cannot see
+ * past such a position waits for it to be filled or sealed instead of
+ * reporting a log that ends there. It has to be the READ that waits, because
+ * a shorter prefix is a legal log state and nothing downstream can tell the
+ * two apart. The first rollout of this default shipped without that: the
+ * backend's in-request poll budget was shorter than the age a position must
+ * reach before it can be sealed, so the read always gave up and truncated,
+ * and a replay took a step whose completion sat above the gap to be still
+ * running — then sat on it for a full inline-ownership lease.
+ *
+ * The fallback is a real fallback, not a formality. Turning this off has to
+ * leave a World the runtime still admits, which is why
+ * `assertWorldSupportsRuntimeProtocol` floors at the slot-identity version
+ * rather than at {@link SPEC_VERSION_CURRENT} because a kill switch that made
+ * the runtime reject its own World would be no kill switch at all.
+ *
+ * Every World reads runs up to {@link SPEC_VERSION_MAX_SUPPORTED} whatever
+ * this returns, so switching it off here does not make runs another process
+ * created unreadable.
+ */
+export function mintedSpecVersion(
+  env: Record<string, string | undefined> = process.env
+): SpecVersion {
+  return envFlag(SEALED_LOG_ENV_VAR, true, env)
+    ? SPEC_VERSION_CURRENT
+    : SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
+}
 
 /**
  * The highest spec version this SDK can read.
  *
- * Distinct from `SPEC_VERSION_CURRENT`, which is the *default* a World stamps
- * on runs it creates. A World may declare a higher version than the default,
- * so the "was this run made by a newer SDK?" test has to be against the
- * ceiling: comparing against the default would make the SDK reject runs its
- * own adapters just created.
+ * Kept distinct from `SPEC_VERSION_CURRENT`, and right now they genuinely
+ * differ. They answer different questions, "what do we write?" versus "what
+ * can we still read?", and they come apart in exactly the release order a spec
+ * bump follows: a reader that can already handle the next version raises this
+ * ceiling first, and stamping follows only once the version is safe to mint
+ * everywhere. Sealed-log support is at that first stage. Every build reads
+ * spec 7 and skips `noop`, while {@link mintedSpecVersion} still has to be
+ * turned on before anything creates a spec-7 run.
  */
 export const SPEC_VERSION_MAX_SUPPORTED =
-  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY as SpecVersion;
+  SPEC_VERSION_SUPPORTS_SEALED_LOG as SpecVersion;
 
 /**
  * Check if a spec version is legacy (<= SPEC_VERSION_LEGACY or undefined).

@@ -8,8 +8,8 @@
  *
  * Here `queue()` only *records* a message. Nothing is ever delivered until the
  * scheduler asks for the next one, and the scheduler always takes the same one:
- * the minimum by `(readyAtMs, enqueueSeq)`. Delays are virtual — a message
- * scheduled 23 hours out is delivered by jumping the clock, not by waiting —
+ * the minimum by `(readyAtMs, enqueueSeq)`. Delays are virtual (a message
+ * scheduled 23 hours out is delivered by jumping the clock, not by waiting),
  * which is what lets a scenario containing `sleep('30d')` finish in
  * microseconds.
  */
@@ -99,7 +99,7 @@ export function createSimQueue(opts: {
    * Idempotency keys of messages that are enqueued but not yet settled. This
    * matches world-local's in-flight-only dedupe window (VQS holds keys for
    * longer); the wait-continuation logic in core is written against exactly
-   * this behaviour, and widening the window here would silently drop the
+   * this behavior, and widening the window here would silently drop the
    * re-enqueues it relies on.
    */
   const inflightKeys = new Map<string, string>();

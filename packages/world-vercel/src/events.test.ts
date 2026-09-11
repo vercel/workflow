@@ -1,10 +1,11 @@
 import { Buffer } from 'node:buffer';
 import { gzipSync } from 'node:zlib';
+import { WorkflowWorldError } from '@workflow/errors';
 import type { AnyEventRequest, CreateEventParams } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
 import { MockAgent } from 'undici';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowRunEvent,
   getWorkflowRunEvents,
@@ -161,6 +162,49 @@ describe('createWorkflowRunEvent with v1Compat', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  // A `hook_received` resumed with a payload the legacy v1 server does not
+  // echo back (e.g. an `undefined` resume payload) comes back with an
+  // `eventData` that omits the required `payload` key. Under Zod 4.5 the bare
+  // `EventSchema` rejects a missing property, so this path must parse with the
+  // omitted-payload-tolerant wire schema (the same fix the v4 sites use), or
+  // hook resume breaks for legacy spec-1 runs.
+  it('parses a legacy hook_received response that omits payload', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({ path: '/api/v1/runs/wrun_legacy/events', method: 'POST' })
+      .reply(
+        200,
+        {
+          eventId: 'evnt_legacy',
+          runId: 'wrun_legacy',
+          eventType: 'hook_received',
+          correlationId: 'hook_1',
+          createdAt: '2026-06-10T00:00:00.000Z',
+          specVersion: 1,
+          // payload key intentionally absent
+          eventData: {},
+        },
+        { headers: { 'content-type': 'application/json' } }
+      );
+
+    const result = await createWorkflowRunEvent(
+      'wrun_legacy',
+      {
+        eventType: 'hook_received',
+        correlationId: 'hook_1',
+        specVersion: 1,
+        eventData: { payload: undefined },
+      } as AnyEventRequest,
+      { v1Compat: true },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.event?.eventId).toBe('evnt_legacy');
+    expect(result.event?.eventType).toBe('hook_received');
+    agent.assertNoPendingInterceptors();
+  });
+
   it('rejects v1Compat without a runId for non-lifecycle events', async () => {
     await expect(
       createWorkflowRunEvent(
@@ -179,54 +223,14 @@ describe('createWorkflowRunEvent with v1Compat', () => {
 });
 
 /**
- * The optimistic-concurrency precondition guard: a replay-context create
- * describes the runtime's loaded snapshot with three params — `stateUpdatedAt`
- * (the ULID time of the latest loaded event), `stateEventCount` (how many
- * events that snapshot holds at or below it) and `stateCursor` (so a rejecting
- * backend may return the missing events inline). Locks in that each reaches
- * the v4 frame meta, and that all are omitted when the caller has no loaded
- * snapshot — an unsent field disables the corresponding backend check.
+ * A replay-context create names the position its decisions were made at:
+ * `eventCount`, the highest event slot the runtime had loaded. Locks in that it
+ * reaches the v4 frame meta under the wire name the backend reads, and that it
+ * is omitted when the caller has no loaded snapshot — an unsent field leaves
+ * the backend with no position to report a skipped span against.
  */
-describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
-  it('includes stateUpdatedAt in the v4 frame meta when provided', async () => {
-    const agent = mockAgent();
-    let capturedMeta: Record<string, unknown> | undefined;
-
-    agent
-      .get(ORIGIN)
-      .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
-        method: 'POST',
-      })
-      .reply(
-        200,
-        (opts: { body?: unknown }) => {
-          capturedMeta = decodePostedMeta(opts.body);
-          return runStartedResponse();
-        },
-        {
-          headers: {
-            'content-type': V4_FRAME_CONTENT_TYPE,
-            'x-wf-event-id': 'evnt_1',
-            'x-wf-run-id': 'wrun_1',
-            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
-            'x-wf-max-events': '10000',
-          },
-        }
-      );
-
-    await createWorkflowRunEvent(
-      'wrun_1',
-      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
-      { stateUpdatedAt: 1_700_000_000_000 },
-      { token: 'test-token', dispatcher: agent }
-    );
-
-    expect(capturedMeta?.stateUpdatedAt).toBe(1_700_000_000_000);
-    agent.assertNoPendingInterceptors();
-  });
-
-  it('omits stateUpdatedAt from the v4 frame meta when not provided', async () => {
+describe('createWorkflowRunEvent slot snapshot wire fields', () => {
+  it('omits maxSlot from the v4 frame meta when no snapshot is provided', async () => {
     const agent = mockAgent();
     let capturedMeta: Record<string, unknown> | undefined;
 
@@ -260,89 +264,7 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect('stateUpdatedAt' in (capturedMeta ?? {})).toBe(false);
-    agent.assertNoPendingInterceptors();
-  });
-
-  it('includes stateEventCount and stateCursor in the v4 frame meta when provided', async () => {
-    const agent = mockAgent();
-    let capturedMeta: Record<string, unknown> | undefined;
-
-    agent
-      .get(ORIGIN)
-      .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
-        method: 'POST',
-      })
-      .reply(
-        200,
-        (opts: { body?: unknown }) => {
-          capturedMeta = decodePostedMeta(opts.body);
-          return runStartedResponse();
-        },
-        {
-          headers: {
-            'content-type': V4_FRAME_CONTENT_TYPE,
-            'x-wf-event-id': 'evnt_1',
-            'x-wf-run-id': 'wrun_1',
-            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
-            'x-wf-max-events': '10000',
-          },
-        }
-      );
-
-    await createWorkflowRunEvent(
-      'wrun_1',
-      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
-      {
-        stateUpdatedAt: 1_700_000_000_000,
-        stateEventCount: 7,
-        stateCursor: 'eid:evnt_1',
-      },
-      { token: 'test-token', dispatcher: agent }
-    );
-
-    expect(capturedMeta?.stateEventCount).toBe(7);
-    expect(capturedMeta?.stateCursor).toBe('eid:evnt_1');
-    agent.assertNoPendingInterceptors();
-  });
-
-  it('omits stateEventCount and stateCursor from the v4 frame meta when not provided', async () => {
-    const agent = mockAgent();
-    let capturedMeta: Record<string, unknown> | undefined;
-
-    agent
-      .get(ORIGIN)
-      .intercept({
-        path: '/api/v4/runs/wrun_1/events/run_started',
-        method: 'POST',
-      })
-      .reply(
-        200,
-        (opts: { body?: unknown }) => {
-          capturedMeta = decodePostedMeta(opts.body);
-          return runStartedResponse();
-        },
-        {
-          headers: {
-            'content-type': V4_FRAME_CONTENT_TYPE,
-            'x-wf-event-id': 'evnt_1',
-            'x-wf-run-id': 'wrun_1',
-            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
-            'x-wf-max-events': '10000',
-          },
-        }
-      );
-
-    await createWorkflowRunEvent(
-      'wrun_1',
-      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
-      { stateUpdatedAt: 1_700_000_000_000 },
-      { token: 'test-token', dispatcher: agent }
-    );
-
-    expect('stateEventCount' in (capturedMeta ?? {})).toBe(false);
-    expect('stateCursor' in (capturedMeta ?? {})).toBe(false);
+    expect('maxSlot' in (capturedMeta ?? {})).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 
@@ -389,8 +311,9 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
   });
 
   it('never sends the snapshot on the legacy v1Compat path', async () => {
-    // Pre-event-sourcing runs have no event log to fence, and the legacy
-    // endpoint has no field for the snapshot: the params are dropped whole.
+    // Pre-event-sourcing runs have no slot-numbered log to name a position
+    // in, and the legacy endpoint has no field for one: the params are dropped
+    // whole.
     const agent = mockAgent();
     let capturedBody = '';
 
@@ -425,19 +348,13 @@ describe('createWorkflowRunEvent precondition snapshot wire fields', () => {
         specVersion: 1,
         eventData: { resumeAt: '2026-06-10T00:00:00.000Z' },
       } as AnyEventRequest,
-      {
-        v1Compat: true,
-        stateUpdatedAt: 1_700_000_000_000,
-        stateEventCount: 7,
-        stateCursor: 'eid:evnt_1',
-      },
+      { v1Compat: true, eventCount: 7 },
       { token: 'test-token', dispatcher: agent }
     );
 
     expect(capturedBody).toContain('wait_completed');
-    expect(capturedBody).not.toContain('stateUpdatedAt');
-    expect(capturedBody).not.toContain('stateEventCount');
-    expect(capturedBody).not.toContain('stateCursor');
+    expect(capturedBody).not.toContain('maxSlot');
+    expect(capturedBody).not.toContain('eventCount');
     agent.assertNoPendingInterceptors();
   });
 });
@@ -905,6 +822,42 @@ describe('splitEventDataForV4 attribute fields', () => {
 });
 
 describe('createWorkflowRunEvent response coercion', () => {
+  it('surfaces streamed event observer failures unchanged', async () => {
+    const agent = mockAgent();
+    const observerError = new WorkflowWorldError('observer failed', {
+      code: 'TRANSPORT',
+    });
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(200, runStartedResponse(), {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+          'x-wf-event-id': 'evnt_1',
+          'x-wf-run-id': 'wrun_1',
+          'x-wf-created-at': STARTED_AT.toISOString(),
+          'x-wf-max-events': '10000',
+        },
+      });
+
+    await expect(
+      createWorkflowRunEvent(
+        'wrun_1',
+        { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
+        {
+          replayEventObserver: () => {
+            throw observerError;
+          },
+        },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toBe(observerError);
+    agent.assertNoPendingInterceptors();
+  });
+
   it('accepts a current region-tagged run_created runId', async () => {
     const taggedRunId = `wrun_${encodeRunId(ulid(), REGION_IDS.sfo1)}`;
     const agent = mockAgent();
@@ -1173,6 +1126,52 @@ describe('createWorkflowRunEvent response coercion', () => {
     agent.assertNoPendingInterceptors();
   });
 
+  it('classifies a run_started stream missing lifecycle events as a world schema error', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+      new Response(
+        Buffer.concat([
+          encodeFrame(
+            {
+              eventId: 'evnt_1',
+              runId: 'wrun_1',
+              eventType: 'run_started',
+              createdAt: STARTED_AT,
+              specVersion: 5,
+              eventData: {},
+            },
+            new Uint8Array()
+          ),
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_1', hasMore: false },
+            new Uint8Array()
+          ),
+        ]),
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-max-events': '10000',
+          },
+        }
+      )
+    );
+
+    try {
+      await expect(
+        createWorkflowRunEvent(
+          'wrun_1',
+          { eventType: 'run_started', specVersion: 5 },
+          undefined,
+          { token: 'test-token' }
+        )
+      ).rejects.toMatchObject({
+        name: 'WorkflowWorldError',
+        code: 'SCHEMA_VALIDATION',
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it('threads the wait entity through to the EventResult', async () => {
     const agent = mockAgent();
     agent
@@ -1309,7 +1308,10 @@ describe('getWorkflowRunEvents remoteRefBehavior mapping', () => {
         },
         body
       ),
-      encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)),
+      encodeFrame(
+        { _end: 1, next: 'eid:evnt_1', hasMore: false },
+        new Uint8Array(0)
+      ),
     ]);
   }
 
@@ -1456,7 +1458,10 @@ describe('getWorkflowRunEvents legacy structured-error compatibility', () => {
         },
         body
       ),
-      encodeFrame({ _end: 1, hasMore: false }, new Uint8Array(0)),
+      encodeFrame(
+        { _end: 1, next: 'eid:evnt_1', hasMore: false },
+        new Uint8Array(0)
+      ),
     ]);
   }
 
@@ -1684,8 +1689,8 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     return out;
   }
 
-  function hookReplayStreamResponse(): Uint8Array {
-    return concatFrames([
+  function hookReplayFrames(): Uint8Array[] {
+    return [
       encodeFrame(
         {
           eventId: 'evnt_1',
@@ -1741,7 +1746,11 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
         { _end: 1, next: 'eid:evnt_4', hasMore: false },
         new Uint8Array()
       ),
-    ]);
+    ];
+  }
+
+  function hookReplayStreamResponse(): Uint8Array {
+    return concatFrames(hookReplayFrames());
   }
 
   it('decodes a streamed replay log into event + reconstructed run + page', async () => {
@@ -1969,7 +1978,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('rejects a truncated preload stream (no end sentinel)', async () => {
+  it('continues a truncated preload after its last validated event', async () => {
     const agent = mockAgent();
     agent
       .get(ORIGIN)
@@ -1978,30 +1987,35 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
         method: 'POST',
         headers: { accept: V4_FRAME_CONTENT_TYPE },
       })
-      .reply(
-        200,
-        encodeFrame(
-          {
-            eventId: 'evnt_4',
-            runId: 'wrun_1',
-            eventType: 'hook_received',
-            correlationId: 'hook_1',
-            createdAt: new Date('2026-06-10T00:00:03.000Z'),
-            specVersion: 2,
-            resumeId: RESUME_ID,
-            eventData: { token: 'tok-preload' },
-          },
-          PAYLOAD
-        ),
-        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
-      );
-
-    await expect(
-      createWorkflowRunEvent('wrun_1', hookReceivedRequest(), preloadParams, {
-        token: 'test-token',
-        dispatcher: agent,
+      .reply(200, concatFrames(hookReplayFrames().slice(0, 2)), {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+          'x-wf-event-id': 'evnt_4',
+          'x-wf-max-events': '10000',
+        },
+      });
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: /\/api\/v4\/runs\/wrun_1\/events\?.*cursor=eid%3Aevnt_2/,
+        method: 'GET',
       })
-    ).rejects.toThrow(/end-of-stream sentinel/);
+      .reply(200, concatFrames(hookReplayFrames().slice(2)), {
+        headers: {
+          'content-type': V4_FRAME_CONTENT_TYPE,
+        },
+      });
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      hookReceivedRequest(),
+      preloadParams,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.event?.eventId).toBe('evnt_4');
+    expect(result.events).toHaveLength(4);
+    expect(result.maxEvents).toBe(10000);
     agent.assertNoPendingInterceptors();
   });
 

@@ -1,9 +1,13 @@
 import type { Storage, World } from '@workflow/world';
-import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
+import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createQueue } from './queue.js';
+import {
+  createRunStatusListener,
+  type RunStatusListener,
+} from './run-status.js';
 import {
   createEventsStorage,
   createHooksStorage,
@@ -12,9 +16,12 @@ import {
 } from './storage.js';
 import { createStreamer } from './streamer.js';
 
-function createStorage(drizzle: Drizzle): Storage {
+function createStorage(
+  drizzle: Drizzle,
+  runStatusListener: RunStatusListener
+): Storage {
   return {
-    runs: createRunsStorage(drizzle),
+    runs: createRunsStorage(drizzle, runStatusListener),
     events: createEventsStorage(drizzle),
     hooks: createHooksStorage(drizzle),
     steps: createStepsStorage(drizzle),
@@ -59,17 +66,16 @@ export function createWorld(
 
   const drizzle = createClient(pool);
   const queue = createQueue(config, pool);
-  const storage = createStorage(drizzle);
+  // Opens its `LISTEN` connection lazily, on the first `waitForTerminalStatus`
+  // call, so a deployment that never awaits a run never pays for it.
+  const runStatusListener = createRunStatusListener(pool);
+  const storage = createStorage(drizzle, runStatusListener);
   const streamer = createStreamer(pool, drizzle);
 
   return {
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: mintedSpecVersion(),
     capabilities: {
       hookRetention: { active: true },
-      // New runs get dense per-run slot event ids. Runs created before this
-      // keep their ULIDs; the scheme is pinned by whether the run owns a slot
-      // counter, not by this flag, which only says what new runs get.
-      slotEventIds: true,
     },
     ...storage,
     ...streamer,
@@ -89,6 +95,7 @@ export function createWorld(
     async close() {
       await queue.close();
       await streamer.close();
+      await runStatusListener.close();
       if (pool !== config.pool) {
         await pool.end();
       }

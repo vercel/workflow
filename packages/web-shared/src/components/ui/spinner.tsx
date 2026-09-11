@@ -44,9 +44,8 @@ export function Spinner({
 
   return (
     <span
+      className="relative inline-flex"
       style={{
-        display: 'inline-flex',
-        position: 'relative',
         width: size,
         height: size,
       }}
@@ -55,18 +54,15 @@ export function Spinner({
       {config.delays.map((delay, i) => (
         <span
           key={delay}
+          className="absolute top-1/2 left-1/2 rounded-[1px] bg-gray-700 [animation-iteration-count:infinite] [animation-name:wf-spinner-fade] [animation-timing-function:linear]"
           style={{
-            position: 'absolute',
-            left: '50%',
-            top: '50%',
             width: config.lineW,
             height: config.lineH,
             marginLeft: -config.lineW / 2,
             marginTop: -config.lineH / 2,
-            borderRadius: 1,
-            backgroundColor: color ?? 'var(--ds-gray-700)',
+            backgroundColor: color,
             transform: `rotate(${i * config.angle}deg) translate(${size * 0.36}px)`,
-            animation: `wf-spinner-fade ${config.duration}ms linear infinite`,
+            animationDuration: `${config.duration}ms`,
             animationDelay: `${delay}ms`,
           }}
         />

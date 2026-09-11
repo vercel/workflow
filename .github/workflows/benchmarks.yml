@@ -1,8 +1,8 @@
 name: Performance Benchmarks
 
-# Measures the workflow runtime's core latency metrics (TTFS, STSO, WO, SL —
-# see packages/core/e2e/benchmark.test.ts for definitions) against a deployed
-# workbench app and posts the results as a sticky PR comment. Re-runs update
+# Measures the workflow runtime's core latency metrics (TTFS, STSO, WO, CRTT,
+# CDV — see packages/core/e2e/benchmark.test.ts for definitions) against a
+# deployed workbench app and posts the results as a sticky PR comment. Re-runs update
 # the same comment; previous results stay available in a collapsed history
 # section (state is embedded in the comment body itself).
 #
@@ -96,10 +96,10 @@ jobs:
   # backend (e.g. postgres or local), add a matrix entry with
   # `world: postgres` / `world: local` and gate the Vercel-specific steps —
   # the runner (packages/core/e2e/benchmark.test.ts) already selects its
-  # backend from the same env vars as the e2e tests. SL is measured inside the
-  # workflow (benchSlWorkflow's parallel reader/writer steps read/write on the
-  # deployment), so it no longer needs `run.getReadable()` to work from the
-  # test process; the runner only polls returnValue for the collected timings.
+  # backend from the same env vars as the e2e tests. CRTT is measured inside
+  # the workflow (benchCrttWorkflow's parallel reader/writer steps read/write
+  # on the deployment), so it does not need `run.getReadable()` to work from
+  # the test process; the runner only polls returnValue for the aggregates.
   benchmark:
     name: Benchmark (${{ matrix.target.world }}, ${{ matrix.target.app }})
     runs-on: ubuntu-latest

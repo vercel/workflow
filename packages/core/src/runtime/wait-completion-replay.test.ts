@@ -81,12 +81,6 @@ async function runStaleWaitReplayScenario(options: {
   returnInlineDelta?: boolean;
   /** Truncate that inline delta (hasMore: true), which must not be absorbed. */
   inlineDeltaHasMore?: boolean;
-  /**
-   * Number the fake log with slot event ids. That is what makes the handler
-   * send the slot precondition, so it is the only mode in which a write can
-   * carry both halves of the World's answer channel.
-   */
-  slotEventIds?: boolean;
 }) {
   vi.spyOn(Date, 'now').mockReturnValue(+fixedNow);
 
@@ -131,9 +125,7 @@ async function runStaleWaitReplayScenario(options: {
       ...data,
       specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
       runId,
-      eventId: options.slotEventIds
-        ? slotToEventId(eventIndex)
-        : `evt_${eventIndex.toString().padStart(3, '0')}`,
+      eventId: slotToEventId(eventIndex),
       createdAt,
     }) as Event;
 
@@ -691,9 +683,8 @@ describe('workflow handler wait completion replay', () => {
     expectHookBranchQueued(result);
   });
 
-  it('asks a slot-numbered World for the delta and the skipped slots at once', async () => {
-    // On a slot-numbered run the write carries both halves of the World's
-    // answer channel: `sinceCursor` asks for the delta since the handler's
+  it('asks for the delta and the skipped slots at once', async () => {
+    // The write carries both halves of the World's answer channel: `sinceCursor` asks for the delta since the handler's
     // snapshot, and `eventCount` states the slot that snapshot reached so a
     // bumped write can report what it was decided without. They share
     // `events`/`cursor`/`hasMore` on the response, so a World that answers
@@ -702,7 +693,6 @@ describe('workflow handler wait completion replay', () => {
     const result = await runStaleWaitReplayScenario({
       includePreloadedCursor: true,
       returnInlineDelta: true,
-      slotEventIds: true,
     });
 
     const waitWrite = result.createEvent.mock.calls.find(

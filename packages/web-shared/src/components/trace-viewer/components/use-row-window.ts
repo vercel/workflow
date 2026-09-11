@@ -96,7 +96,7 @@ export const ROW_HEIGHT_PX = 40;
  * Scroll a windowed row into view by index.
  *
  * The list is virtualized (fixed `rowHeight` rows), so an off-screen row has no
- * DOM node to `scrollIntoView` — its target offset is computed from its index
+ * DOM node to `scrollIntoView`; its target offset is computed from its index
  * instead. Walks up from `listEl` to the shared scrollable ancestor (the same
  * one `useRowWindow` measures against), only scrolls when the row sits outside
  * the visible area, leaves a one-row `margin` of breathing room past it, and

@@ -21,7 +21,7 @@
  *
  * Watches do not fire for calls made from inside another watch's action.
  * Without that rule, a watch on `events.create` would re-trigger on the
- * `hook_received` it just wrote, and any scenario using `deliverHook` would
+ * `hook_received` it wrote, and any scenario using `deliverHook` would
  * recurse forever.
  */
 
@@ -30,13 +30,14 @@ import {
   type Event,
   getQueueTopicPrefix,
   type QueuePayload,
+  requireEventSlot,
   SPEC_VERSION_CURRENT,
   type World,
 } from '@workflow/world';
 import { createVirtualClock, type VirtualClock } from './clock.js';
-import { createIdFactory, type IdFactory, ulidTimeOf } from './ids.js';
+import { createIdFactory, type IdFactory } from './ids.js';
 import { createSimQueue, type DirectHandler, type SimQueue } from './queue.js';
-import { createSimStore, type MintedEvent, type SimStore } from './store.js';
+import { createSimStore, type LoadedSnapshot, type SimStore } from './store.js';
 import { createSimStreamer, type SimStreamer } from './streams.js';
 import type {
   CallContext,
@@ -82,29 +83,13 @@ export interface SimWorldOptions {
   /** See `SimStoreOptions.preconditionGuard`. */
   preconditionGuard?: boolean;
   /**
-   * Also enforce the count half of the fence (see `SimStoreOptions.countGuard`),
-   * and supply `stateEventCount` for the writes the runtime does not count.
+   * Also enforce the count half of the fence (see `SimStoreOptions.countGuard`).
    *
-   * Production arms both halves. Since #3145 `@workflow/core` sends
-   * `stateEventCount` on every replay-context create
-   * (`preconditionSnapshotParams`), gated only by the
-   * `WORKFLOW_PRECONDITION_GUARD` kill-switch, and workflow-server's count guard
-   * is on by default — so this tracks `preconditionGuard` rather than being
-   * opted into per scenario. A run with the fence on and the count off would be
-   * a world that exists nowhere.
+   * Production arms both halves, so this tracks `preconditionGuard` rather than
+   * being opted into per scenario. A run with the fence on and the count off
+   * would be a world that exists nowhere.
    */
   countGuard?: boolean;
-  /**
-   * Assign log positions at commit rather than at the handler boundary, so the
-   * log is append-only and no read can be contradicted by a later one. See
-   * `SimStoreOptions.appendOnlyLog` for what that buys and what it costs.
-   *
-   * The boundary mint still happens — `reservePosition` and everything a
-   * scenario hangs off it work unchanged. It just stops being binding: a held
-   * write that nothing overtook keeps the position it reserved, and one that was
-   * overtaken re-mints when it lands.
-   */
-  appendOnlyLog?: boolean;
 }
 
 export interface SimWorld extends World {
@@ -128,21 +113,6 @@ export interface SimWorld extends World {
    * `external` writer, and not itself a call point.
    */
   asExternal<T>(fn: () => Promise<T>): Promise<T>;
-  /**
-   * Take a log position now, to be used by a write that happens later.
-   *
-   * The scenario's own calls are not call points (see `fireWatches`), so a script
-   * cannot hold *itself* between minting and committing the way it holds a
-   * writer. This pair is how it states the same thing directly: reserve the
-   * position, do whatever should observe the log without it, then run the write
-   * inside `withReservedPosition` so it lands where it was reserved.
-   */
-  reservePosition(): MintedEvent;
-  /** Run `fn` with the next `events.create` taking `position` instead of minting. */
-  withReservedPosition<T>(
-    position: MintedEvent,
-    fn: () => Promise<T>
-  ): Promise<T>;
   pushTrace(entry: TraceInput): void;
   /** Total intercepted world calls so far. */
   callCount(): number;
@@ -174,7 +144,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
    * `external` and is not itself a call point.
    *
    * Async-context-scoped rather than a plain counter, because `asExternal`
-   * brackets whole operations — `scenario.ts` wraps all of `resumeHook`, which
+   * brackets whole operations: `scenario.ts` wraps all of `resumeHook`, which
    * spans several awaits. A counter is a global flag for that whole window, so
    * a step body committing concurrently gets read as the scenario's own call:
    * attributed `external`, skipped by `fireWatches` (a `runTo` armed on it waits
@@ -183,14 +153,12 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
    * step's own `step_completed`, in the one scenario whose subject is the
    * writer column.
    *
-   * Deliberately *not* set for the duration of a watch action — see
+   * Deliberately *not* set for the duration of a watch action; see
    * `fireWatches`. A held action outlives the call it fired from, and a flag
    * held that long would silence every other writer.
    */
   const externalCtx = new AsyncLocalStorage<true>();
   const isExternal = () => externalCtx.getStore() === true;
-  /** Set by `withReservedPosition`; consumed by the next `events.create`. */
-  let reservedPosition: MintedEvent | undefined;
   let callSeq = 0;
   let traceSeq = 0;
 
@@ -211,19 +179,15 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     ids,
     preconditionGuard: options.preconditionGuard,
     countGuard: options.countGuard,
-    appendOnlyLog: options.appendOnlyLog,
     // Fires synchronously inside `events.create`, so it runs in that call's
     // async context and `isExternal()` still describes who is writing.
     onEvent: (event) =>
       pushTrace({ kind: 'event', event, writer: writerOfEvent(event) }),
-    // Two different faults, and the trace should not blur them: one read
-    // around a committed event, the other stopped before it.
-    onStaleRead: ({ eventId, hidden, truncated }) =>
+    // A stale read is always a lagging prefix of the log.
+    onStaleRead: ({ eventId, hidden }) =>
       pushTrace({
         kind: 'warn',
-        message: truncated
-          ? `lagging read: log cut short at ${eventId}; ${hidden} committed event(s) not yet visible`
-          : `stale read: committed event ${eventId} withheld from this event-log read`,
+        message: `lagging read: log cut short at ${eventId}; ${hidden} committed event(s) not yet visible`,
       }),
   });
 
@@ -271,14 +235,14 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
   /**
    * Which writer is responsible for an event.
    *
-   * Everything the *scenario* does is `external` — that check comes first,
+   * Everything the *scenario* does is `external`. That check comes first,
    * because a `run_cancelled` from an operator and a `run_cancelled` from the
-   * runtime are the same event type written by very different writers, and only
+   * runtime are the same event type written by different writers, and only
    * the call stack can tell them apart.
    *
    * Otherwise: a step's own result events belong to that step body, an
    * attribute write names its writer explicitly in the event, and everything
-   * else — the step and hook and wait *creations*, the run lifecycle — is the
+   * else (the step and hook and wait *creations*, the run lifecycle) is the
    * orchestrator committing at a suspension point.
    */
   function writerOfEvent(event: {
@@ -335,7 +299,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     const { match } = watch;
 
     // An unspecified phase means `after`, never "both". Matching both would
-    // fire every watch twice — and, worse, fire a `nth: 1` watch at `before`,
+    // fire every watch twice and, worse, fire a `nth: 1` watch at `before`,
     // where the effect it is keyed on has not happened yet and `ctx.event` is
     // absent. `before` is the case you opt into.
     if ((match.phase ?? 'after') !== ctx.phase) return false;
@@ -404,7 +368,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     }
 
     if (match.where) {
-      // A predicate that throws must not become a world-call failure — see the
+      // A predicate that throws must not become a world-call failure; see the
       // note on watch actions below. Treat it as "did not match" and report.
       try {
         if (!match.where(ctx, snapshot)) return false;
@@ -423,7 +387,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
 
   async function fireWatches(ctx: CallContext): Promise<void> {
     // Calls the scenario itself makes are not call points: they would otherwise
-    // trip the very watches they were made from inside of.
+    // trip the watches they were made from inside of.
     if (isExternal()) return;
 
     // Iterate a copy: an action may dispose its own watch, or arm a new one.
@@ -446,7 +410,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       // it, so raising the depth for the duration would mean: for as long as one
       // writer is held, every *other* writer's call stops being a call point and
       // every event it commits is attributed to the scenario. Holding one step
-      // body would make its sibling both invisible and unsteerable — the exact
+      // body would make its sibling both invisible and unsteerable, the exact
       // interleaving the writer vocabulary exists to state. Scenario-originated
       // writes get their attribution from `asExternal` instead, which follows
       // the call chain rather than the wall clock.
@@ -535,69 +499,85 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
   /**
    * Which events the log the *runtime* is holding contains, keyed by run.
    *
-   * This reconstructs the array the client has in memory, because the count
-   * guard compares against that array and nothing else: `stateEventCount` is
-   * defined as the number of loaded events whose ULID time is at or below
-   * `stateUpdatedAt` — and since `stateUpdatedAt` *is* the maximum of those
-   * times, that is the whole array. The pair "I loaded N events, the newest at
-   * T" is what lets the world spot a hole *behind* T, which no comparison
-   * against T alone can see.
+   * This reconstructs the array the client has in memory, which is the whole
+   * input to the fence. The runtime does not state it: `@workflow/core`
+   * describes its snapshot as a slot count and the sim mints ULIDs, so the
+   * facade derives the pair the fence needs: the newest loaded position, and
+   * how many events sit at or below it. Since the watermark *is* the maximum of
+   * those times, the count is the size of the array. "I loaded N events, the
+   * newest at T" is what lets the world spot a hole *behind* T, which no
+   * comparison against T alone can see.
    *
-   * Keyed by run, not by writer: the orchestrator and the inline step bodies of
-   * one delivery are sim-level writers, but they are one process sharing one
-   * loaded log, and that log is what the count describes. The out-of-band
-   * writer is the exception — a different process with its own log — so its
-   * calls are excluded, by the same `isExternal()` rule that keeps them from
-   * being call points.
+   * Keyed by run *within one delivery*, not by writer: the orchestrator and the
+   * inline step bodies of one delivery are sim-level writers, but they are one
+   * process sharing one loaded log, and that log is what the count describes.
+   * Two writers that are genuinely separate processes get separate sets: the
+   * out-of-band writer, excluded by the same `isExternal()` rule that keeps it
+   * from being a call point, and a concurrent delivery of the same run, which
+   * is the shape every replay-race scenario is built on. A map that outlived
+   * the delivery would hand a cold-starting replay the previous delivery's
+   * view, and the fence would reject it for a log it never claimed to hold.
    *
-   * Everything a caller's own write appends counts as loaded, including events
-   * the write produces as a side effect (a `step_started` claim also appends
-   * the `step_created` ahead of it). They have to count: the client takes
-   * `stateUpdatedAt` over a log that includes what it just appended, so
-   * counting less would leave the count below the watermark it is paired with
-   * and reject perfectly current writes.
+   * **A read is what starts a set.** Until a writer lists the log it holds
+   * nothing, and no write of its own changes that: the client's own snapshot
+   * comes from `eventLog`, which is empty until the runtime loads it, and a
+   * runtime writing `run_started` before loading anything sends no snapshot at
+   * all. Crediting it with that write would hand the fence a position the
+   * client never claimed, and a *lower* one than the log holds, so a later
+   * concurrent write would be rejected as stale on the strength of a claim
+   * nobody made.
+   *
+   * Once a set exists, everything the caller's own writes append counts, side
+   * effects included (a `step_started` claim also appends the `step_created`
+   * ahead of it). They have to count: the caller's watermark is taken over a
+   * log that includes what it just appended, so counting less would leave the
+   * count below the watermark it is paired with and reject current writes.
    *
    * A scan that starts without a cursor replaces the set rather than adding to
-   * it — that is a fresh delivery re-reading the log from the beginning, and its
+   * it: that is the runtime re-reading the log from the beginning, and its
    * earlier view should not linger.
    */
-  const loadedEvents = new Map<string, Set<string>>();
-
-  function loadedSet(runId: string): Set<string> {
-    let set = loadedEvents.get(runId);
-    if (!set) {
-      set = new Set();
-      loadedEvents.set(runId, set);
-    }
-    return set;
-  }
+  const deliveryCtx = new AsyncLocalStorage<Map<string, Set<string>>>();
+  const loadedEvents = (): Map<string, Set<string>> | undefined =>
+    deliveryCtx.getStore();
 
   function noteLoadedEvents(
     runId: string,
     args: readonly unknown[],
     result: unknown
   ): void {
+    const perRun = loadedEvents();
+    if (!perRun) return;
     const page = (result as { data?: { eventId?: string }[] } | undefined)
       ?.data;
     if (!page) return;
     const cursor = (args[0] as { pagination?: { cursor?: string } } | undefined)
       ?.pagination?.cursor;
-    if (!cursor) loadedEvents.set(runId, new Set());
-    const set = loadedSet(runId);
+    const set: Set<string> = cursor
+      ? (perRun.get(runId) ?? new Set())
+      : new Set();
     for (const event of page) if (event.eventId) set.add(event.eventId);
+    perRun.set(runId, set);
   }
 
-  /** The `stateEventCount` the loaded log implies at `stateUpdatedAt`. */
-  function loadedCount(
-    runId: string | undefined,
-    stateUpdatedAt: number
-  ): number {
-    if (!runId) return 0;
-    let count = 0;
-    for (const eventId of loadedSet(runId)) {
-      if (ulidTimeOf(eventId) <= stateUpdatedAt) count++;
+  /**
+   * The snapshot a replay-context write was decided against, or `undefined`
+   * when this writer has read nothing for the run and so has no position to
+   * name. A writer with an empty log is indistinguishable from an out-of-band
+   * one, and the fence treats it that way: there is nothing to compare.
+   */
+  function loadedSnapshot(
+    runId: string | undefined
+  ): LoadedSnapshot | undefined {
+    if (!runId) return undefined;
+    const set = loadedEvents()?.get(runId);
+    if (!set || set.size === 0) return undefined;
+    let maxSlot = 0;
+    for (const eventId of set) {
+      const slot = requireEventSlot(eventId);
+      if (slot > maxSlot) maxSlot = slot;
     }
-    return count;
+    return { maxSlot, count: set.size };
   }
 
   /** Wrap one world method so it becomes a call point. */
@@ -625,59 +605,46 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
       record(base);
       await fireWatches(base);
 
-      // The handler boundary. workflow-server mints the event id here
-      // (`EventId.make()`, before the storage write is attempted) because
-      // DynamoDB does not generate ids and that id *is* the log's sort key. So a
-      // write acquires its position and its visibility at two different moments.
-      // A scenario holds that gap open with `sim.beginHookDelivery`, which takes
-      // the position on one side and lets the write land on the other.
       let callArgs = args;
       let entered = base;
       if (call === 'events.create') {
-        // A reserved position wins: it belongs to a write whose handler was
-        // entered earlier and is only now reaching storage.
-        const minted = reservedPosition ?? store.mintEvent();
-        reservedPosition = undefined;
         const params = (args[2] ?? {}) as Record<string, unknown>;
         callArgs = [
           args[0],
           args[1],
           {
             ...params,
-            minted,
-            // The runtime's own count wins when it sent one. Since #3145
-            // `preconditionSnapshotParams` puts `stateEventCount` on every
-            // replay-context create, so the value under test is normally the
-            // real client's, not ours.
+            // The snapshot the fence reads. Reconstructed rather than taken off
+            // the wire: the runtime states its position as a slot count, and
+            // this store mints ULIDs, so there is nothing on the wire a ULID
+            // fence can compare. What the facade tracks is the same array the
+            // client is holding (see `loadedEvents`), so the pair it derives is
+            // the pair the client would have sent.
             //
-            // The reconstruction is the fallback, for the writes core does not
-            // count: a step body committing outside a replay context, and any
-            // create made while the precondition guard's env kill-switch is off
-            // (`preconditionSnapshotParams` returns `{}` wholesale then). It is
-            // the size of the last page this writer read, which is what the
-            // client would have counted had it counted.
-            ...(options.countGuard &&
-            !isExternal() &&
-            typeof params.stateUpdatedAt === 'number'
-              ? {
-                  stateEventCount:
-                    typeof params.stateEventCount === 'number'
-                      ? params.stateEventCount
-                      : loadedCount(runId, params.stateUpdatedAt),
-                }
+            // Attached whenever the fence is armed, not just for the count
+            // half: `SimCreateParams.snapshot` is also what marks a write as
+            // replay-origin, and an out-of-band write must stay unmarked so it
+            // can advance the store's external-write marker.
+            ...(options.preconditionGuard && !isExternal()
+              ? { snapshot: loadedSnapshot(runId) }
               : {}),
           },
         ] as unknown as Parameters<F>;
         entered = { ...base, args: callArgs };
       }
 
-      // For a create, what the log held going in — so the caller can be
-      // credited with everything its own write appended, not just the event the
-      // call handed back. A `step_started` claim also appends the `step_created`
-      // ahead of it, and a client that did not count both would look like it was
-      // holding a hole it had itself just made.
+      // For a create by a writer that has already loaded the log, what that log
+      // held going in, so the caller can be credited with everything its own
+      // write appended, not just the event the call handed back. A
+      // `step_started` claim also appends the `step_created` ahead of it, and a
+      // client that did not count both would look like it was holding a hole it
+      // had itself just made. A writer that has loaded nothing is left alone;
+      // see `loadedEvents`.
       const before =
-        call === 'events.create' && runId && !isExternal()
+        call === 'events.create' &&
+        runId &&
+        !isExternal() &&
+        loadedEvents()?.has(runId)
           ? new Set(store.allEvents(runId).map((e) => e.eventId))
           : undefined;
 
@@ -695,9 +662,11 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
         if (call === 'events.list') {
           noteLoadedEvents(runId, args, result);
         } else if (before) {
-          const set = loadedSet(runId);
-          for (const event of store.allEvents(runId)) {
-            if (!before.has(event.eventId)) set.add(event.eventId);
+          const set = loadedEvents()?.get(runId);
+          if (set) {
+            for (const event of store.allEvents(runId)) {
+              if (!before.has(event.eventId)) set.add(event.eventId);
+            }
           }
         }
       }
@@ -761,11 +730,7 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
 
   const world: SimWorld = {
     specVersion: SPEC_VERSION_CURRENT,
-    capabilities: {
-      // Only advertise the fence when the store is actually enforcing it — a
-      // runtime fast path gated on this capability must never run without one.
-      ...(options.preconditionGuard ? { preconditionGuard: true } : {}),
-    },
+    capabilities: {},
     getDeploymentId: intercept('getDeploymentId', () =>
       simQueue.getDeploymentId()
     ),
@@ -810,8 +775,13 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     snapshot,
     trace,
 
+    // Each delivery is a separate process, and the log it holds is its own.
+    // Opening the scope around the handler is what makes `loadedEvents`
+    // describe one replay rather than every replay this run has ever had.
     registerHandler: (prefix, handler) =>
-      simQueue.registerHandler(prefix as never, handler),
+      simQueue.registerHandler(prefix as never, (req) =>
+        deliveryCtx.run(new Map(), () => handler(req))
+      ),
     addWatch(watch) {
       const entry = { watch, matches: 0 };
       watches.push(entry);
@@ -826,15 +796,6 @@ export function createSimWorld(options: SimWorldOptions = {}): SimWorld {
     },
     async asExternal(fn) {
       return externalCtx.run(true, fn);
-    },
-    reservePosition: () => store.mintEvent(),
-    async withReservedPosition(position, fn) {
-      reservedPosition = position;
-      try {
-        return await fn();
-      } finally {
-        reservedPosition = undefined;
-      }
     },
     pushTrace,
     callCount: () => callSeq,

@@ -191,6 +191,8 @@ async function connectAndSend(
 
 let errorSpy: ReturnType<typeof vi.spyOn>;
 let logSpy: ReturnType<typeof vi.spyOn>;
+let debugSpy: ReturnType<typeof vi.spyOn>;
+let warnSpy: ReturnType<typeof vi.spyOn>;
 
 beforeAll(async () => {
   // The upgrade injects trace context, whose first call imports the optional
@@ -206,18 +208,31 @@ beforeEach(() => {
   resetWsEventsTransportsForTest();
   errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+  warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   delete process.env.WORKFLOW_REQUEST_TIMEOUT_MS;
+  delete process.env.DEBUG;
 });
 
 const headers = async () => ({ authorization: 'Bearer token-1' });
 
-const loggedErrors = () =>
-  errorSpy.mock.calls.map((args) => args.join(' ')).join('\n');
+const joined = (spy: ReturnType<typeof vi.spyOn>) =>
+  spy.mock.calls.map((args) => args.join(' ')).join('\n');
+
+const loggedErrors = () => joined(errorSpy);
+
+/**
+ * Everything the transport says about a *healthy* connection is debug-gated, so
+ * the assertions below have to distinguish "printed the line" from "printed it
+ * unconditionally". This is what a user without `DEBUG` set sees.
+ */
+const loggedWithoutDebug = () =>
+  `${joined(logSpy)}\n${joined(warnSpy)}\n${joined(debugSpy)}`;
 
 describe('toEventsWsUrl', () => {
   it('upgrades the scheme and scopes the path to one run', () => {
@@ -490,7 +505,8 @@ describe('failures are never silent', () => {
     expect(loggedErrors()).not.toContain('timed out');
   });
 
-  it('logs a drain notice without settling in-flight work', async () => {
+  it('logs a drain notice under DEBUG without settling in-flight work', async () => {
+    process.env.DEBUG = 'workflow:*';
     const transport = getWsEventsTransport(WS_URL, headers);
     const { promise, socket } = await connectAndSend(transport);
     let settled = false;
@@ -506,10 +522,22 @@ describe('failures are never silent', () => {
     socket.deliver(encodeFrame({ type: 'drain', graceMs: 10_000 }, EMPTY));
     await tick();
 
-    expect(logSpy.mock.calls.map((a) => a.join(' ')).join('\n')).toContain(
-      'drain notice'
-    );
+    expect(joined(debugSpy)).toContain('drain notice');
     expect(settled).toBe(false);
+  });
+
+  it('stays silent on a drain notice without DEBUG', async () => {
+    // Both drain reasons — the socket outliving the server's max duration, and
+    // its bearer nearing expiry — are routine on the WS default, and the
+    // transport reconnects from the close that follows. A healthy long-lived
+    // run must not narrate that.
+    const transport = getWsEventsTransport(WS_URL, headers);
+    const { socket } = await connectAndSend(transport);
+
+    socket.deliver(encodeFrame({ type: 'drain', graceMs: 10_000 }, EMPTY));
+    await tick();
+
+    expect(loggedWithoutDebug()).not.toContain('drain notice');
   });
 });
 
@@ -957,26 +985,39 @@ describe('transport selection', () => {
   const directConfig = { token: 'test-token' };
 
   /**
-   * The gate is the whole safety story for this feature: everything else is
-   * dead code for anyone who hasn't opted in. Nothing on the HTTP side pins
-   * the *choice* of path — a future edit that flipped the default (as an
-   * earlier revision of this branch did deliberately, for benchmarking) would
-   * sail through with every HTTP assertion still green, because the two
-   * transports are built to be indistinguishable at the result layer.
+   * The gate is the whole safety story for this feature, and since the default
+   * flipped it is the HTTP path that is now reached only by opting out.
+   * Nothing on either side pins the *choice* of path — the two transports are
+   * built to be indistinguishable at the result layer, so a future edit that
+   * moved the default again would sail through with every other assertion in
+   * this file still green. This table is the only thing that would fail, which
+   * is why it enumerates the boundary rather than spot-checking two values.
    */
   describe('isWsEventsTransportEnabled', () => {
     it.each([
-      ['ws', true],
+      // `http` opts out, case-insensitively and trimmed: whoever reaches for
+      // the escape hatch is the last person who should have it silently
+      // ignored over a capital letter.
       ['http', false],
-      ['', false],
-      ['WS', false],
+      ['HTTP', false],
+      ['Http', false],
+      ['  http  ', false],
+      // Everything else takes the default, including values that look like a
+      // half-remembered opt-out. Unrecognized input resolving to `ws` is the
+      // deliberate half of the asymmetry above.
+      ['ws', true],
+      ['WS', true],
+      ['', true],
+      ['https', true],
+      ['off', true],
+      ['false', true],
     ])('%o resolves to ws=%o', (value, expected) => {
       process.env.WORKFLOW_EVENTS_TRANSPORT = value;
       expect(isWsEventsTransportEnabled()).toBe(expected);
     });
 
-    it('defaults to HTTP when unset', () => {
-      expect(isWsEventsTransportEnabled()).toBe(false);
+    it('defaults to ws when unset', () => {
+      expect(isWsEventsTransportEnabled()).toBe(true);
     });
   });
 
@@ -1024,15 +1065,14 @@ describe('transport selection', () => {
       // That gateway does not forward a raw upgrade, so the caller has to fall
       // back to HTTP rather than attempt a connection it can't serve.
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
-      vi.spyOn(console, 'warn').mockImplementation(() => {});
       openWsChannel('wrun_1', proxyConfig);
 
       expect(resolveWsTransport('wrun_1', proxyConfig)).toBeNull();
       expect(sockets).toHaveLength(0);
     });
 
-    it('logs the proxy fallback and the ws-in-use notice once per process', () => {
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    it('logs the proxy fallback and the ws-in-use notice once per process, under DEBUG', () => {
+      process.env.DEBUG = 'workflow:*';
       process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
 
       openWsChannel('wrun_1', proxyConfig);
@@ -1041,10 +1081,27 @@ describe('transport selection', () => {
       openWsChannel('wrun_2', directConfig);
 
       // Every event takes the resolve path, so a per-request line would be noise.
-      expect(warnSpy).toHaveBeenCalledTimes(1);
       expect(
-        logSpy.mock.calls.filter(([m]) => String(m).includes('using ws'))
+        debugSpy.mock.calls.filter(([m]) => String(m).includes('falling back'))
       ).toHaveLength(1);
+      expect(
+        debugSpy.mock.calls.filter(([m]) => String(m).includes('using ws'))
+      ).toHaveLength(1);
+    });
+
+    it('says nothing about the transport it selected without DEBUG', () => {
+      // The regression this pins: both lines were written while WS was opt-in,
+      // where "using ws" and "you asked for ws but this World can't" reported a
+      // choice the caller had made. On the WS default nobody asked, so every
+      // deployment printed the first after each cold start and every CLI
+      // command — all `projectConfig` Worlds — printed the second.
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'ws';
+
+      openWsChannel('wrun_1', proxyConfig);
+      openWsChannel('wrun_2', directConfig);
+
+      expect(loggedWithoutDebug()).not.toContain('using ws');
+      expect(loggedWithoutDebug()).not.toContain('falling back');
     });
   });
 
@@ -1067,6 +1124,11 @@ describe('transport selection', () => {
     });
 
     it('does nothing when the gate is off', async () => {
+      // Explicitly off. Before the default flipped this was the ambient state
+      // of the suite, so the test read as if it were asserting nothing in
+      // particular; it is in fact the only thing pinning "gate off means no
+      // socket is ever opened".
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
       openWsChannel('wrun_1', directConfig);
       await tick();
 
@@ -1212,6 +1274,7 @@ describe('transport selection', () => {
 
     it('is undefined when the gate is off', () => {
       // Nothing was claimed, so there is nothing for the flow route to release.
+      process.env.WORKFLOW_EVENTS_TRANSPORT = 'http';
       expect(openWsChannel('wrun_1', directConfig)).toBeUndefined();
       expect(sockets).toHaveLength(0);
     });

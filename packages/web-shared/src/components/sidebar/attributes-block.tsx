@@ -92,8 +92,7 @@ function DetailKeyValueRowBase({
             >
               <MiddleTruncate
                 value={copyText}
-                className="min-w-0 text-right"
-                style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}
+                className="min-w-0 grid-cols-[minmax(0,1fr)] text-right"
               />
               <ArrowUpRight aria-hidden className="h-3 w-3 shrink-0" />
             </a>
@@ -101,9 +100,9 @@ function DetailKeyValueRowBase({
             <MiddleTruncate
               value={copyText}
               className={cn(
-                rowValueVariants({ variant, className: 'text-right' })
+                rowValueVariants({ variant, className: 'text-right' }),
+                'grid-cols-[minmax(0,1fr)]'
               )}
-              style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}
             />
           )}
           <CopyButton
@@ -311,13 +310,7 @@ export function AttrSetEventBlock({ data }: { data: unknown }) {
         ))}
       </div>
       {writerLabel && (
-        <div
-          className="border-t py-1.5 text-label-12"
-          style={{
-            borderColor: 'var(--ds-gray-alpha-400)',
-            color: 'var(--ds-gray-700)',
-          }}
-        >
+        <div className="border-gray-alpha-400 border-t py-1.5 text-gray-700 text-label-12">
           {writerLabel}
         </div>
       )}

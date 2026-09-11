@@ -10,7 +10,7 @@
  * The continuation is keyed on the wait's correlationId: while a wait is
  * pending, every replay pass over the run re-observes it (e.g., once per
  * step completion in `Promise.all([steps..., sleep()])`), and without
- * dedupe each pass would enqueue another delayed continuation — each one
+ * dedupe each pass would enqueue another delayed continuation: each one
  * a spurious full replay when the wait elapses, and each a fresh message
  * that resets the delivery-attempt runaway guard. A key is attached in
  * all cases: some worlds (e.g. world-postgres) serialize key-less
@@ -29,7 +29,7 @@
  * situations exist, each with its own key variation:
  *
  * - Waits longer than the maximum queue delay are chained: the delay is
- *   clamped to `WAIT_CONTINUATION_MAX_DELAY_SECONDS` (23h — VQS messages
+ *   clamped to `WAIT_CONTINUATION_MAX_DELAY_SECONDS` (23h: VQS messages
  *   have a 24h retention limit, and one hour of buffer matches
  *   world-vercel's own clamp for delayed re-enqueues), so the
  *   continuation intentionally fires early, re-observes the wait, and
@@ -37,7 +37,7 @@
  *   (`ceil(timeoutSeconds / maxDelay)`): stable for every re-observation
  *   within the same hop window (so passes dedupe), decremented at each
  *   hop delivery (so the chain always advances). Worlds without a delay
- *   limit (world-postgres, world-local) simply take the same ≤23h hops.
+ *   limit (world-postgres, world-local) take the same ≤23h hops.
  *
  * - Near-elapsed waits (≤2s remaining) get a second-bucketed suffix. A
  *   continuation delivered marginally early (clock skew between the
@@ -50,11 +50,25 @@
  * Mid-range waits (more than the near-elapsed threshold, at most one
  * hop) use the bare correlationId: every re-observation targets the same
  * deadline, so deduping to the first message is semantically lossless.
- * Host clock skew beyond the near-elapsed threshold could in principle
- * deliver such a continuation early enough to re-observe its wait and
- * lose the re-enqueue to the burnt key; the threshold is the skew
- * tolerance we accept for the benefit of exactly-one continuation per
- * wait.
+ *
+ * That last case used to be the one hole in the scheme, and it was not
+ * theoretical. Any delivery early enough to re-observe its own wait as
+ * pending burns the bare key on the way in: the re-enqueue is dropped by
+ * the dedupe window, nothing else is scheduled to wake the run, and no
+ * backstop exists for a wait the way inline step ownership provides one
+ * for a step. The run sleeps forever. Waits over the threshold have zero
+ * tolerance for it, which is why an infrastructure change in delivery
+ * timing was able to strand runs across every published SDK version at
+ * once, all of them keyed this way.
+ *
+ * So the key is no longer derived from the wait alone. A continuation
+ * carries the wait it was armed for and its attempt number
+ * ({@link WorkflowInvokePayload.waitContinuation}), and an invocation
+ * that recognizes itself as the continuation for a wait that is still
+ * pending arms the next one at `attempt + 1`. Attempts advance ONLY when
+ * an early delivery actually happens, so the normal path is untouched:
+ * attempt 0 keys exactly as before, and every re-observation within one
+ * attempt still collapses to a single message.
  */
 
 import { envNumber } from '@workflow/world';
@@ -100,19 +114,45 @@ export interface WaitContinuationDispatch {
  * message. `timeoutSeconds` is the time until the wait's `resumeAt`
  * (floored at 1s by the suspension handler); `waitCorrelationId`
  * identifies the wait so repeated suspension passes dedupe.
+ *
+ * `attempt` is the number of continuations already spent on this wait, taken
+ * from the incoming message when this invocation IS one of them (see
+ * {@link WorkflowInvokePayload.waitContinuation}). It only ever moves when a
+ * continuation arrived before its wait elapsed, which is exactly when the
+ * previous key is spent and re-using it would drop the message. Attempt 0
+ * keys identically to the scheme before attempts existed, so the ordinary
+ * path — arm once, deliver once, complete — is byte-for-byte unchanged.
  */
 export function getWaitContinuationDispatch(
   timeoutSeconds: number,
   waitCorrelationId: string,
-  now: number = Date.now()
+  now: number = Date.now(),
+  attempt = 0
+): WaitContinuationDispatch {
+  const dispatch = waitContinuationDispatchForAttemptZero(
+    timeoutSeconds,
+    waitCorrelationId,
+    now
+  );
+  if (attempt <= 0) return dispatch;
+  return {
+    delaySeconds: dispatch.delaySeconds,
+    idempotencyKey: `${dispatch.idempotencyKey}:a${attempt}`,
+  };
+}
+
+function waitContinuationDispatchForAttemptZero(
+  timeoutSeconds: number,
+  waitCorrelationId: string,
+  now: number
 ): WaitContinuationDispatch {
   const maxDelaySeconds = getWaitContinuationMaxDelaySeconds();
   // The near-elapsed branch returns the full remaining time as the delay, so
-  // its threshold can never exceed the max delay — otherwise a wait between the
+  // its threshold can never exceed the max delay. Otherwise a wait between the
   // max and the threshold would be dispatched with a delay above the max. Cap
   // the threshold at the max so every branch yields a delay within it. (With
-  // defaults — threshold 2s, max 82_800s — this is a no-op; it only bites when
-  // the max is tuned down below the threshold for testing.)
+  // defaults, threshold 2s and max 82_800s, this is a no-op; it only bites
+  // when the max is tuned down below the threshold for testing.)
   const nearElapsedThreshold = Math.min(
     getNearElapsedWaitThresholdSeconds(),
     maxDelaySeconds

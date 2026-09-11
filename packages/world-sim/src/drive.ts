@@ -54,7 +54,7 @@ export const DEFAULT_LIMITS: Required<ScenarioLimits> = {
  * The runtime uses zero-delay macrotasks as ordering barriers in the replay
  * consumer, and `waitUntil`-style background work is not awaited by anyone.
  * Between deliveries we drain both so the next delivery starts from a quiet
- * process — otherwise a message enqueued from a trailing microtask would be
+ * process. Otherwise, a message enqueued from a trailing microtask would be
  * missed and the scenario would report a spurious stall.
  */
 async function settle(rounds = 4): Promise<void> {
@@ -77,7 +77,7 @@ export interface DriveResult {
  *
  * Take the next message, jump the clock to its delivery time, hand it to the
  * flow handler, repeat until the queue is empty or a budget says stop. This is
- * the whole of "nothing happens on its own" — extracted so the replay
+ * the whole of "nothing happens on its own," extracted so the replay
  * verification can drive a second world through exactly the same loop.
  */
 export async function driveQueue(options: {

@@ -198,6 +198,58 @@ describe('QueuePayloadSchema', () => {
       }).success
     ).toBe(false);
   });
+
+  describe('replayDivergence', () => {
+    it('round-trips the divergence history', () => {
+      expect(
+        QueuePayloadSchema.parse({
+          runId: 'wrun_01ABC',
+          replayDivergence: {
+            eventId: 'evnt_2',
+            count: 2,
+            eventIds: ['evnt_1', 'evnt_2'],
+          },
+        })
+      ).toEqual({
+        runId: 'wrun_01ABC',
+        replayDivergence: {
+          eventId: 'evnt_2',
+          count: 2,
+          eventIds: ['evnt_1', 'evnt_2'],
+        },
+      });
+    });
+
+    // A producer that predates the history sends only the latest position.
+    it('accepts a message without a history', () => {
+      expect(
+        QueuePayloadSchema.parse({
+          runId: 'wrun_01ABC',
+          replayDivergence: { eventId: 'evnt_1', count: 1 },
+        })
+      ).toEqual({
+        runId: 'wrun_01ABC',
+        replayDivergence: { eventId: 'evnt_1', count: 1 },
+      });
+    });
+
+    // The history is diagnostic only. A malformed value must not fail the
+    // parse, which would fail every delivery of the recovery message.
+    it('drops a malformed history instead of failing the parse', () => {
+      const parsed = QueuePayloadSchema.parse({
+        runId: 'wrun_01ABC',
+        replayDivergence: {
+          eventId: 'evnt_1',
+          count: 1,
+          eventIds: [1, { not: 'a string' }],
+        },
+      });
+      expect(parsed).toEqual({
+        runId: 'wrun_01ABC',
+        replayDivergence: { eventId: 'evnt_1', count: 1 },
+      });
+    });
+  });
 });
 
 describe('RunInputSchema environment', () => {

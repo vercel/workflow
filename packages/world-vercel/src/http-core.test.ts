@@ -1,6 +1,7 @@
 import {
   EntityConflictError,
   RunExpiredError,
+  StreamExpiredError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
@@ -9,14 +10,65 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   errorForResponse,
   formatVercelDiagnostics,
+  getRequestTimeoutMs,
   getVercelDiagnostics,
   parseRetryAfter,
+  REQUEST_TIMEOUT_MS,
   resolveVercelApiToken,
 } from './http-core.js';
 
 vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
 }));
+
+describe('getRequestTimeoutMs', () => {
+  const envName = 'WORKFLOW_REQUEST_TIMEOUT_MS';
+  const original = process.env[envName];
+
+  afterEach(() => {
+    if (original === undefined) delete process.env[envName];
+    else process.env[envName] = original;
+  });
+
+  it('uses the default when unset', () => {
+    delete process.env[envName];
+    expect(getRequestTimeoutMs()).toBe(REQUEST_TIMEOUT_MS);
+  });
+
+  it('honors a value inside the clamp', () => {
+    process.env[envName] = '30000';
+    expect(getRequestTimeoutMs()).toBe(30_000);
+  });
+
+  it('clamps up to the floor', () => {
+    // Below ~10s the deadline cancels requests that would have succeeded (a
+    // cold route, a large event page), and a cancelled request is redriven
+    // through the queue instead of making progress.
+    process.env[envName] = '500';
+    expect(getRequestTimeoutMs()).toBe(10_000);
+  });
+
+  it('clamps down to the ceiling', () => {
+    // Beyond 120s a hung request outlives the callers this deadline protects.
+    // Paths that legitimately run longer pass `timeoutMs: null` instead.
+    process.env[envName] = '600000';
+    expect(getRequestTimeoutMs()).toBe(120_000);
+  });
+
+  it('leaves the long poll a usable budget at the default', () => {
+    // The run-status wait asks for this minus 10s of headroom, so the default
+    // must stay comfortably above the floor or long polling disables itself.
+    delete process.env[envName];
+    expect(getRequestTimeoutMs() - 10_000).toBeGreaterThan(0);
+  });
+
+  it('disables the long-poll budget at exactly the floor', () => {
+    // Documented consequence rather than an accident: 10s is the value at
+    // which long polling turns itself off, not one where it half-works.
+    process.env[envName] = '10000';
+    expect(getRequestTimeoutMs() - 10_000).toBe(0);
+  });
+});
 
 describe('errorForResponse', () => {
   // The runtime branches on these typed errors for core control flow, so the
@@ -26,8 +78,27 @@ describe('errorForResponse', () => {
     expect(errorForResponse(409, 'boom')).toBeInstanceOf(EntityConflictError);
   });
 
-  it('maps 410 to RunExpiredError', () => {
+  it('maps an unstructured 410 to RunExpiredError', () => {
     expect(errorForResponse(410, 'boom')).toBeInstanceOf(RunExpiredError);
+  });
+
+  it('maps a stream-expired 410 to StreamExpiredError with its details', () => {
+    const err = errorForResponse(410, 'stream expired', {
+      code: 'stream-expired',
+      details: {
+        runId: 'wrun_test',
+        streamId: 'stream-test',
+        expiredAt: '2026-08-10T14:40:00.000Z',
+      },
+    });
+
+    expect(err).toMatchObject({
+      name: 'StreamExpiredError',
+      runId: 'wrun_test',
+      streamId: 'stream-test',
+      expiredAt: new Date('2026-08-10T14:40:00.000Z'),
+    });
+    expect(err).toBeInstanceOf(StreamExpiredError);
   });
 
   it('maps 425 to TooEarlyError carrying retryAfter', () => {

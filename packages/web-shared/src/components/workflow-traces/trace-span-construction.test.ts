@@ -1,6 +1,6 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { runToSpan } from './trace-span-construction';
+import { runToSpan, stepToSpan } from './trace-span-construction';
 import { otelTimeToMs } from './trace-time-utils';
 
 const date = (ms: number) => new Date(ms);
@@ -81,5 +81,31 @@ describe('runToSpan', () => {
     expect(data.startedAt).toEqual(date(200));
     expect(data.completedAt).toEqual(date(500));
     expect(data).not.toHaveProperty('occurredAt');
+  });
+});
+
+describe('stepToSpan', () => {
+  it('uses the short name for a workflow-prefixed step name', () => {
+    const span = stepToSpan(
+      [
+        event({
+          eventType: 'step_created',
+          correlationId: 'step_1',
+          eventData: {
+            stepName: 'workflow//src/billing.ts//fetchInvoices',
+            input: null,
+          },
+        }),
+        event({
+          eventType: 'step_completed',
+          correlationId: 'step_1',
+          createdAt: date(2_000),
+          eventData: { result: null },
+        }),
+      ],
+      date(2_000)
+    );
+
+    expect(span?.name).toBe('fetchInvoices');
   });
 });

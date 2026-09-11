@@ -256,7 +256,7 @@ describe('runWorkflow', () => {
       suspension: WorkflowSuspension,
       result: number
     ): Promise<void> => {
-      const step = suspension.steps[0];
+      const step = suspension.items[0];
       assert(step?.type === 'step');
       const base = {
         runId: run.runId,
@@ -1700,7 +1700,7 @@ describe('runWorkflow', () => {
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
       expect(error.message).toEqual('1 step has not been run yet');
-      expect((error as WorkflowSuspension).steps).toEqual([
+      expect((error as WorkflowSuspension).items).toEqual([
         {
           type: 'step',
           stepName: 'add',
@@ -1761,7 +1761,7 @@ describe('runWorkflow', () => {
       expect(error.name).toEqual('WorkflowSuspension');
       // step_started no longer removes from queue - step stays in queue for re-enqueueing
       expect(error.message).toEqual('1 step has not been run yet');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
     });
 
     it('should throw `WorkflowSuspension` for multiple steps with `Promise.all()`', async () => {
@@ -1802,7 +1802,7 @@ describe('runWorkflow', () => {
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
       expect(error.message).toEqual('2 steps have not been run yet');
-      expect((error as WorkflowSuspension).steps).toEqual([
+      expect((error as WorkflowSuspension).items).toEqual([
         {
           type: 'step',
           stepName: 'add',
@@ -2159,10 +2159,10 @@ describe('runWorkflow', () => {
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
       expect(error.message).toEqual('1 hook has not been created yet');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
-      expect((error as WorkflowSuspension).steps[0].type).toEqual('hook');
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
+      expect((error as WorkflowSuspension).items[0].type).toEqual('hook');
       // createHook() should always set isWebhook: false
-      expect((error as WorkflowSuspension).steps[0] as any).toHaveProperty(
+      expect((error as WorkflowSuspension).items[0] as any).toHaveProperty(
         'isWebhook',
         false
       );
@@ -2813,8 +2813,8 @@ describe('runWorkflow', () => {
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
       expect(error.message).toEqual('1 hook has not been created yet');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
-      expect((error as WorkflowSuspension).steps[0].type).toEqual('hook');
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
+      expect((error as WorkflowSuspension).items[0].type).toEqual('hook');
     });
 
     it('should handle hook with custom token', async () => {
@@ -2916,8 +2916,8 @@ describe('runWorkflow', () => {
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
       expect(error.message).toEqual('1 hook has not been created yet');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
-      expect((error as WorkflowSuspension).steps[0].type).toEqual('hook');
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
+      expect((error as WorkflowSuspension).items[0].type).toEqual('hook');
     });
 
     it('should resolve hook.getConflict() with null on hook_created without waiting for hook payload data', async () => {
@@ -4067,8 +4067,8 @@ describe('runWorkflow', () => {
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
       expect(error.message).toEqual('1 wait has not been created yet');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
-      expect((error as WorkflowSuspension).steps[0].type).toEqual('wait');
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
+      expect((error as WorkflowSuspension).items[0].type).toEqual('wait');
     });
 
     it('should handle multiple simultaneous sleeps with Promise.all()', async () => {
@@ -4222,8 +4222,8 @@ describe('runWorkflow', () => {
       }
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
-      expect((error as WorkflowSuspension).steps[0].type).toEqual('wait');
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
+      expect((error as WorkflowSuspension).items[0].type).toEqual('wait');
     });
 
     it('should handle sleep combined with steps', async () => {
@@ -4383,7 +4383,7 @@ describe('runWorkflow', () => {
       ).toEqual('sleep with date completed');
     });
 
-    it('should reject with WorkflowRuntimeError for duplicate wait_completed in event log', async () => {
+    it('should ignore a duplicate wait_completed and keep replaying', async () => {
       const ops: Promise<any>[] = [];
       const workflowRunId = 'test-run-123';
       const workflowRun: WorkflowRun = {
@@ -4424,11 +4424,9 @@ describe('runWorkflow', () => {
           createdAt: new Date('2024-01-01T00:00:05.000Z'),
         },
         {
-          // Duplicate wait_completed — all worlds enforce one wait_completed
-          // per correlationId, so this shape indicates a corrupted event log.
-          // Its position between the sleep's completion and the subsequent
-          // step events means it blocks event consumption until onUnconsumedEvent
-          // fires.
+          // Duplicate wait_completed. The wait's outcome was already decided by
+          // event-1, so this one is committed but inert and replay skips past
+          // it to the step events below rather than stalling on it.
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'wait_completed',
@@ -4461,22 +4459,28 @@ describe('runWorkflow', () => {
         },
       ];
 
-      await expect(
-        runWorkflow(
-          `const doWork = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork");
+      const result = await runWorkflow(
+        `const doWork = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork");
             const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
             async function workflow() {
               await sleep('5s');
               const result = await doWork();
               return result;
             }${getWorkflowTransformCode('workflow')}`,
-          workflowRun,
-          events
+        workflowRun,
+        events
+      );
+      expect(
+        await hydrateWorkflowReturnValue(
+          result as any,
+          workflowRunId,
+          noEncryptionKey,
+          ops
         )
-      ).rejects.toThrow('Replay could not consume event');
+      ).toEqual('step done');
     });
 
-    it('should reject with WorkflowRuntimeError for duplicate step_completed blocking subsequent events', async () => {
+    it('should ignore a duplicate step_completed and keep replaying', async () => {
       const ops: Promise<any>[] = [];
       const workflowRunId = 'test-run-123';
       const workflowRun: WorkflowRun = {
@@ -4518,7 +4522,9 @@ describe('runWorkflow', () => {
           createdAt: new Date('2024-01-01T00:00:01.000Z'),
         },
         {
-          // Duplicate step_completed - orphaned, blocks events below
+          // Duplicate step_completed. doWork1's result was already decided by
+          // event-1, so the second result is never observed and replay skips
+          // past it to doWork2's events.
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'step_completed',
@@ -4552,18 +4558,24 @@ describe('runWorkflow', () => {
         },
       ];
 
-      await expect(
-        runWorkflow(
-          `const doWork1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork1");
+      const result = await runWorkflow(
+        `const doWork1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork1");
           const doWork2 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork2");
           async function workflow() {
             await doWork1();
             return await doWork2();
           }${getWorkflowTransformCode('workflow')}`,
-          workflowRun,
-          events
+        workflowRun,
+        events
+      );
+      expect(
+        await hydrateWorkflowReturnValue(
+          result as any,
+          workflowRunId,
+          noEncryptionKey,
+          ops
         )
-      ).rejects.toThrow(WorkflowRuntimeError);
+      ).toEqual('second done');
     });
 
     it('should reject with WorkflowRuntimeError for orphaned step_completed blocking workflow step', async () => {
@@ -4743,9 +4755,9 @@ describe('runWorkflow', () => {
       // Should suspend to create the step
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
 
-      const step = (error as WorkflowSuspension).steps[0];
+      const step = (error as WorkflowSuspension).items[0];
       expect(step).toMatchObject({
         type: 'step',
         stepName: 'step//input.js//_anonymousStep0',
@@ -4793,9 +4805,9 @@ describe('runWorkflow', () => {
       // Should suspend to create the step
       assert(error);
       expect(error.name).toEqual('WorkflowSuspension');
-      expect((error as WorkflowSuspension).steps).toHaveLength(1);
+      expect((error as WorkflowSuspension).items).toHaveLength(1);
 
-      const step = (error as WorkflowSuspension).steps[0];
+      const step = (error as WorkflowSuspension).items[0];
       expect(step).toMatchObject({
         type: 'step',
         stepName: 'add',

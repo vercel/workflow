@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { cn } from '../../lib/cn';
 
 const STYLES = `.wf-menu-btn{appearance:none;-webkit-appearance:none;border:none;display:inline-flex;align-items:center;justify-content:center;height:40px;padding:0 12px;border-radius:6px;font-size:14px;font-weight:500;line-height:20px;color:var(--ds-gray-1000);background:var(--ds-background-100);box-shadow:0 0 0 1px var(--ds-gray-400);cursor:pointer;white-space:nowrap;transition:background 150ms}.wf-menu-btn:hover{background:var(--ds-gray-alpha-200)}.wf-menu-item{appearance:none;-webkit-appearance:none;border:none;display:flex;align-items:center;width:100%;height:40px;padding:0 8px;border-radius:6px;font-size:14px;color:var(--ds-gray-1000);background:transparent;cursor:pointer;transition:background 150ms}.wf-menu-item:hover{background:var(--ds-gray-alpha-100)}`;
 
@@ -41,7 +42,7 @@ export function MenuDropdown<T extends string = string>({
   }, [open]);
 
   return (
-    <div ref={ref} style={{ position: 'relative', flexShrink: 0 }}>
+    <div ref={ref} className="relative shrink-0">
       <style dangerouslySetInnerHTML={{ __html: STYLES }} />
 
       <button
@@ -55,11 +56,7 @@ export function MenuDropdown<T extends string = string>({
           height={16}
           viewBox="0 0 16 16"
           fill="none"
-          style={{
-            marginLeft: 16,
-            marginRight: -4,
-            color: 'var(--ds-gray-900)',
-          }}
+          className="-mr-1 ml-4 text-gray-900"
         >
           <path
             d="M4.5 6L8 9.5L11.5 6"
@@ -73,18 +70,7 @@ export function MenuDropdown<T extends string = string>({
 
       {open && (
         <div
-          style={{
-            position: 'absolute',
-            right: 0,
-            top: '100%',
-            marginTop: 4,
-            minWidth: 140,
-            padding: 4,
-            borderRadius: 12,
-            background: 'var(--ds-background-100)',
-            boxShadow: 'var(--ds-shadow-menu, var(--ds-shadow-medium))',
-            zIndex: 2001,
-          }}
+          className="absolute top-full right-0 z-[2001] mt-1 min-w-[140px] bg-background-100 p-1 material-menu"
           role="menu"
         >
           {options.map((option) => (
@@ -92,10 +78,10 @@ export function MenuDropdown<T extends string = string>({
               key={option.value}
               type="button"
               role="menuitem"
-              className="wf-menu-item"
-              style={{
-                fontWeight: option.value === value ? 500 : 400,
-              }}
+              className={cn(
+                'wf-menu-item',
+                option.value === value ? 'font-medium' : 'font-normal'
+              )}
               onClick={() => {
                 onChange(option.value);
                 setOpen(false);
