@@ -282,6 +282,28 @@ export function isBatchTransitionsEnabled(): boolean {
 }
 
 /**
+ * Whether the pending-step dispatch pass treats a queue-owned running step
+ * (created, latest `step_started` bare, no `step_retrying`, no terminal
+ * event) on a World that declares `capabilities.queueRedeliversUnacked` as
+ * already in flight: it arms a delayed backstop wake for the ownership lease
+ * remainder instead of re-sending the step message on every replay. The
+ * unacked step message is the step's crash recovery on such a queue, so the
+ * immediate re-enqueue was duplicate traffic (deduped by the queue, but paid
+ * for as a send on every replay of a wide fan-out). A step that is created
+ * but never started keeps its immediate re-enqueue regardless.
+ *
+ * Reads `process.env.WORKFLOW_QUEUE_OWNED_BACKSTOP` lazily. Default **ON**;
+ * disabled only by an explicit `'0'` / `'false'` (case-insensitive), which
+ * restores the unconditional immediate re-enqueue whatever the World
+ * declares, mirroring `WORKFLOW_BATCH_TRANSITIONS`'s kill-switch shape.
+ */
+export function isQueueOwnedBackstopEnabled(): boolean {
+  const raw = process.env.WORKFLOW_QUEUE_OWNED_BACKSTOP;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
+}
+
+/**
  * Ceiling on events per `createBatch` call from the batched fan-out fold.
  * Mirrors the server's transaction budgets with a comfortable margin: each
  * fan-out event costs 2 transaction items server-side (entity + event row)

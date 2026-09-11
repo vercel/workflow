@@ -41,6 +41,9 @@ interface WorldCapabilities {
   hookRetention?: {
     active: boolean;
   };
+  queueRedeliversUnacked?: {
+    active: boolean;
+  };
   maxConcurrency?: boolean;
 }
 
@@ -60,7 +63,7 @@ interface World extends Storage, Queue, Streamer {
 
 `specVersion` is required. See [Declaring the spec version](#declaring-the-spec-version).
 
-The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses.
+The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `queueRedeliversUnacked.active` to `true` only when your queue redelivers a message whose consumer died before acknowledging it, on its own and within the inline ownership lease (`WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`, 860 seconds by default). The runtime then stops re-sending the step message for a step that a queue delivery is already running (its latest `step_started` is bare and has no terminal event) and arms a delayed backstop wake instead, relying on your redelivery to recover the step if that delivery dies. Leave it unset for an in-process queue, or when a dead consumer's message can stay locked for longer than the lease. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses.
 
 [Slot-numbered event IDs](#event-id-allocation) are a contract requirement rather than a capability, so there is no flag or fallback path.
 

@@ -218,6 +218,7 @@ inline execution:
 | Uncreated (`!hasCreatedEvent`) | Unchanged: lazy-inline candidate or eager create+queue |
 | Created, ownership active, `owner === myMessageId` | **Execute in this invocation** (owned recovery, alongside the lazy-inline batch; input hydrates from the step entity; the bare `step_started` re-stamps) |
 | Created, ownership active, `owner !== myMessageId` | **Ensure backstop wake**: plain run continuation, `delaySeconds = leaseRemaining`, epoch-scoped idempotency key |
+| Created, latest start bare, no `step_retrying`, World declares `capabilities.queueRedeliversUnacked` | **Ensure backstop wake** (same shape, keyed to the bare start's timestamp). The bare start was written by a queue delivery of the step message that has not acked yet, so the queue itself redelivers it if that consumer dies; the immediate re-send was duplicate traffic. Once the lease is spent the backstop falls through to the row below. `WORKFLOW_QUEUE_OWNED_BACKSTOP=0` disables this row. |
 | Created, ownership lapsed (`step_retrying` seen), never owned (eager / old events), lease expired, or kill-switched | Unchanged: immediate enqueue, `idempotencyKey = correlationId` |
 | Terminal | Unchanged: not in the pending set |
 
@@ -325,8 +326,11 @@ heartbeat machinery rejected above.
 
 - Span attributes on `workflow.execute`:
   `workflow.inline_ownership.owned_recovery_steps` (crash recovery re-executed owned
-  steps) and `workflow.inline_ownership.backstop_wakes_armed` (a replay suppressed an
-  immediate requeue).
+  steps), `workflow.inline_ownership.backstop_wakes_armed` (a replay suppressed an
+  immediate requeue of an inline-owned step) and
+  `workflow.queue_ownership.backstop_wakes_armed` (a replay suppressed an immediate
+  requeue of a queue-owned running step on a World whose queue redelivers unacked
+  messages).
 - Always-printed `warn` logs when owned recovery runs (a prior delivery died mid-body)
   and when the single-flight absorbs a would-be duplicate (a burst of these means leases
   are expiring under live executions: raise the lease environment variable). Invariant violations log at

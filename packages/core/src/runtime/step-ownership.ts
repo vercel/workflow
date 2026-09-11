@@ -26,6 +26,30 @@ export function isStepOwnershipActive(step: StepInvocationQueueItem): boolean {
 }
 
 /**
+ * Whether a pending step is queue-owned and running: created, its latest
+ * `step_started` is bare (unstamped, so written by a queue delivery of the
+ * step message rather than by an inline owner), and no `step_retrying` has
+ * been observed. Such a step's body is being executed by a queue consumer
+ * that has not acked its message. On a World whose queue redelivers unacked
+ * messages (`capabilities.queueRedeliversUnacked`) that message is the
+ * step's crash recovery, so a replay need not re-enqueue it and arms a
+ * delayed backstop wake instead (see the dispatch loop in runtime.ts).
+ *
+ * `step_retrying` excludes the step deliberately, mirroring
+ * {@link isStepOwnershipActive}: from there the step rides its delayed retry
+ * handoff, which stays on the immediate re-enqueue path. The two predicates
+ * are mutually exclusive, since ownership requires a stamped start.
+ */
+export function isQueueOwnedRunning(step: StepInvocationQueueItem): boolean {
+  return (
+    step.hasCreatedEvent === true &&
+    step.lastStartedAt !== undefined &&
+    step.ownerMessageId === undefined &&
+    step.sawRetrying !== true
+  );
+}
+
+/**
  * Seconds left on an owned step's liveness lease, anchored at its latest
  * `step_started`. 0 means the lease has expired (or the start timestamp is
  * missing, the degraded mode for worlds whose events lack usable

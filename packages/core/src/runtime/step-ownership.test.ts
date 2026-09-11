@@ -4,6 +4,7 @@ import type { StepInvocationQueueItem } from '../global.js';
 import {
   backstopIdempotencyKey,
   hasPendingStepOwnedByMessage,
+  isQueueOwnedRunning,
   isStepOwnershipActive,
   stepLeaseRemainingSeconds,
 } from './step-ownership.js';
@@ -48,6 +49,49 @@ describe('isStepOwnershipActive', () => {
 
   it('is permanently inactive after step_retrying', () => {
     expect(isStepOwnershipActive(makeStep({ sawRetrying: true }))).toBe(false);
+  });
+});
+
+describe('isQueueOwnedRunning', () => {
+  // A queue delivery of the step message wrote the latest start: bare
+  // (unstamped), after step_created, with no step_retrying since.
+  const queueOwned = () =>
+    makeStep({ ownerMessageId: undefined, lastStartedAt: 1_000_000 });
+
+  it('is running for a created step whose latest start is bare', () => {
+    expect(isQueueOwnedRunning(queueOwned())).toBe(true);
+  });
+
+  it('is not running when the latest start is stamped (inline-owned)', () => {
+    expect(isQueueOwnedRunning(makeStep({ ownerMessageId: 'msg_owner' }))).toBe(
+      false
+    );
+  });
+
+  it('is not running after step_retrying', () => {
+    expect(isQueueOwnedRunning({ ...queueOwned(), sawRetrying: true })).toBe(
+      false
+    );
+  });
+
+  it('is not running for a step that was created but never started', () => {
+    expect(
+      isQueueOwnedRunning({ ...queueOwned(), lastStartedAt: undefined })
+    ).toBe(false);
+  });
+
+  it('is not running before step_created is observed', () => {
+    expect(
+      isQueueOwnedRunning({ ...queueOwned(), hasCreatedEvent: false })
+    ).toBe(false);
+  });
+
+  it('is exclusive with inline ownership', () => {
+    for (const step of [queueOwned(), makeStep()]) {
+      expect(isQueueOwnedRunning(step) && isStepOwnershipActive(step)).toBe(
+        false
+      );
+    }
   });
 });
 

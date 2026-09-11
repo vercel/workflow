@@ -17,8 +17,10 @@ import { runtimeLogger } from './logger.js';
 import { registerStepFunction } from './private.js';
 import {
   DEPLOYMENT_MISMATCH_MAX_RETRIES,
+  getInlineOwnershipLeaseSeconds,
   REPLAY_DIVERGENCE_MAX_RETRIES,
 } from './runtime/constants.js';
+import { stepDispatchIdempotencyKey } from './runtime/helpers.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
 import {
@@ -3354,5 +3356,298 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(stso).toBeUndefined();
     // Continuation delivery is not turbo.
     expect(optimizations).toEqual(['lazyStepStart']);
+  });
+});
+
+describe('workflowEntrypoint queue-owned running step dispatch', () => {
+  afterEach(() => {
+    delete process.env.WORKFLOW_QUEUE_OWNED_BACKSTOP;
+    setWorld(undefined);
+    vi.clearAllMocks();
+    waitUntilPromises.length = 0;
+  });
+
+  const getWorkflowTransformCode = (workflowName: string) =>
+    `;globalThis.__private_workflows = new Map();
+    globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${workflowName});`;
+
+  // Every log below says some queue delivery is (or was) responsible for this
+  // step, so the replay must never run its body; a throwing body makes an
+  // accidental inline execution fail loudly instead of passing silently.
+  registerStepFunction('queueOwnedStep', async () => {
+    throw new Error('queueOwnedStep body must not execute during the replay');
+  });
+  const oneStepWorkflow = `const queueOwnedStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("queueOwnedStep");
+    async function workflow() {
+      return await queueOwnedStep(1);
+    }${getWorkflowTransformCode('workflow')}`;
+
+  async function makeRunningRun(runId: string): Promise<WorkflowRun> {
+    return {
+      runId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments([], runId, undefined, []),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+  }
+
+  /**
+   * Drives one run-message delivery of `oneStepWorkflow` over a pinned event
+   * log against a World with the given capabilities, recording every
+   * `world.queue` send.
+   */
+  async function driveReplay(opts: {
+    workflowRun: WorkflowRun;
+    events: Event[];
+    capabilities?: Record<string, unknown>;
+    onStepStarted?: (data: any) => void;
+  }) {
+    const queueCalls: QueueCall[] = [];
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      if (data.eventType === 'run_started') {
+        return { run: opts.workflowRun, events: opts.events };
+      }
+      if (data.eventType === 'step_started') opts.onStepStarted?.(data);
+      return {
+        event: {
+          eventId: slotToEventId(opts.events.length + 1),
+          runId: opts.workflowRun.runId,
+          createdAt: new Date(),
+          ...data,
+        },
+      };
+    });
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      capabilities: opts.capabilities,
+      getDeploymentId: vi.fn(async () => opts.workflowRun.deploymentId),
+      createQueueHandler: vi.fn(
+        (
+          _prefix: string,
+          handler: (message: unknown, metadata: unknown) => Promise<unknown>
+        ) =>
+          async () => {
+            await handler(
+              {
+                runId: opts.workflowRun.runId,
+                requestedAt: new Date('2024-01-01T00:00:00.000Z'),
+              },
+              {
+                requestId: 'req_test',
+                attempt: 1,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg_replay',
+              }
+            );
+            return new Response(null, { status: 204 });
+          }
+      ),
+      events: {
+        create: eventsCreate,
+        list: vi.fn(async () => ({
+          data: opts.events,
+          hasMore: false,
+          cursor: 'cursor_test',
+        })),
+      },
+      runs: { get: vi.fn(async () => opts.workflowRun) },
+      queue: vi.fn(
+        async (
+          queueName: string,
+          message: unknown,
+          queueOpts?: Record<string, unknown>
+        ) => {
+          queueCalls.push({ queueName, message, opts: queueOpts });
+          return { messageId: null };
+        }
+      ),
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+    const handler = workflowEntrypoint(oneStepWorkflow);
+    return {
+      handlerPromise: handler(new Request('https://example.test')),
+      queueCalls,
+    };
+  }
+
+  /**
+   * Step correlation IDs come from a PRNG seeded by the run's identity at a
+   * timestamp derived from the run, so this run mints the same ID on every
+   * replay. Discover it by letting a first delivery reach the step's lazy
+   * `step_started` and refusing that write, then pin it in the scenario log.
+   */
+  async function discoverStepCorrelationId(
+    workflowRun: WorkflowRun
+  ): Promise<string> {
+    let correlationId: string | undefined;
+    const { handlerPromise } = await driveReplay({
+      workflowRun,
+      events: [],
+      onStepStarted: (data) => {
+        correlationId = data.correlationId;
+        throw new WorkflowWorldError('discovery only', {
+          code: 'PARSE_ERROR',
+        });
+      },
+    });
+    await expect(handlerPromise).rejects.toThrow('discovery only');
+    // Nothing from the discovery delivery may leak into the scenario.
+    await Promise.allSettled(waitUntilPromises);
+    waitUntilPromises.length = 0;
+    setWorld(undefined);
+    vi.clearAllMocks();
+    if (!correlationId) {
+      throw new Error('discovery delivery never reached step_started');
+    }
+    return correlationId;
+  }
+
+  // The bare start landed 30s ago: well inside the ownership lease, and far
+  // enough back that a whole-second lease remainder is strictly positive.
+  const startedAtMs = Date.now() - 30_000;
+
+  /** `step_created`, plus (optionally) a bare `step_started`, no terminal. */
+  function pendingStepLog(
+    workflowRun: WorkflowRun,
+    stepId: string,
+    opts: { started: boolean }
+  ): Event[] {
+    const events: Event[] = [
+      {
+        eventId: slotToEventId(1),
+        runId: workflowRun.runId,
+        eventType: 'step_created',
+        correlationId: stepId,
+        eventData: { stepName: 'queueOwnedStep' },
+        createdAt: new Date(startedAtMs - 1_000),
+      } as Event,
+    ];
+    if (opts.started) {
+      events.push({
+        eventId: slotToEventId(2),
+        runId: workflowRun.runId,
+        eventType: 'step_started',
+        correlationId: stepId,
+        // Bare: no ownerMessageId, i.e. written by a queue delivery of the
+        // step message, not by an inline owner.
+        eventData: {},
+        createdAt: new Date(startedAtMs),
+      } as Event);
+    }
+    return events;
+  }
+
+  const redeliveringQueue = { queueRedeliversUnacked: { active: true } };
+
+  function expectImmediateStepEnqueue(
+    queueCalls: QueueCall[],
+    workflowRun: WorkflowRun,
+    stepId: string
+  ) {
+    expect(queueCalls).toHaveLength(1);
+    const [send] = queueCalls;
+    expect(send.message).toMatchObject({
+      runId: workflowRun.runId,
+      stepId,
+      stepName: 'queueOwnedStep',
+    });
+    expect(send.opts).toMatchObject({
+      idempotencyKey: stepDispatchIdempotencyKey(stepId, 'queueOwnedStep'),
+    });
+    expect(send.opts?.delaySeconds).toBeUndefined();
+  }
+
+  it('arms a delayed backstop instead of re-enqueueing a queue-owned running step when the World redelivers unacked messages', async () => {
+    const workflowRun = await makeRunningRun('wrun_queue_owned_backstop');
+    const stepId = await discoverStepCorrelationId(workflowRun);
+
+    const { handlerPromise, queueCalls } = await driveReplay({
+      workflowRun,
+      events: pendingStepLog(workflowRun, stepId, { started: true }),
+      capabilities: redeliveringQueue,
+    });
+    await handlerPromise;
+
+    expect(queueCalls).toHaveLength(1);
+    const [wake] = queueCalls;
+    // A plain run continuation, never a step message: when it fires this
+    // same decision table handles whatever state the step is in by then.
+    expect(wake.message).toMatchObject({ runId: workflowRun.runId });
+    expect(wake.message).not.toHaveProperty('stepId');
+    // Same epoch-scoped key and lease-remainder delay as an inline-owned
+    // step's backstop.
+    expect(wake.opts).toMatchObject({
+      idempotencyKey: `${stepId}:backstop:${startedAtMs}`,
+    });
+    const delaySeconds = wake.opts?.delaySeconds;
+    expect(typeof delaySeconds).toBe('number');
+    expect(delaySeconds as number).toBeGreaterThan(0);
+    expect(delaySeconds as number).toBeLessThanOrEqual(
+      getInlineOwnershipLeaseSeconds()
+    );
+  });
+
+  it('re-enqueues the step immediately when the World does not declare the capability', async () => {
+    const workflowRun = await makeRunningRun('wrun_queue_owned_no_capability');
+    const stepId = await discoverStepCorrelationId(workflowRun);
+
+    const { handlerPromise, queueCalls } = await driveReplay({
+      workflowRun,
+      events: pendingStepLog(workflowRun, stepId, { started: true }),
+      capabilities: { hookRetention: { active: true } },
+    });
+    await handlerPromise;
+
+    expectImmediateStepEnqueue(queueCalls, workflowRun, stepId);
+  });
+
+  it('re-enqueues the step immediately when the capability is declared inactive', async () => {
+    const workflowRun = await makeRunningRun('wrun_queue_owned_inactive');
+    const stepId = await discoverStepCorrelationId(workflowRun);
+
+    const { handlerPromise, queueCalls } = await driveReplay({
+      workflowRun,
+      events: pendingStepLog(workflowRun, stepId, { started: true }),
+      capabilities: { queueRedeliversUnacked: { active: false } },
+    });
+    await handlerPromise;
+
+    expectImmediateStepEnqueue(queueCalls, workflowRun, stepId);
+  });
+
+  it('re-enqueues the step immediately under WORKFLOW_QUEUE_OWNED_BACKSTOP=0 even when the World redelivers', async () => {
+    process.env.WORKFLOW_QUEUE_OWNED_BACKSTOP = '0';
+    const workflowRun = await makeRunningRun('wrun_queue_owned_kill_switch');
+    const stepId = await discoverStepCorrelationId(workflowRun);
+
+    const { handlerPromise, queueCalls } = await driveReplay({
+      workflowRun,
+      events: pendingStepLog(workflowRun, stepId, { started: true }),
+      capabilities: redeliveringQueue,
+    });
+    await handlerPromise;
+
+    expectImmediateStepEnqueue(queueCalls, workflowRun, stepId);
+  });
+
+  it('still re-enqueues a created-but-never-started step immediately when the World redelivers', async () => {
+    // step_created proves nothing about whether the step's message was ever
+    // sent: a handler may have crashed between the create and the send. The
+    // capability only covers steps a queue delivery has already started.
+    const workflowRun = await makeRunningRun('wrun_queue_owned_never_started');
+    const stepId = await discoverStepCorrelationId(workflowRun);
+
+    const { handlerPromise, queueCalls } = await driveReplay({
+      workflowRun,
+      events: pendingStepLog(workflowRun, stepId, { started: false }),
+      capabilities: redeliveringQueue,
+    });
+    await handlerPromise;
+
+    expectImmediateStepEnqueue(queueCalls, workflowRun, stepId);
   });
 });

@@ -59,6 +59,7 @@ import {
   getPreconditionReinvokeDelaySeconds,
   getReplayDivergenceMaxRetries,
   isInlineOwnershipEnabled,
+  isQueueOwnedBackstopEnabled,
   isTurboEnabled,
   isVmRetentionEnabled,
 } from './runtime/constants.js';
@@ -108,6 +109,7 @@ import { computeStepLatencyTracking } from './runtime/step-latency.js';
 import {
   backstopIdempotencyKey,
   hasPendingStepOwnedByMessage,
+  isQueueOwnedRunning,
   isStepOwnershipActive,
   stepLeaseRemainingSeconds,
 } from './runtime/step-ownership.js';
@@ -3847,6 +3849,24 @@ export function workflowEntrypoint(
                         //     (fixed keys either absorb the retry handoff
                         //     or dedupe the refreshed-lease re-arm against
                         //     the in-flight backstop itself).
+                        //   - Queue-owned and running (created, latest
+                        //     step_started BARE, no step_retrying, no
+                        //     terminal event) on a World whose queue
+                        //     redelivers unacked messages
+                        //     (capabilities.queueRedeliversUnacked) →
+                        //     ensure the same DELAYED backstop wake. The
+                        //     bare start was written by a queue delivery of
+                        //     the step message that has not acked yet, so
+                        //     the queue itself redelivers it if that
+                        //     consumer dies; an immediate re-send here is
+                        //     duplicate traffic (deduped by the queue, but
+                        //     one send per pending step per replay on a
+                        //     wide fan-out). When the backstop fires the
+                        //     lease is spent, so this same table falls
+                        //     through to the immediate enqueue below: a
+                        //     wrong guess costs at most one lease, never
+                        //     the step. WORKFLOW_QUEUE_OWNED_BACKSTOP=0
+                        //     disables this row.
                         //   - Not owned (never stamped / eager / ownership
                         //     lapsed at step_retrying / lease expired /
                         //     kill-switched) → immediate enqueue, exactly as
@@ -3855,6 +3875,9 @@ export function workflowEntrypoint(
                         //     queueing, a later handler queues it; the
                         //     step-identity-scoped idempotencyKey dedupes
                         //     redundant queues across concurrent handlers.
+                        //     A created-but-never-started step always lands
+                        //     here: nothing in the log proves its message
+                        //     was ever sent.
                         //
                         // The wait continuation is what makes
                         // `Promise.race(step, sleep)` behave correctly with
@@ -3876,6 +3899,14 @@ export function workflowEntrypoint(
                         const traceCarrier = await nextTraceCarrier();
                         const dispatches: Promise<unknown>[] = [];
                         const inlineOwnership = isInlineOwnershipEnabled();
+                        // Fails closed: only a World that declares its queue
+                        // redelivers unacked messages gets the queue-owned
+                        // row of the table, and the kill switch wins over
+                        // the declaration.
+                        const queueOwnedBackstop =
+                          isQueueOwnedBackstopEnabled() &&
+                          world.capabilities?.queueRedeliversUnacked?.active ===
+                            true;
                         const dispatchNowMs = Date.now();
                         const ownedRecoverySteps: StepInvocationQueueItem[] =
                           [];
@@ -3887,6 +3918,7 @@ export function workflowEntrypoint(
                         for (const correlationId of suspensionResult.queuedStepCorrelationIds) {
                           publishedStepCorrelationIds.add(correlationId);
                         }
+                        let queueOwnedBackstopWakesArmed = 0;
                         // TTR hand-off. The measurement may only go to an
                         // execution that will actually ATTEMPT the next
                         // durable step, and the loop below is what decides
@@ -3961,18 +3993,32 @@ export function workflowEntrypoint(
                             continue;
                           }
                           // Delayed backstop wake while another invocation's
-                          // ownership lease is live; immediate step enqueue
-                          // otherwise (lease expired ⇒ remaining 0 ⇒ same as
-                          // today, which is also the degraded mode for
-                          // worlds with unstable message IDs, where the owner
-                          // check above never matches there).
-                          const backstopDelaySeconds = ownershipActive
-                            ? stepLeaseRemainingSeconds(step, dispatchNowMs)
-                            : 0;
+                          // ownership lease is live, or while a queue
+                          // delivery is running the step under an unacked
+                          // message on a queue that redelivers those;
+                          // immediate step enqueue otherwise (lease expired
+                          // ⇒ remaining 0 ⇒ same as today, which is also the
+                          // degraded mode for worlds with unstable message
+                          // IDs, where the owner check above never matches
+                          // there). The two conditions are exclusive: one
+                          // needs a stamped latest start, the other a bare
+                          // one.
+                          const queueOwnedRunning =
+                            queueOwnedBackstop && isQueueOwnedRunning(step);
+                          const backstopDelaySeconds =
+                            ownershipActive || queueOwnedRunning
+                              ? stepLeaseRemainingSeconds(step, dispatchNowMs)
+                              : 0;
                           if (backstopDelaySeconds > 0) {
-                            backstopWakesArmed++;
+                            if (queueOwnedRunning) {
+                              queueOwnedBackstopWakesArmed++;
+                            } else {
+                              backstopWakesArmed++;
+                            }
                             runtimeLogger.debug(
-                              'Pending step is inline-owned by a live invocation; ensuring delayed backstop wake instead of immediate requeue',
+                              queueOwnedRunning
+                                ? 'Pending step is queue-owned and running under an unacked message; ensuring delayed backstop wake instead of immediate requeue'
+                                : 'Pending step is inline-owned by a live invocation; ensuring delayed backstop wake instead of immediate requeue',
                               {
                                 workflowRunId: runId,
                                 stepId: step.correlationId,
@@ -4160,6 +4206,8 @@ export function workflowEntrypoint(
                           backstopWakesArmed > 0 ||
                           ownedRecoverySteps.length > 0 ||
                           republishesSkipped > 0
+                          queueOwnedBackstopWakesArmed > 0 ||
+                          ownedRecoverySteps.length > 0
                         ) {
                           span?.setAttributes({
                             ...(ownedRecoverySteps.length > 0
@@ -4175,6 +4223,11 @@ export function workflowEntrypoint(
                             ...(republishesSkipped > 0
                               ? Attribute.WorkflowDispatchRepublishSkipped(
                                   republishesSkipped
+                                )
+                              : {}),
+                            ...(queueOwnedBackstopWakesArmed > 0
+                              ? Attribute.WorkflowQueueOwnedBackstopWakesArmed(
+                                  queueOwnedBackstopWakesArmed
                                 )
                               : {}),
                           });

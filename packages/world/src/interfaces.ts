@@ -505,6 +505,32 @@ export interface WorldCapabilities {
   };
 
   /**
+   * The World's queue redelivers a message whose consumer died before acking
+   * it (visibility timeout, lease expiry, or an equivalent mechanism) on its
+   * own, with no help from the runtime. A step whose latest `step_started`
+   * is bare (no `ownerMessageId`) and has no terminal event is being executed
+   * by a queue delivery of its step message that has not acked yet; on such
+   * a queue that unacked message IS the step's crash recovery, so a replay
+   * needs no re-enqueue for it. The dispatch pass then arms a delayed
+   * backstop wake for the ownership lease remainder (the shape inline-owned
+   * steps already use) instead of re-sending the step message on every
+   * replay, and falls back to the immediate enqueue once the lease is spent.
+   * A step that is created but never started is NOT covered and keeps its
+   * immediate re-enqueue: `step_created` in the log proves nothing about
+   * whether the step's message was ever sent.
+   *
+   * Leave this unset when the queue is in-process, when a dead consumer's
+   * message can stay locked for longer than the inline ownership lease
+   * (`WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS`), or when the World relies on
+   * the replay re-enqueue (or its own `start()` recovery) to re-run steps
+   * whose consumer died. `WORKFLOW_QUEUE_OWNED_BACKSTOP=0` restores the
+   * immediate re-enqueue even when this is declared.
+   */
+  queueRedeliversUnacked?: {
+    active: boolean;
+  };
+
+  /**
    * The World's queue supports `maxConcurrency`-limited consumption, in
    * particular the per-run flow topics consumed with `maxConcurrency: 1`
    * that `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses to serialize a run's

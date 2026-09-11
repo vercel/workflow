@@ -42,6 +42,11 @@ export function createWorld(config?: APIConfig): World {
     specVersion: mintedSpecVersion(),
     capabilities: {
       hookRetention: { active: true },
+      // Vercel Queues redelivers a message its consumer did not ack once the
+      // visibility timeout expires, so a queue-owned running step (bare
+      // `step_started`, no terminal event) recovers from a dead consumer
+      // without a replay re-sending its message.
+      queueRedeliversUnacked: { active: true },
       // Vercel Queues supports maxConcurrency-limited consumers, which
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
       // flow topics (see queue.ts and @workflow/builders).

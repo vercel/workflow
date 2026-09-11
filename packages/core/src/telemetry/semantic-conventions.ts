@@ -247,6 +247,16 @@ export const WorkflowDispatchRepublishSkipped = SemanticConvention<number>(
   'workflow.dispatch.republish_skipped'
 );
 
+/**
+ * Number of pending steps for which this replay suppressed the immediate
+ * requeue because they are queue-owned and running (bare `step_started`, no
+ * terminal event) on a World whose queue redelivers unacked messages, and
+ * ensured a delayed backstop wake instead.
+ */
+export const WorkflowQueueOwnedBackstopWakesArmed = SemanticConvention<number>(
+  'workflow.queue_ownership.backstop_wakes_armed'
+);
+
 // Route attributes
 
 /** The workflow runtime route being handled */
