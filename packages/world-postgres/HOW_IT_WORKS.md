@@ -12,13 +12,12 @@ If you want to use any other ORM, query builder or underlying database client, y
 graph LR
     Client --> PG[graphile-worker queue]
     PG --> Worker[Embedded Worker]
-    Worker --> HTTP[Combined flow HTTP route]
-    HTTP --> Handler[Workflow Handler]
+    Worker --> Handler[Registered flow handler]
 
     PG -.-> F["${prefix}flows<br/>(orchestration and steps)"]
 ```
 
-Jobs include retry logic (3 attempts), idempotency keys, durable delayed rescheduling, and configurable worker concurrency (default: 10).
+Jobs include retry logic, idempotency keys, durable delayed rescheduling, and configurable worker concurrency (default: 50).
 
 ## Streaming
 
@@ -32,23 +31,24 @@ Real-time data streaming via **PostgreSQL LISTEN/NOTIFY**:
 
 ## Setup
 
-Call `world.start()` to initialize graphile-worker workers. When `.start()` is called, workers begin listening to graphile-worker queues. When a job arrives, the worker executes the queue message over the workflow HTTP routes and awaits completion before acknowledging the Graphile job.
+Call the generated flow handler's `initialize()` method before `world.start()`. This registers the handler before Graphile Worker begins claiming jobs. The worker invokes it directly and acknowledges each Graphile job only after it finishes.
 
 When the runtime returns `{ timeoutSeconds }`, the worker schedules a new Graphile job with a future `runAt` time before finishing the current task.
 
-The worker sends workflow orchestration and queued step messages to the combined `.well-known/workflow/v1/flow` endpoint.
+The generated `.well-known/workflow/v1/flow` route returns 404 for every external request when Postgres is active, including `?__health`.
 
 In **Next.js**, the `world.start()` call needs to be added to `instrumentation.ts|js` to ensure workers start before request handling. Use `workflow/runtime` for `getWorld` (same as the testing server and other framework plugins):
 
 ```ts
 // instrumentation.ts
 
-if (process.env.NEXT_RUNTIME !== "edge") {
-  import("workflow/runtime").then(async ({ getWorld }) => {
-    // start listening to the jobs.
-    const world = await getWorld();
-    await world.start?.();
-  });
+if (process.env.NEXT_RUNTIME === "nodejs") {
+  const { POST } = await import(
+    "./app/.well-known/workflow/v1/flow/route"
+  );
+  await POST.initialize();
+  const { getWorld } = await import("workflow/runtime");
+  await (await getWorld()).start?.();
 }
 ```
 
@@ -56,6 +56,6 @@ if (process.env.NEXT_RUNTIME !== "edge") {
 
 `world.close()` first stops Graphile Worker from claiming new jobs, then waits for active jobs before closing the streamer and any internally owned pool.
 
-Graphile Worker gives active tasks a grace period, then aborts their task signal. The Postgres world forwards that signal to both the workflow HTTP request and its response body. If the request aborts, Graphile Worker unlocks the same Postgres job row through its normal failure handling. The already-claimed delivery consumes an attempt and is retried only if its Graphile attempt budget remains; the shutdown handler does not insert a successor row.
+Graphile Worker gives active tasks a grace period, then aborts their task signal. The Postgres World stops waiting for the handler and Graphile Worker unlocks the same Postgres job row through its normal failure handling. The already-claimed delivery consumes an attempt and is retried only if its Graphile attempt budget remains; the shutdown handler does not insert a successor row.
 
-Applications that manage a broader shutdown sequence should set `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` for the standard package target or `applicationManagedShutdown: true` for a programmatic World, await `world.close()`, and only then close the workflow HTTP routes and any caller-owned pool. This prevents Graphile Worker's default handler from terminating the process as soon as its queue stops. Because aborting a client request does not prove that its server handler stopped, workflow and step handlers still need to tolerate at-least-once execution.
+Applications that manage a broader shutdown sequence should set `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` for the standard package target or `applicationManagedShutdown: true` for a programmatic World, await `world.close()`, and only then close any caller-owned pool. This prevents Graphile Worker's default handler from terminating the process as soon as its queue stops. Because aborting a delivery does not prove that application code in its handler stopped, workflow and step handlers still need to tolerate at-least-once execution.

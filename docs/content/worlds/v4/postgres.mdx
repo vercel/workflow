@@ -73,7 +73,7 @@ The migration is idempotent and can safely be run as a post-deployment lifecycle
 
 ## Starting the World
 
-To subscribe to the graphile-worker queue, your workflow app needs to start the world on server start. Here are examples for a few frameworks:
+Register the generated flow handler before starting the World. Then Graphile Worker can deliver jobs directly in the worker process.
 
 <Callout type="warn">
 This step is specific to worlds that run a background worker, such as Postgres
@@ -91,10 +91,13 @@ Create an `instrumentation.ts` file in your project root:
 
 ```ts title="instrumentation.ts" lineNumbers
 export async function register() {
-  if (process.env.NEXT_RUNTIME !== "edge") {
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { POST } = await import(
+      "./app/.well-known/workflow/v1/flow/route"
+    );
+    await POST.initialize();
     const { getWorld } = await import("workflow/runtime");
-    const world = await getWorld();
-    await world.start?.();
+    await (await getWorld()).start?.();
   }
 }
 ```
@@ -110,12 +113,17 @@ Learn more about [Next.js Instrumentation](https://nextjs.org/docs/app/guides/in
 Create a `src/hooks.server.ts` file:
 
 ```ts title="src/hooks.server.ts" lineNumbers
+import { building } from "$app/environment";
 import type { ServerInit } from "@sveltejs/kit";
 
 export const init: ServerInit = async () => {
+  if (building) return;
+  const { POST } = await import(
+    "./routes/.well-known/workflow/v1/flow/+server.js"
+  );
+  await POST.initialize();
   const { getWorld } = await import("workflow/runtime");
-  const world = await getWorld();
-  await world.start?.();
+  await (await getWorld()).start?.();
 };
 ```
 
@@ -133,9 +141,10 @@ Create a plugin to start the world on server initialization:
 import { defineNitroPlugin } from "nitro/~internal/runtime/plugin";
 
 export default defineNitroPlugin(async () => {
+  const { initializeWorkflow } = await import("#workflow/workflows.mjs");
+  await initializeWorkflow();
   const { getWorld } = await import("workflow/runtime");
-  const world = await getWorld();
-  await world.start?.();
+  await (await getWorld()).start?.();
 });
 ```
 
@@ -157,6 +166,10 @@ Learn more about [Nitro Plugins](https://v3.nitro.build/docs/plugins).
 </Tab>
 
 </Tabs>
+
+<Callout type="warn">
+Do not warm the flow route with an HTTP request. With Postgres active, every external request to `/.well-known/workflow/v1/flow` returns 404, including `?__health`.
+</Callout>
 
 <Callout type="info">
 The Postgres World requires a long-lived worker process that polls the database for jobs. This does not work on serverless environments. For Vercel deployments, use the [Vercel World](/worlds/vercel) instead.
@@ -231,7 +244,7 @@ const world = createWorld({
 The Postgres World uses PostgreSQL as a durable backend:
 
 - **Storage**: Workflow runs, events, steps, and hooks are stored in PostgreSQL tables.
-- **Job queue**: [graphile-worker](https://github.com/graphile/worker) handles reliable job processing with retries.
+- **Job queue**: [graphile-worker](https://github.com/graphile/worker) handles retries and calls the registered flow handler directly.
 - **Streaming**: PostgreSQL NOTIFY/LISTEN enables real-time event distribution.
 
 This architecture ensures workflows survive application restarts with all state reliably persisted. For implementation details, see the [source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres).
@@ -249,7 +262,7 @@ Ensure your deployment has:
 
 - Network access to your PostgreSQL database
 - Environment variables configured correctly
-- The `start()` function called on server initialization
+- The flow handler initialized before `start()` on server initialization
 
 <Callout type="info">
 The Postgres World is not compatible with Vercel deployments. On Vercel, workflows automatically use the [Vercel World](/worlds/vercel) with zero configuration.
@@ -257,7 +270,7 @@ The Postgres World is not compatible with Vercel deployments. On Vercel, workflo
 
 ## Limitations
 
-- **Requires long-running process**: Must call `start()` on server initialization; not compatible with serverless platforms
+- **Requires long-running process**: Must initialize the flow handler and call `start()` on server initialization; not compatible with serverless platforms
 - **PostgreSQL infrastructure**: Requires a PostgreSQL database (self-hosted or managed)
 - **Not compatible with Vercel**: Use the [Vercel World](/worlds/vercel) for Vercel deployments
 

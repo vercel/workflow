@@ -80,7 +80,7 @@ The migration is idempotent and can safely be run as a post-deployment lifecycle
 
 ## Starting the World
 
-To subscribe to the graphile-worker queue, your workflow app needs to start the world on server start. Here are examples for a few frameworks:
+Register the generated flow handler before starting the World. Then Graphile Worker can deliver jobs directly in the worker process.
 
 <Callout type="warn">
 This step is specific to worlds that run a background worker, such as Postgres
@@ -98,10 +98,13 @@ Create an `instrumentation.ts` file in your project root:
 
 ```ts title="instrumentation.ts" lineNumbers
 export async function register() {
-  if (process.env.NEXT_RUNTIME !== "edge") {
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { POST } = await import(
+      "./app/.well-known/workflow/v1/flow/route"
+    );
+    await POST.initialize();
     const { getWorld } = await import("workflow/runtime");
-    const world = await getWorld();
-    await world.start?.();
+    await (await getWorld()).start?.();
   }
 }
 ```
@@ -117,12 +120,17 @@ Learn more about [Next.js Instrumentation](https://nextjs.org/docs/app/guides/in
 Create a `src/hooks.server.ts` file:
 
 ```ts title="src/hooks.server.ts" lineNumbers
+import { building } from "$app/environment";
 import type { ServerInit } from "@sveltejs/kit";
 
 export const init: ServerInit = async () => {
+  if (building) return;
+  const { POST } = await import(
+    "./routes/.well-known/workflow/v1/flow/+server.js"
+  );
+  await POST.initialize();
   const { getWorld } = await import("workflow/runtime");
-  const world = await getWorld();
-  await world.start?.();
+  await (await getWorld()).start?.();
 };
 ```
 
@@ -140,9 +148,10 @@ Create a plugin to start the world on server initialization:
 import { defineNitroPlugin } from "nitro/~internal/runtime/plugin";
 
 export default defineNitroPlugin(async () => {
+  const { initializeWorkflow } = await import("#workflow/workflows.mjs");
+  await initializeWorkflow();
   const { getWorld } = await import("workflow/runtime");
-  const world = await getWorld();
-  await world.start?.();
+  await (await getWorld()).start?.();
 });
 ```
 
@@ -164,6 +173,10 @@ Learn more about [Nitro Plugins](https://v3.nitro.build/docs/plugins).
 </Tab>
 
 </Tabs>
+
+<Callout type="warn">
+Do not warm the flow route with an HTTP request. With Postgres active, every external request to `/.well-known/workflow/v1/flow` returns 404, including `?__health`.
+</Callout>
 
 <Callout type="info">
 The Postgres World requires a long-lived worker process that polls the database for jobs. This does not work on serverless environments. For Vercel deployments, use the [Vercel World](/worlds/vercel) instead.
@@ -275,17 +288,16 @@ WORKFLOW_TARGET_WORLD="./my-world.ts"
 Graphile Worker responds automatically when the application is asked to shut down. If your application or framework already coordinates a broader shutdown sequence, set `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` when selecting the package directly with `WORKFLOW_TARGET_WORLD`, or set `applicationManagedShutdown: true` in a programmatic World. Use the application's normal shutdown hook. This prevents Graphile Worker's default handler from terminating the process as soon as its queue stops. The hook must handle cleanup errors and await resources in this order:
 
 1. `world.close()`
-2. The workflow HTTP server
-3. Any caller-owned `pg.Pool`
+2. Any caller-owned `pg.Pool`
 
-Closing the world stops new queue claims and waits for active jobs. After Graphile Worker's grace period, a pending workflow HTTP request is aborted. Graphile Worker unlocks that same row through its normal failure handling. The already-claimed delivery consumes a Graphile attempt and is retried only if its attempt budget remains; a one-attempt or final-attempt job is not retried. The shutdown handler does not insert a successor row. Because a client abort does not prove the server handler stopped, workflow and step handlers must tolerate at-least-once execution.
+Closing the World stops new queue claims and waits for active jobs. After Graphile Worker's grace period, it aborts the delivery wait and unlocks that row through its normal failure handling. The delivery consumes an attempt and is retried only if its attempt budget remains. Because aborting a delivery does not prove that application code in its handler stopped, workflow and step handlers must tolerate at-least-once execution.
 
 ## How it works
 
 The Postgres World uses PostgreSQL as a durable backend:
 
 - **Storage**: Workflow runs, events, steps, and hooks are stored in PostgreSQL tables.
-- **Job queue**: [graphile-worker](https://github.com/graphile/worker) handles reliable job processing with retries.
+- **Job queue**: [graphile-worker](https://github.com/graphile/worker) handles retries and calls the registered flow handler directly.
 - **Streaming**: PostgreSQL NOTIFY/LISTEN enables real-time event distribution.
 
 This architecture ensures workflows survive application restarts with all state reliably persisted. For implementation details, see the [source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres).
@@ -303,7 +315,7 @@ Ensure your deployment has:
 
 - Network access to your PostgreSQL database
 - Environment variables configured correctly
-- The `start()` function called on server initialization
+- The flow handler initialized before `start()` on server initialization
 
 <Callout type="info">
 The Postgres World is not compatible with Vercel deployments. On Vercel, workflows automatically use the [Vercel World](/worlds/vercel) with zero configuration.
@@ -311,7 +323,7 @@ The Postgres World is not compatible with Vercel deployments. On Vercel, workflo
 
 ## Limitations
 
-- **Requires long-running process**: Must call `start()` on server initialization; not compatible with serverless platforms
+- **Requires long-running process**: Must initialize the flow handler and call `start()` on server initialization; not compatible with serverless platforms
 - **PostgreSQL infrastructure**: Requires a PostgreSQL database (self-hosted or managed)
 - **Not compatible with Vercel**: Use the [Vercel World](/worlds/vercel) for Vercel deployments
 

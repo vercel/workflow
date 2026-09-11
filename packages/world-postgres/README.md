@@ -33,8 +33,8 @@ export WORKFLOW_POSTGRES_URL="postgres://username:password@localhost:5432/databa
 # Optional: Job prefix for queue operations
 export WORKFLOW_POSTGRES_JOB_PREFIX="myapp"
 
-# Optional: Worker concurrency (default: 10)
-export WORKFLOW_POSTGRES_WORKER_CONCURRENCY="10"
+# Optional: Worker concurrency (default: 50)
+export WORKFLOW_POSTGRES_WORKER_CONCURRENCY="50"
 
 # Optional: Internal pg.Pool max size (default: 10)
 export WORKFLOW_POSTGRES_MAX_POOL_SIZE="10"
@@ -67,6 +67,29 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const worldFromPool = createWorld({ pool });
 ```
 
+### Starting the embedded worker
+
+Load the generated flow handler before starting the World. For example, in
+Next.js:
+
+```typescript
+// instrumentation.ts
+export async function register() {
+  if (process.env.NEXT_RUNTIME === 'nodejs') {
+    const { POST } = await import(
+      './app/.well-known/workflow/v1/flow/route'
+    );
+    await POST.initialize();
+    const { getWorld } = await import('workflow/runtime');
+    await (await getWorld()).start?.();
+  }
+}
+```
+
+Postgres calls this handler directly in the worker process. Its generated HTTP
+route returns 404 for every request, including `?__health`, so it is not an
+unauthenticated queue or health endpoint.
+
 ### Application-managed shutdown
 
 By default, Graphile Worker responds automatically when the application is asked to shut down. If your application already coordinates shutdown, set `WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN=1` when selecting the package with `WORKFLOW_TARGET_WORLD`, or set `applicationManagedShutdown: true` when calling `createWorld()` directly. Await `world.close()` from your shutdown path so Graphile Worker cannot terminate the process as soon as its queue stops, before your application finishes closing dependent resources:
@@ -82,11 +105,11 @@ const world = createWorld({
 await world.start();
 ```
 
-Use this option only when your application or framework has its own shutdown hook. Handle cleanup errors there and await `world.close()` first, then close the workflow HTTP server and any caller-owned `pg.Pool`.
+Use this option only when your application or framework has its own shutdown hook. Handle cleanup errors there and await `world.close()` before closing any caller-owned `pg.Pool`.
 
-Closing the world stops the queue from accepting new jobs and waits for active jobs. After Graphile Worker's graceful-shutdown timeout (5s by default), it aborts any workflow HTTP request that is still pending. Graphile Worker then unlocks the same row through its normal failure handling. Graphile counts a delivery attempt when it claims the row, so the aborted delivery consumes that attempt and is retried only if its Graphile attempt budget remains. A one-attempt or final-attempt job is unlocked but not retried. The shutdown handler does not create a replacement row.
+Closing the World stops the queue from accepting new jobs and waits for active jobs. After Graphile Worker's graceful-shutdown timeout (5s by default), it aborts the delivery wait. Graphile Worker then unlocks the same row through its normal failure handling. Graphile counts a delivery attempt when it claims the row, so the aborted delivery consumes that attempt and is retried only if its Graphile attempt budget remains. A one-attempt or final-attempt job is unlocked but not retried. The shutdown handler does not create a replacement row.
 
-An aborted HTTP request does not guarantee that its server-side handler stopped, so workflow and step handlers must continue to tolerate at-least-once execution. Keep the workflow HTTP routes and any caller-owned pool available until `world.close()` resolves.
+Aborting a delivery does not guarantee that application code already running in its handler stopped, so workflow and step handlers must continue to tolerate at-least-once execution. Keep any caller-owned pool available until `world.close()` resolves.
 
 ## Configuration options
 
@@ -176,10 +199,9 @@ and its token can be reused. If the token is never reused, the expired
 ## Features
 
 - **Durable storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL
-- **Queue processing**: Uses Graphile Worker as the durable queue and executes jobs over the workflow HTTP routes
+- **Queue processing**: Uses Graphile Worker as the durable queue and executes jobs directly in the worker process
 - **Durable delays**: Reschedules waits and retries in PostgreSQL
 - **Streaming**: Real-time event streaming capabilities
-- **Health checks**: Built-in connection health monitoring
 - **Configurable concurrency**: Adjustable worker concurrency for queue processing
 
 ## Queue behavior
@@ -187,7 +209,7 @@ and its token can be reused. If the token is never reused, the expired
 - Graphile jobs are acknowledged only after execution finishes, or after the worker durably schedules a delayed follow-up job
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
-- Workflow orchestration and queued step execution are both sent through `/.well-known/workflow/v1/flow`
+- Workflow orchestration and queued step execution use the registered flow handler; the generated HTTP route is disabled for this World
 
 ## Development
 
