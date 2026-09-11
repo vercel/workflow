@@ -93,6 +93,15 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   const { streams } = Schema;
   const genChunkId = () => `chnk_${ulid()}` as const;
   const mutexes = new Map<string, Rc<{ drop(): void; mutex: Mutex }>>();
+  // One abort function per reader that has not yet reached a terminal state
+  // (EOF, cancel, or initial-query failure). `close()` drains this set so a
+  // streamer shutdown detaches every listener still registered on `events`
+  // and settles readers that would otherwise wait forever: the LISTEN client
+  // is gone, so no notification can ever wake them.
+  const activeReaders = new Set<() => void>();
+  let closed = false;
+  const streamerClosedError = () =>
+    new Error('Cannot read stream: the Postgres streamer has been closed');
   const getMutex = (key: string) => {
     let mutex = mutexes.get(key);
     if (!mutex) {
@@ -136,6 +145,17 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   const notifyStream = async (payload: string) => {
     await pool.query('SELECT pg_notify($1, $2)', [STREAM_TOPIC, payload]);
   };
+
+  const loadPersistedChunks = (name: string): Promise<StreamChunkEvent[]> =>
+    drizzle
+      .select({
+        id: streams.chunkId,
+        eof: streams.eof,
+        data: streams.chunkData,
+      })
+      .from(streams)
+      .where(and(eq(streams.streamId, name)))
+      .orderBy(streams.chunkId);
 
   // Helper to convert chunk to Buffer
   const toBuffer = (chunk: string | Uint8Array): Buffer =>
@@ -351,10 +371,35 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       name: string,
       startIndex?: number
     ): Promise<ReadableStream<Uint8Array>> {
+      if (closed) {
+        throw streamerClosedError();
+      }
+
       const cleanups: (() => void)[] = [];
+      let cleanedUp = false;
+      // Idempotent: reachable from EOF, cancel(), initial-query failure,
+      // and streamer close(), and more than one of those can fire for the
+      // same reader (e.g. cancel() while the initial query is in flight).
+      const cleanup = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        activeReaders.delete(abort);
+        cleanups.forEach((fn) => void fn());
+      };
+      // `start()` runs synchronously inside the ReadableStream constructor
+      // up to its first `await`, so `controller` is assigned before
+      // `readFromStream()` returns and before `abort` can be invoked from
+      // `close()`.
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const abort = () => {
+        cleanup();
+        controller.error(streamerClosedError());
+      };
+      activeReaders.add(abort);
 
       return new ReadableStream<Uint8Array>({
-        async start(controller) {
+        async start(ctrl) {
+          controller = ctrl;
           // an empty string is always < than any string,
           // so `'' < ulid()` and `ulid() < ulid()` (maintaining order)
           let lastChunkId = '';
@@ -366,11 +411,17 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
             data: Uint8Array;
             eof: boolean;
           }) {
+            if (cleanedUp) {
+              // The reader was cancelled or the streamer closed while the
+              // initial query was in flight; the controller is no longer
+              // writable.
+              return;
+            }
+
             if (lastChunkId >= msg.id) {
               // already sent or out of order
               return;
             }
-
             lastChunkId = msg.id;
             if (offset > 0) {
               offset--;
@@ -381,6 +432,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
               controller.enqueue(new Uint8Array(msg.data));
             }
             if (msg.eof) {
+              cleanup();
               controller.close();
             }
           }
@@ -397,15 +449,12 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
             events.off(`strm:${name}`, onData);
           });
 
-          const chunks = await drizzle
-            .select({
-              id: streams.chunkId,
-              eof: streams.eof,
-              data: streams.chunkData,
-            })
-            .from(streams)
-            .where(and(eq(streams.streamId, name)))
-            .orderBy(streams.chunkId);
+          // A rejection here fails the stream; detach the listener that was
+          // registered above so a failing stream does not leak on each read.
+          const chunks = await loadPersistedChunks(name).catch((err) => {
+            cleanup();
+            throw err;
+          });
 
           // Resolve negative offset relative to the data chunk count
           // (excluding the trailing EOF marker, if present)
@@ -423,7 +472,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
           buffer = null;
         },
         cancel() {
-          cleanups.forEach((fn) => void fn());
+          cleanup();
         },
       });
     },
@@ -439,6 +488,10 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
     },
 
     async close() {
+      closed = true;
+      for (const abort of [...activeReaders]) {
+        abort();
+      }
       const sub = await listenSubscription.catch(() => undefined);
       if (sub) await sub.close();
     },
