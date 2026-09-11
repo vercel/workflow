@@ -1,6 +1,6 @@
 import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
-import { createWorkflowUrl } from '@workflow/utils';
+import { createWorkflowUrl, debugLog } from '@workflow/utils';
 import {
   isNodeHttpEnabled,
   MessageId,
@@ -212,7 +212,10 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
       const token = semaphore.tryAcquire();
       if (!token) {
-        console.warn(
+        // Debug-gated: this is the semaphore doing its job. A fan-out wider
+        // than the limit queues behind it and every message still runs, so a
+        // per-message warning turns a healthy wide run into a wall of output.
+        debugLog(
           `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
         );
         await semaphore.acquire();

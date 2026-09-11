@@ -198,6 +198,16 @@ export function getCommonReducers(): Partial<Reducers> {
       if ('cause' in value) reduced.cause = (value as any).cause;
       return reduced;
     },
+    StreamError: (value) => {
+      const base = makeNamedErrorSubclassReducer('StreamError')(value);
+      if (!base) return false;
+      const reduced: SerializableSpecial['StreamError'] = { ...base };
+      const status = (value as any).status;
+      const url = (value as any).url;
+      if (typeof status === 'number') reduced.status = status;
+      if (typeof url === 'string') reduced.url = url;
+      return reduced;
+    },
     SyntaxError: makeNamedErrorSubclassReducer('SyntaxError'),
     TypeError: makeNamedErrorSubclassReducer('TypeError'),
     URIError: makeNamedErrorSubclassReducer('URIError'),
@@ -459,6 +469,27 @@ export function getCommonRevivers(): Partial<Revivers> {
           (error as any).context = value.context;
         }
         if ('cause' in value) (error as any).cause = (value as any).cause;
+      }
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
+    StreamError: (value) => {
+      const Cls = (globalThis as any)[
+        Symbol.for('@workflow/errors//StreamError')
+      ];
+      let error: Error;
+      if (typeof Cls === 'function') {
+        error = new Cls(value.message, {
+          ...('cause' in value ? { cause: value.cause } : {}),
+          status: value.status,
+          url: value.url,
+        });
+      } else {
+        error = new Error(value.message);
+        error.name = 'StreamError';
+        if ('cause' in value) (error as any).cause = value.cause;
+        if (value.status !== undefined) (error as any).status = value.status;
+        if (value.url !== undefined) (error as any).url = value.url;
       }
       if (value.stack !== undefined) error.stack = value.stack;
       return error;

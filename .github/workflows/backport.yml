@@ -76,10 +76,32 @@ jobs:
 
           # Every opencode call site runs `--model vercel/${AI_MODEL}`, so
           # `AI_MODEL` has to be a `<provider>/<model>` id the Vercel AI
-          # Gateway actually serves. When it isn't, the gateway's
-          # `model_not_found` reaches us as an opaque opencode
-          # `UnknownError: Unexpected server error` that never mentions the
-          # model, so we check the slug here instead.
+          # Gateway actually serves. An unserved slug fails inside opencode,
+          # not at the gateway: opencode resolves the model against its own
+          # provider catalog and throws `ProviderModelNotFoundError` from
+          # `SessionPrompt.getModel` before any request goes out. We check the
+          # slug here instead so the failure names the model.
+          #
+          # What reaches the job for that is
+          # `UnknownError: Unexpected server error`, which is worth reading
+          # correctly because it does NOT mean "bad model". It is what
+          # opencode's own HTTP server returns for *any* unhandled error in a
+          # route handler: the real error and its stack go to opencode's log
+          # under a random `ref`, and the client gets only the generic message
+          # plus that `ref`. Both `opencode run` call sites therefore pass
+          # `--print-logs`, which puts the log on stderr, so the preceding
+          # `level=ERROR message=failed ref=<same ref> error=... cause=<stack>`
+          # line lands in the job output and the `ref` is resolvable. (Checked
+          # 1.18.4: the log carries no credentials.)
+          #
+          # Run 34382013303 on 2026-09-09 is the case this is written from. It
+          # hit that `UnknownError` two seconds into `Decide whether to
+          # backport`, and the cause is now unrecoverable: the AI Gateway
+          # recorded no request at all for that run, while two backport runs in
+          # the same minute, on the same key and model, succeeded, so it was an
+          # opencode-side crash before the first model request. Re-running the
+          # same commit passed. Without the server log there was nothing to
+          # diagnose and nothing to do but re-run blind.
           #
           # This matters most for manual `workflow_dispatch` runs: those force
           # a backport and therefore skip `Decide whether to backport`, the
@@ -284,17 +306,15 @@ jobs:
 
       - name: Setup pnpm
         if: steps.existing-pr.outputs.exists != 'true'
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
-
-      - name: Setup Node.js
-        if: steps.existing-pr.outputs.exists != 'true'
-        uses: actions/setup-node@v4
+        uses: pnpm/setup@703c52620218391530e48b9e8870d5c0082e1b9b # v2.1.0
         with:
-          node-version: 22.x
+          install: false
+          runtime: node@22
 
       - name: Install opencode
         if: steps.existing-pr.outputs.exists != 'true'
-        run: npm install -g opencode-ai@1.18.4
+        # opencode-ai's postinstall downloads its platform-specific binary.
+        run: pnpm add --global --allow-build=opencode-ai opencode-ai@1.18.4
 
       - name: Configure opencode
         if: steps.existing-pr.outputs.exists != 'true'
@@ -445,7 +465,11 @@ jobs:
           # code alone — but with `set -e` above, any non-zero exit will also
           # fail the job. The real signal is whether the decision file was
           # produced.
-          opencode run --model "vercel/${AI_MODEL}" < .backport-decision-prompt.txt
+          #
+          # `--print-logs` puts opencode's server log on stderr. Without it an
+          # opencode-side crash prints only a masked `UnknownError` naming a
+          # log line we never see (see `Validate AI model` above).
+          opencode run --print-logs --model "vercel/${AI_MODEL}" < .backport-decision-prompt.txt
 
           if [ ! -f "$DECISION_FILE" ]; then
             echo "::error::AI did not produce a decision file at ${DECISION_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, gateway down, or rejected tool call) — check the step output above. To force a backport regardless of the AI decision, re-run this workflow via \`workflow_dispatch\` with the relevant commit SHA."
@@ -668,7 +692,9 @@ jobs:
           # rejected tool calls). The outcome-file presence + `set -e` on
           # this step's exit are what we rely on to distinguish infra vs.
           # AI-said-no.
-          opencode run --model "vercel/${AI_MODEL}" < .backport-conflict-prompt.txt
+          #
+          # `--print-logs`: same reason as the decision step above.
+          opencode run --print-logs --model "vercel/${AI_MODEL}" < .backport-conflict-prompt.txt
 
           if [ ! -f "$OUTCOME_FILE" ]; then
             echo "::error::AI conflict resolution did not produce ${OUTCOME_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, rejected tool call, opencode crash) — check the step output above. To resolve manually, see the source PR for instructions."

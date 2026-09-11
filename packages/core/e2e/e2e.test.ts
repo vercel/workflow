@@ -76,6 +76,17 @@ const DISTRIBUTED_CLOCK_TOLERANCE_MS = 1_000;
 // enough to flake without being any better at catching the regression.
 const RACE_WINNER_MAX_DURATION_MS = 8_000;
 const EVENT_POLL_PAGE_SIZE = 100;
+/**
+ * What a purged payload looks like in `workflow inspect --json`.
+ *
+ * The server replaces expired payloads with a devalue stub that hydrates to
+ * `{ expiredAt: "<ISO>" }`; the CLI recognizes it with core's `isExpiredStub`
+ * and swaps in its `ExpiredDataRef` placeholder, whose `toJSON()` is this
+ * string. Asserting on it therefore exercises the same matcher the CLI and
+ * the web UI use, one layer up — the World returns payloads as raw devalue
+ * bytes, so there is nothing to run the predicate against down there.
+ */
+const EXPIRED_DATA_JSON = '<data expired>';
 
 function expectElapsedAtLeast(
   actualMs: number,
@@ -149,10 +160,10 @@ const e2e = (fn: string) => {
  * mean testing something else, so a non-JS app skips them instead of carrying
  * them as gaps.
  *
- * A handful of markers are weaker than that: health check, the webhook route, and
- * app-provided API routes are protocol-level and *ought* to travel, but no other
- * SDK serves them yet, so there is nothing to conform to. Those sites say so, and
- * should move back to plain `test` as soon as a second implementation lands.
+ * A handful of markers are weaker than that: the webhook route and app-provided
+ * API routes are protocol-level and *ought* to travel, but no other SDK serves
+ * them yet, so there is nothing to conform to. Those sites say so, and should
+ * move back to plain `test` as soon as a second implementation lands.
  *
  * Every test not marked here is in scope for cross-language conformance, and is
  * gated only by `e2e-conformance.json`. No-op for the JS workbench apps.
@@ -676,7 +687,7 @@ describe.concurrent('e2e', () => {
     expect(hook.runId).toBe(run.runId);
     await resumeHook(hook, {
       message: 'one',
-      customData: (hook.metadata as any)?.customData,
+      customData: ((await hook.metadata) as any)?.customData,
     });
 
     // Invalid token test
@@ -687,7 +698,7 @@ describe.concurrent('e2e', () => {
     expect(hook.runId).toBe(run.runId);
     await resumeHook(hook, {
       message: 'two',
-      customData: (hook.metadata as any)?.customData,
+      customData: ((await hook.metadata) as any)?.customData,
     });
 
     // Resume with third (final) payload
@@ -696,7 +707,7 @@ describe.concurrent('e2e', () => {
     await resumeHook(hook, {
       message: 'three',
       done: true,
-      customData: (hook.metadata as any)?.customData,
+      customData: ((await hook.metadata) as any)?.customData,
     });
 
     const returnValue = await run.returnValue;
@@ -737,7 +748,7 @@ describe.concurrent('e2e', () => {
       // Now resume via server-side resumeHook() — should work
       await resumeHook(hook, {
         message: 'via-server',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
         done: true,
       });
 
@@ -2056,7 +2067,7 @@ describe.concurrent('e2e', () => {
       expect(hook.runId).toBe(run1.runId);
       await resumeHook(hook, {
         message: 'test-message-1',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Get first workflow result
@@ -2080,7 +2091,7 @@ describe.concurrent('e2e', () => {
       expect(hook.runId).toBe(run2.runId);
       await resumeHook(hook, {
         message: 'test-message-2',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Get second workflow result
@@ -2142,7 +2153,7 @@ describe.concurrent('e2e', () => {
       const hook = await getHookByToken(token);
       await resumeHook(hook, {
         message: 'test-concurrent',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Verify workflow 1 completed successfully
@@ -2299,7 +2310,7 @@ describe.concurrent('e2e', () => {
 
       await resumeHook(hook, {
         message: 'ready-conflict-holder',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       const run1Result = await run1.returnValue;
@@ -2637,7 +2648,7 @@ describe.concurrent('e2e', () => {
       // Send payload to first workflow - this will trigger it to dispose the hook
       await resumeHook(hook, {
         message: 'first-payload',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Wait for workflow 1 to release the token before starting workflow 2.
@@ -2659,7 +2670,7 @@ describe.concurrent('e2e', () => {
       // Send payload to workflow 2
       await resumeHook(hook, {
         message: 'second-payload',
-        customData: (hook.metadata as any)?.customData,
+        customData: ((await hook.metadata) as any)?.customData,
       });
 
       // Wait for both workflows to complete
@@ -2929,12 +2940,7 @@ describe.concurrent('e2e', () => {
   // For production use on Vercel with Deployment Protection enabled, use the
   // queue-based `healthCheck(world, options)` function instead, which
   // bypasses protection by sending messages through the Queue infrastructure.
-  // JS-only for now, though no longer for want of a second implementation:
-  // vercel-py answers both probes as of vercel-py#292. What it omits is
-  // `workflowCoreVersion`, asserted below, on the grounds that it names a
-  // JavaScript package's version. Moving all three health-check tests out of
-  // js-only together means settling what a non-JS SDK reports there.
-  testJsOnly.skipIf(!isLocalDeployment())(
+  test.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow endpoint responds to __health query parameter',
     { timeout: 30_000 },
     async () => {
@@ -2955,21 +2961,32 @@ describe.concurrent('e2e', () => {
       );
       expect(flowRes.status).toBe(200);
       expect(flowRes.headers.get('Content-Type')).toBe('application/json');
-      const flowBody = await flowRes.json();
+      const { workflowCoreVersion, ...flowBody } = await flowRes.json();
       expect(flowBody).toEqual({
         healthy: true,
         endpoint: '/.well-known/workflow/v1/flow',
         // specVersion comes from the World's declared specVersion (e.g. 3
         // for world-vercel) or falls back to SPEC_VERSION_CURRENT (2).
         specVersion: expect.any(Number),
-        workflowCoreVersion: expect.any(String),
       });
-      expect(flowBody.specVersion).toBeGreaterThanOrEqual(SPEC_VERSION_CURRENT);
+      // A JavaScript app is built from the same `@workflow/core` as this driver,
+      // so advertising an older spec version than the library it ships with is a
+      // regression. A second implementation's spec version is its own: it reports
+      // what it *writes*, so the only portable claim is that it is a real version.
+      if (isJsApp()) {
+        expect(flowBody.specVersion).toBeGreaterThanOrEqual(
+          SPEC_VERSION_CURRENT
+        );
+        // See comments in the next test about workflowCoreVersion
+        expect(typeof workflowCoreVersion).toBe('string');
+      } else {
+        expect(flowBody.specVersion).toBeGreaterThanOrEqual(1);
+      }
       // V2: no separate step endpoint — combined into the flow handler.
     }
   );
 
-  testJsOnly(
+  test(
     'health check (queue-based) - workflow endpoint responds to health check messages',
     { timeout: 60_000 },
     async () => {
@@ -2983,14 +3000,20 @@ describe.concurrent('e2e', () => {
         timeout: 30000,
       });
       expect(workflowResult.healthy).toBe(true);
-      // The deployed app advertises its `@workflow/core` version so
+      // A JavaScript app advertises its `@workflow/core` version so
       // callers can derive capability metadata (see `getRunCapabilities`
       // in `capabilities.ts`).
-      expect(typeof workflowResult.workflowCoreVersion).toBe('string');
+      // An SDK in another language has no such package, and the field is
+      // not advertised; cross-language capability detection should not
+      // be built on top of emulated `@workflow/core` version, thus needs
+      // further design and evolution.
+      if (isJsApp()) {
+        expect(typeof workflowResult.workflowCoreVersion).toBe('string');
+      }
     }
   );
 
-  testJsOnly(
+  test(
     'health check (CLI) - workflow health command reports healthy endpoints',
     { timeout: 60_000 },
     async () => {
@@ -3822,7 +3845,7 @@ describe.concurrent('e2e', () => {
   // AbortController / AbortSignal
   // ==========================================================================
 
-  describeJsOnly('AbortController', () => {
+  describe('AbortController', () => {
     test(
       'abortTimeoutWorkflow: timeout cancels long-running step',
       { timeout: 60_000 },
@@ -4734,7 +4757,13 @@ describe.concurrent('e2e', () => {
         // catch, with a message naming the violated rule and its limit.
         expect(outcomes.reserved).toMatch(/^FatalError: /);
         expect(outcomes.reserved).toContain('reserved prefix');
-        expect(outcomes.reserved).toContain('allowReservedAttributes');
+        // The message names the opt-out parameter, and each SDK names it in its
+        // own casing — `allowReservedAttributes` here, `allow_reserved_attributes`
+        // in Python. Assert that it points at the escape hatch, not how one
+        // language spells it.
+        expect(outcomes.reserved).toMatch(
+          /allow[_]?[rR]eserved[_]?[aA]ttributes/
+        );
         expect(outcomes.emptyKey).toContain('must not be empty');
         expect(outcomes.keyTooLong).toContain(
           'key length 257 exceeds limit 256'
@@ -4747,7 +4776,10 @@ describe.concurrent('e2e', () => {
           'byte length 400 exceeds limit 256'
         );
         expect(outcomes.overCap).toContain('exceed limit 64');
-        expect(outcomes.nonObject).toContain('requires a plain object');
+        // Same idea: "plain object" in JS is "mapping" in Python. What the test
+        // is for is that a non-object argument is rejected by name at the call
+        // site, which either wording satisfies.
+        expect(outcomes.nonObject).toMatch(/requires a (plain object|mapping)/);
 
         // No invalid write reached the run, and the run stayed healthy
         // enough to complete a valid write afterwards.
@@ -4772,4 +4804,113 @@ describe.concurrent('e2e', () => {
       }
     );
   });
+
+  // ==========================================================================
+  // retention
+  // ==========================================================================
+
+  /**
+   * `start({ experimental_retention: 0 })` seeds `$retention: '0'`, which a
+   * World that implements retention honors at terminal cleanup by deleting
+   * the run's user payloads. The unit tests in `start-retention.test.ts`
+   * cover the SDK's half — that the attribute is encoded and sent. This
+   * covers the half only a real World can answer: that the data is
+   * afterwards actually gone.
+   *
+   * Gated on `WORKFLOW_VERCEL_ENV` — the same marker `setupWorld` uses to
+   * choose the Vercel world — rather than on `!isLocalDeployment()`, which is
+   * also true for the Postgres lane. The Local and Postgres Worlds implement
+   * retention too, but their coverage lives in their own package tests where
+   * the storage can be inspected directly.
+   *
+   * Also gated on `isJsApp()`: the padding below deliberately crosses the JS
+   * client's compression threshold, and the Python SDK cannot read the `zstd`
+   * payload that produces, so the run fails deserializing its own input. The
+   * gate belongs here rather than in an app's `unsupported` map, because a
+   * `describe` skipped at collection time never reaches `requireSupported`
+   * and the entry would read as stale to `assertUnsupportedTestsExist`.
+   */
+  describe.skipIf(!process.env.WORKFLOW_VERCEL_ENV || !isJsApp())(
+    'retention',
+    () => {
+      test(
+        'experimental_retention: 0 purges the run payloads once the run finishes',
+        { timeout: 240_000 },
+        async () => {
+          // Padded past the ~422-byte inline-ref cutoff on purpose. Below it a
+          // payload lives inside the database row and is scrubbed in place;
+          // above it the World writes a blob and has to delete the object. A
+          // small payload exercises only the first path, and this feature's
+          // whole claim is about the second. `metadataFromHelperWorkflow`
+          // echoes its label, so one big argument puts a blob behind the run's
+          // input, its output, and the step's on both sides.
+          const label = `retention-purge-${'x'.repeat(2048)}`;
+          const run = await start(
+            await e2e('metadataFromHelperWorkflow'),
+            [label],
+            {
+              experimental_retention: 0,
+            }
+          );
+
+          // The purge races the caller's own read of the result and generally
+          // wins, so `returnValue` resolves after the data is already gone.
+          // What it must NOT do is hand back the expired-data placeholder as
+          // though the workflow had returned it — that is indistinguishable
+          // from a real result. It throws instead, carrying whatever metadata
+          // outlived the payloads so a caller can still tell success from
+          // failure.
+          //
+          // Accepting either outcome would make this assertion worthless, so it
+          // insists on the throw. If the client ever starts winning the race
+          // this test fails loudly, which is the right way to find out.
+          await expect(run.returnValue).rejects.toMatchObject({
+            name: 'RunExpiredError',
+            runId: run.runId,
+            runStatus: 'completed',
+          });
+
+          // That same race is why nothing is asserted about the payloads
+          // *before* the purge: there is no reliable window in which to read
+          // them.
+          const afterPurge = await cliInspectJsonUntil(
+            `runs ${run.runId} --withData`,
+            (json) => json?.output === EXPIRED_DATA_JSON,
+            { timeoutMs: 180_000, intervalMs: 5_000 }
+          );
+          expect(afterPurge).toMatchObject({
+            runId: run.runId,
+            input: EXPIRED_DATA_JSON,
+            output: EXPIRED_DATA_JSON,
+            // Only user data goes. The run itself survives on the World's
+            // default retention so it stays listable in observability.
+            status: 'completed',
+          });
+
+          // Step payloads go with it, not just the run's own input/output.
+          const steps = await cliInspectJsonUntil(
+            `steps --runId ${run.runId} --withData`,
+            (json) =>
+              Array.isArray(json) &&
+              json.length > 0 &&
+              json.every((step: any) => step.output === EXPIRED_DATA_JSON),
+            { timeoutMs: 60_000, intervalMs: 5_000 }
+          );
+          expect(steps.length).toBeGreaterThan(0);
+          for (const step of steps) {
+            expect(step.output).toBe(EXPIRED_DATA_JSON);
+          }
+
+          // And the run carries the marker the CLI and web UI gate their
+          // "<data expired>" rendering on: an `expiredAt` in the past.
+          const world = await getWorld();
+          const persisted = await world.runs.get(run.runId);
+          expect(persisted.expiredAt).toBeInstanceOf(Date);
+          expect(persisted.expiredAt?.getTime()).toBeLessThanOrEqual(
+            Date.now()
+          );
+        }
+      );
+    }
+  );
 });
