@@ -356,50 +356,129 @@ export interface PreconditionFailureDetails {
   cursor?: string;
 }
 
-const CreateEventV4BodyBaseSchema = z.object({
-  event: EventSchema,
-  run: WorkflowRunSchema.optional(),
-  step: StepWireSchema.transform(deserializeStep).optional(),
-  hook: HookSchema.optional(),
-  wait: WaitSchema.optional(),
-  stepCreated: z.literal(true).optional(),
-  maxEvents: z.number().int().positive().optional(),
-});
+/**
+ * Event responses may omit an unresolved payload field entirely. Zod <=4.3
+ * treated an object property backed by `z.any()` as optional, so EventSchema
+ * historically accepted that wire shape even though the property was not
+ * explicitly optional. Zod 4.5 correctly distinguishes a missing property
+ * from a present `undefined` value.
+ *
+ * Keep CreateEventSchema strict while preserving the Vercel response contract:
+ * temporarily materialize an omitted payload with a private sentinel for
+ * EventSchema, then remove only that synthesized value from the parsed response.
+ *
+ * Exported so the legacy `/v1/runs/:id/events` path (see `events.ts`
+ * `createWorkflowRunEventInner` v1Compat catch-all) can parse its event
+ * responses with the same omitted-payload tolerance the v4 sites use.
+ */
+const OMITTED_EVENT_PAYLOAD = Symbol('omitted event payload');
+export const VercelEventWireSchema = z.compile(
+  z
+    .preprocess((value) => {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return value;
+      }
 
-const CreateEventV4PageSchema = z.union([
-  z.object({
-    events: z.array(EventSchema),
-    cursor: z.string().nullable(),
-    hasMore: z.boolean(),
-  }),
-  z.object({
-    events: z.undefined(),
-    cursor: z.undefined(),
-    hasMore: z.undefined(),
-  }),
-]);
+      const event = value as Record<string, unknown>;
+      const payloadField =
+        typeof event.eventType === 'string'
+          ? getEventDataPayloadField(event.eventType)
+          : undefined;
+      const eventData = event.eventData as Record<string, unknown> | undefined;
+      if (
+        !payloadField ||
+        typeof eventData !== 'object' ||
+        eventData === null ||
+        Array.isArray(eventData) ||
+        Object.hasOwn(eventData, payloadField)
+      ) {
+        return value;
+      }
 
-const CreateEventV4BodySchema = CreateEventV4BodyBaseSchema.and(
-  CreateEventV4PageSchema
+      return {
+        ...event,
+        eventData: {
+          ...eventData,
+          [payloadField]: OMITTED_EVENT_PAYLOAD,
+        },
+      };
+    }, EventSchema)
+    .transform((event) => {
+      const payloadField = getEventDataPayloadField(event.eventType);
+      if (!payloadField || !('eventData' in event)) return event;
+
+      const eventData = event.eventData as Record<string, unknown> | undefined;
+      if (
+        typeof eventData !== 'object' ||
+        eventData === null ||
+        Array.isArray(eventData) ||
+        eventData[payloadField] !== OMITTED_EVENT_PAYLOAD
+      ) {
+        return event;
+      }
+
+      const parsedEventData = { ...eventData };
+      delete parsedEventData[payloadField];
+      return { ...event, eventData: parsedEventData } as Event;
+    })
+);
+
+const CreateEventV4BodyBaseSchema = z.compile(
+  z.object({
+    event: VercelEventWireSchema,
+    run: WorkflowRunSchema.optional(),
+    step: StepWireSchema.transform(deserializeStep).optional(),
+    hook: HookSchema.optional(),
+    wait: WaitSchema.optional(),
+    stepCreated: z.literal(true).optional(),
+    maxEvents: z.number().int().positive().optional(),
+  })
+);
+
+const CreateEventV4PageSchema = z.compile(
+  z.union([
+    z.object({
+      events: z.array(VercelEventWireSchema),
+      cursor: z.string().nullable(),
+      hasMore: z.boolean(),
+    }),
+    // This schema is always intersected with CreateEventV4BodyBaseSchema.
+    // Keep it non-strict so the base response fields remain valid here.
+    z.object({
+      events: z.undefined().optional(),
+      cursor: z.undefined().optional(),
+      hasMore: z.undefined().optional(),
+    }),
+  ])
+);
+
+const CreateEventV4BodySchema = z.compile(
+  CreateEventV4BodyBaseSchema.and(CreateEventV4PageSchema)
 );
 
 const CreateEventV4BodySchemas: {
   [T in EventType]: z.ZodType<EventResult<T> & { event: Event }>;
 } = {
-  run_created: CreateEventV4BodyBaseSchema.extend({
-    run: WorkflowRunSchema,
-  }).and(CreateEventV4PageSchema),
-  run_started: CreateEventV4BodyBaseSchema.extend({
-    run: WorkflowRunSchema.and(z.object({ startedAt: z.coerce.date() })),
-  }).and(CreateEventV4PageSchema),
-  step_started: CreateEventV4BodyBaseSchema.extend({
-    step: StepWireSchema.extend({
-      startedAt: z.coerce.date(),
-    }).transform((step) => ({
-      ...deserializeStep(step),
-      startedAt: step.startedAt,
-    })),
-  }).and(CreateEventV4PageSchema),
+  run_created: z.compile(
+    CreateEventV4BodyBaseSchema.extend({
+      run: WorkflowRunSchema,
+    }).and(CreateEventV4PageSchema)
+  ),
+  run_started: z.compile(
+    CreateEventV4BodyBaseSchema.extend({
+      run: WorkflowRunSchema.and(z.object({ startedAt: z.coerce.date() })),
+    }).and(CreateEventV4PageSchema)
+  ),
+  step_started: z.compile(
+    CreateEventV4BodyBaseSchema.extend({
+      step: StepWireSchema.extend({
+        startedAt: z.coerce.date(),
+      }).transform((step) => ({
+        ...deserializeStep(step),
+        startedAt: step.startedAt,
+      })),
+    }).and(CreateEventV4PageSchema)
+  ),
   run_completed: CreateEventV4BodySchema,
   run_failed: CreateEventV4BodySchema,
   run_cancelled: CreateEventV4BodySchema,
@@ -419,23 +498,27 @@ const CreateEventV4BodySchemas: {
   noop: CreateEventV4BodySchema,
 };
 
-const MaxEventsHeaderSchema = z.coerce.number().int().positive();
-const EventStreamEndSchema = z.object({
-  _end: z.literal(1),
-  next: z.string().optional(),
-  hasMore: z.boolean(),
-});
+const MaxEventsHeaderSchema = z.compile(z.coerce.number().int().positive());
+const EventStreamEndSchema = z.compile(
+  z.object({
+    _end: z.literal(1),
+    next: z.string().optional(),
+    hasMore: z.boolean(),
+  })
+);
 
 /**
  * Terminal error frame. The backend sends this when it cannot finish a frame
  * stream and retrying will not help — the response already committed to `200`
  * with its first byte, so there is no status code left to carry the failure.
  */
-const EventStreamErrorSchema = z.object({
-  _error: z.literal(1),
-  code: z.string(),
-  message: z.string().optional(),
-});
+const EventStreamErrorSchema = z.compile(
+  z.object({
+    _error: z.literal(1),
+    code: z.string(),
+    message: z.string().optional(),
+  })
+);
 
 /**
  * An event's payload object is gone from the backend's blob storage. The
@@ -463,67 +546,15 @@ function decodeLegacyStructuredError(payload: Uint8Array): unknown {
   }
 }
 
-/**
- * Validate a metadata-only frame without requiring its omitted payload field.
- *
- * A lazy v4 listing is an observability read: old or expired event rows can
- * legitimately retain the event metadata after their payload descriptor is no
- * longer available. `EventSchema` describes a materialized runtime event and
- * therefore still requires fields such as `step_completed.eventData.result`.
- * Validate the rest of the event by temporarily supplying an empty payload,
- * then remove it again before returning the metadata-only event.
- */
-function decodeLazyEventMeta(
-  meta: Record<string, unknown>,
-  eventType: EventType
-): Event {
-  const payloadField = getEventDataPayloadField(eventType);
-  if (!payloadField) return EventSchema.parse(meta);
-
-  const eventData =
-    meta.eventData && typeof meta.eventData === 'object'
-      ? (meta.eventData as Record<string, unknown>)
-      : undefined;
-  if (eventData?.[payloadField] !== undefined) {
-    return EventSchema.parse(meta);
-  }
-
-  const parsed = EventSchema.parse({
-    ...meta,
-    eventData: {
-      ...eventData,
-      [payloadField]: new Uint8Array(),
-    },
-  });
-  const parsedEventData = {
-    ...(parsed.eventData as Record<string, unknown>),
-  };
-  delete parsedEventData[payloadField];
-
-  return {
-    ...parsed,
-    ...(Object.keys(parsedEventData).length > 0
-      ? { eventData: parsedEventData }
-      : { eventData: undefined }),
-  } as Event;
-}
-
-function decodeEventFrame(
-  { meta, body }: DecodedFrame,
-  remoteRefBehavior: 'resolve' | 'lazy' = 'resolve'
-): Event {
+function decodeEventFrame({ meta, body }: DecodedFrame): Event {
   const eventType = EventTypeSchema.parse(meta.eventType);
-  if (body.byteLength === 0) {
-    return remoteRefBehavior === 'lazy'
-      ? decodeLazyEventMeta(meta, eventType)
-      : EventSchema.parse(meta);
-  }
+  if (body.byteLength === 0) return VercelEventWireSchema.parse(meta);
 
   const payloadField = getEventDataPayloadField(eventType);
   assert(payloadField, `Event type ${eventType} cannot carry a payload body`);
   assert(meta.eventData && typeof meta.eventData === 'object');
 
-  return EventSchema.parse({
+  return VercelEventWireSchema.parse({
     ...meta,
     eventData: {
       ...meta.eventData,
@@ -733,7 +764,7 @@ function decodePreconditionDetails(
     const candidate = raw as Record<string, unknown>;
     if (typeof candidate.eventId !== 'string') return undefined;
     if (hasUnusablePayload(candidate)) return undefined;
-    const event = EventSchema.safeParse(candidate);
+    const event = VercelEventWireSchema.safeParse(candidate);
     if (!event.success) return undefined;
     events.push(event.data);
   }
@@ -955,13 +986,14 @@ async function decodeCreateEventResponse<T extends EventType>(
       code: 'PARSE_ERROR',
     });
   }
-  const schema: z.ZodType<EventResult<T> & { event: Event }> =
+  const schema: z.ZodType<EventResult<T> & { event: Event }> = z.compile(
     CreateEventV4BodySchemas[eventType].refine(
       ({ event }) =>
         event.eventType === eventType ||
         (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
       { path: ['event', 'eventType'] }
-    );
+    )
+  );
   let decoded: unknown;
   try {
     decoded = decode(bodyBytes);
@@ -1042,11 +1074,13 @@ export interface CreateEventBatchV4Result {
   results: CreateEventBatchV4ItemResult[];
 }
 
-const BatchItemFailureSchema = z.object({
-  status: z.number().int(),
-  error: z.string(),
-  message: z.string(),
-});
+const BatchItemFailureSchema = z.compile(
+  z.object({
+    status: z.number().int(),
+    error: z.string(),
+    message: z.string(),
+  })
+);
 
 /**
  * POST /api/v4/runs/:runId/events/batch
@@ -1559,7 +1593,7 @@ export async function getEventV4(
       if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
         throw new Error('v4 getEvent: unexpected control frame');
       }
-      return decodeEventFrame(frame, remoteRefBehavior);
+      return decodeEventFrame(frame);
     }
   } catch (cause) {
     if (cause instanceof IncompleteFrameError && StreamError.is(cause.cause)) {
@@ -1661,7 +1695,6 @@ function partialEventFrameStream(
 async function consumeEventFrameStream(
   response: Response,
   opName: string,
-  remoteRefBehavior: 'resolve' | 'lazy' = 'resolve',
   replayEventObserver?: (event: Event) => void
 ): Promise<EventFrameStreamResult> {
   const contentType = response.headers.get('content-type');
@@ -1695,7 +1728,7 @@ async function consumeEventFrameStream(
       if (Object.keys(frame.meta).some((key) => key.startsWith('_'))) {
         throw new Error(`v4 ${opName}: unexpected control frame`);
       }
-      const event = decodeEventFrame(frame, remoteRefBehavior);
+      const event = decodeEventFrame(frame);
       events.push(event);
       try {
         replayEventObserver?.(event);
@@ -1753,7 +1786,6 @@ async function consumeReplayLogResponse(
   const page = await consumeEventFrameStream(
     response,
     'createEvent',
-    'resolve',
     replayEventObserver
   );
   if (!page.hasMore) {
@@ -1797,7 +1829,6 @@ async function consumeListFrameStream(
   headers: Headers,
   config: APIConfig | undefined,
   opName: string,
-  remoteRefBehavior: 'resolve' | 'lazy',
   replayEventObserver?: (event: Event) => void
 ): Promise<EventFrameStreamResult> {
   const response = await fetchV4(
@@ -1806,12 +1837,7 @@ async function consumeListFrameStream(
     config,
     opName
   );
-  return consumeEventFrameStream(
-    response,
-    opName,
-    remoteRefBehavior,
-    replayEventObserver
-  );
+  return consumeEventFrameStream(response, opName, replayEventObserver);
 }
 
 /**
@@ -1869,7 +1895,6 @@ export async function getWorkflowRunEventsV4(
       headers,
       config,
       'listEvents',
-      params.remoteRefBehavior ?? 'resolve',
       replayEventObserver
     );
     const cursorAdvanced = !!consumed.cursor && consumed.cursor !== cursor;
@@ -1934,8 +1959,7 @@ export async function getEventsByCorrelationIdV4(
     url,
     headers,
     config,
-    'listEventsByCorrelationId',
-    params.remoteRefBehavior ?? 'resolve'
+    'listEventsByCorrelationId'
   );
   if (consumed.kind === 'partial') throw consumed.error;
   return {

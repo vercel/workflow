@@ -1,6 +1,7 @@
 import path from 'node:path';
-import type { WorkflowRun } from '@workflow/world';
+import type { Event, WorkflowRun } from '@workflow/world';
 import {
+  EventSchema,
   getEventDataRefFields,
   RETENTION_ATTRIBUTE,
   readRunRetention,
@@ -109,6 +110,44 @@ export async function purgeRunEntityData(
  * rewriting anything but the payload keys it was asked to remove.
  */
 const RawEntitySchema = z.record(z.string(), z.any());
+
+/**
+ * `EventSchema`, tolerant of a zero-retention purge having deleted an
+ * event's ref field (`eventData.input`/`result`/`error`/`payload`, see
+ * {@link getEventDataRefFields}) outright.
+ *
+ * `scrubEntityFiles` above deletes the key rather than writing it back as an
+ * explicit `undefined`, because JSON has no way to represent "present but
+ * undefined" and a schema round-trip would drop it either way. A *missing*
+ * key and a key *present with value `undefined`* are different things to
+ * Zod, though: a required field whose own schema tolerates `undefined`
+ * (`SerializedDataSchema`'s trailing `z.any()`) only accepts the latter.
+ * Every read of a stored event goes through this schema instead of the bare
+ * `EventSchema` so a purged run's log stays parseable, while `EventSchema`
+ * itself stays strict for the create-time contract (`CreateEventSchema`
+ * shares the same per-type schemas, and a run genuinely being created must
+ * still supply `input`).
+ */
+export const ReadEventSchema: z.ZodType<Event> = z.preprocess((raw) => {
+  if (
+    raw &&
+    typeof raw === 'object' &&
+    'eventType' in raw &&
+    'eventData' in raw
+  ) {
+    const eventData = (raw as { eventData: unknown }).eventData;
+    if (eventData && typeof eventData === 'object') {
+      for (const field of getEventDataRefFields(
+        String((raw as { eventType: unknown }).eventType)
+      )) {
+        if (!(field in eventData)) {
+          (eventData as Record<string, unknown>)[field] = undefined;
+        }
+      }
+    }
+  }
+  return raw;
+}, EventSchema);
 
 /** Rewrite every file in `directory` belonging to `runId` with `scrub` applied. */
 async function scrubEntityFiles(

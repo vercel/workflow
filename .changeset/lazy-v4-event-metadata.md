@@ -1,5 +1,4 @@
 ---
-'@workflow/world-vercel': patch
 ---
 
-Fix v4 lazy event reads failing when an expired payload is omitted from otherwise valid event metadata.
+Add regression coverage for v4 event reads whose expired payload is omitted from otherwise valid metadata.

@@ -105,15 +105,17 @@ class DualTransport implements Transport<unknown> {
 // same module copy, so the context never has to cross a copy boundary.
 const requestIdStorage = new AsyncLocalStorage<string | undefined>();
 
-const MessageWrapper = z.object({
-  payload: QueuePayloadSchema,
-  queueName: ValidQueueName,
-  /**
-   * The deployment ID to use when re-enqueueing the message.
-   * This ensures the message is processed by the same deployment.
-   */
-  deploymentId: z.string().optional(),
-});
+const MessageWrapper = z.compile(
+  z.object({
+    payload: QueuePayloadSchema,
+    queueName: ValidQueueName,
+    /**
+     * The deployment ID to use when re-enqueueing the message.
+     * This ensures the message is processed by the same deployment.
+     */
+    deploymentId: z.string().optional(),
+  })
+);
 
 /**
  * Sleep Implementation via Message Delays
