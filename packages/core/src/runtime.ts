@@ -3621,6 +3621,22 @@ export function workflowEntrypoint(
                           });
                           return;
                         }
+                        // Record the step messages the suspension handler
+                        // itself published this pass (resilient dispatch
+                        // publishes alongside the step_created write, the
+                        // batched fold publishes its eager creates) BEFORE any
+                        // of the early exits below can `continue` the loop.
+                        // The hook-conflict, attribute-event and
+                        // serialization-failure paths all replay in-process
+                        // without reaching the dispatch pass; on that next
+                        // pass the step already exists, so the handler no
+                        // longer reports it and only this set remembers the
+                        // send. Seeding at the dispatch pass alone let each of
+                        // those paths publish every such step twice.
+                        for (const correlationId of suspensionResult.queuedStepCorrelationIds) {
+                          publishedStepCorrelationIds.add(correlationId);
+                        }
+
                         // Open hooks/waits in the log this replay ran over,
                         // plus whatever the suspension's own writes folded back
                         // into it — so a `hook_created` this suspension
@@ -3974,11 +3990,10 @@ export function workflowEntrypoint(
                         let backstopWakesArmed = 0;
                         // Immediate re-enqueues suppressed because this
                         // invocation already published the step's message
-                        // on an earlier pass. See publishedStepCorrelationIds.
+                        // on an earlier pass. See publishedStepCorrelationIds
+                        // (seeded with this pass's handler publishes right
+                        // after handleSuspension returned, above).
                         let republishesSkipped = 0;
-                        for (const correlationId of suspensionResult.queuedStepCorrelationIds) {
-                          publishedStepCorrelationIds.add(correlationId);
-                        }
                         // TTR hand-off. The measurement may only go to an
                         // execution that will actually ATTEMPT the next
                         // durable step, and the loop below is what decides

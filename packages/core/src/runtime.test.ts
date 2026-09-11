@@ -1471,6 +1471,23 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       return a;
     }${getWorkflowTransformCode('workflow')}`;
 
+  // Same fan-out, preceded by a fire-and-forget hook. When the World answers
+  // the hook_created write with a `hook_conflict`, the runtime's
+  // hook-conflict branch replays in-process BEFORE reaching the dispatch pass
+  // (see continueOverHookWrite), so this is the shape that exits a pass early
+  // after the suspension handler has already published step messages. The
+  // hook is never awaited, so the conflict settles nothing and the steps
+  // proceed as in stepWithSleepWorkflow.
+  const hookConflictStepWithSleepWorkflow = `const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+    const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+    const addB = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("addB");
+    const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+    async function workflow() {
+      createHook({ token: 'ack-ordering-conflict-token' });
+      const [a] = await Promise.all([add(1, 2), addB(3, 4), sleep('1h')]);
+      return a;
+    }${getWorkflowTransformCode('workflow')}`;
+
   // Register the two steps so the one chosen for inline execution actually
   // runs (and completes) instead of failing as unregistered; the other is
   // queued. Both are no-ops — these tests only assert dispatch/ack ordering.
@@ -1515,6 +1532,13 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     retryingQueuedStep?: boolean;
     /** `specVersion` to stamp on the run (gates resilient step dispatch). */
     runSpecVersion?: number;
+    /** Workflow source to drive (defaults to stepWithSleepWorkflow). */
+    workflowSource?: string;
+    /**
+     * Answer every `hook_created` write with a `hook_conflict` event (the
+     * token is held by another run), recorded in the log like a World would.
+     */
+    conflictHookCreate?: boolean;
   }) {
     const workflowRun = await makeRunningRun(opts.runId);
     if (opts.runSpecVersion !== undefined) {
@@ -1556,6 +1580,22 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
         }
         if (data.eventType === 'run_started') {
           return { run: workflowRun, events: [] as Event[] };
+        }
+        if (data.eventType === 'hook_created' && opts.conflictHookCreate) {
+          // The World found the token claimed by another run: it records a
+          // hook_conflict in this run's log in place of the hook_created and
+          // returns it, which the suspension handler reports as a conflict.
+          order.push('hook_conflict');
+          const conflict = recordEvent({
+            eventType: 'hook_conflict',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: data.correlationId,
+            eventData: {
+              token: data.eventData?.token,
+              conflictingRunId: 'wrun_holds_the_token',
+            },
+          });
+          return { event: conflict };
         }
         if (data.eventType === 'step_created') {
           // Eager step_created for the QUEUED step (the one not run inline).
@@ -1668,7 +1708,9 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       getEncryptionKeyForRun: vi.fn(async () => undefined),
     } as any);
 
-    const handler = workflowEntrypoint(stepWithSleepWorkflow);
+    const handler = workflowEntrypoint(
+      opts.workflowSource ?? stepWithSleepWorkflow
+    );
     // Push the ack sentinel the moment the handler resolves — i.e. right
     // before @vercel/queue would delete (ack) the orchestrator message.
     const handlerPromise = handler(new Request('https://example.test')).then(
@@ -1846,6 +1888,53 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       expect(eventsList.mock.calls.length).toBeGreaterThanOrEqual(2);
       // The one send came from the suspension handler (it carries the
       // resilient stepInput), and nothing re-published it afterwards.
+      const stepSends = queue.mock.calls.filter(
+        ([, message]: any[]) =>
+          message && typeof message === 'object' && 'stepId' in message
+      );
+      expect(stepSends).toHaveLength(1);
+      expect(stepSends[0][1]).toHaveProperty('stepInput');
+      expect(stepIdSends).toHaveLength(1);
+    } finally {
+      delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
+    }
+  });
+
+  it('remembers handler publishes from a pass that exited early on a hook conflict', async () => {
+    // Regression test for the seeding point of the invocation's published
+    // set. The suspension handler publishes the queued step (resilient
+    // dispatch, create + queue in parallel) and reports it in
+    // queuedStepCorrelationIds, but the same suspension's hook_created came
+    // back as a hook_conflict, so the runtime replays in-process without
+    // reaching the dispatch pass. On the next pass the step already exists
+    // and the handler no longer reports it; if the set was only seeded at the
+    // dispatch pass, that pass would publish the step a second time. The
+    // seeding must therefore happen as soon as handleSuspension returns.
+    process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = '1';
+    try {
+      const { handlerPromise, order, eventsList, stepIdSends, queue } =
+        await driveHandler({
+          runId: 'wrun_no_republish_after_hook_conflict',
+          queueImpl: async () => ({ messageId: null }),
+          runSpecVersion: SPEC_VERSION_CURRENT,
+          workflowSource: hookConflictStepWithSleepWorkflow,
+          conflictHookCreate: true,
+        });
+
+      const res = (await handlerPromise) as Response;
+      expect(res.status).toBe(204);
+
+      // The first pass did hit the conflict, and its handler publish (the
+      // send carrying stepInput) happened before the conflict branch could
+      // continue the loop.
+      expect(order).toContain('hook_conflict');
+      expect(order.indexOf('queue_dispatch_start')).toBeLessThan(
+        order.indexOf('ack')
+      );
+      // The run went through more than one pass (the conflict continuation
+      // and the post-inline replay each reload the log)...
+      expect(eventsList.mock.calls.length).toBeGreaterThanOrEqual(2);
+      // ...yet the queued step's message went out exactly once.
       const stepSends = queue.mock.calls.filter(
         ([, message]: any[]) =>
           message && typeof message === 'object' && 'stepId' in message
