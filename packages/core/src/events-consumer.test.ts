@@ -1258,24 +1258,34 @@ describe('EventsConsumer', () => {
           realEvent('step_started', corr)
         ),
       ];
-      // Run at the real delay: the point of the test is the difference
-      // between paying it and not, so shortening it would erase the signal.
-      vi.unstubAllEnvs();
-      const consumer = consumerFor(events);
+      const onUnconsumedEvent = vi.fn();
+      const onDuplicateEvent = vi.fn();
+      const consumer = consumerFor(events, {
+        onUnconsumedEvent,
+        onDuplicateEvent,
+      });
 
-      const start = Date.now();
       consumer.subscribe(entityConsumer(corr, 'step_completed'));
-      await vi.waitFor(
-        () => {
-          expect(consumer.eventIndex).toBe(events.length);
-        },
-        { interval: 1 }
-      );
+      // `subscribe()` queues one `consume` pass on `process.nextTick`, and a
+      // pass steps over a straggler synchronously. Deferring one instead ends
+      // the pass with the walk parked on that straggler until a
+      // `getDeferredCheckDelayMs()` timer fires, so the walk standing at the
+      // end of the log on the very next tick is the proof that none of them
+      // paid the window. That holds however loaded the runner is, where the
+      // wall-clock bound this replaced (finish inside one 100ms window) did
+      // not: Windows CI measured 102ms.
+      await waitForNextTick();
 
-      // Deferring each straggler would cost one window apiece, so the walk
-      // finishing inside a single window means none of them went through the
-      // deferred check.
-      expect(Date.now() - start).toBeLessThan(DEFERRED_CHECK_DELAY_MS);
+      expect(consumer.eventIndex).toBe(events.length);
+      // Each straggler left through the skip, not the deferred check.
+      expect(onDuplicateEvent).toHaveBeenCalledTimes(stragglers);
+      for (const straggler of events.slice(-stragglers)) {
+        expect(onDuplicateEvent).toHaveBeenCalledWith(
+          straggler,
+          'step_started'
+        );
+      }
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
     });
 
     it('reports the first outcome when a repeat decides the class differently', async () => {
