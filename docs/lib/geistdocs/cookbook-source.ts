@@ -6,30 +6,19 @@ import {
   recipes,
 } from '../cookbook-tree';
 import { source, v5Source } from './source';
+import { rewriteCookbookUrlForVersion } from './version-href';
 
-const COOKBOOK_DOCS_PREFIX_RE = /\/docs\/cookbook(?=\/|$)/g;
+export { rewriteCookbookUrlForVersion } from './version-href';
 
 type FolderNode = Extract<Node, { type: 'folder' }>;
 type PageNode = Extract<Node, { type: 'page' }>;
 
 export function rewriteCookbookUrl(url: string): string {
-  return url.replace(COOKBOOK_DOCS_PREFIX_RE, '/cookbook');
-}
-
-/**
- * Rewrite a fumadocs source URL (`/docs/cookbook/...`) to the public cookbook
- * URL for a given version prefix. Pass '' for v4 (`/cookbook/...`) or '/v5'
- * for v5 (`/v5/cookbook/...`).
- */
-export function rewriteCookbookUrlForVersion(
-  url: string,
-  versionPrefix: string
-): string {
-  return url.replace(COOKBOOK_DOCS_PREFIX_RE, `${versionPrefix}/cookbook`);
+  return rewriteCookbookUrlForVersion(url, '');
 }
 
 export function rewriteCookbookUrlsInText(text: string): string {
-  return text.replace(COOKBOOK_DOCS_PREFIX_RE, '/cookbook');
+  return rewriteCookbookUrlForVersion(text, '');
 }
 
 function isCookbookFolder(node: Node): boolean {

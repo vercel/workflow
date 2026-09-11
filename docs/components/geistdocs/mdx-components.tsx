@@ -7,6 +7,7 @@ import { AgentTraces } from '@/components/custom/agent-traces';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
 import {
   LanguageContent,
+  LanguageLink,
   LanguageSwitcher,
   LanguageSwitcherTab,
   LanguageText,
@@ -59,6 +60,7 @@ export const getMDXComponents = (components?: MDXComponents): MDXComponents =>
     AgentTraces,
     FluidComputeCallout,
     LanguageContent,
+    LanguageLink,
     LanguageSwitcher,
     LanguageSwitcherTab,
     LanguageText,

@@ -1,8 +1,10 @@
 'use client';
 
+import Link from 'fumadocs-core/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   Children,
+  type ComponentProps,
   createElement,
   isValidElement,
   type JSX,
@@ -21,6 +23,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { rewriteHrefForVersion } from '@/lib/geistdocs/version-href';
+import { getVersionFromPathname } from '@/lib/geistdocs/versions';
 import { cn } from '@/lib/utils';
 
 const QUERY_PARAM = 'language';
@@ -90,6 +94,15 @@ interface LanguageContentProps {
 }
 
 type LanguageTextProps = Record<string, ReactNode>;
+
+interface LanguageLinkProps {
+  children?: ReactNode;
+  className?: string;
+  title?: string;
+  target?: ComponentProps<'a'>['target'];
+  rel?: string;
+  [language: string]: unknown;
+}
 
 // TOCs are compiled independently of LanguageContent. Match their links to the
 // rendered heading IDs so both the sidebar and the portaled mobile TOC follow
@@ -391,4 +404,41 @@ export function LanguageText(values: LanguageTextProps): JSX.Element {
   const selected = useSharedLanguage() ?? 'ts';
 
   return <>{values[selected]}</>;
+}
+
+/** Selects a destination URL, provided as a prop named after each language. */
+export function LanguageLink({
+  children,
+  className,
+  title,
+  target,
+  rel,
+  ...destinations
+}: LanguageLinkProps): JSX.Element | null {
+  const selected = useSharedLanguage() ?? 'ts';
+  const pathname = usePathname();
+  const href = destinations[selected];
+
+  if (href === undefined) return null;
+  if (typeof href !== 'string') {
+    throw new TypeError(
+      `LanguageLink destination "${selected}" must be a string`
+    );
+  }
+
+  // Apply the same version rewrite as Markdown links without passing a
+  // page-specific server component across the client boundary.
+  const version = getVersionFromPathname(pathname);
+  return (
+    <Link
+      href={rewriteHrefForVersion(href, version.prefix)}
+      prefetch
+      className={className}
+      title={title}
+      target={target}
+      rel={rel}
+    >
+      {children}
+    </Link>
+  );
 }
