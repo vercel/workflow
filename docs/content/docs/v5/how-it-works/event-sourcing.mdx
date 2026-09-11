@@ -267,6 +267,33 @@ Both kinds of skip are logged at `debug`, so neither reaches the console unless 
 
 The observability UI grays out events it can identify this way and shows the reason on hover. Its set is narrower than the runtime's because it reads the log without consumer state. A consumer for an entity that is still open can legitimately claim a repeat because each step retry writes another `step_started`. The UI marks a repeat only when no consumer can remain for it: after a terminal event for the same entity or at a second `run_started`, of which the log records one per run. The UI marks nothing on a partial log view, such as one page of a paginated list or search results, because identifying the first copy requires the entire log.
 
+## Events returned on a write
+
+Concurrent invocations of one run write to a shared log, and a write is decided against the log the writer had loaded. When the write lands above other events the writer had not seen, the World can hand those events back on the write's own success response, so the writer merges them and continues rather than discovering the gap on its next read. Two parameters of `events.create()` ask for this:
+
+- **`eventCount`** says how many events the writer held. When the write commits at a higher position than `eventCount + 1`, the World returns the events on the positions in between (the *skipped-slot report*).
+- **`sinceCursor`** is the `events.list()` cursor the writer had read to. The World returns everything after it, the write itself included (the *inline delta*), in the same `events` / `cursor` / `hasMore` shape as a list page.
+
+Both save a reload, so the rule for which writes send them is not about the event type. It is about whether the process that writes **holds a loaded log it will keep deciding from**: its own next writes, or the replay it resumes after the write. A writer with no log has nothing to merge a page into, and whoever decides next is a fresh replay that loads the log anyway. Three things must hold for a page to come back: the writer named a position, the World reads a page for that event type (a backend may decline for types whose writer never holds a log), and there is something to return (the report only when positions were skipped; the delta always).
+
+| Event | Writer | Sends | Why |
+|-------|--------|-------|-----|
+| `run_created` | `start()` | Nothing | No log exists yet. |
+| `run_started` | Replay, first write of a delivery | `eventCount` when a log is loaded; no cursor | The `run_started` response already carries the full log as a preload. |
+| `step_created`, `wait_created`, `hook_disposed`, `attr_set` | Suspension handler | `eventCount` | The handler keeps writing from this log and the replay resumes from it. |
+| `hook_created` | Suspension handler | `eventCount` and `sinceCursor` (one hook write per suspension) | The delta is how a hook whose payload already arrived resolves without another invocation. |
+| `hook_received` | Replay resuming a hook | `eventCount` | The replay continues from the log right after. |
+| `hook_received` | Webhook or `resumeHook()` | Nothing | Out-of-band. It enqueues a delivery that loads the log. |
+| `wait_completed` | Replay completing an elapsed wait | `eventCount` | The replay continues from the log right after. |
+| `step_started`, `step_retrying` | Step executor | Nothing | The executor holds no log. The next decision is a replay that reloads, or receives the delta on the step's terminal write. |
+| `step_completed`, `step_failed` | Step executor | `sinceCursor` when a single step runs inline; nothing from a queued delivery | Inline, this is where the invocation gets its log back without a list. From a queue, a fresh replay loads the log anyway. |
+| `attr_set` | `setAttributes()` outside a workflow | Nothing | Out-of-band. |
+| `run_completed`, `run_failed`, `run_cancelled` | Replay, or `cancel()` | Never `sinceCursor` | Terminal. Nothing replays the log afterwards, so a page would be read by no one. |
+
+Batched writes (`events.createBatch()`) carry no position and get no page. Both runtime engines follow this table: the `node:vm` engine merges a returned page into the log it replays from, and the QuickJS engine queues it for delivery to its live VM, in position order, ahead of its next `events.list()`.
+
+A World that supports this returns the page in `events`, `cursor`, and `hasMore` on the `EventResult`. A World that does not simply returns the created event, and the runtime lists. See [Building a World](/worlds/building-a-world#event-id-allocation) for the World-side contract.
+
 ## Sealed positions (noop events)
 
 Runs at `specVersion` 7 and above use a *sealed log*. The backend gives each write its position from a per-run sequencer **before** the write commits, so concurrent writers hold distinct positions and never race for a slot. New runs use this behavior by default. [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) returns a deployment to the previous scheme. Every runtime reads a sealed log regardless, and a run's version is fixed at creation, so changing the setting never affects an in-flight run. However, a writer can claim a position and then stop because of a crashed process or canceled transaction. This leaves a hole that no writer will fill, and a hole looks like an event the reader failed to load.

@@ -23,7 +23,10 @@ import {
 } from '@workflow/errors';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
+  type CreateEventParams,
+  type CreateEventRequest,
   type Event,
+  type EventResult,
   ROOT_RUN_ID_ATTRIBUTE,
   type RunInput,
   SPEC_VERSION_CURRENT,
@@ -60,6 +63,7 @@ import {
   queueMessage,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
+import { QuickJSLogView } from './quickjs-log-view.js';
 import {
   BASELINE_BUNDLE_FILENAME,
   type PendingAttribute,
@@ -76,6 +80,12 @@ import { runStepSingleFlight } from './step-single-flight.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 import { getWaitContinuationDispatch } from './wait-continuation.js';
 import { getWorld } from './world.js';
+
+/** An `events.create` bound to the run; see `dispatchPendingOps.createEvent`. */
+type EventCreator = (
+  data: CreateEventRequest,
+  params?: CreateEventParams
+) => Promise<EventResult>;
 
 /** Tiny ms timer using performance.now(), already monotonic on Node. */
 function tick(): number {
@@ -220,6 +230,14 @@ async function queueStepMessage(params: {
 async function dispatchPendingOps(params: {
   world: Awaited<ReturnType<typeof getWorld>>;
   runId: string;
+  /**
+   * The seam every event write in this pass goes through. The inline loop
+   * passes a create that names the log position this invocation holds
+   * (`eventCount`) and queues what the World hands back for the live VM; see
+   * {@link QuickJSLogView}. The terminal drain passes a plain create, since
+   * the run is ending and nothing reads its log afterwards.
+   */
+  createEvent: EventCreator;
   workflowRun: WorkflowRun;
   encryptionKey: RunPayloadKeys | undefined;
   pendingOperations: PendingOperation[];
@@ -281,6 +299,7 @@ async function dispatchPendingOps(params: {
     pendingOperations,
     namespace,
     nextTraceCarrier,
+    createEvent,
   } = params;
   const skipStepCreation = params.skipStepCreation;
   const queueStepCids = params.queueStepCids;
@@ -349,7 +368,7 @@ async function dispatchPendingOps(params: {
           typeof hook.metadata === 'undefined'
             ? undefined
             : await encryptSerializedData(hook.metadata, encryptionKey);
-        const result = await world.events.create(runId, {
+        const result = await createEvent({
           eventType: 'hook_created',
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: hook.correlationId,
@@ -409,7 +428,7 @@ async function dispatchPendingOps(params: {
             )) as Uint8Array)
           : undefined;
       try {
-        await world.events.create(runId, {
+        await createEvent({
           eventType: 'hook_received',
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: hook.correlationId,
@@ -451,7 +470,7 @@ async function dispatchPendingOps(params: {
     op: PendingHookDispose
   ): Promise<void> => {
     try {
-      await world.events.create(runId, {
+      await createEvent({
         eventType: 'hook_disposed',
         specVersion: SPEC_VERSION_CURRENT,
         correlationId: op.correlationId,
@@ -555,7 +574,7 @@ async function dispatchPendingOps(params: {
               }
             );
             try {
-              await world.events.create(runId, {
+              await createEvent({
                 eventType: 'step_created',
                 specVersion: SPEC_VERSION_CURRENT,
                 correlationId: step.correlationId,
@@ -579,7 +598,7 @@ async function dispatchPendingOps(params: {
               if (!EntityConflictError.is(err)) throw err;
             }
             try {
-              await world.events.create(runId, {
+              await createEvent({
                 eventType: 'step_failed',
                 specVersion: SPEC_VERSION_CURRENT,
                 correlationId: step.correlationId,
@@ -637,7 +656,7 @@ async function dispatchPendingOps(params: {
             encryptedInput.byteLength <= MAX_RESILIENT_STEP_INPUT_BYTES
           ) {
             const [createResult, queueResult] = await Promise.allSettled([
-              world.events.create(runId, {
+              createEvent({
                 eventType: 'step_created',
                 specVersion: SPEC_VERSION_CURRENT,
                 correlationId: step.correlationId,
@@ -705,7 +724,7 @@ async function dispatchPendingOps(params: {
           }
 
           try {
-            await world.events.create(runId, {
+            await createEvent({
               eventType: 'step_created',
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: step.correlationId,
@@ -730,7 +749,7 @@ async function dispatchPendingOps(params: {
       opsPromises.push(
         (async () => {
           try {
-            await world.events.create(runId, {
+            await createEvent({
               eventType: 'attr_set',
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: attr.correlationId,
@@ -759,7 +778,7 @@ async function dispatchPendingOps(params: {
       opsPromises.push(
         (async () => {
           try {
-            await world.events.create(runId, {
+            await createEvent({
               eventType: 'wait_created',
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: wait.correlationId,
@@ -793,14 +812,28 @@ async function dispatchPendingOps(params: {
  * This replaces the `node:vm` replay path (runWorkflow + EventsConsumer)
  * with a QuickJS VM invocation that performs the same full event replay.
  *
- * KNOWN GAP (slot snapshot): unlike the node:vm path, no event write in
- * this file carries {@link CreateEventParams.eventCount}, so a World never
- * learns which events the writer had not seen and never reports them back.
- * The engine currently relies on per-(runId, correlationId) event
- * uniqueness (EntityConflictError dedup) alone. This is a deliberate
- * simplification while the engine is experimental: wiring the snapshot is
- * tracked follow-up work; anyone adding new write paths here should not
- * assume parity with the node engine on this axis.
+ * Log position on writes. This engine follows the same rule as the node:vm
+ * replay loop for which writes tell the World where the writer stood (see the
+ * "Who names a position" table above `slotSnapshotParams` in `helpers.ts`):
+ *
+ * - Writes made from this invocation's view of the log (`step_created`,
+ *   `wait_created`, `hook_created`, `hook_disposed`, `attr_set`, the abort
+ *   `hook_received`, `wait_completed`, and the `step_created` + `step_failed`
+ *   pair for an unserializable input) carry `eventCount`, and the page a
+ *   World hands back is queued for the live VM through {@link QuickJSLogView}.
+ * - A single inline step's terminal write asks for the inline delta
+ *   (`sinceCursor`) through `executeStep`, and the delta is queued the same
+ *   way. The step executor's other writes carry nothing: it holds no log.
+ * - Run-terminal writes (`run_completed`, `run_failed`) and the terminal drain
+ *   of pending ops carry nothing: nothing reads the log afterwards.
+ *
+ * What differs from the node engine is what "merge into the log" means. The
+ * node engine merges a returned page into the array it replays from. This
+ * engine holds a live VM that consumes events exactly once, in position
+ * order, so a returned page is queued and delivered ahead of the next
+ * `events.list`, which then only runs when the queue cannot account for the
+ * next position. Both engines fall back to a list for anything a page did
+ * not carry.
  */
 export async function runWorkflowWithQuickJS(params: {
   workflowCode: string;
@@ -822,6 +855,13 @@ export async function runWorkflowWithQuickJS(params: {
    * hook-resume preload would be discarded and refetched.
    */
   preloadedEventsComplete?: boolean;
+  /**
+   * The `events.list` cursor positioned after the last of `preloadedEvents`,
+   * when the caller has one. Lets this invocation read incrementally from
+   * where the preload ended and ask for an inline delta against it. Without
+   * it the first read after the preload starts from the top of the log.
+   */
+  preloadedCursor?: string | null;
   /**
    * Run input carried through the queue message on first delivery. Used
    * as a last-resort fallback for `run_created.eventData.input` when
@@ -889,6 +929,7 @@ export async function runWorkflowWithQuickJS(params: {
     workflowRun,
     preloadedEvents,
     preloadedEventsComplete,
+    preloadedCursor,
     runInput,
     parentSpan,
     maxEventsLimit,
@@ -979,6 +1020,10 @@ export async function runWorkflowWithQuickJS(params: {
   // preload (lazy hook fast path) is trusted the same way.
   let events: Event[];
   let eventsFetchedPages = 0;
+  // Where the log was read to: the cursor after the last page below, or the
+  // one the caller read the preload to. Seeds the incremental reads and the
+  // inline-delta requests that follow.
+  let loadedCursor: string | null = null;
   const usePreloaded =
     (preloadedEventsComplete === true &&
       Array.isArray(preloadedEvents) &&
@@ -986,6 +1031,7 @@ export async function runWorkflowWithQuickJS(params: {
     isFirstInvocation(preloadedEvents);
   if (usePreloaded && preloadedEvents) {
     events = preloadedEvents;
+    loadedCursor = preloadedCursor ?? null;
   } else {
     const allEvents: Event[] = [];
     let cursor: string | null = null;
@@ -1012,7 +1058,41 @@ export async function runWorkflowWithQuickJS(params: {
     }
 
     events = allEvents;
+    loadedCursor = cursor;
   }
+
+  // This invocation's view of the log, and the queue of events a World has
+  // handed back on a write that the VM has not been given yet. Every write
+  // made from this view goes through `createEvent` below so it names the
+  // position it was decided against and its response is queued here.
+  const logView = new QuickJSLogView(events, loadedCursor);
+  const createEvent: EventCreator = async (data, eventParams) => {
+    const result = await world.events.create(runId, data, {
+      ...eventParams,
+      ...logView.snapshotParams(),
+    });
+    const absorbed = logView.absorb(result);
+    if (absorbed.truncated) {
+      runtimeLogger.debug(
+        'QuickJS runtime: dropped a truncated skipped-slot report',
+        {
+          workflowRunId: runId,
+          eventType: data.eventType,
+          eventId: result.event?.eventId,
+          offered: result.events?.length ?? 0,
+        }
+      );
+    }
+    return result;
+  };
+  /**
+   * The create for writes that end the run (`run_completed`, `run_failed`,
+   * and the terminal drain of leftover ops): no position named and no page
+   * asked for, because nothing replays a finished run's log. The node
+   * engine's `deltaRequestCursor` makes the same exclusion for `sinceCursor`.
+   */
+  const terminalCreateEvent: EventCreator = (data, eventParams) =>
+    world.events.create(runId, data, eventParams);
 
   // Event-limit guard: fail a runaway run once its log reaches the
   // server-supplied ceiling, the same enforcement point as the node:vm
@@ -1057,12 +1137,16 @@ export async function runWorkflowWithQuickJS(params: {
       const resumeAt = eventData?.resumeAt;
       if (resumeAt && now >= new Date(resumeAt as string).getTime()) {
         try {
-          const result = await world.events.create(runId, {
+          const result = await createEvent({
             eventType: 'wait_completed',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: event.correlationId,
           });
-          if (result.event) events.push(result.event);
+          if (!logView.tracking && result.event) {
+            // No positions to order by (see QuickJSLogView), so the event
+            // joins the initial log directly, as it always has.
+            events.push(result.event);
+          }
         } catch (err) {
           if (EntityConflictError.is(err)) continue;
           throw err;
@@ -1070,6 +1154,10 @@ export async function runWorkflowWithQuickJS(params: {
       }
     }
   }
+  // The VM has not started, so whatever those writes handed back (each
+  // wait_completed, plus anything another writer appended that they skipped
+  // over) joins the initial log instead of waiting for a feed.
+  events.push(...logView.takeContiguous());
 
   // Resolve the workflow server port so `getWorkflowMetadata().url` inside
   // the VM matches what the step-side handler reports. Skipped on Vercel:
@@ -1228,10 +1316,17 @@ export async function runWorkflowWithQuickJS(params: {
   // and nothing scheduled to read it.
   let pendingRequeueSignal = false;
 
-  /** Fetch all events not yet processed by the live VM (log order). */
+  /**
+   * Fetch all events not yet processed by the live VM (log order), reading
+   * from where the log was last read to. A World's cursor never passes a
+   * position whose writer is still in flight, so reading forward from it
+   * cannot skip an event; the id set is what makes a re-read of the same
+   * span (after a queued page or a delta moved the view ahead of the cursor)
+   * harmless.
+   */
   const fetchUnseenEvents = async (): Promise<Event[]> => {
     const unseen: Event[] = [];
-    let cursor: string | null = null;
+    let cursor: string | null = logView.logCursor;
     let hasMore = true;
     while (hasMore) {
       const response = await world.events.list({
@@ -1250,8 +1345,28 @@ export async function runWorkflowWithQuickJS(params: {
       if (response.cursor) cursor = response.cursor;
       hasMore = response.data.length > 0 && response.cursor != null;
     }
+    logView.advanceCursor(cursor);
+    logView.markFed(unseen);
     observeEventsForOwnership(unseen);
     return unseen;
+  };
+
+  /**
+   * Events a World handed back on this invocation's writes that the VM can
+   * take now: the contiguous run above what it has (see
+   * `QuickJSLogView.takeContiguous`). Delivered ahead of `fetchUnseenEvents`
+   * so a write's response, not a listing, is what usually carries the log
+   * forward, which is the round-trip the page exists to save. Empty when
+   * nothing is queued or the next position is not in hand, and the caller
+   * lists.
+   */
+  const takeQueuedEvents = (): Event[] => {
+    const queued = logView.takeContiguous();
+    for (const e of queued) {
+      if (e.eventId) seenEventIds.add(e.eventId);
+    }
+    observeEventsForOwnership(queued);
+    return queued;
   };
 
   try {
@@ -1334,6 +1449,7 @@ export async function runWorkflowWithQuickJS(params: {
         encryptionKey,
         namespace,
         nextTraceCarrier,
+        createEvent,
         pendingOperations: opsToDispatch,
         skipStepCreation: inlineClaimCids,
         queueStepCids: new Set(overflowSteps.map((s) => s.correlationId)),
@@ -1393,7 +1509,7 @@ export async function runWorkflowWithQuickJS(params: {
         waitCompletePromises.push(
           (async () => {
             try {
-              await world.events.create(runId, {
+              await createEvent({
                 eventType: 'wait_completed',
                 specVersion: SPEC_VERSION_CURRENT,
                 correlationId: wait.correlationId,
@@ -1410,9 +1526,13 @@ export async function runWorkflowWithQuickJS(params: {
       }
 
       // 2. Cheap progress first: feed newly recorded events into the live
-      // VM before blocking on step bodies.
+      // VM before blocking on step bodies. What the writes above handed back
+      // is delivered first; a listing runs only when that does not reach the
+      // next position.
       {
-        const newEvents = await fetchUnseenEvents();
+        const queued = takeQueuedEvents();
+        const newEvents =
+          queued.length > 0 ? queued : await fetchUnseenEvents();
         if (newEvents.length > 0) {
           // The listing caught up with this invocation's writes, so any
           // attr_set / getConflict hook_created has been (or is being)
@@ -1423,6 +1543,7 @@ export async function runWorkflowWithQuickJS(params: {
             iteration,
             phase: 'feed',
             fedEvents: newEvents.length,
+            fedFrom: queued.length > 0 ? 'write-response' : 'list',
             outcome: result.completed
               ? 'completed'
               : result.failed
@@ -1596,6 +1717,19 @@ export async function runWorkflowWithQuickJS(params: {
       // own, matching the node:vm engine, where a long sequential
       // workflow likewise runs step-by-step until the platform reclaims
       // the invocation and a redelivery resumes from the log.
+      // Inline delta: a single inline step's terminal write asks the World
+      // for everything after the cursor this view holds, so the step's own
+      // events (and anything interleaved) arrive on the write's response and
+      // the feed below needs no listing. Only for a batch of one, as in the
+      // node engine: several steps would each get a delta from the same
+      // cursor, and only one could be taken. Not requested when the log has
+      // no cursor to name (tracking off, or nothing read yet).
+      const inlineDeltaSinceCursor =
+        inlineCandidates.length === 1 &&
+        logView.tracking &&
+        typeof logView.logCursor === 'string'
+          ? logView.logCursor
+          : undefined;
       budget.pause();
       let outcomes: StepExecutionResult[];
       try {
@@ -1632,6 +1766,9 @@ export async function runWorkflowWithQuickJS(params: {
                   // A lazy step is brand-new by construction: first
                   // attempt.
                   authoritativeAttempt: 1,
+                  ...(inlineDeltaSinceCursor !== undefined
+                    ? { inlineDeltaSinceCursor }
+                    : {}),
                 }))()
             )
           )
@@ -1645,6 +1782,23 @@ export async function runWorkflowWithQuickJS(params: {
         const step = inlineCandidates[i];
         const outcome = outcomes[i];
         executedStepIds.add(step.correlationId);
+        if (
+          outcome.type === 'completed' &&
+          outcome.inlineDelta !== undefined &&
+          inlineDeltaSinceCursor !== undefined
+        ) {
+          const advanced = logView.absorbDelta(
+            inlineDeltaSinceCursor,
+            outcome.inlineDelta
+          );
+          wfdiag('inline_delta_absorbed', {
+            iteration,
+            correlationId: step.correlationId,
+            events: outcome.inlineDelta.events.length,
+            hasMore: outcome.inlineDelta.hasMore,
+            cursorAdvanced: advanced,
+          });
+        }
         if (outcome.type === 'retry' || outcome.type === 'throttled') {
           // Hand the step to the queue with the requested backoff:
           // background delivery drives the retry from here.
@@ -1690,7 +1844,8 @@ export async function runWorkflowWithQuickJS(params: {
       // body; 'gone', retry/throttled: a queue message exists) don't
       // need it, but signaling on them too only costs a no-op invocation
       // in an already-rare lag window.
-      const newEvents = await fetchUnseenEvents();
+      const queued = takeQueuedEvents();
+      const newEvents = queued.length > 0 ? queued : await fetchUnseenEvents();
       if (newEvents.length === 0) {
         pendingRequeueSignal = true;
         break;
@@ -1740,6 +1895,9 @@ export async function runWorkflowWithQuickJS(params: {
           encryptionKey,
           namespace,
           nextTraceCarrier,
+          // Plain create: the run is ending, nothing replays its log, so a
+          // page handed back here would be read by no one.
+          createEvent: terminalCreateEvent,
           pendingOperations: result.completed.drainOperations,
           wfdiag,
         });
@@ -1758,7 +1916,7 @@ export async function runWorkflowWithQuickJS(params: {
     // events have the same `encr`-prefixed payload shape that the node:vm
     // engine's `dehydrateWorkflowReturnValue` produces.
     try {
-      await world.events.create(runId, {
+      await terminalCreateEvent({
         eventType: 'run_completed',
         specVersion: SPEC_VERSION_CURRENT,
         eventData: {
@@ -1987,6 +2145,7 @@ export async function runWorkflowWithQuickJS(params: {
           encryptionKey,
           namespace,
           nextTraceCarrier,
+          createEvent: terminalCreateEvent,
           pendingOperations: result.failed.drainOperations,
           wfdiag,
         });
@@ -2112,7 +2271,7 @@ export async function runWorkflowWithQuickJS(params: {
       }
     }
     try {
-      await world.events.create(runId, {
+      await terminalCreateEvent({
         eventType: 'run_failed',
         specVersion: SPEC_VERSION_CURRENT,
         eventData: {
