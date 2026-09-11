@@ -1217,6 +1217,88 @@ export async function queueMessage(
 }
 
 /**
+ * Publishes several messages to one logical queue, using the World's batch
+ * send when it has one and falling back to concurrent single sends when it
+ * does not.
+ *
+ * Rejects if ANY message failed to publish, because every caller so far wants
+ * all-or-nothing: the recovery is to fail the delivery and let redelivery
+ * republish the whole set, deduped by the per-message `idempotencyKey`. That
+ * means a partial batch can leave some messages already out — which is
+ * exactly why the keys are required rather than advisory.
+ */
+export async function queueMessages(
+  world: World,
+  queueName: Parameters<typeof world.queue>[0],
+  messages: readonly {
+    message: Parameters<typeof world.queue>[1];
+    opts?: Parameters<typeof world.queue>[2];
+  }[]
+): Promise<void> {
+  if (messages.length === 0) return;
+  const batch = world.queueBatch?.bind(world);
+  if (!batch) {
+    await Promise.all(
+      messages.map((entry) =>
+        queueMessage(world, queueName, entry.message, entry.opts)
+      )
+    );
+    return;
+  }
+  await trace(
+    'queue.publish',
+    {
+      attributes: {
+        ...Attribute.MessagingSystem('vercel-queue'),
+        ...Attribute.MessagingDestinationName(queueName),
+        ...Attribute.MessagingOperationType('publish'),
+        ...Attribute.MessagingBatchMessageCount(messages.length),
+        ...Attribute.PeerService('vercel-queue'),
+        ...Attribute.RpcSystem('vercel-queue'),
+        ...Attribute.RpcService('vqs'),
+        ...Attribute.RpcMethod('publishBatch'),
+      },
+      kind: await getSpanKind('PRODUCER'),
+    },
+    async () => {
+      const results = await batch(queueName, messages);
+      // A World that answers with the wrong number of results has told us
+      // nothing about the messages it left out. Treated as a failure of the
+      // whole batch rather than read as success for the entries that ARE
+      // present: republishing under the same idempotency keys is safe,
+      // silently never dispatching a step is not (the run makes no progress
+      // and nothing surfaces an error).
+      if (results.length !== messages.length) {
+        throw Object.assign(
+          new Error(
+            `Queue batch for ${queueName} returned ${results.length} ` +
+              `result(s) for ${messages.length} message(s)`
+          ),
+          { retryable: true }
+        );
+      }
+      const failures = results.filter((result) => result.error !== undefined);
+      if (failures.length === 0) return;
+      const retryable = failures.some(
+        (failure) => failure.error !== undefined && failure.retryable
+      );
+      const error = new Error(
+        `Failed to publish ${failures.length} of ${messages.length} queue ` +
+          `message(s) to ${queueName}: ${failures[0]?.error}`
+      );
+      // Carried on the error so a caller CAN tell a transient partial batch
+      // from a permanent rejection. Nothing reads it yet: today every caller
+      // rejects the delivery either way, so a permanently rejected entry
+      // still costs the full redelivery budget. Left in place because the
+      // information is only available here, and a fast-fail on
+      // `retryable: false` needs it.
+      Object.assign(error, { retryable });
+      throw error;
+    }
+  );
+}
+
+/**
  * Calculates the queue overhead time in milliseconds for a given message.
  */
 export function getQueueOverhead(message: { requestedAt?: Date }) {
