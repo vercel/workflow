@@ -1862,85 +1862,171 @@ export function workflowEntrypoint(
                               ? { lazyStepInput, suppressOptimisticStart: true }
                               : {}),
                           });
+                        /**
+                         * A `skipped` bare start is a conflict the World mapped
+                         * (`EntityConflictError`), and a conflict on a start
+                         * has more than one reading: the step is already
+                         * `running` or finished (a peer delivery or the inline
+                         * path won it, the only reading the executor assumes),
+                         * the step does not exist at all, or the step is still
+                         * `pending`. The last one is never a legitimate refusal
+                         * (a start is allowed from `pending`) and is what a
+                         * World returns when its start races the create it is
+                         * conditioned on: publish-first delivers this message
+                         * while the producer's `step_created` is still
+                         * committing, the conditional start misses the entity,
+                         * and the re-read that phrases the rejection already
+                         * sees the committed `pending` row. Acknowledging that
+                         * as `skipped` strands the step forever: every later
+                         * re-publish of it is deduplicated against this
+                         * message (vercel/workflow#4102, the race harness's
+                         * `stuck` blocked-branch runs). So the entity is the
+                         * arbiter: `running` / terminal acks as the loser,
+                         * missing materializes from the payload, `pending`
+                         * retries the start once, and a step still `pending`
+                         * after that fails the delivery so the queue redelivers
+                         * it rather than acknowledging a step nobody started.
+                         */
+                        const arbitrateSkippedStart = async (
+                          skipped: Awaited<ReturnType<typeof executeStep>>,
+                          startsLeft: number
+                        ): Promise<Awaited<ReturnType<typeof executeStep>>> => {
+                          let existing: Awaited<
+                            ReturnType<typeof world.steps.get>
+                          >;
+                          try {
+                            existing = await world.steps.get(
+                              runId,
+                              incomingStepId,
+                              { resolveData: 'none' }
+                            );
+                          } catch (err) {
+                            if (!stepInput || !isStepMissingError(err)) {
+                              throw err;
+                            }
+                            // The conflict named a step that does not exist:
+                            // the same recovery as a step-missing bare start.
+                            return await materializeMissingStep(
+                              stepInput.input
+                            );
+                          }
+                          if (existing.status !== 'pending') {
+                            runtimeLogger.debug(
+                              'step_started lost to a peer delivery that already started the step; acknowledging without executing',
+                              {
+                                workflowRunId: runId,
+                                stepId: incomingStepId,
+                                stepName: incomingStepName,
+                                status: existing.status,
+                              }
+                            );
+                            return skipped;
+                          }
+                          if (startsLeft <= 0) {
+                            // Not a WorkflowRuntimeError: this must not fail
+                            // the run, only this delivery, so the queue
+                            // redelivers it (retry semantics of the World's
+                            // queue) and the step gets another start.
+                            throw new Error(
+                              `Queued step "${incomingStepId}" (${incomingStepName}) is still pending after its step_started was refused with a conflict twice; failing the delivery so the queue redelivers it instead of acknowledging a step nobody started`
+                            );
+                          }
+                          runtimeLogger.warn(
+                            'step_started refused with a conflict while the step is still pending (the start raced its create on the World); retrying the start',
+                            {
+                              workflowRunId: runId,
+                              stepId: incomingStepId,
+                              stepName: incomingStepName,
+                            }
+                          );
+                          return await startPendingStep(startsLeft - 1);
+                        };
+                        /** A bare start whose conflict, if any, is arbitrated. */
+                        const startPendingStep = async (
+                          startsLeft: number
+                        ): Promise<Awaited<ReturnType<typeof executeStep>>> => {
+                          const result = await executeQueuedStep();
+                          if (result.type !== 'skipped') {
+                            return result;
+                          }
+                          return await arbitrateSkippedStart(
+                            result,
+                            startsLeft
+                          );
+                        };
+                        /**
+                         * In-band resilient recovery: a missing step on a
+                         * stepInput-carrying message means this delivery
+                         * outran (or outlived a transient failure of) the
+                         * producer's step_created write. Materialize the step
+                         * from the payload with ONE lazy step_started, within
+                         * this delivery (see the comment above the run fetch
+                         * for why this cannot wait for a redelivery).
+                         */
+                        const materializeMissingStep = async (
+                          input: Uint8Array
+                        ): Promise<Awaited<ReturnType<typeof executeStep>>> => {
+                          const lazyResult = await executeQueuedStep(input);
+                          if (lazyResult.type !== 'skipped') {
+                            if (lazyResult.type !== 'gone') {
+                              // This delivery materialized the step, the
+                              // completion of the producer's recovery
+                              // path.
+                              span?.setAttributes(
+                                Attribute.StepResilientDispatchMaterialized(
+                                  true
+                                )
+                              );
+                              runtimeLogger.warn(
+                                'Materialized the step from the queue message with a lazy step_started: the producer’s step_created had not landed',
+                                {
+                                  workflowRunId: runId,
+                                  stepId: incomingStepId,
+                                  stepName: incomingStepName,
+                                }
+                              );
+                            }
+                            return lazyResult;
+                          }
+                          // The lazy start lost its atomic create-claim. The
+                          // same 409 covers two different winners: the
+                          // producer's step_created landing between the
+                          // failed bare start and this write (the step
+                          // exists, never started: `pending`), or a peer
+                          // delivery of this same message on another
+                          // instance materializing AND starting it with its
+                          // own lazy start (`running`, or already terminal).
+                          // `runStepSingleFlight` only serializes within this
+                          // process, so the entity arbitrates: one bare start
+                          // for a pending step (redelivery of a pending step
+                          // is what the bare start already handles, retries
+                          // included, so `pending` is the whole "safe to
+                          // start" set); for anything else this delivery is
+                          // the loser and acks without executing, exactly
+                          // like an in-process single-flight loser.
+                          return await arbitrateSkippedStart(lazyResult, 1);
+                        };
                         stepResult = await runStepSingleFlight(
                           runId,
                           incomingStepId,
                           async () => {
+                            let first: Awaited<ReturnType<typeof executeStep>>;
                             try {
-                              return await executeQueuedStep();
+                              first = await executeQueuedStep();
                             } catch (err) {
-                              // In-band resilient recovery: a missing step on
-                              // a stepInput-carrying message means this
-                              // delivery outran (or outlived a transient
-                              // failure of) the producer's step_created
-                              // write. Materialize the step from the payload
-                              // with ONE lazy step_started, within this
-                              // delivery (see the comment above the run fetch
-                              // for why this cannot wait for a redelivery). A
-                              // second failure propagates as before.
+                              // A second failure of the lazy start propagates
+                              // as before.
                               if (!stepInput || !isStepMissingError(err)) {
                                 throw err;
                               }
-                              const lazyResult = await executeQueuedStep(
+                              return await materializeMissingStep(
                                 stepInput.input
                               );
-                              if (lazyResult.type !== 'skipped') {
-                                if (lazyResult.type !== 'gone') {
-                                  // This delivery materialized the step, the
-                                  // completion of the producer's recovery
-                                  // path.
-                                  span?.setAttributes(
-                                    Attribute.StepResilientDispatchMaterialized(
-                                      true
-                                    )
-                                  );
-                                  runtimeLogger.warn(
-                                    'Materialized the step from the queue message with a lazy step_started: the producer\u2019s step_created had not landed',
-                                    {
-                                      workflowRunId: runId,
-                                      stepId: incomingStepId,
-                                      stepName: incomingStepName,
-                                    }
-                                  );
-                                }
-                                return lazyResult;
-                              }
-                              // The lazy start lost its atomic create-claim.
-                              // The same 409 covers two different winners:
-                              // the producer's step_created landing between
-                              // the failed bare start and this write (the
-                              // step exists, never started: `pending`), or a
-                              // peer delivery of this same message on another
-                              // instance materializing AND starting it with
-                              // its own lazy start (`running`, or already
-                              // terminal). `runStepSingleFlight` only serializes
-                              // within this process, so the entity is the
-                              // arbiter: bare-start only a pending step; for
-                              // anything else this delivery is the loser and
-                              // acks without executing, exactly like an
-                              // in-process single-flight loser. (Redelivery
-                              // of a pending step is what the bare start
-                              // already handles, retries included, so
-                              // `pending` is the whole "safe to start" set.)
-                              const existing = await world.steps.get(
-                                runId,
-                                incomingStepId,
-                                { resolveData: 'none' }
-                              );
-                              if (existing.status !== 'pending') {
-                                runtimeLogger.debug(
-                                  'Lazy step_started lost to a peer delivery that already started the step; acknowledging without executing',
-                                  {
-                                    workflowRunId: runId,
-                                    stepId: incomingStepId,
-                                    stepName: incomingStepName,
-                                    status: existing.status,
-                                  }
-                                );
-                                return lazyResult;
-                              }
-                              return await executeQueuedStep();
                             }
+                            if (first.type !== 'skipped') {
+                              return first;
+                            }
+                            return await arbitrateSkippedStart(first, 1);
                           }
                         );
                       } finally {

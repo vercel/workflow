@@ -2097,6 +2097,26 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
      * its own lazy start. Defaults to `pending`.
      */
     lazyStartConflictStatus?: 'pending' | 'running' | 'completed' | 'failed';
+    /**
+     * Whether the producer's step_created has already committed when the
+     * message is delivered (the consumer's bare start then finds the step).
+     */
+    stepExists?: boolean;
+    /**
+     * Refuse this many bare `step_started` writes with the World's start
+     * conflict (`EntityConflictError`) while the step exists (or, with
+     * `stepsGetStatus: 'missing'`, does not). Models the Vercel World's
+     * start racing the create it is conditioned on: the conditional start
+     * misses the entity and the re-read that phrases the 409 already sees the
+     * committed `pending` row.
+     */
+    bareStartConflicts?: number;
+    /**
+     * What the arbitrating `steps.get` reports after a refused bare start
+     * (defaults to `lazyStartConflictStatus`, then `pending`). `missing`
+     * rejects with the World's step-not-found error.
+     */
+    stepsGetStatus?: 'pending' | 'running' | 'completed' | 'failed' | 'missing';
   }) {
     const stepId = 'step_resilient_1';
     const dehydratedInput = (await dehydrateStepArguments(
@@ -2146,7 +2166,8 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
 
     const createdEvents: any[] = [];
     const createdEventParams: any[] = [];
-    let stepEntityExists = false;
+    let stepEntityExists = opts.stepExists ?? false;
+    let bareStartConflictsLeft = opts.bareStartConflicts ?? 0;
     const eventsCreate = vi.fn(
       async (_runId: string, data: any, params?: any) => {
         createdEvents.push(data);
@@ -2165,6 +2186,14 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
             if (opts.lazyStartConflict) {
               throw new EntityConflictError('lost the create-claim');
             }
+          } else if (
+            bareStartConflictsLeft > 0 &&
+            (stepEntityExists || opts.stepsGetStatus === 'missing')
+          ) {
+            bareStartConflictsLeft -= 1;
+            throw new EntityConflictError(
+              `Cannot start workflow step ${stepId} with status 'pending'. Operation requires status 'pending' or 'running'.`
+            );
           } else if (opts.stepMissingError && !stepEntityExists) {
             throw opts.stepMissingError;
           }
@@ -2188,9 +2217,16 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
     );
 
     const runsGet = vi.fn(async () => workflowRun);
-    // The entity read that arbitrates a lost lazy claim. Only reachable once
-    // the step exists (the 409 said so), so it never models "not found".
+    // The entity read that arbitrates a refused start (a lost lazy claim or a
+    // conflicted bare start).
     const stepsGet = vi.fn(async () => {
+      const status =
+        opts.stepsGetStatus ?? opts.lazyStartConflictStatus ?? 'pending';
+      if (status === 'missing') {
+        throw new WorkflowWorldError(`workflow step ${stepId} not found`, {
+          status: 404,
+        });
+      }
       if (!stepEntityExists) {
         throw new Error('steps.get called before the step existed');
       }
@@ -2198,7 +2234,7 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
         runId: opts.runId,
         stepId,
         stepName: 'resilientAdd',
-        status: opts.lazyStartConflictStatus ?? ('pending' as const),
+        status,
         attempt: 1,
         input: undefined,
         output: undefined,
@@ -2426,6 +2462,118 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
       'step_started',
     ]);
     expect(stepsGet).toHaveBeenCalledTimes(1);
+    expect(stepBodySpy).not.toHaveBeenCalled();
+  });
+
+  // The regression behind vercel/workflow#4102's `stuck` blocked-branch
+  // harness runs: publish-first delivers the message while the producer's
+  // step_created is still committing, the Vercel World's conditional bare
+  // start misses the entity, and the re-read that phrases its 409 already
+  // sees the committed `pending` row ("Cannot start workflow step … with
+  // status 'pending'. Operation requires status 'pending' or 'running'.").
+  // Mapped to `skipped` and acknowledged, that stranded the step forever:
+  // every later re-publish is deduplicated against the acknowledged message.
+  it('retries the bare start once when its conflict names a step that is still pending (start raced its create)', async () => {
+    const { response, createdEvents, stepsGet } = await driveStepMessage({
+      runId: 'wrun_resilient_step_bare_conflict_pending',
+      attempt: 1,
+      stepExists: true,
+      bareStartConflicts: 1,
+      stepsGetStatus: 'pending',
+    });
+
+    expect(response.status).toBe(204);
+    // bare (409 naming a pending step) → entity read confirms `pending` →
+    // bare again, accepted → completion. Never a lazy start: the step exists.
+    expect(createdEvents.map((e) => e.eventType)).toEqual([
+      'step_started',
+      'step_started',
+      'step_completed',
+    ]);
+    for (const start of createdEvents.slice(0, 2)) {
+      expect(start.eventData.input).toBeUndefined();
+    }
+    expect(stepsGet).toHaveBeenCalledTimes(1);
+    expect(stepsGet).toHaveBeenCalledWith(
+      'wrun_resilient_step_bare_conflict_pending',
+      'step_resilient_1',
+      { resolveData: 'none' }
+    );
+    expect(stepBodySpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    'running',
+    'completed',
+    'failed',
+  ] as const)('acknowledges a conflicted bare start without executing when the step is already %s', async (status) => {
+    const { response, createdEvents, stepsGet } = await driveStepMessage({
+      runId: `wrun_resilient_step_bare_conflict_${status}`,
+      attempt: 1,
+      stepExists: true,
+      bareStartConflicts: 1,
+      stepsGetStatus: status,
+    });
+
+    // The only reading the executor used to assume, still acknowledged as
+    // the loser, now on the entity's word rather than the conflict's.
+    expect(response.status).toBe(204);
+    expect(createdEvents.map((e) => e.eventType)).toEqual(['step_started']);
+    expect(stepsGet).toHaveBeenCalledTimes(1);
+    expect(stepBodySpy).not.toHaveBeenCalled();
+  });
+
+  it('materializes the step from the message when a conflicted bare start names a step that does not exist', async () => {
+    const { response, createdEvents, stepsGet } = await driveStepMessage({
+      runId: 'wrun_resilient_step_bare_conflict_missing',
+      attempt: 1,
+      bareStartConflicts: 1,
+      stepsGetStatus: 'missing',
+    });
+
+    expect(response.status).toBe(204);
+    // bare (409) → entity read says not found → the step-missing recovery:
+    // one lazy start carrying the payload → completion.
+    expect(createdEvents.map((e) => e.eventType)).toEqual([
+      'step_started',
+      'step_started',
+      'step_completed',
+    ]);
+    expect(createdEvents[0].eventData.input).toBeUndefined();
+    expect(createdEvents[1].eventData.input).toBeDefined();
+    expect(stepsGet).toHaveBeenCalledTimes(1);
+    expect(stepBodySpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails the delivery for redelivery, instead of acknowledging, when the step is still pending after the retried bare start', async () => {
+    await expect(
+      driveStepMessage({
+        runId: 'wrun_resilient_step_bare_conflict_pending_twice',
+        attempt: 1,
+        stepExists: true,
+        bareStartConflicts: 2,
+        stepsGetStatus: 'pending',
+      })
+    ).rejects.toThrow(/still pending/);
+    // Nobody started the step; acknowledging would strand it, since the
+    // queue deduplicates every later publish of it against this message.
+    expect(stepBodySpy).not.toHaveBeenCalled();
+  });
+
+  it('fails the delivery when the bare start after a lost lazy claim is itself refused on a pending step', async () => {
+    await expect(
+      driveStepMessage({
+        runId: 'wrun_resilient_step_lazy_lost_then_conflict',
+        attempt: 1,
+        stepMissingError: new WorkflowWorldError(
+          'workflow step step_resilient_1 not found',
+          { status: 404 }
+        ),
+        lazyStartConflict: true,
+        lazyStartConflictStatus: 'pending',
+        bareStartConflicts: 1,
+      })
+    ).rejects.toThrow(/still pending/);
     expect(stepBodySpy).not.toHaveBeenCalled();
   });
 
