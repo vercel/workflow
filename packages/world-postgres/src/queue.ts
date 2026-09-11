@@ -19,6 +19,7 @@ import {
   type ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from '@workflow/world';
+import { nodeHttpFetch } from '@workflow/world/node-http.js';
 import { createWorld } from '@workflow/world-local';
 import {
   Logger,
@@ -354,13 +355,19 @@ export function createQueue(
     if (!baseUrl) {
       throw new Error('Unable to resolve base URL for workflow queue.');
     }
-    const response = await fetch(createWorkflowUrl(baseUrl, { type: 'flow' }), {
-      method: 'POST',
-      duplex: 'half',
-      headers,
-      body,
-      signal: abortSignal,
-    } as any);
+    // Inline work can outlive fetch's default headers/body deadlines. Queue
+    // shutdown still aborts the delivery through its explicit signal.
+    const response = await nodeHttpFetch(
+      createWorkflowUrl(baseUrl, { type: 'flow' }),
+      {
+        method: 'POST',
+        headers: new Headers(headers),
+        body,
+        signal: abortSignal,
+        headersTimeoutMs: 0,
+        bodyTimeoutMs: 0,
+      }
+    );
     const text = await response.text();
 
     if (!response.ok) {

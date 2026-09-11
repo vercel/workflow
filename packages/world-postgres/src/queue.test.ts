@@ -1,4 +1,5 @@
-import { createServer, type Server } from 'node:http';
+import { channel } from 'node:diagnostics_channel';
+import { type ClientRequest, createServer, type Server } from 'node:http';
 import { JsonTransport } from '@vercel/queue';
 import { setWorkflowBasePath } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
@@ -211,19 +212,22 @@ describe('postgres queue http execution', () => {
   it('aborts while reading an HTTP response body without scheduling a replacement', async () => {
     const server = await startHangingWorkflowHttpServer('body');
     process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
-    const nativeFetch = globalThis.fetch;
+    const target = new URL(server.baseUrl);
     let resolveResponseReceived!: () => void;
     const responseReceived = new Promise<void>((resolve) => {
       resolveResponseReceived = resolve;
     });
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (...args: Parameters<typeof fetch>) => {
-        const response = await nativeFetch(...args);
+    const responseChannel = channel('http.client.response.finish');
+    const onResponse = (message: unknown) => {
+      const { request } = message as { request: ClientRequest };
+      if (
+        request.getHeader('host') === target.host &&
+        request.path === '/.well-known/workflow/v1/flow'
+      ) {
         resolveResponseReceived();
-        return response;
-      })
-    );
+      }
+    };
+    responseChannel.subscribe(onResponse);
 
     try {
       const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
@@ -247,7 +251,8 @@ describe('postgres queue http execution', () => {
       );
 
       await responseReceived;
-      // Let executeMessageOverHttp enter response.text() before aborting.
+      // The diagnostic fires before the response event; let its promise
+      // continuation enter response.text() before aborting the body read.
       await Promise.resolve();
       controller.abort();
 
@@ -257,7 +262,7 @@ describe('postgres queue http execution', () => {
       });
       expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
     } finally {
-      vi.unstubAllGlobals();
+      responseChannel.unsubscribe(onResponse);
     }
   });
 
@@ -273,7 +278,7 @@ describe('postgres queue http execution', () => {
     let requestCount = 0;
     let activeRequests = 0;
     let maxActiveRequests = 0;
-    const fetchMock = vi.fn(async () => {
+    const server = await startWorkflowHttpServer([], 0, undefined, async () => {
       requestCount += 1;
       activeRequests += 1;
       maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
@@ -284,10 +289,8 @@ describe('postgres queue http execution', () => {
       }
 
       activeRequests -= 1;
-      return Response.json({ ok: true });
     });
-    vi.stubGlobal('fetch', fetchMock);
-    process.env.WORKFLOW_LOCAL_BASE_URL = 'https://workflow.example.test';
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
 
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     try {
@@ -311,7 +314,7 @@ describe('postgres queue http execution', () => {
       );
 
       await firstRequestStarted;
-      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 50));
       expect(requestCount).toBe(1);
       expect(maxActiveRequests).toBe(1);
 
@@ -320,9 +323,8 @@ describe('postgres queue http execution', () => {
 
       expect(requestCount).toBe(2);
       expect(maxActiveRequests).toBe(1);
-      expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally {
-      vi.unstubAllGlobals();
+      resolveReleaseFirstRequest();
     }
   });
 
@@ -338,7 +340,7 @@ describe('postgres queue http execution', () => {
     let requestCount = 0;
     let activeRequests = 0;
     let maxActiveRequests = 0;
-    const fetchMock = vi.fn(async () => {
+    const server = await startWorkflowHttpServer([], 0, undefined, async () => {
       requestCount += 1;
       activeRequests += 1;
       maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
@@ -349,10 +351,8 @@ describe('postgres queue http execution', () => {
       }
 
       activeRequests -= 1;
-      return Response.json({ ok: true });
     });
-    vi.stubGlobal('fetch', fetchMock);
-    process.env.WORKFLOW_LOCAL_BASE_URL = 'https://workflow.example.test';
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
 
     const queue = buildQueue(
       { connectionString: 'postgres://test', namespace: 'custom' },
@@ -379,7 +379,7 @@ describe('postgres queue http execution', () => {
       );
 
       await firstRequestStarted;
-      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 50));
       expect(requestCount).toBe(1);
       expect(maxActiveRequests).toBe(1);
 
@@ -388,16 +388,15 @@ describe('postgres queue http execution', () => {
 
       expect(requestCount).toBe(2);
       expect(maxActiveRequests).toBe(1);
-      expect(fetchMock).toHaveBeenCalledTimes(2);
     } finally {
-      vi.unstubAllGlobals();
+      resolveReleaseFirstRequest();
     }
   });
 
   it('does not require a runId for workflow health-check payloads', async () => {
-    const fetchMock = vi.fn(async () => Response.json({ ok: true }));
-    vi.stubGlobal('fetch', fetchMock);
-    process.env.WORKFLOW_LOCAL_BASE_URL = 'https://workflow.example.test';
+    const requests: Parameters<typeof startWorkflowHttpServer>[0] = [];
+    const server = await startWorkflowHttpServer(requests);
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
 
     const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     try {
@@ -411,25 +410,28 @@ describe('postgres queue http execution', () => {
 
       await expect(task(payload, {} as any)).resolves.toBeUndefined();
 
-      expect(fetchMock).toHaveBeenCalledWith(
-        'https://workflow.example.test/.well-known/workflow/v1/flow',
+      expect(requests).toEqual([
         expect.objectContaining({
+          url: '/.well-known/workflow/v1/flow',
           method: 'POST',
           headers: expect.objectContaining({
             'x-vqs-queue-name': '__wkf_workflow_health_check',
           }),
-        })
-      );
+        }),
+      ]);
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
   it('uses basePath for local postgres queue HTTP delivery', async () => {
-    const fetchMock = vi.fn(async () => Response.json({ ok: true }));
-    vi.stubGlobal('fetch', fetchMock);
+    const requests: Parameters<typeof startWorkflowHttpServer>[0] = [];
     const port = await getUnusedLoopbackPort();
-    await startWorkflowHttpServer([], port);
+    await startWorkflowHttpServer(
+      requests,
+      port,
+      '/v2/.well-known/workflow/v1/flow'
+    );
     process.env.PORT = String(port);
     setWorkflowBasePath('/v2');
 
@@ -446,10 +448,12 @@ describe('postgres queue http execution', () => {
 
       await expect(task(payload, {} as any)).resolves.toBeUndefined();
 
-      expect(fetchMock).toHaveBeenCalledWith(
-        `http://localhost:${port}/v2/.well-known/workflow/v1/flow`,
-        expect.objectContaining({ method: 'POST' })
-      );
+      expect(requests).toEqual([
+        expect.objectContaining({
+          url: '/v2/.well-known/workflow/v1/flow',
+          method: 'POST',
+        }),
+      ]);
       expect(getWorkflowPort).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
@@ -576,7 +580,9 @@ async function startWorkflowHttpServer(
     headers: Record<string, string | string[] | undefined>;
     body: string;
   }>,
-  port = 0
+  port = 0,
+  path = '/.well-known/workflow/v1/flow',
+  beforeResponse?: () => Promise<void>
 ) {
   const server = createServer(async (req, res) => {
     const body = await new Promise<string>((resolve, reject) => {
@@ -597,7 +603,8 @@ async function startWorkflowHttpServer(
     };
     requests.push(request);
 
-    if (req.method === 'POST' && req.url === '/.well-known/workflow/v1/flow') {
+    if (req.method === 'POST' && req.url === path) {
+      if (beforeResponse) await beforeResponse();
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return;
