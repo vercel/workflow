@@ -70,7 +70,7 @@ async function runWorkflowHandlerWithEvents(
     createdEvents?: unknown[];
     createdEventParams?: unknown[];
     queueCalls?: QueueCall[];
-    replayDivergence?: { eventId: string; count: number };
+    replayDivergence?: { eventId: string; count: number; eventIds?: string[] };
     /**
      * Make created events visible to subsequent events.list calls (appended
      * to `events`), like a real World. Needed for flows where the handler
@@ -819,6 +819,11 @@ describe('workflowEntrypoint replay guards', () => {
       },
     ];
 
+    using warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    using error = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
     const initialAttemptEvents: unknown[] = [];
     const queueCalls: QueueCall[] = [];
     await runWorkflowHandlerWithEvents(
@@ -838,17 +843,39 @@ describe('workflowEntrypoint replay guards', () => {
     expect(initialAttemptEvents).not.toContainEqual(
       expect.objectContaining({ eventType: 'run_failed' })
     );
+    // The recovery message starts the divergence history at this event.
     expect(queueCalls.map((c) => c.message)).toContainEqual(
       expect.objectContaining({
         replayDivergence: {
           eventId: slotToEventId(1),
           count: 1,
+          eventIds: [slotToEventId(1)],
         },
       })
+    );
+    // The WARN says which pass of which invocation diverged and what that
+    // pass was working from, and the console renderer keeps the divergence
+    // text (`errorMessage`) rather than dropping it as a well-known field.
+    const warnOut = warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((line) => line.includes('Workflow replay diverged'));
+    expect(warnOut).toBeDefined();
+    expect(warnOut).toContain('loopIteration 1');
+    expect(warnOut).toContain('servedByRetainedSession false');
+    expect(warnOut).toContain('eventLogLength 2');
+    expect(warnOut).toContain(`eventLogLastEventId ${slotToEventId(2)}`);
+    expect(warnOut).toContain('isRecoveryReplay false');
+    expect(warnOut).toContain('hasHookInput false');
+    expect(warnOut).toContain(
+      `Replay could not consume event: eventType=wait_created, correlationId=wait_01HK153X00VFKAJV9XFN9JXXRS, eventId=${slotToEventId(1)}. pending at this id: none.`
     );
 
     const terminalAttemptEvents: unknown[] = [];
     const terminalAttemptParams: unknown[] = [];
+    const priorEventIds = Array.from(
+      { length: REPLAY_DIVERGENCE_MAX_RETRIES },
+      (_, i) => `evnt_prior_${i}`
+    );
     await runWorkflowHandlerWithEvents(
       `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
       async function workflow() {
@@ -863,9 +890,24 @@ describe('workflowEntrypoint replay guards', () => {
         replayDivergence: {
           eventId: 'different-event',
           count: REPLAY_DIVERGENCE_MAX_RETRIES,
+          eventIds: priorEventIds,
         },
       }
     );
+
+    // The terminal error lists the whole chain so a reader can tell whether
+    // every divergence hit one event or wandered, and the terminal console
+    // line carries that message and the same pass context as the WARN.
+    const errorOut = error.mock.calls
+      .map((c) => String(c[0]))
+      .find((line) => line.includes('Error while running workflow'));
+    expect(errorOut).toBeDefined();
+    expect(errorOut).toContain('code   CORRUPTED_EVENT_LOG');
+    expect(errorOut).toContain(
+      `divergent event ids: ${[...priorEventIds, slotToEventId(1)].join(', ')}`
+    );
+    expect(errorOut).toContain('isRecoveryReplay true');
+    expect(errorOut).toContain('loopIteration 1');
 
     const failedIndex = terminalAttemptEvents.findIndex(
       (event) => (event as { eventType?: string }).eventType === 'run_failed'
@@ -989,7 +1031,11 @@ describe('workflowEntrypoint replay guards', () => {
     );
     expect(queueCalls.map((c) => c.message)).toContainEqual(
       expect.objectContaining({
-        replayDivergence: { eventId: slotToEventId(1), count: 1 },
+        replayDivergence: {
+          eventId: slotToEventId(1),
+          count: 1,
+          eventIds: [slotToEventId(1)],
+        },
       })
     );
   });

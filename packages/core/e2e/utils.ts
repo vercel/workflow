@@ -11,6 +11,7 @@ import { onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import { getWorld, start as runtimeStart, setWorld } from '../src/runtime';
+import { hydrateRunError } from '../src/serialization';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultCliTimeoutMs = Number(
@@ -1515,3 +1516,64 @@ export const cliInspectJsonUntil = async (
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 };
+
+/**
+ * The `name` / `message` of a failed run, from whatever shape the World
+ * returned for `run.error`.
+ *
+ * `errorCode` is a plaintext field and always readable, but it only says
+ * *which class* a run died of. Telling two `CORRUPTED_EVENT_LOG`s apart needs
+ * the divergence text, and on world-vercel that is not sitting on the run:
+ * `runs.get()` returns `error` as the `SerializedData` bytes
+ * `dehydrateRunError` wrote, and world-vercel's `deserializeError` is a
+ * pass-through cast, so `run.error.message` is `undefined` no matter what the
+ * run actually failed with. The CLI and the web UI read the text because they
+ * hydrate it themselves; a caller that does not, silently gets nothing.
+ *
+ * Hydration is therefore the caller's job, and this does it the same way,
+ * tolerating every shape a World may hand back:
+ *
+ * - `SerializedData` bytes (world-vercel, spec >= 2), hydrated here.
+ * - An already-hydrated `Error`, which is what the local and Postgres Worlds
+ *   produce and what the encrypted case degrades to.
+ * - A legacy plain `{ name, message }` record.
+ *
+ * Never throws and never rejects: this runs on the reporting path of a job
+ * whose whole purpose is to describe a failure, so an unreadable error must
+ * still yield a row. An unreadable one comes back `undefined`, which reads as
+ * "no signature" in the results JSON rather than as a passing run.
+ */
+export async function describeRunError(
+  error: unknown,
+  runId: string,
+  key?: Parameters<typeof hydrateRunError>[2]
+): Promise<{ errorName?: string; errorMessage?: string }> {
+  if (error == null) return {};
+
+  // Already an Error or a legacy `{name, message}` record.
+  const direct = error as { name?: unknown; message?: unknown };
+  if (typeof direct.message === 'string' || typeof direct.name === 'string') {
+    return {
+      errorName: typeof direct.name === 'string' ? direct.name : undefined,
+      errorMessage:
+        typeof direct.message === 'string' ? direct.message : undefined,
+    };
+  }
+
+  try {
+    const hydrated = (await hydrateRunError(error, runId, key)) as {
+      name?: unknown;
+      message?: unknown;
+    } | null;
+    if (hydrated == null) return {};
+    return {
+      errorName: typeof hydrated.name === 'string' ? hydrated.name : undefined,
+      errorMessage:
+        typeof hydrated.message === 'string' ? hydrated.message : undefined,
+    };
+  } catch {
+    // Encrypted without a key, a format this build cannot read, or plain
+    // corruption. The run still gets reported, just without a signature.
+    return {};
+  }
+}
