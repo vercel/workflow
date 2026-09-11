@@ -86,7 +86,7 @@ interface LanguageSwitcherProps {
 }
 
 interface LanguageContentProps {
-  as?: keyof JSX.IntrinsicElements;
+  inline?: boolean;
   value: string;
   className?: string;
   children?: ReactNode;
@@ -408,16 +408,16 @@ export function PageLanguageSwitcher(
 }
 
 /**
- * Shows block content when its language is selected for the current page.
+ * Shows content for the selected language, using a span when inline is set.
  */
 export function LanguageContent({
-  as,
+  inline = false,
   children,
   className,
   value,
 }: LanguageContentProps): JSX.Element {
   const selected = useSharedLanguage() ?? 'ts';
-  const Component = as ?? 'div';
+  const Component = inline ? 'span' : 'div';
 
   return createElement(
     Component,

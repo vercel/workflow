@@ -1,16 +1,85 @@
+import { createProcessor } from '@mdx-js/mdx';
 import { createSource } from '@vercel/geistdocs/source';
+import { mdxJsxToMarkdown } from 'mdast-util-mdx-jsx';
+import { toMarkdown } from 'mdast-util-to-markdown';
 import { describe, expect, it } from 'vitest';
 import {
   renderLanguageMarkdown,
   withLanguageMarkdown,
 } from './language-markdown';
 
+function processedMarkdown(markdown: string): string {
+  let processed = '';
+  createProcessor({
+    remarkPlugins: [
+      () => (tree) => {
+        processed = toMarkdown(tree, { extensions: [mdxJsxToMarkdown()] });
+      },
+    ],
+  }).processSync(markdown);
+  return processed;
+}
+
 describe('language Markdown exports', () => {
-  it('unwraps matching block and inline content without changing whitespace', () => {
+  it('removes JSX serializer indentation while preserving code and container indentation', () => {
+    const markdown = [
+      '<LanguageContent value="py">',
+      '',
+      'Text',
+      '',
+      '- Item',
+      '  - Nested',
+      '',
+      '```python',
+      'if True:',
+      '    work()',
+      '```',
+      '',
+      '<LanguageContent value="py">',
+      '',
+      'Nested text',
+      '',
+      '</LanguageContent>',
+      '',
+      '<Callout>',
+      '',
+      'Callout text',
+      '',
+      '</Callout>',
+      '',
+      '</LanguageContent>',
+      '',
+      '- <LanguageContent value="py">',
+      '',
+      '  Item text',
+      '',
+      '  </LanguageContent>',
+      '',
+      '> <LanguageContent value="py">',
+      '>',
+      '> Quote text',
+      '>',
+      '> </LanguageContent>',
+      '',
+    ].join('\n');
+    // Fumadocs getText('processed') serializes JSX before our export runs.
+    // Run the compiler too: it promotes paragraphs of JSX to flow elements.
+    const processed = processedMarkdown(markdown);
+    const exported = renderLanguageMarkdown(processed, 'py');
+    expect(exported).toContain(
+      '\nText\n\n* Item\n  * Nested\n\n```python\nif True:\n    work()\n```\n'
+    );
+    expect(exported).toContain('\nNested text\n');
+    expect(exported).toContain('<Callout>\n  Callout text\n</Callout>');
+    expect(exported).toContain('* \n  Item text\n');
+    expect(exported).toContain('> \n> Quote text\n> \n');
+  });
+
+  it('selects inline content while preserving block whitespace', () => {
     const markdown = [
       '# Example',
       '',
-      'Use <LanguageContent value="ts" as="span">`start()`</LanguageContent><LanguageContent value="py">`await start()`</LanguageContent> here.',
+      'Use <LanguageContent value="ts" inline>`start()`</LanguageContent><LanguageContent value="py" inline>`await start()`</LanguageContent> here.',
       '',
       '<LanguageContent value="py">',
       '',
@@ -28,6 +97,57 @@ describe('language Markdown exports', () => {
     expect(renderLanguageMarkdown(markdown, 'ts')).toBe(
       '# Example\n\nUse `start()` here.\n\n\n'
     );
+  });
+
+  it('trims inline content after JSX serialization, including explicit boolean props', () => {
+    for (const inline of ['inline', 'inline={true}']) {
+      const markdown = [
+        `<LanguageContent value="py" ${inline}>`,
+        '',
+        '**Python** with <LanguageText ts="Node.js" py="Python" />.',
+        '',
+        '</LanguageContent>',
+      ].join('\n');
+      const processed = processedMarkdown(markdown);
+      expect(renderLanguageMarkdown(processed, 'py')).toBe(
+        '**Python** with Python.\n'
+      );
+    }
+    expect(
+      renderLanguageMarkdown(
+        '<LanguageContent value="py" inline={false}>\n\nPython\n\n</LanguageContent>',
+        'py'
+      )
+    ).toBe('\n\nPython\n\n');
+  });
+
+  it('keeps inline content in surrounding sentences and list items', () => {
+    const markdown = [
+      'Use <LanguageContent value="ts" inline> `start()` </LanguageContent><LanguageContent value="py" inline={true}>\n`await start()`\n</LanguageContent> here.',
+      '',
+      '- <LanguageContent value="ts" inline>Node.js</LanguageContent><LanguageContent value="py" inline>Python</LanguageContent>',
+      '',
+      '> <LanguageContent value="ts" inline>Node.js</LanguageContent><LanguageContent value="py" inline>Python</LanguageContent>',
+    ].join('\n');
+    const processed = processedMarkdown(markdown);
+    expect(renderLanguageMarkdown(processed, 'py')).toBe(
+      'Use `await start()` here.\n\n* Python\n\n> Python\n'
+    );
+    expect(renderLanguageMarkdown(processed, 'ts')).toBe(
+      'Use `start()` here.\n\n* Node.js\n\n> Node.js\n'
+    );
+    expect(() =>
+      renderLanguageMarkdown(
+        '<LanguageContent value="py" inline="false">Python</LanguageContent>',
+        'py'
+      )
+    ).toThrow('LanguageContent.inline must be a boolean literal');
+    expect(() =>
+      renderLanguageMarkdown(
+        '<LanguageContent value="py" inline={process.exit()}>Python</LanguageContent>',
+        'py'
+      )
+    ).toThrow('LanguageContent.inline must be a boolean literal');
   });
 
   it('inserts text and links with formatted children and literal attributes', () => {

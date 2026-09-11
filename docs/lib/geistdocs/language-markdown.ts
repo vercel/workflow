@@ -32,6 +32,56 @@ function stringAttribute(node: LanguageElement, name: string) {
   throw new TypeError(`${node.name}.${name} must be a string literal`);
 }
 
+function booleanAttribute(node: LanguageElement, name: string): boolean {
+  const attribute = node.attributes.find(
+    (attribute) =>
+      attribute.type === 'mdxJsxAttribute' && attribute.name === name
+  );
+  if (!attribute || attribute.type !== 'mdxJsxAttribute') return false;
+  if (attribute.value === null) return true;
+
+  const statement =
+    typeof attribute.value === 'object'
+      ? attribute.value.data?.estree?.body[0]
+      : undefined;
+  if (
+    statement?.type === 'ExpressionStatement' &&
+    statement.expression.type === 'Literal' &&
+    typeof statement.expression.value === 'boolean'
+  ) {
+    return statement.expression.value;
+  }
+
+  throw new TypeError(`${node.name}.${name} must be a boolean literal`);
+}
+
+function removeWrapperIndent(content: string, node: LanguageElement): string {
+  const start = node.position?.start;
+  const childStart = node.children[0]?.position?.start;
+  if (
+    node.type !== 'mdxJsxFlowElement' ||
+    !start ||
+    !childStart ||
+    childStart.line === start.line ||
+    childStart.column - start.column < 2
+  ) {
+    return content;
+  }
+
+  // Fumadocs' JSX serializer adds two spaces per flow wrapper. Remove only
+  // that layer, after any enclosing list/blockquote prefix, leaving relative
+  // indentation in code blocks and remaining JSX components intact.
+  const offset = start.column - 1;
+  return content
+    .split('\n')
+    .map((line, index) =>
+      index > 0 && line.slice(offset, offset + 2) === '  '
+        ? line.slice(0, offset) + line.slice(offset + 2)
+        : line
+    )
+    .join('\n');
+}
+
 /** Select language components while leaving the surrounding Markdown intact. */
 export function renderLanguageMarkdown(
   markdown: string,
@@ -41,39 +91,69 @@ export function renderLanguageMarkdown(
 
   const tree = createProcessor().parse(markdown);
 
+  function isInlineFlowElement(node: Nodes | undefined): boolean {
+    return (
+      node?.type === 'mdxJsxFlowElement' &&
+      (node.name === 'LanguageText' ||
+        node.name === 'LanguageLink' ||
+        (node.name === 'LanguageContent' && booleanAttribute(node, 'inline')))
+    );
+  }
+
   function renderRange(start: number, end: number, children: Nodes[]): string {
     let result = '';
     let cursor = start;
+    let previous: Nodes | undefined;
     for (const child of children) {
       const childStart = child.position?.start.offset;
       const childEnd = child.position?.end.offset;
       if (childStart === undefined || childEnd === undefined) continue;
-      result += markdown.slice(cursor, childStart) + renderNode(child);
+      // MDX promotes paragraphs containing only JSX to flow elements. Their
+      // serializer inserts line breaks between otherwise adjacent inline tags.
+      const separator =
+        isInlineFlowElement(previous) && isInlineFlowElement(child)
+          ? ''
+          : markdown.slice(cursor, childStart);
+      result += separator + renderNode(child);
       cursor = childEnd;
+      previous = child;
     }
     return result + markdown.slice(cursor, end);
   }
 
-  function renderContent(node: LanguageElement): string {
+  function renderContent(node: LanguageElement, inline = false): string {
     const start = node.position?.start.offset ?? 0;
     const end = node.position?.end.offset ?? start;
     // Attribute positions skip quoted/expression values containing `>`.
-    // Slice only the tags, retaining whitespace even for inline content.
+    // Flow content also loses the serializer's wrapper indentation, which
+    // isn't present in the authored MDX.
     const attributesEnd = node.attributes.at(-1)?.position?.end.offset ?? start;
-    const contentStart = markdown.indexOf('>', attributesEnd) + 1;
+    let contentStart = markdown.indexOf('>', attributesEnd) + 1;
     if (markdown.slice(contentStart - 2, contentStart) === '/>') return '';
-    const contentEnd = markdown.lastIndexOf('</', end - 1);
-    return renderRange(contentStart, contentEnd, node.children);
+    let contentEnd = markdown.lastIndexOf('</', end - 1);
+    if (inline) {
+      if (node.children.length === 0) return '';
+      // Child positions also exclude list/blockquote prefixes on the blank
+      // lines around flow content, which trimming whitespace alone would keep.
+      contentStart = node.children[0].position?.start.offset ?? contentStart;
+      contentEnd = node.children.at(-1)?.position?.end.offset ?? contentEnd;
+    }
+    return removeWrapperIndent(
+      renderRange(contentStart, contentEnd, node.children),
+      node
+    );
   }
 
   function renderElement(node: LanguageElement): string | undefined {
     switch (node.name) {
       case 'LanguageText':
         return stringAttribute(node, language) ?? '';
-      case 'LanguageContent':
-        return stringAttribute(node, 'value') === language
-          ? renderContent(node)
-          : '';
+      case 'LanguageContent': {
+        if (stringAttribute(node, 'value') !== language) return '';
+        const inline = booleanAttribute(node, 'inline');
+        const content = renderContent(node, inline);
+        return inline ? content.trim() : content;
+      }
       case 'LanguageLink': {
         const href = stringAttribute(node, language);
         if (href === undefined) return '';
