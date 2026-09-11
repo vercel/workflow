@@ -1,0 +1,87 @@
+{
+  "protocol": "workflow-stream-read-ws/v1",
+  "version": 1,
+  "endpoint": "/api/websockets/v1/runs/:runId/stream-reads/:streamId?startIndex=:startIndex&readerId=:readerId",
+  "readerId": "read_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+  "envelope": "u32_be(cbor_meta_length) || cbor_meta || u32_be(body_length) || body_bytes",
+  "frames": [
+    {
+      "direction": "server_to_client",
+      "meta": {
+        "type": "opened",
+        "requestedStartIndex": -5,
+        "resolvedStartIndex": 42
+      },
+      "bodyHex": "",
+      "frameHex": "00000039b900036474797065666f70656e6564737265717565737465645374617274496e64657824727265736f6c7665645374617274496e646578182a00000000"
+    },
+    {
+      "direction": "client_to_server",
+      "meta": {
+        "type": "credit",
+        "chunks": 2
+      },
+      "bodyHex": "",
+      "frameHex": "00000017b90002647479706566637265646974666368756e6b730200000000"
+    },
+    {
+      "direction": "server_to_client",
+      "meta": {
+        "type": "chunk",
+        "index": 42
+      },
+      "bodyHex": "6869",
+      "frameHex": "00000016b900026474797065656368756e6b65696e646578182a000000026869"
+    },
+    {
+      "direction": "server_to_client",
+      "meta": {
+        "type": "eof",
+        "finalIndex": 42,
+        "nextIndex": 43
+      },
+      "bodyHex": "",
+      "frameHex": "00000025b90003647479706563656f666a66696e616c496e646578182a696e657874496e646578182b00000000"
+    },
+    {
+      "direction": "server_to_client",
+      "meta": {
+        "type": "end",
+        "reason": "drain",
+        "retryAfterMs": 1000
+      },
+      "bodyHex": "",
+      "frameHex": "00000029b90003647479706563656e6466726561736f6e65647261696e6c726574727941667465724d731903e800000000"
+    },
+    {
+      "direction": "server_to_client",
+      "meta": {
+        "type": "error",
+        "status": 410,
+        "code": "read_failed",
+        "message": "stream expired"
+      },
+      "bodyHex": "",
+      "frameHex": "00000040b900046474797065656572726f726673746174757319019a64636f64656b726561645f6661696c6564676d6573736167656e73747265616d206578706972656400000000"
+    },
+    {
+      "direction": "client_to_server",
+      "meta": {
+        "type": "cancel",
+        "reqId": 7,
+        "reason": "consumer cancelled"
+      },
+      "bodyHex": "",
+      "frameHex": "00000030b9000364747970656663616e63656c6572657149640766726561736f6e72636f6e73756d65722063616e63656c6c656400000000"
+    },
+    {
+      "direction": "server_to_client",
+      "meta": {
+        "type": "cancel_ack",
+        "reqId": 7
+      },
+      "bodyHex": "",
+      "frameHex": "0000001ab9000264747970656a63616e63656c5f61636b6572657149640700000000"
+    }
+  ]
+}
