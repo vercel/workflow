@@ -145,6 +145,11 @@ import {
 
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
+// V2: stepEntrypoint is no longer re-exported — the combined handler
+// (workflowEntrypoint) executes steps inline. Removing the re-export
+// prevents Turbopack from tracing step-handler.js → get-port.js
+// filesystem operations into the flow route bundle.
+export { registerStepFunctionLoader } from './private.js';
 export {
   type HealthCheckOptions,
   type HealthCheckResult,

@@ -45,6 +45,7 @@ function executeStep(workingDir: string, stepName: string): string {
       '--input-type=module',
       '-e',
       `await import(${JSON.stringify(bundleUrl)});
+await Promise.all(globalThis.__workflowStepLoaders.map((loader) => loader()));
 const steps = globalThis[Symbol.for('@workflow/core//registeredSteps')];
 const step = [...steps].find(([id]) => id.endsWith(${JSON.stringify(`//${stepName}`)}))?.[1];
 if (!step) throw new Error(${JSON.stringify(`${stepName} step was not registered`)});
@@ -84,7 +85,7 @@ async function writeWorkflowRuntimeStub(workingDir: string): Promise<void> {
   );
   await write(
     join(packageDir, 'runtime.js'),
-    'export function workflowEntrypoint() { return async function POST() { return new Response(null, { status: 204 }); }; }\n'
+    'globalThis.__workflowStepLoaders = [];\nexport function workflowEntrypoint() { return async function POST() { return new Response(null, { status: 204 }); }; }\nexport function registerStepFunctionLoader(_stepId, loader) { globalThis.__workflowStepLoaders.push(loader); }\n'
   );
 }
 
