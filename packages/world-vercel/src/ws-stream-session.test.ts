@@ -122,6 +122,7 @@ beforeEach(() => {
   injectTraceContextIntoHeaders.mockClear();
   writeSpans.length = 0;
   delete process.env.WORKFLOW_STREAMS_TRANSPORT;
+  delete process.env.WORKFLOW_REQUEST_TIMEOUT_MS;
 });
 
 afterEach(() => {
@@ -131,9 +132,18 @@ afterEach(() => {
 });
 
 function makeSession(
-  config: { token?: string } | undefined = { token: 'token' }
+  config: { token?: string } | undefined = { token: 'token' },
+  connectAfterFirstWrite = false
 ) {
-  const writeHttp = vi.fn().mockResolvedValue(undefined);
+  const writeHttp = vi.fn(
+    async (
+      _chunks: (string | Uint8Array)[],
+      _attributes?: Record<string, unknown>,
+      onRequestDispatched?: () => void
+    ) => {
+      onRequestDispatched?.();
+    }
+  );
   const closeHttp = vi.fn().mockResolvedValue(undefined);
   const session = createStreamWriteSession(
     'wrun_1',
@@ -141,7 +151,8 @@ function makeSession(
     writerId,
     config,
     writeHttp,
-    closeHttp
+    closeHttp,
+    connectAfterFirstWrite
   );
   activeSessions.push(session);
   return { session, writeHttp, closeHttp };
@@ -156,6 +167,124 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(sockets).toHaveLength(0);
     expect(writeHttp).toHaveBeenCalledWith(['one']);
     expect(closeHttp).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts WS during the second HTTP group and keeps writing HTTP until OPEN', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    let releaseSecond: (() => void) | undefined;
+    const secondPending = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    const { session, writeHttp } = makeSession({ token: 'token' }, true);
+
+    await session.write(0, ['one']);
+    expect(sockets).toHaveLength(0);
+    expect(writeHttp).toHaveBeenNthCalledWith(
+      1,
+      ['one'],
+      expect.objectContaining({
+        'workflow.stream.ws.session_first_write': true,
+        'workflow.stream.ws.http_group_ordinal': 1,
+      })
+    );
+
+    writeHttp.mockImplementationOnce(
+      async (_chunks, _attributes, dispatched) => {
+        dispatched?.();
+        await secondPending;
+      }
+    );
+    const second = session.write(1, ['two']);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    expect(writeHttp).toHaveBeenNthCalledWith(
+      2,
+      ['two'],
+      expect.objectContaining({
+        'workflow.stream.ws.connect_after_http_group': 2,
+      }),
+      expect.any(Function)
+    );
+    expect(sockets[0].sent).toHaveLength(0);
+    releaseSecond?.();
+    await second;
+
+    const third = session.write(2, ['three']);
+    await third;
+    expect(writeHttp.mock.calls[2]?.[0]).toEqual(['three']);
+    sockets[0].open();
+
+    const fourth = session.write(3, ['four']);
+    await vi.waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    expect((await decodeOne(sockets[0].sent[0])).meta).toMatchObject({
+      type: 'write',
+      chunkSeq: 3,
+      numChunks: 1,
+    });
+    sockets[0].reply(
+      encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
+    );
+    await fourth;
+  });
+
+  it('closes over HTTP without waiting for the background socket', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const { session, closeHttp } = makeSession({ token: 'token' }, true);
+    await session.write(0, ['one']);
+    await session.write(1, ['two']);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+
+    await session.close();
+    expect(closeHttp).toHaveBeenCalledTimes(1);
+    expect(sockets[0].closed).toContainEqual([1000, 'stream closed over HTTP']);
+  });
+
+  it('retires a provisional socket after an ambiguous second HTTP outcome', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const error = new Error('second HTTP outcome unknown');
+    const { session, writeHttp } = makeSession({ token: 'token' }, true);
+    await session.write(0, ['one']);
+    let rejectSecond: ((error: Error) => void) | undefined;
+    const secondPending = new Promise<void>((_resolve, reject) => {
+      rejectSecond = reject;
+    });
+    writeHttp.mockImplementationOnce(
+      async (_chunks, _attributes, dispatched) => {
+        dispatched?.();
+        await secondPending;
+      }
+    );
+
+    const second = session.write(1, ['two']);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    rejectSecond?.(error);
+    await expect(second).rejects.toBe(error);
+    await expect(session.write(2, ['three'])).rejects.toBe(error);
+    expect(sockets[0].sent).toHaveLength(0);
+    expect(sockets[0].closed).toContainEqual([
+      1011,
+      'unknown stream write outcome',
+    ]);
+  });
+
+  it('does not start a socket after an ambiguous first HTTP outcome', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const error = new Error('HTTP outcome unknown');
+    const { session, writeHttp } = makeSession({ token: 'token' }, true);
+    writeHttp.mockRejectedValueOnce(error);
+
+    await expect(session.write(0, ['one'])).rejects.toBe(error);
+    await expect(session.write(1, ['two'])).rejects.toBe(error);
+    expect(sockets).toHaveLength(0);
+  });
+
+  it('closes a one-group stream without starting a socket', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const { session, closeHttp } = makeSession({ token: 'token' }, true);
+
+    await session.write(0, ['only']);
+    await session.close();
+    expect(closeHttp).toHaveBeenCalledTimes(1);
+    expect(sockets).toHaveLength(0);
   });
 
   it('sends immediately over HTTP while the initial socket connects, then switches to WS', async () => {
@@ -239,27 +368,33 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     });
   });
 
-  it('tombstones to HTTP when the background connect budget expires', async () => {
+  it('bounds the background connect attempt without delaying HTTP writes', async () => {
     vi.useFakeTimers();
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
-    const { session, writeHttp } = makeSession();
+    process.env.WORKFLOW_REQUEST_TIMEOUT_MS = '10000';
+    const { session, writeHttp } = makeSession({ token: 'token' }, true);
     const first = session.write(0, ['one']);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(writeHttp).toHaveBeenCalledWith(
-      ['one'],
-      expect.objectContaining({
-        'workflow.stream.ws.session_first_write': true,
-        'workflow.stream.ws.connecting_at_write': true,
-      })
+    await vi.waitFor(() =>
+      expect(writeHttp).toHaveBeenCalledWith(
+        ['one'],
+        expect.objectContaining({
+          'workflow.stream.ws.session_first_write': true,
+          'workflow.stream.ws.connecting_at_write': false,
+          'workflow.stream.ws.connect_deferred_at_write': true,
+        })
+      )
     );
     await first;
+    expect(sockets).toHaveLength(0);
+    await session.write(1, ['two']);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
 
-    await vi.advanceTimersByTimeAsync(250);
-    const second = session.write(1, ['two']);
-    await second;
-    expect(writeHttp).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await session.write(2, ['three']);
+    expect(writeHttp).toHaveBeenCalledTimes(3);
     expect(writeHttp.mock.calls[0]?.[0]).toEqual(['one']);
-    expect(writeHttp.mock.calls[1]).toEqual([['two']]);
+    expect(writeHttp.mock.calls[1]?.[0]).toEqual(['two']);
+    expect(writeHttp.mock.calls[2]).toEqual([['three']]);
     expect(sockets[0].sent).toHaveLength(0);
     expect(sockets[0].closed).toContainEqual([1000, 'connect budget expired']);
     sockets[0].open();
@@ -766,15 +901,16 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(sockets).toHaveLength(0);
   });
 
-  it('forwards streamer-wrapper disposal after session materialization', async () => {
+  it('keeps streamer-wrapper disposal socket-free before its first write', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
     const { createStreamer } = await import('./streamer.js');
     const session = createStreamer({
       token: 'token',
     }).streams.createWriteSession?.('wrun_1', 'stream/1', { writerId });
-    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sockets).toHaveLength(0);
     await session?.dispose?.();
-    expect(sockets[0].closed).toContainEqual([1000, 'stream writer disposed']);
+    expect(sockets).toHaveLength(0);
   });
 
   it('disposes transport without sending protocol close', async () => {

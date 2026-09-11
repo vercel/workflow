@@ -1,11 +1,10 @@
 import type { WebSocket } from 'ws';
 import { trace } from './telemetry.js';
 
-/**
- * Initial implementation-level wait for an opted-in stream socket to open.
- * Tune from deployment measurements; this is not protocol semantics.
- */
-export const STREAM_WS_CONNECT_BUDGET_MS = 250;
+/** Background initial upgrade bound; writes continue over HTTP meanwhile. */
+export const STREAM_WS_INITIAL_CONNECT_TIMEOUT_MS = 10_000;
+/** Bounded wait while reconnecting after an established socket drains/closes. */
+export const STREAM_WS_RECONNECT_BUDGET_MS = 250;
 /** Cleanup-only wait after semantic close success; not protocol semantics. */
 export const STREAM_WS_CLOSE_BUDGET_MS = 250;
 
