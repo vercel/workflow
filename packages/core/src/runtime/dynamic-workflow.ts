@@ -199,6 +199,16 @@ function validateDynamicWorkflowSource(
     );
   }
 
+  // No transform runs over dynamic source, so a `"use step"` directive in it
+  // would not split a step out: the function would simply run inside the
+  // workflow VM, as ordinary (and non-deterministic) workflow code. Steps
+  // come from `dynamic.steps` only.
+  if (/(?:"use step"|'use step')/.test(source)) {
+    throw new WorkflowRuntimeError(
+      'Dynamic workflow source cannot declare "use step" functions. Register the step with the deployment and expose it through `dynamic.steps` instead.'
+    );
+  }
+
   const functionMatch = new RegExp(
     `\\basync\\s+function\\s+${exportName}\\s*\\([^)]*\\)\\s*\\{`
   ).exec(source);
@@ -214,6 +224,34 @@ function validateDynamicWorkflowSource(
     throw new WorkflowRuntimeError(
       `Dynamic workflow function ${JSON.stringify(exportName)} must open with a "use workflow" directive.`
     );
+  }
+}
+
+/**
+ * Parse the generated code once, here, so a definition that can never run
+ * fails the `start()` call instead of every delivery of the run it created.
+ *
+ * The regex checks above are deliberately shallow (see
+ * `UNSUPPORTED_DYNAMIC_MODULE_SYNTAX`), so they let through anything the
+ * engine would reject: TypeScript annotations, a reserved word as the
+ * function name, an unbalanced brace. `new Function` parses without
+ * evaluating, which is exactly the check wanted; the body is never run.
+ *
+ * Runtimes that forbid code generation from strings (edge under a strict
+ * CSP) throw an `EvalError` rather than a `SyntaxError`. That is not a
+ * verdict on the source, so the check is skipped there and the replay-time
+ * error stays the backstop.
+ */
+function assertGeneratedCodeParses(workflowCode: string): void {
+  try {
+    new Function(workflowCode);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new WorkflowRuntimeError(
+        `Dynamic workflow source is not valid JavaScript: ${error.message}. The source is evaluated as-is, so it cannot contain TypeScript syntax or use a reserved word as the function name.`
+      );
+    }
+    // Code generation disabled in this runtime: nothing to conclude.
   }
 }
 
@@ -311,6 +349,8 @@ Object.defineProperty(${exportName}, "workflowId", {
 });
 globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${exportName});
 `;
+
+  assertGeneratedCodeParses(workflowCode);
 
   return {
     workflowName,
