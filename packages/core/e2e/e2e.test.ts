@@ -2051,7 +2051,13 @@ describe.concurrent('e2e', () => {
 
   test(
     'hookCleanupTestWorkflow - hook token reuse after workflow completion',
-    { timeout: 60_000 },
+    // Two full hook round trips in sequence, each paying a `returnValue`
+    // poll interval (5s in CI) plus a hook registration poll, then two CLI
+    // inspects. On green lanes this ran at 42-59s locally and 50-74s on
+    // Vercel against the previous 60s budget, so its retries were budget
+    // exhaustion, not a race. Same budget as the sibling multi-round-trip
+    // hook tests (`hookClaimOnlyMutexWorkflow`, `retainedInterleavingWorkflow`).
+    { timeout: 90_000 },
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);

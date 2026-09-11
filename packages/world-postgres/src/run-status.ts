@@ -106,9 +106,23 @@ export function createRunStatusListener(pool: Pool): RunStatusListener {
     // run into a connection attempt per poll interval.
     if (Date.now() < retrySubscribeAfter) return undefined;
 
-    subscription = listenChannel(pool, RUN_STATUS_TOPIC, async (payload) => {
-      if (payload) emitter.emit(`run:${payload}`);
-    }).catch(() => {
+    subscription = listenChannel(
+      pool,
+      RUN_STATUS_TOPIC,
+      async (payload) => {
+        if (payload) emitter.emit(`run:${payload}`);
+      },
+      {
+        onError: () => {
+          // The connection died under us. Forget it so the next wait past the
+          // backoff opens a fresh one; until then waits fall back to the
+          // backstop re-read. A closed listener stays closed.
+          if (retrySubscribeAfter === Number.POSITIVE_INFINITY) return;
+          subscription = undefined;
+          retrySubscribeAfter = Date.now() + LISTEN_RETRY_BACKOFF_MS;
+        },
+      }
+    ).catch(() => {
       // No listener connection available (pool options that don't permit a
       // second client, a database without LISTEN, a restarting server). Waits
       // degrade to the backstop re-read (the behavior of a plain poll), and

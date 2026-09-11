@@ -46,20 +46,46 @@ class Rc<T extends { drop(): void }> {
 }
 
 /**
+ * How long a `LISTEN` subscription that lost its connection waits before it
+ * is opened again. Long enough that a database that is restarting costs one
+ * connection attempt every few seconds, short enough that live stream reads
+ * resume well within the time a reader would notice.
+ */
+export const LISTEN_RECONNECT_BACKOFF_MS = 5_000;
+
+/**
  * Subscribe to a PostgreSQL NOTIFY channel using a dedicated client created
  * from the pool's connection options. `channel` must be a trusted identifier.
+ *
+ * A `pg.Client` emits `error` when the server ends the connection under it (a
+ * restart, a failover, `pg_terminate_backend`, an idle-connection reaper).
+ * With no listener registered that is an uncaught exception, so every
+ * subscription gets one here. The connection is not usable afterwards: it is
+ * ended and `onError` is told, and the owner decides whether to subscribe
+ * again. Notifications published in between are lost, which every consumer
+ * of this helper already tolerates (they are signals over durable rows).
  */
 export const listenChannel = async (
   pool: Pool,
   channel: string,
-  onPayload: (payload: string) => Promise<void>
+  onPayload: (payload: string) => Promise<void>,
+  options: { onError?: (error: Error) => void } = {}
 ): Promise<{ close: () => Promise<void> }> => {
   const client = new Client(pool.options);
+  let ended = false;
+
+  client.on('error', (error: Error) => {
+    if (ended) return;
+    ended = true;
+    client.end().catch(() => {});
+    options.onError?.(error);
+  });
 
   try {
     await client.connect();
     await client.query(`LISTEN ${channel}`);
   } catch (err) {
+    ended = true;
     await client.end().catch(() => {});
     throw err;
   }
@@ -73,6 +99,8 @@ export const listenChannel = async (
   return {
     close: async () => {
       client.removeListener('notification', onNotification);
+      if (ended) return;
+      ended = true;
       try {
         await client.query(`UNLISTEN ${channel}`);
       } finally {
@@ -118,7 +146,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
 
   const STREAM_TOPIC = 'workflow_event_chunk';
 
-  const listenSubscription = listenChannel(pool, STREAM_TOPIC, async (msg) => {
+  const onChunkPublished = async (msg: string) => {
     const parsed = StreamPublishMessage.parse(JSON.parse(msg));
 
     const key = `strm:${parsed.streamId}` as const;
@@ -142,7 +170,27 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       const { data, eof } = value;
       events.emit(key, { id: parsed.chunkId, data, eof });
     });
-  });
+  };
+
+  // The subscription is re-opened when its connection dies (see
+  // `listenChannel`); the shared `closed` flag stops that once the streamer
+  // is shut down.
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let listenSubscription: Promise<{ close: () => Promise<void> } | undefined>;
+  const subscribe = () => {
+    listenSubscription = listenChannel(pool, STREAM_TOPIC, onChunkPublished, {
+      onError: () => {
+        if (closed) return;
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = undefined;
+          if (!closed) subscribe();
+        }, LISTEN_RECONNECT_BACKOFF_MS);
+        // A dead subscription must not keep a process alive on its own.
+        reconnectTimer.unref?.();
+      },
+    }).catch(() => undefined);
+  };
+  subscribe();
 
   const notifyStream = async (payload: string) => {
     await pool.query('SELECT pg_notify($1, $2)', [STREAM_TOPIC, payload]);
@@ -492,10 +540,14 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
 
     async close() {
       closed = true;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = undefined;
+      }
       for (const abort of [...activeReaders]) {
         abort();
       }
-      const sub = await listenSubscription.catch(() => undefined);
+      const sub = await listenSubscription;
       if (sub) await sub.close();
     },
   };

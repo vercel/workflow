@@ -1536,6 +1536,74 @@ describe('runWorkflow', () => {
       );
     });
 
+    it('does not leave an unhandled rejection when the workflow is not registered and the log holds an unconsumed event', async () => {
+      // The structural consumer starts the event walk before the workflow
+      // function is looked up. With an ordered event in the log that nobody
+      // will ever claim, the consumer's deferred check fires after
+      // `WorkflowNotRegisteredError` has already been thrown and calls
+      // `onWorkflowError`, which rejects the initial interruption promise.
+      // Nothing was awaiting it yet, so that used to be an unhandled
+      // rejection: a crashed host process, not a failed run.
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => {
+        unhandled.push(reason);
+      };
+      process.on('unhandledRejection', onUnhandled);
+      try {
+        const ops: Promise<any>[] = [];
+        const runId = 'test-run-unregistered';
+        const workflowRun: WorkflowRun = {
+          runId,
+          workflowName: 'value',
+          status: 'running',
+          input: await dehydrateWorkflowArguments(
+            [],
+            'wrun_123',
+            noEncryptionKey,
+            ops
+          ),
+          createdAt: new Date('2024-01-01T00:00:00.000Z'),
+          updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+          startedAt: new Date('2024-01-01T00:00:00.000Z'),
+          deploymentId: 'test-deployment',
+        };
+        const events: Event[] = [
+          {
+            runId,
+            eventId: 'evnt_run_started',
+            eventType: 'run_started',
+            createdAt: new Date('2024-01-01T00:00:00.000Z'),
+          } as Event,
+          {
+            runId,
+            eventId: 'evnt_orphan_step_created',
+            eventType: 'step_created',
+            correlationId: 'step_orphan',
+            eventData: { stepName: 'orphan' },
+            createdAt: new Date('2024-01-01T00:00:01.000Z'),
+          } as Event,
+        ];
+
+        await expect(
+          runWorkflow(
+            `const value = "test"${getWorkflowTransformCode()}`,
+            workflowRun,
+            events,
+            noEncryptionKey
+          )
+        ).rejects.toMatchObject({ name: 'WorkflowNotRegisteredError' });
+
+        // Let the consumer's deferred unconsumed-event check run its course:
+        // the promise queue drains, deliveries are idle, then the delay.
+        await new Promise((resolve) =>
+          setTimeout(resolve, DEFERRED_CHECK_DELAY_MS * 4)
+        );
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off('unhandledRejection', onUnhandled);
+      }
+    });
+
     it('should throw user-defined error when workflow code throws an error', async () => {
       let error: Error | undefined;
       try {

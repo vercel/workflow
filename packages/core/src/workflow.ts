@@ -416,6 +416,18 @@ async function createWorkflowSessionInner(
   });
 
   const initialInterruption = withResolvers<never>();
+  // Nothing awaits this promise until `waitForExecution` at the bottom of this
+  // function, but the structural consumer registered below starts walking the
+  // event log as soon as it subscribes. If anything between here and there
+  // throws (an unregistered workflow name, a bundle that fails to evaluate,
+  // input that fails to hydrate), the walk can still reach an ordered event
+  // nobody claims, and its deferred check then calls `onWorkflowError`, whose
+  // `running` branch rejects this promise. With no handler attached yet that
+  // is an `unhandledRejection`, which takes the host process down about
+  // `DEFERRED_CHECK_DELAY_MS` after the flow route already reported the run
+  // as failed. Mark it handled up front: `Promise.race` in `waitForExecution`
+  // attaches its own handler and still observes the rejection.
+  initialInterruption.promise.catch(() => {});
   let state: WorkflowSessionState = {
     type: 'running',
     interruption: initialInterruption,
