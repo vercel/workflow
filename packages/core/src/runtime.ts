@@ -1655,9 +1655,10 @@ export function workflowEntrypoint(
                       // start is only ever the recovery for a step-missing
                       // bare start, never the first attempt, and a redelivery
                       // or retry of a materialized step keeps the bare start.
-                      // If the lazy start is `skipped`, the producer's create
-                      // landed in between, and one more bare start runs the
-                      // step. There is no eager pre-ensure on redelivery any
+                      // If the lazy start is `skipped`, the step now exists;
+                      // whether this delivery may still bare-start it is
+                      // decided by reading the entity (see the fallback
+                      // below). There is no eager pre-ensure on redelivery any
                       // more: the in-band path covers a redelivered dispatch
                       // whose step is missing at the same round-trip count the
                       // eager `step_created` write did, and a redelivery whose
@@ -1904,11 +1905,40 @@ export function workflowEntrypoint(
                                 }
                                 return lazyResult;
                               }
-                              // The lazy start lost its atomic create-claim:
-                              // the producer's step_created landed between the
-                              // failed bare start and this write. The step now
-                              // exists, so the bare start it wanted all along
-                              // runs it.
+                              // The lazy start lost its atomic create-claim.
+                              // The same 409 covers two different winners:
+                              // the producer's step_created landing between
+                              // the failed bare start and this write (the
+                              // step exists, never started: `pending`), or a
+                              // peer delivery of this same message on another
+                              // instance materializing AND starting it with
+                              // its own lazy start (`running`, or already
+                              // terminal). `runStepSingleFlight` only serializes
+                              // within this process, so the entity is the
+                              // arbiter: bare-start only a pending step; for
+                              // anything else this delivery is the loser and
+                              // acks without executing, exactly like an
+                              // in-process single-flight loser. (Redelivery
+                              // of a pending step is what the bare start
+                              // already handles, retries included, so
+                              // `pending` is the whole "safe to start" set.)
+                              const existing = await world.steps.get(
+                                runId,
+                                incomingStepId,
+                                { resolveData: 'none' }
+                              );
+                              if (existing.status !== 'pending') {
+                                runtimeLogger.debug(
+                                  'Lazy step_started lost to a peer delivery that already started the step; acknowledging without executing',
+                                  {
+                                    workflowRunId: runId,
+                                    stepId: incomingStepId,
+                                    stepName: incomingStepName,
+                                    status: existing.status,
+                                  }
+                                );
+                                return lazyResult;
+                              }
                               return await executeQueuedStep();
                             }
                           }

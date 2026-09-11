@@ -1283,18 +1283,22 @@ export async function handleSuspension({
           // promise joins `batchPreps` (see the loop below), so the flush
           // op cannot run before this step's input finished dehydrating.
           //
-          // Publish-first: when the message can carry the input, send it
-          // NOW, before the fold's createBatch has even been issued, rather
-          // than after this step's chunk commits. A delivery that beats the
-          // create materializes the step from the message with a lazy
-          // `step_started` (see the queued-step consumer in runtime.ts), and
-          // a create that then lands as a duplicate is the same 409 the fold
-          // already tolerates. This inverts the old happens-before: once the
-          // fold commits, `step_created` in the log implies the message was
-          // sent. The publish rides the flush's trailing work, which the
-          // caller joins before ack, so a failure is exactly as fatal as it
-          // is on the per-step branch below (redelivery re-creates and
-          // re-dispatches, deduped by the idempotency key). Recorded in
+          // Publish-first: when the message can carry the input, initiate
+          // the send NOW, before the fold's createBatch has even been
+          // issued, rather than after this step's chunk commits. A delivery
+          // that beats the create materializes the step from the message
+          // with a lazy `step_started` (see the queued-step consumer in
+          // runtime.ts), and a create that then lands as a duplicate is the
+          // same 409 the fold already tolerates. The publish and the create
+          // run CONCURRENTLY and both must succeed before the delivery acks:
+          // the publish is only initiated early, it is joined alongside the
+          // commits (the flush's trailing work), not before them. So a
+          // durable `step_created` does NOT by itself prove its message was
+          // published: a slow or failed send can leave a committed create
+          // with an unpublished message until the redelivery re-dispatches
+          // it (deduped by the idempotency key), which is why the caller's
+          // unconditional re-enqueue of pending steps stays. A failure is
+          // exactly as fatal as on the per-step branch below. Recorded in
           // `queuedStepCorrelationIds` up front so the caller's dispatch
           // pass skips it. Turbo: the send still waits for `run_started`
           // to settle, so no message names a run that does not exist.

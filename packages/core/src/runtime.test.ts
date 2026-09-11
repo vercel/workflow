@@ -92,6 +92,8 @@ async function runWorkflowHandlerWithEvents(
     runsGet?: () => Promise<WorkflowRun>;
     /** Lazy hook resume payload carried on the incoming queue message. */
     hookInput?: Record<string, unknown>;
+    /** Publish-first step payload carried on the incoming queue message. */
+    stepInput?: { input: Uint8Array };
     queueImpl?: () => Promise<{ messageId: null }>;
     isDeploymentUnavailableError?: (error: unknown) => boolean;
   } = {}
@@ -150,6 +152,7 @@ async function runWorkflowHandlerWithEvents(
               stepInput: options.stepInput,
               hookResumeTiming: options.hookResumeTiming,
               hookInput: options.hookInput,
+              ...(options.stepInput ? { stepInput: options.stepInput } : {}),
             },
             {
               requestId: 'req_test',
@@ -334,6 +337,42 @@ describe('workflowEntrypoint replay guards', () => {
     expect(createdEvents).not.toContainEqual(
       expect.objectContaining({ eventType: 'run_failed' })
     );
+  });
+
+  it('re-routes a publish-first queued step execution with its stepInput intact', async () => {
+    // A publish-first message can arrive on the wrong deployment before its
+    // producer's step_created has committed, so its `stepInput` may be the
+    // only copy of the input. The re-routed message has to carry it, or the
+    // pinned deployment's bare start finds no step and has nothing to
+    // materialize it from.
+    const workflowRun = await misroutedRun();
+    const queueCalls: QueueCall[] = [];
+    const stepInput = { input: new Uint8Array([1, 2, 3, 4]) };
+
+    const createdEvents = await runWorkflowHandlerWithEvents(
+      mustNotRun,
+      workflowRun,
+      [],
+      {
+        currentDeploymentId: 'dpl_current',
+        incomingStepId: 'step_1',
+        incomingStepName: 'myStep',
+        stepInput,
+        queueCalls,
+      }
+    );
+
+    expect(queueCalls).toHaveLength(1);
+    expect(queueCalls[0].opts).toMatchObject({ deploymentId: 'dpl_origin' });
+    expect(queueCalls[0].message).toMatchObject({
+      runId: 'wrun_wrong_deployment',
+      stepId: 'step_1',
+      stepName: 'myStep',
+      deploymentMismatchRetryCount: 1,
+    });
+    expect((queueCalls[0].message as any).stepInput).toEqual(stepInput);
+    expect(queueCalls[0].message).not.toHaveProperty('runInput');
+    expect(createdEvents).toEqual([]);
   });
 
   it('re-routes a misrouted lazy hook resume with its payload intact', async () => {
@@ -2045,11 +2084,19 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
      *  consumer skips the blocking runs.get (vercel/workflow#3456). */
     includeRunContext?: boolean;
     /**
-     * Simulate the producer's step_created landing between the failed bare
-     * start and the lazy recovery start: the lazy step_started loses its
-     * atomic create-claim (409) and the step exists from then on.
+     * Simulate the lazy recovery start losing its atomic create-claim (409)
+     * to a concurrent writer, after which the step exists. Who won is what
+     * `lazyStartConflictStatus` reports.
      */
     lazyStartConflict?: boolean;
+    /**
+     * Status of the step entity after the lost lazy claim, as the consumer's
+     * arbitrating read sees it: `pending` is the producer's step_created
+     * (created, never started), `running` / a terminal status is a peer
+     * delivery on another instance that materialized AND started it with
+     * its own lazy start. Defaults to `pending`.
+     */
+    lazyStartConflictStatus?: 'pending' | 'running' | 'completed' | 'failed';
   }) {
     const stepId = 'step_resilient_1';
     const dehydratedInput = (await dehydrateStepArguments(
@@ -2141,6 +2188,25 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
     );
 
     const runsGet = vi.fn(async () => workflowRun);
+    // The entity read that arbitrates a lost lazy claim. Only reachable once
+    // the step exists (the 409 said so), so it never models "not found".
+    const stepsGet = vi.fn(async () => {
+      if (!stepEntityExists) {
+        throw new Error('steps.get called before the step existed');
+      }
+      return {
+        runId: opts.runId,
+        stepId,
+        stepName: 'resilientAdd',
+        status: opts.lazyStartConflictStatus ?? ('pending' as const),
+        attempt: 1,
+        input: undefined,
+        output: undefined,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+    });
+
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
       createQueueHandler: vi.fn(
@@ -2191,6 +2257,9 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
       runs: {
         get: runsGet,
       },
+      steps: {
+        get: stepsGet,
+      },
       queue: vi.fn(async () => ({ messageId: null })),
       getEncryptionKeyForRun: vi.fn(async () => undefined),
     } as any);
@@ -2205,6 +2274,7 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
       createdEventParams,
       dehydratedInput,
       runsGet,
+      stepsGet,
     };
   }
 
@@ -2291,8 +2361,8 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
     expect(createdEvents[1].eventData.input).toBeDefined();
   });
 
-  it('falls back to one more bare start when the lazy start loses to the producer\u2019s create (409)', async () => {
-    const { response, createdEvents } = await driveStepMessage({
+  it('falls back to one more bare start when the lazy start loses to the producer\u2019s create (409, step pending)', async () => {
+    const { response, createdEvents, stepsGet } = await driveStepMessage({
       runId: 'wrun_resilient_step_lazy_lost',
       attempt: 1,
       stepMissingError: new WorkflowWorldError(
@@ -2300,11 +2370,13 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
         { status: 404 }
       ),
       lazyStartConflict: true,
+      lazyStartConflictStatus: 'pending',
     });
 
     expect(response.status).toBe(204);
     // bare (404) → lazy (409, the producer's create landed in between) →
-    // bare again, which now finds the step → completion.
+    // entity read says `pending` (created, never started) → bare again,
+    // which now finds the step → completion.
     expect(createdEvents.map((e) => e.eventType)).toEqual([
       'step_started',
       'step_started',
@@ -2313,8 +2385,68 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
     ]);
     expect(createdEvents[1].eventData.input).toBeDefined();
     expect(createdEvents[2].eventData.input).toBeUndefined();
+    // Exactly one arbitrating read, on the rare 409 path only.
+    expect(stepsGet).toHaveBeenCalledTimes(1);
+    expect(stepsGet).toHaveBeenCalledWith(
+      'wrun_resilient_step_lazy_lost',
+      'step_resilient_1',
+      { resolveData: 'none' }
+    );
     // The lost lazy claim never ran the body; the bare start did, once.
     expect(stepBodySpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    'running',
+    'completed',
+    'failed',
+  ] as const)('acknowledges as the loser, without executing, when the lazy start loses to a peer delivery that already started the step (%s)', async (status) => {
+    // Two deliveries of the same publish-first message on different
+    // instances: the peer's lazy start won the create-claim and is running
+    // (or has finished) the body. This consumer's 409 must not be read as
+    // "the producer's create won": a bare start here would run the body a
+    // second time, and `runStepSingleFlight` only covers one process.
+    const { response, createdEvents, stepsGet } = await driveStepMessage({
+      runId: `wrun_resilient_step_lazy_lost_peer_${status}`,
+      attempt: 1,
+      stepMissingError: new WorkflowWorldError(
+        'workflow step step_resilient_1 not found',
+        { status: 404 }
+      ),
+      lazyStartConflict: true,
+      lazyStartConflictStatus: status,
+    });
+
+    // Acked like an in-process single-flight loser.
+    expect(response.status).toBe(204);
+    // bare (404) → lazy (409) → entity read says the peer started it →
+    // nothing more is written by this delivery.
+    expect(createdEvents.map((e) => e.eventType)).toEqual([
+      'step_started',
+      'step_started',
+    ]);
+    expect(stepsGet).toHaveBeenCalledTimes(1);
+    expect(stepBodySpy).not.toHaveBeenCalled();
+  });
+
+  it('never reads the step entity when the lazy start wins or the bare start succeeds', async () => {
+    const won = await driveStepMessage({
+      runId: 'wrun_resilient_step_no_arbitration_won',
+      attempt: 1,
+      stepMissingError: new WorkflowWorldError(
+        'workflow step step_resilient_1 not found',
+        { status: 404 }
+      ),
+    });
+    expect(won.response.status).toBe(204);
+    expect(won.stepsGet).not.toHaveBeenCalled();
+
+    const exists = await driveStepMessage({
+      runId: 'wrun_resilient_step_no_arbitration_exists',
+      attempt: 1,
+    });
+    expect(exists.response.status).toBe(204);
+    expect(exists.stepsGet).not.toHaveBeenCalled();
   });
 
   it('recovers a redelivery (attempt > 1) in-band too, with no eager step_created write', async () => {
