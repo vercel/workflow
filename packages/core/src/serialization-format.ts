@@ -729,11 +729,17 @@ function hydrateStepIO<
  * Hydrate the data fields of a workflow run resource.
  */
 function hydrateWorkflowIO<
-  T extends { input?: any; output?: any; error?: any },
+  T extends {
+    input?: any;
+    output?: any;
+    error?: any;
+    dynamicWorkflowCode?: any;
+  },
 >(resource: T, revivers: Revivers): T {
   let hydratedInput = resource.input;
   let hydratedOutput = resource.output;
   let hydratedError = resource.error;
+  let hydratedDynamicWorkflowCode = resource.dynamicWorkflowCode;
 
   if (resource.input != null) {
     try {
@@ -762,11 +768,27 @@ function hydrateWorkflowIO<
     }
   }
 
+  // A dynamic run's own workflow code, stored through the same pipeline as
+  // `input`. Absent on every static run, so this is a no-op for them.
+  if (resource.dynamicWorkflowCode != null) {
+    try {
+      hydratedDynamicWorkflowCode = hydrateData(
+        resource.dynamicWorkflowCode,
+        revivers
+      );
+    } catch {
+      // Leave un-hydrated
+    }
+  }
+
   return {
     ...resource,
     input: hydratedInput,
     output: hydratedOutput,
     error: hydratedError,
+    ...(resource.dynamicWorkflowCode != null
+      ? { dynamicWorkflowCode: hydratedDynamicWorkflowCode }
+      : {}),
   };
 }
 

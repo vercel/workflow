@@ -171,6 +171,47 @@ describe('compileDynamicWorkflow', () => {
       ).rejects.toThrow(/must declare `async function workflow/);
     });
 
+    it.each([
+      [
+        'TypeScript annotations',
+        'async function workflow(input: { id: string }) {\n  "use workflow";\n  return 1;\n}',
+        undefined,
+      ],
+      [
+        'a reserved word as the function name',
+        'async function class(input) {\n  "use workflow";\n  return 1;\n}',
+        'class',
+      ],
+      [
+        'an unbalanced brace',
+        'async function workflow(input) {\n  "use workflow";\n  if (input) {\n  return 1;\n}',
+        undefined,
+      ],
+    ])('rejects source the engine cannot parse: %s', async (_label, source, exportName) => {
+      // The shallow checks above pass all of these; without parsing the
+      // generated code here they would only fail at replay, on every
+      // delivery of a run that already exists.
+      await expect(
+        compileDynamicWorkflow(source, { steps: STEPS, exportName })
+      ).rejects.toThrow(/not valid JavaScript/);
+    });
+
+    it('rejects an inline "use step" function', async () => {
+      // Nothing transforms dynamic source, so the directive would be inert
+      // and the function would run inside the workflow VM.
+      const source = `async function workflow(input) {
+  "use workflow";
+  async function fetchUser(id) {
+    "use step";
+    return fetch("https://example.com/" + id);
+  }
+  return fetchUser(input.id);
+}`;
+      await expect(
+        compileDynamicWorkflow(source, { steps: STEPS })
+      ).rejects.toThrow(/cannot declare "use step"/);
+    });
+
     it('rejects a missing "use workflow" directive', async () => {
       await expect(
         compileDynamicWorkflow(
