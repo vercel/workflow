@@ -20,8 +20,12 @@ export interface NestBuilderOptions {
    */
   outDir?: string;
   /**
-   * Enable watch mode for development
-   * @default false
+   * Enable watch mode for development.
+   *
+   * @deprecated Not implemented. `createCombinedBundle` hands back live esbuild
+   * contexts in watch mode and this builder discards them, so nothing rebuilds
+   * and the contexts leak. The option is pinned off until watch is wired up;
+   * use `nest start --watch`, which re-runs the startup build.
    */
   watch?: boolean;
   /**
@@ -47,6 +51,11 @@ export interface NestBuilderOptions {
    * Can also be set via the `WORKFLOW_SOURCEMAP` environment variable.
    */
   sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
+  /**
+   * Route prefix the workflow endpoints are served under, stamped into the
+   * generated flow route so the runtime generates matching callback URLs.
+   */
+  basePath?: string;
 }
 
 export class NestLocalBuilder extends BaseBuilder {
@@ -63,10 +72,12 @@ export class NestLocalBuilder extends BaseBuilder {
     super({
       ...createBaseBuilderConfig({
         workingDir,
-        watch: options.watch ?? false,
+        // Pinned off: see the `watch` option's deprecation note.
+        watch: false,
         dirs,
         sourcemap: options.sourcemap,
       }),
+      basePath: options.basePath,
       // Use 'standalone' as base target - we handle the specific bundling ourselves
       buildTarget: 'standalone',
       stepsBundlePath: join(outDir, 'steps.mjs'),

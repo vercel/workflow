@@ -1579,7 +1579,10 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
           write: true,
           keepNames: true,
           minify: false,
-          external: ['@aws-sdk/credential-provider-web-identity'],
+          external: [
+            '@aws-sdk/credential-provider-web-identity',
+            ...(this.config.externalPackages || []),
+          ],
         });
 
         this.logEsbuildMessages(
@@ -1782,7 +1785,10 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         keepNames: true,
         minify: false,
         define: importMetaDefine,
-        external: ['@aws-sdk/credential-provider-web-identity'],
+        external: [
+          '@aws-sdk/credential-provider-web-identity',
+          ...(this.config.externalPackages || []),
+        ],
       });
       this.logEsbuildMessages(finalResult, 'combined bundle', true);
       this.logBaseBuilderInfo(
@@ -2074,7 +2080,7 @@ export const OPTIONS = handler;`;
       sourcemap: this.resolveSourcemap(EMIT_SOURCEMAPS_FOR_DEBUGGING),
       mainFields: ['module', 'main'],
       // Don't externalize anything - bundle everything including workflow packages
-      external: [],
+      external: [...(this.config.externalPackages || [])],
     });
 
     this.logEsbuildMessages(result, 'webhook bundle creation');

@@ -4,12 +4,15 @@
 // The builders are available via the `workflow/nest/builder` subpath.
 
 export type { NestBuilderOptions } from './builder.js';
+export {
+  WORKFLOW_MODULE_OPTIONS,
+  WORKFLOW_OPTIONS,
+  type WorkflowModuleAsyncOptions,
+  type WorkflowModuleOptions,
+} from './options.js';
 export type { NestVercelBuilderOptions } from './vercel-builder.js';
 export {
   configureWorkflowController,
   WorkflowController,
 } from './workflow.controller.js';
-export {
-  WorkflowModule,
-  type WorkflowModuleOptions,
-} from './workflow.module.js';
+export { WorkflowModule } from './workflow.module.js';
