@@ -376,15 +376,36 @@ export async function readHookTokenClaim(
   }
 }
 
+/** A held Hook token claim lock (see {@link acquireHookTokenClaimLock}). */
+export interface HookTokenClaimLockHandle {
+  /**
+   * Aborts if the lock is compromised while held (its lockfile disappeared or
+   * stopped refreshing, so another process may hold it too). Work done under
+   * the lock must check it before every write that relies on exclusivity.
+   */
+  readonly signal: AbortSignal;
+  /**
+   * Release the lock. Idempotent. A compromised lock is no longer this
+   * holder's to release, so that case is a no-op. Rejects with
+   * `WorkflowWorldError` when the lockfile could not be removed.
+   */
+  release(): Promise<void>;
+}
+
 /**
- * Serializes claim handoffs. Exclusive writes admit the first owner, but
- * cannot atomically replace a stale owner across local-world processes.
+ * Acquire the per-token lock that serializes claim handoffs. Exclusive writes
+ * admit the first owner, but cannot atomically replace a stale owner across
+ * local-world processes.
+ *
+ * Callers that only need the lock around one block use
+ * {@link withHookTokenClaimLock}. The handle form exists for the
+ * `hook_created` publish, which has to keep the lock across a section that
+ * spans several stages of `events.create` and releases it in a `finally`.
  */
-export async function withHookTokenClaimLock<T>(
+export async function acquireHookTokenClaimLock(
   basedir: string,
-  token: string,
-  fn: (signal: AbortSignal) => Promise<T>
-): Promise<T> {
+  token: string
+): Promise<HookTokenClaimLockHandle> {
   const claimPath = hookTokenClaimPath(basedir, token);
   await fs.mkdir(path.dirname(claimPath), { recursive: true });
   const controller = new AbortController();
@@ -414,24 +435,49 @@ export async function withHookTokenClaimLock<T>(
     });
   }
 
+  let released = false;
+  return {
+    signal: controller.signal,
+    async release() {
+      if (released) return;
+      released = true;
+      if (controller.signal.aborted) return;
+      try {
+        await release();
+      } catch (error) {
+        throw new WorkflowWorldError(
+          'Could not release Hook token claim lock',
+          {
+            cause: error,
+          }
+        );
+      }
+    },
+  };
+}
+
+/**
+ * Run `fn` under the per-token claim lock (see
+ * {@link acquireHookTokenClaimLock}). The lock is released when `fn` settles;
+ * a compromised lock fails the operation.
+ */
+export async function withHookTokenClaimLock<T>(
+  basedir: string,
+  token: string,
+  fn: (signal: AbortSignal) => Promise<T>
+): Promise<T> {
+  const held = await acquireHookTokenClaimLock(basedir, token);
+
   let result: T;
   try {
-    result = await fn(controller.signal);
-    controller.signal.throwIfAborted();
+    result = await fn(held.signal);
+    held.signal.throwIfAborted();
   } catch (error) {
-    if (!controller.signal.aborted) {
-      await release().catch(() => {});
-    }
+    await held.release().catch(() => {});
     throw error;
   }
 
-  try {
-    await release();
-  } catch (error) {
-    throw new WorkflowWorldError('Could not release Hook token claim lock', {
-      cause: error,
-    });
-  }
+  await held.release();
   return result;
 }
 

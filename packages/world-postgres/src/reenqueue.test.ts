@@ -25,6 +25,9 @@ vi.mock('pg', () => ({
     return {
       query: vi.fn(async () => ({ rows: [{ exists: false }] })),
       end: vi.fn(),
+      // `createWorld()` registers an `error` listener on a pool it owns (a
+      // real `pg.Pool` is an EventEmitter).
+      on: vi.fn(),
     };
   }),
 }));
