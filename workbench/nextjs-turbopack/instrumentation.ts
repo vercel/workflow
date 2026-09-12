@@ -1,6 +1,16 @@
 import { registerOTel } from '@vercel/otel';
 
-export function register() {
+export async function register() {
+  if (process.env.NEXT_RUNTIME === 'nodejs') {
+    // Workflow lifecycle hooks are host-only. The import MUST be dynamic
+    // and inside the runtime guard (the canonical Next.js pattern for
+    // node-only instrumentation): a static top-level import would pull
+    // `workflow/api` → world-init → @workflow/world-local → fs into every
+    // compile target of instrumentation.ts, and the non-node ones cannot
+    // resolve `fs` (breaks the webpack workbench's build).
+    const { registerE2eLifecycleHooks } = await import('./lifecycle-hooks-e2e');
+    registerE2eLifecycleHooks();
+  }
   registerOTel({
     serviceName: 'nextjs-turbopack',
     instrumentationConfig: {

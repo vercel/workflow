@@ -14,6 +14,7 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getDeploymentMismatchMaxRetries } from './constants.js';
+import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 
 /** Cap on the re-route backoff, in seconds. */
 const MAX_REROUTE_DELAY_SECONDS = 8;
@@ -117,6 +118,7 @@ export interface ReenqueueArgs {
 export async function guardDeploymentAffinity({
   world,
   run,
+  workflowName,
   requestId,
   retryCount = 0,
   reenqueue,
@@ -125,6 +127,7 @@ export async function guardDeploymentAffinity({
 }: {
   world: World;
   run: Pick<WorkflowRun, 'runId' | 'deploymentId' | 'specVersion'>;
+  workflowName: string;
   requestId?: string;
   /** `deploymentMismatchRetryCount` from the incoming message, if any. */
   retryCount?: number;
@@ -191,26 +194,32 @@ export async function guardDeploymentAffinity({
     );
 
     try {
+      // Unencrypted: the pinned deployment's key may no longer be available.
+      const dehydratedError = await dehydrateRunError(
+        error,
+        run.runId,
+        undefined,
+        undefined,
+        (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
+      );
       await world.events.create(
         run.runId,
         {
           eventType: 'run_failed',
           specVersion: SPEC_VERSION_CURRENT,
           eventData: {
-            // Unencrypted (undefined key): see the note on
-            // `guardDeploymentAffinity`. dehydrate/hydrate are self-describing,
-            // so this reads back without a key.
-            error: await dehydrateRunError(
-              error,
-              run.runId,
-              undefined,
-              undefined,
-              (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
-            ),
+            error: dehydratedError,
             errorCode: RUN_ERROR_CODES.DEPLOYMENT_MISMATCH,
           },
         },
         { requestId }
+      );
+      dispatchRunFailedHooks(
+        run.runId,
+        workflowName,
+        dehydratedError,
+        undefined,
+        RUN_ERROR_CODES.DEPLOYMENT_MISMATCH
       );
     } catch (failError) {
       // Run already reached a terminal state (a concurrent writer failed it, or

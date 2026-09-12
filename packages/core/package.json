@@ -36,6 +36,10 @@
       "types": "./dist/runtime/run.d.ts",
       "default": "./dist/runtime/run.js"
     },
+    "./runtime/lifecycle-hooks": {
+      "types": "./dist/runtime/lifecycle-hooks.d.ts",
+      "default": "./dist/runtime/lifecycle-hooks.js"
+    },
     "./runtime/start": {
       "types": "./dist/runtime/start.d.ts",
       "default": "./dist/runtime/start.js"
