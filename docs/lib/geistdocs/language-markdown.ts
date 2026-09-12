@@ -2,6 +2,7 @@ import { createProcessor } from '@mdx-js/mdx';
 import type { GeistdocsSourceBundle } from '@vercel/geistdocs/source';
 import type { Nodes } from 'mdast';
 import type { MdxJsxFlowElement, MdxJsxTextElement } from 'mdast-util-mdx-jsx';
+import { toMarkdown } from 'mdast-util-to-markdown';
 import { resolveLanguage } from '../language';
 
 type LanguageElement = MdxJsxFlowElement | MdxJsxTextElement;
@@ -146,8 +147,12 @@ export function renderLanguageMarkdown(
 
   function renderElement(node: LanguageElement): string | undefined {
     switch (node.name) {
-      case 'LanguageText':
-        return stringAttribute(node, language) ?? '';
+      case 'LanguageText': {
+        const value = stringAttribute(node, language) ?? '';
+        return booleanAttribute(node, 'code') && value
+          ? toMarkdown({ type: 'inlineCode', value }).trimEnd()
+          : value;
+      }
       case 'LanguageContent': {
         if (stringAttribute(node, 'value') !== language) return '';
         const inline = booleanAttribute(node, 'inline');

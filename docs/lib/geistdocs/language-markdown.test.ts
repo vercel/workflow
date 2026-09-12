@@ -164,6 +164,49 @@ describe('language Markdown exports', () => {
     ).toBe('[Link](/docs/a%28b%29%20c)');
   });
 
+  it('exports LanguageText code after JSX serialization', () => {
+    for (const code of ['code', 'code={true}']) {
+      const markdown = processedMarkdown(
+        `Default: <LanguageText ${code} ts="maxRetries = 3" py="max_retries=3" />.`
+      );
+      expect(renderLanguageMarkdown(markdown, 'ts')).toBe(
+        'Default: `maxRetries = 3`.\n'
+      );
+      expect(renderLanguageMarkdown(markdown, 'py')).toBe(
+        'Default: `max_retries=3`.\n'
+      );
+    }
+    expect(
+      renderLanguageMarkdown(
+        '<LanguageText code={false} ts="plain text" />',
+        'ts'
+      )
+    ).toBe('plain text');
+    expect(
+      renderLanguageMarkdown(
+        '<LanguageText code py="Python" /><LanguageText code ts="" />',
+        'ts'
+      )
+    ).toBe('');
+    expect(() =>
+      renderLanguageMarkdown('<LanguageText code="false" ts="text" />', 'ts')
+    ).toThrow('LanguageText.code must be a boolean literal');
+  });
+
+  it('preserves backticks and significant spaces inside LanguageText code', () => {
+    for (const value of ['`template`', 'a `` b', ' padded ', '<tag> & value']) {
+      const markdown = processedMarkdown(
+        `<LanguageText code ts={${JSON.stringify(value)}} />`
+      );
+      const tree = createProcessor().parse(
+        renderLanguageMarkdown(markdown, 'ts')
+      );
+      expect(tree.children).toMatchObject([
+        { type: 'paragraph', children: [{ type: 'inlineCode', value }] },
+      ]);
+    }
+  });
+
   it('leaves code examples and unrelated components intact', () => {
     const markdown = [
       'Inline `<LanguageText ts="Node.js" py="Python" />`.',

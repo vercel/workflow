@@ -92,7 +92,9 @@ interface LanguageContentProps {
   children?: ReactNode;
 }
 
-type LanguageTextProps = Record<string, ReactNode>;
+type LanguageTextProps = Record<string, ReactNode> & {
+  code?: boolean;
+};
 
 interface LanguageLinkProps {
   children?: ReactNode;
@@ -432,10 +434,16 @@ export function LanguageContent({
 }
 
 /** Selects one inline value, provided as a prop named after each language. */
-export function LanguageText(values: LanguageTextProps): JSX.Element {
+export function LanguageText({
+  code = false,
+  ...values
+}: LanguageTextProps): ReactNode {
   const selected = useSharedLanguage() ?? 'ts';
+  const value = values[selected];
 
-  return <>{values[selected]}</>;
+  if (value === undefined || value === null || value === '') return null;
+
+  return code ? <code>{value}</code> : value;
 }
 
 /** Selects a destination URL, provided as a prop named after each language. */
