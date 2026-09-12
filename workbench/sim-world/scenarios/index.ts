@@ -20,6 +20,7 @@ import { scenario as attrHookAfterStep } from './attr-hook-after-step.ts';
 import { scenario as attrHookBeforeStep } from './attr-hook-before-step.ts';
 import { scenario as cancelMidStep } from './cancel-mid-step.ts';
 import { scenario as claimedPayloadUnderFork } from './claimed-payload-under-fork.ts';
+import { scenario as clockAfterRace } from './clock-after-race.ts';
 import { scenario as countHookAfterTimeout } from './count-hook-after-timeout.ts';
 import { scenario as countHookBeforeTimeout } from './count-hook-before-timeout.ts';
 import { scenario as deadlineExpires } from './deadline-expires.ts';
@@ -129,6 +130,7 @@ export const scenarios: ScenarioSpec[] = [
   staleReadEqualStepCounts,
   stepVsStepFork,
   stepVsStepForkFenced,
+  clockAfterRace,
   fenceCatchesBenignDirection,
 
   // -------------------------------------------------------------------------

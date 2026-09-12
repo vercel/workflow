@@ -565,6 +565,48 @@ export async function stepVsStepForkWorkflow(documentId: string) {
     : await afterSlow(documentId);
 }
 
+async function afterClockBeforeCutoff(documentId: string) {
+  'use step';
+  return `before:${documentId}`;
+}
+
+async function afterClockAfterCutoff(documentId: string) {
+  'use step';
+  return `after:${documentId}`;
+}
+
+/**
+ * Reads the deterministic VM clock immediately after a step race.
+ *
+ * Delivery barriers keep the winner stable, but event consumption advances
+ * the clock before those ordered deliveries reach workflow code. A live pass
+ * can therefore read after only the winner was consumed while a cold replay
+ * reads after both competitors were consumed from the committed log.
+ */
+export async function clockAfterRaceWorkflow(documentId: string) {
+  'use workflow';
+
+  using hook = createHook<{ fired: boolean }>({
+    token: `clock:${documentId}`,
+  });
+
+  const winner = await Promise.race([
+    fast(documentId).then(() => 'fast' as const),
+    hook.then(() => 'hook' as const),
+  ]);
+
+  if (winner !== 'fast') {
+    return await afterClockAfterCutoff(documentId);
+  }
+
+  const cutoff = Date.parse('2024-01-01T00:00:30.000Z');
+  const beforeCutoff = Date.now() < cutoff;
+  await sleep(beforeCutoff ? '2m' : '3m');
+  return beforeCutoff
+    ? await afterClockBeforeCutoff(documentId)
+    : await afterClockAfterCutoff(documentId);
+}
+
 // ---------------------------------------------------------------------------
 // 8. Unclaimed payload — a hook nobody reads, sitting under the fork
 // ---------------------------------------------------------------------------
