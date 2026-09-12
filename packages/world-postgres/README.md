@@ -188,7 +188,6 @@ and its token can be reused. If the token is never reused, the expired
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - Workflow orchestration and queued step execution are both sent through `/.well-known/workflow/v1/flow`
-- HTTP delivery has no implicit headers or body timeout because inline work can take longer than a transport deadline. Queue shutdown still aborts pending requests through Graphile Worker's abort signal.
 
 ## Development
 
@@ -220,14 +219,6 @@ Then from the package directory:
 pnpm build
 pnpm test
 ```
-
-The HTTP-delivery regressions can also use an existing loopback PostgreSQL server:
-
-```bash
-WORKFLOW_POSTGRES_URL="postgres://username:password@localhost:5432/postgres" pnpm exec vitest run test/queue-http.test.ts
-```
-
-These tests create and drop an isolated database and run a real Graphile Worker and HTTP server. The database user needs permission to create databases; the supplied database is not modified.
 
 ## World selection
 

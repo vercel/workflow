@@ -13,7 +13,12 @@ import {
 } from 'graphile-worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MessageData } from './message.js';
-import { createQueue } from './queue.js';
+import {
+  createQueue,
+  DEFAULT_DELIVERY_BODY_TIMEOUT_MS,
+  DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS,
+  getDeliveryTimeouts,
+} from './queue.js';
 
 const transport = new JsonTransport();
 const createdQueues: Array<ReturnType<typeof createQueue>> = [];
@@ -83,7 +88,48 @@ describe('postgres queue http execution', () => {
     vi.useRealTimers();
     delete process.env.WORKFLOW_LOCAL_BASE_URL;
     delete process.env.PORT;
+    delete process.env.WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS;
+    delete process.env.WORKFLOW_POSTGRES_BODY_TIMEOUT_MS;
     setWorkflowBasePath(undefined);
+  });
+
+  it('places no deadline on a delivery unless the operator sets one', () => {
+    expect(getDeliveryTimeouts()).toEqual({
+      headersTimeoutMs: DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS,
+      bodyTimeoutMs: DEFAULT_DELIVERY_BODY_TIMEOUT_MS,
+    });
+    expect(DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS).toBe(0);
+    expect(DEFAULT_DELIVERY_BODY_TIMEOUT_MS).toBe(0);
+
+    process.env.WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS = '1500';
+    process.env.WORKFLOW_POSTGRES_BODY_TIMEOUT_MS = 'not-a-number';
+    expect(getDeliveryTimeouts()).toEqual({
+      headersTimeoutMs: 1500,
+      bodyTimeoutMs: DEFAULT_DELIVERY_BODY_TIMEOUT_MS,
+    });
+  });
+
+  it('fails a delivery whose handler exceeds an operator-set headers deadline', async () => {
+    const server = await startHangingWorkflowHttpServer('headers');
+    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
+    process.env.WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS = '50';
+
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+
+    const execution = getTaskHandler('workflow_flows')(
+      buildMessageData('__wkf_workflow_test-step', {
+        runId: 'run_01ABC',
+        stepId: 'step_01ABC',
+        stepName: 'test-step',
+      }),
+      { abortSignal: new AbortController().signal, job: { attempts: 1 } }
+    );
+
+    // Rejecting hands the job back to Graphile for redelivery; the queue
+    // must not schedule a replacement of its own.
+    await expect(execution).rejects.toMatchObject({ code: 'ETIMEDOUT' });
+    expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
   });
 
   it('uses a late-detected local port when the queue starts before PORT is available', async () => {

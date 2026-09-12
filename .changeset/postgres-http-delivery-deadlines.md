@@ -2,4 +2,4 @@
 '@workflow/world-postgres': patch
 ---
 
-Deliver queue messages without implicit HTTP headers or body deadlines so healthy long-running inline work is not redelivered, while preserving shutdown cancellation.
+Queue deliveries no longer inherit `fetch`'s 300s headers/body deadlines, which redelivered healthy long-running inline work while it was still executing. Deadlines can be set with `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS` and `WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`.
