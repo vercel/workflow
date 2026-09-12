@@ -33,6 +33,40 @@ import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
 import { MessageData } from './message.js';
 
+/**
+ * Serialize Graphile Worker log metadata. `JSON.stringify` alone renders an
+ * `Error` as `{}` because `name`, `message`, `stack`, and `cause` are
+ * non-enumerable, which is how a failed delivery used to log `"error": {}`.
+ * Errors are expanded to those fields plus their enumerable properties (such as
+ * a transport `code`), recursively through `cause` and `AggregateError.errors`.
+ * An error that has already been expanded is replaced with a marker: a cyclic
+ * cause chain would otherwise make `JSON.stringify` throw from inside the
+ * logger, and Graphile has no fallback for a logger that throws.
+ */
+export function serializeGraphileMeta(meta: unknown): string {
+  const seen = new WeakSet<object>();
+  const expandError = (error: Error): Record<string, unknown> => {
+    if (seen.has(error)) {
+      return { name: error.name, message: error.message, repeated: true };
+    }
+    seen.add(error);
+    const expanded: Record<string, unknown> = {
+      ...error,
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+    if (error.cause !== undefined) expanded.cause = error.cause;
+    if (error instanceof AggregateError) expanded.errors = error.errors;
+    return expanded;
+  };
+  return JSON.stringify(
+    meta,
+    (_key, value) => (value instanceof Error ? expandError(value) : value),
+    2
+  );
+}
+
 function createGraphileLogger() {
   const isJsonMode = () => process.env.WORKFLOW_JSON_MODE === '1';
   const isVerbose = () => Boolean(process.env.DEBUG);
@@ -43,7 +77,7 @@ function createGraphileLogger() {
     const pipe = level === 'error' ? process.stderr : process.stdout;
     if (meta) {
       pipe.write(
-        `[Graphile Worker] ${message} ${JSON.stringify(meta, null, 2)}\n`
+        `[Graphile Worker] ${message} ${serializeGraphileMeta(meta)}\n`
       );
     } else {
       pipe.write(`[Graphile Worker] ${message}\n`);
