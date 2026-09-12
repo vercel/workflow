@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import type { Span } from '@opentelemetry/api';
 import {
   EntityConflictError,
@@ -110,7 +111,7 @@ export interface SuspensionHandlerParams {
    * publish, and the queue message carries the serialized step input
    * (`stepInput`) so the consumer can idempotently re-ensure the event if the
    * direct write failed transiently. Steps queued this way are reported in
-   * {@link SuspensionHandlerResult.queuedStepCorrelationIds} so the caller
+   * {@link SuspensionHandlerResult.queuedStepDispatchKeys} so the caller
    * skips them in its own dispatch pass. Omitted by callers that must not
    * queue (terminal drain, tests); creates then behave exactly as before.
    */
@@ -179,15 +180,21 @@ export interface SuspensionHandlerResult {
    */
   failedStepCorrelationIds: Set<string>;
   /**
-   * Correlation IDs of steps this suspension call already published
+   * Dispatch keys ({@link stepDispatchIdempotencyKey}, i.e. `(correlationId,
+   * stepName)` identity) of the steps this suspension call already published
    * step-execution queue messages for, via resilient step dispatch (the
    * `step_created` write parallelized with a `stepInput`-carrying queue
-   * publish). The caller MUST NOT dispatch these again: the message is
-   * already out (a duplicate would be deduped by its idempotency key, but
-   * costs a wasted round-trip). Empty when {@link SuspensionHandlerParams.stepDispatch}
-   * was not provided or no step was eligible.
+   * publish) or the batched fold's eager creates. The caller MUST NOT
+   * dispatch these again: the message is already out (a duplicate would be
+   * deduped by its idempotency key, but costs a wasted round-trip). Keyed by
+   * step identity rather than correlation id alone for the same reason the
+   * idempotency key is: a corrected replay can rebind a correlation id to a
+   * different step, and that step's dispatch must not be absorbed by the
+   * record of this one's. Empty when
+   * {@link SuspensionHandlerParams.stepDispatch} was not provided or no step
+   * was eligible.
    */
-  queuedStepCorrelationIds: Set<string>;
+  queuedStepDispatchKeys: Set<string>;
   /**
    * How many events this phase's writes reported back as occupying slots they
    * skipped over, already merged into the caller's `eventLog.events`. Nonzero
@@ -242,7 +249,7 @@ export interface SuspensionHandlerResult {
    * MUST await it before acking: a rejection here is a failed suspension
    * write and fails the delivery exactly as it would have at the handler's
    * return. Steps whose messages this work publishes are already in
-   * {@link queuedStepCorrelationIds} at return time.
+   * {@link queuedStepDispatchKeys} at return time.
    */
   deferredBatchWork?: Promise<void>;
   /**
@@ -1026,10 +1033,12 @@ export async function handleSuspension({
 
   const ops: Promise<void>[] = [];
 
-  // Correlation IDs of steps whose step-execution queue message was already
-  // published by the resilient-dispatch ops below (alongside the step_created
-  // write). Reported to the caller so its dispatch pass skips them.
-  const queuedStepCorrelationIds = new Set<string>();
+  // Dispatch keys (step identity: correlationId + stepName, see
+  // stepDispatchIdempotencyKey) of the steps whose step-execution queue
+  // message was already published by the resilient-dispatch ops below
+  // (alongside the step_created write) or by the batched fold's flush.
+  // Reported to the caller so its dispatch pass skips them.
+  const queuedStepDispatchKeys = new Set<string>();
 
   // Resilient step dispatch eligibility, shared by every step op below (the
   // per-step input-size check is applied inside the op). All must hold:
@@ -1127,7 +1136,7 @@ export async function handleSuspension({
   // Steps: create step_created events (no queuing, V2 returns pending steps
   // to caller, EXCEPT on the resilient dispatch path, which parallelizes the
   // create with the step's queue publish and reports it in
-  // `queuedStepCorrelationIds`).
+  // `queuedStepDispatchKeys`).
   let batchOrderCounter = 0;
   for (const queueItem of stepItems) {
     if (stepsNeedingCreation.has(queueItem.correlationId)) {
@@ -1291,7 +1300,12 @@ export async function handleSuspension({
           if (queueResult.status === 'rejected') {
             throw queueResult.reason;
           }
-          queuedStepCorrelationIds.add(queueItem.correlationId);
+          queuedStepDispatchKeys.add(
+            stepDispatchIdempotencyKey(
+              queueItem.correlationId,
+              queueItem.stepName
+            )
+          );
           if (createResult.status === 'rejected') {
             const err = createResult.reason;
             if (EntityConflictError.is(err)) {
@@ -1579,7 +1593,12 @@ export async function handleSuspension({
         if (publishEagerSteps) {
           for (const entry of entries) {
             if (entry.kind === 'step') {
-              queuedStepCorrelationIds.add(entry.correlationId);
+              // Step entries always carry their name (set where they are
+              // enqueued above); the in-flush publish keys on it too.
+              assert(entry.stepName !== undefined);
+              queuedStepDispatchKeys.add(
+                stepDispatchIdempotencyKey(entry.correlationId, entry.stepName)
+              );
             }
           }
         }
@@ -1986,7 +2005,7 @@ export async function handleSuspension({
     pendingSteps: stepItems,
     createdStepCorrelationIds,
     failedStepCorrelationIds,
-    queuedStepCorrelationIds,
+    queuedStepDispatchKeys,
     lazyInlineSteps,
     inlineClaims,
     deferredBatchWork,
