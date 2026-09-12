@@ -2,9 +2,13 @@ import { fileURLToPath } from 'node:url';
 import { nitro } from 'nitro/vite';
 import { defineConfig } from 'vite';
 import { workflow } from 'workflow/vite';
+import { virtualEnv } from './virtual-module/plugin.js';
 
 export default defineConfig({
-  plugins: [nitro(), workflow()],
+  // `virtualEnv` serves a module id only Vite can resolve, reached from a step
+  // via `virtual-module/db.ts`. It is a regression guard for
+  // vercel/workflow#3859: before that fix `vite dev` failed to start here.
+  plugins: [virtualEnv(), nitro(), workflow()],
   // Mirror the `@repo/*` tsconfig path alias for Vite's bundler. Nitro
   // dropped automatic tsconfig-paths resolution in 3.0.1-alpha.2 and
   // removed the `experimental.tsconfigPaths` opt-in in 3.0.260415-beta+.

@@ -1181,6 +1181,7 @@ export const __steps_registered = true;
           bundleTransitiveLocalStepDependencies,
           rewriteTsExtensions,
           sideEffectEntries: normalizedSideEffectEntries,
+          hostResolver: this.config.hostResolver,
         }),
       ],
       // Plugin should catch most things, but this lets users hard override

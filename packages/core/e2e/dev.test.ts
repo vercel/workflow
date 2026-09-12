@@ -776,6 +776,26 @@ export async function myNewStep() {
     );
 
     test.runIf(process.env.APP_NAME === 'vite')(
+      'should execute a step that imports a Vite virtual module',
+      { timeout: 30_000 },
+      async () => {
+        assert(deploymentUrl);
+        const response = await fetch(
+          new URL('/api/virtual-module', deploymentUrl),
+          {
+            method: 'POST',
+            signal: AbortSignal.timeout(25_000),
+          }
+        );
+
+        expect(response.ok).toBe(true);
+        expect(await response.json()).toMatchObject({
+          returnValue: 'postgres://virtual',
+        });
+      }
+    );
+
+    test.runIf(process.env.APP_NAME === 'vite')(
       'should execute updated step logic after HMR',
       { timeout: 70_000 },
       async () => {
