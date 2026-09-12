@@ -1,0 +1,17 @@
+{
+  "version": "1.0",
+  "sources": ["model"],
+  "maven": {
+    "dependencies": [
+      "software.amazon.smithy.typescript:smithy-typescript-codegen:0.52.0"
+    ]
+  },
+  "plugins": {
+    "typescript-codegen": {
+      "package": "@workflow/world-idl",
+      "packageVersion": "0.0.0",
+      "modes": ["types"],
+      "closure": "vercel.workflow.world#WorldTypes"
+    }
+  }
+}
