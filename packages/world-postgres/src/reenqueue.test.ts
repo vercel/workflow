@@ -3,6 +3,7 @@ import { createWorld as createLocalTestWorld } from '@workflow/world-local';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PostgresWorldRoleSchema } from './config.js';
 import { createWorld } from './index.js';
 import {
   createEventsStorage,
@@ -122,6 +123,7 @@ describe('re-enqueue active runs on start', () => {
   afterEach(async () => {
     delete process.env.WORKFLOW_LOCAL_BASE_URL;
     delete process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN;
+    delete process.env.WORKFLOW_POSTGRES_ROLE;
     delete process.env.WORKFLOW_POSTGRES_URL;
     delete process.env.DATABASE_URL;
     delete process.env.PORT;
@@ -357,6 +359,117 @@ describe('re-enqueue active runs on start', () => {
     expect(localWorldClose).toHaveBeenCalledTimes(2);
     expect(streamer?.close).toHaveBeenCalledOnce();
     expect(internalPool?.end).toHaveBeenCalledOnce();
+  });
+
+  it('starts a graphile runner and recovers active runs in the default role', async () => {
+    mockRunsList({
+      pending: [{ runId: 'wrun_AAA', workflowName: 'wfA' }],
+    });
+
+    const world = createWorld({ connectionString: 'postgres://test', pool });
+    await world.start();
+
+    expect(run).toHaveBeenCalledOnce();
+    expect(workerUtilsMock.addJob).toHaveBeenCalledOnce();
+
+    await world.close();
+  });
+
+  it('does not start a graphile runner in the producer role', async () => {
+    const world = createWorld({
+      connectionString: 'postgres://test',
+      pool,
+      role: PostgresWorldRoleSchema.enum.producer,
+    });
+    await world.start();
+
+    expect(run).not.toHaveBeenCalled();
+    expect(workerUtilsMock.migrate).toHaveBeenCalledOnce();
+
+    await world.close();
+  });
+
+  it('does not re-enqueue active runs in the producer role', async () => {
+    mockRunsList({
+      pending: [{ runId: 'wrun_AAA', workflowName: 'wfA' }],
+      running: [{ runId: 'wrun_BBB', workflowName: 'wfB' }],
+    });
+
+    const world = createWorld({
+      connectionString: 'postgres://test',
+      pool,
+      role: PostgresWorldRoleSchema.enum.producer,
+    });
+    await world.start();
+
+    expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
+
+    await world.close();
+  });
+
+  it('still enqueues messages in the producer role', async () => {
+    const world = createWorld({
+      connectionString: 'postgres://test',
+      pool,
+      role: PostgresWorldRoleSchema.enum.producer,
+    });
+    await world.start();
+
+    await world.queue('__wkf_workflow_test-step', {
+      runId: 'run_01ABC',
+      stepId: 'step_01ABC',
+      stepName: 'test-step',
+    });
+
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_flows',
+      expect.objectContaining({ id: 'test-step' }),
+      expect.anything()
+    );
+    expect(run).not.toHaveBeenCalled();
+
+    await world.close();
+  });
+
+  it('reads the producer role from WORKFLOW_POSTGRES_ROLE', async () => {
+    process.env.WORKFLOW_POSTGRES_ROLE = 'producer';
+    mockRunsList({
+      running: [{ runId: 'wrun_BBB', workflowName: 'wfB' }],
+    });
+
+    const world = createWorld({ connectionString: 'postgres://test', pool });
+    await world.start();
+
+    expect(run).not.toHaveBeenCalled();
+    expect(workerUtilsMock.addJob).not.toHaveBeenCalled();
+
+    await world.close();
+  });
+
+  it('ignores an unrecognized WORKFLOW_POSTGRES_ROLE', async () => {
+    process.env.WORKFLOW_POSTGRES_ROLE = 'producers';
+
+    const world = createWorld({ connectionString: 'postgres://test', pool });
+    await world.start();
+
+    expect(run).toHaveBeenCalledOnce();
+
+    await world.close();
+  });
+
+  it('closes only what a producer opened', async () => {
+    const world = createWorld({
+      connectionString: 'postgres://test',
+      pool,
+      role: PostgresWorldRoleSchema.enum.producer,
+    });
+    await world.start();
+
+    await expect(world.close()).resolves.toBeUndefined();
+
+    expect(runnerMock.stop).not.toHaveBeenCalled();
+    expect(workerUtilsMock.release).toHaveBeenCalledOnce();
+    expect(localWorldClose).toHaveBeenCalledOnce();
   });
 
   it('does not close a caller-owned pool', async () => {

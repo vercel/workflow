@@ -30,7 +30,11 @@ import {
 import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod/v4';
-import type { PostgresWorldConfig } from './config.js';
+import {
+  type PostgresWorldConfig,
+  type PostgresWorldRole,
+  PostgresWorldRoleSchema,
+} from './config.js';
 import { MessageData } from './message.js';
 
 function createGraphileLogger() {
@@ -87,7 +91,8 @@ export type PostgresQueue = Queue & {
 
 export function createQueue(
   config: PostgresWorldConfig,
-  pool: Pool
+  pool: Pool,
+  role: PostgresWorldRole
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createWorld({ dataDir: undefined, port });
@@ -473,6 +478,11 @@ export function createQueue(
       return;
     }
 
+    // A producer enqueues but never claims, so it still ensures the schema and
+    // then stops short of the runner. `queue()` awaits this same `start()`, so
+    // the check has to live here rather than at the call sites.
+    const isProducer = role === PostgresWorldRoleSchema.enum.producer;
+
     if (!startPromise) {
       startPromise = (async () => {
         try {
@@ -482,7 +492,9 @@ export function createQueue(
           });
           await workerUtils.migrate();
           await migratePgBossJobs(workerUtils);
-          await startRunnerWhenExecutorIsReady();
+          if (!isProducer) {
+            await startRunnerWhenExecutorIsReady();
+          }
         } catch (err) {
           startPromise = null;
           throw err;
@@ -490,7 +502,7 @@ export function createQueue(
       })();
     }
     await startPromise;
-    if (!closing && !runner && !runnerStart) {
+    if (!isProducer && !closing && !runner && !runnerStart) {
       await startRunnerWhenExecutorIsReady();
     }
   }
