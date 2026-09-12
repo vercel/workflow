@@ -54,7 +54,9 @@ export async function cleanupAttributes() {
 
 Attribute keys must be 1-256 characters, values must be strings up to 256 bytes, and each run can have up to 64 attributes. Keys that start with `$` are reserved for framework and library code.
 
-Validation errors throw [`FatalError`](/docs/api-reference/workflow/fatal-error) and fail the run before an attribute write is attempted.
+Each call's complete `attr_set` event data must also fit in **8192 UTF-8 JSON bytes (8KiB)**. This includes the change keys and values, JSON escaping and structure, writer metadata (including the step ID and attempt for step calls), and the reserved-key option when enabled. It is not a limit on values alone. Split large updates into smaller calls; updates across multiple calls are not atomic and still share the 64-attribute per-run limit.
+
+Validation errors reject `setAttributes` with [`FatalError`](/docs/api-reference/workflow/fatal-error) before a new attribute write is attempted. Catch the error if the metadata is best-effort; an uncaught error fails the workflow or step. Previously persisted attribute events remain replayable.
 
 Calls from both workflow and step bodies append a native `attr_set` event, which the World materializes onto `run.attributes`. Workflow-originated events record a workflow writer; step-originated events record the originating step ID and attempt.
 

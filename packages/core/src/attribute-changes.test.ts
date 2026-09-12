@@ -3,11 +3,65 @@ import {
   ATTRIBUTE_KEY_MAX_LENGTH,
   ATTRIBUTE_MAX_PER_RUN,
   ATTRIBUTE_VALUE_MAX_BYTES,
+  type EventOfType,
 } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
 import { normalizeAttributeChanges } from './attribute-changes.js';
 
 describe('normalizeAttributeChanges', () => {
+  it.each<{
+    writer: EventOfType<'attr_set'>['eventData']['writer'];
+    options: { allowReservedAttributes?: boolean };
+  }>([
+    { writer: { type: 'workflow' }, options: {} },
+    {
+      writer: { type: 'workflow' },
+      options: { allowReservedAttributes: false },
+    },
+    {
+      writer: { type: 'workflow' },
+      options: { allowReservedAttributes: true },
+    },
+    {
+      writer: { type: 'step', stepId: 'step_actual_id', attempt: 12 },
+      options: {},
+    },
+  ])('counts $writer and $options only for attr_set', ({ writer, options }) => {
+    const changes = Array.from({ length: 30 }, (_, i) => ({
+      key: `k${i}`.padEnd(240, 'k'),
+      value: i === 1 ? 'x'.repeat(128) : '',
+    }));
+    const eventData = {
+      changes,
+      writer,
+      ...(options.allowReservedAttributes
+        ? { allowReservedAttributes: true }
+        : {}),
+    };
+    changes[0].value = 'x'.repeat(
+      8192 - Buffer.byteLength(JSON.stringify(eventData))
+    );
+    const attrs = Object.fromEntries(
+      changes.map(({ key, value }) => [key, value])
+    );
+    expect(normalizeAttributeChanges(attrs, options, writer)).toEqual(changes);
+
+    attrs[changes[0].key] += 'x';
+    // Initial run attributes have no writer and retain only per-attribute limits.
+    const initialChanges = normalizeAttributeChanges(attrs, options);
+    expect(
+      Buffer.byteLength(
+        JSON.stringify({ ...eventData, changes: initialChanges })
+      )
+    ).toBe(8193);
+    expect(() => normalizeAttributeChanges(attrs, options, writer)).toThrow(
+      FatalError
+    );
+    expect(() => normalizeAttributeChanges(attrs, options, writer)).toThrow(
+      /8192.*8193.*Split/
+    );
+  });
+
   it('converts a record into ordered changes, mapping undefined to null', () => {
     expect(
       normalizeAttributeChanges({ phase: 'init', stale: undefined })

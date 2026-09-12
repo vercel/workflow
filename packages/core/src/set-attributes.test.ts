@@ -179,4 +179,53 @@ describe('setAttributes (host-side)', () => {
     ).rejects.toBeInstanceOf(FatalError);
     expect(create).not.toHaveBeenCalled();
   });
+
+  it.each([
+    false,
+    true,
+  ])('counts the actual step writer and reserved flag (%s) before create', async (allowReservedAttributes) => {
+    const create = vi.fn().mockResolvedValue({});
+    globals[WORLD_CACHE] = {
+      specVersion: SPEC_VERSION_CURRENT,
+      events: { create },
+    };
+    const context = stepContext();
+    context.stepMetadata.stepId = 'step_actual_id_longer_than_placeholder';
+    context.stepMetadata.attempt = 12;
+    const changes = Array.from({ length: 30 }, (_, i) => ({
+      key: `k${i}`.padEnd(240, 'k'),
+      value: i === 1 ? 'x'.repeat(128) : '',
+    }));
+    const eventData = {
+      changes,
+      writer: {
+        type: 'step',
+        stepId: context.stepMetadata.stepId,
+        attempt: 12,
+      },
+      ...(allowReservedAttributes ? { allowReservedAttributes: true } : {}),
+    };
+    changes[0].value = 'x'.repeat(
+      8192 - Buffer.byteLength(JSON.stringify(eventData))
+    );
+    const attrs = Object.fromEntries(
+      changes.map(({ key, value }) => [key, value])
+    );
+    await contextStorage.run(context, () =>
+      setAttributes(attrs, { allowReservedAttributes })
+    );
+    expect(create).toHaveBeenCalledWith(
+      'run_123',
+      expect.objectContaining({ eventData })
+    );
+    create.mockClear();
+
+    attrs[changes[0].key] += 'x';
+    await expect(
+      contextStorage.run(context, () =>
+        setAttributes(attrs, { allowReservedAttributes })
+      )
+    ).rejects.toThrow(FatalError);
+    expect(create).not.toHaveBeenCalled();
+  });
 });

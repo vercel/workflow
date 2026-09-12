@@ -5,6 +5,7 @@ import {
   __peekBaselineEntryForTests,
   BASELINE_BUNDLE_FILENAME,
   runQuickJSWorkflow,
+  startQuickJSWorkflow,
 } from './quickjs-runtime.js';
 
 /** Helper to deserialize the format-prefixed result bytes */
@@ -424,6 +425,202 @@ describe('runQuickJSWorkflow', () => {
       ],
     });
     expect(unwrapResult(r2.completed!.result)).toBe('caught: boom');
+  });
+});
+
+describe('fresh attribute validation', () => {
+  it.each([
+    false,
+    true,
+  ])('keeps validation ahead of step results on replay (async wrapper: %s)', async (asyncWrapper) => {
+    const run = makeRun();
+    const options = {
+      workflowCode: `
+        var step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//race");
+        var dispatcher = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
+        async function setAttributes(changes) { await dispatcher(changes); }
+        async function workflow() {
+          var pendingStep = step();
+          var changes = Array.from({ length: 32 }, function(_, i) {
+            return { key: "key" + i, value: "x".repeat(256) };
+          });
+          var attributePromise = ${asyncWrapper ? 'setAttributes' : 'dispatcher'}(changes);
+          var winner;
+          try { winner = await Promise.race([pendingStep, attributePromise]); }
+          catch (error) { winner = { name: error.name, fatal: error.fatal }; }
+          await pendingStep;
+          return winner;
+        }
+        globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+      `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+    };
+    const input = runCreatedEvent(run);
+    const fresh = await startQuickJSWorkflow({ ...options, events: [input] });
+    try {
+      assert(fresh.result.suspended);
+      expect(fresh.result.suspended.pendingOperations).toHaveLength(1);
+      expect(fresh.result.suspended.pendingOperations[0].type).toBe('step');
+      const stepCompleted = {
+        eventId: 'evnt_race_step',
+        runId: run.runId,
+        eventType: 'step_completed' as const,
+        correlationId:
+          fresh.result.suspended.pendingOperations[0].correlationId,
+        eventData: { result: serialize('step won') },
+        createdAt: run.createdAt,
+      };
+      const continued = await fresh.continueWithEvents([stepCompleted]);
+      const replayed = await runQuickJSWorkflow({
+        ...options,
+        events: [input, stepCompleted],
+      });
+      for (const result of [continued, replayed]) {
+        assert(result.completed);
+        expect(unwrapResult(result.completed.result)).toEqual({
+          name: 'FatalError',
+          fatal: true,
+        });
+        expect(result.completed.drainOperations).toBeUndefined();
+      }
+    } finally {
+      fresh.dispose();
+    }
+  });
+
+  it.each([
+    false,
+    true,
+  ])('checks the exact UTF-8 eventData boundary (reserved flag: %s)', async (allowReservedAttributes) => {
+    const changes = Array.from({ length: 29 }, (_, i) => ({
+      key: `key${i}`,
+      value: i === 28 ? '' : '\u00e9'.repeat(128),
+    }));
+    const eventData = {
+      changes,
+      writer: { type: 'workflow' },
+      ...(allowReservedAttributes ? { allowReservedAttributes: true } : {}),
+    };
+    changes[28].value = 'x'.repeat(
+      8192 - new TextEncoder().encode(JSON.stringify(eventData)).length
+    );
+    const run = makeRun();
+    const options = {
+      workflowCode: `
+          async function workflow(changes) {
+            try {
+              await globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")](changes, {
+                allowReservedAttributes: ${allowReservedAttributes},
+              });
+            } catch (error) {
+              return { name: error.name, message: error.message, isError: error instanceof Error };
+            }
+          }
+          globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+        `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+    };
+    const accepted = await runQuickJSWorkflow({
+      ...options,
+      events: [runCreatedEvent(run, [changes])],
+    });
+    expect(accepted.suspended?.pendingOperations).toHaveLength(1);
+    expect(accepted.suspended?.pendingOperations[0]).toMatchObject({
+      type: 'attribute',
+      changes,
+    });
+
+    changes[28].value += 'x';
+    const rejected = await runQuickJSWorkflow({
+      ...options,
+      events: [runCreatedEvent(run, [changes])],
+    });
+    assert(rejected.completed);
+    expect(unwrapResult(rejected.completed.result)).toEqual({
+      name: 'FatalError',
+      message: expect.stringContaining('received 8193 bytes'),
+      isError: true,
+    });
+    expect(rejected.completed.drainOperations).toBeUndefined();
+  });
+
+  it('preserves oversized history and IDs while rejecting fresh writes on replay and live continuation', async () => {
+    const run = makeRun();
+    const oversized = Array.from({ length: 32 }, (_, i) => ({
+      key: `key${i}`,
+      value: 'x'.repeat(256),
+    }));
+    const small = [{ key: 'status', value: 'ok' }];
+    const options = {
+      workflowCode: `
+        var setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
+        async function workflow(first, oversized) {
+          var caught = 0;
+          try { await setAttributes(first); } catch (error) { caught++; }
+          await setAttributes([{ key: 'status', value: 'ok' }]);
+          try { await setAttributes(oversized); } catch (error) { caught++; }
+          return caught;
+        }
+        globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+      `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+    };
+    const control = await runQuickJSWorkflow({
+      ...options,
+      events: [runCreatedEvent(run, [small, oversized])],
+    });
+    assert(control.suspended);
+    const historical = {
+      eventId: 'evnt_old_attr',
+      runId: run.runId,
+      eventType: 'attr_set' as const,
+      correlationId: control.suspended.pendingOperations[0].correlationId,
+      eventData: { changes: oversized, writer: { type: 'workflow' as const } },
+      createdAt: run.createdAt,
+    };
+    const input = runCreatedEvent(run, [oversized, oversized]);
+    const replayed = await runQuickJSWorkflow({
+      ...options,
+      events: [input, historical],
+    });
+    const fresh = await startQuickJSWorkflow({ ...options, events: [input] });
+    try {
+      assert(fresh.result.suspended);
+      expect(fresh.result.suspended.pendingOperations).toHaveLength(1);
+      expect(fresh.result.suspended).toEqual(replayed.suspended);
+      const nextEvent = {
+        ...historical,
+        eventId: 'evnt_next_attr',
+        correlationId:
+          fresh.result.suspended.pendingOperations[0].correlationId,
+        eventData: { changes: small, writer: { type: 'workflow' as const } },
+      };
+      expect(nextEvent.correlationId).not.toBe(historical.correlationId);
+      const continued = await fresh.continueWithEvents([nextEvent]);
+      assert(continued.completed);
+      expect(unwrapResult(continued.completed.result)).toBe(2);
+      expect(continued.completed.drainOperations).toBeUndefined();
+
+      for (const history of [
+        [input, nextEvent],
+        [input, historical, nextEvent],
+      ]) {
+        const result = await runQuickJSWorkflow({
+          ...options,
+          events: history,
+        });
+        assert(result.completed);
+        expect(unwrapResult(result.completed.result)).toBe(
+          history.length === 2 ? 2 : 1
+        );
+        expect(result.completed.drainOperations).toBeUndefined();
+      }
+    } finally {
+      fresh.dispose();
+    }
   });
 });
 

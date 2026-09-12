@@ -38,6 +38,11 @@ import {
   type WorkflowRun,
   type WorldCapabilities,
 } from '@workflow/world';
+import {
+  type AttributeChange,
+  AttributeValidationError,
+  validateAttributeEventDataSize,
+} from '@workflow/world/attributes-validation';
 import * as nanoid from 'nanoid';
 import {
   type ExtensionDescriptor,
@@ -160,7 +165,7 @@ export interface PendingAttribute {
   type: 'attribute';
   correlationId: string;
   /** Normalized attribute changes (plain JSON-able objects) */
-  changes: unknown[];
+  changes: AttributeChange[];
   allowReservedAttributes?: boolean;
   /** Whether an attr_set event already exists for this write */
   hasCreatedEvent: boolean;
@@ -814,18 +819,28 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
 };
 
 // setAttributes — attaches plaintext metadata to the current run.
-// Validation happens in library code (normalizeAttributeChanges) before
+// Per-change validation happens in library code (normalizeAttributeChanges) before
 // this dispatcher is invoked, so "changes" is already normalized. The
 // returned promise resolves when the matching attr_set event is
 // observed during event processing — mirroring the node:vm engine's
 // createSetAttributes (attribute-dispatcher.ts).
+// Baseline hydrate placeholder; module-scope calls draw a ULID and disable snapshots.
+globalThis.__validateAttributeWrite = function() {};
 globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")] = function(changes, options) {
   var correlationId = "attr_" + globalThis.__generateUlid();
+  var allowReservedAttributes = !!(options && options.allowReservedAttributes);
+  var validationError = globalThis.__validateAttributeWrite(correlationId, changes, allowReservedAttributes);
+  if (validationError !== undefined) {
+    var error = new Error(validationError);
+    error.name = "FatalError";
+    error.fatal = true;
+    return Promise.reject(error);
+  }
   globalThis.__pending.push({
     type: "attribute",
     correlationId: correlationId,
     changes: changes,
-    allowReservedAttributes: !!(options && options.allowReservedAttributes),
+    allowReservedAttributes: allowReservedAttributes,
     hasCreatedEvent: false,
   });
   return new Promise(function(resolve, reject) {
@@ -1556,6 +1571,39 @@ export async function startQuickJSWorkflow(
     // replays.
     serde.installProcessEnv(process.env);
 
+    // Validate before enqueueing so promise races observe the same rejection
+    // order on replay. Existing attr_set IDs retain their original semantics.
+    const historicalAttributeIds = new Set<string>();
+    for (const event of events) {
+      if (event.eventType === 'attr_set' && event.correlationId !== undefined) {
+        historicalAttributeIds.add(event.correlationId);
+      }
+    }
+    {
+      using validateAttributeWrite = vm.newFunction(
+        '__validateAttributeWrite',
+        (correlationId, changes, allowReservedAttributes) => {
+          if (historicalAttributeIds.has(correlationId.toString())) {
+            return vm.undefined;
+          }
+          try {
+            validateAttributeEventDataSize({
+              changes: vm.dump(changes) as AttributeChange[],
+              writer: { type: 'workflow' },
+              ...(allowReservedAttributes.toBoolean()
+                ? { allowReservedAttributes: true }
+                : {}),
+            });
+          } catch (err) {
+            if (!(err instanceof AttributeValidationError)) throw err;
+            return vm.newString(err.message);
+          }
+          return vm.undefined;
+        }
+      );
+      vm.setProp(vm.global, '__validateAttributeWrite', validateAttributeWrite);
+    }
+
     // Execute the workflow bundle: use the workflowId as the eval filename
     // so QuickJS stack traces reference the workflow name, enabling source map
     // remapping by remapErrorStack (which matches frames by filename).
@@ -1705,6 +1753,12 @@ export async function startQuickJSWorkflow(
       let maxIterations = 100;
       let madeProgress: boolean;
       do {
+        // Propagate local rejections through async wrappers before replay can
+        // resolve a competing promise from history.
+        let batch: number;
+        do {
+          batch = vm.executePendingJobs();
+        } while (batch > 0);
         madeProgress = await processEvents(
           vm,
           serde,
@@ -1712,7 +1766,6 @@ export async function startQuickJSWorkflow(
           advanceClock,
           options.encryptionKey
         );
-        let batch: number;
         do {
           batch = vm.executePendingJobs();
           if (batch > 0) madeProgress = true;
@@ -1739,6 +1792,7 @@ export async function startQuickJSWorkflow(
       serde,
       interruptBudget,
       advanceClock,
+      historicalAttributeIds,
       options.encryptionKey
     );
   }
@@ -1769,6 +1823,7 @@ function makeLiveSession(
   serde: QuickJSSerde,
   interruptBudget: InterruptBudget,
   advanceClock: (ms: number) => void,
+  historicalAttributeIds: Set<string>,
   encryptionKey?: DecryptionKey
 ): QuickJSWorkflowSession {
   const result = checkWorkflowState(vm, serde, { keepAliveOnSuspend: true });
@@ -1787,10 +1842,23 @@ function makeLiveSession(
       // Fresh execution burst: the interrupt budget bounds VM compute,
       // not wall time spent waiting on inline steps between bursts.
       interruptBudget.start = Date.now();
+      for (const event of newEvents) {
+        if (
+          event.eventType === 'attr_set' &&
+          event.correlationId !== undefined
+        ) {
+          historicalAttributeIds.add(event.correlationId);
+        }
+      }
 
       let maxIterations = 100;
       let madeProgress: boolean;
       do {
+        // Match initial replay: already-queued jobs precede event delivery.
+        let batch: number;
+        do {
+          batch = vm.executePendingJobs();
+        } while (batch > 0);
         madeProgress = await processEvents(
           vm,
           serde,
@@ -1798,7 +1866,6 @@ function makeLiveSession(
           advanceClock,
           encryptionKey
         );
-        let batch: number;
         do {
           batch = vm.executePendingJobs();
           if (batch > 0) madeProgress = true;
