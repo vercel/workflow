@@ -444,6 +444,67 @@ describe('createQueue', () => {
     });
   });
 
+  describe('VQS topic sanitization', () => {
+    /**
+     * VQS rejects a topic that is not `[A-Za-z0-9_-]{1,256}`
+     * (`V3QueueNameSchema` on the send path), so `queue()` folds every other
+     * character to `-` before it calls `send`. A workflow name is derived from
+     * its module path and always carries `/` and `.`, so this has to hold for
+     * every workflow — these cases pin the Next.js App Router conventions
+     * (issue #3991), whose parentheses and brackets reach the topic the same
+     * way the slashes already do.
+     */
+    const VQS_TOPIC_PATTERN = /^[A-Za-z0-9_-]{1,256}$/;
+
+    let originalDeploymentId: string | undefined;
+
+    beforeEach(() => {
+      originalDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+      mockSend.mockResolvedValue({ messageId: 'msg-123' });
+    });
+
+    afterEach(() => {
+      if (originalDeploymentId !== undefined) {
+        process.env.VERCEL_DEPLOYMENT_ID = originalDeploymentId;
+      } else {
+        delete process.env.VERCEL_DEPLOYMENT_ID;
+      }
+    });
+
+    it.each([
+      ['plain module path', 'workflow//./workflows/1_simple//simple'],
+      ['route group', 'workflow//./app/(group)/workflows/hello//routeGroup'],
+      ['dynamic segment', 'workflow//./app/[teamId]/workflows/sync//syncTeam'],
+      ['catch-all', 'workflow//./app/[...slug]/workflows/x//run'],
+      ['optional catch-all', 'workflow//./app/[[...slug]]/workflows/x//run'],
+      ['intercepting route', 'workflow//./app/(.)photo/workflows/x//run'],
+      ['scoped package', 'workflow//@acme/jobs@1.2.3//processOrder'],
+    ])('sends a VQS-valid topic for a %s name', async (_label, name) => {
+      const queue = createQueue();
+      await queue.queue(`__wkf_workflow_${name}`, { runId: 'wrun_abc' });
+
+      expect(mockSend.mock.calls[0][0]).toMatch(VQS_TOPIC_PATTERN);
+      // The logical queue name survives untouched inside the wrapper: handler
+      // dispatch and the re-enqueue path both key off it, not off the topic.
+      expect(mockSend.mock.calls[0][1].queueName).toBe(
+        `__wkf_workflow_${name}`
+      );
+    });
+
+    it('keeps the sanitized topic under the flow-topic wildcard the trigger subscribes with', async () => {
+      const queue = createQueue();
+      await queue.queue(
+        '__wkf_workflow_workflow//./app/(group)/workflows/hello//routeGroup',
+        { runId: 'wrun_abc' }
+      );
+
+      expect(mockSend.mock.calls[0][0]).toBe(
+        '__wkf_workflow_workflow----app--group--workflows-hello--routeGroup'
+      );
+    });
+  });
+
   describe('strict concurrency (WORKFLOW_SEQUENTIAL_REPLAYS)', () => {
     let originalDeploymentId: string | undefined;
     let originalStrict: string | undefined;
