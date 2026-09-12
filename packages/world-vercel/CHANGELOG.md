@@ -1,5 +1,30 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.46
+
+### Minor Changes
+
+- [#3833](https://github.com/vercel/workflow/pull/3833) [`d4817ce`](https://github.com/vercel/workflow/commit/d4817ce548216a48b155548be5b123483394f37a) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add the default-off, server-negotiated WebSocket transport for stateful stream writer sessions.
+
+### Patch Changes
+
+- [#4074](https://github.com/vercel/workflow/pull/4074) [`7740388`](https://github.com/vercel/workflow/commit/7740388d7fe1a744f04974c67fd583d2526658f4) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add first-write WebSocket phase timings to stream write spans.
+
+- [#4076](https://github.com/vercel/workflow/pull/4076) [`01fa7a4`](https://github.com/vercel/workflow/commit/01fa7a41581e319b313a2452db8dd5459a596f69) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Send initial stream groups over HTTP while the WebSocket connects in the background.
+
+- [#4095](https://github.com/vercel/workflow/pull/4095) [`86eb822`](https://github.com/vercel/workflow/commit/86eb8229f89e48afe95fb68aa5922d22fc76573b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix lazy event reads failing when an expired payload is omitted from otherwise valid event metadata.
+
+- [#3838](https://github.com/vercel/workflow/pull/3838) [`e00b1a5`](https://github.com/vercel/workflow/commit/e00b1a57ee8e4cc7b597e1bd23188efe23cc6235) Thanks [@pranaygp](https://github.com/pranaygp)! - Publish a fan-out's step-execution messages in one batched queue request instead of one per step, via a new optional `Queue.queueBatch` implemented on `@vercel/queue`'s `experimental_sendBatch`.
+
+- [#4066](https://github.com/vercel/workflow/pull/4066) [`3aa4c16`](https://github.com/vercel/workflow/commit/3aa4c161af5b2fb6830fbd20e1e27e77a25acd76) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Add bounded trace attributes identifying lazy step-start claim strategies and ownership stamps.
+
+- [#4104](https://github.com/vercel/workflow/pull/4104) [`5fc8fb7`](https://github.com/vercel/workflow/commit/5fc8fb7a9866597d62d99ea61bc72dfa9238e6bd) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Start stream WebSocket connections after the first HTTP group without delaying later HTTP writes.
+
+- [#3902](https://github.com/vercel/workflow/pull/3902) [`7a46a81`](https://github.com/vercel/workflow/commit/7a46a81a53d91ddcff75b073b917a900f3cb956b) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Upgrade runtime validation to Zod 4.5 and enable compilation on SDK-owned Zod schemas.
+- Updated dependencies [[`ec57aff`](https://github.com/vercel/workflow/commit/ec57aff3be53c7404191de41b7a140d814235efa), [`6cc851c`](https://github.com/vercel/workflow/commit/6cc851c34210f7c74141500e4849e00173c2791e), [`e00b1a5`](https://github.com/vercel/workflow/commit/e00b1a57ee8e4cc7b597e1bd23188efe23cc6235), [`03455a2`](https://github.com/vercel/workflow/commit/03455a2979663b0e1acfa0ebecba3c2b77187ae8), [`7a46a81`](https://github.com/vercel/workflow/commit/7a46a81a53d91ddcff75b073b917a900f3cb956b)]:
+  - @workflow/world@5.0.0-beta.35
+  - @workflow/errors@5.0.0-beta.21
+
 ## 5.0.0-beta.45
 
 ### Patch Changes

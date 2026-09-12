@@ -1,5 +1,13 @@
 # @workflow/nest
 
+## 5.0.0-beta.51
+
+### Patch Changes
+
+- Updated dependencies [[`c29200f`](https://github.com/vercel/workflow/commit/c29200fac5848fb8e40bf77351b5b69d10a31357)]:
+  - @workflow/swc-plugin@5.0.0-beta.7
+  - @workflow/builders@5.0.0-beta.51
+
 ## 5.0.0-beta.50
 
 ### Patch Changes
