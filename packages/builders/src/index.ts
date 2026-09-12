@@ -20,8 +20,11 @@ export {
 } from './constants.js';
 export {
   createDiscoverEntriesPlugin,
+  type ImportParents,
+  importGraphHasChild,
   parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
+export { analyzeWorkflowSource } from './fast-discovery.js';
 export {
   clearModuleSpecifierCache,
   getImportPath,
