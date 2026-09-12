@@ -1,6 +1,93 @@
 # @workflow/world-postgres
 
-An embedded worker and workflow system backed by PostgreSQL for multi-host self-hosted solutions. This is a reference implementation. A production system might run workers in separate processes with a dedicated queuing system.
+An embedded worker and workflow system backed by PostgreSQL for multi-host self-hosted solutions.
+
+> **This is a reference implementation.** It shows how to implement the World
+> interface on top of a database and a queue, and it is a reasonable starting
+> point for self-hosting. It is not a managed backend: it ships **without
+> authentication**, and it is not tuned for the performance or scale properties
+> of one. A production deployment typically runs workers in separate processes
+> with a more robust queuing system, and **must** put its own authentication in
+> front of the workflow HTTP routes. Read [Security](#security) before you
+> deploy it.
+>
+> While some customers have been successful in deploying the Postgres World as
+> is, for production use-cases, we highly recommend cloning this reference
+> implementation and adapting it to your persistence, network stack, scale and
+> security requirements.
+
+## Security
+
+The Postgres World does **not** automatically authenticate the requests that
+drive workflow execution. Adding that is your responsibility, and it should be
+in place before an app using this World is reachable by untrusted clients.
+
+### Protect the queue route
+
+`POST /.well-known/workflow/v1/flow` is where the worker delivers workflow
+orchestration and queued step invocations. It is mounted in your application
+like any other route, so it is publicly reachable by default, and the queue
+handler, inherited from
+[`@workflow/world-local`](https://github.com/vercel/workflow/tree/main/packages/world-local),
+accepts any request whose `x-vqs-*` headers and queue-name prefix are
+well-formed, leaving the payload itself to be validated later by the runtime
+that consumes the message. There is no signature, shared secret, or caller check,
+so anyone who can reach the route can forge or replay a workflow or step
+invocation, including steps your application would only reach after its own
+gating. Restrict it before you expose the app.
+
+The other routes under `/.well-known/workflow/v1/` differ:
+
+- `webhook/:token`, created by
+  [`createWebhook()`](https://workflow-sdk.dev/docs/api-reference/workflow/create-webhook),
+  is authorized by the token in the URL and nothing else. Use
+  [`createHook()`](https://workflow-sdk.dev/docs/api-reference/workflow/create-hook)
+  behind your own authenticated route and
+  [`resumeHook()`](https://workflow-sdk.dev/docs/api-reference/workflow-api/resume-hook)
+  when you need more than that.
+- `manifest.json` responds with `404` unless the app was built with
+  `WORKFLOW_PUBLIC_MANIFEST=1`. That variable is read at build time, so
+  unsetting it in the runtime environment of an already-built deployment does
+  not withdraw the manifest. Leave it unset outside of testing, because the
+  manifest lists your workflow and step names.
+
+### Bringing your own auth
+
+Workflow does not prescribe an auth mechanism, so gate the flow route at the
+network edge rather than inside the application:
+
+- **Keep the flow route unreachable from outside.** By default the worker
+  delivers to a loopback address (`http://localhost:{PORT}`, or
+  `WORKFLOW_LOCAL_BASE_URL` when set), so in the common single-process topology
+  nothing outside the container needs to reach it. Blocking external requests to
+  `/.well-known/workflow/v1/flow` at your ingress, reverse proxy, or firewall
+  costs you nothing, because loopback delivery never traverses that layer. Do
+  not block the whole `/.well-known/workflow/` prefix if you use
+  `createWebhook()`: its `webhook/:token` route sits under the same prefix and
+  has to stay reachable by whoever calls it.
+- **Authenticate at the proxy when the routes must cross hosts.** If your web
+  tier and workers are separate deployments, require mTLS or a shared-secret
+  header at the proxy in front of the application, and strip any client-supplied
+  copy of that header at the edge.
+- **Do not gate these paths in framework middleware.** The setup guides tell you
+  to exclude `/.well-known/workflow/*` from your Next.js proxy matcher, because a
+  handler that consumes the internal request body breaks execution. Adding the
+  paths back in order to gate them reintroduces that failure mode.
+- **Do not expect the World to present a credential.** It does not sign its
+  delivery requests or attach a secret to them, so an in-application check that
+  requires one will reject the World's own deliveries.
+
+### Data at rest
+
+This World does not currently implement `getEncryptionKeyForRun()`, so it does
+not participate in Workflow's
+[end-to-end encryption](https://workflow-sdk.dev/docs/how-it-works/encryption):
+workflow and step inputs and return values, hook payloads and metadata, and
+stream chunks are all stored in your database in readable form. A World derived
+from this one can opt in by implementing that single method (see
+[Custom World implementations](https://workflow-sdk.dev/docs/how-it-works/encryption#custom-world-implementations)),
+which is the recommended route if your workflows carry sensitive data. Until
+then, protect the database, its credentials, and its backups accordingly.
 
 ## Installation
 

@@ -1,6 +1,6 @@
 ---
 title: Postgres World
-description: Production-ready, self-hosted world using PostgreSQL for storage and graphile-worker for job processing.
+description: Self-hosted reference world using PostgreSQL for storage and graphile-worker for job processing.
 type: integration
 summary: Deploy workflows to your own infrastructure using PostgreSQL and graphile-worker.
 prerequisites:
@@ -10,9 +10,19 @@ related:
   - /worlds/vercel
 ---
 
-The Postgres World is a production-ready backend for self-hosted deployments. It uses PostgreSQL for durable storage and [graphile-worker](https://github.com/graphile/worker) for reliable job processing.
+The Postgres World is a self-hosted backend that uses PostgreSQL for durable storage and [graphile-worker](https://github.com/graphile/worker) for reliable job processing.
 
 Use the Postgres World to deploy workflows on your own infrastructure outside Vercel, such as a Docker container, Kubernetes cluster, or any cloud that supports long-running servers.
+
+<Callout type="warn">
+  The Postgres World is a **reference implementation**: it implements the
+  complete World spec and is tested, but it is not optimized for scale, speed,
+  or security, and it ships with **no authentication** on the workflow HTTP
+  routes. For production use-cases we recommend cloning it and adapting it to
+  your persistence, network stack, scale, and security requirements. If you
+  deploy it as is, you must restrict those routes yourself. Read
+  [Security](#security) first.
+</Callout>
 
 ## Installation
 
@@ -290,6 +300,34 @@ The Postgres World uses PostgreSQL as a durable backend:
 
 This architecture ensures workflows survive application restarts with all state reliably persisted. For implementation details, see the [source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres).
 
+## Security
+
+Unlike the [Vercel World](/worlds/vercel), which authenticates and [encrypts](/docs/how-it-works/encryption) workflow traffic automatically, the Postgres World does **not** automatically authenticate requests that drive workflow execution. Adding that is your responsibility and should be in place before an app using this World is used in production and reachable by untrusted clients. We also recommend [enabling encryption](/docs/how-it-works/encryption#custom-world-implementations).
+
+### Protect the queue route
+
+`POST /.well-known/workflow/v1/flow` is where the worker delivers workflow orchestration and queued step invocations. It is mounted in your application like any other route, so it is publicly reachable by default, and it accepts any request whose headers and body are well-formed: there is no signature, shared secret, or caller check. Anyone who can reach it can forge or replay a workflow or step invocation, including steps your application would only reach after its own gating. Restrict it before you expose the app.
+
+The other routes under `/.well-known/workflow/v1/` differ:
+
+- `webhook/:token`, created by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), is authorized by the token in the URL and nothing else. Use [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own authenticated route and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) when you need more than that.
+- `manifest.json` responds with `404` unless the app was built with `WORKFLOW_PUBLIC_MANIFEST=1`. That variable is read at build time, so unsetting it in the runtime environment of an already-built deployment does not withdraw the manifest. Leave it unset outside of testing, because the manifest lists your workflow and step names.
+
+### Bringing your own auth
+
+Workflow does not prescribe an auth mechanism for self-hosted Worlds, so restrict the flow route at the network edge rather than inside the application:
+
+- **Keep the flow route unreachable from outside.** By default the worker delivers to a loopback address (`http://localhost:{PORT}`, or `WORKFLOW_LOCAL_BASE_URL` when set), so in the common single-process topology nothing outside the container needs to reach it. Blocking external requests to `/.well-known/workflow/v1/flow` at your ingress, reverse proxy, or firewall costs you nothing, because loopback delivery never traverses that layer. Do not block the whole `/.well-known/workflow/` prefix if you use [`createWebhook()`](/docs/api-reference/workflow/create-webhook): its `webhook/:token` route sits under the same prefix and has to stay reachable by whoever calls it.
+- **Authenticate at the proxy when the routes must cross hosts.** If your web tier and workers are separate deployments, require mTLS or a shared-secret header at the proxy in front of the application, and strip any client-supplied copy of that header at the edge.
+- **Do not gate these paths in framework middleware.** The [Next.js setup guide](/docs/getting-started/next) tells you to exclude `/.well-known/workflow/*` from your proxy matcher, because a handler that consumes the internal request body breaks execution. Adding the paths back in order to gate them reintroduces that failure mode.
+- **Do not expect the World to present a credential.** It does not sign its delivery requests or attach a secret to them, so an in-application check that requires one will reject the World's own deliveries.
+
+### Data at rest
+
+The Postgres World does not currently implement `getEncryptionKeyForRun()`, so it does not participate in Workflow's [end-to-end encryption](/docs/how-it-works/encryption): workflow and step inputs and return values, hook payloads and metadata, and stream chunks are all stored in your database in readable form. A World derived from this one can opt in by implementing that one method; see [Custom World implementations](/docs/how-it-works/encryption#custom-world-implementations). Until then, protect the database, its credentials, and its backups accordingly.
+
+The [observability UI](/docs/observability) has no authentication of its own either. If you self-host `@workflow/web` against your Postgres database, put it behind your own auth layer, because everyone who can reach it can read every run.
+
 ## Deployment
 
 Deploy your application to any cloud that supports long-running servers:
@@ -304,6 +342,7 @@ Ensure your deployment has:
 - Network access to your PostgreSQL database
 - Environment variables configured correctly
 - The `start()` function called on server initialization
+- `/.well-known/workflow/v1/flow` restricted so untrusted clients cannot reach it (see [Security](#security))
 
 <Callout type="info">
 The Postgres World is not compatible with Vercel deployments. On Vercel, workflows automatically use the [Vercel World](/worlds/vercel) with zero configuration.
@@ -311,6 +350,9 @@ The Postgres World is not compatible with Vercel deployments. On Vercel, workflo
 
 ## Limitations
 
+- **Reference implementation**: Tested and implements the complete World spec, but is not optimized for scale, speed, or security; a production deployment typically clones it and adapts it, or runs workers in separate processes with a more robust queuing system
+- **No built-in authentication**: The workflow HTTP routes accept any request that reaches them; you must restrict them yourself (see [Security](#security))
+- **No encryption**: Workflow and step data is stored unencrypted; the World does not currently implement [end-to-end encryption](/docs/how-it-works/encryption)
 - **Requires long-running process**: Must call `start()` on server initialization; not compatible with serverless platforms
 - **PostgreSQL infrastructure**: Requires a PostgreSQL database (self-hosted or managed)
 - **Not compatible with Vercel**: Use the [Vercel World](/worlds/vercel) for Vercel deployments
