@@ -1,0 +1,12 @@
+{
+  "name": "workflow-apm-trace-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Source-agnostic OpenTelemetry APM trace waterfall viewer. Imports from Axiom JSONL dumps or the Datadog Spans API and isolates Vercel Workflow traffic from third-party calls.",
+  "scripts": {
+    "import:axiom": "node bin/import-axiom.mjs",
+    "import:datadog": "node bin/import-datadog.mjs",
+    "serve": "node bin/serve.mjs"
+  }
+}
