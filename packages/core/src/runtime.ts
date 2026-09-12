@@ -59,6 +59,7 @@ import {
   getPreconditionReinvokeDelaySeconds,
   getReplayDivergenceMaxRetries,
   isInlineOwnershipEnabled,
+  isQueueOwnedBackstopEnabled,
   isTurboEnabled,
   isVmRetentionEnabled,
 } from './runtime/constants.js';
@@ -110,7 +111,10 @@ import { computeStepLatencyTracking } from './runtime/step-latency.js';
 import {
   backstopIdempotencyKey,
   hasPendingStepOwnedByMessage,
+  isQueueOwnedRunning,
   isStepOwnershipActive,
+  leaseRemainingSeconds,
+  queueOwnedBackstopIdempotencyKey,
   stepLeaseRemainingSeconds,
 } from './runtime/step-ownership.js';
 import { runStepSingleFlight } from './runtime/step-single-flight.js';
@@ -2889,6 +2893,16 @@ export function workflowEntrypoint(
                   // as before, and only knowledge of this process's own
                   // sends is used to skip. Dies with this delivery.
                   const publishedStepCorrelationIds = new Set<string>();
+                  // Queue-ownership epochs (latest bare `step_started`
+                  // timestamp among the pass's queue-owned running steps)
+                  // for which THIS invocation has already armed the run's
+                  // backstop wake. A later pass over an unchanged log derives
+                  // the same epoch and skips the send, so the wake costs one
+                  // publish per epoch per invocation, not one per step per
+                  // pass. Invocation-scoped like publishedStepCorrelationIds:
+                  // a different invocation re-arms, and the epoch-scoped key
+                  // collapses those onto one pending wake server-side.
+                  const armedQueueOwnedBackstopEpochs = new Set<number>();
 
                   // Main replay loop
                   while (true) {
@@ -3939,6 +3953,34 @@ export function workflowEntrypoint(
                         //     (fixed keys either absorb the retry handoff
                         //     or dedupe the refreshed-lease re-arm against
                         //     the in-flight backstop itself).
+                        //   - Queue-owned and running (created, latest
+                        //     step_started BARE, no step_retrying, no
+                        //     terminal event) on a World whose queue
+                        //     redelivers unacked messages
+                        //     (capabilities.queueRedeliversUnacked), on a
+                        //     run whose runtime stamps inline starts (spec
+                        //     version gate in isQueueOwnedRunning) → no
+                        //     send for the step; instead ONE delayed run
+                        //     continuation per pass covers every such step,
+                        //     armed after this loop for the latest of their
+                        //     lease expiries and keyed to that timestamp
+                        //     (queueOwnedBackstopIdempotencyKey), and
+                        //     skipped outright when this invocation already
+                        //     armed that epoch. The bare start was written
+                        //     by a queue delivery of the step message that
+                        //     has not acked yet, so the queue itself
+                        //     redelivers it if that consumer dies; an
+                        //     immediate re-send here is duplicate traffic
+                        //     (deduped by the queue, but one send per
+                        //     pending step per replay on a wide fan-out).
+                        //     When the wake fires every covered lease is
+                        //     spent, so this same table falls through to
+                        //     the immediate enqueue below for whatever is
+                        //     still pending, and a finished run exits before
+                        //     reaching it: a wrong guess costs at most one
+                        //     lease, never the step.
+                        //     WORKFLOW_QUEUE_OWNED_BACKSTOP=0 disables this
+                        //     row.
                         //   - Not owned (never stamped / eager / ownership
                         //     lapsed at step_retrying / lease expired /
                         //     kill-switched) → immediate enqueue, exactly as
@@ -3947,6 +3989,9 @@ export function workflowEntrypoint(
                         //     queueing, a later handler queues it; the
                         //     step-identity-scoped idempotencyKey dedupes
                         //     redundant queues across concurrent handlers.
+                        //     A created-but-never-started step always lands
+                        //     here: nothing in the log proves its message
+                        //     was ever sent.
                         //
                         // The wait continuation is what makes
                         // `Promise.race(step, sleep)` behave correctly with
@@ -3968,6 +4013,14 @@ export function workflowEntrypoint(
                         const traceCarrier = await nextTraceCarrier();
                         const dispatches: Promise<unknown>[] = [];
                         const inlineOwnership = isInlineOwnershipEnabled();
+                        // Fails closed: only a World that declares its queue
+                        // redelivers unacked messages gets the queue-owned
+                        // row of the table, and the kill switch wins over
+                        // the declaration.
+                        const queueOwnedBackstop =
+                          isQueueOwnedBackstopEnabled() &&
+                          world.capabilities?.queueRedeliversUnacked?.active ===
+                            true;
                         const dispatchNowMs = Date.now();
                         const ownedRecoverySteps: StepInvocationQueueItem[] =
                           [];
@@ -3979,6 +4032,13 @@ export function workflowEntrypoint(
                         for (const correlationId of suspensionResult.queuedStepCorrelationIds) {
                           publishedStepCorrelationIds.add(correlationId);
                         }
+                        // Queue-owned running steps this pass left to their
+                        // unacked messages, and the latest bare start among
+                        // them (the epoch the run's single backstop wake is
+                        // armed for after the loop). 0/1 per pass.
+                        let queueOwnedRunningSteps = 0;
+                        let queueOwnedLatestStartMs: number | undefined;
+                        let queueOwnedBackstopWakesArmed = 0;
                         // TTR hand-off. The measurement may only go to an
                         // execution that will actually ATTEMPT the next
                         // durable step, and the loop below is what decides
@@ -4052,12 +4112,42 @@ export function workflowEntrypoint(
                             ownedRecoverySteps.push(step);
                             continue;
                           }
+                          // Queue-owned and running on a redelivering queue:
+                          // leave the step to its unacked message and fold
+                          // it into the run's single delayed backstop wake,
+                          // armed after this loop. A spent lease (remaining
+                          // 0) falls through to the immediate enqueue, so
+                          // the wake's own replay re-sends whatever is still
+                          // pending by then. Exclusive with inline ownership
+                          // below: one needs a bare latest start, the other
+                          // a stamped one.
+                          if (
+                            queueOwnedBackstop &&
+                            isQueueOwnedRunning(step, workflowRun?.specVersion)
+                          ) {
+                            const startedAtMs = step.lastStartedAt as number;
+                            if (
+                              leaseRemainingSeconds(
+                                startedAtMs,
+                                dispatchNowMs
+                              ) > 0
+                            ) {
+                              queueOwnedRunningSteps++;
+                              if (
+                                queueOwnedLatestStartMs === undefined ||
+                                startedAtMs > queueOwnedLatestStartMs
+                              ) {
+                                queueOwnedLatestStartMs = startedAtMs;
+                              }
+                              continue;
+                            }
+                          }
                           // Delayed backstop wake while another invocation's
                           // ownership lease is live; immediate step enqueue
                           // otherwise (lease expired ⇒ remaining 0 ⇒ same as
-                          // today, which is also the degraded mode for
-                          // worlds with unstable message IDs, where the owner
-                          // check above never matches there).
+                          // today, which is also the degraded mode for worlds
+                          // with unstable message IDs, where the owner check
+                          // above never matches there).
                           const backstopDelaySeconds = ownershipActive
                             ? stepLeaseRemainingSeconds(step, dispatchNowMs)
                             : 0;
@@ -4151,6 +4241,71 @@ export function workflowEntrypoint(
                               }
                             )
                           );
+                        }
+                        // The run's single queue-owned backstop wake: one
+                        // delayed run continuation covering every queue-owned
+                        // running step seen this pass, due when the LAST of
+                        // their leases expires (each expiry is its own bare
+                        // start plus the lease, so the latest start bounds
+                        // them all). Keyed to that latest start, so a pass
+                        // over an unchanged log re-derives the same key and
+                        // is skipped here without a send; a newer bare start
+                        // moves the epoch and arms a fresh wake that covers
+                        // it. See queueOwnedBackstopIdempotencyKey.
+                        if (queueOwnedLatestStartMs !== undefined) {
+                          const queueOwnedBackstopDelaySeconds =
+                            leaseRemainingSeconds(
+                              queueOwnedLatestStartMs,
+                              dispatchNowMs
+                            );
+                          if (
+                            armedQueueOwnedBackstopEpochs.has(
+                              queueOwnedLatestStartMs
+                            )
+                          ) {
+                            runtimeLogger.debug(
+                              'Queue-owned running steps are covered by a backstop wake this invocation already armed; skipping the send',
+                              {
+                                workflowRunId: runId,
+                                queueOwnedRunningSteps,
+                                queueOwnedLatestStartMs,
+                              }
+                            );
+                          } else {
+                            armedQueueOwnedBackstopEpochs.add(
+                              queueOwnedLatestStartMs
+                            );
+                            queueOwnedBackstopWakesArmed = 1;
+                            runtimeLogger.debug(
+                              'Pending steps are queue-owned and running under unacked messages; arming one delayed backstop wake for the run instead of re-sending their step messages',
+                              {
+                                workflowRunId: runId,
+                                queueOwnedRunningSteps,
+                                queueOwnedLatestStartMs,
+                                backstopDelaySeconds:
+                                  queueOwnedBackstopDelaySeconds,
+                              }
+                            );
+                            dispatches.push(
+                              queueMessage(
+                                world,
+                                getWorkflowQueueName(workflowName, namespace),
+                                {
+                                  runId,
+                                  traceCarrier,
+                                  requestedAt: new Date(),
+                                },
+                                {
+                                  delaySeconds: queueOwnedBackstopDelaySeconds,
+                                  idempotencyKey:
+                                    queueOwnedBackstopIdempotencyKey(
+                                      runId,
+                                      queueOwnedLatestStartMs
+                                    ),
+                                }
+                              )
+                            );
+                          }
                         }
                         if (suspensionResult.waitTimeout) {
                           // One higher than the incoming continuation's when
@@ -4254,6 +4409,7 @@ export function workflowEntrypoint(
                         // delivery of this message died mid-step-body.
                         if (
                           backstopWakesArmed > 0 ||
+                          queueOwnedBackstopWakesArmed > 0 ||
                           ownedRecoverySteps.length > 0 ||
                           republishesSkipped > 0
                         ) {
@@ -4271,6 +4427,11 @@ export function workflowEntrypoint(
                             ...(republishesSkipped > 0
                               ? Attribute.WorkflowDispatchRepublishSkipped(
                                   republishesSkipped
+                                )
+                              : {}),
+                            ...(queueOwnedBackstopWakesArmed > 0
+                              ? Attribute.WorkflowQueueOwnedBackstopWakesArmed(
+                                  queueOwnedBackstopWakesArmed
                                 )
                               : {}),
                           });

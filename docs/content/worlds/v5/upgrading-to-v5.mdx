@@ -115,7 +115,7 @@ None of this is required. Each entry is a hook the runtime uses if your World pr
 
 | Member | What it buys |
 | --- | --- |
-| `capabilities` | Advertises `hookRetention.active`, `hookResumeDedup`, `deploymentAffinity`, and `maxConcurrency`. See the contract note above about failing closed. Event ID allocation is *not* in here: it is a requirement, not a capability. |
+| `capabilities` | Advertises `hookRetention.active`, `queueRedeliversUnacked.active`, `hookResumeDedup`, `deploymentAffinity`, and `maxConcurrency`. See the contract note above about failing closed. Event ID allocation is *not* in here: it is a requirement, not a capability. |
 | `analytics` | A metadata-only read namespace for observability surfaces. Payload-bearing reads stay on `runs`, `steps`, `events`, and `hooks`. |
 | `runs.experimentalSetAttributes` | Backs `setAttributes()` from application code. Without it, run attributes are unavailable. |
 | `runs.cancelMany` | Bulk cancellation: up to 500 unique run IDs per request (`BULK_CANCEL_MAX_RUN_IDS`), an optional `cancelReason` of at most 512 characters, and a per-run outcome for every ID. Without it, the runtime falls back to bounded-concurrency individual cancels. |

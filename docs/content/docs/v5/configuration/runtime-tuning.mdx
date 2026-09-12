@@ -203,6 +203,12 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - How long after an inline step's latest `step_started` other invocations assume its owner may still be executing the body. Within the lease they defer the step's backstop message; past it they enqueue immediately.
 - Raise this on self-hosted multi-instance deployments whose inline steps run longer than the default (the default is sized for Vercel's function duration ceiling).
 
+### `WORKFLOW_QUEUE_OWNED_BACKSTOP`
+
+- Default: enabled
+- Only takes effect on a World whose queue redelivers unacknowledged messages on its own (it declares `capabilities.queueRedeliversUnacked`; `@workflow/world-vercel` does). A pending step whose latest `step_started` is bare (written by a queue delivery of the step message, not by an inline owner) and has no terminal event is being executed by a delivery that has not acknowledged its message yet, so a replay does not re-send its step message. Instead it arms **one** delayed run continuation per replay pass for the whole run, covering every such step and due when the last of their ownership leases expires; a later pass over an unchanged log derives the same message and skips the send. If the run has finished by then the wake exits at once; anything still pending falls back to the immediate re-enqueue. Without this, every replay of a run with such steps re-sends one message per step (the queue deduplicates them, but each is still a send), so a wide fan-out costs N sends per replay instead of at most one per lease window. Only runs whose runtime stamps inline starts qualify (spec version 6 and later); older runs keep the immediate re-enqueue, since on them a bare start could be a legacy inline start. Steps that were created but never started are re-enqueued immediately either way, because `step_created` does not prove the step's message was ever sent.
+- Set `0` or `false` to restore the unconditional immediate re-enqueue.
+
 ## Workflow VM engine
 
 ### `WORKFLOW_VM`
