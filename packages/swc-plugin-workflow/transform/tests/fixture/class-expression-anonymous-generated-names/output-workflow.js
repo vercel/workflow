@@ -17,7 +17,7 @@ registerPlugin(function(__wf_cls) {
     __wf_cls.prototype["run"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//AnonymousClass1#run");
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//AnonymousClass1", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//AnonymousClass1",
         writable: false,
         enumerable: false,
@@ -32,7 +32,7 @@ export const handlers = [
         __wf_cls.execute = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//AnonymousClass2.execute");
         var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
         __wf_cls_reg.set("class//./input//AnonymousClass2", __wf_cls);
-        Object.defineProperty(__wf_cls, "classId", {
+        if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
             value: "class//./input//AnonymousClass2",
             writable: false,
             enumerable: false,
@@ -54,7 +54,7 @@ export const Worker = process.env.FAST ? function(__wf_cls) {
     });
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//AnonymousClass3", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//AnonymousClass3",
         writable: false,
         enumerable: false,
@@ -70,7 +70,7 @@ const registry = new Map([
         function(__wf_cls) {
             var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
             __wf_cls_reg.set("class//./input//AnonymousClass4", __wf_cls);
-            Object.defineProperty(__wf_cls, "classId", {
+            if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
                 value: "class//./input//AnonymousClass4",
                 writable: false,
                 enumerable: false,
@@ -105,7 +105,7 @@ useModel(function(__wf_cls) {
     __wf_cls.prototype["run"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//AnonymousClass6$1#run");
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//AnonymousClass6$1", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//AnonymousClass6$1",
         writable: false,
         enumerable: false,
@@ -119,7 +119,7 @@ registerPlugin(function(__wf_cls) {
     __wf_cls.prototype["run"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//NamedPlugin#run");
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//NamedPlugin", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//NamedPlugin",
         writable: false,
         enumerable: false,

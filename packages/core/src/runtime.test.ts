@@ -9,6 +9,7 @@ import {
   type Event,
   SPEC_VERSION_CURRENT,
   slotToEventId,
+  type WorkflowInvokePayload,
   type WorkflowRun,
 } from '@workflow/world';
 import { ulid } from 'ulid';
@@ -70,7 +71,7 @@ async function runWorkflowHandlerWithEvents(
     createdEvents?: unknown[];
     createdEventParams?: unknown[];
     queueCalls?: QueueCall[];
-    replayDivergence?: { eventId: string; count: number };
+    replayDivergence?: { eventId: string; count: number; eventIds?: string[] };
     /**
      * Make created events visible to subsequent events.list calls (appended
      * to `events`), like a real World. Needed for flows where the handler
@@ -85,6 +86,10 @@ async function runWorkflowHandlerWithEvents(
     /** Set both to drive the background-step branch of the combined handler. */
     incomingStepId?: string;
     incomingStepName?: string;
+    runContext?: WorkflowInvokePayload['runContext'];
+    stepInput?: WorkflowInvokePayload['stepInput'];
+    hookResumeTiming?: WorkflowInvokePayload['hookResumeTiming'];
+    runsGet?: () => Promise<WorkflowRun>;
     /** Lazy hook resume payload carried on the incoming queue message. */
     hookInput?: Record<string, unknown>;
     queueImpl?: () => Promise<{ messageId: null }>;
@@ -141,6 +146,9 @@ async function runWorkflowHandlerWithEvents(
                 options.deploymentMismatchRetryCount,
               stepId: options.incomingStepId,
               stepName: options.incomingStepName,
+              runContext: options.runContext,
+              stepInput: options.stepInput,
+              hookResumeTiming: options.hookResumeTiming,
               hookInput: options.hookInput,
             },
             {
@@ -163,7 +171,7 @@ async function runWorkflowHandlerWithEvents(
       })),
     },
     runs: {
-      get: vi.fn(async () => workflowRun),
+      get: options.runsGet ?? vi.fn(async () => workflowRun),
     },
     queue: vi.fn(
       async (
@@ -266,9 +274,31 @@ describe('workflowEntrypoint replay guards', () => {
     );
   });
 
-  it('re-routes a queued step execution, preserving the pending step', async () => {
+  it.each([
+    false,
+    true,
+  ])('re-routes a queued step execution, preserving its payload (runContext: %s)', async (includeRunContext) => {
     const workflowRun = await misroutedRun();
     const queueCalls: QueueCall[] = [];
+    const runsGet = vi.fn(async () => workflowRun);
+    const runContext = includeRunContext
+      ? {
+          deploymentId: workflowRun.deploymentId,
+          specVersion: SPEC_VERSION_CURRENT,
+          startedAt: Number(workflowRun.startedAt),
+          rootRunId: workflowRun.runId,
+        }
+      : undefined;
+    const stepInput = { input: new Uint8Array([1, 2, 3]) };
+    const hookResumeTiming = {
+      resumeRequestedAtMs: 1000,
+      queuePublishRequestedAtMs: 1100,
+      consumerStartedAtMs: 1200,
+      replayStartedAtMs: 1300,
+      nextStepEncounteredAtMs: 1400,
+      strategy: 'sequential',
+      setupSource: 'run_started',
+    };
 
     const createdEvents = await runWorkflowHandlerWithEvents(
       mustNotRun,
@@ -278,6 +308,10 @@ describe('workflowEntrypoint replay guards', () => {
         currentDeploymentId: 'dpl_current',
         incomingStepId: 'step_1',
         incomingStepName: 'myStep',
+        runContext,
+        stepInput,
+        hookResumeTiming,
+        runsGet,
         queueCalls,
       }
     );
@@ -289,7 +323,11 @@ describe('workflowEntrypoint replay guards', () => {
       stepId: 'step_1',
       stepName: 'myStep',
       deploymentMismatchRetryCount: 1,
+      stepInput,
+      hookResumeTiming,
     });
+    expect(queueCalls[0].message.runContext).toEqual(runContext);
+    expect(runsGet).toHaveBeenCalledTimes(includeRunContext ? 0 : 1);
     expect(createdEvents).not.toContainEqual(
       expect.objectContaining({ eventType: 'step_started' })
     );
@@ -819,6 +857,11 @@ describe('workflowEntrypoint replay guards', () => {
       },
     ];
 
+    using warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    using error = vi
+      .spyOn(console, 'error')
+      .mockImplementation(() => undefined);
+
     const initialAttemptEvents: unknown[] = [];
     const queueCalls: QueueCall[] = [];
     await runWorkflowHandlerWithEvents(
@@ -838,17 +881,39 @@ describe('workflowEntrypoint replay guards', () => {
     expect(initialAttemptEvents).not.toContainEqual(
       expect.objectContaining({ eventType: 'run_failed' })
     );
+    // The recovery message starts the divergence history at this event.
     expect(queueCalls.map((c) => c.message)).toContainEqual(
       expect.objectContaining({
         replayDivergence: {
           eventId: slotToEventId(1),
           count: 1,
+          eventIds: [slotToEventId(1)],
         },
       })
+    );
+    // The WARN says which pass of which invocation diverged and what that
+    // pass was working from, and the console renderer keeps the divergence
+    // text (`errorMessage`) rather than dropping it as a well-known field.
+    const warnOut = warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((line) => line.includes('Workflow replay diverged'));
+    expect(warnOut).toBeDefined();
+    expect(warnOut).toContain('loopIteration 1');
+    expect(warnOut).toContain('servedByRetainedSession false');
+    expect(warnOut).toContain('eventLogLength 2');
+    expect(warnOut).toContain(`eventLogLastEventId ${slotToEventId(2)}`);
+    expect(warnOut).toContain('isRecoveryReplay false');
+    expect(warnOut).toContain('hasHookInput false');
+    expect(warnOut).toContain(
+      `Replay could not consume event: eventType=wait_created, correlationId=wait_01HK153X00VFKAJV9XFN9JXXRS, eventId=${slotToEventId(1)}. pending at this id: none.`
     );
 
     const terminalAttemptEvents: unknown[] = [];
     const terminalAttemptParams: unknown[] = [];
+    const priorEventIds = Array.from(
+      { length: REPLAY_DIVERGENCE_MAX_RETRIES },
+      (_, i) => `evnt_prior_${i}`
+    );
     await runWorkflowHandlerWithEvents(
       `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
       async function workflow() {
@@ -863,9 +928,24 @@ describe('workflowEntrypoint replay guards', () => {
         replayDivergence: {
           eventId: 'different-event',
           count: REPLAY_DIVERGENCE_MAX_RETRIES,
+          eventIds: priorEventIds,
         },
       }
     );
+
+    // The terminal error lists the whole chain so a reader can tell whether
+    // every divergence hit one event or wandered, and the terminal console
+    // line carries that message and the same pass context as the WARN.
+    const errorOut = error.mock.calls
+      .map((c) => String(c[0]))
+      .find((line) => line.includes('Error while running workflow'));
+    expect(errorOut).toBeDefined();
+    expect(errorOut).toContain('code   CORRUPTED_EVENT_LOG');
+    expect(errorOut).toContain(
+      `divergent event ids: ${[...priorEventIds, slotToEventId(1)].join(', ')}`
+    );
+    expect(errorOut).toContain('isRecoveryReplay true');
+    expect(errorOut).toContain('loopIteration 1');
 
     const failedIndex = terminalAttemptEvents.findIndex(
       (event) => (event as { eventType?: string }).eventType === 'run_failed'
@@ -989,7 +1069,11 @@ describe('workflowEntrypoint replay guards', () => {
     );
     expect(queueCalls.map((c) => c.message)).toContainEqual(
       expect.objectContaining({
-        replayDivergence: { eventId: slotToEventId(1), count: 1 },
+        replayDivergence: {
+          eventId: slotToEventId(1),
+          count: 1,
+          eventIds: [slotToEventId(1)],
+        },
       })
     );
   });
@@ -1422,8 +1506,20 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       queueName: string,
       message: any
     ) => Promise<{ messageId: null }>;
+    /**
+     * Record a `step_retrying` for the QUEUED step right after its eager
+     * `step_created`, so the post-inline replay pass observes the step as
+     * `sawRetrying` (a retry handoff happened since this invocation
+     * published it).
+     */
+    retryingQueuedStep?: boolean;
+    /** `specVersion` to stamp on the run (gates resilient step dispatch). */
+    runSpecVersion?: number;
   }) {
     const workflowRun = await makeRunningRun(opts.runId);
+    if (opts.runSpecVersion !== undefined) {
+      (workflowRun as any).specVersion = opts.runSpecVersion;
+    }
     const order: string[] = [];
 
     // Start from a clean slate so the rejection check only observes promises
@@ -1466,7 +1562,16 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
           // It must be durably created before its dispatch send — the ordering
           // assertion below checks step_created precedes queue_dispatch_start.
           order.push('step_created');
-          return { event: recordEvent(data) };
+          const created = recordEvent(data);
+          if (opts.retryingQueuedStep) {
+            recordEvent({
+              eventType: 'step_retrying',
+              specVersion: SPEC_VERSION_CURRENT,
+              correlationId: data.correlationId,
+              eventData: { stepName: data.eventData?.stepName },
+            });
+          }
+          return { event: created };
         }
         if (data.eventType === 'step_started') {
           // The inline step's lazy step_started creates the step on the fly:
@@ -1503,9 +1608,12 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       }
     );
 
+    // Every step-execution send (message carrying a stepId), in order.
+    const stepIdSends: string[] = [];
     const queue = vi.fn(async (queueName: string, message: any) => {
       // Only the step-dispatch send carries a stepId; ignore other sends.
       if (message && typeof message === 'object' && 'stepId' in message) {
+        stepIdSends.push(message.stepId);
         order.push('queue_dispatch_start');
         const result = await opts.queueImpl(queueName, message);
         order.push('queue_dispatch_done');
@@ -1513,6 +1621,16 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       }
       return { messageId: null };
     });
+
+    // Return the accumulated event log so replay converges: a later loop
+    // iteration sees the inline step completed and the queued step already
+    // created (so neither is re-run), and the handler returns instead of
+    // re-suspending forever.
+    const eventsList = vi.fn(async () => ({
+      data: [...durableEvents],
+      hasMore: false,
+      cursor: 'cursor_test',
+    }));
 
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
@@ -1541,15 +1659,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       ),
       events: {
         create: eventsCreate,
-        // Return the accumulated event log so replay converges: a later loop
-        // iteration sees the inline step completed and the queued step already
-        // created (so neither is re-run), and the handler returns instead of
-        // re-suspending forever.
-        list: vi.fn(async () => ({
-          data: [...durableEvents],
-          hasMore: false,
-          cursor: 'cursor_test',
-        })),
+        list: eventsList,
       },
       runs: {
         get: vi.fn(async () => workflowRun),
@@ -1572,6 +1682,8 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       handlerPromise,
       order,
       queue,
+      eventsList,
+      stepIdSends,
       createdEventParams,
       stepStartedParams,
     };
@@ -1667,6 +1779,83 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
     // promise (queue re-drive), never through an unconsumed `waitUntil`
     // promise (which would become an unhandled rejection / process exit 128).
     expect(await anyWaitUntilPromiseRejected()).toBe(false);
+  });
+
+  it('publishes each queued step message once per invocation: the post-inline replay pass re-publishes nothing', async () => {
+    // Pass 1 queues `addB` (one step-execution send) and runs `add` inline.
+    // Once `add` completes the loop reloads the log and replays again; the
+    // second pass finds `addB` still pending. That pass must NOT send its
+    // message a second time: this invocation already did, and the queue
+    // would only dedupe the repeat after a wasted round-trip.
+    const { handlerPromise, order, eventsList, stepIdSends } =
+      await driveHandler({
+        runId: 'wrun_no_republish',
+        queueImpl: async () => ({ messageId: null }),
+      });
+
+    const res = (await handlerPromise) as Response;
+    expect(res.status).toBe(204);
+
+    // The second replay pass really happened (a fresh events.list after the
+    // inline step completed), and it observed the queued step as pending
+    // (eagerly created, never completed).
+    expect(eventsList.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(order).toContain('step_created');
+    // Exactly one step-execution publish for the whole invocation.
+    expect(stepIdSends).toHaveLength(1);
+  });
+
+  it('still re-enqueues a step it published once a step_retrying has been observed', async () => {
+    // A `step_retrying` recorded after this invocation's publish means the
+    // step is now on a retry schedule the earlier message does not cover, so
+    // the invocation-local "already published" knowledge must not suppress
+    // the later pass's enqueue (the idempotency key still dedupes if the
+    // handoff message is in flight).
+    const { handlerPromise, stepIdSends } = await driveHandler({
+      runId: 'wrun_republish_after_retrying',
+      queueImpl: async () => ({ messageId: null }),
+      retryingQueuedStep: true,
+    });
+
+    const res = (await handlerPromise) as Response;
+    expect(res.status).toBe(204);
+    // Pass 1 publish + the pass-2 re-enqueue for the retrying step, same
+    // correlation id both times.
+    expect(stepIdSends).toHaveLength(2);
+    expect(new Set(stepIdSends).size).toBe(1);
+  });
+
+  it("counts the suspension handler's resilient publishes as already published", async () => {
+    // With resilient step dispatch the suspension handler publishes the
+    // queued step itself (create + queue in parallel, message carrying
+    // stepInput) and reports it in queuedStepCorrelationIds. That publish
+    // must seed the invocation's published set too, so the post-inline
+    // replay pass does not send it again.
+    process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = '1';
+    try {
+      const { handlerPromise, eventsList, stepIdSends, queue } =
+        await driveHandler({
+          runId: 'wrun_no_republish_resilient',
+          queueImpl: async () => ({ messageId: null }),
+          runSpecVersion: SPEC_VERSION_CURRENT,
+        });
+
+      const res = (await handlerPromise) as Response;
+      expect(res.status).toBe(204);
+
+      expect(eventsList.mock.calls.length).toBeGreaterThanOrEqual(2);
+      // The one send came from the suspension handler (it carries the
+      // resilient stepInput), and nothing re-published it afterwards.
+      const stepSends = queue.mock.calls.filter(
+        ([, message]: any[]) =>
+          message && typeof message === 'object' && 'stepId' in message
+      );
+      expect(stepSends).toHaveLength(1);
+      expect(stepSends[0][1]).toHaveProperty('stepInput');
+      expect(stepIdSends).toHaveLength(1);
+    } finally {
+      delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
+    }
   });
 
   it('runs BOTH parallel steps inline (none queued) when the inline cap allows it', async () => {
@@ -1849,6 +2038,9 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
      * step has been written (the in-band re-ensure path).
      */
     stepMissingError?: Error;
+    /** Stamp the message with the producer-carried run identity so the
+     *  consumer skips the blocking runs.get (vercel/workflow#3456). */
+    includeRunContext?: boolean;
   }) {
     const stepId = 'step_resilient_1';
     const dehydratedInput = (await dehydrateStepArguments(
@@ -1931,6 +2123,7 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
       }
     );
 
+    const runsGet = vi.fn(async () => workflowRun);
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
       createQueueHandler: vi.fn(
@@ -1948,6 +2141,16 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
                 ...(opts.omitStepInput
                   ? {}
                   : { stepInput: { input: dehydratedInput } }),
+                ...(opts.includeRunContext
+                  ? {
+                      runContext: {
+                        deploymentId: 'test-deployment',
+                        specVersion: SPEC_VERSION_CURRENT,
+                        startedAt: Date.parse('2024-01-01T00:00:00.000Z'),
+                        rootRunId: opts.runId,
+                      },
+                    }
+                  : {}),
               },
               {
                 requestId: 'req_test',
@@ -1969,7 +2172,7 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
         })),
       },
       runs: {
-        get: vi.fn(async () => workflowRun),
+        get: runsGet,
       },
       queue: vi.fn(async () => ({ messageId: null })),
       getEncryptionKeyForRun: vi.fn(async () => undefined),
@@ -1979,7 +2182,13 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
     const response = (await handler(
       new Request('https://example.test')
     )) as Response;
-    return { response, createdEvents, createdEventParams, dehydratedInput };
+    return {
+      response,
+      createdEvents,
+      createdEventParams,
+      dehydratedInput,
+      runsGet,
+    };
   }
 
   it('materializes step_created from stepInput on a redelivery before executing', async () => {
@@ -2156,6 +2365,282 @@ describe('workflowEntrypoint resilient step consumption (stepInput re-ensure)', 
         ),
       })
     ).rejects.toThrow('not found');
+  });
+
+  it('skips the blocking runs.get when the message carries runContext', async () => {
+    const { response, createdEvents, runsGet } = await driveStepMessage({
+      runId: 'wrun_resilient_step_run_context',
+      attempt: 1,
+      includeRunContext: true,
+    });
+
+    expect(response.status).toBe(204);
+    // The step executed to completion with the run identity from the message
+    // — no run fetch on the start path. (The all-done inline replay would
+    // fetch lazily, but this harness keeps an unrelated step pending.)
+    expect(runsGet).not.toHaveBeenCalled();
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({
+        eventType: 'step_completed',
+        correlationId: 'step_resilient_1',
+      })
+    );
+  });
+
+  it('still fetches the run for legacy messages without runContext', async () => {
+    const { response, runsGet } = await driveStepMessage({
+      runId: 'wrun_resilient_step_no_run_context',
+      attempt: 1,
+    });
+
+    expect(response.status).toBe(204);
+    expect(runsGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers in-band with runContext too (no run fetch, no redelivery)', async () => {
+    const { response, createdEvents, runsGet } = await driveStepMessage({
+      runId: 'wrun_resilient_step_ctx_inband',
+      attempt: 1,
+      includeRunContext: true,
+      stepMissingError: new WorkflowWorldError(
+        'workflow step step_resilient_1 not found',
+        { status: 404 }
+      ),
+    });
+
+    expect(response.status).toBe(204);
+    expect(runsGet).not.toHaveBeenCalled();
+    expect(createdEvents.map((e) => e.eventType)).toEqual([
+      'step_started',
+      'step_created',
+      'step_started',
+      'step_completed',
+    ]);
+  });
+});
+
+// The fan-out path this PR optimizes end to end: phase 1 drives a REAL replay
+// of a two-step Promise.all fan-out (inline cap 1, so the runtime itself
+// emits the queued step message with its seeded correlation id and stamped
+// runContext); phase 2 redelivers that exact message against the shared event
+// log, making it the LAST completer — exercising the fetch-free prologue, the
+// single lazy runs.get before the inline replay, and the terminal-only status
+// gate on its result.
+describe('workflowEntrypoint fan-out last completer (fetch-free prologue)', () => {
+  beforeEach(() => {
+    process.env.WORKFLOW_MAX_INLINE_STEPS = '1';
+  });
+  afterEach(() => {
+    delete process.env.WORKFLOW_MAX_INLINE_STEPS;
+    setWorld(undefined);
+    vi.clearAllMocks();
+  });
+
+  const getWorkflowTransformCode = (workflowName: string) =>
+    `;globalThis.__private_workflows = new Map();
+    globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${workflowName});`;
+
+  const fanOutWorkflow = `const fanA = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("fanA");
+    const fanB = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("fanB");
+    async function workflow() {
+      const [a, b] = await Promise.all([fanA(1, 2), fanB(3, 4)]);
+      return a + b;
+    }${getWorkflowTransformCode('workflow')}`;
+
+  registerStepFunction('fanA', async (a: number, b: number) => a + b);
+  registerStepFunction('fanB', async (a: number, b: number) => a + b);
+
+  async function driveFanOut(opts: {
+    runId: string;
+    /** Status the LAST completer's lazy runs.get returns. */
+    lazyRunStatus: 'running' | 'pending' | 'completed';
+  }) {
+    const workflowRun: WorkflowRun = {
+      runId: opts.runId,
+      workflowName: 'workflow',
+      status: 'running',
+      specVersion: SPEC_VERSION_CURRENT,
+      input: await dehydrateWorkflowArguments([], opts.runId, undefined, []),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    // Shared durable state across the two deliveries.
+    let eventSeq = 1;
+    const durableEvents: Event[] = [
+      {
+        eventId: slotToEventId(eventSeq),
+        runId: opts.runId,
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'test-deployment',
+          workflowName: 'workflow',
+          input: workflowRun.input,
+        },
+      } as unknown as Event,
+    ];
+    const recordEvent = (data: any): Event => {
+      eventSeq += 1;
+      const created = {
+        eventId: slotToEventId(eventSeq),
+        runId: opts.runId,
+        createdAt: new Date(),
+        ...data,
+      } as Event;
+      durableEvents.push(created);
+      return created;
+    };
+    // Step inputs recorded at creation, so a BARE start can return the entity
+    // with the input the body will hydrate (like a real World).
+    const stepInputsByCorrelationId = new Map<string, unknown>();
+
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      if (data.eventType === 'run_started') {
+        return { run: workflowRun, events: [...durableEvents] };
+      }
+      if (data.eventType === 'step_created') {
+        stepInputsByCorrelationId.set(
+          data.correlationId,
+          data.eventData?.input
+        );
+        return { event: recordEvent(data) };
+      }
+      if (data.eventType === 'step_started') {
+        const lazy = data.eventData as { stepName?: string; input?: unknown };
+        if (lazy?.input !== undefined) {
+          // Lazy inline start: create the step on the fly.
+          stepInputsByCorrelationId.set(data.correlationId, lazy.input);
+          recordEvent({
+            eventType: 'step_created',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: data.correlationId,
+            eventData: { stepName: lazy.stepName, input: lazy.input },
+          });
+        }
+        const created = recordEvent(data);
+        return {
+          event: created,
+          step: {
+            runId: opts.runId,
+            stepId: data.correlationId,
+            stepName: lazy?.stepName,
+            status: 'running' as const,
+            attempt: 1,
+            input: stepInputsByCorrelationId.get(data.correlationId),
+            startedAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          ...(lazy?.input !== undefined ? { stepCreated: true } : {}),
+        };
+      }
+      return { event: recordEvent(data) };
+    });
+
+    const queuedMessages: any[] = [];
+    const queue = vi.fn(async (_queueName: string, message: any) => {
+      queuedMessages.push(message);
+      return { messageId: null };
+    });
+    const runsGet = vi.fn(async () => ({
+      ...workflowRun,
+      status: opts.lazyRunStatus,
+    }));
+
+    // Capture the queue handler so both phases can deliver messages directly.
+    let handler!: (message: unknown, metadata: unknown) => Promise<unknown>;
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn((_prefix: string, h: typeof handler) => {
+        handler = h;
+        return async () => new Response(null, { status: 204 });
+      }),
+      events: {
+        create: eventsCreate,
+        list: vi.fn(async () => ({
+          data: [...durableEvents],
+          hasMore: false,
+          cursor: 'cursor_test',
+        })),
+      },
+      runs: { get: runsGet },
+      queue,
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const entry = workflowEntrypoint(fanOutWorkflow);
+    await entry(new Request('https://example.test')); // binds `handler`
+
+    // Phase 1: flow delivery. The real replay inline-executes one step (cap 1)
+    // and queues the other with its seeded correlation id and runContext.
+    await handler(
+      { runId: opts.runId, requestedAt: new Date() },
+      {
+        requestId: 'req_1',
+        attempt: 1,
+        queueName: '__wkf_workflow_workflow',
+        messageId: 'msg_flow_1',
+      }
+    );
+    const stepMessage = queuedMessages.find((m) => m && m.stepId);
+    expect(stepMessage).toBeDefined();
+    expect(runsGet).not.toHaveBeenCalled();
+
+    // Phase 2: redeliver the runtime's own step message — the last completer.
+    await handler(stepMessage, {
+      requestId: 'req_2',
+      attempt: 1,
+      queueName: '__wkf_workflow_workflow',
+      messageId: 'msg_step_1',
+    });
+
+    return { stepMessage, durableEvents, runsGet };
+  }
+
+  it('completes the run via the fetch-free prologue with exactly one lazy runs.get', async () => {
+    const { stepMessage, durableEvents, runsGet } = await driveFanOut({
+      runId: 'wrun_fanout_last_completer',
+      lazyRunStatus: 'running',
+    });
+
+    // The producer stamped the run identity on its own message.
+    expect(stepMessage.runContext).toMatchObject({
+      deploymentId: 'test-deployment',
+      specVersion: SPEC_VERSION_CURRENT,
+      rootRunId: 'wrun_fanout_last_completer',
+    });
+    // Zero reads before the step; exactly one for the inline replay.
+    expect(runsGet).toHaveBeenCalledTimes(1);
+    // The last completer replayed inline and finished the run.
+    expect(durableEvents.map((e) => e.eventType)).toContain('run_completed');
+  });
+
+  it('falls through a stale `pending` read instead of silently abandoning the fan-out', async () => {
+    const { durableEvents, runsGet } = await driveFanOut({
+      runId: 'wrun_fanout_stale_pending',
+      lazyRunStatus: 'pending',
+    });
+
+    // A run with completed steps cannot truly be pending — the read is stale.
+    // The terminal-only gate lets the replay proceed, so the continuation is
+    // not dropped on the floor.
+    expect(runsGet).toHaveBeenCalledTimes(1);
+    expect(durableEvents.map((e) => e.eventType)).toContain('run_completed');
+  });
+
+  it('still skips the inline replay when the run is genuinely terminal', async () => {
+    const { durableEvents } = await driveFanOut({
+      runId: 'wrun_fanout_terminal',
+      lazyRunStatus: 'completed',
+    });
+
+    expect(durableEvents.map((e) => e.eventType)).not.toContain(
+      'run_completed'
+    );
   });
 });
 
@@ -2756,17 +3241,18 @@ describe('workflowEntrypoint inline-delta gate with open hooks', () => {
     // The handler responds normally: the rejection restarts the replay inside
     // this delivery, never a run_failed.
     expect(res.status).toBe(204);
-    // Step B's claim was issued from a loaded (non-empty) log, so it named the
-    // position it was decided against. (The very first batch of a run loads an
-    // empty log and has no position to name; reporting is best-effort there,
-    // matching the suspension creates.)
+    // Step B's claim names no log position: the executor has no loaded log
+    // to merge a skipped-slot report into, so it sends no `eventCount` and
+    // the World reads no page for it. The fence this test exercises does not
+    // depend on one either; a World that rejects a claim does so from its own
+    // view of the log, as the scripted rejection above does.
     const rejectedClaim = eventsCreate.mock.calls.find(
       (c) =>
         (c[1] as any).eventType === 'step_started' &&
         ((c[1] as any).eventData as { stepName?: string })?.stepName ===
           'deltaGateStepB'
     );
-    expect(typeof (rejectedClaim?.[2] as any)?.eventCount).toBe('number');
+    expect((rejectedClaim?.[2] as any)?.eventCount).toBeUndefined();
     // The fenced claim's body never ran: step B executes exactly once, on the
     // restarted replay whose claim the backend accepted.
     expect(deltaGateBodyRuns).toEqual(['B']);

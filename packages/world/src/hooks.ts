@@ -14,31 +14,33 @@ import type { PaginationOptions, ResolveData } from './shared.js';
  * excludes the run's mutable state (e.g. status), inputs/outputs, attributes,
  * and any secret: only fields that are fixed at hook-creation time.
  */
-export const HookResumeContextSchema = z.object({
-  deploymentId: z.string(),
-  workflowName: z.string(),
-  // Named `runSpecVersion` to distinguish it from the hook's own `specVersion`.
-  runSpecVersion: z.number().optional(),
-  workflowCoreVersion: z.string().optional(),
-  traceCarrier: TraceCarrierSchema.optional(),
-  // The run's published X25519 public key (base64), mirrored from the run
-  // entity. Lets a resume seal (`encp`) its payload to the run without reading
-  // the run or fetching its symmetric key. Absent on runs created before
-  // sealed envelopes and on projects with encryption disabled, where the
-  // resume falls back to the symmetric per-run key.
-  encryptionPublicKey: z.string().optional(),
-  // Feature marker: the version of the lazy-hook-resume consumer protocol the
-  // run's creating deployment supports. Present (>= 1) means that deployment's
-  // `@workflow/core` re-ensures the `hook_received` event from a queue
-  // message's `hookInput` on replay. Current producers no longer send
-  // `hookInput` (the durable write happens before the wake is published), so
-  // they never read this marker; it remains stamped so OLDER producers, which
-  // still gate their lazy path on it, keep working against new runs. Because a
-  // run is pinned to its creating deployment, this marker is a reliable
-  // per-run attestation, unlike inferring support from a version compare
-  // against a predicted release cutoff.
-  hookResumeInputVersion: z.number().optional(),
-});
+export const HookResumeContextSchema = z.compile(
+  z.object({
+    deploymentId: z.string(),
+    workflowName: z.string(),
+    // Named `runSpecVersion` to distinguish it from the hook's own `specVersion`.
+    runSpecVersion: z.number().optional(),
+    workflowCoreVersion: z.string().optional(),
+    traceCarrier: TraceCarrierSchema.optional(),
+    // The run's published X25519 public key (base64), mirrored from the run
+    // entity. Lets a resume seal (`encp`) its payload to the run without reading
+    // the run or fetching its symmetric key. Absent on runs created before
+    // sealed envelopes and on projects with encryption disabled, where the
+    // resume falls back to the symmetric per-run key.
+    encryptionPublicKey: z.string().optional(),
+    // Feature marker: the version of the lazy-hook-resume consumer protocol the
+    // run's creating deployment supports. Present (>= 1) means that deployment's
+    // `@workflow/core` re-ensures the `hook_received` event from a queue
+    // message's `hookInput` on replay. Current producers no longer send
+    // `hookInput` (the durable write happens before the wake is published), so
+    // they never read this marker; it remains stamped so OLDER producers, which
+    // still gate their lazy path on it, keep working against new runs. Because a
+    // run is pinned to its creating deployment, this marker is a reliable
+    // per-run attestation, unlike inferring support from a version compare
+    // against a predicted release cutoff.
+    hookResumeInputVersion: z.number().optional(),
+  })
+);
 
 export type HookResumeContext = z.infer<typeof HookResumeContextSchema>;
 
@@ -75,13 +77,15 @@ export const HOOK_RESUME_DEDUP_VERSION = 1;
  * `hookResumeInputVersion`, which attests the *consumer* and is fixed at run
  * creation.)
  */
-export const HookResumeCapabilitiesSchema = z.object({
-  // Present (>= HOOK_RESUME_DEDUP_VERSION) when the live backend enforces the
-  // `(runId, resumeId)` dedup constraint AND no server-side kill switch is
-  // active. Absent against an older/rolled-back server or when the kill switch
-  // is engaged.
-  hookResumeDedupVersion: z.number(),
-});
+export const HookResumeCapabilitiesSchema = z.compile(
+  z.object({
+    // Present (>= HOOK_RESUME_DEDUP_VERSION) when the live backend enforces the
+    // `(runId, resumeId)` dedup constraint AND no server-side kill switch is
+    // active. Absent against an older/rolled-back server or when the kill switch
+    // is engaged.
+    hookResumeDedupVersion: z.number(),
+  })
+);
 
 export type HookResumeCapabilities = z.infer<
   typeof HookResumeCapabilitiesSchema
@@ -95,35 +99,37 @@ export type HookResumeCapabilities = z.infer<
  * - specVersion 1: any (legacy JSON format)
  */
 // Hook schemas
-export const HookSchema = z.object({
-  runId: z.string(),
-  hookId: z.string(),
-  token: z.string(),
-  ownerId: z.string(),
-  projectId: z.string(),
-  environment: z.string(),
-  metadata: SerializedDataSchema.optional(),
-  createdAt: z.coerce.date(),
-  // Optional in database for backward compatibility, defaults to 1 (legacy) when reading
-  specVersion: z.number().optional(),
-  isWebhook: z.boolean().optional(),
-  isSystem: z.boolean().optional(),
-  // Earliest time the token can become available after the owning run ends.
-  // An active run keeps the token beyond this deadline.
-  tokenRetentionUntil: z.coerce.date().optional(),
-  // Present when the server stored it (new hooks) or synthesized it from the
-  // run (old hooks). Absent only against an old server, where the resume path
-  // falls back to `runs.get`.
-  resumeContext: HookResumeContextSchema.optional(),
-  // Backend dedup capability, computed FRESH by the server on every by-token
-  // lookup: RESPONSE-ONLY and TRANSIENT. Never persisted on the hook entity
-  // and never part of `resumeContext`, so a server rollback or kill switch
-  // takes effect on the next lookup (the field stops appearing).
-  // `resumeHook()` gates its lazy path on this being present and
-  // current. Absent against an older/rolled-back server or when the kill switch
-  // is active.
-  resumeCapabilities: HookResumeCapabilitiesSchema.optional(),
-});
+export const HookSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    hookId: z.string(),
+    token: z.string(),
+    ownerId: z.string(),
+    projectId: z.string(),
+    environment: z.string(),
+    metadata: SerializedDataSchema.optional(),
+    createdAt: z.coerce.date(),
+    // Optional in database for backward compatibility, defaults to 1 (legacy) when reading
+    specVersion: z.number().optional(),
+    isWebhook: z.boolean().optional(),
+    isSystem: z.boolean().optional(),
+    // Earliest time the token can become available after the owning run ends.
+    // An active run keeps the token beyond this deadline.
+    tokenRetentionUntil: z.coerce.date().optional(),
+    // Present when the server stored it (new hooks) or synthesized it from the
+    // run (old hooks). Absent only against an old server, where the resume path
+    // falls back to `runs.get`.
+    resumeContext: HookResumeContextSchema.optional(),
+    // Backend dedup capability, computed FRESH by the server on every by-token
+    // lookup: RESPONSE-ONLY and TRANSIENT. Never persisted on the hook entity
+    // and never part of `resumeContext`, so a server rollback or kill switch
+    // takes effect on the next lookup (the field stops appearing).
+    // `resumeHook()` gates its lazy path on this being present and
+    // current. Absent against an older/rolled-back server or when the kill switch
+    // is active.
+    resumeCapabilities: HookResumeCapabilitiesSchema.optional(),
+  })
+);
 
 /**
  * Represents a Hook. Hooks kept by minimum retention remain readable after

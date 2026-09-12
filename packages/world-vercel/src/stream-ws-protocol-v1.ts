@@ -76,10 +76,21 @@ export const StreamWsErrorMetaSchema = z.object({
   message: z.string().optional(),
 });
 
+/**
+ * Additive connection-level notice. It is not a request outcome: the server
+ * still replies to every request admitted before this notice, then closes 1001.
+ */
+export const StreamWsDrainMetaSchema = z.object({
+  type: z.literal('drain'),
+  reason: z.enum(['auth_expiry', 'max_duration']),
+  graceMs: NonnegativeIntegerSchema,
+});
+
 export const StreamWsReplyMetaSchema = z.discriminatedUnion('type', [
   StreamWsWriteAckMetaSchema,
   StreamWsCloseAckMetaSchema,
   StreamWsErrorMetaSchema,
+  StreamWsDrainMetaSchema,
 ]);
 
 /*
@@ -101,6 +112,7 @@ export type StreamWsRequestMeta = z.infer<typeof StreamWsRequestMetaSchema>;
 export type StreamWsWriteAckMeta = z.infer<typeof StreamWsWriteAckMetaSchema>;
 export type StreamWsCloseAckMeta = z.infer<typeof StreamWsCloseAckMetaSchema>;
 export type StreamWsErrorMeta = z.infer<typeof StreamWsErrorMetaSchema>;
+export type StreamWsDrainMeta = z.infer<typeof StreamWsDrainMetaSchema>;
 export type StreamWsReplyMeta = z.infer<typeof StreamWsReplyMetaSchema>;
 
 /** Builds the independently versioned, writer-observability-aware v1 URL. */

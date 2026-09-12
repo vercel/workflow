@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { getWorkbenchAppPath } from './utils';
+import { getWorkbenchAppPath } from './workbench-path';
 
 interface ManifestStep {
   stepId: string;
@@ -44,17 +44,39 @@ interface Manifest {
   workflows: Record<string, Record<string, ManifestWorkflow>>;
 }
 
-// Map project names to their manifest paths
-const MANIFEST_PATHS: Record<string, string> = {
-  'nextjs-webpack': 'app/.well-known/workflow/v1/manifest.json',
-  'nextjs-turbopack': 'app/.well-known/workflow/v1/manifest.json',
-  nitro: 'node_modules/.nitro/workflow/manifest.json',
-  vite: 'node_modules/.nitro/workflow/manifest.json',
-  sveltekit: 'src/routes/.well-known/workflow/v1/manifest.json',
-  nuxt: 'node_modules/.nitro/workflow/manifest.json',
-  hono: 'node_modules/.nitro/workflow/manifest.json',
-  express: 'node_modules/.nitro/workflow/manifest.json',
+interface ManifestLocation {
+  path?: string;
+  skipReason?: string;
+}
+
+// Map every local-production matrix app to its build-time manifest behavior.
+// Nest creates its manifest when the application starts, after this CI phase;
+// the live E2E suite validates its public manifest instead.
+const MANIFEST_LOCATIONS: Record<string, ManifestLocation> = {
+  'nextjs-webpack': { path: 'app/.well-known/workflow/v1/manifest.json' },
+  'nextjs-turbopack': { path: 'app/.well-known/workflow/v1/manifest.json' },
+  nitro: { path: 'node_modules/.nitro/workflow/manifest.json' },
+  vite: { path: 'node_modules/.nitro/workflow/manifest.json' },
+  sveltekit: { path: 'src/routes/.well-known/workflow/v1/manifest.json' },
+  nuxt: { path: '.nuxt/workflow/manifest.json' },
+  hono: { path: 'node_modules/.nitro/workflow/manifest.json' },
+  express: { path: 'node_modules/.nitro/workflow/manifest.json' },
+  fastify: { path: 'node_modules/.nitro/workflow/manifest.json' },
+  nest: {
+    skipReason: 'Nest generates its manifest when the application starts',
+  },
+  astro: { path: 'src/pages/.well-known/workflow/v1/manifest.json' },
+  'tanstack-start': { path: 'node_modules/.nitro/workflow/manifest.json' },
 };
+
+if (process.env.APP_NAME && !(process.env.APP_NAME in MANIFEST_LOCATIONS)) {
+  throw new Error(
+    `No manifest path is declared for targeted app "${process.env.APP_NAME}"`
+  );
+}
+if (process.env.WORKBENCH_APP_PATH && !process.env.APP_NAME) {
+  throw new Error('`WORKBENCH_APP_PATH` requires `APP_NAME`');
+}
 
 function validateSteps(steps: Manifest['steps']) {
   expect(steps).toBeDefined();
@@ -127,31 +149,71 @@ function validateWorkflows(workflows: Manifest['workflows']) {
 }
 
 /**
- * Helper to safely read manifest, returns null if file doesn't exist
+ * Reads a manifest, returning null only when it has not been generated. Parse
+ * and other I/O errors must fail the test rather than silently disabling it.
  */
 async function tryReadManifest(project: string): Promise<Manifest | null> {
+  const appPath = getWorkbenchAppPath(project);
+  const manifestPath = path.join(
+    appPath,
+    requireDefined(
+      MANIFEST_LOCATIONS[project].path,
+      `No build-time manifest path for ${project}`
+    )
+  );
+
   try {
-    const appPath = getWorkbenchAppPath(project);
-    const manifestPath = path.join(appPath, MANIFEST_PATHS[project]);
     const manifestContent = await fs.readFile(manifestPath, 'utf8');
     return JSON.parse(manifestContent);
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      return null;
+    }
+    throw error;
   }
 }
 
-describe.each(Object.keys(MANIFEST_PATHS))('manifest generation', (project) => {
+function requireTargetManifest(project: string, manifest: Manifest | null) {
+  if (manifest) return manifest;
+
+  throw new Error(
+    `Manifest for targeted app "${project}" was not generated at ${MANIFEST_LOCATIONS[project].path}`
+  );
+}
+
+function requireDefined<T>(value: T | undefined, message: string): T {
+  expect(value, message).toBeDefined();
+  if (value === undefined) throw new Error(message);
+  return value;
+}
+
+function skipWithoutBuildManifest(
+  project: string,
+  skip: (note?: string) => never
+) {
+  const reason = MANIFEST_LOCATIONS[project].skipReason;
+  if (reason) skip(reason);
+}
+
+describe.each(
+  Object.keys(MANIFEST_LOCATIONS)
+)('manifest generation', (project) => {
   test(
     `${project}: manifest.json exists and has valid structure`,
     { timeout: 30_000 },
-    async () => {
-      // Skip if we're targeting a specific app
+    async ({ skip }) => {
+      // A CI invocation targets the app built by the preceding step. Local
+      // all-project invocations explicitly skip apps that have not been built.
       if (process.env.APP_NAME && project !== process.env.APP_NAME) {
-        return;
+        skip(`Targeting ${process.env.APP_NAME}`);
       }
+      skipWithoutBuildManifest(project, skip);
 
-      const manifest = await tryReadManifest(project);
-      if (!manifest) return; // Skip if manifest doesn't exist
+      const candidate = await tryReadManifest(project);
+      if (!candidate && !process.env.APP_NAME) {
+        skip('Manifest has not been generated');
+      }
+      const manifest = requireTargetManifest(project, candidate);
 
       expect(manifest.version).toBe('1.0.0');
       validateSteps(manifest.steps);
@@ -194,13 +256,16 @@ describe.each([
   test(
     `${project}: discovers steps inside .well-known/agent directory`,
     { timeout: 30_000 },
-    async () => {
+    async ({ skip }) => {
       if (process.env.APP_NAME && project !== process.env.APP_NAME) {
-        return;
+        skip(`Targeting ${process.env.APP_NAME}`);
       }
 
-      const manifest = await tryReadManifest(project);
-      if (!manifest) return;
+      const candidate = await tryReadManifest(project);
+      if (!candidate && !process.env.APP_NAME) {
+        skip('Manifest has not been generated');
+      }
+      const manifest = requireTargetManifest(project, candidate);
 
       // Find the step from .well-known/agent/v1/steps.ts
       const stepFiles = Object.keys(manifest.steps);
@@ -212,7 +277,10 @@ describe.each([
         `Expected a step file matching ".well-known/agent" in manifest steps. Available: ${stepFiles.join(', ')}`
       ).toBeDefined();
 
-      const fileSteps = manifest.steps[wellKnownStepFile!];
+      const fileSteps =
+        manifest.steps[
+          requireDefined(wellKnownStepFile, 'Well-known step file is missing')
+        ];
       expect(fileSteps.wellKnownAgentStep).toBeDefined();
       expect(fileSteps.wellKnownAgentStep.stepId).toContain(
         'wellKnownAgentStep'
@@ -223,13 +291,16 @@ describe.each([
   test(
     `${project}: discovers workflows inside .well-known/agent directory`,
     { timeout: 30_000 },
-    async () => {
+    async ({ skip }) => {
       if (process.env.APP_NAME && project !== process.env.APP_NAME) {
-        return;
+        skip(`Targeting ${process.env.APP_NAME}`);
       }
 
-      const manifest = await tryReadManifest(project);
-      if (!manifest) return;
+      const candidate = await tryReadManifest(project);
+      if (!candidate && !process.env.APP_NAME) {
+        skip('Manifest has not been generated');
+      }
+      const manifest = requireTargetManifest(project, candidate);
 
       // Find the workflow from .well-known/agent/v1/steps.ts
       const workflowFiles = Object.keys(manifest.workflows);
@@ -241,7 +312,13 @@ describe.each([
         `Expected a workflow file matching ".well-known/agent" in manifest workflows. Available: ${workflowFiles.join(', ')}`
       ).toBeDefined();
 
-      const fileWorkflows = manifest.workflows[wellKnownWorkflowFile!];
+      const fileWorkflows =
+        manifest.workflows[
+          requireDefined(
+            wellKnownWorkflowFile,
+            'Well-known workflow file is missing'
+          )
+        ];
       expect(fileWorkflows.wellKnownAgentWorkflow).toBeDefined();
       expect(fileWorkflows.wellKnownAgentWorkflow.workflowId).toContain(
         'wellKnownAgentWorkflow'
@@ -253,24 +330,27 @@ describe.each([
 /**
  * Tests for single-statement control flow extraction.
  * These verify that steps inside if/while/for without braces are extracted.
- * Tests are skipped if manifest doesn't exist or workflow isn't found.
  */
 describe.each(
-  Object.keys(MANIFEST_PATHS)
+  Object.keys(MANIFEST_LOCATIONS)
 )('single-statement control flow extraction', (project) => {
   test(
     `${project}: single-statement if extracts steps with conditional metadata`,
     { timeout: 30_000 },
-    async () => {
+    async ({ skip }) => {
       if (process.env.APP_NAME && project !== process.env.APP_NAME) {
-        return;
+        skip(`Targeting ${process.env.APP_NAME}`);
       }
-
-      const manifest = await tryReadManifest(project);
-      if (!manifest) return; // Skip if manifest doesn't exist
-
-      const workflow = findWorkflow(manifest, 'single_statement_if');
-      if (!workflow) return; // Skip if workflow not in this project
+      skipWithoutBuildManifest(project, skip);
+      const candidate = await tryReadManifest(project);
+      if (!candidate && !process.env.APP_NAME) {
+        skip('Manifest has not been generated');
+      }
+      const manifest = requireTargetManifest(project, candidate);
+      const workflow = requireDefined(
+        findWorkflow(manifest, 'single_statement_if'),
+        'single_statement_if is missing from manifest'
+      );
 
       const stepNodes = getStepNodes(workflow.graph);
 
@@ -303,16 +383,20 @@ describe.each(
   test(
     `${project}: single-statement while extracts steps with loop metadata`,
     { timeout: 30_000 },
-    async () => {
+    async ({ skip }) => {
       if (process.env.APP_NAME && project !== process.env.APP_NAME) {
-        return;
+        skip(`Targeting ${process.env.APP_NAME}`);
       }
-
-      const manifest = await tryReadManifest(project);
-      if (!manifest) return; // Skip if manifest doesn't exist
-
-      const workflow = findWorkflow(manifest, 'single_statement_while');
-      if (!workflow) return; // Skip if workflow not in this project
+      skipWithoutBuildManifest(project, skip);
+      const candidate = await tryReadManifest(project);
+      if (!candidate && !process.env.APP_NAME) {
+        skip('Manifest has not been generated');
+      }
+      const manifest = requireTargetManifest(project, candidate);
+      const workflow = requireDefined(
+        findWorkflow(manifest, 'single_statement_while'),
+        'single_statement_while is missing from manifest'
+      );
 
       const stepNodes = getStepNodes(workflow.graph);
 
@@ -335,16 +419,20 @@ describe.each(
   test(
     `${project}: single-statement for extracts steps with loop metadata`,
     { timeout: 30_000 },
-    async () => {
+    async ({ skip }) => {
       if (process.env.APP_NAME && project !== process.env.APP_NAME) {
-        return;
+        skip(`Targeting ${process.env.APP_NAME}`);
       }
-
-      const manifest = await tryReadManifest(project);
-      if (!manifest) return; // Skip if manifest doesn't exist
-
-      const workflow = findWorkflow(manifest, 'single_statement_for');
-      if (!workflow) return; // Skip if workflow not in this project
+      skipWithoutBuildManifest(project, skip);
+      const candidate = await tryReadManifest(project);
+      if (!candidate && !process.env.APP_NAME) {
+        skip('Manifest has not been generated');
+      }
+      const manifest = requireTargetManifest(project, candidate);
+      const workflow = requireDefined(
+        findWorkflow(manifest, 'single_statement_for'),
+        'single_statement_for is missing from manifest'
+      );
 
       const stepNodes = getStepNodes(workflow.graph);
 
