@@ -1,5 +1,15 @@
 # @workflow/world-postgres
 
+## 4.3.7
+
+### Patch Changes
+
+- [#4111](https://github.com/vercel/workflow/pull/4111) [`f72c6a6`](https://github.com/vercel/workflow/commit/f72c6a63c97a262f08ebe84da5b21d602ed6f379) Thanks [@komly](https://github.com/komly)! - Fix run creation and slot allocation not happening transactionally
+
+- [#4113](https://github.com/vercel/workflow/pull/4113) [`73465bc`](https://github.com/vercel/workflow/commit/73465bc4576c1deddb3d265c1a4df23a167e35bd) Thanks [@komly](https://github.com/komly)! - Fix stream cursors not being advanced for skipped chunks, so repeated notifications cannot consume the requested start offset twice
+
+- [#4125](https://github.com/vercel/workflow/pull/4125) [`d86d752`](https://github.com/vercel/workflow/commit/d86d7521bac9b464f1a0bd3092c5cfb99104e79f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix stream readers leaking EventEmitter listeners on EOF, initial query failure, and World close, and fail pending readers when the World is closed.
+
 ## 4.3.6
 
 ### Patch Changes
