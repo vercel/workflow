@@ -1,3 +1,4 @@
+import type { WorkflowManifest } from './apply-swc-transform.js';
 import type { WorkflowAfterTransformHook } from './swc-esbuild-plugin.js';
 
 export const validBuildTargets = [
@@ -8,7 +9,35 @@ export const validBuildTargets = [
   'sveltekit',
   'astro',
 ] as const;
+
+/** The output strategy used to emit workflow build artifacts. */
 export type BuildTarget = (typeof validBuildTargets)[number];
+
+export type WorkflowBundleArtifactKind = 'steps' | 'workflows' | 'manifest';
+
+export interface WorkflowBundleArtifact<
+  Kind extends WorkflowBundleArtifactKind = WorkflowBundleArtifactKind,
+> {
+  readonly kind: Kind;
+  readonly path: string;
+}
+
+export type WorkflowBundleArtifacts = readonly [
+  WorkflowBundleArtifact<'steps'>,
+  WorkflowBundleArtifact<'workflows'>,
+  WorkflowBundleArtifact<'manifest'>,
+];
+
+export interface WorkflowBundleResult {
+  readonly buildTarget: BuildTarget;
+  readonly workingDir: string;
+  readonly workflowManifest: WorkflowManifest;
+  readonly artifacts: WorkflowBundleArtifacts;
+}
+
+export type WorkflowAfterBundleHook = (
+  result: WorkflowBundleResult
+) => void | Promise<void>;
 
 /**
  * Source map emission mode for generated workflow bundles. Matches esbuild's
@@ -62,6 +91,18 @@ interface BaseWorkflowConfig {
    * workflow bundles.
    */
   onAfterTransform?: WorkflowAfterTransformHook;
+
+  /**
+   * Optional observer invoked after a complete workflow bundle and its
+   * manifest have been written successfully.
+   *
+   * Each invocation contains exactly one `steps`, one `workflows`, and one
+   * `manifest` artifact. The observer is awaited and runs again after every
+   * successful watch rebuild. Throwing rejects the build or rebuild.
+   * Consumers should make side effects idempotent because build systems may
+   * rebuild unchanged inputs.
+   */
+  onAfterBundle?: WorkflowAfterBundleHook;
 
   // Optional prefix for debug files (e.g., "_" for Astro to ignore them)
   debugFilePrefix?: string;
