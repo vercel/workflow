@@ -239,25 +239,38 @@ export const MAX_RESILIENT_STEP_INPUT_BYTES = 128 * 1024;
 
 /**
  * Whether resilient step dispatch is enabled: the suspension handler
- * parallelizes each newly created step's `step_created` event write with its
- * step-execution queue publish, carrying the serialized step input in the
- * queue message (`stepInput`) so the consumer can idempotently re-ensure the
- * event if the direct write failed transiently. Mirrors the resilient start
+ * publishes each newly created non-inline step's step-execution queue message
+ * without waiting for its `step_created` write to commit, carrying the
+ * serialized step input on the message (`stepInput`) so the consumer can
+ * materialize the step itself (a lazy `step_started`) if the delivery beats
+ * the write, or the write failed transiently. Mirrors the resilient start
  * (`runInput`) pattern (and the legacy lazy hook resume's `hookInput`, which
- * current producers no longer send).
+ * current producers no longer send). Inside the batched fan-out fold the
+ * publishes go out as each step's input finishes dehydrating, concurrently
+ * with the `createBatch` commits, instead of after the step's chunk commits.
  *
- * **Off by default.** Enable via `WORKFLOW_RESILIENT_STEP_DISPATCH=1`.
+ * Reads `process.env.WORKFLOW_RESILIENT_STEP_DISPATCH` lazily. Default
+ * **ON**; disabled only by an explicit `'0'` / `'false'` (case-insensitive),
+ * the operator escape hatch that restores the sequential create-then-publish
+ * dispatch, mirroring `isBatchTransitionsEnabled`'s kill-switch shape.
  *
- * The queue publish races the create's verdict, and a create can come back
- * refused: as a duplicate this replay should stop pursuing, or as a stale
- * write on a World that refuses rather than reports. Either way the message
- * carrying the payload is already out, so the consumer can materialize a step
- * whose create was refused, and nothing orders the verdict before the
- * consumer's redelivery re-ensure. Enabling this trades that window for the
- * latency the parallel publish saves.
+ * It was off by default (#3519) because the publish races the create's
+ * verdict, and a World that refused a stale `step_created` with a 412 would
+ * leave a payload-carrying message out for a step whose create was revoked,
+ * with nothing ordering that verdict before the consumer's re-ensure. That
+ * window no longer exists on slot-identity runs: since #3519 no World in this
+ * repository returns 412 for a stale write (a reader's log is a prefix, replay
+ * is deterministic on a prefix, and the write reports what it skipped), the
+ * Vercel backend skips its precondition check entirely for slot-identity
+ * runs, and the only remaining refusal, a duplicate-create 409, means a
+ * concurrent writer already created the step, whose dispatch the out message
+ * dedupes against on the shared idempotency key. The kill switch stays for
+ * operators running a World that does refuse.
  */
 export function isResilientStepDispatchEnabled(): boolean {
-  return process.env.WORKFLOW_RESILIENT_STEP_DISPATCH === '1';
+  const raw = process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
+  if (raw === undefined || raw === '') return true;
+  return !(raw === '0' || raw.toLowerCase() === 'false');
 }
 
 /**
@@ -266,9 +279,10 @@ export function isResilientStepDispatchEnabled(): boolean {
  * `world.events.createBatch` call (one durable write, per-event outcomes)
  * instead of one write per event. Only engages when the World implements the
  * optional `events.createBatch` AND the run is on slot identity
- * (specVersion >= 6) AND the suspension carries no attribute/hook writes and
- * no resilient step dispatch. Everything else keeps the single-event path
- * byte-for-byte.
+ * (specVersion >= 6) AND the suspension carries no attribute/hook writes.
+ * Everything else keeps the single-event path byte-for-byte. Resilient step
+ * dispatch composes with the fold (see `isResilientStepDispatchEnabled`):
+ * the folded steps' queue messages publish before their creates commit.
  *
  * Reads `process.env.WORKFLOW_BATCH_TRANSITIONS` lazily. Default **ON**;
  * disabled only by an explicit `'0'` / `'false'` (case-insensitive), the

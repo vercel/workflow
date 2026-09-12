@@ -1632,119 +1632,65 @@ export function workflowEntrypoint(
                   // will pick up the replay.
                   if (incomingStepId && incomingStepName) {
                     try {
-                      // Resilient step dispatch: the producer parallelized the
-                      // `step_created` write with this queue publish, so the
-                      // step entity may not exist yet when this delivery
-                      // executes: the delivery beat the write, or the write
-                      // failed transiently and this message carries the only
-                      // copy of the input. Idempotently re-ensure the event
-                      // from the message's `stepInput`, keyed by the step's
-                      // correlation id, so the producer's write and this
-                      // re-ensure converge on exactly one event.
+                      // Resilient step dispatch: the producer published this
+                      // message without waiting for the step's `step_created`
+                      // to commit (inside the batched fan-out fold it is sent
+                      // before the createBatch is even POSTed), so the step
+                      // entity may not exist yet when this delivery executes:
+                      // the delivery beat the write, or the write failed
+                      // transiently and this message carries the only copy of
+                      // the input. Recovery is IN-BAND, below: when the bare
+                      // `step_started` rejects with "step not found" and the
+                      // message carries `stepInput`, the executor is re-run
+                      // ONCE with that input as a lazy `step_started`, which
+                      // every World turns into an atomic create + start
+                      // (entity, synthetic `step_created`, and the claim in
+                      // one write, the same shape the inline path uses). One
+                      // round trip instead of the former three (bare start,
+                      // `step_created` write, bare start again).
                       //
-                      // Invoked from two places:
+                      // A lazy `step_started` on a step that already exists is
+                      // a 409 → `skipped` on every World, deliberately (it is
+                      // the inline path's exactly-one-owner gate). So the lazy
+                      // start is only ever the recovery for a step-missing
+                      // bare start, never the first attempt, and a redelivery
+                      // or retry of a materialized step keeps the bare start.
+                      // If the lazy start is `skipped`, the step now exists;
+                      // whether this delivery may still bare-start it is
+                      // decided by reading the entity (see the fallback
+                      // below). There is no eager pre-ensure on redelivery any
+                      // more: the in-band path covers a redelivered dispatch
+                      // whose step is missing at the same round-trip count the
+                      // eager `step_created` write did, and a redelivery whose
+                      // step exists (the common case: a crash mid-body, a
+                      // throttle) no longer pays a conditional write that
+                      // only ever came back 409.
                       //
-                      //  - IN-BAND (the load-bearing path): when the bare
-                      //    `step_started` below rejects with "step not found",
-                      //    the executor catch materializes the step and
-                      //    retries once, all within this delivery. This must
-                      //    not rely on delivery attempts: world-vercel's
-                      //    failure-retry path re-enqueues a FRESH message
-                      //    (attempt resets to 1), so an attempt-gated recovery
-                      //    is unreachable on the retry chain and the step
-                      //    would stall until the ORIGINAL message's
-                      //    ~300s visibility-timeout redelivery, measured
-                      //    exactly so in the durabench parallel sweeps before
-                      //    this path existed.
-                      //  - EAGERLY on a genuine redelivery (attempt > 1): a
-                      //    redelivered dispatch already had its create race
-                      //    resolved either way, so ensuring up front saves the
-                      //    failed-start round trip the in-band recovery would
-                      //    otherwise pay. On the legacy prologue it overlaps
-                      //    the run fetch (no wall-time cost); on the
-                      //    fetch-free (runContext) prologue it is the sole
-                      //    pre-step write and still the cheaper trade. First
-                      //    deliveries skip it: the producer's write almost
-                      //    always lands, and an eager ensure would burn a
-                      //    conditional write per step.
-                      const ensureStepFromMessage = async (): Promise<
-                        'ok' | 'gone'
-                      > => {
-                        if (!stepInput) return 'ok';
-                        try {
-                          await world.events.create(
-                            runId,
-                            {
-                              eventType: 'step_created',
-                              specVersion: SPEC_VERSION_CURRENT,
-                              correlationId: incomingStepId,
-                              eventData: {
-                                stepName: incomingStepName,
-                                workflowName,
-                                // Typed Uint8Array by StepDispatchInputSchema:
-                                // a non-binary (mangled) payload fails the
-                                // message parse above and never reaches this
-                                // write.
-                                input: stepInput.input,
-                              },
-                            },
-                            {
-                              requestId,
-                              // Marks this create as a dispatch re-ensure so
-                              // a guard-enforcing backend can refuse it when
-                              // the producer's write was 412-rejected (the
-                              // dispatch was revoked). Surfaces as
-                              // RunExpiredError → 'gone' below, acking the
-                              // message. Worlds without the guard ignore it.
-                              viaStepDispatch: true,
-                            }
-                          );
-                          // This delivery materialized the step, the
-                          // completion of the producer's recovery path.
-                          span?.setAttributes(
-                            Attribute.StepResilientDispatchMaterialized(true)
-                          );
-                          runtimeLogger.warn(
-                            'Materialized step_created from the queue message — the producer\u2019s direct write did not land',
-                            {
-                              workflowRunId: runId,
-                              stepId: incomingStepId,
-                              stepName: incomingStepName,
-                            }
-                          );
-                        } catch (err) {
-                          // The common case: the producer's write (or a
-                          // concurrent re-ensure) already landed.
-                          if (EntityConflictError.is(err)) return 'ok';
-                          // Nothing left to execute: the run went terminal
-                          // (matches the run-status check below), or a
-                          // guard-enforcing backend revoked this dispatch
-                          // (410 `step-dispatch-revoked`, the producer's
-                          // write was 412-rejected and the replay restarted
-                          // with a corrected schedule).
-                          if (RunExpiredError.is(err)) return 'gone';
-                          // Transient: rethrow so the queue redelivers and a
-                          // later attempt converges instead of executing (and
-                          // acking) a step that may not exist.
-                          throw err;
-                        }
-                        return 'ok';
-                      };
+                      // This cannot rely on delivery attempts: world-vercel's
+                      // failure-retry path re-enqueues a FRESH message (attempt
+                      // resets to 1), so an attempt-gated recovery is
+                      // unreachable on the retry chain and the step would stall
+                      // until the ORIGINAL message's ~300s visibility-timeout
+                      // redelivery, measured exactly so in the durabench
+                      // parallel sweeps before this path existed.
+                      //
                       // Run identity for this execution. A message stamped
                       // with `runContext` (immutable run fields the producer
                       // held at dispatch time) skips the blocking `runs.get`
                       // entirely — one less round trip on the TTLS-critical
                       // path, and N fewer reads on the run's partition per
-                      // fan-out (vercel/workflow#3456). The run-status early
-                      // exit is not lost: every World rejects a `step_started`
-                      // claim on a terminal run (RunExpired → gone, terminal
-                      // step → skipped) — including a redelivered start whose
-                      // step row still reads `running`, which world-local and
-                      // world-postgres reject as of this change (previously
-                      // only world-vercel's run-status fence covered that
-                      // shape, and the body could re-run on a finished run).
-                      // Older messages without the field keep the legacy
-                      // fetch.
+                      // fan-out (vercel/workflow#3456). With the resilient
+                      // recovery in-band as well, a first delivery on this
+                      // path reads and writes NOTHING before its `step_started`
+                      // claim. The run-status early exit is not lost: every
+                      // World rejects a `step_started` claim on a terminal run
+                      // (RunExpired → gone, terminal step → skipped) —
+                      // including a redelivered start whose step row still
+                      // reads `running`, which world-local and world-postgres
+                      // reject as of #3457 (previously only world-vercel's
+                      // run-status fence covered that shape, and the body
+                      // could re-run on a finished run). Older messages
+                      // without the field keep the legacy fetch.
                       let bgRun: WorkflowRun | undefined;
                       let runIdentity: {
                         deploymentId: string;
@@ -1761,40 +1707,11 @@ export function workflowEntrypoint(
                         )
                       );
                       if (runContext) {
-                        // The eager redelivery re-ensure has no run fetch to
-                        // overlap with on this path — it is kept because a
-                        // redelivered dispatch has already had its create race
-                        // resolved, so one conditional write here is cheaper
-                        // than letting the bare start fail and paying the
-                        // in-band recovery's extra start round trip.
-                        const ensureOutcome =
-                          stepInput && metadata.attempt > 1
-                            ? await ensureStepFromMessage()
-                            : ('ok' as const);
-                        if (ensureOutcome === 'gone') {
-                          runtimeLogger.debug(
-                            'Run already finished, skipping background step',
-                            { workflowRunId: runId }
-                          );
-                          return;
-                        }
                         runIdentity = runContext;
                       } else {
-                        const [fetched, ensureOutcome] = await Promise.all([
-                          world.runs.get(runId, {
-                            resolveData: 'none',
-                          }),
-                          stepInput && metadata.attempt > 1
-                            ? ensureStepFromMessage()
-                            : ('ok' as const),
-                        ]);
-                        if (ensureOutcome === 'gone') {
-                          runtimeLogger.debug(
-                            'Run already finished, skipping background step',
-                            { workflowRunId: runId }
-                          );
-                          return;
-                        }
+                        const fetched = await world.runs.get(runId, {
+                          resolveData: 'none',
+                        });
                         if (fetched.status !== 'running') {
                           runtimeLogger.debug(
                             'Run already finished, skipping background step',
@@ -1819,8 +1736,14 @@ export function workflowEntrypoint(
                       // Covers every queued step execution — first dispatch and
                       // redeliveries/retries alike. The re-route payload keeps
                       // the message's stepInput/runContext so the target
-                      // deployment's consumer retains the resilient re-ensure
-                      // and the fetch-free prologue.
+                      // deployment's consumer retains the in-band resilient
+                      // recovery and the fetch-free prologue. The input matters
+                      // most here: a publish-first message may be the only
+                      // copy of it while the producer's step_created is still
+                      // in flight (or failed), and without it the pinned
+                      // deployment's bare start would find no step and have
+                      // nothing to materialize it from, spinning until the
+                      // producer's own recovery.
                       if (
                         (await guardDeployment(
                           {
@@ -1904,7 +1827,9 @@ export function workflowEntrypoint(
                         // step_started of a queue-driven execution
                         // intentionally clears inline ownership (the step is
                         // queue-owned from this point).
-                        const executeQueuedStep = () =>
+                        const executeQueuedStep = (
+                          lazyStepInput?: Uint8Array
+                        ) =>
                           executeStep({
                             world,
                             workflowRunId: runId,
@@ -1923,31 +1848,185 @@ export function workflowEntrypoint(
                             ...(bgResumeTracking
                               ? { resumeTracking: bgResumeTracking }
                               : {}),
+                            // Resilient recovery only (see below): the lazy
+                            // `step_started` that materializes the step from
+                            // the message's payload. Awaited, never
+                            // optimistic: a queued execution has a peer that
+                            // may have created the step in the meantime, and
+                            // the 409 that says so must be seen before the
+                            // body runs, or the bare-start fallback below
+                            // would run it a second time. No ownerMessageId:
+                            // the recovered step is queue-owned like every
+                            // other bare start on this path.
+                            ...(lazyStepInput !== undefined
+                              ? { lazyStepInput, suppressOptimisticStart: true }
+                              : {}),
                           });
+                        /**
+                         * A `skipped` bare start is a conflict the World mapped
+                         * (`EntityConflictError`), and a conflict on a start
+                         * has more than one reading: the step is already
+                         * `running` or finished (a peer delivery or the inline
+                         * path won it, the only reading the executor assumes),
+                         * the step does not exist at all, or the step is still
+                         * `pending`. The last one is never a legitimate refusal
+                         * (a start is allowed from `pending`) and is what a
+                         * World returns when its start races the create it is
+                         * conditioned on: publish-first delivers this message
+                         * while the producer's `step_created` is still
+                         * committing, the conditional start misses the entity,
+                         * and the re-read that phrases the rejection already
+                         * sees the committed `pending` row. Acknowledging that
+                         * as `skipped` strands the step forever: every later
+                         * re-publish of it is deduplicated against this
+                         * message (vercel/workflow#4102, the race harness's
+                         * `stuck` blocked-branch runs). So the entity is the
+                         * arbiter: `running` / terminal acks as the loser,
+                         * missing materializes from the payload, `pending`
+                         * retries the start once, and a step still `pending`
+                         * after that fails the delivery so the queue redelivers
+                         * it rather than acknowledging a step nobody started.
+                         */
+                        const arbitrateSkippedStart = async (
+                          skipped: Awaited<ReturnType<typeof executeStep>>,
+                          startsLeft: number
+                        ): Promise<Awaited<ReturnType<typeof executeStep>>> => {
+                          let existing: Awaited<
+                            ReturnType<typeof world.steps.get>
+                          >;
+                          try {
+                            existing = await world.steps.get(
+                              runId,
+                              incomingStepId,
+                              { resolveData: 'none' }
+                            );
+                          } catch (err) {
+                            if (!stepInput || !isStepMissingError(err)) {
+                              throw err;
+                            }
+                            // The conflict named a step that does not exist:
+                            // the same recovery as a step-missing bare start.
+                            return await materializeMissingStep(
+                              stepInput.input
+                            );
+                          }
+                          if (existing.status !== 'pending') {
+                            runtimeLogger.debug(
+                              'step_started lost to a peer delivery that already started the step; acknowledging without executing',
+                              {
+                                workflowRunId: runId,
+                                stepId: incomingStepId,
+                                stepName: incomingStepName,
+                                status: existing.status,
+                              }
+                            );
+                            return skipped;
+                          }
+                          if (startsLeft <= 0) {
+                            // Not a WorkflowRuntimeError: this must not fail
+                            // the run, only this delivery, so the queue
+                            // redelivers it (retry semantics of the World's
+                            // queue) and the step gets another start.
+                            throw new Error(
+                              `Queued step "${incomingStepId}" (${incomingStepName}) is still pending after its step_started was refused with a conflict twice; failing the delivery so the queue redelivers it instead of acknowledging a step nobody started`
+                            );
+                          }
+                          runtimeLogger.warn(
+                            'step_started refused with a conflict while the step is still pending (the start raced its create on the World); retrying the start',
+                            {
+                              workflowRunId: runId,
+                              stepId: incomingStepId,
+                              stepName: incomingStepName,
+                            }
+                          );
+                          return await startPendingStep(startsLeft - 1);
+                        };
+                        /** A bare start whose conflict, if any, is arbitrated. */
+                        const startPendingStep = async (
+                          startsLeft: number
+                        ): Promise<Awaited<ReturnType<typeof executeStep>>> => {
+                          const result = await executeQueuedStep();
+                          if (result.type !== 'skipped') {
+                            return result;
+                          }
+                          return await arbitrateSkippedStart(
+                            result,
+                            startsLeft
+                          );
+                        };
+                        /**
+                         * In-band resilient recovery: a missing step on a
+                         * stepInput-carrying message means this delivery
+                         * outran (or outlived a transient failure of) the
+                         * producer's step_created write. Materialize the step
+                         * from the payload with ONE lazy step_started, within
+                         * this delivery (see the comment above the run fetch
+                         * for why this cannot wait for a redelivery).
+                         */
+                        const materializeMissingStep = async (
+                          input: Uint8Array
+                        ): Promise<Awaited<ReturnType<typeof executeStep>>> => {
+                          const lazyResult = await executeQueuedStep(input);
+                          if (lazyResult.type !== 'skipped') {
+                            if (lazyResult.type !== 'gone') {
+                              // This delivery materialized the step, the
+                              // completion of the producer's recovery
+                              // path.
+                              span?.setAttributes(
+                                Attribute.StepResilientDispatchMaterialized(
+                                  true
+                                )
+                              );
+                              runtimeLogger.warn(
+                                'Materialized the step from the queue message with a lazy step_started: the producer’s step_created had not landed',
+                                {
+                                  workflowRunId: runId,
+                                  stepId: incomingStepId,
+                                  stepName: incomingStepName,
+                                }
+                              );
+                            }
+                            return lazyResult;
+                          }
+                          // The lazy start lost its atomic create-claim. The
+                          // same 409 covers two different winners: the
+                          // producer's step_created landing between the
+                          // failed bare start and this write (the step
+                          // exists, never started: `pending`), or a peer
+                          // delivery of this same message on another
+                          // instance materializing AND starting it with its
+                          // own lazy start (`running`, or already terminal).
+                          // `runStepSingleFlight` only serializes within this
+                          // process, so the entity arbitrates: one bare start
+                          // for a pending step (redelivery of a pending step
+                          // is what the bare start already handles, retries
+                          // included, so `pending` is the whole "safe to
+                          // start" set); for anything else this delivery is
+                          // the loser and acks without executing, exactly
+                          // like an in-process single-flight loser.
+                          return await arbitrateSkippedStart(lazyResult, 1);
+                        };
                         stepResult = await runStepSingleFlight(
                           runId,
                           incomingStepId,
                           async () => {
+                            let first: Awaited<ReturnType<typeof executeStep>>;
                             try {
-                              return await executeQueuedStep();
+                              first = await executeQueuedStep();
                             } catch (err) {
-                              // In-band resilient recovery: a missing step on
-                              // a stepInput-carrying message means this
-                              // delivery outran (or outlived a transient
-                              // failure of) the producer's parallel
-                              // step_created write. Materialize the event
-                              // from the payload and retry ONCE, within this
-                              // delivery. See ensureStepFromMessage for why
-                              // this cannot wait for a redelivery. A second
-                              // failure propagates as before.
+                              // A second failure of the lazy start propagates
+                              // as before.
                               if (!stepInput || !isStepMissingError(err)) {
                                 throw err;
                               }
-                              if ((await ensureStepFromMessage()) === 'gone') {
-                                return { type: 'gone' as const };
-                              }
-                              return await executeQueuedStep();
+                              return await materializeMissingStep(
+                                stepInput.input
+                              );
                             }
+                            if (first.type !== 'skipped') {
+                              return first;
+                            }
+                            return await arbitrateSkippedStart(first, 1);
                           }
                         );
                       } finally {
