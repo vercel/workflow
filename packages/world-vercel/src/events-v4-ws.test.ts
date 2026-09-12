@@ -9,8 +9,9 @@
  * what happens when it isn't one this client understands.
  */
 
+import * as otel from '@opentelemetry/api';
 import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
-import { encode } from 'cbor-x';
+import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -523,5 +524,77 @@ describe('withEventPostRetry over ws', () => {
       )
     ).rejects.toThrow(EntityConflictError);
     expect(requestMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The write's traceparent/tracestate ride the frame envelope (not `event`,
+// which is the HTTP wire format) so server spans parent to the write rather
+// than to the connection's upgrade.
+describe('per-frame trace context', () => {
+  afterEach(() => {
+    otel.propagation.disable();
+  });
+
+  /** Decode the CBOR meta block of a single encoded frame. */
+  const frameMeta = (frame: Uint8Array): Record<string, unknown> => {
+    const metaLen = new DataView(frame.buffer, frame.byteOffset).getUint32(
+      0,
+      false
+    );
+    return decode(frame.subarray(4, 4 + metaLen));
+  };
+
+  const captureFrame = () => {
+    let frame: Uint8Array | undefined;
+    requestMock.mockImplementation(
+      async (...args: unknown[]): Promise<WsFrameReply> => {
+        const build = args[0] as (reqId: number) => Uint8Array;
+        frame = build(1);
+        return ack();
+      }
+    );
+    return () => {
+      if (!frame) throw new Error('transport.request never built a frame');
+      return frameMeta(frame);
+    };
+  };
+
+  it('stamps traceparent and tracestate onto the frame envelope', async () => {
+    otel.propagation.setGlobalPropagator({
+      inject: (_context, carrier, setter) => {
+        setter.set(
+          carrier,
+          'traceparent',
+          '00-11111111111111111111111111111111-2222222222222222-01'
+        );
+        setter.set(carrier, 'tracestate', 'vendor=1');
+      },
+      extract: (context) => context,
+      fields: () => ['traceparent', 'tracestate'],
+    });
+    const meta = captureFrame();
+
+    await createWorkflowRunEventV4(input, { token: 'test-token' });
+
+    expect(meta()).toMatchObject({
+      reqId: 1,
+      type: 'event',
+      traceparent: '00-11111111111111111111111111111111-2222222222222222-01',
+      tracestate: 'vendor=1',
+    });
+    // The event meta itself is the HTTP wire format and must stay free of
+    // WS-only fields.
+    expect(
+      (meta().event as Record<string, unknown>).traceparent
+    ).toBeUndefined();
+  });
+
+  it('omits the fields entirely when no propagator injects anything', async () => {
+    const meta = captureFrame();
+
+    await createWorkflowRunEventV4(input, { token: 'test-token' });
+
+    expect(meta()).not.toHaveProperty('traceparent');
+    expect(meta()).not.toHaveProperty('tracestate');
   });
 });
