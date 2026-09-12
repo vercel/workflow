@@ -240,7 +240,7 @@ export async function handoffWorkflow(channelId: string) {
 }
 ```
 
-After calling `dispose()`, the hook will no longer receive events and its token becomes available for other workflows to use.
+The release is committed at the workflow's next suspension, after which the token becomes available for other workflows to use. Payloads accepted before the release is committed are still delivered, to awaiters and to `for await` iteration, which ends once the release is durable, so nothing sent between the `dispose()` call and the release taking effect is dropped.
 
 ### Automatic disposal with `using`
 
