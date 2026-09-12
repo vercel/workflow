@@ -9,9 +9,9 @@ interface WorldVersionSelectProps {
 
 /**
  * Version switcher for the world detail pages. World docs are versioned like
- * the docs trees (/worlds/* for the current version, /v5/worlds/* for the
- * pre-release), but the worlds listing page has no natural home for the docs
- * sidebar switcher — so each world page renders its own.
+ * the docs trees (/worlds/* for the current version, /v4/worlds/* for the
+ * maintenance version), but the worlds listing page has no natural home for
+ * the docs sidebar switcher — so each world page renders its own.
  */
 export function WorldVersionSelect({
   current,

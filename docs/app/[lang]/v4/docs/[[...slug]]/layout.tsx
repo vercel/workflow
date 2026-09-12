@@ -1,7 +1,7 @@
 import { DocsLayout } from '@/components/geistdocs/docs-layout';
-import { PreReleaseBanner } from '@/components/geistdocs/pre-release-banner';
+import { MaintenanceBanner } from '@/components/geistdocs/maintenance-banner';
 import { getDocsTreeForVersion } from '@/lib/geistdocs/version-source';
-import { PRE_RELEASE_VERSION } from '@/lib/geistdocs/versions';
+import { MAINTENANCE_VERSION } from '@/lib/geistdocs/versions';
 
 // This layout lives inside `[[...slug]]` rather than next to it so that
 // `params.slug` is available: the sidebar needs the active page to decide
@@ -9,16 +9,21 @@ import { PRE_RELEASE_VERSION } from '@/lib/geistdocs/versions';
 const Layout = async ({
   children,
   params,
-}: LayoutProps<'/[lang]/v5/docs/[[...slug]]'>) => {
+}: LayoutProps<'/[lang]/v4/docs/[[...slug]]'>) => {
   const { lang, slug } = await params;
   return (
     <div className="bg-background-200">
-      <PreReleaseBanner pathname={`/${lang}/v5/docs`} />
+      {/* Deep-link the banner to the same page on the latest version; pages
+          that only exist in v4 are caught by the version-switcher fallback
+          redirects in next.config.ts. */}
+      <MaintenanceBanner
+        pathname={`/${lang}/v4/docs${slug?.length ? `/${slug.join('/')}` : ''}`}
+      />
       <DocsLayout
         activeSlug={slug}
-        currentVersion={PRE_RELEASE_VERSION.id}
+        currentVersion={MAINTENANCE_VERSION.id}
         lang={lang}
-        tree={getDocsTreeForVersion(lang, PRE_RELEASE_VERSION)}
+        tree={getDocsTreeForVersion(lang, MAINTENANCE_VERSION)}
       >
         {children}
       </DocsLayout>

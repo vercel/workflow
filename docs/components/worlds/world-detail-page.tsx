@@ -7,7 +7,7 @@ import { notFound, redirect } from 'next/navigation';
 import type { ComponentProps, ComponentType, ReactNode } from 'react';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
 import { getMDXComponents } from '@/components/geistdocs/mdx-components';
-import { v5WorldsSource, worldsSource } from '@/lib/geistdocs/source';
+import { v4WorldsSource, worldsSource } from '@/lib/geistdocs/source';
 import { rewriteHrefForVersion } from '@/lib/geistdocs/version-href';
 import type { DocsVersionId } from '@/lib/geistdocs/versions';
 import { getWorldData } from '@/lib/worlds-data';
@@ -34,13 +34,13 @@ const officialWorldMdxSlugs: Record<string, string[]> = {
 };
 
 const VERSION_SOURCES = {
-  v4: worldsSource,
-  v5: v5WorldsSource,
+  v5: worldsSource,
+  v4: v4WorldsSource,
 } as const;
 
 const VERSION_PREFIXES = {
-  v4: '',
-  v5: '/v5',
+  v5: '',
+  v4: '/v4',
 } as const;
 
 export const officialWorldIds = Object.keys(officialWorldMdxSlugs);
@@ -58,10 +58,10 @@ export async function generateWorldMetadata(
   }
 
   const versionPrefix = VERSION_PREFIXES[version];
-  const isPreRelease = version === 'v5';
+  const isMaintenance = version === 'v4';
 
   return {
-    title: `${data.world.name} World${isPreRelease ? ' · Pre-release' : ''} | Workflow SDK`,
+    title: `${data.world.name} World${isMaintenance ? ' · v4' : ''} | Workflow SDK`,
     description: data.world.description,
     openGraph: {
       images: [`/og/worlds/${id}`],
@@ -72,7 +72,7 @@ export async function generateWorldMetadata(
         'text/markdown': `${versionPrefix}/worlds/${id}.md`,
       },
     },
-    ...(isPreRelease
+    ...(isMaintenance
       ? {
           robots: {
             index: false,
@@ -103,7 +103,7 @@ export async function WorldDetailPage({
 
   // Community worlds have no versioned content — their canonical page lives
   // at /worlds/<id> only.
-  if (version !== 'v4' && !isOfficial) {
+  if (version !== 'v5' && !isOfficial) {
     redirect(`/worlds/${id}`);
   }
 
@@ -133,7 +133,7 @@ export async function WorldDetailPage({
         }));
 
       // Content links are authored against the raw /docs/... and /worlds/...
-      // URL spaces; on the pre-release route they are rewritten into the /v5
+      // URL spaces; on the maintenance route they are rewritten into the /v4
       // view so navigation doesn't escape to the current-version pages.
       const RelativeLink = createRelativeLink(source, page);
       const VersionedLink = (props: ComponentProps<'a'>) => (

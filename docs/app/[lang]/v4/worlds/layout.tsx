@@ -4,7 +4,7 @@ import { source } from '@/lib/geistdocs/source';
 const Layout = async ({
   children,
   params,
-}: LayoutProps<'/[lang]/v5/worlds'>) => {
+}: LayoutProps<'/[lang]/v4/worlds'>) => {
   const { lang } = await params;
   return (
     <HomeLayout tree={source.pageTree[lang]}>
