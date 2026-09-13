@@ -127,6 +127,24 @@ VERCEL_OIDC_TOKEN="$(grep VERCEL_OIDC_TOKEN workbench/nextjs-turbopack/.env.loca
 pnpm run test:e2e
 ```
 
+#### The local e2e lanes share one server process
+
+`packages/core/e2e/e2e.test.ts` is `describe.concurrent`, and on every lane
+except the Vercel ones all of it is pointed at a single app process. A test
+that drives a high resume rate therefore spends someone else's budget: each
+`resumeHook()` leaves a queue wake-up, world-local admits 1,000 deliveries in
+flight, and each delivery replays the run's whole log. The backlog outlives
+the test that created it, so what fails is the *unrelated* tests running
+concurrently with the drain — read a cluster of timeouts followed by a clean
+recovery as saturation, not as a bug in whatever timed out.
+
+Two lanes cannot absorb what the others can, and both have been over the edge:
+the QuickJS engine (several times node:vm's cost per replay) and the Windows
+runner. The `hook inbox patterns` block divides its per-hook counts by three on
+those two — see `LANE_DIVISOR` there — and that is the pattern to copy rather
+than skipping the lane, since QuickJS has its own hook implementation and
+needs the coverage. `E2E_INBOX_SCALE=N` dials the counts back up for soaks.
+
 ### Event log race repro
 
 `packages/core/e2e/event-log-race-repro.test.ts` is a dedicated harness for
