@@ -11,6 +11,7 @@ Use these workflow patterns and copy-paste code examples to implement common use
 - [**WorkflowAgent**](/cookbook/agent-patterns/durable-agent): Build durable, resumable AI agents with AI SDK's WorkflowAgent
 - [**Human-in-the-Loop**](/cookbook/agent-patterns/human-in-the-loop): Pause an agent for human approval, then resume based on the decision
 - [**Agent Cancellation**](/cookbook/agent-patterns/agent-cancellation): Stop a running agent immediately via `run.cancel()` or gracefully via a hook + `Promise.race`
+- [**Hook Inbox & Steering**](/docs/cookbook/agent-patterns/hook-inbox): Buffer hook payloads in a background subscriber to steer an agent loop, and merge several hooks into one ordered inbox
 
 ## Common patterns
 

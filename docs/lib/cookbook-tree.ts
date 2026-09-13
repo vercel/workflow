@@ -50,6 +50,7 @@ export const slugToCategory: Record<string, string> = {
   'durable-agent': 'agent-patterns',
   'human-in-the-loop': 'agent-patterns',
   'agent-cancellation': 'agent-patterns',
+  'hook-inbox': 'agent-patterns',
 
   // Integrations
   'ai-sdk': 'integrations',
@@ -152,6 +153,14 @@ export const recipes: Record<string, Recipe> = {
     description:
       'Cancel a running agent from the outside using AbortSignal — a stop hook fires controller.abort(), the agent step bails out of the model stream, and the client gets a clean stop notification.',
     category: 'agent-patterns',
+  },
+  'hook-inbox': {
+    slug: 'hook-inbox',
+    title: 'Hook Inbox & Steering',
+    description:
+      'Buffer hook payloads in a background subscriber to steer an agent loop at turn boundaries, and merge several hooks into one ordered inbox.',
+    category: 'agent-patterns',
+    skipVersions: ['v4'],
   },
 
   // Integrations

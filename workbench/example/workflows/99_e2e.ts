@@ -3894,3 +3894,326 @@ export async function crossRegionStreamWorkflow(chunkCount: number) {
   await closeCrossRegionStream(writable);
   return 'done';
 }
+
+//////////////////////////////////////////////////////////
+// Background hook subscribers and merged hook inboxes
+//////////////////////////////////////////////////////////
+
+/** Payload shape shared by the inbox workflows below. */
+type InboxMessage = { seq: number; done?: boolean };
+
+/** One item yielded by {@link mergeAsyncIterables}: the value plus which source it came from. */
+type MergedItem<T> = { index: number; value: T };
+
+/**
+ * Merges several async iterables into one, yielding each item as soon as its
+ * source produces it, tagged with the source's index. Sources can be added
+ * while the merge is being consumed via `add()`, so a workflow can start with
+ * one hook (its "identity" inbox) and merge in more later, e.g. a Slack-thread
+ * hook whose token is only known after the first reply is posted.
+ *
+ * This is plain JavaScript (no workflow primitives), so it runs unchanged in
+ * the workflow sandbox. Inside a workflow, each source's `next()` is an `await
+ * hook`, and the runtime delivers hook payloads in event-log order, so the
+ * merged order is deterministic across replays.
+ */
+function mergeAsyncIterables<T>(initial: AsyncIterable<T>[] = []) {
+  type Slot = { index: number; result: IteratorResult<T> };
+  const iterators = new Map<number, AsyncIterator<T>>();
+  const pending = new Map<number, Promise<Slot>>();
+  let nextIndex = 0;
+  // Resolved whenever a source is added, so a consumer blocked in
+  // `Promise.race` over the current sources re-races with the new one.
+  let wake!: () => void;
+  let woken = new Promise<null>((resolve) => {
+    wake = () => resolve(null);
+  });
+
+  const pull = (index: number) => {
+    const iterator = iterators.get(index);
+    if (!iterator) return;
+    pending.set(
+      index,
+      iterator.next().then((result) => ({ index, result }))
+    );
+  };
+
+  const add = (source: AsyncIterable<T>): number => {
+    const index = nextIndex++;
+    iterators.set(index, source[Symbol.asyncIterator]());
+    pull(index);
+    const previousWake = wake;
+    woken = new Promise<null>((resolve) => {
+      wake = () => resolve(null);
+    });
+    previousWake();
+    return index;
+  };
+
+  for (const source of initial) add(source);
+
+  const merged: AsyncIterable<MergedItem<T>> & {
+    add: (source: AsyncIterable<T>) => number;
+  } = {
+    add,
+    async *[Symbol.asyncIterator]() {
+      try {
+        while (pending.size > 0) {
+          const winner = await Promise.race([...pending.values(), woken]);
+          if (winner === null) continue; // a source was added: re-race
+          const { index, result } = winner;
+          if (result.done) {
+            pending.delete(index);
+            iterators.delete(index);
+            continue;
+          }
+          pull(index);
+          yield { index, value: result.value };
+        }
+      } finally {
+        // Let sources clean up. A disposed hook's iterator never settles a
+        // pending `next()`, so this is fire-and-forget.
+        for (const iterator of iterators.values()) {
+          void iterator.return?.().catch(() => {});
+        }
+      }
+    },
+  };
+  return merged;
+}
+
+/**
+ * Stands in for one agent turn (a model call plus tool calls). The `steering`
+ * argument is the inbox contents the workflow saw when it started the turn, and
+ * it is echoed back so the test can compare what the workflow *observed* with
+ * what was *recorded* in the step's arguments in the event log: a replay that
+ * observed the inbox differently from the live run would call this step with
+ * different arguments than the log holds, and the runtime would hand back the
+ * recorded return value, making the two disagree.
+ */
+async function inboxTurnStep(turn: number, steering: number[]) {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  return { turn, steering };
+}
+
+/**
+ * Pattern 1: a "background" hook subscriber. The `for await` over the hook is
+ * never awaited by the main body: it runs concurrently, appending every payload
+ * to a local inbox as it arrives. The turn loop drains the inbox at each turn
+ * boundary and passes the drained messages to the step as steering. The
+ * workflow finishes when it has run `turns` turns and the subscriber has seen
+ * the `done` marker.
+ *
+ * Determinism requirement under test: the set of messages drained at each turn
+ * boundary must be the same on every replay, i.e. each `hook_received` is
+ * delivered to the subscriber before or after a given `step_completed`
+ * consistently with the event log.
+ *
+ * With `waitForDone: false` the workflow returns as soon as the turns are
+ * over, while the subscriber is still parked on `await hook`: the common
+ * agent shape where the loop ends and nobody sends an explicit end marker.
+ * The run must still complete, and `using` must still dispose the hook.
+ */
+export async function backgroundInboxWorkflow(
+  token: string,
+  turns: number,
+  waitForDone = true
+) {
+  'use workflow';
+
+  const inbox: InboxMessage[] = [];
+  using hook = createHook<InboxMessage>({ token });
+
+  // Background subscriber: intentionally NOT awaited here.
+  const subscriber = (async () => {
+    let count = 0;
+    for await (const message of hook) {
+      if (message.done) break;
+      inbox.push(message);
+      count++;
+    }
+    return count;
+  })();
+
+  const turnLog: {
+    turn: number;
+    steeringSeen: number[];
+    steeringApplied: number[];
+  }[] = [];
+  for (let turn = 0; turn < turns; turn++) {
+    const steering = inbox.splice(0).map((m) => m.seq);
+    const result = await inboxTurnStep(turn, steering);
+    turnLog.push({
+      turn,
+      steeringSeen: steering,
+      steeringApplied: result.steering,
+    });
+  }
+
+  const subscribed = waitForDone ? await subscriber : null;
+  const drained = inbox.splice(0).map((m) => m.seq);
+  return { turns: turnLog, drained, subscribed };
+}
+
+/**
+ * A background subscriber wrapped as an inbox with `drain()` and `wait()`.
+ * `wait()` resolves once a message has been pushed (or the source ended), so a
+ * loop can `await inbox.wait()` instead of spinning; while nothing is buffered
+ * the only pending promise is the subscriber's `await hook`, so the run
+ * suspends durably.
+ */
+function subscribeInbox<T>(source: AsyncIterable<T>, isEnd: (v: T) => boolean) {
+  const buffered: T[] = [];
+  let ended = false;
+  let notify = () => {};
+  let changed = new Promise<void>((resolve) => {
+    notify = resolve;
+  });
+  const bump = () => {
+    const previous = notify;
+    changed = new Promise<void>((resolve) => {
+      notify = resolve;
+    });
+    previous();
+  };
+  const done = (async () => {
+    for await (const value of source) {
+      if (isEnd(value)) {
+        ended = true;
+        bump();
+        break;
+      }
+      buffered.push(value);
+      bump();
+    }
+  })();
+  return {
+    done,
+    drain: () => buffered.splice(0),
+    get ended() {
+      return ended;
+    },
+    async wait() {
+      if (buffered.length === 0 && !ended) await changed;
+    },
+  };
+}
+
+/**
+ * Pattern 1 in its "chat session" shape: instead of a fixed number of turns,
+ * the loop drains the inbox, runs a turn over what it drained, and then waits
+ * for the next message. What each turn drains depends on how many payloads
+ * the subscriber pushed between the previous turn's step result and the
+ * `wait()` resolving: a replay must reproduce the live run's grouping exactly,
+ * which is what the echoed `steering` argument checks.
+ */
+export async function inboxWaitLoopWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<InboxMessage>({ token });
+  const inbox = subscribeInbox(hook, (m) => m.done === true);
+
+  const turnLog: {
+    turn: number;
+    steeringSeen: number[];
+    steeringApplied: number[];
+  }[] = [];
+  let turn = 0;
+  while (true) {
+    await inbox.wait();
+    if (inbox.ended) break;
+    const steering = inbox.drain().map((m) => m.seq);
+    const result = await inboxTurnStep(turn, steering);
+    turnLog.push({
+      turn,
+      steeringSeen: steering,
+      steeringApplied: result.steering,
+    });
+    turn++;
+  }
+  await inbox.done;
+  return { turns: turnLog, drained: inbox.drain().map((m) => m.seq) };
+}
+
+async function recordMergedMessage(source: number, seq: number) {
+  'use step';
+  return { source, seq };
+}
+
+/**
+ * Pattern 2: several hooks merged into one async iterator. Each hook is its own
+ * token (e.g. an identity inbox, a Slack thread, an auth callback), and the
+ * workflow consumes a single ordered stream. With `stepPerMessage`, every
+ * message is also processed through a step so each payload forces a replay
+ * over a growing log. Each hook is closed by its own `done` marker; the
+ * workflow returns once every hook has been closed.
+ */
+export async function mergedHooksWorkflow(
+  tokens: string[],
+  stepPerMessage: boolean
+) {
+  'use workflow';
+
+  const hooks = tokens.map((token) => createHook<InboxMessage>({ token }));
+  const received: { source: number; seq: number }[] = [];
+  let open = hooks.length;
+
+  for await (const { index, value } of mergeAsyncIterables(hooks)) {
+    if (value.done) {
+      open--;
+      if (open === 0) break;
+      continue;
+    }
+    if (stepPerMessage) {
+      received.push(await recordMergedMessage(index, value.seq));
+    } else {
+      received.push({ source: index, seq: value.seq });
+    }
+  }
+
+  for (const hook of hooks) hook.dispose();
+  return received;
+}
+
+async function postFirstReplyStep(sessionId: string) {
+  'use step';
+  // A real app would post to Slack here and get the thread timestamp back.
+  return `thread-${sessionId}`;
+}
+
+/**
+ * Pattern 1 + 2 together, shaped like a chat session: the run starts with only
+ * its identity hook, a background subscriber drains the merged inbox, and after
+ * the first reply is posted the thread's hook is added to the same merged
+ * inbox. Messages sent to either token land in one ordered inbox. The identity
+ * hook's `done` marker ends the session.
+ */
+export async function dynamicInboxWorkflow(
+  identityToken: string,
+  sessionId: string
+) {
+  'use workflow';
+
+  const identity = createHook<InboxMessage>({ token: identityToken });
+  const inbox = mergeAsyncIterables<InboxMessage>([identity]);
+  const received: { source: number; seq: number }[] = [];
+
+  // Background subscriber over the merged inbox; runs for the whole session.
+  const subscriber = (async () => {
+    for await (const { index, value } of inbox) {
+      if (value.done) break;
+      received.push({ source: index, seq: value.seq });
+    }
+  })();
+
+  // First turn: post a reply, learn the thread id, subscribe to the thread.
+  const threadId = await postFirstReplyStep(sessionId);
+  const thread = createHook<InboxMessage>({ token: `thread:${threadId}` });
+  inbox.add(thread);
+
+  await subscriber;
+  identity.dispose();
+  thread.dispose();
+  return { threadId, received };
+}
