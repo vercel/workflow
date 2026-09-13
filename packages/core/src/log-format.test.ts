@@ -113,6 +113,75 @@ describe('composeLogLine', () => {
     `);
   });
 
+  test('renders the errorStack field as the body when the message has none', () => {
+    // The run-failure log in runtime.ts logs a bare framing line and passes
+    // the source-map-remapped stack as metadata. Dropping `errorStack`
+    // unconditionally left that call site with no stack at all.
+    const out = composeLogLine(PREFIX, 'Error while running workflow', {
+      workflowRunId: 'wrun_01ABC',
+      errorCode: 'USER_ERROR',
+      errorName: 'Error',
+      errorMessage: 'thing went wrong',
+      errorStack: [
+        'Error: thing went wrong',
+        '    at workflow (./workflows/x.ts:3:15)',
+        '    at <unknown> (.../node_modules/.pnpm/next@16.2.1/dist/server/base-server.js:1454:9)',
+      ].join('\n'),
+    });
+    // The promoted stack header carries both the class and the message, so
+    // neither is restated as a row above it.
+    expect(out).not.toMatch(/^\s+error\s+/m);
+    expect(out).not.toMatch(/^\s+Error\s*$/m);
+    expect(out).toMatchInlineSnapshot(`
+      "[workflow-sdk] Error while running workflow
+        run    wrun_01ABC
+        code   USER_ERROR
+      Error: thing went wrong
+          at workflow (./workflows/x.ts:3:15)
+              … 1 more frame in framework internals"
+    `);
+  });
+
+  test('does not duplicate a stack the message already embeds', () => {
+    const stack = [
+      'Error: boom',
+      '    at userStep (./workflows/x.ts:15:11)',
+    ].join('\n');
+    const out = composeLogLine(PREFIX, `Step blew up\n${stack}`, {
+      errorStack: stack,
+    });
+    expect(out).toBe(`[workflow-sdk] Step blew up\n${stack}`);
+  });
+
+  test('keeps the class on the header row when it carries an attribution badge', () => {
+    // The badge is something the stack cannot express, so the row still
+    // earns its line even though the stack header repeats the class.
+    const out = composeLogLine(PREFIX, 'Error while running workflow', {
+      errorAttribution: 'sdk',
+      errorName: 'CorruptedEventLogError',
+      errorStack: 'CorruptedEventLogError: corrupted event log',
+    });
+    expect(out).toMatchInlineSnapshot(`
+      "[workflow-sdk] Error while running workflow
+        sdk error · CorruptedEventLogError
+      CorruptedEventLogError: corrupted event log"
+    `);
+  });
+
+  test('keeps the class row when the stack belongs to a different class', () => {
+    // A wrapped/replaced stack can name something other than `errorName`.
+    // Dropping the row there would lose the real class.
+    const out = composeLogLine(PREFIX, 'Error while running workflow', {
+      errorName: 'FatalError',
+      errorStack: 'TypeError: undefined is not a function',
+    });
+    expect(out).toMatchInlineSnapshot(`
+      "[workflow-sdk] Error while running workflow
+        FatalError
+      TypeError: undefined is not a function"
+    `);
+  });
+
   test('falls back gracefully on machine names it cannot parse', () => {
     const out = composeLogLine(PREFIX, 'msg', {
       workflowRunId: 'wrun_X',
