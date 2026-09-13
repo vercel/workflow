@@ -1413,6 +1413,20 @@ describe.concurrent('e2e', () => {
     // per-PR regression check; set e.g. `E2E_INBOX_SCALE=4` to push several
     // hundred payloads through each pattern when hunting for ordering flakes.
     const SCALE = Math.max(1, Number(process.env.E2E_INBOX_SCALE ?? 1) || 1);
+    // Every payload costs the receiving run a replay over its whole event
+    // log, and QuickJS pays several times what node:vm does for each one. On
+    // the local worlds every replay of every run also shares the one server
+    // process the suite is pointed at (world-local admits 1000 deliveries in
+    // flight), so on the quickjs lanes the counts below saturate it: the
+    // backlog outlives this describe block and times out unrelated tests that
+    // were running concurrently. Hold those lanes at a third of the payloads.
+    // Nothing under test is a function of stream length — each assertion is
+    // about where one payload landed relative to a step — so a shorter stream
+    // exercises the same paths, and `E2E_INBOX_SCALE` dials them back up.
+    const ENGINE_DIVISOR = process.env.WORKFLOW_VM === 'quickjs' ? 3 : 1;
+    /** A per-hook message count, adjusted for the soak knob and the engine. */
+    const scaled = (count: number) =>
+      Math.max(1, Math.round((count * SCALE) / ENGINE_DIVISOR));
 
     /** Every event of `runId`, ascending, fetched as pages of EVENT_POLL_PAGE_SIZE. */
     async function listAllRunEvents(runId: string): Promise<WorkflowEvent[]> {
@@ -1461,7 +1475,7 @@ describe.concurrent('e2e', () => {
         // turn) so payloads land while a step is executing, i.e. between a
         // turn's `step_created` and its `step_completed` in the log.
         const BURSTS = TURNS - 2;
-        const BURST_SIZE = 8 * SCALE;
+        const BURST_SIZE = scaled(8);
         const MESSAGES = BURSTS * BURST_SIZE;
 
         const run = await start(await e2e('backgroundInboxWorkflow'), [
@@ -1531,7 +1545,7 @@ describe.concurrent('e2e', () => {
       async () => {
         const token = `inbox-open-${Math.random().toString(36).slice(2)}`;
         const TURNS = 4;
-        const MESSAGES = 12 * SCALE;
+        const MESSAGES = scaled(12);
 
         // `minMessages` keeps the run turning until it has seen every message,
         // so a slow lane cannot finish the run (and dispose the hook) while
@@ -1586,7 +1600,7 @@ describe.concurrent('e2e', () => {
       async () => {
         const token = `inbox-wait-${Math.random().toString(36).slice(2)}`;
         const BURSTS = 6;
-        const BURST_SIZE = 5 * SCALE;
+        const BURST_SIZE = scaled(5);
         const MESSAGES = BURSTS * BURST_SIZE;
 
         const run = await start(await e2e('inboxWaitLoopWorkflow'), [token]);
@@ -1669,9 +1683,11 @@ describe.concurrent('e2e', () => {
         // contract (the sender knows, and can start or find the next run), so
         // count it and retry the same seq against the successor's hook.
         // Bounded so a starved lane cannot turn this sender into a load
-        // generator: the parent runs TURNS * 300 ms of steps, so the cap is
-        // far above what a healthy run can absorb before it completes.
-        const MAX_MESSAGES = 60 * SCALE;
+        // generator. On a slow runner the cap is reached before the parent
+        // finishes, which ends the sender early and leaves nothing late to
+        // hand off; the assertions below stay valid (the warning says so),
+        // the hand-off chain is just not exercised on that run.
+        const MAX_MESSAGES = scaled(60);
         const accepted: number[] = [];
         let rejections = 0;
         let parentDone = false;
@@ -1804,7 +1820,7 @@ describe.concurrent('e2e', () => {
       async () => {
         const id = Math.random().toString(36).slice(2);
         const tokens = range(3).map((i) => `merge-${id}-${i}`);
-        const PER_HOOK = 40 * SCALE;
+        const PER_HOOK = scaled(40);
 
         const run = await start(await e2e('mergedHooksWorkflow'), [
           tokens,
@@ -1845,7 +1861,7 @@ describe.concurrent('e2e', () => {
       async () => {
         const id = Math.random().toString(36).slice(2);
         const tokens = range(3).map((i) => `merge-step-${id}-${i}`);
-        const PER_HOOK = 25 * SCALE;
+        const PER_HOOK = scaled(25);
 
         const run = await start(await e2e('mergedHooksWorkflow'), [
           tokens,
@@ -1899,7 +1915,7 @@ describe.concurrent('e2e', () => {
       async () => {
         const id = Math.random().toString(36).slice(2);
         const tokens = range(3).map((i) => `merge-replay-${id}-${i}`);
-        const PER_HOOK = 12 * SCALE;
+        const PER_HOOK = scaled(12);
         const STEP_DELAY_MS = 400;
         // Bursty, irregular source order (A,A,A,B,C,C,A,...), reproducible
         // from the seed printed on failure. Sends are strictly sequential so
@@ -1979,7 +1995,7 @@ describe.concurrent('e2e', () => {
         const id = Math.random().toString(36).slice(2);
         // Hook 3 never receives a payload, only its `done` at the very end.
         const tokens = range(4).map((i) => `merge-silent-${id}-${i}`);
-        const PER_HOOK = 10 * SCALE;
+        const PER_HOOK = scaled(10);
         const EARLY = 0; // closed after a third of its messages
 
         const run = await start(await e2e('mergedHooksReplayCheckWorkflow'), [
@@ -2037,8 +2053,9 @@ describe.concurrent('e2e', () => {
         const sessionId = Math.random().toString(36).slice(2);
         const identityToken = `identity-${sessionId}`;
         const threadToken = `thread:thread-${sessionId}`;
-        const PHASE_ONE = 15 * SCALE;
-        const PHASE_TWO = 30 * SCALE;
+        const PHASE_ONE = scaled(15);
+        // Even, so phase 2 alternates the two hooks an equal number of times.
+        const PHASE_TWO = 2 * scaled(15);
 
         const run = await start(await e2e('dynamicInboxWorkflow'), [
           identityToken,
