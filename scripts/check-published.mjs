@@ -78,8 +78,11 @@ function git(args) {
 function readJsonAtRef(path) {
   try {
     return JSON.parse(git(['show', `${REF}:${path}`]));
-  } catch {
-    return undefined;
+} catch (error) {
+    if (path === '.changeset/pre.json' && error.status === 128) {
+      return undefined;
+    }
+    throw error;
   }
 }
 
