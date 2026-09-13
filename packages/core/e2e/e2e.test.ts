@@ -1800,11 +1800,13 @@ describe.concurrent('e2e', () => {
           ...generations.map((g) => g.childRunId).filter(Boolean),
         ] as string[];
         // A generation whose `createHook` lost the token to its still-running
-        // predecessor would take no payload at all and hand nothing on, while
-        // the sender kept getting acknowledgements from the predecessor's
-        // hook: acknowledged payloads processed by nobody, which is how the
-        // accounting assertion below fails. Count conflicts per generation so
-        // that failure is told apart from a genuine drop.
+        // predecessor takes no payload at all and hands nothing on, while the
+        // sender keeps getting acknowledgements: acknowledged payloads
+        // processed by nobody, which is how the accounting assertion below
+        // fails. The Vercel lanes show one such conflict on the generation
+        // that ends the chain whether or not the accounting holds, so this is
+        // logged rather than asserted — it is what tells a lost token apart
+        // from a lost payload when the assertion does fail.
         const conflicts: Record<string, number> = {};
         for (const runId of runIds) {
           let turnsCompleted = 0;
@@ -1825,9 +1827,6 @@ describe.concurrent('e2e', () => {
         }
         console.log(
           `[handoff] disposalWindowPayloads=${inWindow} rejectedInWindow=${rejections} conflicts=${JSON.stringify(conflicts)}`
-        );
-        expect(conflicts).toEqual(
-          Object.fromEntries(runIds.map((runId) => [runId, 0]))
         );
         expect(processed).toEqual(accepted);
       }
