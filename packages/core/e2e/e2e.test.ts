@@ -1799,11 +1799,22 @@ describe.concurrent('e2e', () => {
           parent.runId,
           ...generations.map((g) => g.childRunId).filter(Boolean),
         ] as string[];
+        // A generation whose `createHook` lost the token to its still-running
+        // predecessor would take no payload at all and hand nothing on, while
+        // the sender kept getting acknowledgements from the predecessor's
+        // hook: acknowledged payloads processed by nobody, which is how the
+        // accounting assertion below fails. Count conflicts per generation so
+        // that failure is told apart from a genuine drop.
+        const conflicts: Record<string, number> = {};
         for (const runId of runIds) {
           let turnsCompleted = 0;
+          let seenDisposal = false;
+          conflicts[runId] = 0;
           for (const event of await listAllRunEvents(runId)) {
+            if (event.eventType === 'hook_conflict') conflicts[runId]++;
+            if (seenDisposal) continue;
             if (event.eventType === 'step_completed') turnsCompleted++;
-            else if (event.eventType === 'hook_disposed') break;
+            else if (event.eventType === 'hook_disposed') seenDisposal = true;
             else if (
               event.eventType === 'hook_received' &&
               turnsCompleted === TURNS
@@ -1813,7 +1824,10 @@ describe.concurrent('e2e', () => {
           }
         }
         console.log(
-          `[handoff] disposalWindowPayloads=${inWindow} rejectedInWindow=${rejections}`
+          `[handoff] disposalWindowPayloads=${inWindow} rejectedInWindow=${rejections} conflicts=${JSON.stringify(conflicts)}`
+        );
+        expect(conflicts).toEqual(
+          Object.fromEntries(runIds.map((runId) => [runId, 0]))
         );
         expect(processed).toEqual(accepted);
       }
