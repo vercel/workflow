@@ -131,6 +131,9 @@ export class NestLocalBuilder extends BaseBuilder {
    * named exports from CJS files because cjs-module-lexer doesn't recognize
    * SWC's _export() wrapper pattern. This rewrites the imports to use
    * createRequire() and points them to the compiled .js files in distDir.
+   *
+   * `require` comes from the ESM interop banner `createStepsBundle` emits;
+   * declaring it here too is a syntax error.
    */
   async #rewriteStepsBundleForCjs(): Promise<void> {
     const stepsPath = join(this.#outDir, 'steps.mjs');
@@ -154,12 +157,6 @@ export class NestLocalBuilder extends BaseBuilder {
       return;
     }
 
-    const requireShim = [
-      `import { createRequire as __bundled_createRequire } from 'node:module';`,
-      `const require = __bundled_createRequire(import.meta.url);`,
-      ``,
-    ].join('\n');
-
-    await writeFile(stepsPath, requireShim + rewritten);
+    await writeFile(stepsPath, rewritten);
   }
 }
