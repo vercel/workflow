@@ -28,6 +28,7 @@ Documentation structure in `node_modules/workflow/docs/`:
 - `api-reference/workflow-observability/` - Hydration and name parsing utilities (hydrate-resource-io.mdx, parse-workflow-name.mdx, etc.)
 - `ai/`: AI SDK integration docs
 - `errors/` - Error code documentation
+- `worlds/` - Per-World behavior and limits (vercel.mdx, local.mdx, postgres.mdx). Other pages link these as `/worlds/<name>`.
 
 Related packages also include bundled docs:
 

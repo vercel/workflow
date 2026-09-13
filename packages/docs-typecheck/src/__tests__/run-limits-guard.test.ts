@@ -140,6 +140,8 @@ describe('run-limit guidance in user-facing docs', () => {
 
     for (const page of PAGES_PRESENTING_THE_CEILING) {
       const text = read(page);
+      const ownSlugs = headingSlugs(text);
+
       for (const [, route, anchor] of text.matchAll(
         /\]\((\/[\w\-/]+)#([\w-]+)\)/g
       )) {
@@ -153,7 +155,36 @@ describe('run-limit guidance in user-facing docs', () => {
           `${page} links ${route}#${anchor}, but ${target} has no heading with that slug`
         ).toContain(anchor);
       }
+
+      // Same-page jumps, which carry no route to resolve against.
+      for (const [, anchor] of text.matchAll(/\]\(#([\w-]+)\)/g)) {
+        expect(
+          ownSlugs,
+          `${page} links #${anchor}, but has no heading with that slug`
+        ).toContain(anchor);
+      }
     }
+  });
+
+  it('ships the World pages to the directory the skill tells agents to grep', () => {
+    // The guidance above hangs off VERCEL_WORLD_LIMIT_ANCHOR, and the skill
+    // sends agents to `node_modules/workflow/docs/`. `docs/content/worlds/` is
+    // a sibling of `docs/content/docs/`, so it only lands in the published
+    // bundle if `prepack` copies it explicitly -- without that, every
+    // `/worlds/...` link in the bundled pages is a dead end for an agent.
+    const pkg = JSON.parse(read('packages/workflow/package.json')) as {
+      scripts: Record<string, string>;
+    };
+    expect(
+      pkg.scripts.prepack,
+      'packages/workflow prepack must copy docs/content/worlds/v5 into the bundle, so /worlds/... links resolve for agents'
+    ).toContain('docs/content/worlds/v5');
+
+    const skill = read('skills/workflow/SKILL.md');
+    expect(
+      skill,
+      'skills/workflow/SKILL.md must list `worlds/` in the bundled documentation structure'
+    ).toContain('- `worlds/`');
   });
 
   it('does not restate the managed ceiling outside the env-var reference', () => {
