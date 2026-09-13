@@ -18,6 +18,17 @@
  * holds on every commit of a release branch, not only right after a publish,
  * so a gap keeps failing the job until it is closed.
  *
+ * Manifests are read from the commit (`git show HEAD:...`), never from the
+ * working tree. When changesets are pending, the Release job's changesets step
+ * takes its *version* branch: `pnpm ci:version` rewrites every package.json in
+ * the runner's working tree to the next version and opens the "Version
+ * Packages" PR without publishing anything. A working-tree read then asks npm
+ * for a version that is not supposed to exist yet, burns the whole retry budget
+ * and reports a healthy release as broken -- on every push between a version
+ * bump being proposed and its release PR merging. Reading the commit keeps the
+ * check honest in that window: it still verifies the versions this commit
+ * actually claims, so a genuine half-shipped release stays red.
+ *
  * npm does not commit a publish synchronously: `pnpm publish` exits 0 once the
  * version is staged, and the version list and dist-tag catch up afterwards.
  * The lag is minutes, not seconds, and it scales with the tarball, so the same
@@ -32,11 +43,11 @@
  * A gap that outlives the budget is real and needs a person. 5.0.0-beta.48 left
  * `@workflow/web` staged for about a day, which no retry budget can wait out.
  *
- * Usage: node scripts/check-published.mjs [--tag <dist-tag>]
+ * Usage: node scripts/check-published.mjs [--tag <dist-tag>] [--ref <git-ref>]
  */
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -47,38 +58,68 @@ const REGISTRY = 'https://registry.npmjs.org';
 const ATTEMPTS = Number(process.env.CHECK_PUBLISHED_ATTEMPTS ?? 20);
 const DELAY_MS = Number(process.env.CHECK_PUBLISHED_DELAY_MS ?? 30_000);
 
-function readJson(path) {
-  return JSON.parse(readFileSync(path, 'utf8'));
+function argValue(flag) {
+  const index = process.argv.indexOf(flag);
+  return index !== -1 ? process.argv[index + 1] : undefined;
+}
+
+// The commit under test. Manifests come from here, not from disk, because the
+// Release job's changesets step rewrites the working tree (see the note above).
+const REF = argValue('--ref') ?? 'HEAD';
+
+function git(args) {
+  return execFileSync('git', args, {
+    cwd: root,
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+}
+
+function readJsonAtRef(path) {
+  try {
+    return JSON.parse(git(['show', `${REF}:${path}`]));
+  } catch {
+    return undefined;
+  }
 }
 
 function distTagForBranch() {
-  const argIndex = process.argv.indexOf('--tag');
-  if (argIndex !== -1 && process.argv[argIndex + 1]) {
-    return process.argv[argIndex + 1];
-  }
-  const prePath = join(root, '.changeset', 'pre.json');
-  if (existsSync(prePath)) {
-    const pre = readJson(prePath);
-    if (pre.mode === 'pre' && pre.tag) return pre.tag;
-  }
+  const explicit = argValue('--tag');
+  if (explicit) return explicit;
+  const pre = readJsonAtRef('.changeset/pre.json');
+  if (pre?.mode === 'pre' && pre.tag) return pre.tag;
   return 'latest';
 }
 
 function publishablePackages() {
-  const { ignore = [] } = readJson(join(root, '.changeset', 'config.json'));
+  const config = readJsonAtRef('.changeset/config.json');
+  if (!config) {
+    throw new Error(
+      `Cannot read .changeset/config.json at ${REF}. This script reads the ` +
+        'commit, not the working tree, so it needs a checkout with git history.'
+    );
+  }
+  const { ignore = [] } = config;
   const ignored = new Set(ignore.filter((name) => !name.includes('*')));
   const ignoredPatterns = ignore
     .filter((name) => name.includes('*'))
     .map(
       (glob) => new RegExp(`^${glob.split('*').map(escapeRegExp).join('.*')}$`)
     );
-  const packagesDir = join(root, 'packages');
+  const manifestPaths = git([
+    'ls-tree',
+    '-r',
+    '--name-only',
+    REF,
+    '--',
+    'packages/',
+  ])
+    .split('\n')
+    .filter((path) => /^packages\/[^/]+\/package\.json$/.test(path));
   const result = [];
-  for (const dir of readdirSync(packagesDir)) {
-    const manifestPath = join(packagesDir, dir, 'package.json');
-    if (!existsSync(manifestPath)) continue;
-    const manifest = readJson(manifestPath);
-    if (!manifest.name || !manifest.version || manifest.private) continue;
+  for (const manifestPath of manifestPaths) {
+    const manifest = readJsonAtRef(manifestPath);
+    if (!manifest?.name || !manifest.version || manifest.private) continue;
     if (ignored.has(manifest.name)) continue;
     if (ignoredPatterns.some((re) => re.test(manifest.name))) continue;
     result.push({ name: manifest.name, version: manifest.version });
