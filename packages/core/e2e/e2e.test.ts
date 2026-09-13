@@ -1414,19 +1414,24 @@ describe.concurrent('e2e', () => {
     // hundred payloads through each pattern when hunting for ordering flakes.
     const SCALE = Math.max(1, Number(process.env.E2E_INBOX_SCALE ?? 1) || 1);
     // Every payload costs the receiving run a replay over its whole event
-    // log, and QuickJS pays several times what node:vm does for each one. On
-    // the local worlds every replay of every run also shares the one server
-    // process the suite is pointed at (world-local admits 1000 deliveries in
-    // flight), so on the quickjs lanes the counts below saturate it: the
-    // backlog outlives this describe block and times out unrelated tests that
-    // were running concurrently. Hold those lanes at a third of the payloads.
-    // Nothing under test is a function of stream length — each assertion is
-    // about where one payload landed relative to a step — so a shorter stream
-    // exercises the same paths, and `E2E_INBOX_SCALE` dials them back up.
-    const ENGINE_DIVISOR = process.env.WORKFLOW_VM === 'quickjs' ? 3 : 1;
-    /** A per-hook message count, adjusted for the soak knob and the engine. */
+    // log, and on the local worlds every replay of every run shares the one
+    // server process the suite is pointed at (world-local admits 1000
+    // deliveries in flight). Two lanes cannot absorb the counts below at that
+    // rate: QuickJS, which pays several times what node:vm does per replay,
+    // and the Windows runner. Both wedge the server for minutes *after* this
+    // describe block finishes, and the tests running concurrently with the
+    // backlog time out — 20 of them on `E2E Local Dev (express - stable
+    // quickjs)`, the whole back half of the suite on `E2E Windows (node)`.
+    // Hold those lanes at a third of the payloads. Nothing under test is a
+    // function of stream length — each assertion is about where one payload
+    // landed relative to a step — so a shorter stream exercises the same
+    // paths, and `E2E_INBOX_SCALE` dials them back up.
+    const SINGLE_PROCESS_LIMITED =
+      process.env.WORKFLOW_VM === 'quickjs' || process.platform === 'win32';
+    const LANE_DIVISOR = SINGLE_PROCESS_LIMITED ? 3 : 1;
+    /** A per-hook message count, adjusted for the soak knob and the lane. */
     const scaled = (count: number) =>
-      Math.max(1, Math.round((count * SCALE) / ENGINE_DIVISOR));
+      Math.max(1, Math.round((count * SCALE) / LANE_DIVISOR));
 
     /** Every event of `runId`, ascending, fetched as pages of EVENT_POLL_PAGE_SIZE. */
     async function listAllRunEvents(runId: string): Promise<WorkflowEvent[]> {
