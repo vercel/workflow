@@ -42,11 +42,13 @@ For complete details on pricing, usage limits, and included allotments on Vercel
 
 For self-hosted deployments, use the [Postgres World](/worlds/postgres). For local development, use the [Local World](/worlds/local).
 
-## Per-run event limit
+## Per-run limits
 
-The Vercel World caps a single run's [event log](/docs/how-it-works/event-sourcing); see [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits) for the current ceiling. A run that reaches it fails with `MAX_EVENTS_EXCEEDED` and cannot be continued.
+The Vercel World caps how large a single run can get. It caps the run's [event log](/docs/how-it-works/event-sourcing), and separately caps how many steps one run may create; see [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits) for the current values. A run that exhausts its event budget fails with `MAX_EVENTS_EXCEEDED` and cannot be continued.
 
-Treat the cap as a backstop, not a budget. If you expect a run to accumulate tens of thousands of events, split the work into [child workflows](/cookbook/advanced/child-workflows) so each run's log stays small.
+Treat both caps as backstops, not budgets. Replay cost grows with the log, so a run slows down well before it fails: the pricing page recommends [child workflows](/cookbook/advanced/child-workflows) once a run would grow past a few thousand events, which is an order of magnitude below the ceiling. Size for that recommendation rather than for the cap.
+
+Vercel raises the per-run event and step limits on request, so an unusually large run that genuinely cannot be split is worth raising with support rather than working around.
 
 ## Multi-region
 

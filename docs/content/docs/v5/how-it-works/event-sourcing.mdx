@@ -205,9 +205,9 @@ Events are categorized by the entity type they affect. Each event contains metad
 
 ### How fast a log grows
 
-Counting the events above is how you size a run. A step that succeeds on the first attempt contributes three events; a retry adds a `step_retrying` and another `step_started`; a sleep contributes two, and a hook at least two.
+Counting the events above is how you size a run. A step that succeeds on the first attempt contributes three events; a retry adds another `step_started`, preceded by a `step_retrying` when the World emits one; a sleep contributes two, and a hook at least two.
 
-A run's log is capped — the [Vercel World](/worlds/vercel#per-run-event-limit) fails anything past its ceiling with `MAX_EVENTS_EXCEEDED`. If you expect a run to accumulate tens of thousands of events, split the work into [child workflows](/cookbook/advanced/child-workflows).
+A run's log is capped — the [Vercel World](/worlds/vercel#per-run-limits) fails anything past its ceiling with `MAX_EVENTS_EXCEEDED`. Replay reads the whole log, so a run gets slower as it grows and is worth splitting well before it fails: split into [child workflows](/cookbook/advanced/child-workflows) once a run would grow past a few thousand events.
 
 ## Terminal states
 

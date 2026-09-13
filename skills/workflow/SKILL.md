@@ -221,21 +221,31 @@ export async function parentWorkflow() {
 
 ## Run size & concurrency: know when to split
 
-Two independent things to size. Deep runs are fine — a long sequential chain of steps is not itself a problem.
+Three things to size, and all three are capped. Do NOT treat any number you remember as authoritative — the current values are published under [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits), which is the only source to quote.
 
-**Events per run.** A run's event log is capped, and the run fails with `MAX_EVENTS_EXCEEDED` past the ceiling. Do NOT treat any number you remember as authoritative — check https://vercel.com/docs/workflows/pricing#workflow-run-limits. Events are not steps: a step that succeeds on the first try records three (`step_created`, `step_started`, `step_completed`), retries add more, and hooks, sleeps, and webhooks each record their own. When you expect a run to accumulate **tens of thousands of events**, split the work into child workflows. Raising the limit is not an option — `WORKFLOW_MAX_EVENTS_OVERRIDE` only clamps *down*, and on the Vercel World the ceiling is service-owned.
+**Events per run.** A run's event log is capped, and the run fails with `MAX_EVENTS_EXCEEDED` past the ceiling. Events are not steps: a step that succeeds on the first try records three (`step_created`, `step_started`, `step_completed`), a retry records one or two more, and hooks, sleeps, and webhooks each record their own. Split into child workflows well before the ceiling — the pricing page recommends that past **a few thousand events**, because replay slows down long before the run fails.
 
-**Concurrency.** When a fan-out would put more than **~1000 steps** in flight at once, batch or bundle the work: process the list in chunks, or handle several items per step, so fewer and larger units run concurrently. Note that spawning one child run per item is the *same* fan-out width — it bounds each log, it does not reduce concurrency.
+**Steps per run.** Capped separately from events, so a long sequential chain *is* bounded even though it stays narrow. Bundle several items into one step when a chain would otherwise reach five figures.
+
+**Concurrency.** A wide fan-out is throttled rather than rejected: event creation is rate-limited per run per second, so a flat `Promise.all` over a few thousand items spends much of its time backing off. Batch or bundle instead — process the list in chunks, or handle several items per step, so fewer and larger units run concurrently. Spawning one child run per item does not by itself narrow the fan-out; it bounds each child's log and isolates failures, which is worth doing for those reasons, but it is not a substitute for chunking.
+
+You cannot raise any of these yourself — `WORKFLOW_MAX_EVENTS_OVERRIDE` only clamps *down*, and on the Vercel World the ceilings are service-owned — but Vercel raises the per-run event and step limits on request, so a genuinely large run is a support question as well as a design one.
 
 ```typescript
-// ❌ One step per item, all in flight at once
+const BATCH = 100;
+
+async function processItem(item: string) {
+  "use step";
+  return item.toUpperCase();
+}
+
+// One step per item, all in flight at once, all in one log
 export async function processAll(items: string[]) {
   "use workflow";
   await Promise.all(items.map((item) => processItem(item)));
 }
 
-// ✅ Chunked, so only BATCH steps are in flight at a time
-const BATCH = 100;
+// Chunked, so only BATCH steps are in flight at a time
 export async function processBatched(items: string[]) {
   "use workflow";
   for (let i = 0; i < items.length; i += BATCH) {
@@ -243,12 +253,21 @@ export async function processBatched(items: string[]) {
   }
 }
 
-// ✅ Bundled, so one step covers many items and the log stays short
+// Bundled, so one step covers many items and the log stays short
 async function processChunk(chunk: string[]) {
   "use step";
-  return Promise.all(chunk.map((item) => handle(item)));
+  return chunk.map((item) => item.toUpperCase());
+}
+
+export async function processBundled(items: string[]) {
+  "use workflow";
+  for (let i = 0; i < items.length; i += BATCH) {
+    await processChunk(items.slice(i, i + BATCH));
+  }
 }
 ```
+
+`processAll` is the shape to avoid at scale. `processBatched` bounds concurrency but still records events for every item. `processBundled` bounds both, because one step covers `BATCH` items — that is the only one of the three whose event count shrinks as `BATCH` grows.
 
 ## Hooks: pause & resume with external events
 

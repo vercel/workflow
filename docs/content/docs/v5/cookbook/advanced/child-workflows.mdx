@@ -21,7 +21,7 @@ Child workflows are the right choice when:
 - **You need isolated failure boundaries**: A failing child should not abort unrelated work. The parent decides how to handle failures.
 - **You want large fan-out**: Spawning 50 or 500 children is practical because each runs on its own infrastructure.
 - **You need per-item observability**: Each child workflow has its own run ID, status, and event log for monitoring.
-- **One run would otherwise get too big**: A run's event log is capped, see e.g. [Vercel World limits](/worlds/vercel#per-run-event-limit). If you expect a run to accumulate tens of thousands of events, split it so each log stays short.
+- **One run would otherwise get too big**: A run's event log and step count are both capped, see [Vercel World limits](/worlds/vercel#per-run-limits). Replay reads the whole log, so split before the cap: a run headed for more than a few thousand events belongs in several runs.
 
 For simpler cases where steps share a single event log, use [direct await composition](/cookbook/common-patterns/workflow-composition#direct-await-flattening) instead.
 
@@ -307,7 +307,7 @@ async function startAndWaitWithRetries(
 - **Export wrapped children at module scope**: The SDK registers `"use workflow"` functions statically, so a runtime higher-order function returned from `withChildCompletionHook()` cannot be passed to `start()`.
 - **Use stable hook keys**: Document IDs, job IDs, or indexes prevent token collisions between parallel children in one parent run.
 - **Use chunked spawning for large batches**: Starting 500 children at once can create a large burst of work. Break the work into chunks of 10–50.
-- **Watch the parent's log too**: Each child bounds its own log, but the parent still records the spawn and completion of every child. For very large orchestration, multiple layers of child runs may be useful.
+- **Watch the parent's log too**: Each child bounds its own log, but the parent records events for spawning and for collecting every child, so the parent's log grows with the number of children. Count those events per child against the parent's own [run limits](/worlds/vercel#per-run-limits); when the parent alone would exceed them, add a layer, so each parent spawns a modest number of intermediate runs that in turn spawn the leaves.
 - **Account for each child's retry semantics**: Steps inside child workflows retry independently. The parent sees the final `{ status, value | error }` payload from the hook.
 - **Use `deploymentId: "latest"` when children should run on the most recent deployment**: See [Versioning](/docs/foundations/versioning) for the full model and the [`start()` API reference](/docs/api-reference/workflow-api/start#using-deploymentid-latest) for compatibility considerations.
 
