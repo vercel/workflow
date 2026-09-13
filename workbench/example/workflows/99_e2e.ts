@@ -4231,3 +4231,82 @@ export async function dynamicInboxWorkflow(
   thread.dispose();
   return { threadId, received };
 }
+
+async function commitInboxDisposalStep(generation: number) {
+  'use step';
+  return generation;
+}
+
+async function startHandoffRunStep(
+  token: string,
+  turns: number,
+  carried: number[],
+  generation: number
+): Promise<string> {
+  'use step';
+  const run = await start(handoffInboxWorkflow, [
+    token,
+    turns,
+    carried,
+    generation,
+  ]);
+  return run.runId;
+}
+
+/**
+ * Pattern 1 with the "hand off" ending: the turn loop exits on its own (no
+ * end marker), the hook is disposed so the token is released, a step commits
+ * the disposal, and only then is the inbox drained one last time. Anything
+ * that landed between the last turn and the disposal is handed to a fresh run
+ * that starts with those messages as its first steering, instead of being
+ * dropped with the finished run.
+ *
+ * Two things are under test. Ordering: the late drain must be anchored after
+ * the committing step so a replay sees the same late set (a drain right after
+ * `dispose()` can race the subscriber's own delivery chain). Accounting: every
+ * payload the sender got an acknowledgement for is processed by exactly one
+ * generation, and a sender that hits the disposal window sees
+ * `HookNotFoundError` rather than a silent drop.
+ */
+export async function handoffInboxWorkflow(
+  token: string,
+  turns: number,
+  carried: number[],
+  generation: number
+) {
+  'use workflow';
+
+  const inbox: InboxMessage[] = [];
+  const hook = createHook<InboxMessage>({ token });
+  void (async () => {
+    for await (const message of hook) inbox.push(message);
+  })();
+
+  const turnLog: {
+    turn: number;
+    steeringSeen: number[];
+    steeringApplied: number[];
+  }[] = [];
+  let steering = carried;
+  for (let turn = 0; turn < turns; turn++) {
+    const result = await inboxTurnStep(turn, steering);
+    turnLog.push({
+      turn,
+      steeringSeen: steering,
+      steeringApplied: result.steering,
+    });
+    steering = inbox.splice(0).map((m) => m.seq);
+  }
+
+  // Done with this run: release the token, commit the release, then look at
+  // what arrived in the meantime.
+  hook.dispose();
+  await commitInboxDisposalStep(generation);
+  const late = [...steering, ...inbox.splice(0).map((m) => m.seq)];
+
+  let childRunId: string | null = null;
+  if (late.length > 0) {
+    childRunId = await startHandoffRunStep(token, turns, late, generation + 1);
+  }
+  return { generation, turns: turnLog, late, childRunId };
+}
