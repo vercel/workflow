@@ -1,9 +1,10 @@
 ---
 title: Hook Inbox & Steering
-description: Buffer hook payloads in the background while an agent loop runs, drain them at turn boundaries to steer the agent, and merge several hooks into one ordered inbox.
+description: Steer an agent loop with messages that arrive mid-turn, and merge several hooks into one ordered inbox, including hooks added after the session started.
 type: guide
-summary: Subscribe to a hook with a `for await` loop that the workflow body never awaits, so payloads land in a local inbox as they arrive and each agent turn can drain them. Merge multiple hooks into a single async iterator, and add hooks to the merge mid-run, while the runtime keeps delivery in event-log order across replays.
+summary: Apply the background hook subscriber to an agent loop. Messages arriving during a turn are drained at the next turn boundary and passed to the model as steering. Merge multiple hooks into a single async iterator, and add hooks to the merge mid-run, while the runtime keeps delivery in event-log order across replays.
 related:
+  - /docs/cookbook/common-patterns/background-hook-subscriber
   - /docs/foundations/hooks
   - /docs/api-reference/workflow/create-hook
   - /docs/api-reference/workflow-api/resume-hook
@@ -14,7 +15,7 @@ related:
   text="Add a steerable inbox to this durable agent loop. In the &quot;use workflow&quot; function, create one hook per session with `createHook()` from `workflow` using a deterministic token such as `session:${workflowRunId}`. Start a background subscriber: an async IIFE that runs `for await (const message of hook)` and pushes each payload into a local `inbox` array, and do NOT await it before the turn loop. In the turn loop, `inbox.splice(0)` at the start of each turn and pass the drained messages to the &quot;use step&quot; function that runs the turn. Dispose the hook with `using` or `hook.dispose()` before returning. If messages can arrive on more than one token (for example a Slack thread whose id is only known after the first reply), merge the hooks with an async-iterable merge helper that supports `add()` and subscribe to the merged iterator instead. Expose a server route that calls `resumeHook(token, payload)` from `workflow/api`. Verify that messages sent mid-turn are applied on the next turn, that replays observe the same inbox at every turn, and that messages from every token arrive in send order."
 />
 
-An agent loop runs one turn at a time: call the model, run tools, repeat. Messages from the user, or from other systems, keep arriving while a turn is in flight. Awaiting the hook directly would block the loop, and racing the hook against every turn would drop messages that arrive between races. Instead, subscribe to the hook in the background and let each turn drain what arrived since the last one.
+An agent loop runs one turn at a time: call the model, run tools, repeat. Messages from the user, or from other systems, keep arriving while a turn is in flight. Awaiting the hook directly would block the loop, and racing the hook against every turn would drop messages that arrive between races. Instead, apply the [Background Hook Subscriber](/docs/cookbook/common-patterns/background-hook-subscriber) pattern: iterate the hook in the background and let each turn drain what arrived since the last one. This recipe covers the agent-specific parts: steering at turn boundaries, and one inbox fed by several hooks.
 
 ## When to use this
 
@@ -22,7 +23,7 @@ An agent loop runs one turn at a time: call the model, run tools, repeat. Messag
 - **Cancellation and interruption**: an `end` or `stop` message should be noticed at the next turn boundary without a separate hook
 - **Multiple channels**: a session receives messages on more than one token, such as an identity token plus a Slack thread that only exists after the first reply
 
-## Pattern: background subscriber with a local inbox
+## Pattern: steering at turn boundaries
 
 The subscriber is an async function that iterates the hook and pushes into an array. The workflow body starts it and moves on. Each turn drains the array and hands the drained messages to the step that runs the turn.
 
@@ -189,55 +190,9 @@ export function mergeAsyncIterables<T>(initial: AsyncIterable<T>[] = []) {
 }
 ```
 
-### Wrapping the subscriber as an inbox
+### Waiting for the next message
 
-For a session that runs until told to stop, the loop needs to wait for the next message without spinning. Wrap the subscriber so it exposes `drain()` and `wait()`. While nothing is buffered, the only pending promise in the run is the subscriber's `await hook`, so `await inbox.wait()` suspends the workflow durably until a payload arrives.
-
-```typescript lineNumbers
-/**
- * Subscribes to `source` in the background and buffers what it yields.
- * `wait()` resolves once a message has been buffered or the source ended.
- */
-export function subscribeInbox<T>(
-  source: AsyncIterable<T>,
-  isEnd: (value: T) => boolean
-) {
-  const buffered: T[] = [];
-  let ended = false;
-  let notify = () => {};
-  let changed = new Promise<void>((resolve) => {
-    notify = resolve;
-  });
-  const bump = () => {
-    const previous = notify;
-    changed = new Promise<void>((resolve) => {
-      notify = resolve;
-    });
-    previous();
-  };
-  const done = (async () => {
-    for await (const value of source) {
-      if (isEnd(value)) {
-        ended = true;
-        bump();
-        break;
-      }
-      buffered.push(value);
-      bump();
-    }
-  })();
-  return {
-    done,
-    drain: () => buffered.splice(0),
-    get ended() {
-      return ended;
-    },
-    async wait() {
-      if (buffered.length === 0 && !ended) await changed;
-    },
-  };
-}
-```
+For a session that runs until told to stop, the loop needs to block between messages without spinning. The `subscribeInbox()` wrapper from [Background Hook Subscriber](/docs/cookbook/common-patterns/background-hook-subscriber#pattern-the-subscriber-as-an-inbox-with-drain-and-wait) gives the subscriber `drain()` and a durable `wait()`; the example below uses it over the merged stream.
 
 ### Adding a hook mid-session
 
@@ -253,6 +208,7 @@ declare function mergeAsyncIterables<T>(
 ): AsyncIterable<{ index: number; value: T }> & {
   add: (source: AsyncIterable<T>) => number;
 }; // @setup
+// subscribeInbox() is defined in the Background Hook Subscriber recipe.
 declare function subscribeInbox<T>(
   source: AsyncIterable<T>,
   isEnd: (value: T) => boolean
@@ -296,11 +252,9 @@ export async function slackSession(sessionId: string, channel: string) {
 
 ## How it works
 
-1. **The subscriber is ordinary workflow code.** `for await (const message of hook)` awaits the hook once per payload. Nothing about it is special to the runtime; it is just a promise chain the body never awaits.
-2. **Payloads are delivered in event-log order.** Every `resumeHook()` appends a `hook_received` event, and every step result appends a `step_completed` event. The runtime delivers a hook payload to the workflow before or after a step result according to their positions in the log, on the live run and on every replay. So the inbox a turn drains is the same inbox every replay drains at that turn.
-3. **The drained messages are recorded.** Passing `steering` to the step stores it in the log as that step's arguments. A replay reconstructs the inbox from `hook_received` events and calls the step with the same arguments, so the two agree.
-4. **Merging is `Promise.race` over `hook.next()` calls.** Because each payload resolves in log order, the merged stream is the log order of all participating hooks. `add()` re-races with the new hook included.
-5. **A pending subscriber does not block completion.** When the body returns, the run completes even if the subscriber is still awaiting the hook. Dispose hooks with `using` or `hook.dispose()` so the token is released for the next session.
+1. **Steering is a buffer read at a turn boundary.** The subscriber pushes payloads as they arrive; the loop reads the buffer right after a step result. The runtime delivers hook payloads and step results in event-log order, so every replay reads the same buffer at the same turn. Passing the drained messages to the step records them as its arguments, so the recorded turn and the replayed inbox always agree. The general mechanics are in [Background Hook Subscriber](/docs/cookbook/common-patterns/background-hook-subscriber#how-it-works).
+2. **Merging is `Promise.race` over `hook.next()` calls.** Because each payload resolves in log order, the merged stream is the log order of all participating hooks. `add()` re-races with the new hook included, so a hook created after a step joins the same ordered stream.
+3. **A pending subscriber does not block completion.** When the body returns, the run completes even if the subscriber is still awaiting the hook. Dispose hooks with `using` or `hook.dispose()` so the tokens are released for the next session.
 
 ## Adapting this
 
@@ -315,4 +269,5 @@ export async function slackSession(sessionId: string, channel: string) {
 - [`createHook()`](/docs/api-reference/workflow/create-hook): creates the inbox hook; hooks are `AsyncIterable`, which is what the subscriber and the merge helper consume.
 - [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook): sends a payload to a hook by token from any server-side code.
 - [`getWorkflowMetadata()`](/docs/api-reference/workflow/get-workflow-metadata): provides the run ID for a deterministic per-session token.
+- [Background Hook Subscriber](/docs/cookbook/common-patterns/background-hook-subscriber): the general form of the subscriber and the `subscribeInbox()` wrapper used here.
 - [Hooks](/docs/foundations/hooks): token design, `for await` iteration, and disposal semantics.

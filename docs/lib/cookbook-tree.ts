@@ -45,6 +45,7 @@ export const slugToCategory: Record<string, string> = {
   timeouts: 'common-patterns',
   idempotency: 'common-patterns',
   webhooks: 'common-patterns',
+  'background-hook-subscriber': 'common-patterns',
 
   // Agent Patterns
   'durable-agent': 'agent-patterns',
@@ -131,6 +132,14 @@ export const recipes: Record<string, Recipe> = {
       'Receive HTTP callbacks from external services, process them durably, and respond inline.',
     category: 'common-patterns',
   },
+  'background-hook-subscriber': {
+    slug: 'background-hook-subscriber',
+    title: 'Background Hook Subscriber',
+    description:
+      'React to hook payloads as they arrive while the workflow keeps doing other work, by iterating the hook in a subscriber the body never awaits.',
+    category: 'common-patterns',
+    skipVersions: ['v4'],
+  },
 
   // Agent Patterns
   'durable-agent': {
@@ -158,7 +167,7 @@ export const recipes: Record<string, Recipe> = {
     slug: 'hook-inbox',
     title: 'Hook Inbox & Steering',
     description:
-      'Buffer hook payloads in a background subscriber to steer an agent loop at turn boundaries, and merge several hooks into one ordered inbox.',
+      'Steer an agent loop with messages that arrive mid-turn, and merge several hooks into one ordered inbox, including hooks added after the session started.',
     category: 'agent-patterns',
     skipVersions: ['v4'],
   },

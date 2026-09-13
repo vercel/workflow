@@ -10,6 +10,7 @@
     "scheduling",
     "timeouts",
     "idempotency",
-    "webhooks"
+    "webhooks",
+    "background-hook-subscriber"
   ]
 }

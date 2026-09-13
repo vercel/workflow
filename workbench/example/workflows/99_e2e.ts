@@ -4084,13 +4084,16 @@ function subscribeInbox<T>(source: AsyncIterable<T>, isEnd: (v: T) => boolean) {
     previous();
   };
   const done = (async () => {
-    for await (const value of source) {
-      if (isEnd(value)) {
-        ended = true;
+    try {
+      for await (const value of source) {
+        if (isEnd(value)) break;
+        buffered.push(value);
         bump();
-        break;
       }
-      buffered.push(value);
+    } finally {
+      // Runs on the end marker, when the source completes on its own, and
+      // when it throws, so `wait()` always unblocks once the source stops.
+      ended = true;
       bump();
     }
   })();
