@@ -109,13 +109,13 @@ export function subscribeInbox<T>(
   source: AsyncIterable<T>,
   isEnd: (value: T) => boolean
 ) {
-  const buffered: T[] = [];
+  const buffered: T[] = []; // [!code highlight]
   let ended = false;
   let notify = () => {};
   let changed = new Promise<void>((resolve) => {
     notify = resolve;
   });
-  const bump = () => {
+  const bump = () => { // [!code highlight]
     const previous = notify;
     changed = new Promise<void>((resolve) => {
       notify = resolve;
@@ -124,26 +124,26 @@ export function subscribeInbox<T>(
   };
   const done = (async () => {
     try {
-      for await (const value of source) {
+      for await (const value of source) { // [!code highlight]
         if (isEnd(value)) break;
-        buffered.push(value);
-        bump();
+        buffered.push(value); // [!code highlight]
+        bump(); // [!code highlight]
       }
-    } finally {
+    } finally { // [!code highlight]
       // Runs on the end marker, when the source completes on its own, and
       // when it throws, so `wait()` always unblocks once the source stops.
-      ended = true;
-      bump();
+      ended = true; // [!code highlight]
+      bump(); // [!code highlight]
     }
   })();
   return {
     done,
-    drain: () => buffered.splice(0),
+    drain: () => buffered.splice(0), // [!code highlight]
     get ended() {
       return ended;
     },
-    async wait() {
-      if (buffered.length === 0 && !ended) await changed;
+    async wait() { // [!code highlight]
+      if (buffered.length === 0 && !ended) await changed; // [!code highlight]
     },
   };
 }
@@ -178,12 +178,12 @@ export async function jobConsumer(queueId: string) {
   while (true) {
     await inbox.wait(); // suspends durably while nothing is buffered // [!code highlight]
     const jobs = inbox.drain(); // [!code highlight]
-    if (jobs.length === 0) {
-      if (inbox.ended) break;
+    if (jobs.length === 0) { // [!code highlight]
+      if (inbox.ended) break; // [!code highlight]
       continue;
     }
     // Everything that arrived since the last drain is processed together.
-    await processJobs(jobs);
+    await processJobs(jobs); // [!code highlight]
   }
 }
 ```
