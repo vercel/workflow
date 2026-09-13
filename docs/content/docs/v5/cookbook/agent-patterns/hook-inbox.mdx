@@ -127,7 +127,7 @@ export type MergedItem<T> = { index: number; value: T };
 export function mergeAsyncIterables<T>(initial: AsyncIterable<T>[] = []) {
   type Slot = { index: number; result: IteratorResult<T> };
   const iterators = new Map<number, AsyncIterator<T>>();
-  const pending = new Map<number, Promise<Slot>>();
+  const pending = new Map<number, Promise<Slot>>(); // [!code highlight]
   let nextIndex = 0;
   // Resolved whenever a source is added, so a consumer blocked in
   // `Promise.race` over the current sources re-races with the new one.
@@ -139,21 +139,21 @@ export function mergeAsyncIterables<T>(initial: AsyncIterable<T>[] = []) {
   const pull = (index: number) => {
     const iterator = iterators.get(index);
     if (!iterator) return;
-    pending.set(
-      index,
-      iterator.next().then((result) => ({ index, result }))
-    );
+    pending.set( // [!code highlight]
+      index, // [!code highlight]
+      iterator.next().then((result) => ({ index, result })) // [!code highlight]
+    ); // [!code highlight]
   };
 
-  const add = (source: AsyncIterable<T>): number => {
+  const add = (source: AsyncIterable<T>): number => { // [!code highlight]
     const index = nextIndex++;
-    iterators.set(index, source[Symbol.asyncIterator]());
-    pull(index);
+    iterators.set(index, source[Symbol.asyncIterator]()); // [!code highlight]
+    pull(index); // [!code highlight]
     const previousWake = wake;
     woken = new Promise<null>((resolve) => {
       wake = () => resolve(null);
     });
-    previousWake();
+    previousWake(); // [!code highlight]
     return index;
   };
 
@@ -166,16 +166,16 @@ export function mergeAsyncIterables<T>(initial: AsyncIterable<T>[] = []) {
     async *[Symbol.asyncIterator]() {
       try {
         while (pending.size > 0) {
-          const winner = await Promise.race([...pending.values(), woken]);
-          if (winner === null) continue; // a source was added: re-race
+          const winner = await Promise.race([...pending.values(), woken]); // [!code highlight]
+          if (winner === null) continue; // a source was added: re-race // [!code highlight]
           const { index, result } = winner;
           if (result.done) {
             pending.delete(index);
             iterators.delete(index);
             continue;
           }
-          pull(index);
-          yield { index, value: result.value };
+          pull(index); // [!code highlight]
+          yield { index, value: result.value }; // [!code highlight]
         }
       } finally {
         // A disposed hook never settles its pending `next()`, so this is
