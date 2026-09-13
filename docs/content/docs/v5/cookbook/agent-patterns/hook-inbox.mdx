@@ -279,8 +279,12 @@ export async function slackSession(sessionId: string, channel: string) {
 
   while (true) {
     await inbox.wait(); // suspends durably until a message arrives // [!code highlight]
-    if (inbox.ended) break;
+    // Drain before checking for the end marker so nothing is left behind.
     const steering = inbox.drain().map(({ value }) => value.text);
+    if (steering.length === 0) {
+      if (inbox.ended) break;
+      continue;
+    }
     await runTurn(steering);
   }
 

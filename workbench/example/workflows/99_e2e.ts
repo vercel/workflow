@@ -4014,11 +4014,17 @@ async function inboxTurnStep(turn: number, steering: number[]) {
  * over, while the subscriber is still parked on `await hook`: the common
  * agent shape where the loop ends and nobody sends an explicit end marker.
  * The run must still complete, and `using` must still dispose the hook.
+ * `minMessages` keeps the turn loop going until the subscriber has seen that
+ * many payloads, so a test can send a fixed number of messages without racing
+ * the run to completion (a resume against the disposed hook would fail with
+ * HookNotFoundError). Reading the count at a turn boundary is as replay-safe
+ * as reading the inbox itself.
  */
 export async function backgroundInboxWorkflow(
   token: string,
   turns: number,
-  waitForDone = true
+  waitForDone = true,
+  minMessages = 0
 ) {
   'use workflow';
 
@@ -4026,14 +4032,14 @@ export async function backgroundInboxWorkflow(
   using hook = createHook<InboxMessage>({ token });
 
   // Background subscriber: intentionally NOT awaited here.
+  let received = 0;
   const subscriber = (async () => {
-    let count = 0;
     for await (const message of hook) {
       if (message.done) break;
       inbox.push(message);
-      count++;
+      received++;
     }
-    return count;
+    return received;
   })();
 
   const turnLog: {
@@ -4041,7 +4047,7 @@ export async function backgroundInboxWorkflow(
     steeringSeen: number[];
     steeringApplied: number[];
   }[] = [];
-  for (let turn = 0; turn < turns; turn++) {
+  for (let turn = 0; turn < turns || received < minMessages; turn++) {
     const steering = inbox.splice(0).map((m) => m.seq);
     const result = await inboxTurnStep(turn, steering);
     turnLog.push({
@@ -4122,8 +4128,13 @@ export async function inboxWaitLoopWorkflow(token: string) {
   let turn = 0;
   while (true) {
     await inbox.wait();
-    if (inbox.ended) break;
+    // Drain before checking for the end marker: payloads pushed between the
+    // previous drain and the end marker still get a turn.
     const steering = inbox.drain().map((m) => m.seq);
+    if (steering.length === 0) {
+      if (inbox.ended) break;
+      continue;
+    }
     const result = await inboxTurnStep(turn, steering);
     turnLog.push({
       turn,
