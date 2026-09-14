@@ -105,6 +105,8 @@ describe('step source registration', () => {
       discoveredSteps: new Set([stepFile]),
       discoveredWorkflows: new Set(),
       discoveredSerdeFiles: new Set([serdeFile]),
+      discoveredFiles: new Set([stepFile, serdeFile]),
+      importParents: new Map(),
     };
 
     const { manifest } = await createBuilder(
