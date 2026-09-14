@@ -98,11 +98,11 @@ For example, a workflow can run a 10-minute inline step even with `WORKFLOW_REPL
 - Producer-side recoveries are reported on the suspension span as `workflow.step.resilient_dispatch_recovered`; a consumer that materialized the event reports `workflow.step.resilient_dispatch_materialized`.
 - Set `1` to enable it.
 
-### `WORKFLOW_IMMINENT_WAIT_HORIZON_MS`
+### `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`
 
 - Default: `30000` (30 seconds)
-- An open wait (a `sleep()` whose timer has not fired, including one that lost a `Promise.race()` against a hook) keeps the per-step event-log delta optimization and turbo's forced optimistic start off only while its target time is within this many milliseconds of the runtime's clock. A wait due further out cannot complete during the step boundary being scheduled, so it does not cost the extra `events.list()` per step or exit turbo. A `wait_created` whose target time cannot be read is treated as due now.
-- Sized to cover the step boundary's own exposure window plus clock skew between the runtime and the wait timer's writer, with an order of magnitude to spare. A very large value restores the older behavior of gating on any open wait. Open hooks are unaffected: they gate regardless of this setting.
+- An open wait (a `sleep()` whose timer has not fired, including one that lost a `Promise.race()` against a hook) keeps the per-step event-log delta optimization and turbo's forced optimistic start off only if it can fire while the current invocation is still alive: its target time must fall before the end of the invocation's inline window (`WORKFLOW_V2_TIMEOUT_MS`, or the budget derived from the platform's function deadline) plus this allowance for clock skew between the runtime and the wait timer. A wait due later than that does not cost the extra `events.list()` per step or exit turbo. A `wait_created` whose target time cannot be read is treated as due now.
+- Raising the function's duration widens the window automatically. A very large value here restores the older behavior of gating on any open wait. Open hooks are unaffected: they gate regardless of this setting.
 
 ### Stale reads, and why nothing has to be rejected
 

@@ -1,5 +1,4 @@
 import type { Event } from '@workflow/world';
-import { getImminentWaitHorizonMs } from './constants.js';
 
 /**
  * Which out-of-band writers a replay's event log currently admits, computed
@@ -29,9 +28,9 @@ export interface OpenHookAndWaitState {
  * `wait_completed`, which the wait timer can resolve with
  * `wait_completed`).
  *
- * Imminent open waits (see {@link hasImminentOpenWait}) block inline deltas.
- * Open hooks and imminent open waits disable turbo's forced optimistic
- * start. Open hooks additionally suppress operator-enabled optimistic start
+ * Open waits that can fire during this invocation (see
+ * {@link hasOpenWaitDueBy}) block inline deltas. Open hooks and such waits
+ * disable turbo's forced optimistic start. Open hooks additionally suppress operator-enabled optimistic start
  * until the `step_started` claim succeeds; open waits leave that explicit,
  * idempotency-only opt-in alone.
  *
@@ -101,21 +100,20 @@ function resumeAtMs(resumeAt: unknown): number {
 }
 
 /**
- * Whether an open wait is due within `horizonMs` of `nowMs`, so its
- * `wait_completed` could plausibly land inside the window a fast path is
- * exposed to. A wait whose deadline is already past, or cannot be read,
- * is imminent. A wait with no open entry is not.
+ * Whether an open wait is due at or before `deadlineMs` (epoch ms), so its
+ * `wait_completed`, or the resume invocation carrying it, could arrive while
+ * the caller is still exposed. A wait whose deadline is already past, or
+ * cannot be read, is due. A log with no open wait is not.
  *
- * `horizonMs` defaults to {@link getImminentWaitHorizonMs}; the reasoning
- * behind its size is on `IMMINENT_WAIT_HORIZON_MS`.
+ * The runtime passes the end of the invocation's inline window plus a skew
+ * allowance; the reasoning is on `OPEN_WAIT_CLOCK_SKEW_MS`.
  */
-export function hasImminentOpenWait(
+export function hasOpenWaitDueBy(
   state: Pick<OpenHookAndWaitState, 'openWait' | 'earliestOpenWaitResumeAtMs'>,
-  nowMs: number,
-  horizonMs: number = getImminentWaitHorizonMs()
+  deadlineMs: number
 ): boolean {
   if (!state.openWait || state.earliestOpenWaitResumeAtMs === undefined) {
     return false;
   }
-  return state.earliestOpenWaitResumeAtMs <= nowMs + horizonMs;
+  return state.earliestOpenWaitResumeAtMs <= deadlineMs;
 }

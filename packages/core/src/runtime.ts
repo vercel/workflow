@@ -54,6 +54,7 @@ import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import {
   getMaxEventsOverride,
   getMaxQueueDeliveries,
+  getOpenWaitClockSkewMs,
   getPreconditionMaxInProcessRestarts,
   getPreconditionMaxReinvocations,
   getPreconditionReinvokeDelaySeconds,
@@ -92,7 +93,7 @@ import {
   withHealthCheck,
 } from './runtime/helpers.js';
 import {
-  hasImminentOpenWait,
+  hasOpenWaitDueBy,
   openHookAndWaitState,
 } from './runtime/open-hook-wait-state.js';
 import {
@@ -4294,15 +4295,19 @@ export function workflowEntrypoint(
                         }
 
                         // Open hooks/waits are consulted by all three gates
-                        // below; resolve the memoized scan once here. Wait
-                        // imminence is read against this gate's own clock:
-                        // the delta and turbo gates care whether a
-                        // `wait_completed` can land during the boundary that
-                        // starts now, not whether a wait exists at all.
+                        // below; resolve the memoized scan once here. The
+                        // delta and turbo gates care whether an open wait can
+                        // fire while THIS invocation is still alive, not
+                        // whether one exists at all: the bound is the end of
+                        // the inline window (the loop stops scheduling
+                        // batches at `noInlineReplayAfterMs`) plus clock
+                        // skew. See `OPEN_WAIT_CLOCK_SKEW_MS`.
                         const openHookWaitState = openHookWait.value;
-                        const imminentOpenWait = hasImminentOpenWait(
+                        const openWaitDueThisInvocation = hasOpenWaitDueBy(
                           openHookWaitState,
-                          Date.now()
+                          invocationStartTime +
+                            noInlineReplayAfterMs +
+                            getOpenWaitClockSkewMs()
                         );
 
                         // Inline-delta fast path gate. We request the delta
@@ -4320,18 +4325,19 @@ export function workflowEntrypoint(
                         //    siblings queued to background handlers, and no other
                         //    inline step writing its own events out of band).
                         //  - No pending wait timer from THIS suspension, and no
-                        //    open wait in the cumulative log that is due within
-                        //    the imminence horizon. A `wait_completed` is a
-                        //    resolution the replay is waiting on rather than
-                        //    an event it can observe one iteration late, so
-                        //    consuming a delta that predates it would settle
-                        //    the sleep from a view that does not contain its
-                        //    completion. A wait due far in the future cannot
-                        //    produce one during this step boundary, and since
-                        //    nothing disposes a wait, a `sleep()` that lost a
-                        //    race against a hook would otherwise hold every
-                        //    later boundary of the run on the fetch path. See
-                        //    `IMMINENT_WAIT_HORIZON_MS` for the window and why
+                        //    open wait in the cumulative log that can fire
+                        //    before this invocation's inline window ends. A
+                        //    `wait_completed` is a resolution the replay is
+                        //    waiting on rather than an event it can observe
+                        //    one iteration late, so consuming a delta that
+                        //    predates it would settle the sleep from a view
+                        //    that does not contain its completion. A wait due
+                        //    after this invocation has handed the run off
+                        //    cannot produce one here, and since nothing
+                        //    disposes a wait, a `sleep()` that lost a race
+                        //    against a hook would otherwise hold every later
+                        //    boundary of the run on the fetch path. See
+                        //    `OPEN_WAIT_CLOCK_SKEW_MS` for the bound and why
                         //    a `wait_completed` that lands anyway (an operator
                         //    force-completing the wait) is absorbed by the
                         //    next read rather than lost.
@@ -4378,7 +4384,7 @@ export function workflowEntrypoint(
                           lazyInlineSteps.length === 1 &&
                           ownedRecoverySteps.length === 0 &&
                           !suspensionResult.waitTimeout &&
-                          !imminentOpenWait;
+                          !openWaitDueThisInvocation;
 
                         // Stale-sensitive batch: a hook is open in the run (or
                         // was created by this suspension, so its hook_received
@@ -4427,16 +4433,20 @@ export function workflowEntrypoint(
                         // permanently, checked here via `openHookAndWaitState`
                         // over the cumulative event log.
                         //
-                        // An open wait latches turbo off only while its
-                        // `resumeAt` is within the imminence horizon. The
-                        // invocation a wait can spawn is its timer's resume,
-                        // which does not exist before the deadline, and by the
-                        // time a far-future one arrives this batch's
-                        // `step_started` claims have long since landed, so it
-                        // replays over them instead of racing for them. A
-                        // far-future wait therefore leaves turbo on until its
-                        // deadline comes within the horizon; only hooks latch
-                        // permanently. See `IMMINENT_WAIT_HORIZON_MS`.
+                        // An open wait latches turbo off only if it can fire
+                        // while this invocation is still alive. The invocation
+                        // a wait can spawn is its timer's resume, which does
+                        // not exist before the deadline; one that arrives
+                        // after the inline window has closed finds a run this
+                        // invocation has already handed off, and is not turbo
+                        // itself, so nothing forces a body ahead of a claim
+                        // it could race for. A wait due after that point
+                        // therefore leaves turbo on; a wait due before it
+                        // gates every batch until it completes, because even
+                        // a resume that defers to an in-flight inline step
+                        // arms a backstop wake that can land between two of
+                        // this invocation's batches. See
+                        // `OPEN_WAIT_CLOCK_SKEW_MS`.
                         //
                         // NOTE: `WORKFLOW_SEQUENTIAL_REPLAYS=1` (per-run flow
                         // topics consumed with `maxConcurrency: 1`) would in
@@ -4459,7 +4469,7 @@ export function workflowEntrypoint(
                           !suspensionResult.hasHookEvents &&
                           !suspensionResult.hasAwaitedHookCreation &&
                           !openHookWaitState.openHook &&
-                          !imminentOpenWait;
+                          !openWaitDueThisInvocation;
 
                         // Execute the inline steps in parallel. The replay
                         // budget is paused for the whole batch (step duration is
