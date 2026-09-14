@@ -132,6 +132,32 @@ When enabled, each run is given its own queue topic and the flow route is config
 
 Because it routes each run's flow invocations through a dedicated `maxConcurrency: 1` queue topic, enabling this might lead to higher queue performance overhead.
 
+### `WORKFLOW_NODE_HTTP`
+
+Set `WORKFLOW_NODE_HTTP=1` to make the Vercel World issue its HTTP requests through Node's built-in `node:http` and `node:https` modules instead of the HTTP client library (undici) it normally uses. Off by default.
+
+This exists for deployments where that library is not usable, rather than as a tuning knob. Reach for it when:
+
+- your bundler mangles the library's internals, so requests through it fail or never settle;
+- your build pairs a bundled copy of the library with a different copy inside the runtime, which can produce errors like `Cannot read private member #… from an object whose class did not declare it`;
+- you want to rule the transport out while diagnosing event-delivery or queue problems.
+
+The symptom that most often leads here is a workflow whose steps all complete while the invocation itself never returns, and whose queue messages are delivered repeatedly and never acknowledged. A killed invocation cannot acknowledge its message, so the queue redelivers it to the same deployment and each redelivery holds a function for the full `maxDuration`. Check your project's Queues view for a topic with a high received count and a delete count near zero.
+
+Requests reached through `fetch()` are covered too, so a runtime whose `fetch()` is built on the same library still benefits.
+
+<Callout type="warn">
+  Node's modules do less than the client they replace, so enabling this drops per-call-site tuning and costs throughput on every deployment. That is why it is opt-in.
+
+  - Event-log requests lose HTTP/2, so concurrent reads and writes no longer share one connection and the enlarged HTTP/2 receive windows no longer apply. This is the largest difference and it slows replays that read a large event log.
+  - Requests lose their transport-level retry. Nothing is silently dropped, because the layers above still retry event writes and redeliver queue messages, but a failure a same-connection retry would have hidden now costs a full redelivery.
+  - Stream close loses its retry of retriable server errors, so a transient failure at close can leave a stream marked closing until the run expires.
+
+  Connection pooling, keep-alive, and the request, header, and body deadlines are preserved.
+</Callout>
+
+A `dispatcher` passed to `createVercelWorld()` still wins over this variable: supplying one is an instruction to use the library. The variable only chooses which transport the World builds when you have not supplied one.
+
 ### Programmatic configuration
 
 {/*@skip-typecheck: incomplete code sample*/}

@@ -11,7 +11,7 @@ related:
   - /docs/api-reference/workflow-errors/workflow-world-error
 ---
 
-[`setAttributes`](/docs/api-reference/workflow/set-attributes) attaches plaintext string metadata to the current workflow run. These attributes appear in the Workflow CLI and web UI, and you can use them to search and filter runs through the [Analytics API](/docs/api-reference/workflow-runtime/world/analytics).
+[`setAttributes`](/docs/api-reference/workflow/set-attributes) attaches plaintext string metadata to the current workflow run. These attributes appear in the Workflow CLI and web UI, and you can search and filter runs by them from either the [CLI](#from-the-cli) or the [Analytics API](/docs/api-reference/workflow-runtime/world/analytics).
 
 You can also seed any attributes directly when starting a run:
 
@@ -81,6 +81,28 @@ Expanding an `attr_set` event (in the run sidebar or the Events tab) shows the c
 ![Expanded attr_set events showing changes and the writer](/screenshots/attributes/run-details-attr-set-events.png)
 
 ## Searching and filtering by attributes
+
+### From the CLI
+
+`workflow inspect attributes` lists the keys recorded on this project's runs,
+with how many runs carry each and when it was first and last seen:
+
+```bash
+workflow inspect attributes
+```
+
+Pass one or more `--attribute key=value` pairs to `inspect runs` to list the
+runs carrying them. Repeatable up to 8 times:
+
+```bash
+workflow inspect runs --attribute phase=received --status running
+```
+
+Both require a backend with the analytics read path. `--attribute` is ignored
+with a warning on backends without one, and `inspect attributes` reports that
+it is unavailable.
+
+### From the Analytics API
 
 The [Analytics API](/docs/api-reference/workflow-runtime/world/analytics) can discover which attribute keys exist and filter run listings by them. The `analytics` namespace is optional on `World`, so feature-detect it before use; it is absent on local, Postgres, and other custom Worlds:
 

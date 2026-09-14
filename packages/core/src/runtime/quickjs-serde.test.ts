@@ -19,6 +19,7 @@
 
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
+import { StreamError } from '@workflow/errors';
 import { QuickJS } from 'quickjs-wasi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -160,6 +161,21 @@ describe('wire parity: guest serialize matches the reference codec', () => {
         const e = new TypeError('bad type');
         e.stack = 'ts';
         return e;
+      },
+    ],
+    [
+      'StreamError',
+      '(() => { const cause = new Error("socket closed"); cause.stack = "cause-stack"; const e = new Error("stream failed", { cause }); e.name = "StreamError"; e.stack = "stream-stack"; e.status = 503; e.url = "https://workflow.example/stream"; return e; })()',
+      () => {
+        const cause = new Error('socket closed');
+        cause.stack = 'cause-stack';
+        const error = new StreamError('stream failed', {
+          cause,
+          status: 503,
+          url: 'https://workflow.example/stream',
+        });
+        error.stack = 'stream-stack';
+        return error;
       },
     ],
     [

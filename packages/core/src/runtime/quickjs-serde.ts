@@ -256,6 +256,7 @@ const SYMBOL_NAMES = [
   '@workflow/errors//HookConflictError',
   '@workflow/errors//RetryableError',
   '@workflow/errors//RuntimeDecryptionError',
+  '@workflow/errors//StreamError',
 ] as const;
 type SymbolName = (typeof SYMBOL_NAMES)[number];
 
@@ -1167,6 +1168,23 @@ export function createQuickJSSerde(
       if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
       return reduced;
     },
+    StreamError: (value) => {
+      if (!isHandle(value) || !value.isError) return false;
+      if (chainedString(value, 'name') !== 'StreamError') return false;
+      const shape = reduceErrorShape(value) as Record<string, unknown>;
+      const reduced: Record<string, unknown> = {
+        message: shape.message,
+        stack: shape.stack,
+      };
+      if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
+      const status = own(value, 'status');
+      if (status && !status.isUndefined) reduced.status = status;
+      else status?.dispose();
+      const url = own(value, 'url');
+      if (url && !url.isUndefined) reduced.url = url;
+      else url?.dispose();
+      return reduced;
+    },
     SyntaxError: namedErrorSubclassReducer('SyntaxError'),
     TypeError: namedErrorSubclassReducer('TypeError'),
     URIError: namedErrorSubclassReducer('URIError'),
@@ -1846,6 +1864,37 @@ export function createQuickJSSerde(
           define(error, 'context', context);
         }
         context?.dispose();
+      }
+      return error;
+    },
+    StreamError: (value: JSValueHandle) => {
+      const cls = registeredErrorClass('@workflow/errors//StreamError');
+      let error: JSValueHandle;
+      if (cls) {
+        const options = vm.newObject();
+        for (const property of ['cause', 'status', 'url'] as const) {
+          if (!guestHasOwn(value, property)) continue;
+          const propertyValue = own(value, property) ?? vm.undefined;
+          options.setProp(property, propertyValue);
+          if (propertyValue !== vm.undefined) propertyValue.dispose();
+        }
+        const message = own(value, 'message') ?? vm.undefined;
+        error = vm.construct(cls, message, options);
+        if (message !== vm.undefined) message.dispose();
+        options.dispose();
+        const stack = own(value, 'stack');
+        if (stack && !stack.isUndefined) define(error, 'stack', stack);
+        stack?.dispose();
+        cls.dispose();
+      } else {
+        error = buildError(i.Error, value, { name: 'StreamError' });
+        for (const property of ['status', 'url'] as const) {
+          const propertyValue = own(value, property);
+          if (propertyValue && !propertyValue.isUndefined) {
+            define(error, property, propertyValue);
+          }
+          propertyValue?.dispose();
+        }
       }
       return error;
     },

@@ -2,11 +2,11 @@ import { ReplayDivergenceError } from '@workflow/errors';
 import { parseDurationToDate, withResolvers } from '@workflow/utils';
 import type { StringValue } from 'ms';
 import { EventConsumerResult } from '../events-consumer.js';
-import { type WaitInvocationQueueItem, WorkflowSuspension } from '../global.js';
+import type { WaitInvocationQueueItem } from '../global.js';
 import {
   awaitEarlierDeliveries,
   registerDeliveryBarrier,
-  scheduleWhenIdle,
+  scheduleWorkflowSuspension,
   type WorkflowOrchestratorContext,
 } from '../private.js';
 
@@ -32,11 +32,7 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
       // If there are no events and we're waiting for wait_completed,
       // suspend the workflow until the wait fires
       if (!event) {
-        scheduleWhenIdle(ctx, () => {
-          ctx.onWorkflowError(
-            new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
-          );
-        });
+        scheduleWorkflowSuspension(ctx);
         return EventConsumerResult.NotConsumed;
       }
 

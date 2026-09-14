@@ -1,5 +1,11 @@
 # @workflow/utils
 
+## 5.0.0-beta.10
+
+### Patch Changes
+
+- [#3878](https://github.com/vercel/workflow/pull/3878) [`ffc5807`](https://github.com/vercel/workflow/commit/ffc58078d0c3cd2786d69bab7e41614566a9ea4e) Thanks [@pranaygp](https://github.com/pranaygp)! - Stop logging on healthy workflow execution: the breadcrumbs that only described the runtime working correctly now print under `DEBUG=workflow:*`. Warnings and errors are unchanged.
+
 ## 5.0.0-beta.9
 
 ### Minor Changes

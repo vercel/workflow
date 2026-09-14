@@ -446,9 +446,9 @@ describe.skipIf(isLocalDeployment())('multi-region (world-vercel)', () => {
         // Resolve by opaque token from the test process.
         const hook = await waitForHook(token, run.runId);
         expect(hook.runId).toBe(run.runId);
-        expect((hook.metadata as { customData?: string })?.customData).toBe(
-          label
-        );
+        expect(
+          ((await hook.metadata) as { customData?: string })?.customData
+        ).toBe(label);
 
         // Resume the suspended run by token — twice, sequentially, so
         // the payload order in the run's event log is deterministic.

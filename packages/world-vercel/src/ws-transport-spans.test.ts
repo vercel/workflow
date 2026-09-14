@@ -242,7 +242,56 @@ const writeSpan = (): ReadableSpan => {
   return spans[0];
 };
 
+const startedBody = (eventId = 'evnt_1') =>
+  new Uint8Array(
+    encode({
+      event: {
+        eventId,
+        runId: 'wrun_1',
+        createdAt: CREATED_AT,
+        eventType: 'step_started',
+        specVersion: 2,
+        correlationId: 'step_1',
+        eventData: { stepName: 'step' },
+      },
+      step: {
+        runId: 'wrun_1',
+        stepId: 'step_1',
+        stepName: 'step',
+        status: 'running',
+        attempt: 1,
+        createdAt: CREATED_AT,
+        updatedAt: CREATED_AT,
+        startedAt: CREATED_AT,
+      },
+    })
+  );
+
 describe('per-write client span', () => {
+  it('attributes a stamped lazy step claim', async () => {
+    await withOpenChannel(() => ({
+      status: 201,
+      body: startedBody(),
+    }));
+
+    await createWorkflowRunEventV4(
+      {
+        ...input,
+        eventType: 'step_started',
+        payload: new Uint8Array([1]),
+        ownerMessageId: 'msg_1',
+        stepName: 'step',
+      },
+      { token: 'test-token' }
+    );
+
+    const span = writeSpan();
+    expect(span.attributes['workflow.step_start.mode']).toBe(
+      'single_lazy_create_claim'
+    );
+    expect(span.attributes['workflow.step_start.owner_stamped']).toBe(true);
+  });
+
   it('emits one `http POST` CLIENT span per event write', async () => {
     await withOpenChannel();
 

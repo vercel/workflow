@@ -1,4 +1,4 @@
-import { EntityConflictError } from '@workflow/errors';
+import { EntityConflictError, StreamError } from '@workflow/errors';
 import {
   BULK_CANCEL_MAX_RUN_IDS,
   type BulkCancelWorkflowRunResult,
@@ -409,7 +409,8 @@ export async function readStream(
   try {
     return await world.streams.get(runId, streamId, options?.startIndex);
   } catch (err) {
-    throw new Error(
+    if (StreamError.is(err)) throw err;
+    throw new StreamError(
       `Failed to read stream ${streamId}: ${err instanceof Error ? err.message : String(err)}`,
       { cause: err }
     );
@@ -426,7 +427,8 @@ export async function listStreams(
   try {
     return await world.streams.list(runId);
   } catch (err) {
-    throw new Error(
+    if (StreamError.is(err)) throw err;
+    throw new StreamError(
       `Failed to list streams for run ${runId}: ${err instanceof Error ? err.message : String(err)}`,
       { cause: err }
     );

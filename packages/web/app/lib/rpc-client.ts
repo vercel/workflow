@@ -86,18 +86,6 @@ export async function fetchRun(
   return rpc('fetchRun', { worldEnv, runId, resolveData });
 }
 
-export async function fetchSteps(
-  worldEnv: EnvMap,
-  runId: string,
-  params: {
-    cursor?: string;
-    sortOrder?: 'asc' | 'desc';
-    limit?: number;
-  }
-): Promise<ServerActionResult<PaginatedResult<Step>>> {
-  return rpc('fetchSteps', { worldEnv, runId, params });
-}
-
 export async function fetchStep(
   worldEnv: EnvMap,
   runId: string,

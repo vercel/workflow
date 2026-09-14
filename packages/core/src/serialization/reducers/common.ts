@@ -15,6 +15,7 @@ import {
   HookConflictError,
   RetryableError,
   RuntimeDecryptionError,
+  StreamError,
 } from '@workflow/errors';
 import {
   arrayBufferByteLength,
@@ -347,6 +348,16 @@ export function getCommonReducers(
       }
       return reduced;
     },
+    StreamError: (value) => {
+      const base = reduceNamedErrorSubclassBase('StreamError', value);
+      if (!base) return false;
+      const reduced: SerializableSpecial['StreamError'] = { ...base };
+      const status = readProperty(value, 'status');
+      const url = readProperty(value, 'url');
+      if (typeof status === 'number') reduced.status = status;
+      if (typeof url === 'string') reduced.url = url;
+      return reduced;
+    },
     SyntaxError: makeErrorSubclassReducer('SyntaxError'),
     TypeError: makeErrorSubclassReducer('TypeError'),
     URIError: makeErrorSubclassReducer('URIError'),
@@ -514,6 +525,19 @@ export function getCommonRevivers(
       if ('cause' in value) opts.cause = value.cause;
       if (value.context !== undefined) opts.context = value.context;
       const error = new Ctor(value.message, opts);
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
+    StreamError: (value) => {
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//StreamError')
+        ] as typeof StreamError | undefined) ?? StreamError;
+      const error = new Ctor(value.message, {
+        ...('cause' in value ? { cause: value.cause } : {}),
+        status: value.status,
+        url: value.url,
+      });
       if (value.stack !== undefined) error.stack = value.stack;
       return error;
     },

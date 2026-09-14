@@ -16,7 +16,7 @@ After [building a durable AI agent](/docs/ai), we already get UI message chunks 
 
 Workflow SDK enables this by letting step functions write custom chunks to the same stream the agent uses. These chunks appear as data parts in your messages, which you can render however you like.
 
-As an example, we'll extend out Flight Booking Agent to use emit more granular progress updates while searching for flights.
+As an example, we'll extend our Flight Booking Agent to emit more granular progress updates while searching for flights.
 
 <Steps>
 
@@ -46,7 +46,7 @@ The `type` field must be a string starting with `data-` followed by your custom 
 
 ### Emit updates from your tool
 
-Use [`getWritable()`](/docs/api-reference/workflow/get-writable) inside a step function to get a handle to the stream. This is the same stream that the LLM and other tools calls are writing to, so we can inject out own data packets directly.
+Use [`getWritable()`](/docs/api-reference/workflow/get-writable) inside a step function to get a handle to the stream. This is the same stream that the LLM and other tool calls are writing to, so we can inject our own data packets directly.
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript title="workflows/chat/steps/tools.ts" lineNumbers
