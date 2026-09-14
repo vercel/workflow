@@ -6,6 +6,7 @@ import { monotonicFactory } from 'ulid';
 import { vi } from 'vitest';
 import { EventsConsumer } from '../events-consumer.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
+import { describeDivergenceContext } from '../replay-divergence.js';
 import { ReplayPayloadCache } from '../replay-payload-cache.js';
 import { createContext } from '../vm/index.js';
 
@@ -44,9 +45,13 @@ export function setupWorkflowContext(
       // Fake context: no deliveries are modeled, so the gate is a no-op here.
       isDeliveryIdle: () => true,
       onUnconsumedEvent: (event) => {
-        ctxRef.current?.onWorkflowError(
+        const current = ctxRef.current;
+        if (!current) return;
+        // Same detail the production path appends (see `onUnconsumedEvent` in
+        // workflow.ts), so a test can assert on what a user would read.
+        current.onWorkflowError(
           new WorkflowRuntimeError(
-            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
+            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log. ${describeDivergenceContext(event, current.invocationsQueue, current.eventsConsumer)}`
           )
         );
       },

@@ -9,6 +9,7 @@ import type {
   Event,
   EventResult,
   HealthCheckPayload,
+  RunDispatchContext,
   ValidQueueName,
   WorkflowRun,
   World,
@@ -18,6 +19,7 @@ import {
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
   HOOK_RESUME_INPUT_VERSION,
+  ROOT_RUN_ID_ATTRIBUTE,
   requireEventSlot,
   resolveQueueNamespace,
   SPEC_VERSION_CURRENT,
@@ -41,9 +43,11 @@ const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
 /**
  * Pattern for safe workflow names. Only allows alphanumeric characters,
  * underscores, hyphens, dots, forward slashes (for namespaced workflows),
- * and at signs (for scoped packages).
+ * at signs (for scoped packages), and parentheses and square brackets (for
+ * Next.js route groups and dynamic segments, which appear verbatim in the
+ * module path a workflow name is derived from).
  */
-const SAFE_WORKFLOW_NAME_PATTERN = /^[a-zA-Z0-9_\-./@]+$/;
+const SAFE_WORKFLOW_NAME_PATTERN = /^[a-zA-Z0-9_\-./@()[\]]+$/;
 
 /**
  * Validates a workflow name and returns the corresponding queue name.
@@ -56,7 +60,7 @@ export function getWorkflowQueueName(
 ): ValidQueueName {
   if (!SAFE_WORKFLOW_NAME_PATTERN.test(workflowName)) {
     throw new Error(
-      `Invalid workflow name "${workflowName}": must only contain alphanumeric characters, underscores, hyphens, dots, forward slashes, or at signs`
+      `Invalid workflow name "${workflowName}": must only contain alphanumeric characters, underscores, hyphens, dots, forward slashes, at signs, parentheses, or square brackets`
     );
   }
   const prefix = getQueueTopicPrefix(
@@ -108,11 +112,11 @@ export interface HealthCheckResult {
    * version at which the *consumer* (queue-message target) materializes the
    * `hook_received` event from `hookInput` on replay. A cross-deployment
    * `start()` stamps the *target's* value (not the caller's) into the new
-   * run's `executionContext.hookResumeInputVersion` so that `resumeHook()`
-   * only takes the lazy path when the deployment that will actually consume
-   * the queue message is known to honor `hookInput`. Omitted when the
-   * responding deployment predates this field (an older consumer that ignores
-   * `hookInput`), which fails the gate closed.
+   * run's `executionContext.hookResumeInputVersion`. Current producers write
+   * the event durably before publishing the wake and do not read the marker;
+   * OLDER producers still gate their lazy path on it, so it keeps being
+   * stamped. Omitted when the responding deployment predates this field,
+   * which fails that gate closed.
    */
   hookResumeInputVersion?: number;
 }
@@ -597,108 +601,107 @@ export async function loadWorkflowRunEvents(
   afterCursor?: string
 ): Promise<LoadedEventLog> {
   const incremental = afterCursor !== undefined;
-  return trace(
-    incremental ? 'workflow.loadNewEvents' : 'workflow.loadEvents',
-    async (span) => {
-      span?.setAttributes({
-        ...Attribute.WorkflowRunId(runId),
-      });
+  return trace('workflow.replay.load', async (span) => {
+    span?.setAttributes({
+      ...Attribute.WorkflowRunId(runId),
+      ...Attribute.WorkflowReplayLoadSource(
+        incremental ? 'events_list_incremental' : 'events_list'
+      ),
+    });
 
-      const loadedEvents: Event[] = [];
-      const loadedEventIds = new Set<string>();
-      const requestedCursors = new Set<string>();
-      let cursor: string | null = afterCursor ?? null;
-      let hasMore = true;
-      let pagesLoaded = 0;
-      let retriedWithoutCursor = false;
+    const loadedEvents: Event[] = [];
+    const loadedEventIds = new Set<string>();
+    const requestedCursors = new Set<string>();
+    let cursor: string | null = afterCursor ?? null;
+    let hasMore = true;
+    let pagesLoaded = 0;
+    let retriedWithoutCursor = false;
+    const world = await getWorldLazy();
+    const loadStart = Date.now();
+    while (hasMore) {
+      // TODO: we're currently loading all the data with resolveRef behavior. We need to update this
+      // to lazyload the data from the world instead so that we can optimize and make the event log loading
+      // much faster and memory efficient
+      const pageStart = Date.now();
+      const requestedCursor = cursor;
+      recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
 
-      const world = await getWorldLazy();
-      const loadStart = Date.now();
-      while (hasMore) {
-        // TODO: we're currently loading all the data with resolveRef behavior. We need to update this
-        // to lazyload the data from the world instead so that we can optimize and make the event log loading
-        // much faster and memory efficient
-        const pageStart = Date.now();
-        const requestedCursor = cursor;
-        recordRequestedEventCursor(runId, requestedCursor, requestedCursors);
-
-        let response: Awaited<ReturnType<typeof world.events.list>>;
-        try {
-          response = await world.events.list({
-            runId,
-            pagination: {
-              sortOrder: 'asc',
-              cursor: requestedCursor ?? undefined,
-            },
-          });
-        } catch (error) {
-          if (
-            shouldRetryWithoutEventCursor(
-              error,
-              requestedCursor,
-              retriedWithoutCursor
-            )
-          ) {
-            runtimeLogger.warn(
-              'Event cursor was rejected; retrying with a full event reload.',
-              { workflowRunId: runId }
-            );
-            loadedEvents.length = 0;
-            loadedEventIds.clear();
-            requestedCursors.clear();
-            cursor = null;
-            retriedWithoutCursor = true;
-            continue;
-          }
-          throw error;
-        }
-
-        appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
-        hasMore = response.hasMore;
-        assertEventPaginationProgress(
+      let response: Awaited<ReturnType<typeof world.events.list>>;
+      try {
+        response = await world.events.list({
           runId,
-          hasMore,
-          response.cursor,
-          requestedCursors
-        );
-        // Preserve the last non-null cursor across pages. A World may
-        // legitimately return `{ data: [], cursor: null, hasMore: false }`
-        // on a trailing empty page, for example when the previous page's
-        // underlying DB query hit the limit exactly and returned a
-        // precautionary `LastEvaluatedKey`. Overwriting with that null
-        // would lose the position past the last real event we loaded and
-        // force the runtime into the "no cursor after initial load" full-
-        // reload fallback on every subsequent replay iteration.
-        cursor = response.cursor ?? cursor;
-        pagesLoaded++;
-
-        runtimeLogger.debug('Loaded event page', {
-          workflowRunId: runId,
-          incremental,
-          page: pagesLoaded,
-          pageEvents: response.data.length,
-          totalEvents: loadedEvents.length,
-          hasMore,
-          pageMs: Date.now() - pageStart,
+          pagination: {
+            sortOrder: 'asc',
+            cursor: requestedCursor ?? undefined,
+          },
         });
+      } catch (error) {
+        if (
+          shouldRetryWithoutEventCursor(
+            error,
+            requestedCursor,
+            retriedWithoutCursor
+          )
+        ) {
+          runtimeLogger.warn(
+            'Event cursor was rejected; retrying with a full event reload.',
+            { workflowRunId: runId }
+          );
+          loadedEvents.length = 0;
+          loadedEventIds.clear();
+          requestedCursors.clear();
+          cursor = null;
+          retriedWithoutCursor = true;
+          continue;
+        }
+        throw error;
       }
 
-      runtimeLogger.debug('Event load complete', {
+      appendUniqueEvents(loadedEvents, response.data, loadedEventIds);
+      hasMore = response.hasMore;
+      assertEventPaginationProgress(
+        runId,
+        hasMore,
+        response.cursor,
+        requestedCursors
+      );
+      // Preserve the last non-null cursor across pages. A World may
+      // legitimately return `{ data: [], cursor: null, hasMore: false }`
+      // on a trailing empty page, for example when the previous page's
+      // underlying DB query hit the limit exactly and returned a
+      // precautionary `LastEvaluatedKey`. Overwriting with that null
+      // would lose the position past the last real event we loaded and
+      // force the runtime into the "no cursor after initial load" full-
+      // reload fallback on every subsequent replay iteration.
+      cursor = response.cursor ?? cursor;
+      pagesLoaded++;
+
+      runtimeLogger.debug('Loaded event page', {
         workflowRunId: runId,
         incremental,
+        page: pagesLoaded,
+        pageEvents: response.data.length,
         totalEvents: loadedEvents.length,
-        pagesLoaded,
-        totalMs: Date.now() - loadStart,
+        hasMore,
+        pageMs: Date.now() - pageStart,
       });
-
-      span?.setAttributes({
-        ...Attribute.WorkflowEventsCount(loadedEvents.length),
-        ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
-      });
-
-      return { events: loadedEvents, cursor };
     }
-  );
+
+    runtimeLogger.debug('Event load complete', {
+      workflowRunId: runId,
+      incremental,
+      totalEvents: loadedEvents.length,
+      pagesLoaded,
+      totalMs: Date.now() - loadStart,
+    });
+
+    span?.setAttributes({
+      ...Attribute.WorkflowEventsCount(loadedEvents.length),
+      ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
+    });
+
+    return { events: loadedEvents, cursor };
+  });
 }
 
 /**
@@ -709,6 +712,23 @@ export async function loadWorkflowRunEvents(
 export interface LoadedEventLog {
   events: Event[];
   cursor: string | null;
+}
+
+/**
+ * Extend a loaded log with a page that continues it — a listed page, or the
+ * inline delta a write handed back — and move its read position with it.
+ *
+ * The cursor is only advanced when the page carries one, so a source with no
+ * position of its own (a skipped-slot report) cannot walk the read position
+ * past events it did not carry. Appending does not re-sort; see
+ * {@link appendUniqueEvents} for why receipt order is the order to keep.
+ */
+export function appendEventLog(
+  log: LoadedEventLog,
+  appended: { events: readonly Event[]; cursor?: string | null }
+): void {
+  appendUniqueEvents(log.events, appended.events);
+  log.cursor = appended.cursor ?? log.cursor;
 }
 
 /**
@@ -1016,6 +1036,53 @@ export interface SlotSnapshotParams {
  * Empty for an empty log, which is the state a `run_created` write is issued
  * from: there is no position held yet to name.
  *
+ * ## Who names a position
+ *
+ * A World can hand events back on a write's success response through two
+ * params (`CreateEventParams` in `@workflow/world`): `eventCount`, which is
+ * answered with the events on the positions the write skipped over (the
+ * skipped-slot report), and `sinceCursor`, which is answered with everything
+ * after that cursor (the inline delta). Both exist to save the writer a
+ * reload. So the rule for which writes send them is not about the event type;
+ * it is about whether **the process that writes holds a loaded log it will
+ * keep deciding from**, its own next writes or the replay it resumes. A writer
+ * with no log has nothing to merge a page into, and whoever decides next is a
+ * fresh replay that loads the log anyway.
+ *
+ * Three gates, all of which must pass for a page to come back:
+ *
+ * 1. The writer names a position. Only the replay loop's `createEvent` seam
+ *    (runtime.ts) and the suspension handler's `createGuarded` do; the QuickJS
+ *    engine's `createEvent` (quickjs-entrypoint.ts) follows the same rule. Raw
+ *    `world.events.create` calls send nothing.
+ * 2. The World reads a page for that event type. A World may decline for types
+ *    whose writer never holds a log (step executor writes, run-terminal
+ *    writes), whatever the client sent.
+ * 3. There is something to hand back: the report only when the write landed
+ *    more than one position above `eventCount`; the delta always.
+ *
+ * | Event | Writer | Sends | Why |
+ * |---|---|---|---|
+ * | `run_created` | `start()` | nothing | no log exists yet |
+ * | `run_started` | replay loop, first write of a delivery | `eventCount` when a log is loaded; no cursor, the `run_started` preload owns the response fields | the preload already returns the full log |
+ * | `step_created`, `wait_created`, `hook_disposed`, `attr_set` | suspension handler (`createGuarded`) | `eventCount` | the handler keeps writing from, and resumes replay from, this log |
+ * | `step_created` | queue-consumer re-ensure (raw) | nothing | runs from a queue message, no log |
+ * | `hook_created` | suspension handler (node), `dispatchPendingOps` (QuickJS) | `eventCount` + `sinceCursor` (only when the suspension creates exactly one hook) | the delta is how an already-received hook resolves without a re-invocation; two creates against one cursor would give two deltas of which only the first could be taken |
+ * | `hook_received` | replay loop lazy resume; handler in-suspension resume | `eventCount` (preload owns the cursor fields) | both replay from the log right after |
+ * | `hook_received` | webhook / `resumeHook` (raw) | nothing | out-of-band, enqueues a delivery that loads the log |
+ * | `wait_completed` | replay loop timer path | `eventCount` | the loop keeps replaying from the log |
+ * | `wait_completed` | `runs.*` out-of-band (raw) | nothing | no log |
+ * | `step_started`, `step_retrying` | step executor | nothing | no log; the next decision is a replay that reloads or receives the delta below |
+ * | `step_completed`, `step_failed` | step executor | `sinceCursor` only, outside turbo, single inline step | this is where the inline execution loop gets its log back; in turbo or from a queued delivery a fresh replay loads it anyway |
+ * | `step_failed` | suspension handler, unserializable input | `eventCount` | the handler holds a log; rare, and follows a `step_created` that drew the page |
+ * | `attr_set` | `setAttributes()` API (raw) | nothing | out-of-band |
+ * | `run_completed`, `run_failed`, `run_cancelled` | replay loop, replay budget, `runs.cancel` | `eventCount` where the node loop's seam stamps it (the QuickJS engine sends nothing); never `sinceCursor` (`deltaRequestCursor` excludes terminal types) | terminal: nothing replays the log afterwards, so a World reads no page for them |
+ *
+ * Batched writes (`events.createBatch`) are outside all of this: a batch carries
+ * no per-event position and gets no page. The user-facing version of this table
+ * is in `docs/content/docs/v5/how-it-works/event-sourcing.mdx`; keep the two in
+ * step.
+ *
  * The maximum rather than the length, for the reason {@link maxEventSlot}
  * gives: a partially-read log holds fewer events than its highest position, and
  * counting those would make the write claim to have seen less than it has, so
@@ -1128,6 +1195,37 @@ export function withHealthCheck(
   };
 }
 
+/**
+ * The lineage root of a loaded run: its `$rootRunId` attribute, or its own id
+ * when it is itself a root.
+ */
+export function rootRunIdFrom(
+  attributes: Record<string, string> | undefined,
+  runId: string
+): string {
+  return attributes?.[ROOT_RUN_ID_ATTRIBUTE] ?? runId;
+}
+
+/**
+ * The immutable run identity a step-execution message carries so its consumer
+ * can start the step without a blocking `runs.get` — see
+ * `RunDispatchContextSchema` in @workflow/world. Built at dispatch time from
+ * the run row the producer already holds.
+ */
+export function runDispatchContext(
+  run: Pick<
+    WorkflowRun,
+    'runId' | 'deploymentId' | 'specVersion' | 'startedAt' | 'attributes'
+  >
+): RunDispatchContext {
+  return {
+    deploymentId: run.deploymentId,
+    specVersion: run.specVersion ?? 0,
+    ...(run.startedAt ? { startedAt: +run.startedAt } : {}),
+    rootRunId: rootRunIdFrom(run.attributes, run.runId),
+  };
+}
+
 /** FNV-1a 32-bit hash of a string, as 8 hex chars. Tiny, deterministic, and
  *  dependency-free. Used only to scope idempotency keys, not for security. */
 function fnv1a32Hex(value: string): string {
@@ -1201,6 +1299,88 @@ export async function queueMessage(
 }
 
 /**
+ * Publishes several messages to one logical queue, using the World's batch
+ * send when it has one and falling back to concurrent single sends when it
+ * does not.
+ *
+ * Rejects if ANY message failed to publish, because every caller so far wants
+ * all-or-nothing: the recovery is to fail the delivery and let redelivery
+ * republish the whole set, deduped by the per-message `idempotencyKey`. That
+ * means a partial batch can leave some messages already out — which is
+ * exactly why the keys are required rather than advisory.
+ */
+export async function queueMessages(
+  world: World,
+  queueName: Parameters<typeof world.queue>[0],
+  messages: readonly {
+    message: Parameters<typeof world.queue>[1];
+    opts?: Parameters<typeof world.queue>[2];
+  }[]
+): Promise<void> {
+  if (messages.length === 0) return;
+  const batch = world.queueBatch?.bind(world);
+  if (!batch) {
+    await Promise.all(
+      messages.map((entry) =>
+        queueMessage(world, queueName, entry.message, entry.opts)
+      )
+    );
+    return;
+  }
+  await trace(
+    'queue.publish',
+    {
+      attributes: {
+        ...Attribute.MessagingSystem('vercel-queue'),
+        ...Attribute.MessagingDestinationName(queueName),
+        ...Attribute.MessagingOperationType('publish'),
+        ...Attribute.MessagingBatchMessageCount(messages.length),
+        ...Attribute.PeerService('vercel-queue'),
+        ...Attribute.RpcSystem('vercel-queue'),
+        ...Attribute.RpcService('vqs'),
+        ...Attribute.RpcMethod('publishBatch'),
+      },
+      kind: await getSpanKind('PRODUCER'),
+    },
+    async () => {
+      const results = await batch(queueName, messages);
+      // A World that answers with the wrong number of results has told us
+      // nothing about the messages it left out. Treated as a failure of the
+      // whole batch rather than read as success for the entries that ARE
+      // present: republishing under the same idempotency keys is safe,
+      // silently never dispatching a step is not (the run makes no progress
+      // and nothing surfaces an error).
+      if (results.length !== messages.length) {
+        throw Object.assign(
+          new Error(
+            `Queue batch for ${queueName} returned ${results.length} ` +
+              `result(s) for ${messages.length} message(s)`
+          ),
+          { retryable: true }
+        );
+      }
+      const failures = results.filter((result) => result.error !== undefined);
+      if (failures.length === 0) return;
+      const retryable = failures.some(
+        (failure) => failure.error !== undefined && failure.retryable
+      );
+      const error = new Error(
+        `Failed to publish ${failures.length} of ${messages.length} queue ` +
+          `message(s) to ${queueName}: ${failures[0]?.error}`
+      );
+      // Carried on the error so a caller CAN tell a transient partial batch
+      // from a permanent rejection. Nothing reads it yet: today every caller
+      // rejects the delivery either way, so a permanently rejected entry
+      // still costs the full redelivery budget. Left in place because the
+      // information is only available here, and a fast-fail on
+      // `retryable: false` needs it.
+      Object.assign(error, { retryable });
+      throw error;
+    }
+  );
+}
+
+/**
  * Calculates the queue overhead time in milliseconds for a given message.
  */
 export function getQueueOverhead(message: { requestedAt?: Date }) {
@@ -1215,34 +1395,26 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
 }
 
 /**
- * Returns a memoized accessor for a run's full encryption capability.
- *
- * The first call resolves the run's key material via
- * `world.getEncryptionKeyForRun` (which may do HKDF derivation locally on
- * Vercel, or a network fetch from external contexts) and derives a
- * {@link PayloadKey} from it; subsequent calls await the same cached promise.
- * If the world doesn't support encryption or the run has no key configured,
- * the cached value is `undefined`.
- *
- * The resolved value is deliberately the *full* capability (the symmetric AES
- * key plus the run's X25519 keypair), not just a `CryptoKey`. A run reading
- * its own event log can encounter sealed (`encp`) payloads that another run
- * wrote to it (a cross-deployment hook resumption, say), and opening those
- * needs the keypair. Resolving only the symmetric key would leave those
- * payloads unopenable and wedge the run.
- *
- * Used by step / workflow handlers to defer the (potentially expensive)
- * key fetch until the first code path that actually needs it: typically
- * input hydration on the success path, or error dehydration on a failure
- * path. Both paths can race-call the accessor without triggering duplicate
- * fetches.
- *
- * Errors thrown by `getEncryptionKeyForRun` propagate to every caller
- * (the cached promise rejects). This is intentional: when encryption is
- * configured, we never want to silently fall back to plaintext
- * serialization. A propagated error in an event-emission path leaves the
- * outer try/catch to log and surface the issue; the queue's redelivery
- * semantics will retry the key fetch on the next attempt.
+ * Resolve the run's full payload-encryption capability. This includes the
+ * symmetric key and X25519 keypair needed to open cross-run sealed payloads.
+ * Missing world support or key material resolves to `undefined`; lookup and
+ * derivation failures propagate rather than silently falling back to plaintext.
+ */
+export async function resolveRunEncryptionKey(
+  world: World,
+  runOrId: WorkflowRun | string,
+  context?: Record<string, unknown>
+): Promise<PayloadKey | undefined> {
+  const rawKey =
+    typeof runOrId === 'string'
+      ? await world.getEncryptionKeyForRun?.(runOrId, context)
+      : await world.getEncryptionKeyForRun?.(runOrId);
+  return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
+}
+
+/**
+ * Return a lazy, memoized accessor around {@link resolveRunEncryptionKey}.
+ * Concurrent callers share the same promise, including its rejection.
  */
 export function memoizeEncryptionKey(
   world: World,
@@ -1251,20 +1423,7 @@ export function memoizeEncryptionKey(
   let cached: Promise<PayloadKey | undefined> | undefined;
   return () => {
     if (!cached) {
-      cached = (async () => {
-        // The `getEncryptionKeyForRun` overload set takes either a
-        // `WorkflowRun` or a `runId: string` (with optional context). Branch
-        // here so TypeScript picks the right overload for each shape.
-        const rawKey =
-          typeof runOrId === 'string'
-            ? await world.getEncryptionKeyForRun?.(runOrId)
-            : await world.getEncryptionKeyForRun?.(runOrId);
-        // Resolve the *full* capability, not just the symmetric key: a run
-        // reading its own event log may encounter sealed (`encp`) payloads
-        // that another run wrote to it, and opening those needs the run's
-        // X25519 scalar as well.
-        return rawKey ? await deriveRunPayloadKeys(rawKey) : undefined;
-      })();
+      cached = resolveRunEncryptionKey(world, runOrId);
     }
     return cached;
   };

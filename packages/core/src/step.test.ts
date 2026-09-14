@@ -1,8 +1,4 @@
-import {
-  FatalError,
-  ReplayDivergenceError,
-  WorkflowRuntimeError,
-} from '@workflow/errors';
+import { FatalError, ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -945,10 +941,11 @@ describe('AbortController hook integration', () => {
       const WorkflowAbortController = createCreateAbortController(ctx);
       const controller = new WorkflowAbortController();
 
-      // The events consumer processes events via process.nextTick, and the
-      // hook_received handler chains through promiseQueue. We need to let
-      // multiple ticks pass for _setAborted to be called.
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      // Wait until the events consumer has delivered hook_received and
+      // removed its hook subscriber, then drain the hydration work it queued.
+      // A fixed delay races loaded CI runners and can read signal state before
+      // the process.nextTick delivery has even updated promiseQueue.
+      await vi.waitFor(() => expect(ctx.invocationsQueue.size).toBe(0));
       await ctx.promiseQueue;
 
       // After replay event processing, signal.aborted is true — the

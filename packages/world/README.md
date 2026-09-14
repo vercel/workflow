@@ -6,6 +6,15 @@ This package defines the `World` interface that abstracts workflow storage, queu
 
 Used internally by `@workflow/core` and world implementations. Should not be used directly in application code.
 
+## Step dispatch context
+
+`WorkflowInvokePayload.runContext` carries the run's deployment ID, spec version,
+start time, and lineage root. Consumers use this identity to start queued steps
+without first fetching the run. Run status is not carried on the message: World
+implementations must reject `step_started` on terminal runs, including redelivery
+for a step that still has `running` status. In-flight steps may still record
+`step_completed` or `step_failed` after the run ends.
+
 ## Implementation constraint: no mutable module state
 
 A World implementation must not keep mutable state at module scope. Hold it on

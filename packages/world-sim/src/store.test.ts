@@ -266,6 +266,53 @@ describe('sim store', () => {
       expect(store.hookByToken('approval:1')?.hookId).toBe('hook_1');
     });
 
+    it('answers the sinceCursor delta on a conflicting create', async () => {
+      // The conflict is the event the create's awaiters settle on, so a
+      // caller that asked for the delta gets it here for the same reason it
+      // gets one on a clean `hook_created`: it continues over the event in its
+      // own process instead of re-invoking to read it back. Withholding it
+      // would cost a delivery on exactly the path that asked to avoid one.
+      await store.events.create(RUN, hookCreated('hook_1', 'approval:1'));
+      const before = await store.events.list({
+        runId: RUN,
+        pagination: { sortOrder: 'asc' },
+      });
+
+      const conflict = await store.events.create(
+        RUN,
+        hookCreated('hook_2', 'approval:1'),
+        { sinceCursor: before.cursor ?? undefined }
+      );
+
+      expect(conflict.event?.eventType).toBe('hook_conflict');
+      expect(conflict.events?.map((e) => e.eventType)).toEqual([
+        'hook_conflict',
+      ]);
+      expect(conflict.hasMore).toBe(false);
+      // Byte-identical to the page a list from the same cursor returns now.
+      const after = await store.events.list({
+        runId: RUN,
+        pagination: { sortOrder: 'asc', cursor: before.cursor ?? undefined },
+      });
+      expect(conflict.events?.map((e) => e.eventId)).toEqual(
+        after.data.map((e) => e.eventId)
+      );
+      expect(conflict.cursor).toBe(after.cursor);
+    });
+
+    it('omits the delta on a conflicting create that did not ask', async () => {
+      await store.events.create(RUN, hookCreated('hook_1', 'approval:1'));
+      const conflict = await store.events.create(
+        RUN,
+        hookCreated('hook_2', 'approval:1')
+      );
+
+      expect(conflict.event?.eventType).toBe('hook_conflict');
+      expect(conflict.events).toBeUndefined();
+      expect(conflict.cursor).toBeUndefined();
+      expect(conflict.hasMore).toBeUndefined();
+    });
+
     it('releases the token on dispose and refuses later resumes', async () => {
       await store.events.create(RUN, hookCreated('hook_1', 'approval:1'));
       await store.events.create(RUN, {

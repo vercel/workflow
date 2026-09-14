@@ -6,11 +6,13 @@ description: resumeHook() now tolerates transient event storage failures when th
 # Resilient `resumeHook()`
 
 <Callout type="info">
-  Superseded by [lazy hook resume](/docs/changelog/lazy-hook-resume):
-  `resumeHook()` no longer writes the `hook_received` event at all on the fast
-  path, so the two-writer design and the `resilientResume` flag described below
-  are historical. The `(runId, resumeId)` constraint and the queue-carried
-  payload remain.
+  Superseded by [durable hook resume](/docs/changelog/lazy-hook-resume):
+  `resumeHook()` now writes the `hook_received` event durably and only then
+  publishes the workflow wake, so the two-writer design, the queue-carried
+  payload, and the `resilientResume` flag described below are historical. The
+  `(runId, resumeId)` constraint remains, converging transport-level retries
+  of the producer's own write (and legacy `hookInput` redeliveries from older
+  producers).
 </Callout>
 
 ## Motivation
@@ -27,4 +29,4 @@ description: resumeHook() now tolerates transient event storage failures when th
 
 ## Compatibility
 
-The parallel fast path is gated per resume: it activates only when both the target run's queue consumer and the live backend independently attest dedup support (re-checked on every resume, so rollout and rollback both degrade safely). Otherwise (for oversized payloads, legacy runs, or with `WORKFLOW_DISABLE_LAZY_HOOK_RESUME=1`), `resumeHook()` falls back to the original sequential write-then-dispatch path. Because runs keep executing on the deployment they were created on, a resume targeting a run from an older deployment uses the sequential path.
+The parallel fast path is gated per resume: it activates only when both the target run's queue consumer and the live backend independently attest dedup support (re-checked on every resume, so rollout and rollback both degrade safely). Otherwise (for oversized payloads or legacy runs), `resumeHook()` falls back to the original sequential write-then-dispatch path. Because runs keep executing on the deployment they were created on, a resume targeting a run from an older deployment uses the sequential path.

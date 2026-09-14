@@ -1,5 +1,71 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.43
+
+### Patch Changes
+
+- [#4114](https://github.com/vercel/workflow/pull/4114) [`cc9a4cf`](https://github.com/vercel/workflow/commit/cc9a4cf29fc746b96a3b4d9c3c8e05d57d273cda) Thanks [@komly](https://github.com/komly)! - Queue deliveries no longer inherit `fetch`'s 300s headers/body deadlines, which redelivered healthy long-running inline work while it was still executing. Deadlines can be set with `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS` and `WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`.
+
+- [#4117](https://github.com/vercel/workflow/pull/4117) [`2883509`](https://github.com/vercel/workflow/commit/28835099aec1f4889c539a401b3293889e449507) Thanks [@komly](https://github.com/komly)! - Preserve error names, messages, stacks, and nested causes in Graphile Worker log metadata.
+
+- [#3707](https://github.com/vercel/workflow/pull/3707) [`79e7436`](https://github.com/vercel/workflow/commit/79e743655b1b34bd4555fd85c553c77423afa530) Thanks [@unusdon](https://github.com/unusdon)! - Allow `runs.list({ status })` to accept an array of statuses so callers can easily express set filters (e.g. non-terminal runs). world-vercel does not yet support the array form and throws a clear `INVALID_ARGUMENT` error instead of a broken request.
+- Updated dependencies [[`79e7436`](https://github.com/vercel/workflow/commit/79e743655b1b34bd4555fd85c553c77423afa530)]:
+  - @workflow/world@5.0.0-beta.36
+  - @workflow/world-local@5.0.0-beta.45
+  - @workflow/errors@5.0.0-beta.21
+
+## 5.0.0-beta.42
+
+### Patch Changes
+
+- [#4111](https://github.com/vercel/workflow/pull/4111) [`2eb2fe6`](https://github.com/vercel/workflow/commit/2eb2fe6f4d17b43d28ff547c87a2c4939cf17240) Thanks [@komly](https://github.com/komly)! - Fix run creation and slot allocation not happening transactionally
+
+- [#4113](https://github.com/vercel/workflow/pull/4113) [`3dad0a9`](https://github.com/vercel/workflow/commit/3dad0a9d673316bd70643ea3053f2d0bf36603f7) Thanks [@komly](https://github.com/komly)! - Fix stream cursors not being advanced for skipped chunks, so repeated notifications cannot consume the requested start offset twice
+
+- [#4125](https://github.com/vercel/workflow/pull/4125) [`7e8e5dd`](https://github.com/vercel/workflow/commit/7e8e5dda2f45cef7a127f105e85faf0d06e3280c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix stream readers leaking EventEmitter listeners on EOF, initial query failure, and World close, and fail pending readers when the World is closed.
+
+- [#3457](https://github.com/vercel/workflow/pull/3457) [`03455a2`](https://github.com/vercel/workflow/commit/03455a2979663b0e1acfa0ebecba3c2b77187ae8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Reject `step_started` on terminal runs even when the step row still reads `running`: a redelivered start on a cancelled/completed run previously passed the claim and re-executed the step body whose outcome nothing would consume. In-flight steps can still write their terminal events (`step_completed`/`step_failed`) unchanged.
+
+- [#3902](https://github.com/vercel/workflow/pull/3902) [`7a46a81`](https://github.com/vercel/workflow/commit/7a46a81a53d91ddcff75b073b917a900f3cb956b) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Upgrade runtime validation to Zod 4.5 and enable compilation on SDK-owned Zod schemas.
+- Updated dependencies [[`ec57aff`](https://github.com/vercel/workflow/commit/ec57aff3be53c7404191de41b7a140d814235efa), [`6cc851c`](https://github.com/vercel/workflow/commit/6cc851c34210f7c74141500e4849e00173c2791e), [`e00b1a5`](https://github.com/vercel/workflow/commit/e00b1a57ee8e4cc7b597e1bd23188efe23cc6235), [`03455a2`](https://github.com/vercel/workflow/commit/03455a2979663b0e1acfa0ebecba3c2b77187ae8), [`03455a2`](https://github.com/vercel/workflow/commit/03455a2979663b0e1acfa0ebecba3c2b77187ae8), [`7a46a81`](https://github.com/vercel/workflow/commit/7a46a81a53d91ddcff75b073b917a900f3cb956b)]:
+  - @workflow/world@5.0.0-beta.35
+  - @workflow/world-local@5.0.0-beta.44
+  - @workflow/errors@5.0.0-beta.21
+
+## 5.0.0-beta.41
+
+### Minor Changes
+
+- [#3787](https://github.com/vercel/workflow/pull/3787) [`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add an `experimental_retention` option to `start()`: `experimental_retention: 0` asks the World to delete the run's user data as soon as the run completes or fails, while keeping the run itself listable. Implemented on the Vercel, Postgres and Local Worlds. Reading a run whose data has expired now throws `RunExpiredError` instead of resolving to a placeholder.
+
+### Patch Changes
+
+- Updated dependencies [[`61fb1f9`](https://github.com/vercel/workflow/commit/61fb1f93bd914ae6f62e6f7926f9b9ea37a870dd), [`9a5660f`](https://github.com/vercel/workflow/commit/9a5660fbd64165e41f6b346407b1c0a099a8123b), [`4547e1a`](https://github.com/vercel/workflow/commit/4547e1a7a95f273f3166edf45344dc827f1935fa)]:
+  - @workflow/errors@5.0.0-beta.21
+  - @workflow/world@5.0.0-beta.34
+  - @workflow/world-local@5.0.0-beta.43
+
+## 5.0.0-beta.40
+
+### Patch Changes
+
+- [#3901](https://github.com/vercel/workflow/pull/3901) [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Upgrade repository tooling and CI from pnpm 10 to pnpm 11.
+
+- Updated dependencies [[`fbfb9fe`](https://github.com/vercel/workflow/commit/fbfb9fe869980d1ccc351ba594be0ae847165762), [`7cc5c88`](https://github.com/vercel/workflow/commit/7cc5c88a8bb2fad48353dd006c6ca1f28190ab46), [`4a18b01`](https://github.com/vercel/workflow/commit/4a18b0133aaedaf922b903818c6b0db3adc91beb), [`fe2fd8c`](https://github.com/vercel/workflow/commit/fe2fd8c457fd2abfb7281f5318486bf90f603491), [`5c4eef0`](https://github.com/vercel/workflow/commit/5c4eef0a97ef0fc23f0ca6edf52ee891068dde15)]:
+  - @workflow/world@5.0.0-beta.33
+  - @workflow/errors@5.0.0-beta.20
+  - @workflow/world-local@5.0.0-beta.42
+
+## 5.0.0-beta.39
+
+### Patch Changes
+
+- Updated dependencies [[`855e479`](https://github.com/vercel/workflow/commit/855e47990c0da35419325da27976bae925afb0e9), [`2668e33`](https://github.com/vercel/workflow/commit/2668e3325ba89dec973c3c2f35c49efdb239de8d), [`e9d5c56`](https://github.com/vercel/workflow/commit/e9d5c56701821b090108a85b74bf8b0cbef8ea8e), [`ffc5807`](https://github.com/vercel/workflow/commit/ffc58078d0c3cd2786d69bab7e41614566a9ea4e), [`3e0c18a`](https://github.com/vercel/workflow/commit/3e0c18a4cab731a80942a334a01c7e215a784694)]:
+  - @workflow/world@5.0.0-beta.32
+  - @workflow/world-local@5.0.0-beta.41
+  - @workflow/utils@5.0.0-beta.10
+  - @workflow/errors@5.0.0-beta.19
+
 ## 5.0.0-beta.38
 
 ### Patch Changes
