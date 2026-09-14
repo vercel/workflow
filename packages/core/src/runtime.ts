@@ -3710,14 +3710,14 @@ export function workflowEntrypoint(
                          * execution at all.
                          *
                          * The suspension's writes carried the log forward only
-                         * if the hook create's delta accounted for all of
-                         * them; otherwise read from the cursor first, which is
-                         * still one list against the delivery round-trip and
-                         * full replay it replaces. An open wait also forces
-                         * the read, for the reason the inline-delta gate below
-                         * gives: a `wait_completed` is a resolution the replay
-                         * is waiting on rather than an event it can observe an
-                         * iteration late.
+                         * if the longest delta any of them returned accounted
+                         * for all of them; otherwise read from the cursor
+                         * first, which is still one list against the delivery
+                         * round-trip and full replay it replaces. An open wait
+                         * also forces the read, for the reason the inline-delta
+                         * gate below gives: a `wait_completed` is a resolution
+                         * the replay is waiting on rather than an event it can
+                         * observe an iteration late.
                          *
                          * False when this invocation cannot get anywhere that
                          * way — no session to resume (retention off, or a
