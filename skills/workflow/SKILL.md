@@ -3,8 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.12'
-  version: '1.16'
+  version: '1.17'
 ---
 
 ## *Critical*: Always use correct `workflow` documentation
