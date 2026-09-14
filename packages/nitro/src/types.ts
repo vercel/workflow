@@ -1,6 +1,18 @@
+import type { HostModuleResolver } from '@workflow/builders';
+
 export interface ModuleOptions {
   /** @internal */
   _vite?: boolean;
+
+  /**
+   * Set by `workflow/vite` in dev: a last-resort resolver backed by Vite's
+   * SSR plugin container, so a step that reaches a Vite virtual module gets
+   * that module's source inlined into the steps bundle instead of failing the
+   * build. See vercel/workflow#3859.
+   *
+   * @internal
+   */
+  _hostResolver?: HostModuleResolver;
 
   /**
    * Directories to scan for workflows and steps.

@@ -51,6 +51,131 @@ describe('createSwcPlugin externalizeNonSteps', () => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 
+  it('inlines a host-provided virtual module in a local step dependency', async () => {
+    const outdir = join(testRoot, 'out');
+    const stepFile = join(testRoot, 'workflows', 'my-workflow.ts');
+    const dbFile = join(testRoot, 'db.ts');
+
+    writeFile(
+      dbFile,
+      `import { env } from 'virtual:env/server';\nexport const url = env.DATABASE_URL;`
+    );
+    writeFile(
+      stepFile,
+      `import { url } from '../db';\nexport async function myStep() {\n  'use step';\n  return url;\n}`
+    );
+    importParents.set(
+      stepFile.replace(/\\/g, '/'),
+      new Set([dbFile.replace(/\\/g, '/')])
+    );
+
+    const resolveId = vi.fn(async (source: string) =>
+      source === 'virtual:env/server' ? { id: '\0virtual:env/server' } : null
+    );
+    const load = vi.fn(async (id: string) =>
+      id === '\0virtual:env/server'
+        ? `export const env = { DATABASE_URL: 'postgres://from-host' };`
+        : null
+    );
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          outdir,
+          bundleTransitiveLocalStepDependencies: true,
+          hostResolver: { resolveId, load },
+        }),
+      ],
+    });
+
+    expect(result.outputFiles[0].text).toContain('postgres://from-host');
+    expect(resolveId).toHaveBeenCalledWith('virtual:env/server', dbFile);
+  });
+
+  it('preserves host-provided external module resolutions', async () => {
+    const outdir = join(testRoot, 'out');
+    const stepFile = join(testRoot, 'workflows', 'my-workflow.ts');
+
+    writeFile(
+      stepFile,
+      `import optionalModule from 'optional-native-module';\nexport async function myStep() {\n  'use step';\n  return optionalModule;\n}`
+    );
+
+    const load = vi.fn();
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          outdir,
+          hostResolver: {
+            resolveId: async () => ({
+              id: 'optional-native-module',
+              external: true,
+            }),
+            load,
+          },
+        }),
+      ],
+    });
+
+    expect(result.outputFiles[0].text).toContain(
+      'from "optional-native-module"'
+    );
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('propagates host module resolution errors', async () => {
+    const outdir = join(testRoot, 'out');
+    const stepFile = join(testRoot, 'workflows', 'my-workflow.ts');
+
+    writeFile(
+      stepFile,
+      `import 'virtual:broken';\nexport async function myStep() {\n  'use step';\n}`
+    );
+
+    await expect(
+      esbuild.build({
+        entryPoints: [stepFile],
+        absWorkingDir: testRoot,
+        outdir,
+        bundle: true,
+        format: 'esm',
+        platform: 'node',
+        write: false,
+        plugins: [
+          createSwcPlugin({
+            mode: 'step',
+            entriesToBundle: [stepFile],
+            outdir,
+            hostResolver: {
+              resolveId: async () => {
+                throw new Error('host resolve failed');
+              },
+              load: async () => null,
+            },
+          }),
+        ],
+      })
+    ).rejects.toThrow('host resolve failed');
+  });
+
   it('reports authoritative transform results to an optional observer', async () => {
     const srcDir = join(testRoot, 'src');
     const stepFile = join(srcDir, 'step.ts');
