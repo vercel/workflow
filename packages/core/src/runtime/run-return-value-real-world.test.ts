@@ -23,10 +23,18 @@ import { setWorld } from './world.js';
  *
  * So these assert the property a user actually observes — how long after the
  * run finishes the await resolves — with world-local standing in for "a World
- * that can wait". A run finishing 300ms in can only be reported at the ~1s
+ * that can wait". A run finishing 300ms in can only be reported at the next
  * tick by interval polling, so the two paths are far apart and the kill switch
  * is observable rather than merely configured.
+ *
+ * The interval is raised from its 1s default so that "far apart" survives a
+ * loaded runner: at 1s the wait path had 500ms of headroom under its bound,
+ * and Windows CI spent it (828ms measured against an 800ms bound). At 3s the
+ * wait path is bounded at half the interval, which forgives over a second of
+ * stall, while the interval path still cannot report before ~3s.
  */
+const POLL_INTERVAL_MS = 3_000;
+
 describe('run.returnValue over a real World', () => {
   const envName = 'WORKFLOW_RETURN_VALUE_LONG_POLL';
   const original = process.env[envName];
@@ -34,12 +42,17 @@ describe('run.returnValue over a real World', () => {
   let world: World;
 
   beforeEach(async () => {
+    vi.stubEnv(
+      'WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS',
+      String(POLL_INTERVAL_MS)
+    );
     dir = await mkdtemp(join(tmpdir(), 'returnvalue-real-world-'));
     world = createWorld({ dataDir: dir }) as unknown as World;
     setWorld(world);
   });
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     if (original === undefined) delete process.env[envName];
     else process.env[envName] = original;
     setWorld(undefined as unknown as World);
@@ -103,8 +116,8 @@ describe('run.returnValue over a real World', () => {
     const elapsed = Date.now() - startedAt;
     await finishing;
 
-    // At or above the 1s interval would mean the poll reported it, not the wait.
-    expect(elapsed).toBeLessThan(800);
+    // At or above the interval would mean the poll reported it, not the wait.
+    expect(elapsed).toBeLessThan(POLL_INTERVAL_MS / 2);
   }, 30_000);
 
   it('reports a cancellation without waiting out the interval', async () => {
@@ -130,7 +143,7 @@ describe('run.returnValue over a real World', () => {
     const elapsed = Date.now() - startedAt;
     await cancelling;
 
-    expect(elapsed).toBeLessThan(800);
+    expect(elapsed).toBeLessThan(POLL_INTERVAL_MS / 2);
   }, 30_000);
 
   it('restores fixed-interval polling under the kill switch', async () => {
@@ -145,7 +158,7 @@ describe('run.returnValue over a real World', () => {
     const elapsed = Date.now() - startedAt;
     await finishing;
 
-    // The run was done at ~300ms, but only the ~1s tick can observe it.
-    expect(elapsed).toBeGreaterThanOrEqual(900);
+    // The run was done at ~300ms, but only the interval tick can observe it.
+    expect(elapsed).toBeGreaterThanOrEqual(POLL_INTERVAL_MS * 0.9);
   }, 30_000);
 });

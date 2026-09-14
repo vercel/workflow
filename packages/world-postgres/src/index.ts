@@ -63,6 +63,15 @@ export function createWorld(
       connectionString: config.connectionString || getDefaultConnectionString(),
       ...(maxPoolSize !== undefined ? { max: maxPoolSize } : {}),
     });
+  if (pool !== config.pool) {
+    // `pg.Pool` re-emits an idle client's `error` (the server closed the
+    // connection while it sat in the pool) on the pool itself. With no
+    // listener that is an uncaught exception that takes the process down;
+    // with one, the pool simply discards the client and the next checkout
+    // opens a new connection. A caller-supplied pool keeps the caller's own
+    // handling.
+    pool.on('error', () => {});
+  }
 
   const drizzle = createClient(pool);
   const queue = createQueue(config, pool);

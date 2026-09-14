@@ -3,6 +3,15 @@ import { configDefaults, defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     testTimeout: 60_000,
+    // Fixture hooks get the budget of the tests they set up. Vitest's 10s
+    // default assumes an idle disk: on a Windows runner the world-local suite
+    // runs its filesystem-heavy files in parallel against one slow temp
+    // volume, and a `beforeEach` that writes ten small JSON files
+    // (fs.test.ts) stalled past 10s while a sibling file was pushing a
+    // thousand events through the same disk. Main's green run had that
+    // whole 78-test file at 6.7s, so the hook is not what is slow. A test
+    // body doing the same writes would have had 60s.
+    hookTimeout: 60_000,
     // Deployment e2e suites can lose timing races to queue delays, cold
     // starts, and watcher latency. They always set DEPLOYMENT_URL, so keep
     // their one visible retry without masking deterministic unit/integration
