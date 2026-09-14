@@ -11,6 +11,7 @@ import {
 } from '@workflow/world';
 import { sql } from 'drizzle-orm';
 import {
+  bigserial,
   boolean,
   customType,
   index,
@@ -288,6 +289,27 @@ const bytea = customType<{ data: Buffer; notNull: false; default: false }>({
     return 'bytea';
   },
 });
+
+/** Transport inputs/results; event writes and responses are deliberately separate. */
+export const invocations = schema.table(
+  'workflow_invocations',
+  {
+    sequence: bigserial('sequence', { mode: 'number' }).notNull(),
+    runId: varchar('run_id').notNull(),
+    requestId: varchar('request_id').notNull(),
+    payload: bytea('payload').notNull(),
+    fingerprint: varchar('fingerprint').notNull(),
+    result: bytea('result'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    respondedAt: timestamp('responded_at'),
+  },
+  (tb) => [
+    primaryKey({ columns: [tb.runId, tb.requestId] }),
+    index('workflow_invocations_pending')
+      .on(tb.runId, tb.sequence)
+      .where(sql`${tb.respondedAt} IS NULL`),
+  ]
+);
 
 export const streams = schema.table(
   'workflow_stream_chunks',

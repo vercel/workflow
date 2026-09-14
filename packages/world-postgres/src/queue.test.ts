@@ -497,6 +497,46 @@ describe('postgres queue http execution', () => {
     }
   });
 
+  it('uses per-run executor queues without serializing step jobs when invoke is enabled', async () => {
+    const queue = buildQueue(
+      {
+        connectionString: 'postgres://test',
+        enableInvoke: true,
+        queueConcurrency: 7,
+      },
+      pool
+    );
+    await queue.start();
+    expect(queue.invoke).toBeTypeOf('function');
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        concurrency: 7,
+        taskList: {
+          workflow_flows: expect.any(Function),
+          workflow_flows_executor: expect.any(Function),
+        },
+      })
+    );
+    await queue.queue('__wkf_workflow_example', { runId: 'run_a' });
+    await queue.queue('__wkf_workflow_example', { runId: 'run_b' });
+    await queue.queue('__wkf_workflow_example', {
+      runId: 'run_a',
+      stepId: 'step_a',
+      stepName: 'step',
+    });
+    const calls = vi.mocked(workerUtilsMock.addJob).mock.calls;
+    expect(calls[0]).toEqual([
+      'workflow_flows_executor',
+      expect.any(Object),
+      expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' }),
+    ]);
+    expect(calls[1][2]).toMatchObject({
+      queueName: 'workflow_flows:run_b:executor',
+    });
+    expect(calls[2][0]).toBe('workflow_flows');
+    expect(calls[2][2]).not.toHaveProperty('queueName');
+  });
+
   it('queues namespaced producer messages in graphile job metadata', async () => {
     const queue = buildQueue(
       { connectionString: 'postgres://test', namespace: 'custom' },

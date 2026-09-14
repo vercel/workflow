@@ -505,8 +505,35 @@ export type QueueBatchResult =
       retryable: boolean;
     };
 
+/** One input offered to the current executor, not yet a workflow event. */
+export interface Invocation {
+  id: string;
+  payload: unknown;
+  /** Respond only after the runner's decision and any required event writes. */
+  respond(result: unknown): Promise<void>;
+}
+
+export interface InvokeOptions {
+  /** Retries of one request reuse this key and the exact same payload. */
+  idempotencyKey?: string;
+  /** Maximum time to await a response. Timeout does not undo processing. */
+  timeoutMs?: number;
+}
+
 export interface Queue {
   getDeploymentId(): Promise<string>;
+
+  /**
+   * Request a decision from a run's executor. Enable through capabilities.invoke.
+   * Resolves with the executor's response, never merely with transport acceptance.
+   * Every call, including retries, schedules a wake; redundant wakes may no-op.
+   * A transport error is an unknown outcome. Do not fall back to a direct write.
+   */
+  invoke?(
+    runId: string,
+    payload: unknown,
+    options?: InvokeOptions
+  ): Promise<unknown>;
 
   /**
    * Returns true only when a queue error definitively means the explicitly
@@ -586,6 +613,13 @@ export interface Queue {
         queueName: ValidQueueName;
         messageId: MessageId;
         requestId?: string;
+        /**
+         * Run-scoped request stream, present on invoke-capable executor wakes.
+         * The backend owns reading and response storage. Closing the iterator
+         * must interrupt a pending next(); unresponded inputs remain pending.
+         * The runner must service it while steps are awaiting work.
+         */
+        invocations?: AsyncIterable<Invocation>;
       }
       // biome-ignore lint/suspicious/noConfusingVoidType: it is what it is
     ) => Promise<void | { timeoutSeconds: number }>

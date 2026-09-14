@@ -496,6 +496,9 @@ export interface Storage {
  * explicitly declares it.
  */
 export interface WorldCapabilities {
+  /** Supports invoke and the matching queue-handler invocation feed. */
+  invoke?: boolean;
+
   /**
    * Supports `experimental_minRetention` for Hooks. Missing or inactive means
    * the runtime rejects retained Hooks before registration.

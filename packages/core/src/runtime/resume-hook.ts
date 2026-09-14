@@ -34,6 +34,7 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { linkToTraceCarrier, trace } from '../telemetry.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
+import { HookInvocationResultSchema } from './invocations.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
 
 /** Monotonic ULID factory for per-call resume idempotency keys. */
@@ -388,12 +389,14 @@ export type ResumedHook = Hook & {
  * This function is called externally (e.g., from an API route or server action)
  * to send data to a hook and resume the associated workflow run.
  *
- * Resolving means BOTH that the `hook_received` event is durably recorded in
- * the run's event log and that the workflow wake was accepted by the queue, in
- * that order. A {@link HookNotFoundError} means this invocation committed no
- * event. Any other error after the write is ambiguous only in dispatch, never
- * in durability: the event may already be committed, and a later wake of the
- * run (from any source) will deliver it.
+ * On an invoke-capable World, the serialized input is delivered to the run's
+ * executor, which inspects it, writes `hook_received`, then responds. Resolving
+ * means the executor accepted and persisted it, not that user code consumed it.
+ * Other Worlds write the event here and then await queue acceptance of its wake.
+ * On the existing path, a failure after the event write may leave a committed
+ * event whose wake was not accepted. On the invoke path, a transport failure
+ * leaves the executor's outcome unknown; do not retry by directly writing an
+ * event. Event and response persistence may be separate backend operations.
  *
  * Prefer passing the token string over a cached {@link Hook} object. A token
  * is looked up fresh, so the live backend can attest its atomic resume claim
@@ -628,6 +631,37 @@ async function resumeHookImpl<T = any>(
         const originLink = await linkToTraceCarrier(resumeContext.traceCarrier);
         if (originLink) {
           span?.addLink?.(originLink);
+        }
+
+        if (world.capabilities?.invoke === true) {
+          if (!world.invoke) {
+            throw new WorkflowRuntimeError(
+              'World advertises invoke without implementing it'
+            );
+          }
+          span?.setAttributes({ 'workflow.hook.resume_strategy': 'invoke' });
+          const result = HookInvocationResultSchema.parse(
+            await world.invoke(
+              hook.runId,
+              {
+                type: 'hook_resume',
+                version: 1,
+                hookId: hook.hookId,
+                token: hook.token,
+                payload: dehydratedPayload,
+              },
+              { idempotencyKey: generateResumeId() }
+            )
+          );
+          if (result.status === 'rejected') {
+            if (result.code === 'HOOK_NOT_FOUND')
+              throw new HookNotFoundError(hook.token);
+            throw new WorkflowRuntimeError(
+              'Executor rejected the hook invocation input'
+            );
+          }
+          span?.setAttributes(Attribute.HookResumeCommitted(true));
+          return asLazyMetadataHook(hook) satisfies ResumedHook;
         }
 
         const queueName = getWorkflowQueueName(resumeContext.workflowName);

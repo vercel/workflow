@@ -80,6 +80,29 @@ The migration is idempotent and can safely be run as a post-deployment lifecycle
 
 ## Starting the World
 
+### Experimental invocation delivery
+
+Set `WORKFLOW_POSTGRES_INVOKE=1` (default: off), or pass `enableInvoke: true`
+to the Postgres World's factory, to enable synchronous hook-input delivery.
+Apply the database migrations and upgrade the participating workers first.
+
+The World advertises `capabilities.invoke`. Hook callers send inputs to the
+run's executor, which inspects them, writes accepted hook events, and then
+responds. Graphile's `workflow_flows_executor` task uses a per-run named queue
+(`workflow_flows:<runId>:executor`); only one executor job for a run is active at
+a time, while other runs and the separate step jobs remain concurrent. A custom
+job prefix replaces `workflow_` in these names. Each invoke schedules a wake,
+even if a live executor already handled its input.
+
+Inputs/results are stored in a Postgres table and polled every 50ms. The default
+invoke response timeout is 30 seconds, and the encoded input/result limit is
+1 MiB each. A timeout does not undo processing. Event persistence precedes
+response persistence, but the two are not atomic: a crash in between may cause
+duplicate hook events. Result cleanup, stale-executor fencing and routing across
+incompatible code versions are not implemented by this experimental mode.
+
+### Server startup
+
 To subscribe to the graphile-worker queue, your workflow app needs to start the world on server start. Here are examples for a few frameworks:
 
 <Callout type="warn">

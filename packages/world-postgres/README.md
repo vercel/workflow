@@ -189,6 +189,60 @@ and its token can be reused. If the token is never reused, the expired
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - Workflow orchestration and queued step execution are both sent through `/.well-known/workflow/v1/flow`
 
+### Experimental synchronous invocation
+
+Enable `WORKFLOW_POSTGRES_INVOKE=1` when loading the World through
+`WORKFLOW_TARGET_WORLD`, or pass `enableInvoke: true` to `createWorld()`.
+The default is off. Run the database migration before enabling it, and use
+matching upgraded application workers sharing the same job prefix/namespace.
+
+This advertises `world.capabilities.invoke` and implements the optional
+`world.invoke(runId, payload, { idempotencyKey?, timeoutMs? })` operation.
+`resumeHook()` then sends a serialized input to the executor instead of writing
+the event in the caller. The executor validates the hook, awaits its event-log
+write, and responds. A response does not mean the workflow has consumed the input.
+Unsupported Worlds keep the existing hook-write/queue-wake path.
+
+Postgres stores inputs and responses in `workflow.workflow_invocations`. Input
+insertion and enqueueing an executor wake share one transaction. **Every invoke
+enqueues a wake**, even when retrying an input whose response is already stored;
+such a wake may find no additional work. It still checks durable run state because
+the previous executor may have died after responding but before replaying the
+committed event. A repeated idempotency key must carry
+identical input. Without a key, every call is a new input.
+
+There are two Graphile **task identifiers** with the default job prefix:
+
+- `workflow_flows_executor`: workflow orchestration wakes. These set Graphile's
+  named `queueName` to `workflow_flows:<runId>:executor`, allowing one active
+  executor job per run across worker instances.
+- `workflow_flows`: step execution and health checks. These remain parallel and
+  are not placed behind the run's executor job.
+
+`queueConcurrency` remains the overall per-process worker-slot limit (default
+50); it is not changed to 1. Different runs can execute concurrently. An executor
+stays unacknowledged while processing its invocation feed alongside existing
+workflow execution. Input admission is serviced while inline steps wait. Node
+VM retention remains bounded by existing replay boundaries and the executor's
+idle window; a later executor may use another process and replay.
+
+The handler feed reads pending rows in pages of 32, polling every 50ms; response
+waiting also polls every 50ms. Invoke defaults to a 30-second response timeout
+(overridable with `timeoutMs`). A timeout leaves the input pending and does not
+undo execution. Encoded input and result size are each limited to 1 MiB. Closing
+the World aborts local response waits and closes its input feeds.
+
+Event writes and response writes are deliberately **sequential, not atomic**.
+A crash between them may lead to the event being appended again on redelivery.
+Input-row deduplication does not provide exactly-once event journaling. Results
+currently remain in the table without automatic cleanup. Graphile serialization
+does not fence an old HTTP handler after an aborted/reclaimed delivery, and it
+does not route heterogeneous code versions to the correct deployment. These are
+limitations of this experimental mode; no new World acquisition API is added.
+
+The real-database invocation tests use the built core runtime. Build it before
+running `pnpm exec vitest run test/invoke.test.ts` in this package.
+
 ## Development
 
 For local development, you can use the included Docker Compose configuration:

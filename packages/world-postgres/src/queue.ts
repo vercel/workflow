@@ -2,6 +2,7 @@ import { connect } from 'node:net';
 import * as Stream from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
+import { WorkflowRunNotFoundError } from '@workflow/errors';
 import {
   createWorkflowBaseUrl,
   createWorkflowHealthEndpoint,
@@ -31,6 +32,7 @@ import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
+import { createInvocations } from './invocations.js';
 import { MessageData } from './message.js';
 
 function createGraphileLogger() {
@@ -132,7 +134,34 @@ export function createQueue(
     return `${jobPrefix}flows`;
   }
 
-  const createQueueHandler = localWorld.createQueueHandler;
+  const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
+  const executorQueueName = (runId: string) =>
+    `${getJobQueueName()}:${runId}:executor`;
+  const executorTask = () => `${getJobQueueName()}_executor`;
+
+  const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) =>
+    localWorld.createQueueHandler(prefix, async (message, metadata) => {
+      const parsed = WorkflowInvokePayloadSchema.safeParse(message);
+      if (
+        !invocations ||
+        !parsed.success ||
+        parsed.data.stepId ||
+        (typeof message === 'object' &&
+          message !== null &&
+          '__healthCheck' in message)
+      ) {
+        return handler(message, metadata);
+      }
+      const initial = await invocations.pending(parsed.data.runId);
+      // A responded input may have committed just before the previous executor
+      // died. Always drive the run; an empty mailbox alone is not a no-op proof.
+      const feed = invocations.feed(parsed.data.runId, initial);
+      try {
+        return await handler(message, { ...metadata, invocations: feed });
+      } finally {
+        await feed.return?.();
+      }
+    });
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
     return 'postgres';
@@ -170,6 +199,7 @@ export function createQueue(
     headers,
     delaySeconds,
     jobKey,
+    executorRunId,
   }: {
     queueId: string;
     body: Buffer | Uint8Array;
@@ -179,6 +209,7 @@ export function createQueue(
     headers?: Record<string, string>;
     delaySeconds?: number;
     jobKey?: string;
+    executorRunId?: string;
   }) {
     const utils = workerUtils;
     if (!utils) {
@@ -191,7 +222,7 @@ export function createQueue(
         : undefined;
 
     await utils.addJob(
-      getJobQueueName(),
+      executorRunId ? executorTask() : getJobQueueName(),
       MessageData.encode({
         id: queueId,
         data: Buffer.from(body),
@@ -204,6 +235,9 @@ export function createQueue(
         ...(jobKey ? { jobKey } : {}),
         ...(runAt ? { runAt } : {}),
         maxAttempts: MAX_GRAPHILE_JOB_ATTEMPTS,
+        ...(executorRunId
+          ? { queueName: executorQueueName(executorRunId) }
+          : {}),
       }
     );
   }
@@ -509,8 +543,48 @@ export function createQueue(
       headers: opts?.headers,
       delaySeconds: opts?.delaySeconds,
       jobKey: opts?.idempotencyKey ?? messageId,
+      ...(invocations &&
+      'runId' in message &&
+      !('__healthCheck' in message) &&
+      !('stepId' in message && message.stepId)
+        ? { executorRunId: message.runId }
+        : {}),
     });
     return { messageId };
+  };
+
+  const invoke: NonNullable<Queue['invoke']> = async (
+    runId,
+    payload,
+    options
+  ) => {
+    if (!invocations) throw new Error('Postgres invoke is not enabled');
+    await start();
+    return invocations.invoke(runId, payload, options, async (client) => {
+      const { rows } = await client.query<{ name: string }>(
+        'SELECT name FROM workflow.workflow_runs WHERE id = $1',
+        [runId]
+      );
+      if (!rows[0]) throw new WorkflowRunNotFoundError(runId);
+      const wake = MessageData.encode({
+        id: rows[0].name,
+        data: transport.serialize({ runId }) as Buffer,
+        messageId: MessageId.parse(`msg_${generateMessageId()}`),
+        attempt: 1,
+      });
+      // The mailbox insertion and wake share this transaction. No job_key:
+      // every invoke (including a completed request's retry) gets a wake.
+      await client.query(
+        `SELECT graphile_worker.add_job(identifier => $1, payload => $2::json,
+          queue_name => $3, max_attempts => $4)`,
+        [
+          executorTask(),
+          JSON.stringify(wake),
+          executorQueueName(runId),
+          MAX_GRAPHILE_JOB_ATTEMPTS,
+        ]
+      );
+    });
   };
 
   async function deserializeMessageBody(data: Buffer): Promise<unknown> {
@@ -561,6 +635,11 @@ export function createQueue(
             headers: messageData.headers,
             delaySeconds: result.timeoutSeconds,
             jobKey: messageData.idempotencyKey ?? messageData.messageId,
+            ...(invocations &&
+            workflowInvoke.success &&
+            !workflowInvoke.data.stepId
+              ? { executorRunId: workflowInvoke.data.runId }
+              : {}),
           });
           return 'rescheduled';
         }
@@ -630,6 +709,8 @@ export function createQueue(
     const namespace = resolveQueueNamespace(config.namespace);
     const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
     taskList[getJobQueueName()] = createTaskHandler(workflowPrefix);
+    if (invocations)
+      taskList[executorTask()] = createTaskHandler(workflowPrefix);
 
     runner = await run({
       pgPool: pool,
@@ -656,9 +737,11 @@ export function createQueue(
     createQueueHandler,
     getDeploymentId,
     queue,
+    ...(invocations ? { invoke } : {}),
     start,
     async close() {
       closing = true;
+      invocations?.close();
       if (runnerStart) {
         runnerStart.controller.abort();
         await runnerStart.promise;
