@@ -18,8 +18,18 @@ This is a **workflow-level fatal error**. It cannot be caught or handled inside 
 For replay divergence:
 
 ```text
-Workflow replay diverged <divergenceCount> times after <maxRecoveryReplays> recovery replays; latest divergent event was <eventId>. Last divergence: <details>
+Workflow replay diverged <divergenceCount> times after <maxRecoveryReplays> recovery replays; latest divergent event was <eventId>; divergent event ids: <eventId>, <eventId>, ... Last divergence: <details>
 ```
+
+The `divergent event ids` list has one entry per divergence in the recovery chain, oldest first. Every recovery replay diverging at the same event points at a fixed disagreement between the log and the code; ids that wander point at a race with another writer.
+
+`<details>` is the last divergence's own message. When the replay could not place an event, it names the invocation that was pending under that event's position at the time, and where the replay's walk over the log stood:
+
+```text
+Replay could not consume event: eventType=wait_created, correlationId=wait_<id>, eventId=<eventId>. pending at this id: step <stepName> (step_<id>). consumer: index=<n>, length=<n>, parked=<n>, lastConsumed=<eventId>
+```
+
+Steps, sleeps and hooks draw their ids from one sequence, so `pending at this id` reports the entity the replay put at that position, whatever its kind. In the example, the log recorded a sleep where this replay reached a step named `<stepName>`.
 
 For an unreadable stored payload:
 

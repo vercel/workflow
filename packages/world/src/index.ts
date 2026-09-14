@@ -23,8 +23,15 @@ export {
   AttributeValueSchema,
   applyAttributeChanges,
   PARENT_RUN_ID_ATTRIBUTE,
+  purgesUserDataOnFinish,
   RESERVED_ATTRIBUTE_KEY_PREFIX,
+  RETENTION_ATTRIBUTE,
+  RETENTION_DEFAULT,
+  RETENTION_ZERO,
+  type ResolvedRunRetention,
   ROOT_RUN_ID_ATTRIBUTE,
+  type RunRetention,
+  readRunRetention,
   validateAttributeChanges,
 } from './attributes.js';
 export {

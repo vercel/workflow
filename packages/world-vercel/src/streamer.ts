@@ -1,3 +1,4 @@
+import type { Attributes } from '@opentelemetry/api';
 import {
   EntityConflictError,
   PreconditionFailedError,
@@ -26,6 +27,10 @@ import {
   instrumentedFetch,
 } from './http-core.js';
 import {
+  encodeMultiChunks,
+  MAX_CHUNKS_PER_STREAM_WRITE,
+} from './stream-chunks.js';
+import {
   WorkflowRunId,
   WorkflowStreamName,
   WorkflowStreamOperation,
@@ -37,19 +42,21 @@ import {
   type HttpConfig,
   makeRequest,
 } from './utils.js';
+import { createStreamWriteSession } from './ws-stream-session.js';
+import { isWsStreamsTransportEnabled } from './ws-transport-enabled.js';
 
 /**
  * Maximum number of chunks per request, matching the server-side
  * MAX_CHUNKS_PER_BATCH. Larger batches are split into multiple requests.
  */
-export const MAX_CHUNKS_PER_REQUEST = 1000;
+export const MAX_CHUNKS_PER_REQUEST = MAX_CHUNKS_PER_STREAM_WRITE;
 
 /**
  * Effective max chunks per write request. Override via
  * `WORKFLOW_MAX_CHUNKS_PER_REQUEST`. Lower it (paired with the server's
  * `MAX_CHUNKS_PER_BATCH` override) to exercise the batch-splitting path.
  */
-const getMaxChunksPerRequest = (): number =>
+export const getMaxChunksPerRequest = (): number =>
   envNumber('WORKFLOW_MAX_CHUNKS_PER_REQUEST', MAX_CHUNKS_PER_REQUEST, {
     integer: true,
     min: 1,
@@ -171,69 +178,127 @@ function createStreamRequestError(
   );
 }
 
-/**
- * Encode multiple chunks into a length-prefixed binary format.
- * Format: [4 bytes big-endian length][chunk bytes][4 bytes length][chunk bytes]...
- *
- * This preserves chunk boundaries so the server can store them as separate
- * chunks, maintaining correct startIndex semantics for readers.
- *
- * @internal Exported for testing purposes
- */
-export function encodeMultiChunks(chunks: (string | Uint8Array)[]): Uint8Array {
-  const encoder = new TextEncoder();
+export { encodeMultiChunks } from './stream-chunks.js';
 
-  // Convert all chunks to Uint8Array and calculate total size
-  const binaryChunks: Uint8Array[] = [];
-  let totalSize = 0;
-
-  for (const chunk of chunks) {
-    const binary = typeof chunk === 'string' ? encoder.encode(chunk) : chunk;
-    binaryChunks.push(binary);
-    totalSize += 4 + binary.length; // 4 bytes for length prefix
-  }
-
-  // Allocate buffer and write length-prefixed chunks
-  const result = new Uint8Array(totalSize);
-  const view = new DataView(result.buffer);
-  let offset = 0;
-
-  for (const binary of binaryChunks) {
-    view.setUint32(offset, binary.length, false); // big-endian
-    offset += 4;
-    result.set(binary, offset);
-    offset += binary.length;
-  }
-
-  return result;
-}
-
-const StreamInfoResponseSchema = z.object({
-  tailIndex: z.number(),
-  done: z.boolean(),
-});
+const StreamInfoResponseSchema = z.compile(
+  z.object({
+    tailIndex: z.number(),
+    done: z.boolean(),
+  })
+);
 
 /**
  * Zod schema for the paginated stream chunks response from the server.
  * When using CBOR (the default for makeRequest), chunk data arrives as
  * native Uint8Array byte strings, so no base64 decoding is required.
  */
-const StreamChunksResponseSchema = z.object({
-  data: z.array(
-    z.object({
-      index: z.number(),
-      data: z.instanceof(Uint8Array),
-    })
-  ),
-  cursor: z.string().nullable(),
-  hasMore: z.boolean(),
-  done: z.boolean(),
-});
+const StreamChunksResponseSchema = z.compile(
+  z.object({
+    data: z.array(
+      z.object({
+        index: z.number(),
+        data: z.instanceof(Uint8Array),
+      })
+    ),
+    cursor: z.string().nullable(),
+    hasMore: z.boolean(),
+    done: z.boolean(),
+  })
+);
+
+export async function writeStreamSessionOverHttp(
+  runId: string,
+  name: string,
+  chunks: (string | Uint8Array)[],
+  config?: APIConfig,
+  attributes?: Attributes,
+  onRequestDispatched?: () => void
+): Promise<void> {
+  const httpConfig = await getHttpConfig(config);
+  httpConfig.headers.set('X-Stream-Multi', 'true');
+  const pageSize = Math.min(
+    getMaxChunksPerRequest(),
+    MAX_CHUNKS_PER_STREAM_WRITE
+  );
+  for (let offset = 0; offset < chunks.length; offset += pageSize) {
+    const url = getStreamUrl(name, runId, httpConfig);
+    const response = await instrumentedFetch({
+      method: 'PUT',
+      url: url.toString(),
+      body: encodeMultiChunks(chunks.slice(offset, offset + pageSize)),
+      headers: httpConfig.headers,
+      dispatcher: getStreamDispatcher(config),
+      timeoutMs: null,
+      logLabel: url.pathname,
+      spanName: 'workflow.stream.write',
+      durationAttribute: 'workflow.stream.write.chunk_rtt',
+      onRequestDispatched: offset === 0 ? onRequestDispatched : undefined,
+      attributes: {
+        ...streamSpanAttributes({
+          runId,
+          name,
+          operation: 'write_multi',
+        }),
+        ...(offset === 0 ? attributes : undefined),
+      },
+      buildError: async (res) =>
+        createStreamRequestError('write', url, res, await res.text()),
+    });
+    await response.text();
+  }
+}
+
+export async function closeStreamSessionOverHttp(
+  runId: string,
+  name: string,
+  config?: APIConfig
+): Promise<void> {
+  const httpConfig = await getHttpConfig(config);
+  httpConfig.headers.set('X-Stream-Done', 'true');
+  const url = getStreamUrl(name, runId, httpConfig);
+  const response = await instrumentedFetch({
+    method: 'PUT',
+    url: url.toString(),
+    headers: httpConfig.headers,
+    dispatcher: getStreamCloseDispatcher(config),
+    timeoutMs: null,
+    logLabel: url.pathname,
+    spanName: 'workflow.stream.write',
+    durationAttribute: 'workflow.stream.write.chunk_rtt',
+    attributes: streamSpanAttributes({ runId, name, operation: 'close' }),
+    buildError: async (res) =>
+      createStreamRequestError('close', url, res, await res.text()),
+  });
+  await response.text();
+}
 
 /** Creates the HTTP-backed streamer that talks to workflow-server. */
 export function createStreamer(config?: APIConfig): Streamer {
   return {
     streams: {
+      ...(isWsStreamsTransportEnabled()
+        ? {
+            createWriteSession(runId, name, { writerId }) {
+              return createStreamWriteSession(
+                runId,
+                name,
+                writerId,
+                config,
+                (chunks, attributes, onRequestDispatched) =>
+                  writeStreamSessionOverHttp(
+                    runId,
+                    name,
+                    chunks,
+                    config,
+                    attributes,
+                    onRequestDispatched
+                  ),
+                () => closeStreamSessionOverHttp(runId, name, config)
+              );
+            },
+          }
+        : {}),
+
       async write(
         runId: string | Promise<string>,
         name: string,

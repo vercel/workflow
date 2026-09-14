@@ -15,6 +15,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
 
@@ -197,6 +198,42 @@ vi.mock('./utils.js', () => ({
     headers: new Headers(),
   }),
 }));
+
+describe('stream writer session capability', () => {
+  it('leaves the stateful seam absent on the HTTP default', async () => {
+    const { createStreamer } = await import('./streamer.js');
+    expect(createStreamer().streams.createWriteSession).toBeUndefined();
+  });
+
+  it('advertises the stateful seam only on the exact ws opt-in', async () => {
+    vi.stubEnv('WORKFLOW_STREAMS_TRANSPORT', 'ws');
+    const { createStreamer } = await import('./streamer.js');
+    expect(createStreamer().streams.createWriteSession).toBeTypeOf('function');
+  });
+});
+
+describe('session HTTP fallback', () => {
+  it('paginates with the configured request-work cap', async () => {
+    vi.stubEnv('WORKFLOW_MAX_CHUNKS_PER_REQUEST', '2');
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response(null, { status: 200 }));
+    const { writeStreamSessionOverHttp } = await import('./streamer.js');
+
+    await writeStreamSessionOverHttp('run-123', 'stream', [
+      new Uint8Array([1]),
+      new Uint8Array([2]),
+      new Uint8Array([3]),
+    ]);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(
+      fetchSpy.mock.calls.map(
+        (call) => (call[1]?.body as Uint8Array).byteLength
+      )
+    ).toEqual([10, 5]);
+  });
+});
 
 describe('streams.get', () => {
   async function getStreamer() {

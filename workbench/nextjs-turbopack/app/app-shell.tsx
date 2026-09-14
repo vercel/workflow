@@ -37,7 +37,7 @@ export function AppShell({ workflowDefinitions }: AppShellProps) {
                 : 'bg-muted/50 text-muted-foreground border-transparent hover:text-foreground'
             }`}
           >
-            DurableAgent Chat
+            WorkflowAgent Chat
           </button>
         </div>
       </div>

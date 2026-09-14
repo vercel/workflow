@@ -76,6 +76,7 @@ import {
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
+import { purgeRunUserDataIfZeroRetention } from './retention.js';
 import {
   getRunStatusPollIntervalMs,
   notifyRunTerminal,
@@ -634,6 +635,18 @@ async function handleLegacyEventPostgres(
         .where(eq(Schema.runs.runId, runId))
         .limit(1);
 
+      // This shortcut is a terminal transition like any other, so a legacy
+      // run that carries `$retention: 0` has to be purged here too. In
+      // practice it never does — attributes postdate the legacy spec — but
+      // the check is a read of an in-memory map, and a terminal path that
+      // silently skips retention is exactly the kind of gap that survives.
+      await purgeRunUserDataIfZeroRetention(
+        drizzle,
+        runId,
+        updatedRun?.attributes,
+        now
+      );
+
       // Wake `runs.waitForTerminalStatus` waiters. This shortcut returns
       // before the notify in `createEventsStorage`, so without this a legacy
       // run's cancellation is only noticed by the backstop re-read.
@@ -823,6 +836,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // committed: on a slot-numbered run the position is chosen inside the
       // INSERT, so there is nothing to read before it.
       let eventId: string | undefined;
+      let value: { createdAt: Date } | undefined;
       // Lazy, because on a legacy run this mints a ULID and on a slot run it
       // reads which of the two schemes applies. Every caller below awaits it
       // immediately before its insert. A caller that has already fixed the id
@@ -926,35 +940,39 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             // Create run + run_created event atomically. The
             // transaction ensures we never have an orphaned run
             // without its run_created event.
-            const [inserted] = await drizzle
-              .insert(Schema.runs)
-              .values({
-                runId: effectiveRunId,
-                deploymentId: runInputData.deploymentId,
-                workflowName: runInputData.workflowName,
-                specVersion: effectiveSpecVersion,
-                input: runInputData.input as SerializedContent,
-                executionContext: runInputData.executionContext as
-                  | SerializedContent
-                  | undefined,
-                attributes: runInputData.attributes,
-                // Must be mirrored here too: this is the path that recreates a
-                // run from the queued message, which is exactly when the key
-                // would otherwise be lost for the rest of the run's life.
-                encryptionPublicKey: runInputData.encryptionPublicKey,
-                status: 'pending',
-              })
-              .onConflictDoNothing()
-              .returning();
+            const { deploymentId, workflowName } = runInputData;
+            const createdRun = await drizzle.transaction(async (tx) => {
+              const [inserted] = await tx
+                .insert(Schema.runs)
+                .values({
+                  runId: effectiveRunId,
+                  deploymentId,
+                  workflowName,
+                  specVersion: effectiveSpecVersion,
+                  input: runInputData.input as SerializedContent,
+                  executionContext: runInputData.executionContext as
+                    | SerializedContent
+                    | undefined,
+                  attributes: runInputData.attributes,
+                  // Must be mirrored here too: this is the path that recreates a
+                  // run from the queued message, which is exactly when the key
+                  // would otherwise be lost for the rest of the run's life.
+                  encryptionPublicKey: runInputData.encryptionPublicKey,
+                  status: 'pending',
+                })
+                .onConflictDoNothing()
+                .returning();
 
-            if (inserted) {
+              if (!inserted) {
+                return undefined;
+              }
               // This synthetic run_created is the run's first event, so it
               // opens the slot counter the rest of the run allocates from.
               const runCreatedEventId = await openEventSlots(
-                drizzle,
+                tx,
                 effectiveRunId
               );
-              await drizzle.insert(events).values({
+              await tx.insert(events).values({
                 runId: effectiveRunId,
                 eventId: runCreatedEventId,
                 eventType: 'run_created',
@@ -969,8 +987,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                 },
                 specVersion: effectiveSpecVersion,
               });
-            }
-            const createdRun = inserted;
+              return inserted;
+            }, SLOT_INSERT_TRANSACTION);
 
             if (createdRun) {
               currentRun = {
@@ -1164,11 +1182,21 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
 
-          // On terminal runs: only allow completing/failing in-progress steps
+          // On terminal runs: only allow completing/failing in-progress
+          // steps. A step_started is never that — it begins work, and no
+          // work should begin on a finished run — so it is rejected even
+          // when the step row still reads `running` (a redelivery of a
+          // start a previous delivery already claimed). Without this, a
+          // redelivered start on a cancelled/completed run passes the
+          // claim and executes the step body whose outcome nothing will
+          // ever consume.
           if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
-            if (validatedStep.status !== 'running') {
+            if (
+              validatedStep.status !== 'running' ||
+              data.eventType === 'step_started'
+            ) {
               throw new RunExpiredError(
-                `Cannot modify non-running step on run in terminal state "${currentRun.status}"`
+                `Cannot ${data.eventType === 'step_started' ? 'start' : 'modify non-running'} step on run in terminal state "${currentRun.status}"`
               );
             }
           }
@@ -1219,39 +1247,59 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             allowReservedAttributes: eventData.allowReservedAttributes === true,
           }
         );
-        const [runValue] = await drizzle
-          .insert(Schema.runs)
-          .values({
+        // A visible run must already have its slot marker and first event;
+        // otherwise a concurrent writer mistakes it for a legacy run.
+        const created = await drizzle.transaction(async (tx) => {
+          const [runValue] = await tx
+            .insert(Schema.runs)
+            .values({
+              runId: effectiveRunId,
+              deploymentId: eventData.deploymentId,
+              workflowName: eventData.workflowName,
+              // Propagate specVersion from the event to the run entity
+              specVersion: effectiveSpecVersion,
+              input: eventData.input as SerializedContent,
+              executionContext: eventData.executionContext as
+                | SerializedContent
+                | undefined,
+              attributes: eventData.attributes,
+              encryptionPublicKey: eventData.encryptionPublicKey,
+              status: 'pending',
+            })
+            .onConflictDoNothing()
+            .returning();
+          // No row back means the run already exists: the resilient start path
+          // (run_started on a non-existent run) won a TOCTOU race and created
+          // it. Surface the conflict rather than returning `{ run: undefined }`.
+          // start() already treats EntityConflictError as benign, and falling
+          // through would append a duplicate run_created event to the log.
+          if (!runValue) {
+            throw new EntityConflictError(
+              `Workflow run "${effectiveRunId}" already exists`
+            );
+          }
+          // Open the run's slot counter. Doing it here, rather than lazily on
+          // first allocation, is what makes "no row" mean "created before slots
+          // existed" for the rest of the run's life.
+          const firstEventId = await openEventSlots(tx, effectiveRunId);
+          const eventValue = await insertEventRow(tx, {
             runId: effectiveRunId,
-            deploymentId: eventData.deploymentId,
-            workflowName: eventData.workflowName,
-            // Propagate specVersion from the event to the run entity
+            eventId: firstEventId,
+            correlationId: data.correlationId,
+            eventType: 'run_created',
+            eventData,
             specVersion: effectiveSpecVersion,
-            input: eventData.input as SerializedContent,
-            executionContext: eventData.executionContext as
-              | SerializedContent
-              | undefined,
-            attributes: eventData.attributes,
-            encryptionPublicKey: eventData.encryptionPublicKey,
-            status: 'pending',
-          })
-          .onConflictDoNothing()
-          .returning();
-        // No row back means the run already exists: the resilient start path
-        // (run_started on a non-existent run) won a TOCTOU race and created
-        // it. Surface the conflict rather than returning `{ run: undefined }`.
-        // start() already treats EntityConflictError as benign, and falling
-        // through would append a duplicate run_created event to the log.
-        if (!runValue) {
-          throw new EntityConflictError(
-            `Workflow run "${effectiveRunId}" already exists`
-          );
-        }
-        // Open the run's slot counter. Doing it here, rather than lazily on
-        // first allocation, is what makes "no row" mean "created before slots
-        // existed" for the rest of the run's life.
-        eventId = await openEventSlots(drizzle, effectiveRunId);
-        run = deserializeRunError(compact(runValue));
+          });
+          if (!eventValue) {
+            throw new EntityConflictError(
+              `Workflow run "${effectiveRunId}" already exists`
+            );
+          }
+          return { runValue, eventValue };
+        }, SLOT_INSERT_TRANSACTION);
+        eventId = created.eventValue.eventId;
+        value = created.eventValue;
+        run = deserializeRunError(compact(created.runValue));
       }
 
       // Handle run_started event: update run status
@@ -1525,8 +1573,6 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       } else {
         storedEventData = undefined;
       }
-
-      let value: { createdAt: Date } | undefined;
 
       // Handle step_started event: increment attempt and set the step to
       // running, then write the matching event log entry in the same
@@ -2389,6 +2435,20 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // (specVersion < 2) `run_cancelled` shortcut, which returns from
       // `handleLegacyEventPostgres` and notifies for itself.
       if (run && isTerminalWorkflowRunStatus(run.status)) {
+        // Honor `$retention: 0` before the announcement, not after. The
+        // terminal event row committed above is itself payload-bearing
+        // (`run_completed` carries the output), so this is the first point
+        // where a purge can cover the whole run; and going before the notify
+        // means a waiter woken by it re-reads an already-expired run instead
+        // of catching the output on its way out. `run` is only set on the
+        // writer that won the conditional terminal UPDATE, so this fires once
+        // per run rather than on every idempotent retry.
+        await purgeRunUserDataIfZeroRetention(
+          drizzle,
+          effectiveRunId,
+          run.attributes,
+          now
+        );
         await notifyRunTerminal(drizzle, effectiveRunId);
       }
 

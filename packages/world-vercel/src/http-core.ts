@@ -17,7 +17,7 @@
  * which is safe: `http-client.ts` imports nothing from `utils.ts` but a type.
  */
 
-import type { Span } from '@opentelemetry/api';
+import type { Attributes, Span } from '@opentelemetry/api';
 import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
@@ -429,7 +429,7 @@ export interface HttpClientSpanOptions {
    */
   spanName?: string;
   /** Extra attributes merged on top of the standard HTTP attributes. */
-  attributes?: Record<string, string | number | string[]>;
+  attributes?: Attributes;
 }
 
 /**
@@ -549,7 +549,13 @@ export interface InstrumentedFetchOptions extends HttpClientSpanOptions {
    * Non-2xx bodies consumed by `buildError` are still reported here.
    */
   deferTransportSuccessUntilBody?: boolean;
-  /** Error code used when the request itself fails before a response arrives. */
+  /**
+   * Called synchronously after the request promise is created, before awaiting
+   * its response. This observes local dispatch only; it does not imply that any
+   * bytes reached the origin. Must not throw.
+   */
+  onRequestDispatched?: () => void;
+  /** Error code used when the request itself fails before a response arrived. */
   transportErrorCode?: 'TRANSPORT' | 'STREAM_ERROR';
 }
 
@@ -585,6 +591,7 @@ export async function instrumentedFetch(
     durationAttribute,
     onTransportOutcome,
     deferTransportSuccessUntilBody = false,
+    onRequestDispatched,
     transportErrorCode = 'TRANSPORT',
   } = opts;
   const label = logLabel ?? url;
@@ -623,8 +630,8 @@ export async function instrumentedFetch(
         span?.setAttributes({
           ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
         });
-        response = nodeAgents
-          ? await nodeHttpFetch(url, {
+        const request = nodeAgents
+          ? nodeHttpFetch(url, {
               method,
               headers,
               body,
@@ -637,7 +644,7 @@ export async function instrumentedFetch(
               headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
               bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
             })
-          : await fetch(url, {
+          : fetch(url, {
               method,
               headers,
               body,
@@ -645,6 +652,8 @@ export async function instrumentedFetch(
               // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici dispatcher type doesn't match @types/node's RequestInit
               dispatcher,
             } as any);
+        onRequestDispatched?.();
+        response = await request;
       } catch (error) {
         const elapsed = Date.now() - start;
         // Report the raw error, before the timeout mapping below rewraps it: the

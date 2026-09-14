@@ -1,5 +1,34 @@
 # @workflow/sveltekit
 
+## 5.0.0-beta.51
+
+### Patch Changes
+
+- Updated dependencies [[`c29200f`](https://github.com/vercel/workflow/commit/c29200fac5848fb8e40bf77351b5b69d10a31357), [`c29200f`](https://github.com/vercel/workflow/commit/c29200fac5848fb8e40bf77351b5b69d10a31357)]:
+  - @workflow/rollup@5.0.0-beta.51
+  - @workflow/swc-plugin@5.0.0-beta.7
+  - @workflow/builders@5.0.0-beta.51
+  - @workflow/vite@5.0.0-beta.51
+
+## 5.0.0-beta.50
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.50
+  - @workflow/rollup@5.0.0-beta.50
+  - @workflow/vite@5.0.0-beta.50
+
+## 5.0.0-beta.49
+
+### Patch Changes
+
+- Updated dependencies [[`ae5ee5b`](https://github.com/vercel/workflow/commit/ae5ee5ba2e68ca9850a5cb7b2b253388d06fdd8f)]:
+  - @workflow/swc-plugin@5.0.0-beta.6
+  - @workflow/builders@5.0.0-beta.49
+  - @workflow/rollup@5.0.0-beta.49
+  - @workflow/vite@5.0.0-beta.49
+
 ## 5.0.0-beta.48
 
 ### Patch Changes

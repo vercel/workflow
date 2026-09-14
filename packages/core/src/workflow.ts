@@ -22,6 +22,7 @@ import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { isDeliveryIdle } from './private.js';
+import { describeDivergenceContext } from './replay-divergence.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
@@ -492,9 +493,13 @@ async function createWorkflowSessionInner(
       }
     },
     onUnconsumedEvent: (event) => {
+      // `workflowContext` is assigned below, before any event can be offered,
+      // so it is always populated by the time this fires. The appended detail
+      // names the pending invocation that holds this event's ordinal (the
+      // usual reason nobody can consume it) and where the walk stands.
       onWorkflowError(
         new ReplayDivergenceError(
-          `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}.`,
+          `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. ${describeDivergenceContext(event, workflowContext.invocationsQueue, eventsConsumer)}`,
           { eventId: event.eventId }
         )
       );
@@ -1228,7 +1233,7 @@ async function createWorkflowSessionInner(
     if (stranded) {
       return failWorkflow(
         new ReplayDivergenceError(
-          `Replay finished without consuming event: eventType=${stranded.eventType}, correlationId=${stranded.correlationId}, eventId=${stranded.eventId}.`,
+          `Replay finished without consuming event: eventType=${stranded.eventType}, correlationId=${stranded.correlationId}, eventId=${stranded.eventId}. ${describeDivergenceContext(stranded, workflowContext.invocationsQueue, eventsConsumer)}`,
           { eventId: stranded.eventId }
         )
       );

@@ -40,6 +40,25 @@ import type {
   StepWithoutData,
 } from './steps.js';
 
+export interface StreamWriteSession {
+  /**
+   * Write one ordered group from this in-memory writer lifetime.
+   * `chunkSeq` is writer-local and identifies the first chunk in `chunks`.
+   */
+  write(chunkSeq: number, chunks: (string | Uint8Array)[]): Promise<void>;
+
+  /** Close this writer lifetime after all prior writes are durable. */
+  close(): Promise<void>;
+
+  /** Release transport resources without semantically closing the stream. */
+  dispose?(): Promise<void> | void;
+}
+
+export interface CreateStreamWriteSessionOptions {
+  /** Stable observational id for this in-memory writer lifetime. */
+  writerId: `wrtr_${string}`;
+}
+
 export interface Streamer {
   /**
    * Number of milliseconds a stream waits for additional chunks to arrive
@@ -57,6 +76,17 @@ export interface Streamer {
   streamFlushIntervalMs?: number;
 
   streams: {
+    /**
+     * Optionally create a stateful writer session. Core creates at most one
+     * session per in-memory WritableStream and otherwise uses the stateless
+     * write/writeMulti/close methods below unchanged.
+     */
+    createWriteSession?(
+      runId: string,
+      name: string,
+      options: CreateStreamWriteSessionOptions
+    ): StreamWriteSession;
+
     write(
       runId: string,
       name: string,

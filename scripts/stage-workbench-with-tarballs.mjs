@@ -78,41 +78,61 @@ function toTarballFilename(packageName, version) {
   return `${normalized}-${version}.tgz`;
 }
 
-function parseCatalogEntries(yamlPath) {
-  const catalog = {};
-  const lines = fs.readFileSync(yamlPath, 'utf8').split(/\r?\n/u);
-  let inCatalog = false;
+function parseCatalogMapping(lines, startIndex, indentation) {
+  const entries = {};
+  const prefix = ' '.repeat(indentation);
 
-  for (const line of lines) {
-    if (!inCatalog) {
-      if (line.trim() === 'catalog:') {
-        inCatalog = true;
-      }
+  for (const line of lines.slice(startIndex)) {
+    if (!line.trim() || line.trimStart().startsWith('#')) {
       continue;
     }
-
-    if (!line.trim()) {
-      continue;
-    }
-
-    if (!line.startsWith('  ')) {
+    if (!line.startsWith(prefix) || line.startsWith(`${prefix} `)) {
       break;
     }
 
-    const match = line.match(/^\s{2}("?[^"]+"?|[^:]+):\s*(.+)\s*$/u);
+    const match = line
+      .slice(indentation)
+      .match(/^(?:"([^"]+)"|(\S[^:]*)):\s*(.+)\s*$/u);
     if (!match) {
-      continue;
+      break;
     }
-
-    let key = match[1].trim();
-    if (key.startsWith('"') && key.endsWith('"')) {
-      key = key.slice(1, -1);
-    }
-    const value = match[2].trim();
-    catalog[key] = value;
+    entries[match[1] ?? match[2]] = match[3].trim();
   }
 
-  return catalog;
+  return entries;
+}
+
+export function parseCatalogEntries(yamlPath) {
+  const lines = fs.readFileSync(yamlPath, 'utf8').split(/\r?\n/u);
+  const defaultCatalogIndex = lines.indexOf('catalog:');
+  const catalogsIndex = lines.indexOf('catalogs:');
+  const catalogs = {
+    default:
+      defaultCatalogIndex === -1
+        ? {}
+        : parseCatalogMapping(lines, defaultCatalogIndex + 1, 2),
+  };
+
+  if (catalogsIndex === -1) {
+    return catalogs;
+  }
+
+  for (let index = catalogsIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.trim() || line.trimStart().startsWith('#')) {
+      continue;
+    }
+    if (!line.startsWith(' ')) {
+      break;
+    }
+
+    const match = line.match(/^ {2}(?:"([^"]+)"|(\S[^:]*)):\s*$/u);
+    if (match) {
+      catalogs[match[1] ?? match[2]] = parseCatalogMapping(lines, index + 1, 4);
+    }
+  }
+
+  return catalogs;
 }
 
 function collectMonorepoPackages() {
@@ -185,10 +205,34 @@ function copyRepoLib(destinationRoot) {
   return true;
 }
 
-function rewriteDependencySpecs(
+function classifyDependencySpec(
+  dependencyName,
+  spec,
+  tarballPathByPackageName,
+  catalogs
+) {
+  const tarballPath = tarballPathByPackageName.get(dependencyName);
+  if (tarballPath) {
+    return { kind: 'tarball', spec: `file:${tarballPath}` };
+  }
+  if (typeof spec === 'string' && spec.startsWith('workspace:')) {
+    return { kind: 'unresolved-workspace' };
+  }
+  if (typeof spec !== 'string' || !spec.startsWith('catalog:')) {
+    return { kind: 'unchanged' };
+  }
+
+  const catalogName = spec.slice('catalog:'.length) || 'default';
+  const resolvedVersion = catalogs[catalogName]?.[dependencyName];
+  return resolvedVersion
+    ? { kind: 'catalog', spec: resolvedVersion }
+    : { kind: 'unresolved-catalog' };
+}
+
+export function rewriteDependencySpecs(
   packageJsonPath,
   tarballPathByPackageName,
-  catalog
+  catalogs
 ) {
   const packageJson = readJson(packageJsonPath);
   const replacedWithTarballs = [];
@@ -203,31 +247,27 @@ function rewriteDependencySpecs(
     }
 
     for (const [dependencyName, spec] of Object.entries(dependencies)) {
-      const tarballPath = tarballPathByPackageName.get(dependencyName);
-      if (tarballPath) {
-        dependencies[dependencyName] = `file:${tarballPath}`;
-        replacedWithTarballs.push(`${field}.${dependencyName}`);
-        continue;
-      }
-
-      if (typeof spec === 'string' && spec.startsWith('workspace:')) {
-        unresolvedWorkspaceSpecs.push(`${field}.${dependencyName}`);
-        continue;
-      }
-
-      if (spec === 'catalog:') {
-        const resolvedVersion = catalog[dependencyName];
-        if (resolvedVersion) {
-          dependencies[dependencyName] = resolvedVersion;
+      const classification = classifyDependencySpec(
+        dependencyName,
+        spec,
+        tarballPathByPackageName,
+        catalogs
+      );
+      switch (classification.kind) {
+        case 'tarball':
+          dependencies[dependencyName] = classification.spec;
+          replacedWithTarballs.push(`${field}.${dependencyName}`);
+          break;
+        case 'catalog':
+          dependencies[dependencyName] = classification.spec;
           replacedCatalogEntries.push(`${field}.${dependencyName}`);
-        } else {
+          break;
+        case 'unresolved-workspace':
+          unresolvedWorkspaceSpecs.push(`${field}.${dependencyName}`);
+          break;
+        case 'unresolved-catalog':
           unresolvedCatalogSpecs.push(`${field}.${dependencyName}`);
-        }
-        continue;
-      }
-
-      if (typeof spec === 'string' && spec.startsWith('catalog:')) {
-        unresolvedCatalogSpecs.push(`${field}.${dependencyName}`);
+          break;
       }
     }
   }
@@ -354,13 +394,13 @@ function main() {
     );
   }
 
-  const catalog = parseCatalogEntries(workspaceYamlPath);
+  const catalogs = parseCatalogEntries(workspaceYamlPath);
   const stagedPackageJsonPath = path.join(stagedWorkbenchDir, 'package.json');
   const { replacedWithTarballs, replacedCatalogEntries } =
     rewriteDependencySpecs(
       stagedPackageJsonPath,
       tarballPathByPackageName,
-      catalog
+      catalogs
     );
   const overridesApplied = writeStagedWorkspaceConfig(
     stagedWorkbenchDir,
@@ -384,4 +424,6 @@ function main() {
   console.log(`Tarballs: ${tarballDir}`);
 }
 
-main();
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  main();
+}

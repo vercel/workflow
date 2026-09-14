@@ -6,12 +6,14 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { once } from '@workflow/utils';
+import type { StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import { importKey } from './encryption.js';
 import {
   createFlushableState,
+  type FlushableStreamState,
   flushablePipe,
   getMaxBufferedBytes,
   getMaxBytesPerBatch,
@@ -19,6 +21,7 @@ import {
   getMaxInflightChunks,
   pollReadableLock,
   pollWritableLock,
+  trackFlushableWritable,
 } from './flushable-stream.js';
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
@@ -1310,6 +1313,20 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       }
     };
 
+    // One stable identity and sequence space per in-memory sink. Start session
+    // construction as soon as the run-ready barrier permits, so transports may
+    // negotiate eagerly without allowing a write to overtake run creation.
+    // This eager chain cannot strand a new rejection: ensureRunReady absorbs its
+    // ordering-only failure, and every path that can observe worldPromise also
+    // awaits this session promise before it writes, closes, or disposes.
+    const writerId = `wrtr_${defaultUlid()}` as const;
+    const writeSessionPromise: Promise<StreamWriteSession | undefined> =
+      ensureRunReady().then(async () => {
+        const world = await worldPromise;
+        return world.streams.createWriteSession?.(runId, name, { writerId });
+      });
+    let nextChunkSeq = 0;
+
     // ------------------------------------------------------------------
     // Group-commit buffering.
     //
@@ -1427,8 +1444,14 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     ): Promise<void> => {
       await ensureRunReady();
       const world = await worldPromise;
+      const session = await writeSessionPromise;
       const dispatchAt = Date.now();
-      if (typeof world.streams.writeMulti === 'function' && group.length > 1) {
+      if (session) {
+        await session.write(nextChunkSeq, group);
+      } else if (
+        typeof world.streams.writeMulti === 'function' &&
+        group.length > 1
+      ) {
         await world.streams.writeMulti(runId, name, group);
       } else {
         // Fall back to sequential writes
@@ -1436,6 +1459,9 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
           await world.streams.write(runId, name, chunk);
         }
       }
+      // `inFlight` admits only one dispatch loop, so no second group can read
+      // this sequence space until the current group has advanced it.
+      nextChunkSeq += group.length;
       if (groupT0 !== undefined) {
         recordStreamWriteFlush(
           groupT0,
@@ -1635,8 +1661,13 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         await ensureRunReady();
 
         const world = await worldPromise;
+        const session = await writeSessionPromise;
         const closeStart = Date.now();
-        await world.streams.close(runId, name);
+        if (session) {
+          await session.close();
+        } else {
+          await world.streams.close(runId, name);
+        }
         recordStreamClose(closeStart, runId, name);
       },
       async abort(reason) {
@@ -1671,6 +1702,11 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // Reject blocked writers and drain waiters so nothing leaks or
         // hangs on a promise whose timer was just cleared.
         rejectWaiters(sinkError);
+        // Abort is transport cleanup, not semantic stream completion. A
+        // stateful World releases its socket without sending close; stateless
+        // Worlds keep the existing no-op behavior.
+        const session = await writeSessionPromise.catch(() => undefined);
+        await session?.dispose?.();
       },
     });
 
@@ -2753,24 +2789,11 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 }
 
 /**
- * Resolve the write-only key a run needs when writing into another run's
- * forwarded stream.
- *
- * Three tiers, cheapest first:
- *
- * 1. The descriptor carries the owner's X25519 public key: seal to it with
- *    no I/O whatsoever. The owner published the key when it created the
- *    stream, so this is the zero-round-trip path.
- * 2. The descriptor carries the owner's deployment ID: resolve the owner's
- *    symmetric key, which cross-deployment means a key-API round trip.
- * 3. Neither (descriptors written by older SDKs): load the owning run first,
- *    then resolve its symmetric key.
- *
- * Tiers 2 and 3 import the key encrypt-only, which is an honor-system
- * restriction: the same bytes could decrypt. Tier 1 makes it a cryptographic
- * guarantee: a public key cannot read anything.
+ * Resolves the owner's encryption key, preferring its public key, then its
+ * deployment, and finally its run record.
+ * @internal
  */
-async function getForwardedWritableEncryptionKey(
+export async function getForwardedWritableEncryptionKey(
   runId: string,
   deploymentId: string | undefined,
   encryptionPublicKey: string | undefined
@@ -2785,6 +2808,84 @@ async function getForwardedWritableEncryptionKey(
     ? await world.getEncryptionKeyForRun(runId, { deploymentId })
     : await world.getEncryptionKeyForRun(await world.runs.get(runId));
   return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
+}
+
+/** Tags a forwarded writable with its owner's metadata. @internal */
+export function tagForwardedWritableTarget(
+  writable: WritableStream,
+  {
+    deploymentId,
+    encryptionPublicKey,
+  }: { deploymentId?: string; encryptionPublicKey?: string }
+): void {
+  if (typeof deploymentId === 'string') {
+    Object.defineProperty(writable, STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, {
+      value: deploymentId,
+      writable: false,
+    });
+  }
+  if (typeof encryptionPublicKey === 'string') {
+    Object.defineProperty(writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
+      value: encryptionPublicKey,
+      writable: false,
+    });
+  }
+}
+
+/** Creates and tags a forwarded writable targeting the owner run. @internal */
+export function createForwardedWritable<W = any>({
+  global,
+  ops,
+  runId,
+  name,
+  key,
+  deploymentId,
+  encryptionPublicKey,
+  runReadyBarrier,
+}: {
+  global: Record<string, any>;
+  ops: Promise<any>[];
+  runId: string;
+  name: string;
+  key: EncryptionKeyParam;
+  deploymentId?: string;
+  encryptionPublicKey?: string;
+  runReadyBarrier?: Promise<unknown>;
+}): WritableStream<W> {
+  const serialize = getSerializeStream(
+    getExternalReducers(global, ops, runId, key),
+    key
+  );
+  const serverWritable = new WorkflowServerWritableStream(
+    runId,
+    name,
+    runReadyBarrier
+  );
+
+  // Lock release must settle the flush promise; contributors do not close.
+  const state = createFlushableState();
+  ops.push(state.promise);
+
+  flushablePipe(serialize.readable, serverWritable, state).catch(() => {
+    // Errors are handled via state.reject
+  });
+
+  pollWritableLock(serialize.writable, state);
+
+  Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+    value: name,
+    writable: false,
+  });
+  Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+    value: runId,
+    writable: false,
+  });
+  tagForwardedWritableTarget(serialize.writable, {
+    deploymentId,
+    encryptionPublicKey,
+  });
+
+  return serialize.writable as WritableStream<W>;
 }
 
 /**
@@ -3014,59 +3115,15 @@ export function getExternalRevivers(
               value.encryptionPublicKey
             );
 
-      const serialize = getSerializeStream(
-        getExternalReducers(global, ops, targetRunId, targetKey),
-        targetKey
-      );
-      const serverWritable = new WorkflowServerWritableStream(
-        targetRunId,
-        value.name
-      );
-
-      // Create flushable state for this stream
-      const state = createFlushableState();
-      ops.push(state.promise);
-
-      // Start the flushable pipe in the background
-      flushablePipe(serialize.readable, serverWritable, state).catch(() => {
-        // Errors are handled via state.reject
+      return createForwardedWritable({
+        global,
+        ops,
+        runId: targetRunId,
+        name: value.name,
+        key: targetKey,
+        deploymentId: value.deploymentId,
+        encryptionPublicKey: value.encryptionPublicKey,
       });
-
-      // Start polling to detect when user releases lock
-      pollWritableLock(serialize.writable, state);
-
-      Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
-        value: value.name,
-        writable: false,
-      });
-      Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
-        value: targetRunId,
-        writable: false,
-      });
-      if (typeof value.deploymentId === 'string') {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
-          {
-            value: value.deploymentId,
-            writable: false,
-          }
-        );
-      }
-      // Keep the owner's public key on the handle so a further forward stays on
-      // the zero-lookup sealed path.
-      if (typeof value.encryptionPublicKey === 'string') {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
-          {
-            value: value.encryptionPublicKey,
-            writable: false,
-          }
-        );
-      }
-
-      return serialize.writable;
     },
 
     AbortController: (value) => reviveAbortController(value, ops, runId),
@@ -3232,7 +3289,8 @@ function getStepRevivers(
   ops: Promise<void>[],
   runId: string,
   cryptoKey: EncryptionKeyParam,
-  deploymentId?: string
+  deploymentId?: string,
+  streamStates?: FlushableStreamState[]
 ): Partial<Revivers> {
   return {
     ...getCommonRevivers(global),
@@ -3454,6 +3512,8 @@ function getStepRevivers(
 
       // Create flushable state for this stream
       const state = createFlushableState();
+      state.deferReleaseSettlement = streamStates !== undefined;
+      streamStates?.push(state);
       ops.push(state.promise);
 
       // Start the flushable pipe in the background
@@ -3461,8 +3521,13 @@ function getStepRevivers(
         // Errors are handled via state.reject
       });
 
-      // Start polling to detect when user releases lock
-      pollWritableLock(serialize.writable, state);
+      // Track completed user writes independently of lock release.
+      const writable = trackFlushableWritable(
+        serialize.writable,
+        state,
+        global.WritableStream
+      );
+      pollWritableLock(writable, state);
 
       // Record the underlying `(runId, name)` so downstream reducers can
       // recognize that this writable is already backed by a workflow
@@ -3470,23 +3535,19 @@ function getStepRevivers(
       // the child passes this writable on to a grandchild), the
       // external reducer needs both to emit the original `runId` in
       // the descriptor.
-      Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+      Object.defineProperty(writable, STREAM_NAME_SYMBOL, {
         value: value.name,
         writable: false,
       });
-      Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+      Object.defineProperty(writable, STREAM_SERVER_RUN_ID_SYMBOL, {
         value: targetRunId,
         writable: false,
       });
       if (targetDeploymentId) {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_DEPLOYMENT_ID_SYMBOL,
-          {
-            value: targetDeploymentId,
-            writable: false,
-          }
-        );
+        Object.defineProperty(writable, STREAM_SERVER_DEPLOYMENT_ID_SYMBOL, {
+          value: targetDeploymentId,
+          writable: false,
+        });
       }
       // Keep the owner's public key on the handle so a further forward stays on
       // the zero-lookup sealed path.
@@ -3510,27 +3571,19 @@ function getStepRevivers(
         targetRunId === runId &&
         isRunPayloadKeys(cryptoKey)
       ) {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
-          {
-            value: bytesToBase64(cryptoKey.keyPair.publicKey),
-            writable: false,
-          }
-        );
+        Object.defineProperty(writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
+          value: bytesToBase64(cryptoKey.keyPair.publicKey),
+          writable: false,
+        });
       }
       if (typeof value.encryptionPublicKey === 'string') {
-        Object.defineProperty(
-          serialize.writable,
-          STREAM_SERVER_PUBLIC_KEY_SYMBOL,
-          {
-            value: value.encryptionPublicKey,
-            writable: false,
-          }
-        );
+        Object.defineProperty(writable, STREAM_SERVER_PUBLIC_KEY_SYMBOL, {
+          value: value.encryptionPublicKey,
+          writable: false,
+        });
       }
 
-      return serialize.writable;
+      return writable;
     },
 
     AbortController: (value) => reviveAbortController(value, ops, runId),
@@ -3886,14 +3939,15 @@ export async function hydrateStepArguments(
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {},
-  deploymentId?: string
+  deploymentId?: string,
+  streamStates?: FlushableStreamState[]
 ): Promise<any> {
   const compressionStats: CompressionStats = {};
   const result = await stepModule.deserialize(value, key, {
     global,
     extraRevivers: {
       ...getStreamAndRequestRevivers(
-        getStepRevivers(global, ops, runId, key, deploymentId)
+        getStepRevivers(global, ops, runId, key, deploymentId, streamStates)
       ),
       ...extraRevivers,
     },
