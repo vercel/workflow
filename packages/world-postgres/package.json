@@ -68,6 +68,7 @@
     "@workflow/world-testing": "workspace:*",
     "drizzle-kit": "0.31.9",
     "typescript": "catalog:",
+    "undici": "catalog:",
     "vitest": "catalog:"
   },
   "keywords": [],
