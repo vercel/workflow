@@ -4980,8 +4980,13 @@ export function workflowEntrypoint(
                         // carries the same context the WARN does.
                         let divergenceFields: Record<string, unknown> = {};
                         if (ReplayDivergenceError.is(err)) {
+                          // Continues the incoming episode's count unless this
+                          // invocation already committed a write after a clean
+                          // replay, which closed that episode; a divergence
+                          // after it starts a fresh budget rather than failing
+                          // the run on an unrelated earlier chain.
                           const divergenceCount =
-                            (replayDivergence?.count ?? 0) + 1;
+                            replayRecoveryReporter.nextDivergenceCount();
                           const maxRecoveryReplays =
                             getReplayDivergenceMaxRetries();
                           // Every divergence in this recovery chain, oldest
