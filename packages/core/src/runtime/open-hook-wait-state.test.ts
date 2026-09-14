@@ -142,7 +142,7 @@ describe('hasOpenWaitDueBy (the inline-delta and turbo gate)', () => {
     );
   });
 
-  it('follows a longer inline window (multi-hour function durations)', () => {
+  it('follows a longer inline window (a raised WORKFLOW_V2_TIMEOUT_MS)', () => {
     const longWindow = NOW + 3 * HOUR + OPEN_WAIT_CLOCK_SKEW_MS;
     const log = [waitCreated('w', new Date(NOW + HOUR))];
     expect(gates(log, DEADLINE)).toBe(false);

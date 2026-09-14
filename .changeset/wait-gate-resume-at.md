@@ -2,4 +2,4 @@
 '@workflow/core': patch
 ---
 
-An open wait that cannot fire during the current invocation (for example a `sleep()` that lost a `Promise.race()` against a hook) no longer disables the per-step event-log delta or turbo's optimistic start. The window follows the function's duration, plus `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`.
+A pending `sleep()` that cannot fire during the current invocation (for example one that lost a `Promise.race()` against a hook) no longer costs an extra event-log read per step boundary. The window follows the invocation's inline budget plus `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`; a wait completed early via `run.wakeUp()` is picked up by a read before the run parks on it.

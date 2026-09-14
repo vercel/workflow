@@ -109,11 +109,11 @@ function resumeAtMs(resumeAt: unknown): number {
  * allowance; the reasoning is on `OPEN_WAIT_CLOCK_SKEW_MS`.
  */
 export function hasOpenWaitDueBy(
-  state: Pick<OpenHookAndWaitState, 'openWait' | 'earliestOpenWaitResumeAtMs'>,
+  state: Pick<OpenHookAndWaitState, 'earliestOpenWaitResumeAtMs'>,
   deadlineMs: number
 ): boolean {
-  if (!state.openWait || state.earliestOpenWaitResumeAtMs === undefined) {
-    return false;
-  }
-  return state.earliestOpenWaitResumeAtMs <= deadlineMs;
+  return (
+    state.earliestOpenWaitResumeAtMs !== undefined &&
+    state.earliestOpenWaitResumeAtMs <= deadlineMs
+  );
 }

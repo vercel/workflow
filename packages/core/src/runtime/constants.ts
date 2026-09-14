@@ -503,51 +503,50 @@ export function getReplayDivergenceMaxRetries(): number {
   );
 }
 
-// An open wait (a `wait_created` with no `wait_completed`) suppresses the
-// per-step inline event delta and turbo's forced optimistic start only if it
-// can fire while this invocation is still alive: its `resumeAt` must fall
-// before the end of the invocation's inline window (`invocationStartTime +
-// noInlineReplayAfterMs`, the same budget the replay loop stops scheduling
-// inline batches at; see `getMaxInlineDurationMs`) plus this skew allowance.
-// A wait due later than that cannot produce a `wait_completed`, nor spawn the
-// resume invocation that would carry one, until this invocation has handed
-// the run off. Nothing disposes a wait, so without this a `sleep('24h')` that
-// lost a `Promise.race` against a hook would hold every later step boundary of
-// the run on the slow path.
+// A pending wait suppresses the per-step inline event delta only if it can
+// fire while this invocation is still scheduling inline batches: its
+// `resumeAt` must fall before the end of the invocation's inline window
+// (`invocationStartTime + noInlineReplayAfterMs`, the budget the replay loop
+// stops scheduling batches at; see `getMaxInlineDurationMs`) plus this skew
+// allowance. A wait due later than that cannot have its timer write a
+// `wait_completed` before this invocation hands the run off. Nothing disposes
+// a wait, so without this a `sleep('24h')` that lost a `Promise.race` against
+// a hook would hold every later step boundary of the run on the fetch path.
 //
-// The bound is the invocation lifetime rather than the step boundary because
-// of turbo. Forced optimistic start runs a step body before its `step_started`
-// claim lands, which is safe only while no other invocation can race for that
-// claim. A wait firing mid-invocation spawns one: it defers while it finds a
-// step inline-owned by a live lease (arming a delayed backstop wake instead),
-// but it, or the backstop it armed, can land in the in-process gap between one
-// step's terminal write and the next forced claim, and then a body has run for
-// a claim that may be lost. That gap exists for as long as this invocation
-// keeps scheduling forced batches, which is the inline window. Tying the
-// horizon to `noInlineReplayAfterMs` makes it follow the platform: raising the
-// function's duration (or `WORKFLOW_V2_TIMEOUT_MS`) to hours widens the
-// horizon to match.
+// The window is the inline budget, not the platform deadline: that budget is
+// `WORKFLOW_V2_TIMEOUT_MS` when set, otherwise a tier derived from the
+// function's deadline that tops out at 10 minutes. Raising the function's
+// duration alone therefore widens the window only up to that tier; the env
+// var is what takes it further.
 //
-// The skew allowance covers the clocks that are not this process's: the wait
-// timer's queue may deliver a continuation early
-// (`NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS` tolerates 2s of that), and the host
-// that writes `wait_completed` has its own offset. Seconds at most; 30s covers
-// them with an order of magnitude to spare.
+// What the allowance has to cover, all of it seconds at most:
+//   - clocks that are not this process's: the wait timer's queue may deliver
+//     a continuation early (`NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS` tolerates 2s
+//     of that), and the host that writes `wait_completed` has its own offset;
+//   - the inline-window check sits at the top of the loop, so the last batch
+//     an invocation schedules can start one replay pass plus a claim round
+//     trip after the window nominally closes.
+// 30s covers both with an order of magnitude to spare.
 //
-// The guarantee is on the timer's writer, not on every writer: an operator
-// force-completing a pending wait ignores `resumeAt`. Such a `wait_completed`
-// that lands after the step's terminal write is absent from that write's delta
-// and is observed by the next read instead; the events consumer parks it until
-// the replay reaches the wait and refuses a second resolution for the same
-// id, so it is absorbed late rather than lost. The resume invocation it spawns
-// is not turbo (turbo is the start delivery only), so it awaits its claims.
+// The bound is a statement about the wait's own timer, not about every writer.
+// `run.wakeUp()` (public API, and the dashboard's "cancel sleeps" action)
+// completes pending waits regardless of `resumeAt`. A completion it lands
+// after a step's terminal write is absent from that write's delta; the runtime
+// therefore re-reads the log before parking on a wait over a delta-extended
+// log (see `eventLogFromInlineDelta` in runtime.ts), so the completion is
+// acted on then rather than when the wait's own timer would have fired. Turbo's
+// forced optimistic start does not use this window at all: any open wait keeps
+// it off, because a wake `run.wakeUp()` enqueues is a peer that can race a
+// forced body for its claim, and a body executed twice is not repairable the
+// way a delayed wake is.
 export const OPEN_WAIT_CLOCK_SKEW_MS = 30_000;
 
 /**
  * Effective skew allowance added to the invocation's inline window when
- * deciding whether an open wait can fire during it. Override via
- * `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`; a very large value restores the
- * unconditional gating of any open wait.
+ * deciding whether a pending wait can fire during it. Override via
+ * `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`. Must be a finite integer: a value such
+ * as `31536000000` (one year) restores the unconditional gating of any
+ * pending wait, while `Infinity` is rejected and falls back to the default.
  */
 export function getOpenWaitClockSkewMs(): number {
   return envNumber(
