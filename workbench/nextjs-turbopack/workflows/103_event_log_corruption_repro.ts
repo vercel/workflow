@@ -722,6 +722,137 @@ function normalizeWakeLoop(input: WakeLoopInput) {
  *    win, so a wake mistaken for a heartbeat, or the reverse, moves a
  *    `wait_created` in the correlation-id sequence.
  */
+interface CycleHookInput {
+  token: string;
+  /** Hook wins to process before returning. */
+  wakes?: number;
+  /** The heartbeat sleep raced against this cycle's hook. */
+  heartbeatMs?: number;
+  /** Base duration of the drain step, the long step of each cycle. */
+  stepDelayMs?: number;
+  /** Deterministic per-cycle spread added to `stepDelayMs`. */
+  stepDelayJitterMs?: number;
+  /** Bytes every step returns, so each replay pays real hydration per event. */
+  stepPayloadBytes?: number;
+  /** Hard cap so a run that never wins cannot spin forever. */
+  maxCycles?: number;
+}
+
+interface CycleHookResult {
+  runId: string;
+  cycles: number;
+  hookWins: number;
+  heartbeatWins: number;
+  /** Cycles entered while the previous cycle's sleep was still open. */
+  createsUnderOpenWait: number;
+}
+
+function normalizeCycleHook(input: CycleHookInput) {
+  return {
+    wakes: input.wakes ?? 8,
+    heartbeatMs: input.heartbeatMs ?? 4000,
+    stepDelayMs: input.stepDelayMs ?? 400,
+    stepDelayJitterMs: input.stepDelayJitterMs ?? 400,
+    stepPayloadBytes: input.stepPayloadBytes ?? 8192,
+    maxCycles: input.maxCycles ?? 60,
+  };
+}
+
+/**
+ * The cycle-hook shape: like `wake-loop`, one sequential loop racing a hook
+ * against a heartbeat sleep, but the hook is **created fresh inside every
+ * cycle** and disposed only when the sleep wins.
+ *
+ * That one difference is the point. `wake-loop` creates its hooks once, at the
+ * top, when no wait exists, so it commits exactly one `hook_created` before the
+ * first `wait_created` and never again. This loop commits a `hook_created` on
+ * every cycle, and after a cycle the hook won, it commits that write while the
+ * losing sleep from the previous cycle is **still open** — the one state that
+ * decides which path the runtime takes when it settles a hook's awaiter in
+ * process (an open wait forces a read of the log instead of carrying the
+ * suspension's own writes forward).
+ *
+ * Taken from a production run (`githubUserMonitor`, core 5.0.0-beta.48) whose
+ * log is this loop event for event: 56 `hook_created`, 54 `hook_disposed`, 55
+ * `wait_created`, 54 `wait_completed`, 18 `hook_received`, and at the moment it
+ * failed, one open wait and a `hook_received` immediately before the terminal
+ * event. Its sibling died the same way 26 minutes earlier at 29 events. Neither
+ * exhausted the replay-divergence budget and neither hit a missing payload, so
+ * the corruption came from the third producer, the density check, which reports
+ * a hole in the log the replay read rather than a divergence.
+ *
+ * The driver supplies the concurrency: it resumes each cycle's own token, some
+ * of them aimed at the heartbeat deadline so a `hook_received` and a
+ * `wait_completed` land next to each other, which is what the production log
+ * shows at every cycle boundary.
+ */
+export async function cycleHookReproWorkflow(
+  input: CycleHookInput
+): Promise<CycleHookResult> {
+  'use workflow';
+
+  const metadata = getWorkflowMetadata();
+  const config = normalizeCycleHook(input);
+  const runId = metadata.workflowRunId;
+  let cycles = 0;
+  let hookWins = 0;
+  let heartbeatWins = 0;
+  let createsUnderOpenWait = 0;
+  // True while a sleep this loop abandoned is still counting down. There is no
+  // way to close one (see vercel/workflow#3916), so it stays open across the
+  // next cycle's `hook_created`.
+  let openWait = false;
+
+  while (hookWins < config.wakes && cycles < config.maxCycles) {
+    const index = cycles;
+    cycles += 1;
+    const payloadBytes = config.stepPayloadBytes;
+
+    await verifyStep({ runId, cycle: index, phase: 'before', payloadBytes });
+    await drainStep({
+      runId,
+      cycle: index,
+      delayMs:
+        config.stepDelayMs +
+        Math.floor(((index * 7) % 10) * (config.stepDelayJitterMs / 10)),
+      // Every cycle races; the drain never asks for another.
+      continueEvery: 0,
+      payloadBytes,
+    });
+
+    if (openWait) createsUnderOpenWait += 1;
+
+    // The write whose continuation path the open wait above switches.
+    const hook = createHook<WakeLoopPayload>({
+      token: `${input.token}:c${index}`,
+    });
+    // Production publishes the token in a step after creating the hook, so the
+    // `hook_created` is not the suspension's only write.
+    await verifyStep({ runId, cycle: index, phase: 'publish', payloadBytes });
+
+    const winner = await Promise.race([
+      hook[Symbol.asyncIterator]()
+        .next()
+        .then((result) => ({ payload: result.value })),
+      sleep(config.heartbeatMs).then(() => HEARTBEAT),
+    ]);
+
+    if (winner === HEARTBEAT) {
+      heartbeatWins += 1;
+      openWait = false;
+      hook.dispose();
+      continue;
+    }
+
+    // The hook won, so this cycle's sleep is abandoned and stays in the log.
+    hookWins += 1;
+    openWait = true;
+    await syncStep({ runId, cycle: index, payloadBytes });
+  }
+
+  return { runId, cycles, hookWins, heartbeatWins, createsUnderOpenWait };
+}
+
 export async function wakeLoopReproWorkflow(
   input: WakeLoopInput
 ): Promise<WakeLoopResult> {

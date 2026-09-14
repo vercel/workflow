@@ -130,7 +130,7 @@ pnpm run test:e2e
 ### Event log race repro
 
 `packages/core/e2e/event-log-race-repro.test.ts` is a dedicated harness for
-`CORRUPTED_EVENT_LOG`. It drives five scenarios against one deployment:
+`CORRUPTED_EVENT_LOG`. It drives six scenarios against one deployment:
 `step-storm` and `hook-storm` (concurrent replays of a single run racing the
 per-branch watchdog; `hook-storm` is a production shape), `blocked-branch`
 (each branch parks on a launch step before its hook race, so a woken replay can
@@ -140,8 +140,13 @@ sibling's wait is about to get; it covers the class the wake-order fixes miss),
 heartbeat sleep, no fan-out; the driver supplies the concurrency with bursty
 resumes and resumes aimed at the heartbeat deadline, the shape of a production
 run whose replays of one immutable prefix diverged non-deterministically on an
-unconsumable `wait_created`), plus a `hook-sleep` control that provides the
-calibration baseline. Any outcome
+unconsumable `wait_created`), `cycle-hook` (the same race, but the hook is
+created fresh *inside* every cycle and disposed only when the sleep wins, so a
+`hook_created` commits while the previous cycle's abandoned sleep is still open
+— the state that decides whether the runtime settles a hook's awaiter from its
+own writes or re-reads the log; taken from a production run that died on the
+density check rather than on a divergence), plus a `hook-sleep` control that
+provides the calibration baseline. Any outcome
 other than `completed` fails the run, except `infra`, which means the harness
 could not reach the deployment.
 
