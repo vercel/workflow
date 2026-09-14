@@ -226,11 +226,23 @@ workflow execution. Input admission is serviced while inline steps wait. Node
 VM retention remains bounded by existing replay boundaries and the executor's
 idle window; a later executor may use another process and replay.
 
-The handler feed reads pending rows in pages of 32, polling every 50ms; response
-waiting also polls every 50ms. Invoke defaults to a 30-second response timeout
+The handler feed reads pending rows in pages of 32. Input delivery and response
+waiting use `LISTEN/NOTIFY`, sharing one lazily opened dedicated connection per
+World instance. Notifications carry fixed-size hashed identifiers, not payloads
+or results. Input notifications commit with insertion/wake scheduling; result
+notifications commit with the response update. Waiters always read the table,
+and a revision captured before each read prevents missing a notification that
+arrives during the query. Completing/reestablishing LISTEN also wakes waiters
+to cover writes committed before subscription.
+
+A 1-second fallback read handles missing notifications or unavailable LISTEN.
+Listener errors/disconnects wake waiters and permit reconnect after a 1-second
+backoff. The listener needs a session-capable connection (for example, transaction
+pooling alone cannot provide reliable LISTEN); fallback reads preserve progress.
+Invoke defaults to a 30-second response timeout
 (overridable with `timeoutMs`). A timeout leaves the input pending and does not
 undo execution. Encoded input and result size are each limited to 1 MiB. Closing
-the World aborts local response waits and closes its input feeds.
+the World aborts local response waits and closes its input feeds and listener.
 
 Event writes and response writes are deliberately **sequential, not atomic**.
 A crash between them may lead to the event being appended again on redelivery.

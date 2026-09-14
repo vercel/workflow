@@ -741,7 +741,7 @@ export function createQueue(
     start,
     async close() {
       closing = true;
-      invocations?.close();
+      await invocations?.close();
       if (runnerStart) {
         runnerStart.controller.abort();
         await runnerStart.promise;

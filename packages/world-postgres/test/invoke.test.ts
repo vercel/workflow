@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
+import { encode } from 'cbor-x';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { makeWorkerUtils } from 'graphile-worker';
@@ -22,6 +23,12 @@ import {
   dehydrateWorkflowArguments,
 } from '../../core/dist/serialization.js';
 import { createWorld } from '../src/index.js';
+import {
+  createInvocationNotifications,
+  INVOCATION_INPUT_TOPIC,
+  INVOCATION_RESULT_TOPIC,
+  invocationNotificationKey,
+} from '../src/invocation-notifications.js';
 import { createInvocations } from '../src/invocations.js';
 
 const code = `
@@ -152,7 +159,7 @@ describe.skipIf(process.platform === 'win32')(
     }, 120_000);
 
     afterAll(async () => {
-      transport?.close();
+      await transport?.close();
       await secondWorker?.close?.();
       await world?.close?.();
       if (server) {
@@ -370,6 +377,153 @@ describe.skipIf(process.platform === 'win32')(
       expect(
         events.data.filter((event) => event.eventType === 'hook_received')
       ).toHaveLength(1);
+    });
+
+    it('notifies input and result observers only after their writes commit', async () => {
+      const runId = randomUUID();
+      const id = randomUUID();
+      const observer = createInvocationNotifications(pool);
+      const inputWatch = observer.watch(
+        INVOCATION_INPUT_TOPIC,
+        invocationNotificationKey(runId)
+      );
+      const resultWatch = observer.watch(
+        INVOCATION_RESULT_TOPIC,
+        invocationNotificationKey(runId, id)
+      );
+      const entered = Promise.withResolvers<void>();
+      const commit = Promise.withResolvers<void>();
+      await until(
+        async () => inputWatch.revision,
+        (revision) => revision > 0
+      );
+      const inputRevision = inputWatch.revision;
+      const resultRevision = resultWatch.revision;
+      const sent = transport.invoke(
+        runId,
+        { value: 1 },
+        { idempotencyKey: id, timeoutMs: 3_000 },
+        async (client) => {
+          await client.query(
+            'SELECT graphile_worker.add_job($1, $2::json, queue_name => $3)',
+            ['transport_test', JSON.stringify({ runId }), `transport:${runId}`]
+          );
+          entered.resolve();
+          await commit.promise;
+        }
+      );
+      // Observe errors immediately even if a failed assertion takes us to cleanup.
+      void sent.catch(() => {});
+      let feed: ReturnType<typeof transport.feed> | undefined;
+      try {
+        await entered.promise;
+        expect(await transport.pending(runId)).toEqual([]);
+        expect(inputWatch.revision).toBe(inputRevision);
+        commit.resolve();
+        // Revisions change on a real notification, never on the fallback timer.
+        await until(
+          async () => inputWatch.revision,
+          (revision) => revision > inputRevision
+        );
+        const rows = await transport.pending(runId);
+        expect(rows).toHaveLength(1);
+        feed = transport.feed(runId, rows);
+        const input = await feed.next();
+        if (input.done) throw new Error('Missing input');
+        expect(resultWatch.revision).toBe(resultRevision);
+        await input.value.respond({ status: 'accepted' });
+        await until(
+          async () => resultWatch.revision,
+          (revision) => revision > resultRevision
+        );
+        await expect(sent).resolves.toEqual({ status: 'accepted' });
+      } finally {
+        commit.resolve();
+        await feed?.return?.();
+        inputWatch.dispose();
+        resultWatch.dispose();
+        await observer.close();
+        await sent.catch(() => {});
+      }
+    });
+
+    it('reconnects a terminated real LISTEN client and receives later notifications', async () => {
+      const name = `notify-${randomUUID()}`;
+      const listenerPool = new Pool({
+        connectionString: container.getConnectionUri(),
+        application_name: name,
+      });
+      const observer = createInvocationNotifications(listenerPool);
+      const key = invocationNotificationKey('reconnect');
+      const watch = observer.watch(INVOCATION_INPUT_TOPIC, key);
+      const signal = new AbortController().signal;
+      const listenerPid = async () =>
+        (
+          await pool.query<{ pid: number }>(
+            'SELECT pid FROM pg_stat_activity WHERE application_name = $1 AND state = $2',
+            [`${name}:invocations`, 'idle']
+          )
+        ).rows[0]?.pid;
+      try {
+        await until(
+          async () => watch.revision,
+          (revision) => revision > 0
+        );
+        const firstPid = await until(listenerPid, (pid) => pid !== undefined);
+        const beforeDisconnect = watch.revision;
+        await pool.query('SELECT pg_terminate_backend($1)', [firstPid]);
+        await until(
+          async () => watch.revision,
+          (revision) => revision > beforeDisconnect
+        );
+        // Normal consumers reread on disconnect, then use the slow fallback
+        // while reconnect is backed off, then wait/read again.
+        await watch.wait(watch.revision, 1_000, signal);
+        const reconnected = watch.wait(watch.revision, 5_000, signal);
+        const secondPid = await until(
+          listenerPid,
+          (pid) => pid !== undefined && pid !== firstPid
+        );
+        await reconnected;
+        expect(secondPid).not.toBe(firstPid);
+        const beforeNotify = watch.revision;
+        await pool.query('SELECT pg_notify($1, $2)', [
+          INVOCATION_INPUT_TOPIC,
+          key,
+        ]);
+        await until(
+          async () => watch.revision,
+          (revision) => revision > beforeNotify
+        );
+      } finally {
+        watch.dispose();
+        await observer.close();
+        await listenerPool.end();
+      }
+      expect(await listenerPid()).toBeUndefined();
+    });
+
+    it('finds a stored result through the slow fallback when its notification is missing', async () => {
+      const runId = randomUUID();
+      const id = randomUUID();
+      const sent = transport.invoke(
+        runId,
+        {},
+        { idempotencyKey: id, timeoutMs: 3_000 },
+        async () => {}
+      );
+      void sent.catch(() => {});
+      await until(
+        () => transport.pending(runId),
+        (rows) => rows.length === 1
+      );
+      // Deliberately omit pg_notify to simulate a lost signal. The result
+      // table, not notification delivery, decides what invoke returns.
+      await pool.query(
+        'UPDATE workflow.workflow_invocations SET result = $3, responded_at = now() WHERE run_id = $1 AND request_id = $2',
+        [runId, id, Buffer.from(encode({ status: 'accepted' }))]
+      );
+      await expect(sent).resolves.toEqual({ status: 'accepted' });
     });
 
     it('rolls back the input when wake enqueue fails', async () => {

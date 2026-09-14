@@ -94,8 +94,15 @@ a time, while other runs and the separate step jobs remain concurrent. A custom
 job prefix replaces `workflow_` in these names. Each invoke schedules a wake,
 even if a live executor already handled its input.
 
-Inputs/results are stored in a Postgres table and polled every 50ms. The default
-invoke response timeout is 30 seconds, and the encoded input/result limit is
+Inputs/results are stored in a Postgres table. A shared, lazily opened
+`LISTEN/NOTIFY` connection wakes the active input feed and waiting callers when
+their rows change. Notifications carry identifiers only; waiters reread the
+table. A 1-second fallback handles missed signals, and listener failures permit
+reconnection with a 1-second backoff. The listener requires a session-capable
+database connection; polling preserves progress if LISTEN is unavailable.
+Every invoke still schedules a Graphile wake.
+
+The default invoke response timeout is 30 seconds, and the encoded input/result limit is
 1 MiB each. A timeout does not undo processing. Event persistence precedes
 response persistence, but the two are not atomic: a crash in between may cause
 duplicate hook events. Result cleanup, stale-executor fencing and routing across

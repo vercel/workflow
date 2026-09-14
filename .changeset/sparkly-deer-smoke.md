@@ -4,4 +4,4 @@
 "@workflow/world-postgres": minor
 ---
 
-Add optional executor invocation delivery for hooks, with a Postgres input/result mailbox and run-scoped Graphile executor queues.
+Add optional executor invocation delivery for hooks, with a notification-driven Postgres input/result mailbox and run-scoped Graphile executor queues.
