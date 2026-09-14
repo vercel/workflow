@@ -239,22 +239,58 @@ export const MAX_RESILIENT_STEP_INPUT_BYTES = 128 * 1024;
 
 /**
  * Whether resilient step dispatch is enabled: the suspension handler
- * parallelizes each newly created step's `step_created` event write with its
- * step-execution queue publish, carrying the serialized step input in the
- * queue message (`stepInput`) so the consumer can idempotently re-ensure the
- * event if the direct write failed transiently. Mirrors the resilient start
+ * publishes each newly created non-inline step's step-execution queue message
+ * without waiting for its `step_created` write to commit, carrying the
+ * serialized step input on the message (`stepInput`) so the consumer can
+ * materialize the step itself (a lazy `step_started`) if the delivery beats
+ * the write, or the write failed transiently. Mirrors the resilient start
  * (`runInput`) pattern (and the legacy lazy hook resume's `hookInput`, which
- * current producers no longer send).
+ * current producers no longer send). Inside the batched fan-out fold the
+ * publishes go out as each step's input finishes dehydrating, concurrently
+ * with the `createBatch` commits, instead of after the step's chunk commits.
  *
  * **Off by default.** Enable via `WORKFLOW_RESILIENT_STEP_DISPATCH=1`.
  *
- * The queue publish races the create's verdict, and a create can come back
- * refused: as a duplicate this replay should stop pursuing, or as a stale
- * write on a World that refuses rather than reports. Either way the message
- * carrying the payload is already out, so the consumer can materialize a step
- * whose create was refused, and nothing orders the verdict before the
- * consumer's redelivery re-ensure. Enabling this trades that window for the
- * latency the parallel publish saves.
+ * The 412 story #3519 wrote down as the reason is indeed gone: no World in
+ * this repository refuses a stale `step_created` with a 412 any more (a
+ * reader's log is a prefix, replay is deterministic on a prefix, and the
+ * write reports what it skipped), and the Vercel backend skips its
+ * precondition check entirely for slot-identity runs, so the payload-carrying
+ * message can no longer be left out for a step whose create was *revoked*.
+ *
+ * What keeps this off is a different invariant, the one that makes the
+ * inline lazy create-claim exclusive. Under sequential dispatch, "a step
+ * message exists" implies "`step_created` is durable", so a replay that
+ * reads its log and finds a step UNCREATED knows no message for it is in
+ * flight, and may claim it for inline execution with an owner-stamped lazy
+ * `step_started` (an atomic create + start). Publishing before the create
+ * commits removes that implication: the message is out while the step is
+ * still uncreated in every reader's log, so
+ *
+ *  - a redelivered replay (this pass's chunk commit failed, or its create
+ *    was tolerated as a transient failure), or
+ *  - a concurrent replay landing inside the commit window (155-182 ms per
+ *    chunk on a 32-branch fan-out) — a hook resume, or a chunk-1 consumer
+ *    that finishes and replays
+ *
+ * selects that step among its "first N uncreated" inline candidates and
+ * runs the body under an inline claim, while the consumer of the message
+ * already in flight bare-starts the same step. A bare `step_started` on a
+ * `running` step is NOT a conflict on any World — retries need it, so every
+ * World accepts it and bumps `attempt` (see the duplicate-start note in
+ * world-local's `events-storage.ts`) — and `runStepSingleFlight` only
+ * serializes within one process. The body runs twice.
+ *
+ * Closing it needs one of: an ownership fence on the bare start (World-side,
+ * and `step_started` semantics live in the Vercel backend, not here), or the
+ * consumer reading the step's ownership before its first start — which the
+ * `Step` entity cannot answer today, since it carries neither
+ * `ownerMessageId` nor the LATEST start time (`startedAt` is the first start
+ * only), so the read would have to be of the run's event log, on the very
+ * path this feature exists to shorten. Until one of those lands, this stays
+ * opt-in and publish-first stays behind it: with the flag off, the batched
+ * fan-out fold publishes every step message after its chunk commits, exactly
+ * as before.
  */
 export function isResilientStepDispatchEnabled(): boolean {
   return process.env.WORKFLOW_RESILIENT_STEP_DISPATCH === '1';
@@ -266,9 +302,12 @@ export function isResilientStepDispatchEnabled(): boolean {
  * `world.events.createBatch` call (one durable write, per-event outcomes)
  * instead of one write per event. Only engages when the World implements the
  * optional `events.createBatch` AND the run is on slot identity
- * (specVersion >= 6) AND the suspension carries no attribute/hook writes and
- * no resilient step dispatch. Everything else keeps the single-event path
- * byte-for-byte.
+ * (specVersion >= 6) AND the suspension carries no attribute/hook writes.
+ * Everything else keeps the single-event path byte-for-byte. Resilient step
+ * dispatch composes with the fold rather than excluding it (see
+ * `isResilientStepDispatchEnabled`): when that opt-in is ON, the folded
+ * steps' queue messages are published before their creates commit; with it
+ * off (the default) every message still waits for its chunk's commit.
  *
  * Reads `process.env.WORKFLOW_BATCH_TRANSITIONS` lazily. Default **ON**;
  * disabled only by an explicit `'0'` / `'false'` (case-insensitive), the
