@@ -31,6 +31,7 @@ async function waitFor(
 
 describe('WorkflowServerWritableStream', () => {
   let mockStreams: {
+    createWriteSession?: ReturnType<typeof vi.fn>;
     write: ReturnType<typeof vi.fn>;
     writeMulti: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
@@ -516,6 +517,82 @@ describe('WorkflowServerWritableStream', () => {
     });
   });
 
+  describe('stateful writer sessions', () => {
+    it('uses one stable writer id and writer-local sequence across groups', async () => {
+      const session = {
+        write: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      mockStreams.createWriteSession = vi.fn(() => session);
+
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+      const writer = stream.getWriter();
+      await writer.write(new Uint8Array([1]));
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(1));
+      await writer.write(new Uint8Array([2]));
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(2));
+      await writer.close();
+
+      expect(mockStreams.createWriteSession).toHaveBeenCalledTimes(1);
+      expect(mockStreams.createWriteSession).toHaveBeenCalledWith(
+        'run-123',
+        'test-stream',
+        {
+          writerId: expect.stringMatching(
+            /^wrtr_[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$/
+          ),
+        }
+      );
+      expect(session.write).toHaveBeenNthCalledWith(1, 0, [
+        new Uint8Array([1]),
+      ]);
+      expect(session.write).toHaveBeenNthCalledWith(2, 1, [
+        new Uint8Array([2]),
+      ]);
+      expect(session.close).toHaveBeenCalledTimes(1);
+      expect(mockStreams.write).not.toHaveBeenCalled();
+      expect(mockStreams.writeMulti).not.toHaveBeenCalled();
+      expect(mockStreams.close).not.toHaveBeenCalled();
+    });
+
+    it('creates a new writer id for each in-memory sink lifetime', async () => {
+      const writerIds: string[] = [];
+      mockStreams.createWriteSession = vi.fn((_runId, _name, options) => {
+        writerIds.push(options.writerId);
+        return {
+          write: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn().mockResolvedValue(undefined),
+        };
+      });
+
+      new WorkflowServerWritableStream('run-123', 'test-stream');
+      new WorkflowServerWritableStream('run-123', 'test-stream');
+      await waitFor(() => expect(writerIds).toHaveLength(2));
+      expect(new Set(writerIds).size).toBe(2);
+    });
+  });
+
+  describe('abort cleanup', () => {
+    it('drains accepted chunks then disposes without semantic close', async () => {
+      const session = {
+        write: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+        dispose: vi.fn().mockResolvedValue(undefined),
+      };
+      mockStreams.createWriteSession = vi.fn(() => session);
+
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+      const writer = stream.getWriter();
+      await writer.write(new Uint8Array([1]));
+      await writer.abort(new Error('producer failed'));
+
+      expect(session.write).toHaveBeenCalledWith(0, [new Uint8Array([1])]);
+      expect(session.dispose).toHaveBeenCalledTimes(1);
+      expect(session.close).not.toHaveBeenCalled();
+      expect(mockStreams.close).not.toHaveBeenCalled();
+    });
+  });
+
   describe('error handling', () => {
     it('surfaces a dispatch failure at the durability barrier (close) and poisons later writes', async () => {
       mockStreams.write.mockRejectedValueOnce(new Error('write error'));
@@ -547,6 +624,28 @@ describe('WorkflowServerWritableStream', () => {
       );
       // The retained chunk was not re-sent by a leaked timer.
       expect(mockStreams.write).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a session failure sticky without advancing its sequence', async () => {
+      const session = {
+        write: vi.fn().mockRejectedValueOnce(new Error('session failed')),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      mockStreams.createWriteSession = vi.fn(() => session);
+
+      const writer = new WorkflowServerWritableStream(
+        'run-123',
+        'test-stream'
+      ).getWriter();
+      await writer.write(new Uint8Array([1]));
+      await waitFor(() => expect(session.write).toHaveBeenCalledTimes(1));
+      await expect(writer.write(new Uint8Array([2]))).rejects.toThrow(
+        'session failed'
+      );
+      await expect(writer.close()).rejects.toThrow();
+      expect(session.write).toHaveBeenCalledTimes(1);
+      expect(session.write).toHaveBeenCalledWith(0, [new Uint8Array([1])]);
+      expect(session.close).not.toHaveBeenCalled();
     });
 
     it('should propagate close errors', async () => {

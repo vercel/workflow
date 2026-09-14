@@ -157,6 +157,7 @@ const ERROR_REVIVER_KEYS = [
   'ReferenceError',
   'RetryableError',
   'RuntimeDecryptionError',
+  'StreamError',
   'SyntaxError',
   'TypeError',
   'URIError',

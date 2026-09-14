@@ -41,33 +41,37 @@ import {
  * `errorCode` is a separate plaintext metadata field used for routing
  * and classification.
  */
-export const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
-  error: true,
-  errorCode: true,
-}).extend({
-  error: z.union([SerializedDataSchema, z.any()]).optional(),
-  errorCode: z.string().optional(),
-  // Not part of the World interface, but passed through for direct consumers and debugging
-  blobStorageBytes: z.number().optional(),
-  streamStorageBytes: z.number().optional(),
-});
+export const WorkflowRunWireBaseSchema = z.compile(
+  WorkflowRunBaseSchema.omit({
+    error: true,
+    errorCode: true,
+  }).extend({
+    error: z.union([SerializedDataSchema, z.any()]).optional(),
+    errorCode: z.string().optional(),
+    // Not part of the World interface, but passed through for direct consumers and debugging
+    blobStorageBytes: z.number().optional(),
+    streamStorageBytes: z.number().optional(),
+  })
+);
 
 // Wire schema for resolved data (full input/output)
-const WorkflowRunWireSchema = WorkflowRunWireBaseSchema;
+const WorkflowRunWireSchema = z.compile(WorkflowRunWireBaseSchema);
 
 // Wire schema for lazy mode with refs instead of data
 // input/output can be Uint8Array (v2) or any JSON (legacy v1)
-const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
-  input: true,
-  output: true,
-}).extend({
-  // We discard the results of the refs, so we don't care about the type here
-  inputRef: z.any().optional(),
-  outputRef: z.any().optional(),
-  // Accept both Uint8Array (v2 format) and any (legacy v1 JSON format)
-  input: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
-  output: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
-});
+const WorkflowRunWireWithRefsSchema = z.compile(
+  WorkflowRunWireBaseSchema.omit({
+    input: true,
+    output: true,
+  }).extend({
+    // We discard the results of the refs, so we don't care about the type here
+    inputRef: z.any().optional(),
+    outputRef: z.any().optional(),
+    // Accept both Uint8Array (v2 format) and any (legacy v1 JSON format)
+    input: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
+    output: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
+  })
+);
 
 // Overloaded function signatures for filterRunData
 function filterRunData(run: any, resolveData: 'none'): WorkflowRunWithoutData;
@@ -137,6 +141,15 @@ export async function listWorkflowRuns(
   const searchParams = new URLSearchParams();
 
   if (workflowName) searchParams.set('workflowName', workflowName);
+  if (Array.isArray(status)) {
+    // The world-vercel backend's `/v2/runs` only accepts a single status
+    // value today. Reject explicitly rather than joining into a value the
+    // backend would silently reject or misinterpret.
+    throw new WorkflowWorldError(
+      'listWorkflowRuns: status does not support an array of statuses on world-vercel yet; pass a single status',
+      { code: 'INVALID_ARGUMENT', field: 'status' }
+    );
+  }
   if (status) searchParams.set('status', status);
   if (pagination?.limit) searchParams.set('limit', pagination.limit.toString());
   if (pagination?.cursor) searchParams.set('cursor', pagination.cursor);
@@ -566,9 +579,11 @@ export async function cancelWorkflowRuns(
  * returns the post-merge attribute snapshot so callers don't need to
  * issue a follow-up read.
  */
-const ExperimentalSetAttributesResponseSchema = z.object({
-  attributes: z.record(z.string(), z.string()),
-});
+const ExperimentalSetAttributesResponseSchema = z.compile(
+  z.object({
+    attributes: z.record(z.string(), z.string()),
+  })
+);
 
 /**
  * Apply attribute changes to a workflow run. The body shape mirrors the

@@ -1,4 +1,5 @@
 import type {
+  AnalyticsAttributeKey,
   AnalyticsEvent,
   AnalyticsRun,
   AnalyticsStep,
@@ -9,6 +10,7 @@ import type {
   World,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { logger } from '../config/log.js';
 import {
   getObservabilityUpgradeRequiredMessage,
   isObservabilityUpgradeRequiredError,
@@ -16,6 +18,7 @@ import {
 import {
   formatTableValue,
   hasExpiredData,
+  listAttributes,
   listEvents,
   listRuns,
   listSleeps,
@@ -795,5 +798,274 @@ describe('listSleeps', () => {
     expect(log.mock.calls.flat().join('\n')).toContain(
       'Upgrade Observability Plus'
     );
+  });
+});
+
+describe('listSleeps analytics degradation', () => {
+  const eventBase = {
+    runId: 'run-1',
+    workflowName: 'wf',
+    deploymentId: 'dpl_1',
+  };
+
+  // The other three list paths fall back to storage; this one used to end the
+  // command, leaving its storage branch unreachable wherever analytics exists.
+  it('falls back to the event log when the analytics read fails', async () => {
+    const world = {
+      analytics: {
+        waits: {
+          list: vi
+            .fn()
+            .mockRejectedValue(
+              Object.assign(new Error('upstream unavailable'), { status: 503 })
+            ),
+        },
+      },
+      events: {
+        list: vi.fn().mockResolvedValue({
+          data: [
+            {
+              ...eventBase,
+              eventId: 'evnt-1',
+              eventType: 'wait_created',
+              correlationId: 'wait-1',
+              createdAt: new Date('2026-06-30T00:00:00.000Z'),
+              eventData: { resumeAt: new Date('2026-06-30T00:01:00.000Z') },
+            },
+          ],
+          cursor: null,
+          hasMore: false,
+        }),
+      },
+    } as unknown as World;
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listSleeps(world, { json: true, runId: 'run-1' });
+
+    expect(world.analytics?.waits.list).toHaveBeenCalled();
+    expect(world.events.list).toHaveBeenCalled();
+    expect(write.mock.calls.join('')).toContain('wait-1');
+    write.mockRestore();
+  });
+
+  // Retrying an argument the World already rejected would only replace a
+  // precise message with a slower failure.
+  it('does not fall back when the argument was rejected', async () => {
+    const world = {
+      analytics: {
+        waits: {
+          list: vi
+            .fn()
+            .mockRejectedValue(
+              Object.assign(
+                new Error(
+                  'analytics.waits.list: runId must be a workflow run id'
+                ),
+                { code: 'INVALID_ARGUMENT', field: 'runId' }
+              )
+            ),
+        },
+      },
+      events: { list: vi.fn() },
+    } as unknown as World;
+
+    await listSleeps(world, { runId: 'nope' });
+
+    expect(world.analytics?.waits.list).toHaveBeenCalled();
+    expect(world.events.list).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+});
+
+describe('listAttributes', () => {
+  const key = {
+    key: 'application',
+    runCount: 12,
+    firstSeenAt: new Date('2026-08-26T09:14:02.000Z'),
+    lastSeenAt: new Date('2026-09-02T21:40:11.000Z'),
+  } satisfies AnalyticsAttributeKey;
+
+  const worldWith = (list: ReturnType<typeof vi.fn>) =>
+    ({ analytics: { attributes: { list } } }) as unknown as World;
+
+  it('passes the window, name filter and cursor, and preserves JSON output', async () => {
+    const list = vi.fn().mockResolvedValue({
+      data: [key],
+      cursor: 'next',
+      hasMore: true,
+    });
+    const write = vi
+      .spyOn(process.stdout, 'write')
+      .mockImplementation(() => true);
+
+    await listAttributes(worldWith(list), {
+      json: true,
+      workflowName: 'orderWorkflow',
+      since: '7d',
+      cursor: 'first',
+      limit: 25,
+    });
+
+    const params = list.mock.calls[0][0];
+    expect(params.workflowName).toBe('orderWorkflow');
+    expect(params.startTime).toBeDefined();
+    expect(params.endTime).toBeDefined();
+    expect(params.pagination).toMatchObject({ cursor: 'first', limit: 25 });
+    expect(write.mock.calls.join('')).toContain('application');
+    write.mockRestore();
+  });
+
+  // The backend orders keys alphabetically; forwarding a defaulted `desc`
+  // would override that, so the flag is only sent when it was passed.
+  it('omits sortOrder unless --sort was given', async () => {
+    const list = vi
+      .fn()
+      .mockResolvedValue({ data: [], cursor: null, hasMore: false });
+
+    await listAttributes(worldWith(list), { json: true });
+    expect(list.mock.calls[0][0].pagination.sortOrder).toBeUndefined();
+
+    await listAttributes(worldWith(list), { json: true, sort: 'asc' });
+    expect(list.mock.calls[1][0].pagination.sortOrder).toBe('asc');
+  });
+
+  // Analytics-only: there is no cross-run attribute index in storage.
+  it('reports that the backend cannot list attributes', async () => {
+    const world = { analytics: undefined } as unknown as World;
+    await listAttributes(world, { json: true });
+    expect(process.exitCode).toBe(1);
+    process.exitCode = 0;
+  });
+
+  // Every one of these parsed, was dropped, and left the full key table
+  // looking like a filtered answer. The sibling listings warn on the
+  // selectors they cannot apply; this one warned on nothing.
+  describe.each([
+    ['status', { status: 'failed' as const }, 'Filtering by status'],
+    ['runId', { runId: 'wrun_x' }, 'Filtering by run-id'],
+    ['stepId', { stepId: 'step_x' }, 'Filtering by step-id'],
+    ['hookId', { hookId: 'hook_x' }, 'Filtering by hook-id'],
+    ['withData', { withData: true }, '`withData` flag is ignored'],
+  ])('with --%s', (_flag, opts, expected) => {
+    it('warns that the filter does not apply', async () => {
+      const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      const list = vi
+        .fn()
+        .mockResolvedValue({ data: [key], cursor: null, hasMore: false });
+
+      await listAttributes(worldWith(list), { json: true, ...opts });
+
+      expect(warn.mock.calls.flat().join(' ')).toContain(expected);
+      warn.mockRestore();
+    });
+
+    // The listing takes a workflow name and a window; nothing here reaches
+    // the backend, so warning is the only signal the caller gets.
+    it('forwards none of it to the backend', async () => {
+      vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+      const list = vi
+        .fn()
+        .mockResolvedValue({ data: [key], cursor: null, hasMore: false });
+
+      await listAttributes(worldWith(list), { json: true, ...opts });
+
+      const params = list.mock.calls[0][0];
+      expect(params.status).toBeUndefined();
+      expect(params.runId).toBeUndefined();
+      expect(params.stepId).toBeUndefined();
+      expect(params.hookId).toBeUndefined();
+      vi.restoreAllMocks();
+    });
+  });
+});
+
+describe('listRuns attribute filtering', () => {
+  const run = {
+    runId: 'run-1',
+    status: 'completed',
+    deploymentId: 'dep-1',
+    workflowName: 'workflow//./src/workflows/test//myWorkflow',
+    attributes: { tenant: 'acme' },
+    createdAt: new Date('2026-06-30T00:00:00.000Z'),
+    updatedAt: new Date('2026-06-30T00:00:01.000Z'),
+    startedAt: null,
+    completedAt: null,
+    errorCode: null,
+    workflowCoreVersion: null,
+    workflowEncryptionEnabled: false,
+  } satisfies AnalyticsRun;
+
+  it('forwards the filter to the analytics listing', async () => {
+    const list = vi
+      .fn()
+      .mockResolvedValue({ data: [run], cursor: null, hasMore: false });
+    const world = {
+      analytics: { runs: { list } },
+    } as unknown as World;
+
+    await listRuns(world, { json: true, attributes: { tenant: 'acme' } });
+
+    expect(list.mock.calls[0][0].attributes).toEqual({ tenant: 'acme' });
+  });
+
+  it('omits the key entirely when no filter was given', async () => {
+    const list = vi
+      .fn()
+      .mockResolvedValue({ data: [run], cursor: null, hasMore: false });
+    const world = {
+      analytics: { runs: { list } },
+    } as unknown as World;
+
+    await listRuns(world, { json: true });
+
+    expect('attributes' in list.mock.calls[0][0]).toBe(false);
+  });
+
+  // The warning names whichever condition applies. `--withData` is now
+  // rejected upstream by validateAttributeScope, so the reachable case here
+  // is a backend with no analytics namespace.
+  it('says the backend has no analytics read path', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const world = {
+      analytics: undefined,
+      runs: {
+        list: vi
+          .fn()
+          .mockResolvedValue({ data: [], cursor: null, hasMore: false }),
+      },
+    } as unknown as World;
+
+    await listRuns(world, { json: true, attributes: { tenant: 'acme' } });
+
+    expect(warn.mock.calls.flat().join(' ')).toContain(
+      '--attribute is ignored by this backend, which has no analytics read path'
+    );
+    warn.mockRestore();
+  });
+
+  it('blames --withData when that is what moved the read off analytics', async () => {
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const world = {
+      analytics: { runs: { list: vi.fn() } },
+      runs: {
+        list: vi
+          .fn()
+          .mockResolvedValue({ data: [], cursor: null, hasMore: false }),
+      },
+    } as unknown as World;
+
+    await listRuns(world, {
+      json: true,
+      withData: true,
+      attributes: { tenant: 'acme' },
+    });
+
+    expect(warn.mock.calls.flat().join(' ')).toContain(
+      '--attribute is ignored with --withData'
+    );
+    warn.mockRestore();
   });
 });

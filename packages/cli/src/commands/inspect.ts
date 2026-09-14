@@ -8,8 +8,10 @@ import {
   getObservabilityUpgradeRequiredMessage,
   isObservabilityUpgradeRequiredError,
 } from '../lib/inspect/errors.js';
+import { validateInspectFlags } from '../lib/inspect/flag-bounds.js';
 import { cliFlags, urlFlag } from '../lib/inspect/flags.js';
 import {
+  listAttributes,
   listEvents,
   listHooks,
   listRuns,
@@ -31,7 +33,8 @@ export default class Inspect extends BaseCommand {
 
   static examples = [
     '$ workflow inspect runs',
-    '$ workflow inspect runs',
+    '$ workflow inspect attributes',
+    '$ workflow inspect runs --attribute tenant=acme --status failed',
     '$ workflow inspect events --step=step_01K5WAJZ8W367CV2RFKDSDNWB8',
     '$ workflow inspect hooks',
     '$ workflow inspect hook hook_01K5WAJZ8W367CV2RFKDSDNWB8',
@@ -57,7 +60,7 @@ export default class Inspect extends BaseCommand {
   static args = {
     resource: Args.string({
       description:
-        'what to inspect: run(s) | step(s) | stream(s) | event(s) | hook(s) | sleep(s)',
+        'what to inspect: run(s) | step(s) | stream(s) | event(s) | hook(s) | sleep(s) | attribute(s)',
       required: true,
       options: [
         'r',
@@ -79,6 +82,10 @@ export default class Inspect extends BaseCommand {
         'web',
         'sleep',
         'sleeps',
+        'a',
+        'attr',
+        'attribute',
+        'attributes',
       ],
     }),
     id: Args.string({
@@ -115,8 +122,17 @@ export default class Inspect extends BaseCommand {
       helpLabel: '--hookId',
       helpValue: 'HOOK_ID',
     }),
+    attribute: Flags.string({
+      description:
+        'filter runs by attribute, as key=value; repeatable up to 8 times',
+      required: false,
+      multiple: true,
+      helpGroup: 'Filtering',
+      helpLabel: '--attribute',
+      helpValue: 'KEY=VALUE',
+    }),
     workflowName: Flags.string({
-      description: 'workflow name to filter by (only for runs)',
+      description: 'workflow name to filter by (runs and attributes)',
       required: false,
       char: 'n',
       aliases: ['workflow'],
@@ -132,7 +148,7 @@ export default class Inspect extends BaseCommand {
     }),
     since: Flags.string({
       description:
-        'list runs active since a relative duration (30m, 12h, 7d, 2w) or timestamp; defaults to the backend window (only for runs)',
+        'list items active since a relative duration (30m, 12h, 7d, 2w) or timestamp; defaults to the backend window (runs and attributes)',
       required: false,
       helpGroup: 'Filtering',
       helpLabel: '--since',
@@ -140,7 +156,7 @@ export default class Inspect extends BaseCommand {
     }),
     until: Flags.string({
       description:
-        'end of the --since listing window, as a relative duration or timestamp; defaults to now (only for runs)',
+        'end of the --since listing window, as a relative duration or timestamp; defaults to now (runs and attributes)',
       required: false,
       helpGroup: 'Filtering',
       helpLabel: '--until',
@@ -174,13 +190,34 @@ export default class Inspect extends BaseCommand {
       const resource = normalizeResource(args.resource);
       if (!resource) {
         this.logError(
-          `Unknown resource "${args.resource}": must be one of: run(s), step(s), stream(s), event(s), hook(s), sleep(s)`
+          `Unknown resource "${args.resource}": must be one of: run(s), step(s), stream(s), event(s), hook(s), sleep(s), attribute(s)`
         );
         process.exitCode = 1;
         return;
       }
 
       const id = args.id;
+
+      // Bounds and `--attribute` parsing, both before any backend setup: a
+      // mistyped flag should name itself rather than surface as a rejected
+      // argument from the read path, and a malformed pair used to cost a
+      // full auth and project lookup before failing.
+      const bounded = validateInspectFlags({
+        resource,
+        hasId: id !== undefined,
+        limit: flags.limit,
+        runId: flags.runId,
+        attribute: flags.attribute,
+        opensWebUi:
+          Boolean(flags.url) || Boolean(flags.web) || resource === 'web',
+        withData: flags.withData,
+      });
+      if ('error' in bounded) {
+        this.logError(bounded.error);
+        process.exitCode = 1;
+        return;
+      }
+      const { attributes } = bounded;
 
       // Print-only deep link: resolve config and emit the URL, no browser/server.
       if (flags.url) {
@@ -208,7 +245,7 @@ export default class Inspect extends BaseCommand {
       }
 
       // Convert flags to InspectCLIOptions with proper typing
-      const options = toInspectOptions(flags);
+      const options = toInspectOptions(flags, attributes);
 
       if (resource === 'run') {
         if (id) {
@@ -277,6 +314,20 @@ export default class Inspect extends BaseCommand {
         return;
       }
 
+      if (resource === 'attribute') {
+        if (id) {
+          // No per-key listing exists: the analytics namespace exposes the
+          // distinct keys, not the values recorded under one.
+          this.logError(
+            'inspect attribute does not take an ID. Usage: `workflow inspect attributes`'
+          );
+          process.exitCode = 1;
+          return;
+        }
+        await listAttributes(world, options);
+        return;
+      }
+
       this.logError(
         `Unknown resource: ${resource}. Usage: ${Inspect.examples.join('\n')}`
       );
@@ -289,15 +340,32 @@ export default class Inspect extends BaseCommand {
   }
 }
 
-function toInspectOptions(flags: any): InspectCLIOptions {
+/**
+ * Project parsed flags onto the options the listings read.
+ *
+ * Every filtering flag must be copied through: a flag missing here parses,
+ * clears validation, and is then dropped silently, which reads as a
+ * successful unfiltered answer. `inspect-flag-forwarding.test.ts` pins the
+ * mapping, and checks it through `Inspect.run` as well as directly: a listing's
+ * own unit tests pass options in, so they cannot see a drop that happens here.
+ */
+export function toInspectOptions(
+  flags: any,
+  attributes: Record<string, string> | undefined
+): InspectCLIOptions {
   return {
     json: flags.json,
     runId: flags.runId,
     stepId: flags.stepId,
+    // Omitted here until now, so `--hookId` parsed, passed every check, and
+    // was dropped before any listing saw it: `inspect events --hookId` sent
+    // no correlationId and returned the run's whole event list.
+    hookId: flags.hookId,
     cursor: flags.cursor,
     sort: flags.sort as 'asc' | 'desc' | undefined,
     limit: flags.limit,
     workflowName: flags.workflowName,
+    attributes,
     status: flags.status
       ? WorkflowRunStatusSchema.parse(flags.status)
       : undefined,
@@ -312,9 +380,19 @@ function toInspectOptions(flags: any): InspectCLIOptions {
 
 function normalizeResource(
   value?: string
-): 'run' | 'step' | 'stream' | 'event' | 'hook' | 'web' | 'sleep' | undefined {
+):
+  | 'run'
+  | 'step'
+  | 'stream'
+  | 'event'
+  | 'hook'
+  | 'web'
+  | 'sleep'
+  | 'attribute'
+  | undefined {
   if (!value) return undefined;
   const v = value.toLowerCase();
+  if (v.startsWith('a')) return 'attribute';
   if (v.startsWith('r')) return 'run';
   if (v.startsWith('e')) return 'event';
   if (v.startsWith('str')) return 'stream';

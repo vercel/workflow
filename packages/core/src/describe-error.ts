@@ -85,6 +85,8 @@ const MAX_DELIVERIES_HINT =
   'The workflow queue exceeded its max-delivery budget. This usually indicates a persistent runtime failure — check the most recent stack traces for the underlying cause.';
 const MAX_EVENTS_HINT =
   'The workflow exceeded the maximum number of events per run. This usually means unbounded work in the workflow function — e.g. a loop that keeps creating steps without terminating. Break long-running workflows into child workflows to stay under the limit.';
+const STREAM_ERROR_HINT =
+  'Workflow stream infrastructure failed while reading or writing data. This is an SDK or backend failure, not an error in your workflow code; please retry the run and report persistent failures with the runId.';
 const WORLD_CONTRACT_HINT =
   'The workflow backend returned data that violated the SDK contract. This is not retryable; please report it with the stack trace and runId.';
 const DEPLOYMENT_MISMATCH_HINT =
@@ -142,6 +144,13 @@ export function describeRunError(
       attribution: 'sdk',
       errorCode,
       hint: CORRUPTED_EVENT_LOG_HINT,
+    };
+  }
+  if (errorCode === RUN_ERROR_CODES.STREAM_ERROR) {
+    return {
+      attribution: 'sdk',
+      errorCode,
+      hint: STREAM_ERROR_HINT,
     };
   }
   if (errorCode === RUN_ERROR_CODES.WORLD_CONTRACT_ERROR) {
@@ -261,6 +270,14 @@ export function describeError(
       attribution: 'sdk',
       errorCode: effectiveCode,
       hint: CORRUPTED_EVENT_LOG_HINT,
+    };
+  }
+
+  if (effectiveCode === RUN_ERROR_CODES.STREAM_ERROR) {
+    return {
+      attribution: 'sdk',
+      errorCode: effectiveCode,
+      hint: STREAM_ERROR_HINT,
     };
   }
 

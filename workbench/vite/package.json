@@ -13,9 +13,9 @@
     "start": "node .output/server/index.mjs"
   },
   "devDependencies": {
-    "@workflow/ai": "workspace:*",
+    "@ai-sdk/workflow": "catalog:ai-sdk-v7",
     "@workflow/world-postgres": "workspace:*",
-    "ai": "catalog:",
+    "ai": "catalog:ai-sdk-v7",
     "lodash.chunk": "^4.2.0",
     "nitro": "catalog:",
     "openai": "^6.6.0",

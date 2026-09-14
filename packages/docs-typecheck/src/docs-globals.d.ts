@@ -249,6 +249,7 @@ declare global {
       };
       events: {
         get: (...args: any[]) => Promise<any>;
+        getMany: (...args: any[]) => Promise<any>;
         list: (...args: any[]) => Promise<any>;
         listByCorrelationId: (...args: any[]) => Promise<any>;
       };
@@ -273,6 +274,8 @@ declare global {
   const streamName: string;
   const hookId: string;
   const eventId: string;
+  const eventIds: string[];
+  const waitId: string;
   const correlationId: string;
   const cursor: string | undefined;
   const name: string;

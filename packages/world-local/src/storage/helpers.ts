@@ -348,16 +348,18 @@ export function hookTokenClaimPath(basedir: string, token: string): string {
   return path.join(basedir, 'hooks', 'tokens', `${hashToken(token)}.json`);
 }
 
-export const HookTokenClaimSchema = z.object({
-  // Legacy claims omitted hookId. Keeping it optional preserves their
-  // existing cross-hook conflict behavior (see #2283).
-  hookId: z.string().optional(),
-  runId: z.string(),
-  // Legacy claims also omitted eventId. Their recovery marker pins the
-  // canonical hook_created event before concurrent retries publish it.
-  eventId: z.string().optional(),
-  tokenRetentionUntil: z.coerce.date().optional(),
-});
+export const HookTokenClaimSchema = z.compile(
+  z.object({
+    // Legacy claims omitted hookId. Keeping it optional preserves their
+    // existing cross-hook conflict behavior (see #2283).
+    hookId: z.string().optional(),
+    runId: z.string(),
+    // Legacy claims also omitted eventId. Their recovery marker pins the
+    // canonical hook_created event before concurrent retries publish it.
+    eventId: z.string().optional(),
+    tokenRetentionUntil: z.coerce.date().optional(),
+  })
+);
 
 export type HookTokenClaim = z.infer<typeof HookTokenClaimSchema>;
 
