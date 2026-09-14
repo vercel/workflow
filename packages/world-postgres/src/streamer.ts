@@ -5,7 +5,7 @@ import type {
   Streamer,
   StreamInfoResponse,
 } from '@workflow/world';
-import { and, asc, eq, gt, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, lt, sql } from 'drizzle-orm';
 import { Client, type Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import * as z from 'zod';
@@ -157,6 +157,22 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       .where(and(eq(streams.streamId, name)))
       .orderBy(streams.chunkId);
 
+  // The chunkId of the first EOF row, if any has been written. A producer
+  // that retries a terminal write can append data and EOF rows after it;
+  // `getStreamChunks`/`getStreamInfo` bound their queries by this so those
+  // rows are ignored the same way `readFromStream()` ignores them.
+  const findFirstEofChunkId = async (
+    name: string
+  ): Promise<`chnk_${string}` | null> => {
+    const [row] = await drizzle
+      .select({ chunkId: streams.chunkId })
+      .from(streams)
+      .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
+      .orderBy(asc(streams.chunkId))
+      .limit(1);
+    return row?.chunkId ?? null;
+  };
+
   // Helper to convert chunk to Buffer
   const toBuffer = (chunk: string | Uint8Array): Buffer =>
     !Buffer.isBuffer(chunk) ? Buffer.from(chunk) : chunk;
@@ -268,6 +284,11 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         }
       }
 
+      // A producer that retries a terminal write can append data and EOF
+      // rows after the first EOF; bound the page by it so a retried write
+      // does not surface as (or inflate the count of) live data.
+      const firstEofChunkId = await findFirstEofChunkId(name);
+
       // Fetch only data rows (exclude EOF) with limit + 1 to detect hasMore.
       // Filtering EOF here avoids the edge case where an EOF row sorting
       // mid-batch (e.g. due to clock skew) silently drops data rows.
@@ -281,6 +302,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
           and(
             eq(streams.streamId, name),
             eq(streams.eof, false),
+            ...(firstEofChunkId ? [lt(streams.chunkId, firstEofChunkId)] : []),
             ...(cursorChunkId
               ? [gt(streams.chunkId, cursorChunkId as `chnk_${string}`)]
               : [])
@@ -291,17 +313,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
 
       const hasMore = rows.length > limit;
       const pageRows = rows.slice(0, limit);
-
-      // Check if stream is complete via a separate EOF query
-      let streamDone = false;
-      const [eofRow] = await drizzle
-        .select({ eof: streams.eof })
-        .from(streams)
-        .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
-        .limit(1);
-      if (eofRow) {
-        streamDone = true;
-      }
+      const streamDone = firstEofChunkId !== null;
 
       // Build the cursor index: we need a running index across pages.
       // Decode the current start index from the cursor.
@@ -346,24 +358,28 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       name: string,
       _runId: string
     ): Promise<StreamInfoResponse> {
+      // A producer that retries a terminal write can append data and EOF
+      // rows after the first EOF; bound the count by it so those rows
+      // don't inflate tailIndex.
+      const firstEofChunkId = await findFirstEofChunkId(name);
+
       // Use COUNT(*) instead of fetching all rows into memory
       const [countResult] = await drizzle
         .select({ count: sql<number>`count(*)` })
         .from(streams)
-        .where(and(eq(streams.streamId, name), eq(streams.eof, false)));
+        .where(
+          and(
+            eq(streams.streamId, name),
+            eq(streams.eof, false),
+            ...(firstEofChunkId ? [lt(streams.chunkId, firstEofChunkId)] : [])
+          )
+        );
 
       const dataCount = Number(countResult?.count ?? 0);
 
-      // Check for EOF
-      const [eofRow] = await drizzle
-        .select({ eof: streams.eof })
-        .from(streams)
-        .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
-        .limit(1);
-
       return {
         tailIndex: dataCount - 1,
-        done: !!eofRow,
+        done: firstEofChunkId !== null,
       };
     },
 
@@ -414,7 +430,12 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
             if (cleanedUp) {
               // The reader was cancelled or the streamer closed while the
               // initial query was in flight; the controller is no longer
-              // writable.
+              // writable. Also true once the first EOF has been delivered
+              // (cleanup() runs below): a producer that retries a
+              // terminal write (lost ACK, overlapping attempts) can append
+              // data and EOF rows after it, and enqueuing those on the
+              // already-closed controller would throw out of `start()`,
+              // discarding every chunk still queued.
               return;
             }
 
@@ -423,7 +444,13 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
               return;
             }
             lastChunkId = msg.id;
-            if (offset > 0) {
+
+            // The EOF marker is not a data chunk (`getStreamInfo`'s tailIndex
+            // excludes it), so it never counts toward `offset`: a start
+            // index at or past the data count must still close the
+            // stream rather than consume the marker and then hang, or
+            // surface rows written after it.
+            if (offset > 0 && !msg.eof) {
               offset--;
               return;
             }
@@ -456,13 +483,13 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
             throw err;
           });
 
-          // Resolve negative offset relative to the data chunk count
-          // (excluding the trailing EOF marker, if present)
+          // Resolve negative offset relative to the data chunk count: the
+          // rows before the first EOF marker. Rows after it (a retried
+          // terminal write) are ignored by `enqueue`, so they must not
+          // count here either.
           if (typeof offset === 'number' && offset < 0) {
-            const dataCount =
-              chunks.length > 0 && chunks[chunks.length - 1].eof
-                ? chunks.length - 1
-                : chunks.length;
+            const firstEof = chunks.findIndex((chunk) => chunk.eof);
+            const dataCount = firstEof === -1 ? chunks.length : firstEof;
             offset = Math.max(0, dataCount + offset);
           }
 
