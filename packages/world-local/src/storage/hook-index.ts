@@ -39,14 +39,18 @@ import { hashToken } from './helpers.js';
  * (`ensureHookIndexes`) guarded by a completion marker.
  */
 
-const IndexEntrySchema = z.object({
-  runId: z.string(),
-});
+const IndexEntrySchema = z.compile(
+  z.object({
+    runId: z.string(),
+  })
+);
 
-const ByRunMarkerSchema = z.object({
-  hookId: z.string(),
-  tag: z.string().optional(),
-});
+const ByRunMarkerSchema = z.compile(
+  z.object({
+    hookId: z.string(),
+    tag: z.string().optional(),
+  })
+);
 
 // No `.json` extension so entity listings never pick it up.
 const INDEX_COMPLETE_MARKER = '.hook-index-complete';

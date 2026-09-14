@@ -320,6 +320,9 @@ export async function waitForSleep(
  * filter that hasn't had a `hook_received` event. Returns the matching hook,
  * which you can then resume with `resumeHook(hook.token, data)`.
  *
+ * Pass `notHookId` to explicitly exclude a previously observed hook when a
+ * workflow creates several hooks with the same token.
+ *
  * @example
  * ```ts
  * const run = await start(myWorkflow, ["doc-1"]);
@@ -330,7 +333,7 @@ export async function waitForSleep(
  */
 export async function waitForHook(
   run: Run<any>,
-  options?: WaitOptions & { token?: string }
+  options?: WaitOptions & { token?: string; notHookId?: string }
 ): Promise<Hook> {
   const w = getWorldOrThrow();
   const timeout = options?.timeout ?? 30_000;
@@ -352,7 +355,9 @@ export async function waitForHook(
     const pendingHook = hooks.find(
       (h) =>
         !receivedCorrelationIds.has(h.hookId) &&
-        (!options?.token || h.token === options.token)
+        (!options?.token || h.token === options.token) &&
+        // Skip a hook the caller explicitly excluded.
+        (!options?.notHookId || h.hookId !== options.notHookId)
     );
 
     if (pendingHook) return pendingHook;
@@ -361,6 +366,6 @@ export async function waitForHook(
   }
 
   throw new Error(
-    `waitForHook timed out after ${timeout}ms: no pending hook found for run ${run.runId}${options?.token ? ` with token "${options.token}"` : ''}`
+    `waitForHook timed out after ${timeout}ms: no pending hook found for run ${run.runId}${options?.token ? ` with token "${options.token}"` : ''}${options?.notHookId ? ` other than "${options.notHookId}"` : ''}`
   );
 }

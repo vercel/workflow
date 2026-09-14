@@ -1,3 +1,15 @@
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import type {
   Hook,
   SerializedData,
@@ -12,6 +24,80 @@ import { SPEC_VERSION_CURRENT } from '@workflow/world';
  * Test helper functions for creating and updating storage entities through events.
  * These helpers simplify test setup by providing a convenient API for common operations.
  */
+
+/**
+ * Which parts of the POSIX permission model this process is actually subject
+ * to, probed once at import time.
+ *
+ * Tests that simulate an I/O failure with `chmod` need the filesystem to
+ * genuinely refuse the operation, and that is not a given. `chmod` itself
+ * still succeeds for root and for any process holding CAP_DAC_OVERRIDE /
+ * CAP_DAC_READ_SEARCH — common when the suite runs as root in a container or
+ * inside a dev sandbox — but the bits it sets are then ignored, so the
+ * simulation silently becomes a no-op and the assertion fails for a reason
+ * that has nothing to do with the code under test. On Windows, `chmod` on a
+ * directory is a no-op to begin with.
+ *
+ * The three capabilities are probed separately because they are bypassed
+ * independently: with CAP_DAC_OVERRIDE a real read or write of a mode-000
+ * directory succeeds while `access()` still reports EACCES, because that
+ * check is made against the real UID.
+ */
+export const permissionEnforcement = probePermissionEnforcement();
+
+function probePermissionEnforcement(): {
+  /** `fs.access()` reports EACCES for a mode the permission bits deny. */
+  accessCheck: boolean;
+  /** A real read of an unreadable directory is refused. */
+  read: boolean;
+  /** A real write into a non-writable directory is refused. */
+  write: boolean;
+} {
+  if (process.platform === 'win32') {
+    return { accessCheck: false, read: false, write: false };
+  }
+
+  const probeDir = mkdtempSync(path.join(tmpdir(), 'workflow-perm-probe-'));
+  const unreadableDir = path.join(probeDir, 'unreadable');
+  const readOnlyDir = path.join(probeDir, 'read-only');
+
+  try {
+    mkdirSync(unreadableDir);
+    writeFileSync(path.join(unreadableDir, 'entry'), '');
+    chmodSync(unreadableDir, 0o000);
+
+    mkdirSync(readOnlyDir);
+    chmodSync(readOnlyDir, 0o555);
+
+    return {
+      accessCheck: isRefused(() => accessSync(unreadableDir, constants.R_OK)),
+      read: isRefused(() => readdirSync(unreadableDir)),
+      write: isRefused(() =>
+        writeFileSync(path.join(readOnlyDir, 'probe'), '')
+      ),
+    };
+  } finally {
+    // Restore the bits before removing the probe tree, so cleanup works on the
+    // platforms where those bits are enforced.
+    for (const dir of [unreadableDir, readOnlyDir]) {
+      try {
+        chmodSync(dir, 0o755);
+      } catch {
+        // The directory was never created; nothing to restore.
+      }
+    }
+    rmSync(probeDir, { recursive: true, force: true });
+  }
+}
+
+function isRefused(operation: () => unknown): boolean {
+  try {
+    operation();
+    return false;
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Create a new workflow run through the run_created event.

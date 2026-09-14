@@ -13,12 +13,11 @@ import type { HookConflictEvent } from '@workflow/world';
 import { getSerializationClass, RUN_CLASS_ID } from '../class-serialization.js';
 import type { Hook, HookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
-import { WorkflowSuspension } from '../global.js';
 import { webhookLogger } from '../logger.js';
 import {
   awaitEarlierDeliveries,
   registerDeliveryBarrier,
-  scheduleWhenIdle,
+  scheduleWorkflowSuspension,
   type WorkflowOrchestratorContext,
 } from '../private.js';
 import type { Run } from '../runtime/run.js';
@@ -178,11 +177,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           (promises.length > 0 && payloadsQueue.length === 0) ||
           (getConflictPromises.length > 0 && !hasCreated && !hasConflict)
         ) {
-          scheduleWhenIdle(ctx, () => {
-            ctx.onWorkflowError(
-              new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
-            );
-          });
+          scheduleWorkflowSuspension(ctx);
         }
         return EventConsumerResult.NotConsumed;
       }
@@ -503,11 +498,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (eventLogEmpty) {
-        scheduleWhenIdle(ctx, () => {
-          ctx.onWorkflowError(
-            new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
-          );
-        });
+        scheduleWorkflowSuspension(ctx);
       }
 
       promises.push(resolvers);
@@ -547,11 +538,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (eventLogEmpty) {
-        scheduleWhenIdle(ctx, () => {
-          ctx.onWorkflowError(
-            new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
-          );
-        });
+        scheduleWorkflowSuspension(ctx);
       }
 
       getConflictPromises.push(resolvers);
@@ -582,11 +569,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       // never deliver another hook_received after disposal.
       if (promises.length > 0) {
         promises.length = 0;
-        scheduleWhenIdle(ctx, () => {
-          ctx.onWorkflowError(
-            new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
-          );
-        });
+        scheduleWorkflowSuspension(ctx);
       }
 
       webhookLogger.debug('Hook disposed', { correlationId, token });

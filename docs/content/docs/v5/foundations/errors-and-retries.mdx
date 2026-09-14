@@ -195,7 +195,7 @@ try {
 | `MAX_DELIVERIES_EXCEEDED` | The run exceeded the maximum number of queue deliveries |
 | `REPLAY_TIMEOUT` | A workflow replay exceeded the maximum allowed duration |
 | `REPLAY_DIVERGENCE` | A replay could not consume the event log deterministically, usually because of non-deterministic workflow code. |
-| `CORRUPTED_EVENT_LOG` | The event log contains orphaned or mismatched events and cannot be replayed. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
+| `CORRUPTED_EVENT_LOG` | The event log cannot be replayed: it contains orphaned or mismatched events, or one of its stored payloads is no longer readable from the World's storage. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
 | `WORLD_CONTRACT_ERROR` | A World response violated the SDK contract; points at a World implementation bug |
 | `RUNTIME_ERROR` | An internal runtime error. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
 

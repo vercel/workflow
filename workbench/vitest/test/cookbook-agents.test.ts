@@ -1,6 +1,6 @@
 import { waitForHook, waitForSleep } from '@workflow/vitest';
 import { describe, expect, it } from 'vitest';
-import { getRun, resumeHook, start } from 'workflow/api';
+import { getRun, start } from 'workflow/api';
 import { durableAgentWorkflow } from '../workflows/cookbook/durable-agent.js';
 import {
   approvalHook,
@@ -105,7 +105,7 @@ describe('stop-workflow pattern', () => {
   it('hook signal causes workflow to exit loop gracefully', async () => {
     const run = await start(stopWorkflowDemo, [10, 'stop:run-1']);
 
-    // Wait for the stop hook to be created, then signal it after some work
+    // Wait for the stop hook, then stop before the first iteration starts.
     const hook = await waitForHook(run, { token: 'stop:run-1' });
     expect(hook.token).toBe('stop:run-1');
 
@@ -114,15 +114,17 @@ describe('stop-workflow pattern', () => {
     const result = await run.returnValue;
     expect(result.stopped).toBe(true);
     expect(result.stopReason).toBe('User cancelled');
-    expect(result.completed).toBeLessThan(10);
+    expect(result.completed).toBe(0);
   });
 
   it('completes all iterations when no stop signal', async () => {
     const run = await start(stopWorkflowDemo, [3, 'stop:run-2']);
 
-    // Don't signal the stop hook — workflow should complete all iterations
-    // But the hook is created, so we need to handle it. The workflow will
-    // finish the loop before the hook resolves.
+    // Advance each scheduled iteration without sending a stop signal.
+    for (let i = 0; i < 3; i++) {
+      const sleepId = await waitForSleep(run);
+      await getRun(run.runId).wakeUp({ correlationIds: [sleepId] });
+    }
     const result = await run.returnValue;
 
     expect(result.stopped).toBe(false);

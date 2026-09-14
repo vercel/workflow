@@ -441,7 +441,9 @@ export async function readJSON<T>(
   decoder: z.ZodType<T>
 ): Promise<T | null> {
   try {
-    const content = await fs.readFile(filePath, 'utf-8');
+    const content = await withWindowsRetry(() =>
+      fs.readFile(filePath, 'utf-8')
+    );
     return decoder.parse(JSON.parse(content, jsonReviver));
   } catch (error) {
     if ((error as any).code === 'ENOENT') return null;

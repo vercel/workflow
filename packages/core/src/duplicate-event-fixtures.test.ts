@@ -1,4 +1,8 @@
-import { type Event, entityEventClass } from '@workflow/world';
+import {
+  classifyEntityEvent,
+  type Event,
+  TERMINAL_EVENT_CLASSES,
+} from '@workflow/world';
 import { DUPLICATE_EVENT_FIXTURES } from '@workflow/world/test-support/duplicate-event-fixtures.js';
 import { describe, expect, it, vi } from 'vitest';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
@@ -21,13 +25,6 @@ const OPEN_GATE = {
   isDeliveryIdle: () => true,
 };
 
-/** Classes whose event deregisters its entity's consumer. */
-const TERMINAL_CLASSES = new Set([
-  'step_terminal',
-  'wait_completed',
-  'hook_disposed',
-]);
-
 /**
  * One callback standing in for every consumer a replay registers.
  *
@@ -35,7 +32,10 @@ const TERMINAL_CLASSES = new Set([
  * outcome, claiming each attempt's `step_started` and `step_retrying` on the
  * way; `sleep.ts` does the same for a wait. Both delete the queue item on the
  * entity's terminal event, after which nothing claims that correlation id.
- * `workflow.ts` declines a second `run_started` outright.
+ * `attribute-dispatcher.ts` deregisters on the one event it matches, so an
+ * attribute id closes on its own first event. `workflow.ts` declines a second
+ * `run_started` outright, and claims the entity-less attribute events a step
+ * body writes on the way past.
  */
 function replayConsumers(): (event: Event | null) => EventConsumerResult {
   const claimed = new Set<string>();
@@ -44,12 +44,12 @@ function replayConsumers(): (event: Event | null) => EventConsumerResult {
   return (event) => {
     if (event === null) return EventConsumerResult.NotConsumed;
 
-    const eventClass = entityEventClass(event.eventType);
-    // Belongs to no class: a delivery, or an event that precedes every replay.
-    // Their consumers subscribe lazily and take every copy.
-    if (eventClass === undefined) return EventConsumerResult.Consumed;
+    const classification = classifyEntityEvent(event);
+    // Tracked under no class: a delivery, an event that precedes every replay,
+    // or an attribute write from a step body. Their consumers take every copy.
+    if (classification === undefined) return EventConsumerResult.Consumed;
 
-    const entity = event.correlationId ?? '';
+    const { eventClass, entity } = classification;
     if (closed.has(entity)) return EventConsumerResult.NotConsumed;
 
     const classKey = `${eventClass}:${entity}`;
@@ -58,7 +58,7 @@ function replayConsumers(): (event: Event | null) => EventConsumerResult {
     }
 
     claimed.add(classKey);
-    if (TERMINAL_CLASSES.has(eventClass)) closed.add(entity);
+    if (TERMINAL_EVENT_CLASSES.has(eventClass)) closed.add(entity);
     return EventConsumerResult.Consumed;
   };
 }

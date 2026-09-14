@@ -25,10 +25,12 @@ vi.mock('../serialization.js', async (importActual) => {
 });
 
 import { registerSerializationClass } from '../class-serialization.js';
+import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import {
   dehydrateRunError,
   dehydrateStepReturnValue,
   dehydrateWorkflowReturnValue,
+  getSerializeStream,
   hydrateStepReturnValue,
 } from '../serialization.js';
 import { getReturnValuePollIntervalMs, Run } from './run.js';
@@ -267,6 +269,21 @@ describe('Run.getReadable', () => {
     setWorld(undefined as unknown as World);
   });
 
+  async function encryptedFrames(value: unknown, material: Uint8Array) {
+    const serialize = getSerializeStream(
+      {},
+      await deriveRunPayloadKeys(material)
+    );
+    const reader = serialize.readable.getReader();
+    const read = reader.read();
+    const writer = serialize.writable.getWriter();
+    await writer.write(value);
+    await writer.close();
+    const first = await read;
+    if (!first.value) throw new Error('Expected serialized frame');
+    return first.value;
+  }
+
   it('does not fetch the run encryption key for an empty stream', async () => {
     const world = createMockWorld();
     world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
@@ -284,8 +301,147 @@ describe('Run.getReadable', () => {
     new Run('wrun_123').getReadable();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
+    expect(world.streams.get).not.toHaveBeenCalled();
     expect(world.runs.get).not.toHaveBeenCalled();
     expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
+  });
+
+  it('prefetches the run key when a consumed stream is empty', async () => {
+    const world = createMockWorld();
+    world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
+    world.streams = {
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    await expect(
+      new Run('wrun_123').getReadable().getReader().read()
+    ).resolves.toMatchObject({ done: true });
+    expect(world.streams.get).toHaveBeenCalledOnce();
+    expect(world.runs.get).toHaveBeenCalledOnce();
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalledOnce();
+  });
+
+  it('resolves supplied ops when the caller releases an open readable lock', async () => {
+    const ops: Promise<any>[] = [];
+    const material = new Uint8Array(32).fill(6);
+    const frame = await encryptedFrames({ open: true }, material);
+    const world = createMockWorld();
+    world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(material);
+    world.streams = {
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(frame);
+            // Deliberately remain open: releaseLock(), not EOF, is the signal.
+          },
+        })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    const reader = new Run('wrun_123').getReadable({ ops }).getReader();
+    await reader.read();
+    reader.releaseLock();
+    await expect(Promise.all(ops)).resolves.toEqual([undefined]);
+  });
+
+  it('starts stream GET and the cached run-key lookup on first read', async () => {
+    const material = new Uint8Array(32).fill(7);
+    const frame = await encryptedFrames({ first: true }, material);
+    let resolveRun: (run: any) => void;
+    const runPromise = new Promise<any>((resolve) => {
+      resolveRun = resolve;
+    });
+    const world = createMockWorld();
+    world.runs.get = vi.fn().mockReturnValue(runPromise);
+    world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(material);
+    world.streams = {
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(frame);
+            controller.close();
+          },
+        })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    const read = new Run('wrun_123').getReadable().getReader().read();
+    await vi.waitFor(() => {
+      expect(world.streams.get).toHaveBeenCalledOnce();
+      expect(world.runs.get).toHaveBeenCalledOnce();
+    });
+    resolveRun?.({
+      runId: 'wrun_123',
+      deploymentId: 'test-deployment',
+    });
+
+    await expect(read).resolves.toMatchObject({ value: { first: true } });
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalledOnce();
+  });
+
+  it('reuses one run-key promise across readable sessions', async () => {
+    const material = new Uint8Array(32).fill(8);
+    const frame = await encryptedFrames({ reusable: true }, material);
+    const world = createMockWorld();
+    world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(material);
+    world.streams = {
+      get: vi.fn().mockImplementation(
+        async () =>
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(frame);
+              controller.close();
+            },
+          })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    const run = new Run('wrun_123');
+    await expect(run.getReadable().getReader().read()).resolves.toMatchObject({
+      value: { reusable: true },
+    });
+    await expect(run.getReadable().getReader().read()).resolves.toMatchObject({
+      value: { reusable: true },
+    });
+
+    expect(world.runs.get).toHaveBeenCalledOnce();
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalledOnce();
+    expect(world.streams.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces a prefetched key failure when an encrypted frame is consumed', async () => {
+    const material = new Uint8Array(32).fill(9);
+    const frame = await encryptedFrames({ secret: true }, material);
+    const keyError = new Error('key lookup failed');
+    const world = createMockWorld();
+    world.getEncryptionKeyForRun = vi.fn().mockRejectedValue(keyError);
+    world.streams = {
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(frame);
+            controller.close();
+          },
+        })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    await expect(
+      new Run('wrun_123').getReadable().getReader().read()
+    ).rejects.toThrow('key lookup failed');
+    expect(world.runs.get).toHaveBeenCalledOnce();
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalledOnce();
   });
 });
 

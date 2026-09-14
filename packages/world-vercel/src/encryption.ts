@@ -150,7 +150,9 @@ export async function fetchRunKey(
   });
 
   const data = await response.json();
-  const result = z.object({ key: z.string().nullable() }).safeParse(data);
+  const result = z
+    .compile(z.object({ key: z.string().nullable() }))
+    .safeParse(data);
   if (!result.success) {
     throw new Error(
       `Invalid response from Vercel API: expected { key: string | null }. Zod error: ${result.error.message}`

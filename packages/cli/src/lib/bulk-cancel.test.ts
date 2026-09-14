@@ -49,10 +49,32 @@ function makeWorld(opts: {
     request: BulkCancelWorkflowRunsRequest
   ) => Promise<BulkCancelWorkflowRunsResult>;
   eventsCreate?: (runId: string) => Promise<unknown>;
+  /**
+   * Attach an analytics namespace whose listings report a plan window, so a
+   * test can exercise the probe-and-widen path. Left off by default: without
+   * it `performBulkCancel` reads storage.
+   */
+  analyticsWindowStart?: string;
 }): World {
   const runsById = new Map(opts.runs.map((r) => [r.runId, r]));
+  const windowStart = opts.analyticsWindowStart;
+  const analyticsList = windowStart
+    ? vi.fn(async (params: { status?: string } = {}) => ({
+        data: params.status
+          ? opts.runs.filter((r) => r.status === params.status)
+          : opts.runs,
+        hasMore: opts.hasMore ?? false,
+        pageInfo: {
+          currentLookbackDays: 30,
+          maxLookbackDays: 30,
+          currentWindowStart: new Date(windowStart),
+          maxWindowStart: new Date(windowStart),
+          upgradeAvailable: false,
+        },
+      }))
+    : undefined;
   const world: any = {
-    analytics: undefined,
+    analytics: analyticsList ? { runs: { list: analyticsList } } : undefined,
     runs: {
       // Status-aware so tests can seed mixed-status runs and assert that only
       // the requested status is matched. performBulkCancel always passes a
@@ -80,17 +102,26 @@ function makeWorld(opts: {
 }
 
 describe('validateBulkCancelLimit', () => {
-  it('accepts integers within [1, 500]', () => {
+  it('accepts integers within [1, 100]', () => {
     expect(validateBulkCancelLimit(1)).toBeUndefined();
     expect(validateBulkCancelLimit(50)).toBeUndefined();
-    expect(validateBulkCancelLimit(500)).toBeUndefined();
+    expect(validateBulkCancelLimit(100)).toBeUndefined();
   });
 
   it('rejects out-of-range and non-integer values', () => {
-    expect(validateBulkCancelLimit(0)).toMatch(/between 1 and 500/);
-    expect(validateBulkCancelLimit(501)).toMatch(/between 1 and 500/);
-    expect(validateBulkCancelLimit(-5)).toMatch(/between 1 and 500/);
-    expect(validateBulkCancelLimit(1.5)).toMatch(/between 1 and 500/);
+    expect(validateBulkCancelLimit(0)).toMatch(/between 1 and 100/);
+    expect(validateBulkCancelLimit(101)).toMatch(/between 1 and 100/);
+    expect(validateBulkCancelLimit(-5)).toMatch(/between 1 and 100/);
+    expect(validateBulkCancelLimit(1.5)).toMatch(/between 1 and 100/);
+  });
+
+  // 101-500 was advertised and accepted here, and then rejected by whichever
+  // path served it: the analytics runs listing rejects it locally, and the
+  // storage listing it falls back to caps at 100 server-side. Neither message
+  // reached the user, because cancel's catch printed nothing for either.
+  it('rejects the range no backend ever served', () => {
+    expect(validateBulkCancelLimit(200)).toBeDefined();
+    expect(validateBulkCancelLimit(500)).toBeDefined();
   });
 });
 
@@ -434,5 +465,74 @@ describe('performBulkCancel', () => {
     expect(exitCode).toBe(0);
     expect(logs).toContain('Aborted.');
     expect(cancelMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('performBulkCancel analytics window probe', () => {
+  it('probes the plan window once for the whole status fan-out', async () => {
+    const windowStart = '2026-08-03T00:00:00.000Z';
+    const cancelMany = async (
+      req: BulkCancelWorkflowRunsRequest
+    ): Promise<BulkCancelWorkflowRunsResult> => ({
+      summary: {
+        requested: req.runIds.length,
+        cancelled: req.runIds.length,
+        alreadyCancelled: 0,
+        notCancellable: 0,
+        notFound: 0,
+        failed: 0,
+      },
+      results: req.runIds.map((runId) => ({
+        runId,
+        outcome: 'cancelled' as const,
+      })),
+    });
+    const world = makeWorld({
+      analyticsWindowStart: windowStart,
+      runs: [
+        { runId: 'p1', workflowName: 'wf', status: 'pending' },
+        { runId: 'r1', workflowName: 'wf', status: 'running' },
+      ],
+      cancelMany,
+    });
+    const { logger } = makeLogger();
+
+    const { exitCode } = await performBulkCancel({
+      world,
+      limit: 50,
+      confirm: true,
+      logger,
+    });
+
+    expect(exitCode).toBe(0);
+    const calls = (world.analytics?.runs.list as any).mock.calls.map(
+      (
+        c: [
+          {
+            status?: string;
+            startTime?: string;
+            pagination?: { limit?: number };
+          },
+        ]
+      ) => c[0]
+    );
+
+    // Exactly one probe, regardless of how many statuses are fanned out.
+    const probes = calls.filter(
+      (c: { pagination?: { limit?: number } }) => c.pagination?.limit === 1
+    );
+    expect(probes).toHaveLength(1);
+
+    // Every real listing is bounded by the window the probe resolved.
+    const listings = calls.filter(
+      (c: { pagination?: { limit?: number } }) => c.pagination?.limit !== 1
+    );
+    expect(listings.length).toBeGreaterThan(1);
+    for (const listing of listings) {
+      expect(listing.startTime).toBe(windowStart);
+      expect(listing.endTime).toBeDefined();
+    }
+    // Storage is not consulted when analytics is available.
+    expect(world.runs.list).not.toHaveBeenCalled();
   });
 });

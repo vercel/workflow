@@ -165,12 +165,10 @@ export class NestLocalBuilder extends BaseBuilder {
       return;
     }
 
-    const requireShim = [
-      `import { createRequire as __bundled_createRequire } from 'node:module';`,
-      `const require = __bundled_createRequire(import.meta.url);`,
-      ``,
-    ].join('\n');
-
-    await writeFile(stepsPath, requireShim + rewritten);
+    // Write the rewritten bundle as-is. Do NOT prepend a `createRequire` shim:
+    // `require` is already declared by the ESM interop banner `createStepsBundle`
+    // emits, and a second declaration in the same module scope makes the bundle
+    // fail to parse (#3778). Covered by builder.test.ts.
+    await writeFile(stepsPath, rewritten);
   }
 }
