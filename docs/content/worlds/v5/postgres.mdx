@@ -94,6 +94,12 @@ a time, while other runs and the separate step jobs remain concurrent. A custom
 job prefix replaces `workflow_` in these names. Each invoke schedules a wake,
 even if a live executor already handled its input.
 
+Only deliveries verified against an active Graphile executor job on the run's
+named queue receive an invocation feed. Updated workers/HTTP handlers redirect
+legacy, unmarked orchestration deliveries into that queue before acknowledging
+them. Step jobs and health checks never consume the mailbox. The entry check
+does not fence a handler that continues after its job is reclaimed.
+
 Inputs/results are stored in a Postgres table. A shared, lazily opened
 `LISTEN/NOTIFY` connection wakes the active input feed and waiting callers when
 their rows change. Notifications carry identifiers only; waiters reread the

@@ -226,6 +226,23 @@ workflow execution. Input admission is serviced while inline steps wait. Node
 VM retention remains bounded by existing replay boundaries and the executor's
 idle window; a later executor may use another process and replay.
 
+Only verified executor deliveries receive the invocation feed. The executor task
+checks Graphile's actual named queue, then forwards its job ID, worker ID and
+attempt through private HTTP headers. The HTTP receiver checks those against
+Graphile's public `jobs` view: the job must still be locked, have the executor
+task identifier, and belong to this run's exact named queue. Supplied application
+headers cannot override this delivery metadata. Steps and health checks never
+receive a feed.
+
+Ordinary/legacy orchestration jobs picked up by updated workers are durably moved
+to the executor task before acknowledgement, rather than executed immediately.
+The transfer preserves payload/message identity and the known remaining attempt
+budget. Updated HTTP receivers similarly reroute unmarked legacy orchestration
+requests. Invalid or inactive executor metadata is rejected before reading the
+mailbox. Older binaries that have not been upgraded cannot enforce these checks.
+This verifies the delivery's role at entry; it is not continuous fencing of an
+already-running handler and does not change the stale-handler limitation below.
+
 The handler feed reads pending rows in pages of 32. Input delivery and response
 waiting use `LISTEN/NOTIFY`, sharing one lazily opened dedicated connection per
 World instance. Notifications carry fixed-size hashed identifiers, not payloads

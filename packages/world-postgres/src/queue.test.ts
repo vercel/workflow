@@ -2,7 +2,13 @@ import { createServer, type Server } from 'node:http';
 import { JsonTransport } from '@vercel/queue';
 import { setWorkflowBasePath } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
-import { MessageId, parseQueueName, type QueuePayload } from '@workflow/world';
+import {
+  MessageId,
+  parseQueueName,
+  type Queue,
+  type QueuePayload,
+  ValidQueueName,
+} from '@workflow/world';
 import { createWorld } from '@workflow/world-local';
 import {
   makeWorkerUtils,
@@ -17,6 +23,15 @@ import { createQueue } from './queue.js';
 const transport = new JsonTransport();
 const createdQueues: Array<ReturnType<typeof createQueue>> = [];
 const createdServers: Server[] = [];
+const invocationTransport = vi.hoisted(() => ({
+  pending: vi.fn(),
+  feed: vi.fn(),
+  close: vi.fn(),
+  invoke: vi.fn(),
+}));
+vi.mock('./invocations.js', () => ({
+  createInvocations: () => invocationTransport,
+}));
 
 vi.mock('graphile-worker', () => ({
   Logger: class Logger {
@@ -51,13 +66,19 @@ describe('postgres queue http execution', () => {
   };
   const wrappedHandler = vi.fn(async () => Response.json({ ok: true }));
   const localWorldClose = vi.fn();
-  const createQueueHandler = vi.fn(() => wrappedHandler);
+  const createQueueHandler = vi.fn<Queue['createQueueHandler']>(
+    () => wrappedHandler
+  );
   const pool = {
     query: vi.fn(async () => ({ rows: [{ exists: false }] })),
   } as any;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    invocationTransport.pending.mockResolvedValue([]);
+    invocationTransport.close.mockResolvedValue(undefined);
+    createQueueHandler.mockImplementation(() => wrappedHandler);
+    pool.query.mockResolvedValue({ rows: [{ exists: false }] });
 
     vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
     vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
@@ -535,6 +556,271 @@ describe('postgres queue http execution', () => {
     });
     expect(calls[2][0]).toBe('workflow_flows');
     expect(calls[2][2]).not.toHaveProperty('queueName');
+  });
+
+  it('transfers legacy orchestration before HTTP execution and preserves its retry budget', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', enableInvoke: true },
+      pool
+    );
+    await queue.start();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const payload = buildMessageData(
+        '__wkf_workflow_example',
+        {
+          runId: 'run_a',
+          runInput: {
+            input: new Uint8Array([1]),
+            deploymentId: 'postgres',
+            workflowName: 'example',
+            specVersion: 7,
+          },
+        },
+        { idempotencyKey: 'legacy-key' }
+      );
+      await getTaskHandler('workflow_flows')(payload, {
+        job: { attempts: 4, max_attempts: 9 },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+        'workflow_flows_executor',
+        expect.objectContaining({ ...payload, attempt: 4, attemptOffset: 3 }),
+        expect.objectContaining({
+          queueName: 'workflow_flows:run_a:executor',
+          jobKey: `workflow_flows_executor:transfer:${payload.messageId}`,
+          maxAttempts: 6,
+        })
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not acknowledge a legacy transfer when enqueue fails', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', enableInvoke: true },
+      pool
+    );
+    await queue.start();
+    vi.mocked(workerUtilsMock.addJob).mockRejectedValueOnce(
+      new Error('transfer failed')
+    );
+    await expect(
+      getTaskHandler('workflow_flows')(
+        buildMessageData('__wkf_workflow_example', { runId: 'run_a' }),
+        { job: { attempts: 1 } }
+      )
+    ).rejects.toThrow('transfer failed');
+  });
+
+  it('only forwards executor provenance for a job on the expected named queue', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', enableInvoke: true },
+      pool
+    );
+    await queue.start();
+    process.env.WORKFLOW_LOCAL_BASE_URL = 'http://executor.test';
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    const payload = buildMessageData(
+      '__wkf_workflow_example',
+      { runId: 'run_a' },
+      {
+        headers: {
+          'X-Workflow-Postgres-Executor-Job': 'forged',
+          'X-Workflow-Postgres-Executor-Worker': 'forged',
+          'X-Workflow-Postgres-Executor-Attempt': '99',
+        },
+      }
+    );
+    const helpers = {
+      job: {
+        id: '42',
+        attempts: 2,
+        max_attempts: 49,
+        locked_by: 'worker-real',
+        task_identifier: 'workflow_flows_executor',
+      },
+      getQueueName: vi.fn().mockResolvedValue(null),
+    };
+    try {
+      const execute = getTaskHandler('workflow_flows_executor');
+      await execute(payload, helpers);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+        'workflow_flows_executor',
+        expect.anything(),
+        expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' })
+      );
+      helpers.getQueueName.mockResolvedValue('workflow_flows:run_a:executor');
+      await execute(payload, helpers);
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'x-workflow-postgres-executor-job': '42',
+            'x-workflow-postgres-executor-worker': 'worker-real',
+            'x-workflow-postgres-executor-attempt': '2',
+          }),
+        })
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('strips executor provenance from step deliveries', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', enableInvoke: true },
+      pool
+    );
+    await queue.start();
+    process.env.WORKFLOW_LOCAL_BASE_URL = 'http://executor.test';
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      await getTaskHandler('workflow_flows')(
+        buildMessageData(
+          '__wkf_workflow_example',
+          { runId: 'run_a', stepId: 'step_a', stepName: 'step' },
+          {
+            headers: {
+              'X-Workflow-Postgres-Executor-Job': '42',
+              'x-workflow-postgres-executor-worker': 'forged',
+              'X-Workflow-Postgres-Executor-Attempt': '2',
+            },
+          }
+        ),
+        { job: { attempts: 1 } }
+      );
+      const headers = fetchMock.mock.calls[0][1].headers;
+      expect(headers).not.toHaveProperty('x-workflow-postgres-executor-job');
+      expect(headers).not.toHaveProperty('x-workflow-postgres-executor-worker');
+      expect(headers).not.toHaveProperty(
+        'x-workflow-postgres-executor-attempt'
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  function receiver() {
+    // Exercise the Postgres wrapper with a minimal local HTTP adapter. The
+    // real database suite uses the actual world-local HTTP handler as well.
+    createQueueHandler.mockImplementation(
+      (_prefix, callback) => async (req) => {
+        await callback(await req.json(), {
+          attempt: Number(req.headers.get('x-vqs-message-attempt')),
+          messageId: MessageId.parse(req.headers.get('x-vqs-message-id')),
+          queueName: ValidQueueName.parse(req.headers.get('x-vqs-queue-name')),
+        });
+        return Response.json({ ok: true });
+      }
+    );
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', enableInvoke: true },
+      pool
+    );
+    const handler = vi.fn().mockResolvedValue(undefined);
+    return {
+      handler,
+      receive: queue.createQueueHandler('__wkf_workflow_', handler),
+    };
+  }
+
+  function request(
+    headers: Record<string, string> = {},
+    body: unknown = { runId: 'run_a' }
+  ) {
+    return new Request('http://executor.test/flow', {
+      method: 'POST',
+      body: JSON.stringify(body),
+      headers: {
+        'x-vqs-message-id': 'msg_receiver',
+        'x-vqs-message-attempt': '3',
+        'x-vqs-queue-name': '__wkf_workflow_example',
+        ...headers,
+      },
+    });
+  }
+
+  const proof = {
+    'x-workflow-postgres-executor-job': '42',
+    'x-workflow-postgres-executor-worker': 'worker-real',
+    'x-workflow-postgres-executor-attempt': '3',
+  };
+
+  it('reroutes unmarked HTTP orchestration without reading the mailbox or running core', async () => {
+    const { handler, receive } = receiver();
+    await receive(request());
+    // An invalid health-check marker must not bypass executor routing.
+    await receive(request({}, { runId: 'run_a', __healthCheck: false }));
+    expect(handler).not.toHaveBeenCalled();
+    expect(invocationTransport.pending).not.toHaveBeenCalled();
+    expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+      'workflow_flows_executor',
+      expect.objectContaining({
+        messageId: 'msg_receiver',
+        attempt: 3,
+        attemptOffset: 2,
+      }),
+      expect.objectContaining({ queueName: 'workflow_flows:run_a:executor' })
+    );
+  });
+
+  it('refuses inactive/wrong-queue executor evidence before supplying a feed', async () => {
+    const { handler, receive } = receiver();
+    pool.query.mockResolvedValue({ rows: [] });
+    await expect(receive(request(proof))).rejects.toThrow(
+      'not active on the run queue'
+    );
+    expect(pool.query).toHaveBeenCalledWith(
+      expect.stringContaining('graphile_worker.jobs'),
+      [
+        '42',
+        'workflow_flows_executor',
+        'workflow_flows:run_a:executor',
+        'worker-real',
+        3,
+      ]
+    );
+    expect(handler).not.toHaveBeenCalled();
+    expect(invocationTransport.pending).not.toHaveBeenCalled();
+  });
+
+  it('supplies a feed only after verifying the active Graphile job, and keeps steps feed-free', async () => {
+    const { handler, receive } = receiver();
+    pool.query.mockResolvedValue({ rows: [{ id: '42' }] });
+    const feed = {
+      return: vi.fn().mockResolvedValue({ done: true }),
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+    };
+    invocationTransport.feed.mockReturnValue(feed);
+    await receive(request(proof));
+    expect(invocationTransport.pending).toHaveBeenCalledWith('run_a');
+    expect(handler).toHaveBeenCalledWith(
+      { runId: 'run_a' },
+      expect.objectContaining({ invocations: feed })
+    );
+    expect(feed.return).toHaveBeenCalledOnce();
+    handler.mockClear();
+    await receive(
+      request(proof, { runId: 'run_a', stepId: 'step_a', stepName: 'step' })
+    );
+    expect(handler.mock.calls[0][1]).not.toHaveProperty('invocations');
+    handler.mockClear();
+    await receive(
+      request(proof, {
+        runId: 'run_a',
+        __healthCheck: true,
+        correlationId: 'probe',
+      })
+    );
+    expect(handler.mock.calls[0][1]).not.toHaveProperty('invocations');
   });
 
   it('queues namespaced producer messages in graphile job metadata', async () => {

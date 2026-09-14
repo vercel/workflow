@@ -30,10 +30,12 @@ import {
   invocationNotificationKey,
 } from '../src/invocation-notifications.js';
 import { createInvocations } from '../src/invocations.js';
+import { MessageData } from '../src/message.js';
 
 const code = `
 const createHook = globalThis[Symbol.for('WORKFLOW_CREATE_HOOK')];
 const sendHook = globalThis[Symbol.for('WORKFLOW_USE_STEP')]('invokeSendHook');
+const holdStep = globalThis[Symbol.for('WORKFLOW_USE_STEP')]('invokeHoldStep');
 async function oneHook(token) { return await createHook({ token }); }
 async function twoHooks(tokens) {
   const a = createHook({ token: tokens[0] });
@@ -44,8 +46,12 @@ async function selfHook(token) {
   const hook = createHook({ token });
   return await Promise.all([hook, sendHook(token)]);
 }
+async function heldHook(token) {
+  const hook = createHook({ token });
+  return await Promise.all([hook, holdStep()]);
+}
 globalThis.__private_workflows = new Map([
-  ['oneHook', oneHook], ['twoHooks', twoHooks], ['selfHook', selfHook]
+  ['oneHook', oneHook], ['twoHooks', twoHooks], ['selfHook', selfHook], ['heldHook', heldHook]
 ]);
 `;
 
@@ -269,6 +275,66 @@ describe.skipIf(process.platform === 'win32')(
       expect(stepStart?.eventData).toMatchObject({
         ownerMessageId: expect.any(String),
       });
+    });
+
+    it('moves a legacy job behind an active executor instead of starting a second input consumer', async () => {
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      registerStepFunction('invokeHoldStep', async () => {
+        entered.resolve();
+        await release.promise;
+        return 'released';
+      });
+      const token = randomUUID();
+      const runId = await start('heldHook', [token]);
+      try {
+        await entered.promise;
+        expect(active.get(runId)).toBe(1);
+        const messageId = `msg_legacy_${randomUUID()}`;
+        const legacy = MessageData.encode({
+          id: 'heldHook',
+          data: Buffer.from(JSON.stringify({ runId })),
+          messageId: messageId as MessageData['messageId'],
+          attempt: 1,
+        });
+        await pool.query('SELECT graphile_worker.add_job($1, $2::json)', [
+          'workflow_flows',
+          JSON.stringify(legacy),
+        ]);
+        const transferred = await until(
+          async () =>
+            (
+              await pool.query<{
+                task_identifier: string;
+                queue_name: string;
+              }>(
+                'SELECT task_identifier, queue_name FROM graphile_worker.jobs WHERE key = $1',
+                [`workflow_flows_executor:transfer:${messageId}`]
+              )
+            ).rows[0],
+          (row) => row !== undefined
+        );
+        expect(transferred).toEqual({
+          task_identifier: 'workflow_flows_executor',
+          queue_name: `workflow_flows:${runId}:executor`,
+        });
+        await resumeHook(token, 'input');
+        // The existing executor accepted the input while the step was held.
+        // The legacy wake is queued, not another HTTP executor invocation.
+        expect(active.get(runId)).toBe(1);
+        expect(maximum.get(runId)).toBe(1);
+      } finally {
+        release.resolve();
+      }
+      await until(
+        () => world.runs.get(runId),
+        (run) => run.status === 'completed' || run.status === 'failed'
+      );
+      await expect(getRun(runId).returnValue).resolves.toEqual([
+        'input',
+        'released',
+      ]);
+      expect(maximum.get(runId)).toBe(1);
     });
 
     it('replays a stored result but still enqueues a wake for every invoke', async () => {
