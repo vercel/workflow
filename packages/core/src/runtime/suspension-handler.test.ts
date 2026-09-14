@@ -1033,9 +1033,9 @@ describe('handleSuspension', () => {
 describe('resilient step dispatch', () => {
   const queueName = '__wkf_workflow_test-workflow' as ValidQueueName;
 
-  // On by default. Pinned to '1' here so an ambient kill switch in the
-  // environment cannot silently disable the feature these tests exercise;
-  // the default (unset) and the kill switch each have their own test below.
+  // Opt-in. Pinned to '1' here because these tests exercise the feature;
+  // the default (unset, off) and the explicit disabling values each have
+  // their own test below.
   let previousFlag: string | undefined;
   beforeEach(() => {
     previousFlag = process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
@@ -1217,7 +1217,7 @@ describe('resilient step dispatch', () => {
     expect(result.queuedStepCorrelationIds.size).toBe(0);
   });
 
-  it('is on by default: an unset WORKFLOW_RESILIENT_STEP_DISPATCH publishes with stepInput', async () => {
+  it('is off by default: an unset WORKFLOW_RESILIENT_STEP_DISPATCH creates only', async () => {
     delete process.env.WORKFLOW_RESILIENT_STEP_DISPATCH;
     const { world, queue } = createQueueWorld();
 
@@ -1228,16 +1228,16 @@ describe('resilient step dispatch', () => {
       stepDispatch: stepDispatch(),
     });
 
-    expect(queue).toHaveBeenCalledTimes(1);
-    expect(queue.mock.calls[0][1].stepInput.input).toBeInstanceOf(Uint8Array);
-    expect([...result.queuedStepCorrelationIds]).toEqual(['s4']);
+    expect(queue).not.toHaveBeenCalled();
+    expect(result.queuedStepCorrelationIds.size).toBe(0);
   });
 
   it.each([
     '0',
     'false',
-    'FALSE',
-  ])('falls back to create-only when WORKFLOW_RESILIENT_STEP_DISPATCH=%s', async (flag) => {
+    'true',
+    'yes',
+  ])('falls back to create-only when WORKFLOW_RESILIENT_STEP_DISPATCH=%s (only "1" enables it)', async (flag) => {
     process.env.WORKFLOW_RESILIENT_STEP_DISPATCH = flag;
     const { world, queue } = createQueueWorld();
 
@@ -2483,13 +2483,13 @@ describe('handleSuspension batched fan-out', () => {
     });
 
     it('publish-first: 2 inline + 1 eager: the lone plain entry publishes first, its guarded single create is joined, and it is never sent twice', async () => {
-      // Default (resilient dispatch on). The plain partition is exactly one
-      // entry beside the pair chunk, so its create takes `commitSingle`
-      // (the guarded `events.create`), not a one-row createBatch. Its
-      // message must already be out, carrying stepInput, before either
-      // write commits; the single path must not publish it again once the
-      // create is durable; and deferredBatchWork must not settle until
-      // BOTH the create and the early send have.
+      // The plain partition is exactly one entry beside the pair chunk, so
+      // its create takes `commitSingle` (the guarded `events.create`), not
+      // a one-row createBatch. Its message must already be out, carrying
+      // stepInput, before either write commits; the single path must not
+      // publish it again once the create is durable; and deferredBatchWork
+      // must not settle until BOTH the create and the early send have.
+      vi.stubEnv('WORKFLOW_RESILIENT_STEP_DISPATCH', '1');
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const { createBatch, releases } = gatedCreateBatch();
       let releaseSingle: (() => void) | undefined;
@@ -2580,11 +2580,12 @@ describe('handleSuspension batched fan-out', () => {
     });
 
     it('publish-first: every foldable step message is out, carrying stepInput, before any chunk commits', async () => {
-      // Default (resilient dispatch on). 35 steps with two pairs chunk as
-      // [the pairs alone (4 rows), 32 eager, 1 eager]: while ALL THREE
-      // createBatch POSTs are still pending, all 33 eager steps' messages
-      // must already have been sent, each with the serialized input, and
-      // the per-chunk pass must not send them again once the chunks commit.
+      // 35 steps with two pairs chunk as [the pairs alone (4 rows), 32
+      // eager, 1 eager]: while ALL THREE createBatch POSTs are still
+      // pending, all 33 eager steps' messages must already have been sent,
+      // each with the serialized input, and the per-chunk pass must not
+      // send them again once the chunks commit.
+      vi.stubEnv('WORKFLOW_RESILIENT_STEP_DISPATCH', '1');
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const { createBatch, releases } = gatedCreateBatch();
       const { world, queue } = queueWorld(createBatch);
@@ -2668,12 +2669,76 @@ describe('handleSuspension batched fan-out', () => {
       expect(result.createdStepCorrelationIds.size).toBe(33);
     });
 
+    it('publish-first: sends every early message in ONE batch on a World with queueBatch', async () => {
+      // Time-to-first-message must not cost one round trip per step: the
+      // early sends are collected by the preps and published as a single
+      // queueBatch, still ahead of every chunk commit. (Without queueBatch
+      // the helper falls back to concurrent single sends, which is what the
+      // sibling tests above observe.)
+      vi.stubEnv('WORKFLOW_RESILIENT_STEP_DISPATCH', '1');
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
+      const { createBatch, releases } = gatedCreateBatch();
+      const { world, queue } = queueWorld(createBatch);
+      const queueBatch = vi
+        .fn()
+        .mockImplementation(async (_name: string, messages: unknown[]) =>
+          messages.map((_, index) => ({ messageId: `msg_${index}` }))
+        );
+      world.queueBatch = queueBatch;
+      const stepIds = Array.from({ length: 35 }, (_, i) => `s${i + 1}`);
+
+      const pending = handleSuspension({
+        suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+        stepDispatch: stepDispatch(),
+        allowDeferredBatchWork: true,
+      });
+      await vi.waitFor(() => {
+        expect(createBatch).toHaveBeenCalledTimes(3);
+        expect(queueBatch).toHaveBeenCalledTimes(1);
+      });
+      // Nothing has committed yet (no release), so the batch preceded every
+      // create, and it carries all 33 eager steps at once.
+      expect(queue).not.toHaveBeenCalled();
+      const [sentQueueName, sent] = queueBatch.mock.calls[0];
+      expect(sentQueueName).toBe(queueName);
+      expect(sent).toHaveLength(33);
+      expect(
+        sent.map(
+          (entry: { message: { stepId: string } }) => entry.message.stepId
+        )
+      ).not.toContain('s1');
+      for (const entry of sent) {
+        expect(entry.message.stepInput.input).toBeInstanceOf(Uint8Array);
+        expect(entry.opts.idempotencyKey).toBe(
+          stepDispatchIdempotencyKey(
+            entry.message.stepId,
+            entry.message.stepName
+          )
+        );
+      }
+
+      releases[0]();
+      const result = await pending;
+      expect(await probe(result.deferredBatchWork)).toBe('pending');
+      releases[1]();
+      releases[2]();
+      // biome-ignore lint/style/noNonNullAssertion: opted into deferred work
+      await result.deferredBatchWork!;
+      // The per-chunk pass had nothing left to publish.
+      expect(queueBatch).toHaveBeenCalledTimes(1);
+      expect(queue).not.toHaveBeenCalled();
+    });
+
     it('publish-first: an oversize input falls back to publish-after-commit without stepInput', async () => {
       // s5's input exceeds MAX_RESILIENT_STEP_INPUT_BYTES (random bytes, so
       // compression cannot shrink it under the cap). The two pairs take
       // chunk 1 alone, so s5 lands in chunk 2 (s3..s34): its message must
       // wait for chunk 2's commit and carry no payload, while its 32
       // siblings publish first.
+      vi.stubEnv('WORKFLOW_RESILIENT_STEP_DISPATCH', '1');
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const { createBatch, releases } = gatedCreateBatch();
       const { world, queue } = queueWorld(createBatch);
@@ -2723,6 +2788,7 @@ describe('handleSuspension batched fan-out', () => {
     });
 
     it('publish-first: a failed early publish fails the pass through deferredBatchWork', async () => {
+      vi.stubEnv('WORKFLOW_RESILIENT_STEP_DISPATCH', '1');
       const { createBatch, releases } = gatedCreateBatch();
       const queue = vi.fn().mockImplementation(async (_queueName, payload) => {
         if (payload.stepId === 's7') throw new Error('queue down');
@@ -2753,6 +2819,7 @@ describe('handleSuspension batched fan-out', () => {
     });
 
     it('publish-first: a failed early publish rejects the handler without the opt-in', async () => {
+      vi.stubEnv('WORKFLOW_RESILIENT_STEP_DISPATCH', '1');
       const { createBatch, releases } = gatedCreateBatch();
       const queue = vi.fn().mockImplementation(async (_queueName, payload) => {
         if (payload.stepId === 's7') throw new Error('queue down');
@@ -2782,6 +2849,7 @@ describe('handleSuspension batched fan-out', () => {
       // only entry, which takes the single write path. Its message still
       // goes out with stepInput, and the handler must not resolve until
       // that send has settled (there is no trailing work for it to ride).
+      vi.stubEnv('WORKFLOW_RESILIENT_STEP_DISPATCH', '1');
       let releaseQueue: (() => void) | undefined;
       const queue = vi.fn().mockImplementation(
         () =>

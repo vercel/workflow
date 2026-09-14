@@ -1632,10 +1632,12 @@ export function workflowEntrypoint(
                   // will pick up the replay.
                   if (incomingStepId && incomingStepName) {
                     try {
-                      // Resilient step dispatch: the producer published this
-                      // message without waiting for the step's `step_created`
-                      // to commit (inside the batched fan-out fold it is sent
-                      // before the createBatch is even POSTed), so the step
+                      // Resilient step dispatch (opt-in, see
+                      // isResilientStepDispatchEnabled): the producer
+                      // published this message without waiting for the step's
+                      // `step_created` to commit (inside the batched fan-out
+                      // fold it is sent before the createBatch is even
+                      // POSTed), so the step
                       // entity may not exist yet when this delivery executes:
                       // the delivery beat the write, or the write failed
                       // transiently and this message carries the only copy of
@@ -1941,7 +1943,23 @@ export function workflowEntrypoint(
                           );
                           return await startPendingStep(startsLeft - 1);
                         };
-                        /** A bare start whose conflict, if any, is arbitrated. */
+                        /**
+                         * A bare start whose conflict, if any, is arbitrated.
+                         *
+                         * The bare start is unconditional on a step that
+                         * EXISTS: a `step_started` on a `running` step is not
+                         * a conflict on any World (retries need it, so every
+                         * World accepts it and bumps `attempt`), and nothing
+                         * here reads the step's ownership first. That is safe
+                         * exactly while "a step message exists" implies "its
+                         * `step_created` is durable", because then no replay
+                         * can be running the same step under an inline claim
+                         * — it would have found the step created and skipped
+                         * it. Publish-first breaks the implication, which is
+                         * why resilient step dispatch is opt-in; closing it
+                         * needs an ownership fence on this start (see
+                         * isResilientStepDispatchEnabled).
+                         */
                         const startPendingStep = async (
                           startsLeft: number
                         ): Promise<Awaited<ReturnType<typeof executeStep>>> => {

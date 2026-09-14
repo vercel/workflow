@@ -2442,6 +2442,10 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
     // (or has finished) the body. This consumer's 409 must not be read as
     // "the producer's create won": a bare start here would run the body a
     // second time, and `runStepSingleFlight` only covers one process.
+    //
+    // The entity's status is the arbiter, not who wrote it, so the same
+    // branch covers a replay's owner-stamped inline claim winning the
+    // create: `running` here is `running` whoever claimed it.
     const { response, createdEvents, stepsGet } = await driveStepMessage({
       runId: `wrun_resilient_step_lazy_lost_peer_${status}`,
       attempt: 1,
@@ -2578,6 +2582,20 @@ describe('workflowEntrypoint resilient step consumption (stepInput lazy-start re
   });
 
   it('never reads the step entity when the lazy start wins or the bare start succeeds', async () => {
+    // The arbitrating read is confined to the 409 path; the happy paths
+    // stay fetch-free.
+    //
+    // That is also the boundary of what this consumer can arbitrate: a bare
+    // start that SUCCEEDS is never questioned, and a `step_started` on a
+    // `running` step does succeed on every World (retries need it to). So a
+    // delivery whose step is already running under a live inline claim
+    // takes it over and runs the body a second time. Under sequential
+    // dispatch that cannot arise — a message only exists once its
+    // `step_created` is durable, so no replay can still be inline-claiming
+    // the step — which is why publish-first stays behind
+    // WORKFLOW_RESILIENT_STEP_DISPATCH until this start can be fenced on
+    // ownership. Fencing it flips these two assertions for
+    // stepInput-carrying messages.
     const won = await driveStepMessage({
       runId: 'wrun_resilient_step_no_arbitration_won',
       attempt: 1,
