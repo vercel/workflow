@@ -1258,6 +1258,71 @@ function recordStreamWriteFlush(
  * `world.streams.close` round trip (network hop included). Fire-and-forget;
  * no-op without OTEL.
  */
+type StreamWritePhaseMaximum = {
+  ms: number;
+  chunkSeq: number;
+  enqueuedAt: number;
+  requestStartedAt: number;
+  responseAt: number;
+};
+
+type StreamWritePhaseSummary = {
+  groups: number;
+  chunks: number;
+  bytes: number;
+  maxBufferDwell?: StreamWritePhaseMaximum;
+  maxRequest?: StreamWritePhaseMaximum;
+  maxEnqueueToResponse?: StreamWritePhaseMaximum;
+  drainMs: number;
+  closeRpcMs: number;
+};
+
+function recordStreamWritePhaseSummary(
+  startEpochMs: number,
+  runId: string,
+  name: string,
+  summary: StreamWritePhaseSummary
+): void {
+  const maximumAttributes = (
+    phase: string,
+    maximum: StreamWritePhaseMaximum | undefined
+  ): Record<string, number> =>
+    maximum
+      ? {
+          [`workflow.stream.write_summary.${phase}_max_ms`]: maximum.ms,
+          [`workflow.stream.write_summary.${phase}_chunk_seq`]:
+            maximum.chunkSeq,
+          [`workflow.stream.write_summary.${phase}_enqueued_at_ms`]:
+            maximum.enqueuedAt,
+          [`workflow.stream.write_summary.${phase}_request_started_at_ms`]:
+            maximum.requestStartedAt,
+          [`workflow.stream.write_summary.${phase}_response_at_ms`]:
+            maximum.responseAt,
+        }
+      : {};
+  void (async () => {
+    await recordElapsedSpan('workflow.stream.write_summary', startEpochMs, {
+      kind: await getSpanKind('CLIENT'),
+      attributes: {
+        'workflow.run.id': runId,
+        'workflow.stream.name': name,
+        'workflow.stream.operation': 'write_summary',
+        'workflow.stream.write_summary.groups': summary.groups,
+        'workflow.stream.write_summary.chunks': summary.chunks,
+        'workflow.stream.write_summary.bytes': summary.bytes,
+        'workflow.stream.write_summary.drain_ms': summary.drainMs,
+        'workflow.stream.write_summary.close_rpc_ms': summary.closeRpcMs,
+        ...maximumAttributes('buffer_dwell', summary.maxBufferDwell),
+        ...maximumAttributes('request', summary.maxRequest),
+        ...maximumAttributes(
+          'enqueue_to_response',
+          summary.maxEnqueueToResponse
+        ),
+      },
+    });
+  })();
+}
+
 function recordStreamClose(
   startEpochMs: number,
   runId: string,
@@ -1326,6 +1391,22 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         return world.streams.createWriteSession?.(runId, name, { writerId });
       });
     let nextChunkSeq = 0;
+    const writerStartedAt = Date.now();
+    const writePhaseSummary: StreamWritePhaseSummary = {
+      groups: 0,
+      chunks: 0,
+      bytes: 0,
+      drainMs: 0,
+      closeRpcMs: 0,
+    };
+    const updateMaximum = (
+      key: 'maxBufferDwell' | 'maxRequest' | 'maxEnqueueToResponse',
+      maximum: StreamWritePhaseMaximum
+    ): void => {
+      if (!writePhaseSummary[key] || maximum.ms > writePhaseSummary[key].ms) {
+        writePhaseSummary[key] = maximum;
+      }
+    };
 
     // ------------------------------------------------------------------
     // Group-commit buffering.
@@ -1351,6 +1432,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     // getSerializeStream/getDeserializeStream, not here.
     // ------------------------------------------------------------------
     let buffer: Uint8Array[] = [];
+    let bufferEnqueuedAt: number[] = [];
     let bufferBytes = 0;
     // The group currently inside a server request. Counted against the
     // buffer bound so `WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS` keeps its
@@ -1408,7 +1490,11 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
      * `maxChunksPerRequest` chunks and `maxBytesPerRequest` cumulative bytes
      * (a single oversized chunk still goes out alone).
      */
-    const takeGroup = (): { group: Uint8Array[]; bytes: number } => {
+    const takeGroup = (): {
+      group: Uint8Array[];
+      enqueuedAt: number[];
+      bytes: number;
+    } => {
       let count = 0;
       let bytes = 0;
       for (const chunk of buffer) {
@@ -1418,9 +1504,11 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         bytes += chunk.byteLength;
       }
       const group = buffer.slice(0, count);
+      const enqueuedAt = bufferEnqueuedAt.slice(0, count);
       buffer = buffer.slice(count);
+      bufferEnqueuedAt = bufferEnqueuedAt.slice(count);
       bufferBytes -= bytes;
-      return { group, bytes };
+      return { group, enqueuedAt, bytes };
     };
 
     /**
@@ -1439,6 +1527,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
      */
     const sendGroup = async (
       group: Uint8Array[],
+      enqueuedAt: number[],
       bytes: number,
       groupT0: number | undefined
     ): Promise<void> => {
@@ -1446,22 +1535,73 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       const world = await worldPromise;
       const session = await writeSessionPromise;
       const dispatchAt = Date.now();
+      const chunkSeq = nextChunkSeq;
+      let responseAt: number;
       if (session) {
-        await session.write(nextChunkSeq, group);
+        await session.write(chunkSeq, group);
+        responseAt = Date.now();
       } else if (
         typeof world.streams.writeMulti === 'function' &&
         group.length > 1
       ) {
         await world.streams.writeMulti(runId, name, group);
+        responseAt = Date.now();
       } else {
-        // Fall back to sequential writes
-        for (const chunk of group) {
+        responseAt = dispatchAt;
+        for (const [index, chunk] of group.entries()) {
+          const requestStartedAt = Date.now();
           await world.streams.write(runId, name, chunk);
+          responseAt = Date.now();
+          const timing = {
+            chunkSeq: chunkSeq + index,
+            enqueuedAt: enqueuedAt[index] ?? requestStartedAt,
+            requestStartedAt,
+            responseAt,
+          };
+          updateMaximum('maxBufferDwell', {
+            ...timing,
+            ms: requestStartedAt - timing.enqueuedAt,
+          });
+          updateMaximum('maxRequest', {
+            ...timing,
+            ms: responseAt - requestStartedAt,
+          });
+          updateMaximum('maxEnqueueToResponse', {
+            ...timing,
+            ms: responseAt - timing.enqueuedAt,
+          });
         }
       }
       // `inFlight` admits only one dispatch loop, so no second group can read
       // this sequence space until the current group has advanced it.
       nextChunkSeq += group.length;
+      writePhaseSummary.groups++;
+      writePhaseSummary.chunks += group.length;
+      writePhaseSummary.bytes += bytes;
+      if (
+        groupT0 !== undefined &&
+        (session ||
+          (typeof world.streams.writeMulti === 'function' && group.length > 1))
+      ) {
+        const timing = {
+          chunkSeq,
+          enqueuedAt: groupT0,
+          requestStartedAt: dispatchAt,
+          responseAt,
+        };
+        updateMaximum('maxBufferDwell', {
+          ...timing,
+          ms: dispatchAt - groupT0,
+        });
+        updateMaximum('maxRequest', {
+          ...timing,
+          ms: responseAt - dispatchAt,
+        });
+        updateMaximum('maxEnqueueToResponse', {
+          ...timing,
+          ms: responseAt - groupT0,
+        });
+      }
       if (groupT0 !== undefined) {
         recordStreamWriteFlush(
           groupT0,
@@ -1470,7 +1610,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
           name,
           group.length,
           bytes,
-          Date.now() - dispatchAt
+          responseAt - dispatchAt
         );
       }
     };
@@ -1482,14 +1622,13 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
           flushTimer = null;
         }
         const groupT0 = bufferT0;
-        const groupTakenAt = Date.now();
-        const { group, bytes } = takeGroup();
+        const { group, enqueuedAt, bytes } = takeGroup();
         inFlightChunks = group.length;
         inFlightBytes = bytes;
-        bufferT0 = buffer.length > 0 ? groupTakenAt : undefined;
+        bufferT0 = bufferEnqueuedAt[0];
 
         try {
-          await sendGroup(group, bytes, groupT0);
+          await sendGroup(group, enqueuedAt, bytes, groupT0);
           inFlightChunks = 0;
           inFlightBytes = 0;
         } catch (error) {
@@ -1497,6 +1636,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
           // the buffer, poison the sink, and surface the failure to every
           // blocked writer and drain waiter.
           buffer = group.concat(buffer);
+          bufferEnqueuedAt = enqueuedAt.concat(bufferEnqueuedAt);
           bufferBytes += bytes;
           inFlightChunks = 0;
           inFlightBytes = 0;
@@ -1619,8 +1759,10 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     super({
       async write(chunk) {
         if (sinkError !== undefined) throw sinkError;
-        if (bufferT0 === undefined) bufferT0 = Date.now();
+        const enqueuedAt = Date.now();
+        if (bufferT0 === undefined) bufferT0 = enqueuedAt;
         buffer.push(chunk);
+        bufferEnqueuedAt.push(enqueuedAt);
         bufferBytes += chunk.byteLength;
 
         if (
@@ -1653,7 +1795,9 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       async close() {
         // Everything accepted must be durable before the server stream is
         // closed: the server fences post-close writes.
+        const drainStartedAt = Date.now();
         await drain();
+        writePhaseSummary.drainMs = Date.now() - drainStartedAt;
 
         // A close with an empty buffer skips the dispatch path (and its
         // barrier), but can itself be the first write to a brand-new
@@ -1668,7 +1812,14 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         } else {
           await world.streams.close(runId, name);
         }
+        writePhaseSummary.closeRpcMs = Date.now() - closeStart;
         recordStreamClose(closeStart, runId, name);
+        recordStreamWritePhaseSummary(
+          writerStartedAt,
+          runId,
+          name,
+          writePhaseSummary
+        );
       },
       async abort(reason) {
         // Buffered chunks were already ACKED to their writers (early-ack
@@ -1697,6 +1848,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
           flushTimer = null;
         }
         buffer = [];
+        bufferEnqueuedAt = [];
         bufferBytes = 0;
         sinkError ??= reason ?? new Error('Stream aborted');
         // Reject blocked writers and drain waiters so nothing leaks or

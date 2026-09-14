@@ -189,7 +189,48 @@ describe('WorkflowServerWritableStream write-flush telemetry', () => {
     expect(typeof rpc).toBe('number');
   });
 
-  it('does not emit spans for an empty close', async () => {
+  it('emits one bounded write phase summary with maxima and timestamps', async () => {
+    mockStreams.write.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
+    const writer = stream.getWriter();
+    await writer.write(new Uint8Array([1, 2, 3]));
+    await writer.close();
+
+    const [span] = await waitForSpans('workflow.stream.write_summary', 1);
+    expect(span.kind).toBe(SpanKind.CLIENT);
+    expect(span.attributes).toMatchObject({
+      'workflow.run.id': 'run-123',
+      'workflow.stream.name': 'test-stream',
+      'workflow.stream.operation': 'write_summary',
+      'workflow.stream.write_summary.groups': 1,
+      'workflow.stream.write_summary.chunks': 1,
+      'workflow.stream.write_summary.bytes': 3,
+      'workflow.stream.write_summary.buffer_dwell_chunk_seq': 0,
+      'workflow.stream.write_summary.request_chunk_seq': 0,
+      'workflow.stream.write_summary.enqueue_to_response_chunk_seq': 0,
+    });
+    for (const phase of ['buffer_dwell', 'request', 'enqueue_to_response']) {
+      const prefix = `workflow.stream.write_summary.${phase}`;
+      const enqueuedAt = span.attributes[`${prefix}_enqueued_at_ms`] as number;
+      const requestStartedAt = span.attributes[
+        `${prefix}_request_started_at_ms`
+      ] as number;
+      const responseAt = span.attributes[`${prefix}_response_at_ms`] as number;
+      expect(enqueuedAt).toBeLessThanOrEqual(requestStartedAt);
+      expect(requestStartedAt).toBeLessThanOrEqual(responseAt);
+      expect(span.attributes[`${prefix}_max_ms`]).toEqual(expect.any(Number));
+    }
+    expect(span.attributes['workflow.stream.write_summary.drain_ms']).toEqual(
+      expect.any(Number)
+    );
+    expect(
+      span.attributes['workflow.stream.write_summary.close_rpc_ms']
+    ).toEqual(expect.any(Number));
+  });
+
+  it('does not emit flush spans for an empty close', async () => {
     const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
     const writer = stream.getWriter();
     await writer.close();
