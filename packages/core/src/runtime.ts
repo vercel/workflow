@@ -2868,7 +2868,7 @@ export function workflowEntrypoint(
                   // Steps THIS delivery has already published a
                   // step-execution message for, across its replay passes:
                   // the suspension handler's resilient publishes
-                  // (`queuedStepCorrelationIds`) plus the dispatch pass's
+                  // (`queuedStepDispatchKeys`) plus the dispatch pass's
                   // own immediate enqueues. A fan-out that runs some steps
                   // inline falls back into this loop once they finish,
                   // reloads the log, and finds the queued siblings still
@@ -2888,7 +2888,14 @@ export function workflowEntrypoint(
                   // concurrent wake) re-enqueues unconditionally, exactly
                   // as before, and only knowledge of this process's own
                   // sends is used to skip. Dies with this delivery.
-                  const publishedStepCorrelationIds = new Set<string>();
+                  //
+                  // Keyed by step identity (`stepDispatchIdempotencyKey`:
+                  // correlationId + stepName), the same identity the
+                  // dispatch's idempotency key uses, and for the same
+                  // reason: a corrected replay can re-derive a correlation
+                  // id for a DIFFERENT step, and the record of this step's
+                  // send must not absorb that step's dispatch.
+                  const publishedStepDispatchKeys = new Set<string>();
 
                   // Main replay loop
                   while (true) {
@@ -3495,7 +3502,7 @@ export function workflowEntrypoint(
                             // created steps publish their step-execution
                             // message (carrying `stepInput`) in parallel with
                             // the step_created write. Steps queued there are
-                            // reported back in `queuedStepCorrelationIds` and
+                            // reported back in `queuedStepDispatchKeys` and
                             // skipped by the dispatch pass below.
                             stepDispatch: {
                               queueName: getWorkflowQueueName(
@@ -3621,6 +3628,22 @@ export function workflowEntrypoint(
                           });
                           return;
                         }
+                        // Record the step messages the suspension handler
+                        // itself published this pass (resilient dispatch
+                        // publishes alongside the step_created write, the
+                        // batched fold publishes its eager creates) BEFORE any
+                        // of the early exits below can `continue` the loop.
+                        // The hook-conflict, attribute-event and
+                        // serialization-failure paths all replay in-process
+                        // without reaching the dispatch pass; on that next
+                        // pass the step already exists, so the handler no
+                        // longer reports it and only this set remembers the
+                        // send. Seeding at the dispatch pass alone let each of
+                        // those paths publish every such step twice.
+                        for (const key of suspensionResult.queuedStepDispatchKeys) {
+                          publishedStepDispatchKeys.add(key);
+                        }
+
                         // Open hooks/waits in the log this replay ran over,
                         // plus whatever the suspension's own writes folded back
                         // into it — so a `hook_created` this suspension
@@ -3974,11 +3997,10 @@ export function workflowEntrypoint(
                         let backstopWakesArmed = 0;
                         // Immediate re-enqueues suppressed because this
                         // invocation already published the step's message
-                        // on an earlier pass. See publishedStepCorrelationIds.
+                        // on an earlier pass. See publishedStepDispatchKeys
+                        // (seeded with this pass's handler publishes right
+                        // after handleSuspension returned, above).
                         let republishesSkipped = 0;
-                        for (const correlationId of suspensionResult.queuedStepCorrelationIds) {
-                          publishedStepCorrelationIds.add(correlationId);
-                        }
                         // TTR hand-off. The measurement may only go to an
                         // execution that will actually ATTEMPT the next
                         // durable step, and the loop below is what decides
@@ -4032,10 +4054,14 @@ export function workflowEntrypoint(
                           // Ownership never applies to these: they were
                           // created this pass, so no step_started stamp can
                           // exist yet. (Earlier passes' publishes are
-                          // covered by publishedStepCorrelationIds below.)
+                          // covered by publishedStepDispatchKeys below.)
+                          const stepDispatchKey = stepDispatchIdempotencyKey(
+                            step.correlationId,
+                            step.stepName
+                          );
                           if (
-                            suspensionResult.queuedStepCorrelationIds.has(
-                              step.correlationId
+                            suspensionResult.queuedStepDispatchKeys.has(
+                              stepDispatchKey
                             )
                           ) {
                             continue;
@@ -4090,24 +4116,26 @@ export function workflowEntrypoint(
                             continue;
                           }
                           // Already published by THIS invocation on an
-                          // earlier pass (see publishedStepCorrelationIds):
+                          // earlier pass (see publishedStepDispatchKeys):
                           // the message is in the queue and the send is
                           // joined below, so a repeat buys nothing. A
                           // `step_retrying` observed since is a new
                           // schedule (the retry handoff), so it is not
                           // covered by the earlier publish and re-enqueues
-                          // as before. Checked before the TTR hand-off so a
-                          // skipped step never consumes the measurement.
+                          // as before. Keyed by step identity, so a step
+                          // that a corrected replay bound to a correlation
+                          // id an earlier pass published under a different
+                          // name is dispatched, not skipped. Checked before
+                          // the TTR hand-off so a skipped step never
+                          // consumes the measurement.
                           if (
-                            publishedStepCorrelationIds.has(
-                              step.correlationId
-                            ) &&
+                            publishedStepDispatchKeys.has(stepDispatchKey) &&
                             step.sawRetrying !== true
                           ) {
                             republishesSkipped++;
                             continue;
                           }
-                          publishedStepCorrelationIds.add(step.correlationId);
+                          publishedStepDispatchKeys.add(stepDispatchKey);
                           // This step IS being attempted, by the invocation
                           // that picks the message up. Consume the tracking
                           // here, for the first such step and no other.
@@ -4144,10 +4172,7 @@ export function workflowEntrypoint(
                                 // without absorbing a dispatch of a different
                                 // step under a reassigned correlation id.
                                 // See stepDispatchIdempotencyKey.
-                                idempotencyKey: stepDispatchIdempotencyKey(
-                                  step.correlationId,
-                                  step.stepName
-                                ),
+                                idempotencyKey: stepDispatchKey,
                               }
                             )
                           );
