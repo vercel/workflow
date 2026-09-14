@@ -59,7 +59,11 @@ export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
   /**
    * Disposes the hook, releasing its token for reuse by other workflows.
    *
-   * After calling `dispose()`, the hook will no longer receive any events.
+   * The release is committed at the workflow's next suspension, and
+   * `resumeHook()` keeps being accepted until then. Payloads accepted before
+   * the release is committed are still delivered to awaiters and to
+   * `for await` iteration, which ends once the release is durable; nothing
+   * is dropped between calling `dispose()` and the release taking effect.
    * This is useful when you want to explicitly release a hook token before
    * the workflow completes, allowing another workflow to register a hook
    * with the same token.
