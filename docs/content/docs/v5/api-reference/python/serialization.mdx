@@ -1,0 +1,116 @@
+---
+title: Custom serialization
+description: Register custom Python classes for workflow serialization.
+type: reference
+summary: Use serializable or register_serializable for custom classes that cross workflow boundaries.
+prerequisites:
+  - /docs/foundations/serialization
+related:
+  - /docs/api-reference/python/errors
+  - /docs/api-reference/python/get-writable
+---
+
+The Python SDK automatically serializes Pydantic models and dataclasses used in
+workflow and step type annotations. Use `@serializable` or
+`register_serializable()` for other custom classes.
+
+## serializable
+
+```python
+def serializable(
+    cls: type[T] | None = None,
+    *,
+    class_id: str | None = None,
+) -> type[T] | Callable[[type[T]], type[T]]
+```
+
+Use the decorator with a `_workflow_serialize()` instance method and a
+`_workflow_deserialize()` class method:
+
+```python
+from vercel.workflow import serializable
+
+@serializable
+class Point:
+    def __init__(self, x: int, y: int) -> None:
+        self.x = x
+        self.y = y
+
+    def _workflow_serialize(self) -> dict[str, int]:
+        return {"x": self.x, "y": self.y}
+
+    @classmethod
+    def _workflow_deserialize(cls, data: dict[str, int]) -> "Point":
+        return cls(**data)
+```
+
+`class_id` defaults to `class//<module>//<qualified-name>`. Pin it explicitly
+when Python and TypeScript must register the same wire class, or when the
+concrete Python type differs across hosts:
+
+```python
+@serializable(class_id="class//./src/geometry//Point")
+class Point:
+    ...
+```
+
+`enum.Enum` subclasses need no custom methods. The SDK serializes the member's
+value and reconstructs it by calling the enum class:
+
+```python
+import enum
+from vercel.workflow import serializable
+
+@serializable
+class Tier(enum.Enum):
+    FREE = "free"
+    PRO = "pro"
+```
+
+## register_serializable()
+
+```python
+def register_serializable(
+    cls: type[T],
+    *,
+    class_id: str | None = None,
+    serialize: Callable[[T], Any] | None = None,
+    deserialize: Callable[[Any], T] | None = None,
+) -> None
+```
+
+This is the function form for classes you cannot decorate. When `serialize`
+and `deserialize` are omitted, it uses the same special methods as the
+decorator.
+
+```python
+from fractions import Fraction
+from vercel.workflow import register_serializable
+
+register_serializable(
+    Fraction,
+    class_id="class//python//Fraction",
+    serialize=lambda value: [value.numerator, value.denominator],
+    deserialize=lambda data: Fraction(*data),
+)
+```
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `cls` | `type[T]` | Class to register. |
+| `class_id` | `str \| None` | Stable identity placed on the wire. |
+| `serialize` | `Callable[[T], Any] \| None` | Convert an instance into already-supported serializable values. |
+| `deserialize` | `Callable[[Any], T] \| None` | Reconstruct an instance from that value. |
+
+## Constraints
+
+- The serialized representation must itself use
+  [supported types](/docs/foundations/serialization#supported-serializable-types).
+- Pydantic models and dataclasses cannot be registered with these APIs. Put
+  their types in workflow and step annotations instead.
+- Re-registering a `class_id` replaces its existing registration. Workflow
+  sandboxes re-import modules, so registrations should be deterministic.
+- A payload that cannot be encoded raises
+  [`SerializationError`](/docs/api-reference/python/errors#serializationerror).
+  A value that does not match a supported annotation on receipt raises
+  [`TypeValidationError`](/docs/api-reference/python/errors#typevalidationerror).

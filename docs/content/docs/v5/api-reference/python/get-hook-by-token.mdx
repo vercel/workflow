@@ -1,0 +1,93 @@
+---
+title: get_hook_by_token
+description: Retrieve Python hook details and workflow run information by token.
+type: reference
+summary: Use get_hook_by_token to look up a hook's metadata and associated workflow run before resuming it.
+prerequisites:
+  - /docs/foundations/hooks
+related:
+  - /docs/api-reference/python/base-hook
+  - /docs/foundations/idempotency
+---
+
+Retrieves a live hook by its unique token, returning the associated workflow
+run information and any metadata set when the hook was created. Use this
+function to inspect hook details before deciding whether to resume a workflow.
+
+Unlike the TypeScript API, Python hooks do not currently support retained
+tokens, so this function only returns hooks owned by active workflow runs.
+
+<Callout type="warn">
+`get_hook_by_token()` is a runtime function that must be called outside a
+workflow function. It can be called from ordinary application code or a step.
+</Callout>
+
+<Callout type="info">
+Looking up a deterministic hook token is useful in hook-based idempotency
+flows, but it is only an advisory check. If no hook exists yet, another request
+can still start the same workflow before `start()` registers its hook. Handle
+that race inside the workflow by checking `await event.get_conflict()` before
+duplicate-sensitive work. See
+[Run idempotency](/docs/foundations/idempotency#run-idempotency).
+</Callout>
+
+```python
+from vercel.workflow import get_hook_by_token
+
+hook = await get_hook_by_token("approval:req_123")
+print(hook.run_id, hook.metadata)
+```
+
+## API signature
+
+```python
+async def get_hook_by_token(token: str) -> Hook
+```
+
+### Parameter
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `token` | `str` | Custom token used when the workflow called `BaseHook.wait()`. |
+
+### Returns
+
+An immutable `Hook` containing `token`, `hook_id`, `run_id`,
+`created_at`, and decoded `metadata`.
+
+If no live hook owns the token, the function raises
+[`HookNotFoundError`](/docs/api-reference/python/errors#hooknotfounderror).
+
+## Examples
+
+### Basic hook lookup
+
+Retrieve hook information before resuming:
+
+```python
+from vercel.workflow import get_hook_by_token
+
+hook = await get_hook_by_token("approval:req_123")
+print("Hook belongs to run:", hook.run_id)
+print("Hook metadata:", hook.metadata)
+```
+
+### Validating a hook before resume
+
+Pass the returned object to a hook payload's `resume()` method:
+
+```python
+from vercel.workflow import HookNotFoundError, get_hook_by_token
+
+async def approve(request_id: str):
+    try:
+        hook = await get_hook_by_token(f"approval:{request_id}")
+    except HookNotFoundError:
+        return {"accepted": False}
+
+    if hook.metadata != {"request_id": request_id}:
+        return {"accepted": False}
+
+    resumed = await Approval(approved=True).resume(hook)
+    return {"accepted": True, "run_id": resumed.run_id}
+```

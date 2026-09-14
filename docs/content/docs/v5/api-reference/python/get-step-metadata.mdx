@@ -1,0 +1,90 @@
+---
+title: get_step_metadata
+description: Access retry attempts and timing information within Python step functions.
+type: reference
+summary: Call get_step_metadata inside a step to access retry counts, timing, and idempotency keys.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/api-reference/python/get-workflow-metadata
+  - /docs/foundations/idempotency
+  - /docs/foundations/errors-and-retries
+---
+
+Returns metadata available in the current step function.
+
+You may want to use this function when you need to:
+
+- Track retry attempts in error handling
+- Access timing information and execution metadata for a step
+- Generate idempotency keys for external APIs
+
+<Callout type="warn">
+This function can only be called inside a step function. Calling it from a
+workflow or ordinary application code raises `RuntimeError`.
+</Callout>
+
+```python
+from vercel.workflow import get_step_metadata
+
+@wf.step
+async def log_step_id() -> None:
+    info = get_step_metadata()
+    print(info.step_id)
+```
+
+### Example: use `step_id` as an idempotency key
+
+`step_id` is stable across retries, so it can identify an external side effect
+performed by one logical step call:
+
+```python
+from vercel.workflow import get_step_metadata
+
+@wf.step
+async def charge_customer(customer_id: str, amount: int) -> None:
+    info = get_step_metadata()
+    await payments.charge(
+        customer_id,
+        amount,
+        idempotency_key=f"charge:{info.step_id}",
+    )
+```
+
+<Callout type="info">
+Learn more about patterns and caveats in the
+[Idempotency](/docs/foundations/idempotency) guide.
+</Callout>
+
+## API signature
+
+```python
+def get_step_metadata() -> StepInfo
+```
+
+The function takes no parameters.
+
+## StepInfo
+
+`StepInfo` is an immutable dataclass:
+
+```python
+@dataclass(frozen=True)
+class StepInfo:
+    run_id: str
+    step_id: str
+    step_name: str
+    attempt: int
+    step_started_at: datetime
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `run_id` | `str` | ID of the workflow run that owns this step. |
+| `step_id` | `str` | Stable ID of this logical step call. It does not change across retries. |
+| `step_name` | `str` | Machine-readable step ID derived from the function's module and qualified name. |
+| `attempt` | `int` | Current one-based attempt number. The first attempt is `1`. |
+| `step_started_at` | `datetime` | Time the first attempt began. It remains unchanged across retries. |
+
+Use `attempt` to vary backoff or diagnostics per retry, and
+`step_started_at` to measure the total time spent across all attempts.

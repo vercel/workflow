@@ -1,0 +1,105 @@
+---
+title: sleep
+description: Suspend a Python workflow for a duration or until an end date.
+type: reference
+summary: Use sleep to pause workflow execution for a specified duration without consuming resources.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/api-reference/workflow-globals
+---
+
+`sleep()` suspends a workflow for a specified duration or until an end date
+without consuming any resources. Once the duration has elapsed or the date is
+reached, the workflow resumes execution.
+
+Use this function when you need to add time-based delays, schedule tasks for
+later, or wait until a specific time.
+
+<Callout type="info">
+`sleep()` is a built-in workflow runtime function backed by a durable timer
+event, not a step. Call it directly inside a workflow function.
+</Callout>
+
+```python title="app/workflows/ai_refine.py"
+from datetime import timedelta
+
+from app.workflow import wf
+from vercel import workflow
+
+@wf.workflow
+async def ai_refine_workflow(*, draft_id: str):
+    draft = await fetch_draft(draft_id)
+
+    await workflow.sleep(timedelta(days=7))  # Wait 7 days to gather more signals.  # [!code highlight]
+
+    refined = await refine_draft(draft)
+
+    return {
+        "draft_id": draft_id,
+        "refined": refined,
+    }
+```
+
+## API signature
+
+```python
+async def sleep(
+    param: int | float | timedelta | datetime | str,
+) -> None:
+    ...
+```
+
+### Parameter
+
+The parameter accepts four forms:
+
+| Form | Description | Example |
+| --- | --- | --- |
+| `str` | Human-readable duration string | `"2 days"`, `"1w"`, `"1h 30m"` |
+| `int` or `float` | Seconds from now | `5` (5 seconds) |
+| `datetime.timedelta` | Duration from now | `timedelta(days=7)` |
+| `datetime.datetime` | Absolute wake-up time (must be timezone-aware) | `datetime(2025, 1, 1, tzinfo=UTC)` |
+
+The string form accepts one or more `<value><unit>` pairs. Supported units:
+
+| Duration | Unit |
+| --- | --- |
+| Milliseconds | `ms` |
+| Seconds | `s`, `second`, `seconds` |
+| Minutes | `m`, `minute`, `minutes` |
+| Hours | `h`, `hour`, `hours` |
+| Days | `d`, `day`, `days` |
+| Weeks | `w`, `week`, `weeks` |
+
+Duration values must be non-negative.
+
+<Callout>
+`sleep()` must be called from the workflow body, not from inside a step or ordinary application code. Calling it elsewhere raises a `RuntimeError`.
+</Callout>
+
+## Examples
+
+### Sleeping with a duration
+
+```python
+from datetime import timedelta
+from vercel.workflow import sleep
+
+await sleep(10)                       # 10 seconds
+await sleep(timedelta(minutes=15))   # 15 minutes
+await sleep("1h 30m")                # 90 minutes
+```
+
+### Sleeping until an end date
+
+```python
+from datetime import UTC, datetime
+from vercel.workflow import sleep
+
+await sleep(datetime(2025, 1, 1, tzinfo=UTC))
+```
+
+`asyncio.sleep()` is also supported inside a workflow body. Use
+`workflow.sleep()` when you want the API to make the durable-wait intent
+explicit.

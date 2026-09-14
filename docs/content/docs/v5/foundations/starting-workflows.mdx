@@ -3,15 +3,20 @@ title: Starting workflows
 description: Trigger workflow execution with the start() function and track progress with Run objects.
 type: guide
 summary: Trigger workflows and track their execution using the start() function.
+languageSwitcher:
+  - ts
+  - py
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
   - /docs/api-reference/workflow-api/start
 ---
 
-After you define a workflow function, use the `start()` function from `workflow/api` to trigger it. The function enqueues a new workflow run and returns a `Run` object for tracking its progress.
+After you define a workflow function, use the `start()` function <LanguageContent value="ts" inline>from `workflow/api`</LanguageContent> to trigger it. The function enqueues a new workflow run and returns a `Run` object for tracking its progress.
 
 ## The `start()` function
+
+<LanguageContent value="ts">
 
 The [`start()`](/docs/api-reference/workflow-api/start) function programmatically triggers workflow executions from runtime contexts such as API routes, Server Actions, or other server-side code. In v5, you can also call `start()` inside a workflow function to spawn a child run or continue work in a new run.
 
@@ -32,23 +37,51 @@ export async function POST(request: Request) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+The [`start()`](/docs/api-reference/python/start) function programmatically triggers workflow executions from API routes or other server-side code.
+
+```python lineNumbers
+from app.workflows.user_signup import handle_user_signup
+from vercel import workflow
+
+@app.post("/api/signup")
+async def signup(body: SignupBody):
+    # Start the workflow
+    run = await workflow.start(handle_user_signup, body.email)  # [!code highlight]
+
+    return {
+        "message": "Workflow started",
+        "run_id": run.run_id,
+    }
+```
+
+</LanguageContent>
+
 **Key points:**
 
 - `start()` returns immediately after enqueuing the workflow. It doesn't wait for completion
 - The first argument is your workflow function
-- The second argument is an array of arguments to pass to the workflow (optional if the workflow takes no arguments)
+- <LanguageContent value="ts" inline>The second argument is an array of arguments to pass to the workflow (optional if the workflow takes no arguments)</LanguageContent><LanguageContent value="py" inline>Remaining positional and keyword arguments are passed to the workflow</LanguageContent>
 - All arguments must be [serializable](/docs/foundations/serialization)
 - On Worlds with a regional dimension, the optional `region` option pins the new run's storage, queuing, and streams to a specific region. See [Multi-region on the Vercel World](/worlds/vercel#multi-region)
 
-**Learn more**: [`start()` API reference](/docs/api-reference/workflow-api/start)
+**Learn more**: <LanguageLink ts="/docs/api-reference/workflow-api/start" py="/docs/api-reference/python/start">`start()` API reference</LanguageLink>
+
+<LanguageContent value="ts">
 
 <Callout type="info">
 For parent-child workflow patterns, see [Workflow Composition](/cookbook/common-patterns/workflow-composition). For long-lived workflows that intentionally hand off to newer deployments with `deploymentId: "latest"`, see [Versioning](/docs/foundations/versioning).
 </Callout>
 
+</LanguageContent>
+
 ## The `Run` object
 
-When you call `start()`, it returns a [`Run`](/docs/api-reference/workflow-api/start#returns) object that provides access to the workflow's status and results.
+When you call `start()`, it returns a <LanguageLink ts="/docs/api-reference/workflow-api/start#returns" py="/docs/api-reference/python/run">`Run`</LanguageLink> object that provides access to the workflow's status and results.
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { start } from "workflow/api";
@@ -66,6 +99,28 @@ const status = await run.status; // "running" | "completed" | "failed"
 const result = await run.returnValue;
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+from app.workflows.process_order import process_order
+from vercel import workflow
+
+run = await workflow.start(process_order, order_id)
+
+print("Run ID:", run.run_id)
+
+# Check the workflow status
+status = await run.status()  # "pending" | "running" | "completed" | "failed" | "cancelled"
+
+# Get the workflow's return value (waits until completion)
+result = await run.return_value()
+```
+
+</LanguageContent>
+
+<LanguageContent value="ts">
+
 **Key properties:**
 
 - `runId`: Unique identifier for this workflow run
@@ -77,9 +132,23 @@ const result = await run.returnValue;
 Most `Run` properties are async getters that return promises. `await` them to get their values. For a complete list of properties and methods, see the API reference below.
 </Callout>
 
-**Learn more**: [`Run` API reference](/docs/api-reference/workflow-api/start#returns)
+</LanguageContent>
+<LanguageContent value="py">
+
+**Key properties and methods:**
+
+- `run_id`: Unique identifier for this workflow run
+- `status()`: Current workflow status
+- `return_value()`: Wait for and return the workflow result
+- `readable()`: Async iterator for streaming updates from the workflow
+
+</LanguageContent>
+
+**Learn more**: <LanguageLink ts="/docs/api-reference/workflow-api/start#returns" py="/docs/api-reference/python/run">`Run` API reference</LanguageLink>
 
 ## Common patterns
+
+<LanguageContent value="ts">
 
 ### Starting workflows from workflow functions
 
@@ -110,9 +179,13 @@ Inside workflow functions, each `Run` property access (e.g., `run.status`, `run.
 Awaiting `returnValue` polls the child run every second, and the polling step holds its worker slot open until the child finishes. Size worker-based Worlds to cover the peak number of these polls in flight. If the child workflow is long-running, spawn it without awaiting `returnValue` and have it resume a [hook](/docs/foundations/hooks) when it completes. See the [`startAndWait()` pattern](/cookbook/advanced/child-workflows).
 </Callout>
 
+</LanguageContent>
+
 ### Fire and forget
 
 Start a workflow and immediately return to let it execute in the background:
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { start } from "workflow/api";
@@ -130,9 +203,30 @@ export async function POST(request: Request) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+from app.workflows.notifications import send_notifications
+from vercel import workflow
+
+@app.post("/api/notifications")
+async def queue_notifications(user_id: str):
+    run = await workflow.start(send_notifications, user_id)
+
+    return {
+        "message": "Notifications queued",
+        "run_id": run.run_id,
+    }
+```
+
+</LanguageContent>
+
 ### Wait for completion
 
 If you need to wait for the workflow to complete before responding:
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { start } from "workflow/api";
@@ -148,13 +242,32 @@ export async function POST(request: Request) {
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+from app.workflows.reports import generate_report
+from vercel import workflow
+
+@app.post("/api/reports")
+async def create_report(report_id: str):
+    run = await workflow.start(generate_report, report_id)
+
+    report = await run.return_value()  # [!code highlight]
+    return {"report": report}
+```
+
+</LanguageContent>
+
 <Callout type="warn">
-Waiting for `returnValue` can cause your API route to time out if the workflow takes a long time.
+Waiting for <LanguageText code ts="returnValue" py="return_value()" /> can cause your API route to time out if the workflow takes a long time.
 </Callout>
 
 ### Stream updates to client
 
 Stream updates from your workflow as it executes without waiting for completion:
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { start } from "workflow/api";
@@ -178,7 +291,30 @@ export async function POST(request: Request) {
 }
 ```
 
-Your workflow can write to the stream using [`getWritable()`](/docs/api-reference/workflow/get-writable):
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+from fastapi.responses import StreamingResponse
+
+from app.workflows.ai_generation import generate_ai_content
+from vercel import workflow
+
+@app.post("/api/generate")
+async def generate(prompt: str):
+    run = await workflow.start(generate_ai_content, prompt)
+
+    return StreamingResponse(
+        run.readable_bytes(),  # [!code highlight]
+        media_type="application/octet-stream",
+    )
+```
+
+</LanguageContent>
+
+Your workflow can write to the stream using <LanguageContent value="ts" inline>[`getWritable()`](/docs/api-reference/workflow/get-writable)</LanguageContent><LanguageContent value="py" inline>[`get_writable()`](/docs/api-reference/python/get-writable)</LanguageContent>:
+
+<LanguageContent value="ts">
 
 ```typescript lineNumbers
 import { getWritable } from "workflow";
@@ -211,13 +347,39 @@ async function streamContentToClient(
 }
 ```
 
+</LanguageContent>
+<LanguageContent value="py">
+
+```python lineNumbers
+from app.workflow import wf
+from vercel.workflow import get_writable
+
+@wf.workflow
+async def generate_ai_content(prompt: str):
+    writable = get_writable()  # [!code highlight]
+    await stream_content_to_client(writable, prompt)
+    return {"status": "complete"}
+
+@wf.step
+async def stream_content_to_client(writable: workflow.WorkflowWritable, prompt: str):
+    # Stream updates as they become available
+    for index in range(10):
+        await writable.write(f"Update {index}\n".encode())
+
+    await writable.close()
+```
+
+</LanguageContent>
+
 <Callout type="info">
 Use streams to show users real-time progress from AI workflows or intermediate results from long-running processes.
 </Callout>
 
-**Learn more**: [Streaming in workflows](/docs/foundations/serialization#streaming)
+**Learn more**: [Streaming in workflows](/docs/foundations/streaming)
 
 ### Check status later
+
+<LanguageContent value="ts">
 
 You can retrieve a workflow run later using its `runId` with [`getRun()`](/docs/api-reference/workflow-api/get-run):
 
@@ -242,6 +404,30 @@ export async function GET(request: Request) {
   return Response.json({ status });
 }
 ```
+
+</LanguageContent>
+<LanguageContent value="py">
+
+You can recreate a workflow run handle later from its ID:
+
+```python lineNumbers
+from vercel import workflow
+
+@app.get("/api/runs/{run_id}")
+async def get_run_status(run_id: str):
+    run = workflow.Run(run_id)  # [!code highlight]
+    status = await run.status()
+
+    if status == "completed":
+        result = await run.return_value()
+        return {"result": result}
+
+    return {"status": status}
+```
+
+</LanguageContent>
+
+<LanguageContent value="ts">
 
 ### Recursive and repeating workflows
 
@@ -287,8 +473,10 @@ export async function syncDashboard() {
 
 By default a chained run starts on the same deployment as its parent. For workflows that chain over long periods, pass [`deploymentId: "latest"`](/docs/api-reference/workflow-api/start#using-deploymentid-latest) so the next run picks up new code. [Versioning](/docs/foundations/versioning#self-upgrading-workflows) covers this pattern in full, including how the serialized state acts as the migration boundary between versions.
 
+</LanguageContent>
+
 ## Next steps
 
 - Browse the [Cookbook](/cookbook) for copy-paste recipes covering composition, scheduling, timeouts, and more
 - Explore [Errors and retrying](/docs/foundations/errors-and-retries) to handle failures
-- Check the [`start()` API reference](/docs/api-reference/workflow-api/start) for complete details
+- Check the <LanguageLink ts="/docs/api-reference/workflow-api/start" py="/docs/api-reference/python/start">`start()` API reference</LanguageLink> for complete details

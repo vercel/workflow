@@ -3,6 +3,9 @@ title: Workflow Globals
 description: Global APIs available inside workflow functions.
 type: reference
 summary: Reference of all global APIs available inside workflow functions.
+languageSwitcher:
+  - ts
+  - py
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -12,11 +15,13 @@ related:
   - /docs/how-it-works/code-transform
 ---
 
-Workflow functions run in a restricted environment that prevents access to non-deterministic or side-effecting APIs. This page lists all global APIs available inside `"use workflow"` functions.
+Workflow functions run in a restricted environment that prevents access to non-deterministic or side-effecting APIs. This page lists all global APIs available inside <LanguageText code ts='"use workflow"' py="@workflow" /> functions.
 
-For full Node.js runtime access, use [step functions](/docs/foundations/workflows-and-steps#step-functions).
+For full <LanguageText ts="Node.js" py="Python"/> runtime access, use [step functions](/docs/foundations/workflows-and-steps#step-functions).
 
 ## Deterministic APIs
+
+<LanguageContent value="ts">
 
 These APIs are available but are **seeded or fixed** to ensure deterministic behavior across replays.
 
@@ -32,6 +37,25 @@ These APIs are available but are **seeded or fixed** to ensure deterministic beh
 You can safely use `Math.random()`, `Date.now()`, and `crypto.randomUUID()` in workflow functions. The framework ensures these return the same values across replays.
 </Callout>
 
+</LanguageContent>
+<LanguageContent value="py">
+
+Python's standard-library time and random APIs are blocked inside workflow bodies. Use these replacements from `vercel.workflow`; they are **seeded or fixed** to ensure deterministic behavior across replays.
+
+| API | Return type | Behavior |
+| --- | --- | --- |
+| `workflow.now()` | `datetime.datetime` | Returns the workflow's logical time as a timezone-aware `datetime`. The value is stable at the same point in every replay and advances with the event log. |
+| `workflow.time_ns()` | `int` | Returns the same logical time as `now()`, expressed as nanoseconds since the Unix epoch. |
+| `workflow.random()` | `random.Random` | Returns the run-scoped `random.Random` instance, deterministically seeded from the run ID. The same seed produces the same sequence on every replay. Repeated calls return the same generator object within a run; use normal methods such as `.random()`, `.randint()`, `.choice()`, and `.shuffle()`. |
+
+<Callout type="warn">
+These functions can only be called from a workflow body. Steps should use the normal `datetime`, `time`, and `random` APIs.
+</Callout>
+
+</LanguageContent>
+
+<LanguageContent value="ts">
+
 ## Web platform APIs
 
 These standard Web APIs are available in workflow functions:
@@ -45,7 +69,23 @@ These standard Web APIs are available in workflow functions:
 - [`atob`](https://developer.mozilla.org/en-US/docs/Web/API/Window/atob) / [`btoa`](https://developer.mozilla.org/en-US/docs/Web/API/Window/btoa)
 - [`AbortController`](https://developer.mozilla.org/en-US/docs/Web/API/AbortController) / [`AbortSignal`](https://developer.mozilla.org/en-US/docs/Web/API/AbortSignal): A durable, serializable implementation whose abort state survives replay and can be passed into steps to cancel in-flight work. See [Cancellation](/docs/foundations/cancellation).
 
+</LanguageContent>
+<LanguageContent value="py">
+
+## asyncio APIs
+
+Python workflows run on a custom event loop that supports deterministic `asyncio` scheduling and concurrency APIs.
+
+- [`asyncio.sleep()`](https://docs.python.org/3/library/asyncio-task.html#asyncio.sleep)
+- [`asyncio.gather()`](https://docs.python.org/3/library/asyncio-task.html#asyncio.gather) / [`TaskGroup`](https://docs.python.org/3/library/asyncio-task.html#task-groups)
+- [`asyncio.create_task()`](https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task) / [`asyncio.ensure_future()`](https://docs.python.org/3/library/asyncio-future.html#asyncio.ensure_future) / [`asyncio.shield()`](https://docs.python.org/3/library/asyncio-task.html#asyncio.shield)
+- [`asyncio.wait_for()`](https://docs.python.org/3/library/asyncio-task.html#asyncio.wait_for) / [`asyncio.timeout()`](https://docs.python.org/3/library/asyncio-task.html#timeouts) / [`Task.cancel()`](https://docs.python.org/3/library/asyncio-task.html#asyncio.Task.cancel): Timing out or cancelling a task propagates cancellation to the currently awaited step when it is declared with `cancellable=True`. See [Cancellation](/docs/foundations/cancellation).
+
+</LanguageContent>
+
 ## Environment variables
+
+<LanguageContent value="ts">
 
 `process.env` is available as a **read-only, frozen** snapshot of the environment variables at the time the workflow was started. You cannot modify it.
 
@@ -57,6 +97,21 @@ export async function myWorkflow() {
   process.env.FOO = "bar"; // throws: process.env is frozen
 }
 ```
+
+</LanguageContent>
+<LanguageContent value="py">
+
+`os.environ` is available inside workflow functions as a snapshot of the host process environment.
+
+```python
+import os
+
+api_key = os.environ["API_KEY"]
+```
+
+</LanguageContent>
+
+<LanguageContent value="ts">
 
 ## Binary data
 
@@ -93,9 +148,13 @@ target.setFromHex("48656c6c6f"); // { read: 10, written: 5 }
 These methods are polyfilled in the workflow environment. When the JavaScript runtime ships native support, the polyfill is automatically bypassed.
 </Callout>
 
+</LanguageContent>
+
 ## Not available
 
 The following are **not available** in workflow functions. Move this logic to [step functions](/docs/foundations/workflows-and-steps#step-functions) instead.
+
+<LanguageContent value="ts">
 
 - **Node.js core modules**: `fs`, `path`, `http`, `https`, `net`, `dns`, `child_process`, `cluster`, `os`, `stream`, `crypto` (Node.js version), etc. See [node-js-module-in-workflow](/docs/errors/node-js-module-in-workflow).
 - **Global `fetch`**: Use [`import { fetch } from "workflow"`](/docs/api-reference/workflow/fetch) instead. See [fetch-in-workflow](/docs/errors/fetch-in-workflow).
@@ -104,3 +163,17 @@ The following are **not available** in workflow functions. Move this logic to [s
 - **`WeakRef` and `FinalizationRegistry`**: Garbage collection timing is not deterministic, so observing it would make workflow code impossible to replay. (`WeakMap` and `WeakSet` remain available since they do not expose garbage collection state.)
 - **`Atomics.waitAsync`**: a wall-clock timer, which cannot be replayed. Use [`sleep()`](/docs/api-reference/workflow/sleep) instead.
 - **Async `WebAssembly` compilation**: The `compile`, `instantiate`, `compileStreaming`, and `instantiateStreaming` methods resolve on compile-thread timing. The synchronous `new WebAssembly.Module()` and `new WebAssembly.Instance()` constructors remain available.
+
+</LanguageContent>
+<LanguageContent value="py">
+
+- **Wall-clock time and blocking sleep**: `datetime.datetime.now()`, `datetime.datetime.utcnow()`, `datetime.date.today()`, `time.time()`, `time.monotonic()`, `time.perf_counter()`, and `time.sleep()`. Use `workflow.now()`, `workflow.time_ns()`, and `await workflow.sleep()` or `await asyncio.sleep()` instead.
+- **Implicit or system randomness**: Module-level `random` functions, `random.SystemRandom`, `os.urandom()`, and `uuid.uuid4()`. Use `workflow.random()` or an explicitly seeded `random.Random(seed)` instance instead.
+- **Filesystem, network, and process I/O**: `open()`, file operations, socket creation, subprocesses, and multiprocessing. Pure path manipulation through `os.path` remains available.
+- **Threads and event-loop escapes**: Starting `threading.Thread` or `threading.Timer`, `asyncio.to_thread()`, creating or replacing event loops, and asyncio network, server, or subprocess APIs.
+- **Dynamic execution and interactive APIs**: `eval()`, `exec()`, `compile()`, `input()`, and `breakpoint()`.
+- **Host and native access**: Modules such as `ctypes`, `signal`, `fcntl`, `mmap`, `sqlite3`, `pty`, `termios`, `resource`, `faulthandler`, `syslog`, and `readline` cannot be used to access the host runtime.
+
+For sandbox configuration and module passthrough behavior, see [`SandboxPolicy`](/docs/api-reference/python/sandbox-policy).
+
+</LanguageContent>
