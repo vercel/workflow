@@ -14,14 +14,16 @@ async function bootstrap() {
     }
   }
 
+  // rawBody keeps the bytes a webhook sender signed. Nest's own json parser
+  // captures them; the extra middleware below covers the content types Nest
+  // does not parse.
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
-    bodyParser: false,
+    rawBody: true,
   });
 
   // Configure body parsing similar to express workbench
   // Use dynamic import to work around ESM issues
   const { default: expressModule } = await import('express');
-  app.use(expressModule.json());
   app.use(expressModule.text({ type: 'text/*' }));
   app.use(expressModule.raw({ type: 'application/octet-stream' }));
 

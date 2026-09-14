@@ -32,6 +32,8 @@ npx @workflow/nest init
 
 This creates a `.swcrc` file configured with the Workflow SWC plugin for client-mode transformations.
 
+`init` writes only the settings the workflow transform needs (the plugin entry, decorator parsing and metadata, and `module.type`). Any other SWC configuration already in the file is preserved, and `--force` refreshes the resolved plugin path rather than replacing the file.
+
 **Important:** Add `.swcrc` to your `.gitignore` as it contains machine-specific absolute paths:
 
 ```bash
@@ -113,8 +115,20 @@ WorkflowModule.forRoot({
   // Output directory for generated bundles (default: '.nestjs/workflow')
   outDir: '.nestjs/workflow',
 
-  // Skip building in production when bundles are pre-built
+  // Skip building bundles on startup. Defaults to true when VERCEL is set.
+  // With this on and no bundles present, startup fails with an explicit error.
   skipBuild: false,
+
+  // Route prefix the workflow endpoints are served under. Leave unset to adopt
+  // app.setGlobalPrefix() automatically; set it for a reverse-proxy sub-path.
+  basePath: '/api',
+
+  // Start the target World's background workers with the app and close them on
+  // shutdown. Needed for self-hosted Worlds; leave off on Vercel.
+  manageWorldLifecycle: false,
+
+  // Load the generated bundles at startup instead of on the first request.
+  preloadBundles: true,
 
   // SWC module type: 'es6' (default) or 'commonjs'
   // Set to 'commonjs' if your NestJS project compiles to CJS via SWC
@@ -126,6 +140,46 @@ WorkflowModule.forRoot({
   distDir: 'dist',
 });
 ```
+
+Options can come from other providers with `forRootAsync`:
+
+{/*@skip-typecheck: Shows WorkflowModule.forRootAsync options*/}
+
+```typescript
+WorkflowModule.forRootAsync({
+  imports: [ConfigModule],
+  inject: [ConfigService],
+  useFactory: (config: ConfigService) => ({
+    basePath: config.get('API_PREFIX'),
+  }),
+});
+```
+
+### Raw request bodies
+
+Create the app with `rawBody` so a signed webhook body reaches the workflow
+byte-for-byte:
+
+{/*@skip-typecheck: Shows the NestFactory.create option*/}
+
+```typescript
+const app = await NestFactory.create(AppModule, { rawBody: true });
+```
+
+Without it the parsed body has to be re-serialized, which changes whitespace and
+key order and breaks signature verification. A warning is logged once when that
+fallback is used.
+
+### Dependency injection is not available in workflows and steps
+
+Workflows and steps are compiled into separate bundles and do not run inside the
+NestJS application, so the injector, your providers, request-scoped context,
+guards, interceptors and the Nest `Logger` are all out of reach from
+`"use workflow"` and `"use step"` code. A class imported into a step is a
+different class object from the one your module registered, so `app.get()` on it
+raises `UnknownElementException`; on Vercel the workflow function is a separate
+function from the app entirely. Write steps as plain functions over their
+arguments and keep DI in your controllers and providers.
 
 ## Deploying to Vercel
 
@@ -285,6 +339,11 @@ npx @workflow/nest --help
 | `--entry <path>` | Vercel app entry module that default-exports a Node request handler. | auto-detected (e.g. `_vercel/entry.js`) |
 | `--out-dir <dir>` | Output directory for local-dev bundles (ignored with `--vercel`). | `.nestjs/workflow` |
 | `--module <type>` | SWC module type: `es6` or `commonjs`. | `es6` |
+| `--base-path <path>` | Route prefix the app is served under. Must match `setGlobalPrefix()` / `basePath`. | none |
+| `--sourcemap <mode>` | esbuild sourcemap mode: `true`, `false`, `inline`, `linked`, `external`, `both`. | builder default |
+| `--max-duration <secs>` | `maxDuration` for the app function. | `300` |
+| `--runtime <runtime>` | Vercel runtime for the emitted functions, e.g. `nodejs22.x`. | platform default |
+| `--app-function <name>` | Name of the catch-all app function. | `__nest` |
 
 ## License
 

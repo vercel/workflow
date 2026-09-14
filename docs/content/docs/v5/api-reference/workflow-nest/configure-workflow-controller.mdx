@@ -9,7 +9,11 @@ prerequisites:
 
 Configures the output directory that [`WorkflowController`](/docs/api-reference/workflow-nest/workflow-controller) loads the generated workflow bundles (`steps.mjs`, `workflows.mjs`, `webhook.mjs`, `manifest.json`) from.
 
-[`WorkflowModule.forRoot()`](/docs/api-reference/workflow-nest/workflow-module) calls this for you with its resolved `outDir`. Call it yourself only when registering `WorkflowController` manually. The controller's route handlers throw if no directory has been configured.
+<Callout type="warn">
+Deprecated. [`WorkflowModule.forRoot()`](/docs/api-reference/workflow-nest/workflow-module) provides the output directory through dependency injection, which this function predates. It writes process-global state, so two applications in one process (the usual `Test.createTestingModule` setup) overwrite each other's configuration. It is kept only so existing callers keep working.
+</Callout>
+
+`WorkflowModule.forRoot()` still calls this for you, and injected options take precedence over it. Call it yourself only when registering `WorkflowController` without the module. A controller with no configuration at all answers `503` with an explanatory message.
 
 ## Usage
 

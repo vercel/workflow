@@ -46,7 +46,29 @@ export class AppModule {}
 
 #### `forRoot(options?)`
 
-Configures the module and returns a NestJS `DynamicModule` registered as `global`. It calls [`configureWorkflowController`](/docs/api-reference/workflow-nest/configure-workflow-controller) with the resolved output directory, and (unless `skipBuild` is set) creates a [`NestLocalBuilder`](/docs/api-reference/workflow-nest/nest-local-builder) that builds the workflow bundles when the module initializes.
+Configures the module and returns a NestJS `DynamicModule` registered as `global`. It provides the resolved options under the `WORKFLOW_MODULE_OPTIONS` token, and (unless `skipBuild` is set) creates a [`NestLocalBuilder`](/docs/api-reference/workflow-nest/nest-local-builder) that builds the workflow bundles when the module initializes.
+
+#### `forRootAsync(options)`
+
+Same as `forRoot`, with the options produced by a factory so they can come from other providers.
+
+{/* @skip-typecheck - config snippet, WorkflowModule imported above */}
+
+```typescript title="src/app.module.ts" lineNumbers
+WorkflowModule.forRootAsync({
+  imports: [ConfigModule],
+  inject: [ConfigService],
+  useFactory: (config: ConfigService) => ({
+    basePath: config.get("API_PREFIX"),
+  }),
+});
+```
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `imports` | `unknown[]` | Optional. Modules whose exported providers the factory injects. |
+| `inject` | `unknown[]` | Optional. Providers passed to `useFactory`, in order. |
+| `useFactory` | `(...args) => WorkflowModuleOptions \| Promise<WorkflowModuleOptions>` | Returns the module options. |
 
 ### Parameters
 
@@ -60,15 +82,53 @@ Extends [`NestBuilderOptions`](/docs/api-reference/workflow-nest/nest-local-buil
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `skipBuild` | `boolean` | `false` | Skip building workflow bundles on startup. Useful in production when the bundles are pre-built. |
+| `skipBuild` | `boolean` | `true` when `VERCEL` is set, else `false` | Skip building workflow bundles on startup. The bundles must already exist; startup fails with an explicit error if they do not. |
+| `basePath` | `string` | adopted from `app.setGlobalPrefix()` | Route prefix the workflow endpoints are served under, applied to generated callback and webhook URLs. Set it when a reverse proxy mounts the app on a sub-path NestJS cannot see. |
+| `manageWorldLifecycle` | `boolean` | `false` | Start the target World's background workers with the app and close them on shutdown. Required for self-hosted Worlds, which otherwise never pick up runs. |
+| `preloadBundles` | `boolean` | `true` | Load the generated bundles during startup instead of on the first request. |
 | `workingDir` | `string` | `process.cwd()` | Working directory for the NestJS application. |
 | `dirs` | `string[]` | `['src']` | Directories to scan for workflow files. |
 | `outDir` | `string` | `'.nestjs/workflow'` (relative to `workingDir`) | Output directory for generated workflow bundles. |
-| `watch` | `boolean` | `false` | Enable watch mode for development. |
+| `watch` | `boolean` | `false` | Deprecated and ignored. Watch mode is not implemented for this builder. Use `nest start --watch`, which re-runs the startup build. |
 | `moduleType` | `'es6' \| 'commonjs'` | `'es6'` | SWC module compilation type. Set to `'commonjs'` if your NestJS project compiles to CommonJS (CJS) through SWC. |
 | `distDir` | `string` | `'dist'` | Directory where NestJS compiles `.ts` source files to `.js` (relative to `workingDir`). Used when `moduleType` is `'commonjs'`. Should match the `outDir` in your `tsconfig.json`. |
 | `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` (dev) / `false` (prod) | Controls source maps on generated workflow bundles. Defaults to `'inline'` in development and `false` in production. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
 
 ### Returns
 
-`forRoot()` returns a `DynamicModule` to include in the `imports` array of your root module.
+`forRoot()` and `forRootAsync()` return a `DynamicModule` to include in the `imports` array of your root module.
+
+## Injecting the resolved options
+
+Both factories export the resolved options under `WORKFLOW_MODULE_OPTIONS`:
+
+{/* @skip-typecheck - NestJS decorators require special TypeScript config */}
+
+```typescript title="src/some.service.ts" lineNumbers
+import { Inject, Injectable } from "@nestjs/common";
+import {
+  WORKFLOW_MODULE_OPTIONS,
+  type WorkflowModuleOptions,
+} from "workflow/nest";
+
+@Injectable()
+export class SomeService {
+  constructor(
+    @Inject(WORKFLOW_MODULE_OPTIONS)
+    private readonly options: WorkflowModuleOptions
+  ) {}
+}
+```
+
+The older `WORKFLOW_OPTIONS` token resolves to the same value and is kept for compatibility.
+
+## Lifecycle
+
+| Hook | Behaviour |
+| --- | --- |
+| `onModuleInit` | Reconciles the base path against `app.setGlobalPrefix()`, builds the bundles (or verifies they exist when `skipBuild` is set), optionally starts the World, and preloads the bundles. |
+| `onApplicationShutdown` | Closes the World when `manageWorldLifecycle` is set. Call `app.enableShutdownHooks()` so this runs on a signal. |
+
+<Callout type="warn">
+Workflows and steps run outside the NestJS injector, so providers cannot be injected into `"use workflow"` or `"use step"` code. See [NestJS dependency injection is not available in workflows and steps](/docs/getting-started/nestjs#nestjs-dependency-injection-is-not-available-in-workflows-and-steps).
+</Callout>
