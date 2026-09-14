@@ -6,11 +6,7 @@ import { reenqueueActiveRuns } from './recovery.js';
 function createRuns(): Storage['runs'] {
   return {
     list: vi.fn(async ({ status }) => {
-      const statuses = Array.isArray(status)
-        ? status
-        : status
-          ? [status]
-          : [];
+      const statuses = Array.isArray(status) ? status : status ? [status] : [];
       return {
         data: statuses.includes('pending')
           ? [

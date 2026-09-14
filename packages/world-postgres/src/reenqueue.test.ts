@@ -232,8 +232,16 @@ describe('re-enqueue active runs on start', () => {
         if (!params?.pagination?.cursor) {
           return {
             data: [
-              { runId: 'wrun_page1_pending', workflowName: 'paginatedWf', status: 'pending' },
-              { runId: 'wrun_page1_running', workflowName: 'paginatedWf', status: 'running' },
+              {
+                runId: 'wrun_page1_pending',
+                workflowName: 'paginatedWf',
+                status: 'pending',
+              },
+              {
+                runId: 'wrun_page1_running',
+                workflowName: 'paginatedWf',
+                status: 'running',
+              },
             ],
             hasMore: true,
             cursor: 'next',
