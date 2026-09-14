@@ -267,6 +267,17 @@ function dimensionKey(dimension) {
 function testKey(test) {
   return `${test.file}\u0000${test.name}`;
 }
+
+function canonicalTestName(name) {
+  return name.replaceAll(' > ', ' ').replace(/\s+/g, ' ').trim();
+}
+
+function retryKey(entry) {
+  return testKey({
+    file: normalizeFile(entry.file),
+    name: canonicalTestName(entry.fullName || entry.testName),
+  });
+}
 function observationKey(dimension, test) {
   return `${dimensionKey(dimension)}\u0001${testKey(test)}`;
 }
@@ -353,12 +364,7 @@ function addReportObservations(
   runId,
   observations
 ) {
-  const retried = new Set(
-    flakyEntries.map(
-      (entry) =>
-        `${normalizeFile(entry.file)}\u0000${entry.fullName || entry.testName}`
-    )
-  );
+  const retried = new Set(flakyEntries.map(retryKey));
   for (const testFile of report.testResults) {
     for (const assertion of testFile.assertionResults) {
       if (assertion.status !== 'passed' && assertion.status !== 'failed') {
@@ -366,7 +372,7 @@ function addReportObservations(
       }
       const test = {
         file: normalizeFile(testFile.name),
-        name: assertion.fullName || assertion.title,
+        name: canonicalTestName(assertion.fullName || assertion.title),
       };
       const key = observationKey(dimension, test);
       const value = observations.get(key) || {
@@ -376,9 +382,9 @@ function addReportObservations(
         retried: new Set(),
       };
       value.executed.add(runId);
-      if (assertion.status === 'passed' && retried.has(testKey(test))) {
-        value.retried.add(runId);
-      }
+      const passedOnRetry =
+        assertion.status === 'passed' && retried.has(testKey(test));
+      if (passedOnRetry) value.retried.add(runId);
       observations.set(key, value);
     }
   }
