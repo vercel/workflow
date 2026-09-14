@@ -3690,3 +3690,73 @@ describe('workflowEntrypoint latency telemetry (ttfs / stso)', () => {
     expect(optimizations).toEqual(['lazyStepStart']);
   });
 });
+
+describe('workflowEntrypoint run-failure logging', () => {
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    errorSpy.mockRestore();
+    setWorld(undefined);
+    vi.clearAllMocks();
+  });
+
+  const failingRun = async (): Promise<WorkflowRun> => ({
+    runId: 'wrun_run_failure_logging',
+    workflowName: 'workflow',
+    status: 'running',
+    input: await dehydrateWorkflowArguments(
+      [],
+      'wrun_run_failure_logging',
+      undefined,
+      []
+    ),
+    createdAt: new Date('2024-01-01T00:00:00.000Z'),
+    updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+    startedAt: new Date('2024-01-01T00:00:00.000Z'),
+    deploymentId: 'test-deployment',
+    specVersion: SPEC_VERSION_CURRENT,
+  });
+
+  /**
+   * The run-failure log is the only place a user sees *why* their workflow
+   * died when they are tailing logs rather than opening the dashboard. Its
+   * framing line ("Error while running workflow") carries no error text of
+   * its own, so the (source-map-remapped) stack has to survive the trip
+   * through the formatter rather than being dropped as redundant.
+   */
+  it('emits the error message and stack in the run-failure log', async () => {
+    const workflowRun = await failingRun();
+    const createdEvents: any[] = [];
+
+    await runWorkflowHandlerWithEvents(
+      `async function workflow() {
+        throw new Error('user workflow blew up');
+      };globalThis.__private_workflows = new Map();
+      globalThis.__private_workflows.set("workflow", workflow);`,
+      workflowRun,
+      [],
+      { createdEvents }
+    );
+
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({ eventType: 'run_failed' })
+    );
+
+    const runFailureLog = errorSpy.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.includes('Error while running workflow'));
+    expect(runFailureLog).toBeDefined();
+
+    // The run id and error code already render today.
+    expect(runFailureLog).toContain('wrun_run_failure_logging');
+    expect(runFailureLog).toContain(RUN_ERROR_CODES.USER_ERROR);
+    // …and so must the two details that actually explain the failure: the
+    // thrown message and at least one stack frame.
+    expect(runFailureLog).toContain('user workflow blew up');
+    expect(runFailureLog).toMatch(/^\s+at /m);
+  });
+});

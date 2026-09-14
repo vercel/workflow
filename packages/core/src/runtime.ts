@@ -5104,10 +5104,10 @@ export function workflowEntrypoint(
                           workflowRunId: runId,
                           errorCode,
                           errorName,
-                          // The console renderer drops `errorStack` on the
-                          // assumption that the message body carries it, and
-                          // this message has no body, so without this row the
-                          // terminal error's text never reaches the console.
+                          // This message has no body, so the console
+                          // renderer promotes `errorStack` into one and
+                          // shows `errorMessage` on its own row when the
+                          // throw produced no stack to carry it.
                           errorMessage,
                           errorStack,
                         });

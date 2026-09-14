@@ -34,7 +34,9 @@ function writeReport(dir, name, assertions, flaky = []) {
     JSON.stringify(
       flaky.map((fullName) => ({
         file: '/repo/packages/core/e2e/e2e.test.ts',
-        fullName,
+        // Vitest's live API separates suites with ` > `, while the JSON
+        // reporter flattens the same full name with spaces.
+        fullName: fullName.replace(/^e2e /, 'e2e > '),
         testName: fullName.replace(/^e2e /, ''),
         retryCount: 1,
       }))
@@ -135,6 +137,54 @@ test('records executed denominators, excludes skips, and pairs retry data', () =
     '0',
   ]);
   assert.strictEqual(observation(history, 'e2e skipped'), undefined);
+});
+
+test('suite-qualified names do not collide on duplicate leaf titles', () => {
+  const dir = tempDir();
+  const report = path.join(dir, 'e2e-vercel-prod-vite-node.json');
+  fs.writeFileSync(
+    report,
+    JSON.stringify({
+      testResults: [
+        {
+          name: '/repo/packages/core/e2e/e2e-agent.test.ts',
+          assertionResults: [
+            {
+              title: 'same title',
+              fullName: 'suite A same title',
+              status: 'passed',
+            },
+            {
+              title: 'same title',
+              fullName: 'suite B same title',
+              status: 'passed',
+            },
+          ],
+        },
+      ],
+    })
+  );
+  fs.writeFileSync(
+    report.replace(/\.json$/, '.flaky.json'),
+    JSON.stringify([
+      {
+        file: '/repo/packages/core/e2e/e2e-agent.test.ts',
+        testName: 'same title',
+        fullName: 'suite A > same title',
+        retryCount: 1,
+      },
+    ])
+  );
+
+  const history = buildHistory(options(dir, 1));
+  assert.deepStrictEqual(
+    observation(history, 'suite A same title').slice(2, 4),
+    [1, 1]
+  );
+  assert.deepStrictEqual(
+    observation(history, 'suite B same title').slice(2, 4),
+    [1, 0]
+  );
 });
 
 test('rejects corrupt prior masks before decoding them', () => {

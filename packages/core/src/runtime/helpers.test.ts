@@ -151,6 +151,32 @@ describe('getWorkflowQueueName', () => {
     );
   });
 
+  it('should allow parentheses for Next.js route groups', () => {
+    expect(
+      getWorkflowQueueName(
+        'workflow//./app/(marketing)/workflows/checkout.ts//processOrder'
+      )
+    ).toBe(
+      '__wkf_workflow_workflow//./app/(marketing)/workflows/checkout.ts//processOrder'
+    );
+  });
+
+  it('should allow square brackets for Next.js dynamic segments', () => {
+    expect(
+      getWorkflowQueueName(
+        'workflow//./app/[teamId]/workflows/sync.ts//syncTeam'
+      )
+    ).toBe(
+      '__wkf_workflow_workflow//./app/[teamId]/workflows/sync.ts//syncTeam'
+    );
+    expect(
+      getWorkflowQueueName('workflow//./app/[...slug]/workflows/x.ts//run')
+    ).toBe('__wkf_workflow_workflow//./app/[...slug]/workflows/x.ts//run');
+    expect(
+      getWorkflowQueueName('workflow//./app/[[...slug]]/workflows/x.ts//run')
+    ).toBe('__wkf_workflow_workflow//./app/[[...slug]]/workflows/x.ts//run');
+  });
+
   it('should throw for names containing spaces', () => {
     expect(() => getWorkflowQueueName('my workflow')).toThrow(
       'Invalid workflow name'
