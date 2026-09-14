@@ -27,6 +27,8 @@ Broader signals are deliberately ignored. `vercel env pull` writes `VERCEL=1` in
 
 A deployment that pins `WORKFLOW_TARGET_WORLD=local` warns at startup and fails on its first write, because a Vercel deployment's filesystem is read-only.
 
+A deployment can land on the Local World without pinning anything, and without that warning, if the project has cleared **Enable access to System Environment Variables** under **Settings**, then **Environment Variables**. That checkbox is what makes Vercel expose `VERCEL_DEPLOYMENT_ID` to your build and your functions; with it off, there is no signal to detect, so detection and the warning both see an ordinary non-Vercel process. See [System environment variables](/worlds/vercel#system-environment-variables) for how to confirm and fix it.
+
 Set `WORKFLOW_TARGET_WORLD` only when you want to use a custom or self-hosted World:
 
 - `local`: Alias for `@workflow/world-local`.
@@ -197,7 +199,7 @@ The Vercel World is configured automatically inside Vercel deployments. The plat
 
 Most applications should not set `WORKFLOW_VERCEL_*` variables on Vercel. They configure tooling that talks to a Vercel Workflow project from outside a deployment, such as the Workflow CLI, the web user interface (UI), continuous integration (CI), or tests. The runtime warns if these variables are set in a deployed Vercel Function because they do not control runtime configuration there.
 
-Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, and `VERCEL_DEPLOYMENT_KEY` are read by the runtime inside Vercel deployments. Do not set them yourself.
+Platform-provided values such as `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, and `VERCEL_DEPLOYMENT_KEY` are read by the runtime inside Vercel deployments. Do not set them yourself; keep [system environment variables](/worlds/vercel#system-environment-variables) enabled for the project so that Vercel provides them.
 
 ### `token`
 
