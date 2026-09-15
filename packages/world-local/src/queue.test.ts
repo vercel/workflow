@@ -123,6 +123,32 @@ describe('queue timeout re-enqueue', () => {
     expect(body).toEqual({ ok: true });
   });
 
+  it('treats invocation return values containing timeoutSeconds as data', async () => {
+    const result = { timeoutSeconds: 123, value: 'data' };
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => result
+    );
+    const response = await handler(
+      new Request('http://localhost/flow', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-vqs-queue-name': '__wkf_workflow_test',
+          'x-vqs-message-id': 'msg_input',
+          'x-vqs-message-attempt': '1',
+        },
+        body: JSON.stringify({
+          ...workflowPayload,
+          invoke: true,
+          requestId: 'input',
+          input: {},
+        }),
+      })
+    );
+    expect(await response.json()).toEqual({ result });
+  });
+
   it('createQueueHandler returns 200 with timeoutSeconds: 0', async () => {
     const handler = localQueue.createQueueHandler(
       '__wkf_workflow_',

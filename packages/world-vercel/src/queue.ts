@@ -724,7 +724,13 @@ export function createQueue(config?: APIConfig): Queue {
             requestId,
           });
 
-          if (typeof result?.timeoutSeconds === 'number') {
+          if (
+            !('invoke' in payload && payload.invoke === true) &&
+            typeof result === 'object' &&
+            result !== null &&
+            'timeoutSeconds' in result &&
+            typeof result.timeoutSeconds === 'number'
+          ) {
             // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
             // Otherwise, clamp to one continuation hop (23h by default). Longer
             // sleeps chain delayed messages until the full duration has elapsed.

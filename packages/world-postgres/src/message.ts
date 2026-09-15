@@ -10,6 +10,8 @@ import { Base64Buffer } from './zod.js';
 export const MessageData = z.compile(
   z.object({
     attempt: z.number().describe('The attempt number of the message'),
+    /** Attempts already spent before moving a legacy delivery to the executor task. */
+    attemptOffset: z.number().int().nonnegative().optional(),
     messageId: MessageId.describe('The unique ID of the message'),
     idempotencyKey: z.string().optional(),
     headers: z.record(z.string(), z.string()).optional(),

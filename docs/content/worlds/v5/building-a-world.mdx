@@ -237,12 +237,40 @@ interface Queue {
     messages: readonly { message: QueuePayload; opts?: QueueOptions }[]
   ): Promise<QueueBatchResult[]>;
 
+  // Optional request/response delivery, enabled with capabilities.invoke.
+  invoke?(runId: string, payload: unknown, options?: InvokeOptions): Promise<unknown>;
+
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
-    handler: (message: unknown, meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }) => Promise<void | { timeoutSeconds: number }>
+    handler: (message: unknown, meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }) => Promise<unknown>
   ): (req: Request) => Promise<Response>;
 }
 ```
+
+### Invocation delivery
+
+An optional `invoke` implementation advertises `capabilities.invoke`. It delivers
+`{ runId, invoke: true, requestId, input }` to the existing handler and returns the
+handler's result to the original caller. `requestId` is the stable logical input
+identity; it is separate from the physical queue delivery ID. `InvokeOptions`
+accepts an `idempotencyKey` and response-wait `timeoutMs`.
+
+The runtime interprets the input, awaits required event writes, and returns a
+value. World owns delivery, response correlation and storage. It must service
+inputs while the run's normal execution is awaiting step work. There is no public
+mailbox/feed or response callback in this contract.
+
+Only ordinary wake results interpret `{ timeoutSeconds }` as queue control.
+In invocation mode that property is ordinary response data. Transport handler
+results as `InvocationOutcome`: `{ ok: true, value }` or
+`{ ok: false, error: SerializedWorkflowError }`. The adapter returns `value` or
+rehydrates and throws the handler's error. The `@workflow/errors/invocation`
+helpers capture/unwrap these outcomes and preserve known Workflow error classes
+and diagnostic fields. Failure to store or deliver an outcome remains a distinct
+unknown transport failure. A handler error does not imply rollback of its writes.
+Event and response persistence
+need not share a transaction; the backend must implement any deduplication
+guarantees it advertises through `hookResumeDedup`.
 
 ### Batched publishing
 

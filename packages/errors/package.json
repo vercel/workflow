@@ -24,6 +24,10 @@
     "./ansi": {
       "types": "./dist/ansi.d.ts",
       "default": "./dist/ansi.js"
+    },
+    "./invocation": {
+      "types": "./dist/invocation.d.ts",
+      "default": "./dist/invocation.js"
     }
   },
   "scripts": {
@@ -37,12 +41,12 @@
     "@types/ms": "2.1.0",
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "@workflow/world": "workspace:*",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
   "dependencies": {
     "@workflow/utils": "workspace:*",
+    "@workflow/world": "workspace:*",
     "ms": "2.1.3"
   }
 }

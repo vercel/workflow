@@ -189,6 +189,125 @@ and its token can be reused. If the token is never reused, the expired
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - Workflow orchestration and queued step execution are both sent through `/.well-known/workflow/v1/flow`
 
+### Experimental synchronous invocation
+
+Enable `WORKFLOW_POSTGRES_INVOKE=1` when loading the World through
+`WORKFLOW_TARGET_WORLD`, or pass `enableInvoke: true` to `createWorld()`.
+The default is off. Apply database migrations before running the upgraded World
+(also when invoke is disabled: hook deduplication and purge use new columns). Use
+matching upgraded application workers sharing the same job prefix/namespace.
+
+This advertises `world.capabilities.invoke` and implements the optional
+`world.invoke(runId, payload, { idempotencyKey?, timeoutMs? })` operation.
+`resumeHook()` then sends a serialized input to the executor instead of writing
+the event in the caller. The executor validates the hook, awaits its event-log
+write, and responds. A response does not mean the workflow has consumed the input.
+Unsupported Worlds keep the existing hook-write/queue-wake path.
+
+The World calls the normal SDK handler with `{ runId, invoke: true, requestId,
+input }`. The SDK returns a value; the Postgres wrapper stores it for the caller.
+Mailbox iteration and response storage are entirely backend-private. There is
+no exported World invocation feed or `respond()` callback. Invocation returns
+are data (even if they contain `timeoutSeconds`); only normal wake returns use
+that field as queue control.
+
+Responses use the shared `InvocationOutcome` envelope: `{ ok: true, value }` or
+`{ ok: false, error: SerializedWorkflowError }`. `invoke()` unwraps successes and
+throws restored Workflow error classes with their diagnostic fields. A handler
+exception settles that logical request; retrying its identity returns the stored
+error. It does not imply that the handler rolled back earlier writes. Failure to
+persist/read the response remains an unknown transport outcome. Migration 0022
+versions stored results so arbitrary values from earlier previews remain values,
+even if they resemble an error envelope. Upgrade producers and workers together.
+
+Postgres stores inputs and responses in `workflow.workflow_invocations`. Input
+insertion and enqueueing an executor wake share one transaction. **Every invoke
+enqueues a wake**, even when retrying an input whose response is already stored;
+such a wake may find no additional work. It still checks durable run state because
+the previous executor may have died after responding but before replaying the
+committed event. A repeated idempotency key must carry
+identical input. Without a key, every call is a new input.
+
+There are two Graphile **task identifiers** with the default job prefix:
+
+- `workflow_flows_executor`: workflow orchestration wakes. These set Graphile's
+  named `queueName` to `workflow_flows:<runId>:executor`, allowing one active
+  executor job per run across worker instances.
+- `workflow_flows`: step execution and health checks. These remain parallel and
+  are not placed behind the run's executor job.
+
+`queueConcurrency` remains the overall per-process worker-slot limit (default
+50); it is not changed to 1. Different runs can execute concurrently. An executor
+stays unacknowledged while the World delivers inputs alongside existing
+workflow execution. Input admission is serviced while inline steps wait. Node
+VM retention remains bounded by existing replay boundaries and the executor's
+idle window; a later executor may use another process and replay.
+At idle or the 120-second intake deadline, the wrapper stops taking new inputs,
+joins any in-flight delivery, and performs a final replay if inputs committed
+since the last replay began. Only then can it acknowledge this executor wake.
+
+Only verified executor deliveries start mailbox service. The executor task
+checks Graphile's actual named queue, then forwards its job ID, worker ID and
+attempt through private HTTP headers. The HTTP receiver checks those against
+Graphile's public `jobs` view: the job must still be locked, have the executor
+task identifier, and belong to this run's exact named queue. Supplied application
+headers cannot override this delivery metadata. Steps and health checks never
+drain the mailbox.
+
+Ordinary/legacy orchestration jobs picked up by updated workers are durably moved
+to the executor task before acknowledgement, rather than executed immediately.
+The transfer preserves payload/message identity and the known remaining attempt
+budget. Updated HTTP receivers similarly reroute unmarked legacy orchestration
+requests. Invalid or inactive executor metadata is rejected before reading the
+mailbox. Older binaries that have not been upgraded cannot enforce these checks.
+This verifies the delivery's role at entry; it is not continuous fencing of an
+already-running handler and does not change the stale-handler limitation below.
+
+The private mailbox reader loads pending rows in pages of 32. Input delivery and response
+waiting use `LISTEN/NOTIFY`, sharing one lazily opened dedicated connection per
+World instance. Notifications carry fixed-size hashed identifiers, not payloads
+or results. Input notifications commit with insertion/wake scheduling; result
+notifications commit with the response update. Waiters always read the table,
+and a revision captured before each read prevents missing a notification that
+arrives during the query. Completing/reestablishing LISTEN also wakes waiters
+to cover writes committed before subscription.
+
+A 1-second fallback read handles missing notifications or unavailable LISTEN.
+Listener errors/disconnects wake waiters and permit reconnect after a 1-second
+backoff. The listener needs a session-capable connection (for example, transaction
+pooling alone cannot provide reliable LISTEN); fallback reads preserve progress.
+Degradation and restoration are logged once per state transition to stderr,
+without connection details or payloads; repeated failed retries do not spam logs.
+Invoke defaults to a 30-second response timeout
+(overridable with `timeoutMs`). A timeout does not establish whether the input
+was processed and does not undo execution. Encoded input and outcome size are
+each limited to 1 MiB. Closing
+the World aborts local response waits and closes its input feeds and listener.
+
+Event writes and response writes remain **sequential, not atomic**. Postgres now
+implements the existing `hookResumeDedup` capability: a unique durable resume ID
+and payload digest make the hook-event write idempotent. A response-storage retry
+converges on that event even after hook disposal or run completion. A changed
+payload under the same identity is rejected. This is not an exactly-once guarantee
+for arbitrary step side effects.
+
+`$retention: 0` purges invocation inputs, results and fingerprints with the run's
+other user data. An expiry tombstone lets waiting callers/retries receive
+`INVOCATION_DATA_EXPIRED` (410), rather than wait indefinitely. Mailbox writers
+lock/recheck the run so late inputs and responses cannot restore purged data.
+If the run expires before its response can be read, that invocation may return
+the expiry error even though its hook event committed. Other results currently
+remain in the table without automatic cleanup. Graphile serialization
+does not fence an old HTTP handler after an aborted/reclaimed delivery, and it
+does not route heterogeneous code versions to the correct deployment. These are
+limitations of this experimental mode; no new World acquisition API is added.
+
+The invocation migration also clears mailbox data belonging to runs already
+expired or terminal with zero retention, including rows from an earlier preview.
+
+The real-database invocation tests use the built core runtime. Build it before
+running `pnpm exec vitest run test/invoke.test.ts` in this package.
+
 ## Development
 
 For local development, you can use the included Docker Compose configuration:

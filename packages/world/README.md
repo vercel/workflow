@@ -6,6 +6,31 @@ This package defines the `World` interface that abstracts workflow storage, queu
 
 Used internally by `@workflow/core` and world implementations. Should not be used directly in application code.
 
+## Optional invocation delivery
+
+`WorldCapabilities.invoke` enables `world.invoke(runId, payload, options?)`, a
+request/response operation. `InvokeOptions` supports an `idempotencyKey` and
+`timeoutMs`. Every call schedules a run wake, including retries; resolving means
+the executor has responded, not merely that a transport accepted the input.
+
+An implementing World calls the existing `createQueueHandler` callback with
+`{ runId, invoke: true, requestId, input }`. The callback returns `unknown`:
+invocation-mode returns are data, while ordinary wake returns still use
+`{ timeoutSeconds }` for queue control. A result containing `timeoutSeconds`
+must not reschedule an invocation. The runner interprets inputs and awaits event
+writes before returning. World owns delivery, response correlation and storage.
+
+The callback can receive input calls while the run's normal execution is awaiting
+step work; the runtime must direct them to that run's admission path. This adds
+no public mailbox, response callback, acquisition or atomic-commit API. Worlds
+without invocation support leave the capability unset.
+
+Invocation transports can use `InvocationOutcome` to distinguish returned values
+from serialized handler errors. Adapters unwrap the outcome for callers, restoring
+known Workflow error classes via `@workflow/errors/invocation`. Delivery or
+response-storage failure is distinct from a handler error; neither proves that
+earlier handler writes were rolled back.
+
 ## Step dispatch context
 
 `WorkflowInvokePayload.runContext` carries the run's deployment ID, spec version,
