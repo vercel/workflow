@@ -100,6 +100,13 @@ export async function purgeRunEntityData(
       for (const field of getEventDataRefFields(String(event.eventType))) {
         delete (eventData as Record<string, unknown>)[field];
       }
+      if (
+        event.eventType === 'run_created' ||
+        event.eventType === 'run_started'
+      ) {
+        delete (eventData as Record<string, unknown>).dynamicWorkflowCode;
+        delete (eventData as Record<string, unknown>).dynamicWorkflowCodeRef;
+      }
     }),
     scrubHookMetadata(basedir, runId),
     purgeRunStreamData(basedir, runId, tag),

@@ -1195,7 +1195,6 @@ export function createEventsStorage(
                     allowReservedAttributes:
                       runInputData.allowReservedAttributes,
                     encryptionPublicKey: runInputData.encryptionPublicKey,
-                    dynamicWorkflowCode: runInputData.dynamicWorkflowCode,
                   },
                 };
                 await storeEvent(runCreatedEvent);
@@ -1646,6 +1645,16 @@ export function createEventsStorage(
         // Strip eventData from run_started: it belongs on run_created only.
         if (data.eventType === 'run_started' && 'eventData' in event) {
           delete (event as any).eventData;
+        }
+        // Dynamic source is materialized onto the run and never retained on
+        // the creation event as a second durable copy.
+        if (event.eventType === 'run_created' && event.eventData) {
+          const {
+            dynamicWorkflowCode: _dynamicWorkflowCode,
+            dynamicWorkflowCodeRef: _dynamicWorkflowCodeRef,
+            ...eventData
+          } = event.eventData;
+          event = { ...event, eventData };
         }
         // Strip only the step `input` from the lazy step_started event row:
         // it belongs on the synthetic step_created written above. stepName is
