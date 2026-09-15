@@ -1,5 +1,19 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.43
+
+### Patch Changes
+
+- [#4114](https://github.com/vercel/workflow/pull/4114) [`cc9a4cf`](https://github.com/vercel/workflow/commit/cc9a4cf29fc746b96a3b4d9c3c8e05d57d273cda) Thanks [@komly](https://github.com/komly)! - Queue deliveries no longer inherit `fetch`'s 300s headers/body deadlines, which redelivered healthy long-running inline work while it was still executing. Deadlines can be set with `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS` and `WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`.
+
+- [#4117](https://github.com/vercel/workflow/pull/4117) [`2883509`](https://github.com/vercel/workflow/commit/28835099aec1f4889c539a401b3293889e449507) Thanks [@komly](https://github.com/komly)! - Preserve error names, messages, stacks, and nested causes in Graphile Worker log metadata.
+
+- [#3707](https://github.com/vercel/workflow/pull/3707) [`79e7436`](https://github.com/vercel/workflow/commit/79e743655b1b34bd4555fd85c553c77423afa530) Thanks [@unusdon](https://github.com/unusdon)! - Allow `runs.list({ status })` to accept an array of statuses so callers can easily express set filters (e.g. non-terminal runs). world-vercel does not yet support the array form and throws a clear `INVALID_ARGUMENT` error instead of a broken request.
+- Updated dependencies [[`79e7436`](https://github.com/vercel/workflow/commit/79e743655b1b34bd4555fd85c553c77423afa530)]:
+  - @workflow/world@5.0.0-beta.36
+  - @workflow/world-local@5.0.0-beta.45
+  - @workflow/errors@5.0.0-beta.21
+
 ## 5.0.0-beta.42
 
 ### Patch Changes

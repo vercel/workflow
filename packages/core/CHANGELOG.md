@@ -1,5 +1,18 @@
 # @workflow/core
 
+## 5.0.0-beta.52
+
+### Patch Changes
+
+- [#4145](https://github.com/vercel/workflow/pull/4145) [`37f1011`](https://github.com/vercel/workflow/commit/37f10111a84b3377f1a800889d56e3f1f9daaab3) Thanks [@pranaygp](https://github.com/pranaygp)! - Render the `errorStack` field as the log body when the message carries no stack of its own, so the run-failure log shows the stack instead of discarding it.
+
+- [#4070](https://github.com/vercel/workflow/pull/4070) [`d427c47`](https://github.com/vercel/workflow/commit/d427c47e897dd91583ad37b96ffdcb97199c06c8) Thanks [@torsello](https://github.com/torsello)! - Allow parentheses and square brackets in workflow names, so workflows can live in Next.js route groups (`app/(dashboard)/…`) and dynamic segments (`app/[teamId]/…`).
+- Updated dependencies [[`79e7436`](https://github.com/vercel/workflow/commit/79e743655b1b34bd4555fd85c553c77423afa530)]:
+  - @workflow/world@5.0.0-beta.36
+  - @workflow/world-local@5.0.0-beta.45
+  - @workflow/world-vercel@5.0.0-beta.47
+  - @workflow/errors@5.0.0-beta.21
+
 ## 5.0.0-beta.51
 
 ### Minor Changes

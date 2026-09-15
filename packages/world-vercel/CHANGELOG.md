@@ -1,5 +1,14 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.47
+
+### Patch Changes
+
+- [#3707](https://github.com/vercel/workflow/pull/3707) [`79e7436`](https://github.com/vercel/workflow/commit/79e743655b1b34bd4555fd85c553c77423afa530) Thanks [@unusdon](https://github.com/unusdon)! - Allow `runs.list({ status })` to accept an array of statuses so callers can easily express set filters (e.g. non-terminal runs). world-vercel does not yet support the array form and throws a clear `INVALID_ARGUMENT` error instead of a broken request.
+- Updated dependencies [[`79e7436`](https://github.com/vercel/workflow/commit/79e743655b1b34bd4555fd85c553c77423afa530)]:
+  - @workflow/world@5.0.0-beta.36
+  - @workflow/errors@5.0.0-beta.21
+
 ## 5.0.0-beta.46
 
 ### Minor Changes

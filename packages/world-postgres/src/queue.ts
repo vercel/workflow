@@ -21,6 +21,11 @@ import {
   type ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from '@workflow/world';
+import {
+  createNodeHttpAgents,
+  destroyNodeHttpAgents,
+  nodeHttpFetch,
+} from '@workflow/world/node-http.js';
 import { createWorld } from '@workflow/world-local';
 import {
   Logger,
@@ -37,6 +42,40 @@ import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
 import { MessageData } from './message.js';
 
+/**
+ * Serialize Graphile Worker log metadata. `JSON.stringify` alone renders an
+ * `Error` as `{}` because `name`, `message`, `stack`, and `cause` are
+ * non-enumerable, which is how a failed delivery used to log `"error": {}`.
+ * Errors are expanded to those fields plus their enumerable properties (such as
+ * a transport `code`), recursively through `cause` and `AggregateError.errors`.
+ * An error that has already been expanded is replaced with a marker: a cyclic
+ * cause chain would otherwise make `JSON.stringify` throw from inside the
+ * logger, and Graphile has no fallback for a logger that throws.
+ */
+export function serializeGraphileMeta(meta: unknown): string {
+  const seen = new WeakSet<object>();
+  const expandError = (error: Error): Record<string, unknown> => {
+    if (seen.has(error)) {
+      return { name: error.name, message: error.message, repeated: true };
+    }
+    seen.add(error);
+    const expanded: Record<string, unknown> = {
+      ...error,
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+    if (error.cause !== undefined) expanded.cause = error.cause;
+    if (error instanceof AggregateError) expanded.errors = error.errors;
+    return expanded;
+  };
+  return JSON.stringify(
+    meta,
+    (_key, value) => (value instanceof Error ? expandError(value) : value),
+    2
+  );
+}
+
 function createGraphileLogger() {
   const isJsonMode = () => process.env.WORKFLOW_JSON_MODE === '1';
   const isVerbose = () => Boolean(process.env.DEBUG);
@@ -47,7 +86,7 @@ function createGraphileLogger() {
     const pipe = level === 'error' ? process.stderr : process.stdout;
     if (meta) {
       pipe.write(
-        `[Graphile Worker] ${message} ${JSON.stringify(meta, null, 2)}\n`
+        `[Graphile Worker] ${message} ${serializeGraphileMeta(meta)}\n`
       );
     } else {
       pipe.write(`[Graphile Worker] ${message}\n`);
@@ -56,6 +95,43 @@ function createGraphileLogger() {
 }
 
 const graphileLogger = createGraphileLogger();
+
+/**
+ * Default deadlines for a queue delivery's response: none. A delivery executes
+ * the workflow body inline, so response headers arrive only once that work is
+ * done, and a bound here declares a slow-but-healthy delivery crashed and
+ * redelivers it while the original is still running (two executions of the
+ * same steps). Crash recovery is covered by Graphile releasing the job when
+ * the worker dies, plus `reenqueueActiveRuns` on start.
+ */
+export const DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS = 0;
+export const DEFAULT_DELIVERY_BODY_TIMEOUT_MS = 0;
+
+function envTimeoutMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/**
+ * Per-request deadlines for the loopback delivery request. `0` disables the
+ * deadline. An operator who prefers a hung handler to be redelivered rather
+ * than hold its worker slot until restart sets these to a value above the
+ * longest inline step they expect.
+ */
+export function getDeliveryTimeouts() {
+  return {
+    headersTimeoutMs: envTimeoutMs(
+      'WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS',
+      DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS
+    ),
+    bodyTimeoutMs: envTimeoutMs(
+      'WORKFLOW_POSTGRES_BODY_TIMEOUT_MS',
+      DEFAULT_DELIVERY_BODY_TIMEOUT_MS
+    ),
+  };
+}
 const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
 // Core records MAX_DELIVERIES_EXCEEDED on delivery 49.
 const MAX_GRAPHILE_JOB_ATTEMPTS = 49;
@@ -120,6 +196,16 @@ export function createQueue(
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createWorld({ dataDir: undefined, port });
+  // Deliveries go over Node's core HTTP client rather than the global `fetch`:
+  // undici's default 300s headers/body deadlines cannot be lifted without a
+  // custom dispatcher, and a queue-owned pool keeps these sockets out of the
+  // process-global agent. Concurrency is bounded by the Graphile runner, so
+  // the pool itself does not need a socket cap.
+  const httpAgents = createNodeHttpAgents({
+    maxSockets: Infinity,
+    keepAliveMs: 30_000,
+  });
+  const deliveryTimeouts = getDeliveryTimeouts();
 
   // JSON transport that preserves Uint8Array values via a tagged
   // envelope ({ __type: 'Uint8Array', data: '<base64>' }).  Required
@@ -523,13 +609,19 @@ export function createQueue(
     if (!baseUrl) {
       throw new Error('Unable to resolve base URL for workflow queue.');
     }
-    const response = await fetch(createWorkflowUrl(baseUrl, { type: 'flow' }), {
-      method: 'POST',
-      duplex: 'half',
-      headers: Object.fromEntries(headers),
-      body,
-      signal: abortSignal,
-    } as any);
+    // Queue shutdown aborts the delivery through Graphile's signal; the
+    // deadlines are the operator's (see `getDeliveryTimeouts`).
+    const response = await nodeHttpFetch(
+      createWorkflowUrl(baseUrl, { type: 'flow' }),
+      {
+        method: 'POST',
+        headers: new Headers(headers),
+        body,
+        signal: abortSignal,
+        agents: httpAgents,
+        ...deliveryTimeouts,
+      }
+    );
     const text = await response.text();
 
     if (!response.ok) {
@@ -934,6 +1026,7 @@ export function createQueue(
         workerUtils = null;
       }
       startPromise = null;
+      destroyNodeHttpAgents(httpAgents);
       await localWorld.close?.();
     },
   };

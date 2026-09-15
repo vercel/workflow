@@ -1,10 +1,32 @@
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { describe, expect, it } from 'vitest';
-import { cancelWorkflowRuns, getWorkflowRuns } from './runs.js';
+import {
+  cancelWorkflowRuns,
+  getWorkflowRuns,
+  listWorkflowRuns,
+} from './runs.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
 
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+
+describe('listWorkflowRuns', () => {
+  it('rejects an array of statuses client-side without issuing a request', async () => {
+    const agent = new MockAgent();
+    agent.disableNetConnect();
+
+    await expect(
+      listWorkflowRuns(
+        { status: ['pending', 'running'] },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow(/does not support an array of statuses/);
+
+    // No interceptors registered — a network attempt would throw a distinct
+    // "not mocked" error, so reaching here means no request was made.
+    agent.assertNoPendingInterceptors();
+  });
+});
 
 describe('getWorkflowRuns', () => {
   it('delegates to getWorkflowRun for unique IDs, preserves input order, and returns null for missing runs', async () => {
