@@ -436,6 +436,7 @@ export function getDeserializeStream(
           ? isRunPayloadKeys(keyState.key)
           : aesKeyOf(keyState.key) !== undefined;
         if (!usable) {
+          diagnostic?.finish('deserialize_key_unavailable');
           controller.error(
             new RuntimeDecryptionError(
               sealed
@@ -488,37 +489,45 @@ export function getDeserializeStream(
 
   const stream = new TransformStream<Uint8Array, any>({
     async transform(chunk, controller) {
-      // First, try to detect if this is length-prefixed framed data
-      // by checking if the first 4 bytes form a plausible length.
-      if (buffer.length === 0 && chunk.length >= FRAME_HEADER_SIZE) {
-        const possibleLength = new DataView(
-          chunk.buffer,
-          chunk.byteOffset,
-          chunk.byteLength
-        ).getUint32(0, false);
-        if (
-          possibleLength > 0 &&
-          possibleLength < 100_000_000 // sanity check: < 100MB
-        ) {
-          // Looks like framed data
+      try {
+        // First, try to detect if this is length-prefixed framed data
+        // by checking if the first 4 bytes form a plausible length.
+        if (buffer.length === 0 && chunk.length >= FRAME_HEADER_SIZE) {
+          const possibleLength = new DataView(
+            chunk.buffer,
+            chunk.byteOffset,
+            chunk.byteLength
+          ).getUint32(0, false);
+          if (
+            possibleLength > 0 &&
+            possibleLength < 100_000_000 // sanity check: < 100MB
+          ) {
+            // Looks like framed data
+            appendToBuffer(chunk);
+            await processFrames(controller);
+            return;
+          }
+        } else if (buffer.length > 0) {
+          // Already in framed mode (have buffered data)
           appendToBuffer(chunk);
           await processFrames(controller);
           return;
         }
-      } else if (buffer.length > 0) {
-        // Already in framed mode (have buffered data)
-        appendToBuffer(chunk);
-        await processFrames(controller);
-        return;
-      }
 
-      // Legacy format: newline-delimited devalue text (no framing)
-      const text = decoder.decode(chunk);
-      const lines = text.split('\n');
-      for (const line of lines) {
-        if (line.length > 0) {
-          controller.enqueue(parse(line, revivers));
+        // Legacy format: newline-delimited devalue text (no framing)
+        const text = decoder.decode(chunk);
+        const lines = text.split('\n');
+        for (const line of lines) {
+          if (line.length > 0) {
+            const value = parse(line, revivers);
+            diagnostic?.event('deserialize_complete', line.length);
+            controller.enqueue(value);
+            diagnostic?.event('consumer_enqueue', line.length);
+          }
         }
+      } catch (error) {
+        diagnostic?.finish('deserialize_rejected');
+        throw error;
       }
     },
     async flush(controller) {
@@ -1080,6 +1089,7 @@ export function createReconnectingFramedStream(
             if (!(await connect())) return;
           } catch (err) {
             if (canceled) return;
+            diagnostic?.checkpoint('initial_connect_rejected');
             controller.error(err);
             return;
           }
@@ -1092,12 +1102,14 @@ export function createReconnectingFramedStream(
         } catch (err) {
           if (canceled) return;
           if (!reconnectSupported) {
+            diagnostic?.checkpoint('body_read_rejected');
             controller.error(err);
             return;
           }
           try {
             if (!(await reconnect())) return;
           } catch (reconnectErr) {
+            diagnostic?.checkpoint('reconnect_exhausted');
             controller.error(reconnectErr);
             return;
           }
@@ -1121,6 +1133,7 @@ export function createReconnectingFramedStream(
             try {
               if (!(await reconnect())) return;
             } catch (reconnectErr) {
+              diagnostic?.checkpoint('reconnect_exhausted');
               controller.error(reconnectErr);
               return;
             }
@@ -1138,7 +1151,7 @@ export function createReconnectingFramedStream(
               totalReconnectCount
             );
           }
-          diagnostic?.finish('reader_eof');
+          diagnostic?.checkpoint('reader_eof');
           controller.close();
           return;
         }
@@ -1205,7 +1218,7 @@ export function createReconnectingFramedStream(
       }
     },
     cancel: async (reason) => {
-      diagnostic?.finish('reader_cancel');
+      diagnostic?.checkpoint('reader_cancel');
       canceled = true;
       cancelReason = reason;
       const currentReader = reader;

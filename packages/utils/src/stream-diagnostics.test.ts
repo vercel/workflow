@@ -29,7 +29,12 @@ describe('stream slowdown diagnostic gate', () => {
     enable();
     expect(isStreamSlowdownDiagnosticsEnabled(RUN, STREAM, WRITER)).toBe(true);
     for (const [run, stream, writer] of [
-      [`wrun_${'A'.repeat(26)}`, STREAM, WRITER],
+      [
+        `wrun_${'A'.repeat(26)}`,
+        `strm_${'A'.repeat(26)}_user_YmVuY2gtY3R0`,
+        `wrtr_${'A'.repeat(26)}`,
+      ],
+      [RUN, STREAM, `wrtr_${'A'.repeat(26)}`],
       [RUN, `strm_${ULID}_user_YmVuY2gtY3R0LXJlYWR5`, WRITER],
       [RUN, `${STREAM}-near`, WRITER],
       ['invalid', STREAM, WRITER],
@@ -105,6 +110,52 @@ describe('stream slowdown diagnostic bounds and safety', () => {
     );
     expect(records.at(-1)?.omitted).toBe(108);
     expect(records.every((r) => r.tuples.length <= 64)).toBe(true);
+  });
+
+  it('shares sequence and budget across handles for one logical lane', () => {
+    enable();
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const first = createStreamDiagnostic('read', RUN, STREAM);
+    const second = createStreamDiagnostic('read', RUN, STREAM);
+    if (!first || !second) throw new Error('expected diagnostics');
+    first.event('raw', 1);
+    second.event('decoded', 2);
+    second.finish('done');
+    const record = JSON.parse(lines[0]) as {
+      session: number;
+      tuples: [number, number, string][];
+    };
+    expect(record.tuples.map(([seq, , phase]) => [seq, phase])).toEqual([
+      [1, 'raw'],
+      [2, 'decoded'],
+    ]);
+  });
+
+  it('accounts for tuples lost to a throwing sink', () => {
+    enable();
+    const lines: string[] = [];
+    let throws = true;
+    setStreamDiagnosticSinkForTest((line) => {
+      if (throws) {
+        throws = false;
+        throw new Error('sink secret');
+      }
+      lines.push(line);
+    });
+    const diagnostic = createStreamDiagnostic('write', RUN, STREAM, WRITER);
+    if (!diagnostic) throw new Error('expected diagnostic');
+    expect(() => {
+      for (let i = 0; i < 64; i++) diagnostic.event('phase', i);
+      diagnostic.event('after_failure');
+      diagnostic.finish('done');
+    }).not.toThrow();
+    expect(JSON.parse(lines[0])).toMatchObject({
+      omitted: 64,
+      sinkFailures: 1,
+      firstSeq: 65,
+      lastSeq: 65,
+    });
   });
 
   it('swallows a throwing sink without changing caller control flow', () => {

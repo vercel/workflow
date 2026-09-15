@@ -1,12 +1,14 @@
 import { globalSingleton } from './global-singleton.js';
 
 const PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
-const RUN = /^wrun_([0-9A-HJKMNP-TV-Z]{26})$/;
-const STREAM = /^strm_([0-9A-HJKMNP-TV-Z]{26})_user_YmVuY2gtY3R0$/;
-const WRITER = /^wrtr_[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{26}$/;
+const ULID = '[01234567][0-9A-HJKMNP-TV-Z]{25}';
+const RUN = new RegExp(`^wrun_(${ULID})$`);
+const STREAM = new RegExp(`^strm_(${ULID})_user_YmVuY2gtY3R0$`);
+const WRITER = new RegExp(`^wrtr_${ULID}$`);
 const MAX_TUPLES = 64;
 const MAX_LINE_BYTES = 16 * 1024;
 const MAX_RECORDS_PER_LANE = 192;
+const MAX_LINES_PER_LANE = 8;
 
 type Lane = 'read' | 'write';
 type Sink = (line: string) => void;
@@ -20,19 +22,36 @@ type Tuple = readonly [
   number?,
 ];
 
+type Session = {
+  lane: Lane;
+  runId: string;
+  name: string;
+  writerId?: string;
+  id: number;
+  tuples: Tuple[];
+  attempted: number;
+  omitted: number;
+  emitted: number;
+  sinkFailures: number;
+  lines: number;
+  finished: boolean;
+};
+
 type DiagnosticState = {
   nextSession: number;
   sink?: Sink;
+  sessions: Map<string, Session>;
 };
 
 const state = globalSingleton<DiagnosticState>(
   'workflow.stream.slowdown-diagnostics',
-  1,
-  () => ({ nextSession: 1 })
+  2,
+  () => ({ nextSession: 1, sessions: new Map() })
 );
 
 export type StreamDiagnostic = {
   event(phase: string, a?: number, b?: number, c?: number, d?: number): void;
+  checkpoint(outcome: string): void;
   finish(outcome: string): void;
 };
 
@@ -62,11 +81,16 @@ export function isStreamSlowdownDiagnosticsEnabled(
 /** Test seam only. The sink is process-global because bundled module copies are not. */
 export function setStreamDiagnosticSinkForTest(sink?: Sink): void {
   state.sink = sink;
+  state.sessions.clear();
+}
+
+function sessionKey(lane: Lane, runId: string, name: string): string {
+  return `${lane}\0${runId}\0${name}`;
 }
 
 /**
- * Bounded, best-effort client stream diagnostic. Timestamps are performance.now()
- * values from one process clock. Logging is never allowed to affect stream work.
+ * Bounded, best-effort client stream diagnostic. All handles for one logical
+ * lane/run/stream share one sequence, budget, and session across bundled layers.
  */
 export function createStreamDiagnostic(
   lane: Lane,
@@ -75,71 +99,109 @@ export function createStreamDiagnostic(
   writerId?: string
 ): StreamDiagnostic | undefined {
   if (!isStreamSlowdownDiagnosticsEnabled(runId, name, writerId)) return;
-  const session = state.nextSession++;
-  const tuples: Tuple[] = [];
-  let attempted = 0;
-  let omitted = 0;
-  let emitted = 0;
-  let sinkFailures = 0;
-  let finished = false;
-
-  const emit = (kind: 'batch' | 'teardown', outcome?: string): void => {
-    if (tuples.length === 0 && kind === 'batch') return;
-    const batch = tuples.splice(0, MAX_TUPLES);
-    const record = {
-      v: 1,
-      diagnostic: 'workflow-stream-slowdown',
+  const key = sessionKey(lane, runId, name);
+  let session = state.sessions.get(key);
+  if (!session || session.finished) {
+    session = {
       lane,
-      kind,
       runId,
-      streamId: name,
-      ...(writerId ? { writerId } : {}),
-      session,
+      name,
+      writerId,
+      id: state.nextSession++,
+      tuples: [],
+      attempted: 0,
+      omitted: 0,
+      emitted: 0,
+      sinkFailures: 0,
+      lines: 0,
+      finished: false,
+    };
+    state.sessions.set(key, session);
+  } else if (writerId) {
+    session.writerId ??= writerId;
+  }
+  const shared = session;
+
+  const emit = (
+    kind: 'batch' | 'checkpoint' | 'teardown',
+    outcome?: string
+  ) => {
+    if (shared.tuples.length === 0 && kind === 'batch') return;
+    if (shared.lines >= MAX_LINES_PER_LANE) {
+      shared.omitted += shared.tuples.length;
+      shared.tuples.length = 0;
+      return;
+    }
+    const batch = shared.tuples.slice(0, MAX_TUPLES);
+    const record = {
+      v: 2,
+      diagnostic: 'workflow-stream-slowdown',
+      lane: shared.lane,
+      kind,
+      runId: shared.runId,
+      streamId: shared.name,
+      ...(shared.writerId ? { writerId: shared.writerId } : {}),
+      session: shared.id,
       clock: 'performance.now',
       timeOrigin: performance.timeOrigin,
       firstSeq: batch[0]?.[0] ?? null,
       lastSeq: batch.at(-1)?.[0] ?? null,
       tuples: batch,
-      attempted,
-      omitted,
-      emitted: emitted + batch.length,
-      sinkFailures,
+      attempted: shared.attempted,
+      omitted: shared.omitted,
+      emitted: shared.emitted + batch.length,
+      sinkFailures: shared.sinkFailures,
       ...(outcome ? { outcome } : {}),
     };
     try {
       const line = JSON.stringify(record);
-      // The tuple cap normally provides this bound; fail closed if future fields
-      // grow instead of emitting an oversized platform log record.
       if (new TextEncoder().encode(line).byteLength > MAX_LINE_BYTES) {
-        omitted += batch.length;
+        shared.omitted += batch.length;
+        shared.tuples.splice(0, batch.length);
         return;
       }
       (state.sink ?? console.log)(line);
-      emitted += batch.length;
+      shared.emitted += batch.length;
+      shared.tuples.splice(0, batch.length);
+      shared.lines++;
     } catch {
-      sinkFailures++;
+      shared.sinkFailures++;
+      shared.omitted += batch.length;
+      shared.tuples.splice(0, batch.length);
     }
   };
 
   return {
     event(phase, a, b, c, d) {
-      if (finished) return;
-      attempted++;
-      if (attempted > MAX_RECORDS_PER_LANE) {
-        omitted++;
+      if (shared.finished) return;
+      shared.attempted++;
+      if (shared.attempted > MAX_RECORDS_PER_LANE) {
+        shared.omitted++;
         return;
       }
       try {
-        tuples.push([attempted, performance.now(), phase, a, b, c, d]);
-        if (tuples.length >= MAX_TUPLES) emit('batch');
+        shared.tuples.push([
+          shared.attempted,
+          performance.now(),
+          phase,
+          a,
+          b,
+          c,
+          d,
+        ]);
+        if (shared.tuples.length >= MAX_TUPLES) emit('batch');
       } catch {
-        omitted++;
+        shared.omitted++;
       }
     },
+    checkpoint(outcome) {
+      if (!shared.finished) emit('checkpoint', outcome);
+    },
     finish(outcome) {
-      if (finished) return;
-      finished = true;
+      if (shared.finished) return;
+      shared.finished = true;
       emit('teardown', outcome);
+      state.sessions.delete(key);
     },
   };
 }
@@ -148,4 +210,5 @@ export const STREAM_DIAGNOSTIC_LIMITS = {
   maxTuplesPerLine: MAX_TUPLES,
   maxLineBytes: MAX_LINE_BYTES,
   maxRecordsPerLane: MAX_RECORDS_PER_LANE,
+  maxLinesPerLane: MAX_LINES_PER_LANE,
 } as const;

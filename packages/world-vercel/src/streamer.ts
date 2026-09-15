@@ -439,26 +439,33 @@ export function createStreamer(config?: APIConfig): Streamer {
         // Live read: keep the global dispatcher and no request timeout so the
         // long-lived, reconnecting read isn't truncated.
         diagnostic?.event('instrumented_fetch_entry', startIndex);
-        const response = await instrumentedFetch({
-          method: 'GET',
-          url: url.toString(),
-          headers: httpConfig.headers,
-          dispatcher: undefined,
-          timeoutMs: null,
-          transportErrorCode: 'STREAM_ERROR',
-          logLabel: url.pathname,
-          spanName: 'workflow.stream.read.connect',
-          attributes: streamSpanAttributes({
-            runId,
-            name,
-            operation: 'read',
-            startIndex,
-          }),
-          onRequestDispatched: () => diagnostic?.event('fetch_call'),
-          buildError: createStreamReadError,
-        });
+        let response: Response;
+        try {
+          response = await instrumentedFetch({
+            method: 'GET',
+            url: url.toString(),
+            headers: httpConfig.headers,
+            dispatcher: undefined,
+            timeoutMs: null,
+            transportErrorCode: 'STREAM_ERROR',
+            logLabel: url.pathname,
+            spanName: 'workflow.stream.read.connect',
+            attributes: streamSpanAttributes({
+              runId,
+              name,
+              operation: 'read',
+              startIndex,
+            }),
+            onRequestDispatched: () => diagnostic?.event('fetch_call'),
+            buildError: createStreamReadError,
+          });
+        } catch (error) {
+          diagnostic?.checkpoint('fetch_rejected');
+          throw error;
+        }
         diagnostic?.event('headers_received', response.status);
         if (!response.body) {
+          diagnostic?.checkpoint('missing_body');
           throw new StreamError('No response body for stream', {
             url: url.toString(),
           });
@@ -470,9 +477,15 @@ export function createStreamer(config?: APIConfig): Streamer {
         let firstRaw = false;
         return new ReadableStream<Uint8Array>({
           async pull(controller) {
-            const result = await reader.read();
-            if (result.done) {
-              diagnostic?.finish('eof');
+            let result: { done: boolean; value?: Uint8Array };
+            try {
+              result = await reader.read();
+            } catch (error) {
+              diagnostic.checkpoint('body_read_rejected');
+              throw error;
+            }
+            if (result.done || !result.value) {
+              diagnostic?.checkpoint('eof');
               controller.close();
               return;
             }
@@ -486,7 +499,7 @@ export function createStreamer(config?: APIConfig): Streamer {
             controller.enqueue(result.value);
           },
           async cancel(reason) {
-            diagnostic?.finish('cancel');
+            diagnostic?.checkpoint('cancel');
             await reader.cancel(reason);
           },
         });

@@ -7,7 +7,7 @@ and the same ULID in the exact `strm_<ulid>_user_YmVuY2gtY3R0` (`bench-ctt`)
 stream ID. Writes additionally require a canonical `wrtr_` ULID. Headers and
 payloads cannot enable the diagnostic.
 
-Each JSON line has schema version `v`, diagnostic/lane/kind, run/stream/session
+Each JSON line has schema version `v` (currently 2), diagnostic/lane/kind, run/stream/session
 continuity fields, `clock: "performance.now"`, `timeOrigin`, first/last tuple
 sequence, numeric tuples, and attempted/emitted/omitted/sink-failure counters.
 Tuple shape is `[sequence, timestampMs, phase, a?, b?, c?, d?]`; phase defines
@@ -26,8 +26,11 @@ These are same-process monotonic timestamps; compare tuples only when their
 `timeOrigin` matches. They do not measure server work or cross-process clock
 time, and enqueue is not proof that user code has run.
 
-Read and write lanes are independently capped at 192 attempted tuples per
-session. Lines carry at most 64 tuples and are refused above 16 KiB. Teardown
-reports omissions and sink failures. Logging is best effort and throwing sinks
+All handles in core and world-vercel for one run/stream/lane share a process-global
+sequence, budget, and session, including reconnect GETs. Read and write lanes are
+independently capped at 192 attempted tuples and eight lines per logical session.
+Lines carry at most 64 tuples and are refused above 16 KiB. Teardown/checkpoints
+report omissions and sink failures; tuples rejected by the sink count as omitted.
+Logging is best effort and throwing sinks
 are swallowed. Instrumentation does not add operational awaits, change promise
 ownership, inspect frame payloads, or alter timeout/reconnect/fallback policy.

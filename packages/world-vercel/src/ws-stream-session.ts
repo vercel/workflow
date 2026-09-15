@@ -240,14 +240,16 @@ class VercelStreamWriteSession implements StreamWriteSession {
 
   write(chunkSeq: number, chunks: (string | Uint8Array)[]): Promise<void> {
     const groupOrdinal = ++this.groupOrdinal;
-    const bytes = chunks.reduce(
-      (total, chunk) =>
-        total +
-        (typeof chunk === 'string'
-          ? new TextEncoder().encode(chunk).byteLength
-          : chunk.byteLength),
-      0
-    );
+    const bytes = this.diagnostic
+      ? chunks.reduce(
+          (total, chunk) =>
+            total +
+            (typeof chunk === 'string'
+              ? new TextEncoder().encode(chunk).byteLength
+              : chunk.byteLength),
+          0
+        )
+      : 0;
     this.diagnostic?.event(
       'session_write_entry',
       groupOrdinal,
@@ -511,6 +513,11 @@ class VercelStreamWriteSession implements StreamWriteSession {
       const timer = setTimeout(
         () => {
           if (this.mode === 'connecting') {
+            this.diagnostic?.event(
+              'fallback_http_connect_budget',
+              this.connectionAttempt
+            );
+            this.diagnostic?.checkpoint('fallback_http_connect_budget');
             this.mode = 'http';
             this.socket?.close(1000, 'connect budget expired');
           }
@@ -540,6 +547,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
     );
     return this.connectSocket(forceRefresh, timing).catch(() => {
       this.diagnostic?.event('fallback_http', timing.attempt);
+      this.diagnostic?.checkpoint('fallback_http_connect_rejected');
       // Every failure before OPEN is a safe, session-long HTTP fallback. The
       // HTTP request itself still surfaces auth/configuration errors normally.
       if (this.mode === 'connecting') this.mode = 'http';
@@ -551,6 +559,11 @@ class VercelStreamWriteSession implements StreamWriteSession {
     timing: ConnectionTiming
   ): Promise<void> {
     if (!isWsStreamsTransportEnabled()) {
+      this.diagnostic?.event(
+        'fallback_http_transport_disabled',
+        timing.attempt
+      );
+      this.diagnostic?.checkpoint('fallback_http_transport_disabled');
       this.mode = 'http';
       return;
     }
@@ -579,11 +592,15 @@ class VercelStreamWriteSession implements StreamWriteSession {
     ) {
       // A Vercel invocation's context token cannot be refreshed in place. Do
       // not reconnect with the bearer the server is explicitly draining.
+      this.diagnostic?.event('fallback_http_auth_refresh', timing.attempt);
+      this.diagnostic?.checkpoint('fallback_http_auth_refresh');
       this.mode = 'http';
       return;
     }
     this.lastAuthorization = readAuthorization(http.headers);
     if (http.usingProxy) {
+      this.diagnostic?.event('fallback_http_proxy', timing.attempt);
+      this.diagnostic?.checkpoint('fallback_http_proxy');
       this.mode = 'http';
       return;
     }
@@ -791,6 +808,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
       // promised drain close shape was not honored; fail closed to HTTP rather
       // than leaving queued operations parked forever.
       this.drainReason = undefined;
+      this.diagnostic?.event('fallback_http_bad_drain_close', code);
       this.mode = 'http';
       this.socket = undefined;
       this.finishDrainWait();
@@ -800,6 +818,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
       const forceRefresh = this.drainReason === 'auth_expiry';
       this.drainReason = undefined;
       if (this.idleReconnects >= MAX_IDLE_RECONNECTS) {
+        this.diagnostic?.event('fallback_http_reconnect_limit', code);
         this.mode = 'http';
         this.socket = undefined;
         this.finishDrainWait();
@@ -821,6 +840,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
     // control frame, the client cannot fence a concurrent server-side teardown
     // from a newly opened socket. A future protocol may add that handshake.
     if (this.idleReconnects >= MAX_IDLE_RECONNECTS) {
+      this.diagnostic?.event('fallback_http_reconnect_limit', code);
       this.mode = 'http';
       this.socket = undefined;
       return;
@@ -969,6 +989,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
 
   private fallbackToHttpBeforeSend(): void {
     this.diagnostic?.event('fallback_http_before_send', this.connectionAttempt);
+    this.diagnostic?.checkpoint('fallback_http_before_send');
     this.mode = 'http';
     this.socket?.close(1000, 'HTTP fallback before send');
     this.socket = undefined;
@@ -988,6 +1009,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
   }
 
   private poison(error: unknown): unknown {
+    this.diagnostic?.finish('poisoned');
     if (this.mode !== 'poisoned') {
       this.mode = 'poisoned';
       this.poisonError = error;
