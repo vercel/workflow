@@ -164,6 +164,26 @@ Keep the owning run available for at least as long as its token remains unavaila
 
 **Automatic hook cleanup:** When a run ends, remove its live hooks. Make each token available unless its `tokenRetentionUntil` is still in the future. A `hook_disposed` event always makes the token available immediately.
 
+**Terminal-run start fence:** reject a `step_started` write once the run has
+reached a terminal status, including a redelivery whose step row still reads
+`running` because an earlier delivery claimed it. Starting work on a finished run
+is never valid, and the outcome of such a step cannot be consumed by anything.
+The queued-step path depends on this rejection, because a step message carries
+run identity in place of a run fetch and has no other liveness check. A step that
+was already in flight when the run ended still writes its `step_completed` or
+`step_failed` unchanged: the fence is on starting, not on finishing.
+
+**Listing runs:** `runs.list()` takes an optional `workflowName` and an optional
+`status`, and `status` is either one `WorkflowRunStatus` or an array of them. An
+array matches runs in *any* of the listed statuses, and an empty array matches
+nothing, mirroring SQL `IN ()`. An unset filter means "every status", so treat
+`status: []` and an omitted `status` as different requests. If your backend
+cannot express the array form, reject it with an explicit error rather than
+filtering on the first element or ignoring the filter: a silently wrong result
+set is worse than a failed call. `@workflow/world` exports
+`TERMINAL_WORKFLOW_RUN_STATUSES` so neither you nor your callers restate the
+status vocabulary.
+
 ### Optional: waiting for a terminal run status
 
 `await run.returnValue` must determine when a run finishes. Without help, it rereads the run every second, so it reports a run that finishes just after a read up to 1s late. Implement `runs.waitForTerminalStatus(id, { timeoutMs, signal, resolveData })` so the runtime asks once and receives an answer when the run ends.
@@ -286,10 +306,21 @@ interface WorkflowInvokePayload {
   runId: string;
   stepId?: string;
   stepName?: string;
+  runContext?: RunDispatchContext;  // Immutable run identity, step messages only
   traceCarrier?: Record<string, string>;  // OpenTelemetry context
   requestedAt?: Date;
 }
 ```
+
+**Run identity on step messages:** a step-execution message carries `runContext`
+with the run's `deploymentId`, `specVersion`, `startedAt` and `rootRunId`. Each
+of those is fixed for the life of a run, so a consumer that receives them starts
+the step from the message alone instead of fetching the run first. Run *status*
+is deliberately absent: the liveness check for a queued step is the
+`step_started` write itself, which your World must reject on a terminal run (see
+[Key implementation details](#key-implementation-details)). Messages from older
+producers omit `runContext` and take the older path that fetches the run, so a
+World needs to do nothing to support either.
 
 The SDK also sends an internal `HealthCheckPayload` through the same workflow queue.
 
@@ -312,6 +343,13 @@ interface Streamer {
   streamFlushIntervalMs?: number;
 
   streams: {
+    // Optional. A stateful writer lifetime; see below.
+    createWriteSession?(
+      runId: string,
+      name: string,
+      options: { writerId: `wrtr_${string}` }
+    ): StreamWriteSession;
+
     write(
       runId: string,
       name: string,
@@ -358,6 +396,18 @@ interface Streamer {
 Streams are identified by a combination of `runId` and `name`. Each workflow run can have multiple named streams.
 `writeMulti()` is an optional optimization for batching multiple writes.
 
+`createWriteSession()` is optional. Implement it when your transport can do
+better by holding state across a writer's chunks, for example by keeping one
+connection open instead of reopening it per write. The runtime creates at most
+one session per in-memory `WritableStream` and passes a `writerId` identifying
+that lifetime, so the session's `write(chunkSeq, chunks)` receives a sequence
+number that is writer-local rather than stream-global. That is what lets a
+World order concurrent writers to the same stream. The session's `close()` must
+not resolve before every prior write is durable; `dispose()` is optional and
+releases transport resources without ending the stream. A World that does not
+implement `createWriteSession` is unaffected: the runtime uses
+`write`/`writeMulti`/`close` exactly as before.
+
 `getChunks` returns a paginated snapshot of currently available chunks, unlike `get`, which returns a live `ReadableStream` that waits for new chunks. `getInfo` returns the tail index (last chunk index, 0-based, or `-1` when empty) and whether the stream is complete. Use this information to resolve negative `startIndex` values into absolute positions.
 
 ## Analytics interface (optional)
@@ -384,7 +434,11 @@ interface Analytics {
   };
   events: {
     get(runId: string, eventId: string): Promise<AnalyticsEvent>;
+    // Bounded batch lookup within one run. Not paginated; rows that analytics
+    // has not ingested yet are omitted rather than throwing.
+    getMany(runId: string, eventIds: readonly string[]): Promise<AnalyticsEvent[]>;
     list(params: AnalyticsListEventsParams): Promise<PaginatedResponse<AnalyticsEvent>>;
+    /** @deprecated A special case of `list({ runId, correlationId })`. Removed in the next major. */
     listByCorrelationId(params: AnalyticsListEventsByCorrelationIdParams): Promise<PaginatedResponse<AnalyticsEvent>>;
   };
   hooks: {
@@ -403,6 +457,7 @@ If you implement this namespace, observe the following requirements:
 - **Metadata only.** Analytics responses must not include run inputs or outputs, step data, hook tokens, or other payload data. The `Analytics*` schemas exported by `@workflow/world` define the complete set of permitted fields. Payload retrieval remains exclusively available through the Storage APIs.
 - **Attribute filters use the latest value.** `runs.list({ attributes })` evaluates each filter against the run's most recently written value for that key. A request may contain up to eight key-value pairs. Reserved `$`-prefixed attributes are valid filters, although users cannot write them directly.
 - **Time boundaries must be paired.** `startTime` and `endTime` may either both be omitted or both be supplied. Responses may include `pageInfo` describing retention and the available query window. Implementations with retention limits should return this information so tooling can present valid date ranges.
+- **Page limits are part of the contract.** `pagination.limit` defaults to 40 and caps at 1000 for the run-scoped listings (`steps.list`, `events.list`, `waits.list`) and at 100 for the cross-run ones (`runs.list`, `attributes.list`, `hooks.list`); `events.getMany` accepts 1 to 100 ids. Callers hit these bounds before a request leaves their process, as a `RangeError`, so a request that reaches your implementation is already within them.
 - **Results may be eventually consistent.** Analytics records may lag live workflow state. Consumers use this namespace for discovery and listing; Storage remains the authoritative interface for current workflow state and payload access.
 
 See the [Analytics API reference](/docs/api-reference/workflow-runtime/world/analytics) for per-method parameters, row shapes, and `pageInfo` semantics.

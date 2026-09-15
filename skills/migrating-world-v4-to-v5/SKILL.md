@@ -4,7 +4,7 @@ description: >-
   Upgrades a custom Workflow SDK World implementation from the v4 spec to v5. Use when a package implements the `World` interface from `@workflow/world` and is moving to 5.x — event IDs that are ULIDs rather than slot positions, `Event id is not slot-numbered` at replay time, a `specVersion` the runtime refuses, `writeToStream` / `closeStream` / `readFromStream` as top-level World methods, `steps.get` or `events.listByCorrelationId` without a `runId`, a `'step'` queue kind or `__wkf_step_*` topics, a `preconditionGuard` capability, or a `createLocalWorld` / `createVercelWorld` factory.
 metadata:
   author: Vercel Inc.
-  version: '0.3.1'
+  version: '0.3.2'
 ---
 
 # Migrating a World from the v4 spec to v5
@@ -133,7 +133,9 @@ The first parameter was `string | undefined` and is now `string`. A World that l
 
 ### `events.listByCorrelationId()` requires a `runId`
 
-A correlation ID identifies a step, hook or wait within its run, not across runs. Scope the lookup to one run. A World that paginates by event ID needs the run in its cursor comparison too, since two runs can now hold the same correlation ID. The same applies to `analytics.events.listByCorrelationId()`.
+A correlation ID identifies a step, hook or wait within its run, not across runs. Scope the lookup to one run. A World that paginates by event ID needs the run in its cursor comparison too, since two runs can now hold the same correlation ID.
+
+`analytics.events.listByCorrelationId()` took the same `runId`, and is now deprecated on top of it: it is a special case of `analytics.events.list({ runId, correlationId })` and goes away in the next major. Port it for now, and do not build anything new on it. The **storage** `events.listByCorrelationId()` above is not deprecated and keeps its own endpoint.
 
 ### Export a `createWorld()` factory
 
@@ -173,12 +175,14 @@ These change no signature. A World ported by types alone compiles and then behav
 - **The `preconditionGuard` capability is gone, and so is the reason for it.** A World that rejected an event creation whose snapshot was behind the log can delete that code and its `stateUpdatedAt` / `stateEventCount` / `stateCursor` plumbing. Bump-and-report replaced it: a stale replay costs a merge instead of a rejection. `PreconditionFailedError` still exists for a World that allocates slots away from the commit and would rather refuse than report, which a World following step 1 is not.
 - **Capabilities fail closed.** An unadvertised capability costs performance, never correctness, so a partial World stays correct while it catches up. The reverse is not true: advertising something not enforced removes a guard the runtime was relying on. Set a flag only once the behavior is implemented.
 - **Event creation may return a delta.** `events.create()` may return events alongside the one it created, in `events` / `cursor` / `hasMore`. Beyond the bump-and-report case in step 1, the runtime uses this to skip a follow-up `events.list` on `run_started`, on step-terminal writes carrying `sinceCursor`, and on `hook_received` writes carrying `preloadEvents`. All three are advisory: returning only the created event stays correct and pays one more round trip.
+- **A terminal run refuses `step_started`.** The World is where run liveness is enforced, because it is the only party that sees the run row and the claim in one operation. Reject a `step_started` whose run is already `completed`, `failed` or `cancelled`, *even when the step row still reads `running`*. That combination is a redelivery of a start some earlier delivery already claimed, and accepting it executes a step body whose outcome nothing will ever read. `step_completed` and `step_failed` stay accepted on a terminal run, so a step already in flight can still record its outcome. `@workflow/world-local` and `@workflow/world-postgres` both throw `RunExpiredError` here. This is load-bearing rather than defensive: step-execution messages now carry the run's immutable identity (`runContext` on `WorkflowInvokePayload`) so the consumer can skip a blocking `runs.get`, and run *status* is deliberately absent from it. The claim is the only liveness check left. A World whose queue re-serializes payloads through a field allowlist must pass `runContext` through unchanged, or every step dispatch silently falls back to the extra round trip.
+- **`runs.list` accepts an array of statuses.** `ListWorkflowRunsParams.status` is `WorkflowRunStatus | WorkflowRunStatus[]`; with an array, a run matches if its status is any of the listed ones. `status: []` matches nothing, mirroring SQL `IN ()`, and is distinct from omitting the field. A World that types the parameter as a plain string compiles against the old shape and then filters on `status = '[object Array]'`, or throws, depending on the store. Implement it, or reject the array form with an explicit error rather than silently returning the wrong page: `@workflow/world-vercel` takes the second route today and throws `WorkflowWorldError` with `INVALID_ARGUMENT`, because its backend has no multi-status filter yet.
 
 ## Step 6 — optional surface worth adopting
 
 None of this is required, and the runtime routes around each absence. Report what the World is missing rather than implementing everything unprompted.
 
-`capabilities` (`hookRetention.active`, `hookResumeDedup`, `deploymentAffinity`, `maxConcurrency`), `analytics`, `runs.experimentalSetAttributes`, `runs.cancelMany`, `runs.waitForTerminalStatus()`, `events.createBatch()`, `getRuntimeDeadline()`, `getEnvironment()`, `createRunId()`, `describeRun()`, `getEncryptionKeyForRun()`, `resolveLatestDeploymentId()`, `close()`.
+`capabilities` (`hookRetention.active`, `hookResumeDedup`, `deploymentAffinity`, `maxConcurrency`), `analytics`, `analytics.events.getMany()`, `runs.experimentalSetAttributes`, `runs.cancelMany`, `runs.waitForTerminalStatus()`, `events.createBatch()`, `streams.createWriteSession()`, `getRuntimeDeadline()`, `getEnvironment()`, `createRunId()`, `describeRun()`, `getEncryptionKeyForRun()`, `resolveLatestDeploymentId()`, `close()`.
 
 Four are worth raising unprompted because their absence is felt rather than reported:
 
@@ -186,6 +190,9 @@ Four are worth raising unprompted because their absence is felt rather than repo
 - Without `close()`, CLI commands and short-lived processes cannot exit cleanly without `process.exit()`.
 - Without `events.createBatch()`, a suspension's `step_created` and `wait_created` writes each take their own round trip. Implementing the method *is* the declaration — there is no flag — so it must be atomic per attempt, leaving nothing behind on a lost race, or be left out entirely. It cannot express `run_created`, `run_started`, `run_cancelled`, `hook_created`, `hook_disposed` or `attr_set`, and a World rejects the whole batch when one arrives.
 - Without `runs.waitForTerminalStatus()`, `await run.returnValue` falls back to polling on an interval instead of long-polling.
+- Without `streams.createWriteSession()`, the runtime writes through the stateless `write` / `writeMulti` / `close` methods, which is correct and costs a transport setup per write. Implement it when holding state across one writer's chunks buys something, for example keeping a connection open. The runtime creates at most one session per in-memory `WritableStream` and passes a `writerId`, so the session's `write(chunkSeq, chunks)` gets a sequence number that is writer-local rather than stream-global. That is what lets the World order concurrent writers to the same stream. `close()` must not resolve before every prior write is durable; `dispose()` is optional and releases transport resources without ending the stream.
+
+Two limits bind an `analytics` implementation once it exists, and the runtime enforces both in-process, as a `RangeError`, before a request leaves the caller. A request that reaches the World is already inside them, so treat them as the contract rather than re-validating: `pagination.limit` defaults to 40 and caps at 1000 for the run-scoped listings (`steps.list`, `events.list`, `waits.list`) and at 100 for the cross-run ones (`runs.list`, `attributes.list`, `hooks.list`); `analytics.events.getMany()` takes 1 to 100 event IDs within one run, is not paginated, and omits IDs analytics has not ingested yet rather than throwing.
 
 ## Step 7 — the rollout
 
@@ -224,9 +231,11 @@ Fail the migration if any of these are true:
 - [ ] `events.create()` rejects, throws or retries a write whose `eventCount + 1` slot was taken, instead of bumping to the next free slot
 - [ ] a bumped write returns without the skipped events on `events` / `cursor` / `hasMore`
 - [ ] a create carrying no `eventCount` is rejected
-- [ ] `specVersion` is a literal, or `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY`, rather than `SPEC_VERSION_CURRENT`
+- [ ] `specVersion` is a literal, `SPEC_VERSION_CURRENT`, or `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY`, rather than `mintedSpecVersion()`
 - [ ] a `streams.*` call kept the v4 argument order (name before runId)
 - [ ] `steps.get` or `listByCorrelationId` is reachable without a run ID
+- [ ] a `step_started` is accepted on a run in a terminal state
+- [ ] `ListWorkflowRunsParams.status` is typed or handled as a single status only, and the array form is neither implemented nor explicitly rejected
 - [ ] a capability is advertised whose behavior is not implemented
 - [ ] a pool, client, socket, registry, cache, ID factory, or log-once latch is still held at module scope
 - [ ] `@workflow/world-testing` is not wired up, or its results were not reported
