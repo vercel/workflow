@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
@@ -9,8 +10,9 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { makeWorkerUtils } from 'graphile-worker';
 import { Pool } from 'pg';
 import { ulid } from 'ulid';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../../core/dist/private.js';
+import { handleInvocation } from '../../core/dist/runtime/invocations.js';
 // These integration tests exercise the built runtime, like the conformance suite.
 import {
   getRun,
@@ -31,6 +33,7 @@ import {
 } from '../src/invocation-notifications.js';
 import { createInvocations } from '../src/invocations.js';
 import { MessageData } from '../src/message.js';
+import { createQueue } from '../src/queue.js';
 
 const code = `
 const createHook = globalThis[Symbol.for('WORKFLOW_CREATE_HOOK')];
@@ -80,6 +83,7 @@ describe.skipIf(process.platform === 'win32')(
     let transport: ReturnType<typeof createInvocations>;
     const active = new Map<string, number>();
     const maximum = new Map<string, number>();
+    const overrides = new Map<string, (req: Request) => Promise<Response>>();
     const oldPort = process.env.PORT;
     const oldBaseUrl = process.env.WORKFLOW_LOCAL_BASE_URL;
 
@@ -117,7 +121,7 @@ describe.skipIf(process.platform === 'win32')(
             if (value !== undefined)
               headers.set(key, Array.isArray(value) ? value.join(',') : value);
           }
-          const response = await handler(
+          const response = await (overrides.get(payload.runId) ?? handler)(
             new Request(`http://localhost${req.url}`, {
               method: 'POST',
               headers,
@@ -207,6 +211,17 @@ describe.skipIf(process.platform === 'win32')(
       return until(
         () => world.hooks.getByToken(token).catch(() => null),
         (value) => value !== null
+      );
+    }
+
+    async function seedTransportRun(
+      runId: string,
+      attributes: Record<string, string> = {}
+    ) {
+      await pool.query(
+        `INSERT INTO workflow.workflow_runs(id, name, deployment_id, status, spec_version, attributes)
+         VALUES ($1, 'transport_test', 'postgres', 'running', 7, $2::jsonb)`,
+        [runId, JSON.stringify(attributes)]
       );
     }
 
@@ -339,6 +354,7 @@ describe.skipIf(process.platform === 'win32')(
 
     it('replays a stored result but still enqueues a wake for every invoke', async () => {
       const runId = `transport-${randomUUID()}`;
+      await seedTransportRun(runId);
       const requestId = randomUUID();
       let wakes = 0;
       const enqueue = async (client: import('pg').PoolClient) => {
@@ -362,7 +378,7 @@ describe.skipIf(process.platform === 'win32')(
       const delivery = await feed.next();
       if (delivery.done) throw new Error('Missing delivery');
       expect(delivery.value.payload).toEqual({ value: new Uint8Array([1, 2]) });
-      await delivery.value.respond({ status: 'accepted' });
+      await transport.respond(runId, delivery.value.id, { status: 'accepted' });
       await expect(first).resolves.toEqual({ status: 'accepted' });
       await expect(
         transport.invoke(
@@ -384,6 +400,438 @@ describe.skipIf(process.platform === 'win32')(
       expect(wakes).toBe(2);
       await feed.return?.();
     });
+
+    it('characterizes admitted writes continuing after the Graphile claim is revoked', async () => {
+      const runId = `wrun_${ulid()}`;
+      const hookId = `hook_${ulid()}`;
+      const token = randomUUID();
+      await world.events.create(runId, {
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'postgres',
+          workflowName: 'oneHook',
+          input: await dehydrateWorkflowArguments([token], runId, undefined),
+        },
+      });
+      await world.events.create(runId, { eventType: 'run_started' });
+      await world.events.create(runId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token },
+      });
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let calls = 0;
+      let lateWrite = false;
+      overrides.set(
+        runId,
+        world.createQueueHandler('__wkf_workflow_', async () => {
+          calls++;
+          if (calls !== 1) return;
+          entered.resolve();
+          await release.promise;
+          // This write is intentionally NOT fenced by the earlier HTTP admission
+          // check. The test records the limitation, rather than claiming safety.
+          await world.events.create(runId, {
+            eventType: 'hook_received',
+            correlationId: hookId,
+            eventData: { token, payload: new Uint8Array([1]) },
+          });
+          lateWrite = true;
+        })
+      );
+      const utils = await makeWorkerUtils({ pgPool: pool });
+      try {
+        await world.queue('__wkf_workflow_oneHook', { runId });
+        await entered.promise;
+        const job = (
+          await pool.query<{ locked_by: string }>(
+            'SELECT locked_by FROM graphile_worker.jobs WHERE queue_name = $1 AND locked_by IS NOT NULL',
+            [`workflow_flows:${runId}:executor`]
+          )
+        ).rows[0];
+        expect(job).toBeDefined();
+        await utils.forceUnlockWorkers([job.locked_by]);
+        await until(
+          async () =>
+            (
+              await pool.query<{ locked_by: string | null }>(
+                'SELECT locked_by FROM graphile_worker.jobs WHERE queue_name = $1',
+                [`workflow_flows:${runId}:executor`]
+              )
+            ).rows[0]?.locked_by,
+          (owner) => owner !== job.locked_by
+        );
+        release.resolve();
+        await until(async () => lateWrite, Boolean);
+        await until(
+          async () => active.get(runId) ?? 0,
+          (n) => n === 0
+        );
+        expect(lateWrite).toBe(true);
+      } finally {
+        release.resolve();
+        await until(
+          async () => active.get(runId) ?? 0,
+          (n) => n === 0
+        );
+        overrides.delete(runId);
+        await utils.release();
+        await world.events.create(runId, { eventType: 'run_cancelled' });
+      }
+    });
+
+    it('deduplicates an event committed before response storage, including after disposal and completion', async () => {
+      const token = randomUUID();
+      const runId = await start('oneHook', [token]);
+      const target = await hook(token);
+      if (!target) throw new Error('Missing hook');
+      await until(
+        async () => active.get(runId) ?? 0,
+        (count) => count === 0
+      );
+      const payload = await dehydrateStepReturnValue(
+        'once',
+        runId,
+        undefined,
+        []
+      );
+      const input = {
+        type: 'hook_resume',
+        version: 1,
+        hookId: target.hookId,
+        token,
+        payload,
+      };
+      const id = randomUUID();
+      // The first executor wrote the event and returned, but its response was
+      // lost before World stored it. Re-delivery must not append a second event.
+      await expect(handleInvocation(world, runId, id, input)).resolves.toEqual({
+        status: 'accepted',
+      });
+      await world.events.create(runId, {
+        eventType: 'hook_disposed',
+        correlationId: target.hookId,
+      });
+      await expect(
+        Promise.all([
+          handleInvocation(world, runId, id, input),
+          handleInvocation(world, runId, id, input),
+        ])
+      ).resolves.toEqual([{ status: 'accepted' }, { status: 'accepted' }]);
+      await expect(
+        handleInvocation(world, runId, id, {
+          ...input,
+          payload: new Uint8Array([99]),
+        })
+      ).rejects.toMatchObject({ status: 422 });
+      await world.queue('__wkf_workflow_oneHook', { runId });
+      await until(
+        () => world.runs.get(runId),
+        (run) => run.status === 'completed' || run.status === 'failed'
+      );
+      await expect(getRun(runId).returnValue).resolves.toBe('once');
+      await expect(handleInvocation(world, runId, id, input)).resolves.toEqual({
+        status: 'accepted',
+      });
+      const events = await world.events.list({ runId });
+      const receives = events.data.filter(
+        (event) => event.eventType === 'hook_received'
+      );
+      expect(receives).toHaveLength(1);
+      expect(receives[0].resumeId).toBe(id);
+    });
+
+    it('purges invocation inputs/results at zero retention and prevents late recreation', async () => {
+      const runId = randomUUID();
+      await seedTransportRun(runId, { $retention: '0' });
+      const firstId = randomUUID();
+      const first = transport.invoke(
+        runId,
+        { secret: 'input' },
+        { idempotencyKey: firstId },
+        async () => {}
+      );
+      await until(
+        () => transport.pending(runId),
+        (rows) => rows.length === 1
+      );
+      await transport.respond(runId, firstId, { secret: 'result' });
+      await first;
+      const pendingId = randomUUID();
+      const waiting = transport.invoke(
+        runId,
+        { secret: 'pending' },
+        { idempotencyKey: pendingId },
+        async () => {}
+      );
+      const expired = expect(waiting).rejects.toMatchObject({
+        status: 410,
+        code: 'INVOCATION_DATA_EXPIRED',
+      });
+      await until(
+        () => transport.pending(runId),
+        (rows) => rows.length === 1
+      );
+      await world.events.create(runId, {
+        eventType: 'run_cancelled',
+        specVersion: SPEC_VERSION_CURRENT,
+      });
+      await expired;
+      await transport.respond(runId, pendingId, { secret: 'late response' });
+      await expect(
+        transport.invoke(
+          runId,
+          { secret: 'late input' },
+          undefined,
+          async () => {}
+        )
+      ).rejects.toMatchObject({ status: 410 });
+      const { rows } = await pool.query(
+        'SELECT payload, result, fingerprint, expired_at FROM workflow.workflow_invocations WHERE run_id = $1',
+        [runId]
+      );
+      expect(rows).toHaveLength(2);
+      for (const row of rows)
+        expect(row).toEqual({
+          payload: null,
+          result: null,
+          fingerprint: null,
+          expired_at: expect.any(Date),
+        });
+      expect(await transport.pending(runId)).toEqual([]);
+    });
+
+    it('does not deduplicate intentionally separate resumes with identical payloads', async () => {
+      const runId = `wrun_${ulid()}`;
+      const hookId = `hook_${ulid()}`;
+      const token = randomUUID();
+      await world.events.create(runId, {
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'postgres',
+          workflowName: 'oneHook',
+          input: await dehydrateWorkflowArguments([token], runId, undefined),
+        },
+      });
+      await world.events.create(runId, { eventType: 'run_started' });
+      await world.events.create(runId, {
+        eventType: 'hook_created',
+        correlationId: hookId,
+        eventData: { token },
+      });
+      const input = {
+        type: 'hook_resume',
+        version: 1,
+        hookId,
+        token,
+        payload: new Uint8Array([1, 2]),
+      };
+      await handleInvocation(world, runId, 'first', input);
+      await handleInvocation(world, runId, 'second', input);
+      const received = (await world.events.list({ runId })).data.filter(
+        (event) => event.eventType === 'hook_received'
+      );
+      expect(received.map((event) => event.resumeId)).toEqual([
+        'first',
+        'second',
+      ]);
+      await world.events.create(runId, { eventType: 'run_cancelled' });
+    });
+
+    it('serializes late mailbox insertion/response against a purge holding the run lock', async () => {
+      const runId = randomUUID();
+      await seedTransportRun(runId, { $retention: '0' });
+      const id = randomUUID();
+      await expect(
+        transport.invoke(
+          runId,
+          { secret: 'input' },
+          { idempotencyKey: id, timeoutMs: 10 },
+          async () => {}
+        )
+      ).rejects.toMatchObject({ status: 408 });
+      const lock = await pool.connect();
+      await lock.query('BEGIN');
+      await lock.query(
+        'SELECT id FROM workflow.workflow_runs WHERE id = $1 FOR UPDATE',
+        [runId]
+      );
+      const response = transport.respond(runId, id, { secret: 'result' });
+      const insert = transport.invoke(
+        runId,
+        { secret: 'late input' },
+        undefined,
+        async () => {}
+      );
+      const rejected = expect(insert).rejects.toMatchObject({ status: 410 });
+      try {
+        // Same lock/write ordering as purgeRunUserData's transaction.
+        await lock.query(
+          "UPDATE workflow.workflow_runs SET status = 'cancelled', expired_at = now() WHERE id = $1",
+          [runId]
+        );
+        await lock.query(
+          'UPDATE workflow.workflow_invocations SET payload = NULL, result = NULL, fingerprint = NULL, expired_at = now() WHERE run_id = $1',
+          [runId]
+        );
+        await lock.query('COMMIT');
+      } finally {
+        await lock.query('ROLLBACK').catch(() => {});
+        lock.release();
+      }
+      await response;
+      await rejected;
+      const { rows } = await pool.query(
+        'SELECT payload, result FROM workflow.workflow_invocations WHERE run_id = $1',
+        [runId]
+      );
+      expect(rows).toEqual([{ payload: null, result: null }]);
+    });
+
+    it('backfills zero-retention mailbox data left by an earlier preview', async () => {
+      const runId = randomUUID();
+      await seedTransportRun(runId, { $retention: '0' });
+      await pool.query(
+        "UPDATE workflow.workflow_runs SET status = 'completed' WHERE id = $1",
+        [runId]
+      );
+      await pool.query(
+        `INSERT INTO workflow.workflow_invocations(run_id, request_id, payload, result, fingerprint)
+        VALUES ($1, 'old', $2, $2, 'old-hash')`,
+        [runId, Buffer.from([1])]
+      );
+      const migration = await readFile(
+        new URL(
+          '../src/drizzle/migrations/0021_invocation_identity_retention.sql',
+          import.meta.url
+        ),
+        'utf8'
+      );
+      const backfill = migration
+        .split('--> statement-breakpoint')
+        .find((statement) => statement.trimStart().startsWith('UPDATE'));
+      if (!backfill) throw new Error('Missing migration backfill');
+      await pool.query(backfill);
+      const { rows } = await pool.query(
+        'SELECT payload, result, fingerprint, expired_at FROM workflow.workflow_invocations WHERE run_id = $1',
+        [runId]
+      );
+      expect(rows).toEqual([
+        {
+          payload: null,
+          result: null,
+          fingerprint: null,
+          expired_at: expect.any(Date),
+        },
+      ]);
+    });
+
+    it('bounds listener connections and mailbox growth under concurrent invokes', async () => {
+      const name = `soak-${randomUUID()}`;
+      const producerPool = new Pool({
+        connectionString: container.getConnectionUri(),
+        application_name: name,
+        max: 8,
+      });
+      const producer = createQueue(
+        {
+          pool: producerPool,
+          enableInvoke: true,
+          queueConcurrency: 2,
+          applicationManagedShutdown: true,
+        },
+        producerPool
+      );
+      const reads = vi.spyOn(producerPool, 'query');
+      const runIds: string[] = [];
+      let calls = 0;
+      const listenerCount = async () =>
+        (
+          await pool.query<{ n: number }>(
+            'SELECT count(*)::int AS n FROM pg_stat_activity WHERE application_name = $1',
+            [`${name}:invocations`]
+          )
+        ).rows[0].n;
+      try {
+        await producer.start();
+        expect(await listenerCount()).toBe(0);
+        for (let wave = 0; wave < 3; wave++) {
+          const runs = await Promise.all(
+            Array.from({ length: 12 }, async (_, index) => {
+              const tokens = [randomUUID(), randomUUID()];
+              const runId = await start('twoHooks', [tokens]);
+              runIds.push(runId);
+              const hooks = await Promise.all(tokens.map(hook));
+              await Promise.all(
+                hooks.map(async (target, slot) => {
+                  if (!target || !producer.invoke)
+                    throw new Error('Missing invoke fixture');
+                  const payload = await dehydrateStepReturnValue(
+                    `${wave}:${index}:${slot}`,
+                    runId,
+                    undefined,
+                    []
+                  );
+                  calls++;
+                  await expect(
+                    producer.invoke(runId, {
+                      type: 'hook_resume',
+                      version: 1,
+                      hookId: target.hookId,
+                      token: target.token,
+                      payload,
+                    })
+                  ).resolves.toEqual({ status: 'accepted' });
+                })
+              );
+              return runId;
+            })
+          );
+          await Promise.all(
+            runs.map((runId) =>
+              until(
+                () => world.runs.get(runId),
+                (run) => run.status === 'completed'
+              )
+            )
+          );
+        }
+        expect(await listenerCount()).toBe(1);
+        const { rows } = await pool.query<{ n: number }>(
+          'SELECT count(*)::int AS n FROM workflow.workflow_invocations WHERE run_id = ANY($1::varchar[]) AND responded_at IS NOT NULL',
+          [runIds]
+        );
+        expect(rows[0].n).toBe(calls);
+        await until(
+          async () =>
+            (
+              await pool.query<{ n: number }>(
+                'SELECT count(*)::int AS n FROM graphile_worker.jobs WHERE queue_name = ANY($1::text[])',
+                [runIds.map((id) => `workflow_flows:${id}:executor`)]
+              )
+            ).rows[0].n,
+          (n) => n === 0
+        );
+        const resultReads = reads.mock.calls.filter(
+          ([query]) =>
+            typeof query === 'string' && query.startsWith('SELECT result,')
+        ).length;
+        console.info('Invocation concurrency fixture', {
+          calls,
+          resultReads,
+          listenerConnections: 1,
+          completedRows: rows[0].n,
+        });
+      } finally {
+        reads.mockRestore();
+        await producer.close();
+        await producerPool.end();
+      }
+      expect(await listenerCount()).toBe(0);
+    }, 60_000);
 
     it('replays committed input even if its response was stored before the executor stopped', async () => {
       const token = randomUUID();
@@ -429,7 +877,7 @@ describe.skipIf(process.platform === 'win32')(
         specVersion: SPEC_VERSION_CURRENT,
         eventData: { token, payload },
       });
-      await delivery.value.respond({ status: 'accepted' });
+      await transport.respond(runId, delivery.value.id, { status: 'accepted' });
       await sent;
       await feed.return?.();
       expect(await transport.pending(runId)).toEqual([]);
@@ -447,6 +895,7 @@ describe.skipIf(process.platform === 'win32')(
 
     it('notifies input and result observers only after their writes commit', async () => {
       const runId = randomUUID();
+      await seedTransportRun(runId);
       const id = randomUUID();
       const observer = createInvocationNotifications(pool);
       const inputWatch = observer.watch(
@@ -497,7 +946,7 @@ describe.skipIf(process.platform === 'win32')(
         const input = await feed.next();
         if (input.done) throw new Error('Missing input');
         expect(resultWatch.revision).toBe(resultRevision);
-        await input.value.respond({ status: 'accepted' });
+        await transport.respond(runId, input.value.id, { status: 'accepted' });
         await until(
           async () => resultWatch.revision,
           (revision) => revision > resultRevision
@@ -571,6 +1020,7 @@ describe.skipIf(process.platform === 'win32')(
 
     it('finds a stored result through the slow fallback when its notification is missing', async () => {
       const runId = randomUUID();
+      await seedTransportRun(runId);
       const id = randomUUID();
       const sent = transport.invoke(
         runId,
@@ -594,6 +1044,7 @@ describe.skipIf(process.platform === 'win32')(
 
     it('rolls back the input when wake enqueue fails', async () => {
       const runId = randomUUID();
+      await seedTransportRun(runId);
       await expect(
         transport.invoke(runId, {}, undefined, async () => {
           throw new Error('enqueue failed');
@@ -604,6 +1055,7 @@ describe.skipIf(process.platform === 'win32')(
 
     it('leaves timed-out input pending and cancels a blocked feed read on return', async () => {
       const runId = randomUUID();
+      await seedTransportRun(runId);
       await expect(
         transport.invoke(runId, {}, { timeoutMs: 10 }, async () => {})
       ).rejects.toThrow('outcome is unknown');

@@ -13,17 +13,17 @@ request/response operation. `InvokeOptions` supports an `idempotencyKey` and
 `timeoutMs`. Every call schedules a run wake, including retries; resolving means
 the executor has responded, not merely that a transport accepted the input.
 
-An implementing World's `createQueueHandler` supplies an optional
-`metadata.invocations: AsyncIterable<Invocation>` on executor deliveries. Each
-item has `id`, opaque `payload`, and `respond(result): Promise<void>`. The runner
-interprets inputs and awaits required event writes before responding. The backend
-owns input reads and result storage; it must allow an iterator's `return()` to
-interrupt a pending `next()`, keeping unresponded input available for redelivery.
-An executor must service inputs while step bodies are awaiting work.
+An implementing World calls the existing `createQueueHandler` callback with
+`{ runId, invoke: true, requestId, input }`. The callback returns `unknown`:
+invocation-mode returns are data, while ordinary wake returns still use
+`{ timeoutSeconds }` for queue control. A result containing `timeoutSeconds`
+must not reschedule an invocation. The runner interprets inputs and awaits event
+writes before returning. World owns delivery, response correlation and storage.
 
-This adds no acquisition or atomic event/response commit API. Worlds that do not
-implement both sending and receiving leave the capability unset. Core continues
-using their existing queue path.
+The callback can receive input calls while the run's normal execution is awaiting
+step work; the runtime must direct them to that run's admission path. This adds
+no public mailbox, response callback, acquisition or atomic-commit API. Worlds
+without invocation support leave the capability unset.
 
 ## Step dispatch context
 

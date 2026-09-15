@@ -30,6 +30,7 @@ export function createInvocationNotifications(pool: Pool) {
   let connecting: Promise<void> | undefined;
   let retryAfter = 0;
   let closed = false;
+  let degraded = false;
   const ending = new Set<Promise<void>>();
 
   const endConnection = (connection: Client) => {
@@ -45,11 +46,18 @@ export function createInvocationNotifications(pool: Pool) {
     }
   };
 
-  const disconnected = (connection: Client) => {
+  const disconnected = (connection: Client, reason: string) => {
     // An old connection's delayed end/error must not retire its replacement.
     if (client !== connection) return;
     client = undefined;
     retryAfter = Date.now() + RECONNECT_BACKOFF_MS;
+    if (!closed && !degraded) {
+      degraded = true;
+      // State transitions only, and no raw pg errors/connection options.
+      console.warn(
+        `[world-postgres] Invocation notifications unavailable (${reason}); using fallback reads`
+      );
+    }
     wakeAll();
     // Keep the error observer installed through shutdown: pg may emit another
     // error while an in-flight connect/LISTEN is unwinding.
@@ -65,8 +73,8 @@ export function createInvocationNotifications(pool: Pool) {
       query_timeout: pool.options.query_timeout || 1_000,
     });
     client = connection;
-    connection.on('error', () => disconnected(connection));
-    connection.on('end', () => disconnected(connection));
+    connection.on('error', () => disconnected(connection, 'connection error'));
+    connection.on('end', () => disconnected(connection, 'connection ended'));
     connection.on('notification', (notification) => {
       if (closed || client !== connection) return;
       for (const notify of watches.get(
@@ -83,9 +91,15 @@ export function createInvocationNotifications(pool: Pool) {
         await connection.query(
           `LISTEN ${INVOCATION_INPUT_TOPIC}; LISTEN ${INVOCATION_RESULT_TOPIC}`
         );
-        if (!closed && client === connection) wakeAll();
+        if (!closed && client === connection) {
+          if (degraded) {
+            degraded = false;
+            console.warn('[world-postgres] Invocation notifications restored');
+          }
+          wakeAll();
+        }
       } catch {
-        disconnected(connection);
+        disconnected(connection, 'subscription failed');
       } finally {
         connecting = undefined;
       }

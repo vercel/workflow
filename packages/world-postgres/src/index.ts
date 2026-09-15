@@ -77,6 +77,7 @@ export function createWorld(
     specVersion: mintedSpecVersion(),
     capabilities: {
       hookRetention: { active: true },
+      hookResumeDedup: true,
       ...(config.enableInvoke ? { invoke: true } : {}),
     },
     ...storage,

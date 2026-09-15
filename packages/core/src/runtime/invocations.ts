@@ -2,19 +2,21 @@ import {
   HookNotFoundError,
   RunExpiredError,
   WorkflowRunNotFoundError,
+  WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import {
-  type Invocation,
-  isLegacySpecVersion,
+  HealthCheckPayloadSchema,
   isTerminalWorkflowRunStatus,
   type Queue,
+  readRunRetention,
   SPEC_VERSION_CURRENT,
+  WorkflowInvokePayloadSchema,
   type World,
 } from '@workflow/world';
 import { z } from 'zod';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { trace } from '../telemetry.js';
-import { getWorldLazy } from './get-world-lazy.js';
 
 /** Runner protocol, not a hook-specific World operation. */
 export const HookInvocationSchema = z.object({
@@ -22,7 +24,7 @@ export const HookInvocationSchema = z.object({
   version: z.literal(1),
   hookId: z.string(),
   token: z.string(),
-  payload: z.unknown(),
+  payload: z.instanceof(Uint8Array),
 });
 
 export const HookInvocationResultSchema = z.discriminatedUnion('status', [
@@ -32,95 +34,117 @@ export const HookInvocationResultSchema = z.discriminatedUnion('status', [
     code: z.enum(['HOOK_NOT_FOUND', 'INVALID_INPUT']),
   }),
 ]);
+type HookInvocationResult = z.infer<typeof HookInvocationResultSchema>;
 
-/** The executor inspects the input; the World feed never creates events. */
+/** Inspection/event persistence belongs to core. Response delivery belongs to World. */
 export async function handleInvocation(
   world: World,
   runId: string,
-  invocation: Invocation
-): Promise<boolean> {
-  const parsed = HookInvocationSchema.safeParse(invocation.payload);
-  if (!parsed.success) {
-    await invocation.respond({ status: 'rejected', code: 'INVALID_INPUT' });
-    return false;
-  }
+  requestId: string,
+  payload: unknown
+): Promise<HookInvocationResult> {
+  const parsed = HookInvocationSchema.safeParse(payload);
+  if (!parsed.success || !requestId)
+    return { status: 'rejected', code: 'INVALID_INPUT' };
   const input = parsed.data;
+  const digest = Buffer.from(
+    await crypto.subtle.digest('SHA-256', input.payload)
+  ).toString('hex');
   try {
-    const hook = await world.hooks.get(input.hookId);
-    if (hook.runId !== runId || hook.token !== input.token) {
-      throw new HookNotFoundError(input.token);
+    try {
+      const hook = await world.hooks.get(input.hookId);
+      if (hook.runId !== runId || hook.token !== input.token)
+        throw new HookNotFoundError(input.token);
+      const run = await world.runs.get(runId, { resolveData: 'none' });
+      if (isTerminalWorkflowRunStatus(run.status))
+        throw new HookNotFoundError(input.token);
+    } catch (error) {
+      if (!isHookGone(error)) throw error;
+      const run = await world.runs.get(runId, { resolveData: 'none' });
+      if (
+        run.expiredAt ||
+        (isTerminalWorkflowRunStatus(run.status) &&
+          readRunRetention(run.attributes).mode === 'none')
+      ) {
+        throw new WorkflowWorldError(
+          'Invocation data has expired under the run retention policy',
+          { status: 410, code: 'INVOCATION_DATA_EXPIRED' }
+        );
+      }
+      // Only the uncommon disposed/terminal retry needs this read. A prior
+      // durable identity lets events.create validate/converge before lifecycle
+      // rejection; a new input still cannot resurrect a disposed hook.
+      if (
+        !world.capabilities?.hookResumeDedup ||
+        !(await hasResume(world, runId, input.hookId, requestId))
+      ) {
+        return { status: 'rejected', code: 'HOOK_NOT_FOUND' };
+      }
     }
-    const run = await world.runs.get(runId, { resolveData: 'none' });
-    if (isTerminalWorkflowRunStatus(run.status))
-      throw new HookNotFoundError(input.token);
-    const v1Compat = isLegacySpecVersion(hook.specVersion);
     await world.events.create(
       runId,
       {
         eventType: 'hook_received',
         correlationId: input.hookId,
         specVersion: SPEC_VERSION_CURRENT,
-        eventData: {
-          ...(v1Compat ? {} : { token: input.token }),
-          payload: input.payload,
-        },
+        eventData: { token: input.token, payload: input.payload },
       },
-      { v1Compat }
+      {
+        ...(world.capabilities?.hookResumeDedup
+          ? { resumeId: requestId, resumePayloadDigest: digest }
+          : {}),
+      }
     );
   } catch (error) {
-    if (
-      !HookNotFoundError.is(error) &&
-      !RunExpiredError.is(error) &&
-      !WorkflowRunNotFoundError.is(error)
-    )
-      throw error;
-    await invocation.respond({ status: 'rejected', code: 'HOOK_NOT_FOUND' });
-    return false;
+    if (!isHookGone(error)) throw error;
+    return { status: 'rejected', code: 'HOOK_NOT_FOUND' };
   }
-  // Intentionally sequential. A crash between these writes can leave a
-  // committed hook with no response. This is not an atomic commit protocol.
-  await invocation.respond({ status: 'accepted' });
-  return true;
+  return { status: 'accepted' };
 }
 
-/** One executor's input pump. No detached task survives its handler lifetime. */
-export class InvocationPump {
-  revision = 0;
-  private stopped = false;
-  private failure: { error: unknown } | undefined;
-  private listeners = new Set<() => void>();
-  private readonly iterator: AsyncIterator<Invocation>;
-  private readonly task: Promise<void>;
+function isHookGone(error: unknown) {
+  return (
+    HookNotFoundError.is(error) ||
+    RunExpiredError.is(error) ||
+    WorkflowRunNotFoundError.is(error)
+  );
+}
 
-  constructor(
-    source: AsyncIterable<Invocation>,
-    handle: (input: Invocation) => Promise<boolean>
-  ) {
-    const iterator = source[Symbol.asyncIterator]();
-    this.iterator = iterator;
-    this.task = (async () => {
-      while (!this.stopped) {
-        const item = await iterator.next();
-        if (item.done) break;
-        // Finish an already-delivered input even when shutdown starts. Never
-        // acknowledge the executor while an event/response write is in flight.
-        if (await handle(item.value)) {
-          this.revision++;
-          for (const notify of this.listeners) notify();
-        }
-      }
-    })().catch((error) => {
-      this.failure = { error };
-      for (const notify of this.listeners) notify();
+async function hasResume(
+  world: World,
+  runId: string,
+  hookId: string,
+  requestId: string
+) {
+  let cursor: string | null = null;
+  do {
+    const page = await world.events.listByCorrelationId({
+      runId,
+      correlationId: hookId,
+      resolveData: 'none',
+      pagination: { limit: 100, ...(cursor ? { cursor } : {}) },
     });
-  }
+    if (
+      page.data.some(
+        (event) =>
+          event.eventType === 'hook_received' && event.resumeId === requestId
+      )
+    )
+      return true;
+    cursor = page.hasMore ? page.cursor : null;
+  } while (cursor);
+  return false;
+}
 
-  private checkFailure() {
-    if (this.failure) throw this.failure.error;
+/** In-memory runner coordination only; no transport, iteration or response storage. */
+export class RunInputActivity {
+  revision = 0;
+  private listeners = new Set<() => void>();
+  notify() {
+    this.revision++;
+    for (const notify of this.listeners) notify();
   }
-
   async waitForActivity(since: number, timeoutMs = 100): Promise<boolean> {
-    this.checkFailure();
     if (this.revision !== since) return true;
     await new Promise<void>((resolve) => {
       const finish = () => {
@@ -131,52 +155,82 @@ export class InvocationPump {
       const timer = setTimeout(finish, timeoutMs);
       this.listeners.add(finish);
     });
-    this.checkFailure();
     return this.revision !== since;
-  }
-
-  async close(): Promise<void> {
-    this.stopped = true;
-    await this.iterator.return?.();
-    await this.task;
-    if (this.failure) throw this.failure.error;
   }
 }
 
 type Handler = Parameters<Queue['createQueueHandler']>[1];
+type RunHandler = (
+  ...args: [...Parameters<Handler>, RunInputActivity?]
+) => ReturnType<Handler>;
 
-/** Attach inputs only to executor deliveries, preserving the existing handler API. */
-export function withInvocationFeed(
-  handler: (
-    ...args: [...Parameters<Handler>, InvocationPump?]
-  ) => ReturnType<Handler>
-): Handler {
-  return async (message, metadata) => {
-    if (!metadata.invocations) return handler(message, metadata);
-    const runId = (message as { runId: string }).runId;
-    const world = await getWorldLazy();
-    const pump = new InvocationPump(metadata.invocations, (input) =>
-      trace('workflow.invoke.receive', async (span) => {
-        span?.setAttributes({
-          ...Attribute.WorkflowRunId(runId),
-          'workflow.invocation.id': input.id,
-        });
-        return handleInvocation(world, runId, input);
-      })
-    );
-    const deadline = Date.now() + 120_000;
-    try {
-      // The normal runtime keeps its VM across inline replay passes. If an
-      // input commits as it is retiring, replay within this same executor job.
-      // A later input also has its own serialized wake, so no wake is lost.
-      for (;;) {
-        const revision = pump.revision;
-        const result = await handler(message, metadata, pump);
-        if (Date.now() >= deadline || !(await pump.waitForActivity(revision)))
-          return result;
+/** Both handler modes share one run's admission lane and live execution. */
+export function withRunInputs(world: World) {
+  return (handler: RunHandler): Handler => {
+    const sessions = new Map<
+      string,
+      {
+        activity: RunInputActivity;
+        admission: Promise<unknown>;
+        execution?: Promise<unknown>;
+        references: number;
       }
-    } finally {
-      await pump.close();
-    }
+    >();
+    return async (message, metadata) => {
+      if (HealthCheckPayloadSchema.safeParse(message).success)
+        return handler(message, metadata);
+      const parsed = WorkflowInvokePayloadSchema.safeParse(message);
+      if (!world.capabilities?.invoke || !parsed.success || parsed.data.stepId)
+        return handler(message, metadata);
+      const input = parsed.data;
+      let session = sessions.get(input.runId);
+      if (!session) {
+        session = {
+          activity: new RunInputActivity(),
+          admission: Promise.resolve(),
+          references: 0,
+        };
+        sessions.set(input.runId, session);
+      }
+      const current = session;
+      current.references++;
+      try {
+        if (input.invoke) {
+          if (!input.requestId)
+            throw new WorkflowRuntimeError('Invocation requestId is required');
+          const requestId = input.requestId;
+          const decision = current.admission.then(() =>
+            trace('workflow.invoke.receive', async (span) => {
+              span?.setAttributes({
+                ...Attribute.WorkflowRunId(input.runId),
+                'workflow.invocation.id': requestId,
+              });
+              const result = await handleInvocation(
+                world,
+                input.runId,
+                requestId,
+                input.input
+              );
+              if (result.status === 'accepted') current.activity.notify();
+              return result;
+            })
+          );
+          current.admission = decision.catch(() => {});
+          return await decision;
+        }
+        if (current.execution) return await current.execution;
+        const execution = handler(message, metadata, current.activity);
+        current.execution = execution;
+        try {
+          return await execution;
+        } finally {
+          if (current.execution === execution) current.execution = undefined;
+        }
+      } finally {
+        current.references--;
+        if (current.references === 0 && sessions.get(input.runId) === current)
+          sessions.delete(input.runId);
+      }
+    };
   };
 }

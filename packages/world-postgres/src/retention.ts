@@ -59,7 +59,7 @@ export async function purgeRunUserData(
   runId: string,
   purgedAt: Date
 ): Promise<void> {
-  const { runs, steps, events, hooks, streams } = Schema;
+  const { runs, steps, events, hooks, streams, invocations } = Schema;
 
   await drizzle.transaction(async (tx) => {
     await tx
@@ -89,7 +89,7 @@ export async function purgeRunUserData(
 
     await tx
       .update(events)
-      .set({ eventData: NULL, eventDataJson: NULL })
+      .set({ eventData: NULL, eventDataJson: NULL, resumePayloadDigest: NULL })
       .where(eq(events.runId, runId));
 
     // Hooks that outlive the run (token retention) keep their row, and a hook
@@ -104,6 +104,18 @@ export async function purgeRunUserData(
       .update(streams)
       .set({ chunkData: Buffer.alloc(0) })
       .where(eq(streams.runId, runId));
+
+    // Keep an expiry tombstone so waiting callers/retries can finish with a
+    // data-expired error. Writers lock the run before touching these rows.
+    await tx
+      .update(invocations)
+      .set({
+        payload: NULL,
+        result: NULL,
+        fingerprint: NULL,
+        expiredAt: purgedAt,
+      })
+      .where(eq(invocations.runId, runId));
   });
 }
 

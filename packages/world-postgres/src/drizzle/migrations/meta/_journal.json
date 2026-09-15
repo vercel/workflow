@@ -148,6 +148,13 @@
       "when": 1789430400000,
       "tag": "0020_add_invocations",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1789516800000,
+      "tag": "0021_invocation_identity_retention",
+      "breakpoints": true
     }
   ]
 }

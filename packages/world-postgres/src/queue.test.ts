@@ -28,6 +28,7 @@ const invocationTransport = vi.hoisted(() => ({
   feed: vi.fn(),
   close: vi.fn(),
   invoke: vi.fn(),
+  respond: vi.fn(),
 }));
 vi.mock('./invocations.js', () => ({
   createInvocations: () => invocationTransport,
@@ -77,6 +78,7 @@ describe('postgres queue http execution', () => {
     vi.clearAllMocks();
     invocationTransport.pending.mockResolvedValue([]);
     invocationTransport.close.mockResolvedValue(undefined);
+    invocationTransport.respond.mockResolvedValue(undefined);
     createQueueHandler.mockImplementation(() => wrappedHandler);
     pool.query.mockResolvedValue({ rows: [{ exists: false }] });
 
@@ -790,21 +792,39 @@ describe('postgres queue http execution', () => {
     expect(invocationTransport.pending).not.toHaveBeenCalled();
   });
 
-  it('supplies a feed only after verifying the active Graphile job, and keeps steps feed-free', async () => {
+  it('delivers invocation-mode handler calls and stores their return values without exposing a feed', async () => {
     const { handler, receive } = receiver();
     pool.query.mockResolvedValue({ rows: [{ id: '42' }] });
+    const pending = [{ id: 'request', payload: { value: 'input' } }];
     const feed = {
       return: vi.fn().mockResolvedValue({ done: true }),
+      async next() {
+        const value = pending.shift();
+        return value ? { done: false, value } : { done: true };
+      },
       [Symbol.asyncIterator]() {
         return this;
       },
     };
     invocationTransport.feed.mockReturnValue(feed);
+    handler.mockImplementation(async (message) =>
+      message.invoke ? { timeoutSeconds: 123, value: 'data' } : undefined
+    );
     await receive(request(proof));
     expect(invocationTransport.pending).toHaveBeenCalledWith('run_a');
     expect(handler).toHaveBeenCalledWith(
-      { runId: 'run_a' },
-      expect.objectContaining({ invocations: feed })
+      {
+        runId: 'run_a',
+        invoke: true,
+        requestId: 'request',
+        input: { value: 'input' },
+      },
+      expect.not.objectContaining({ invocations: expect.anything() })
+    );
+    expect(invocationTransport.respond).toHaveBeenCalledExactlyOnceWith(
+      'run_a',
+      'request',
+      { timeoutSeconds: 123, value: 'data' }
     );
     expect(feed.return).toHaveBeenCalledOnce();
     handler.mockClear();

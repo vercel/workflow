@@ -91,7 +91,7 @@ import {
   stepDispatchIdempotencyKey,
   withHealthCheck,
 } from './runtime/helpers.js';
-import { withInvocationFeed } from './runtime/invocations.js';
+import { withRunInputs } from './runtime/invocations.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
@@ -121,7 +121,7 @@ import {
 } from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
-import { getWorld, type WorldHandlers } from './runtime/world.js';
+import { getWorld } from './runtime/world.js';
 import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
@@ -717,10 +717,10 @@ export function workflowEntrypoint(
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
 
-  const handler = (worldHandlers: WorldHandlers) =>
+  const handler = (worldHandlers: World) =>
     worldHandlers.createQueueHandler(
       workflowPrefix,
-      withInvocationFeed(async (message_, metadata, invocations) => {
+      withRunInputs(worldHandlers)(async (message_, metadata, activity) => {
         // T2 of the hook-resume TTR window (see runtime/resume-latency.ts):
         // the instant this consumer began, before message parsing. Only used
         // when the message turns out to carry resume timing; taking it
@@ -2917,7 +2917,7 @@ export function workflowEntrypoint(
 
                   // Main replay loop
                   while (true) {
-                    const invocationRevision = invocations?.revision ?? 0;
+                    const invocationRevision = activity?.revision ?? 0;
                     loopIteration++;
 
                     // Replay-budget check: bail out (retry or fail) if
@@ -3675,7 +3675,7 @@ export function workflowEntrypoint(
                               hookContinuation:
                                 suspensionResult.hasAwaitedHookCreation ||
                                 suspensionResult.hasHookConflict,
-                              invocationContinuation: invocations !== undefined,
+                              invocationContinuation: activity !== undefined,
                             })
                           : undefined;
                         if (retentionDecision?.retain === false) {
@@ -4357,12 +4357,10 @@ export function workflowEntrypoint(
                             return await reinvoke(0);
                           }
                           if (
-                            invocations &&
+                            activity &&
                             Date.now() - invocationStartTime <
                               noInlineReplayAfterMs &&
-                            (await invocations.waitForActivity(
-                              invocationRevision
-                            ))
+                            (await activity.waitForActivity(invocationRevision))
                           ) {
                             eventLog = nextEventLogLoad(eventLog);
                             continue;

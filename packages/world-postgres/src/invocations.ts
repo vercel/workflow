@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
-import type { Invocation, InvokeOptions } from '@workflow/world';
+import {
+  EntityConflictError,
+  WorkflowRunNotFoundError,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import type { InvokeOptions } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { Pool, PoolClient } from 'pg';
 import {
@@ -10,37 +14,60 @@ import {
   INVOCATION_RESULT_TOPIC,
   invocationNotificationKey,
 } from './invocation-notifications.js';
+import {
+  type InvocationRunState,
+  invocationDataExpired,
+  invocationExpiredError,
+} from './invocation-retention.js';
 
 const MAX_BYTES = 1024 * 1024;
-
 export interface PendingInvocation {
   request_id: string;
   payload: Buffer;
 }
+interface Input {
+  id: string;
+  payload: unknown;
+}
 
 function serialize(value: unknown): Buffer {
   const bytes = Buffer.from(encode(value));
-  if (bytes.length > MAX_BYTES) {
+  if (bytes.length > MAX_BYTES)
     throw new WorkflowWorldError('Invocation payload/result exceeds 1 MiB', {
       status: 413,
     });
-  }
   return bytes;
 }
 
-/** Private transport, not a workflow event writer or a second task scheduler. */
+/** All mailbox writers take this lock before their row write, matching purge. */
+async function runState(
+  client: PoolClient,
+  runId: string
+): Promise<InvocationRunState> {
+  const { rows } = await client.query<InvocationRunState>(
+    `SELECT status, attributes, expired_at AS "expiredAt", name AS "workflowName"
+     FROM workflow.workflow_runs WHERE id = $1 FOR SHARE`,
+    [runId]
+  );
+  if (!rows[0]) throw new WorkflowRunNotFoundError(runId);
+  return rows[0];
+}
+
+/** Backend-private mailbox. Runtime handlers only return values to this adapter. */
 export function createInvocations(pool: Pool) {
   const shutdown = new AbortController();
   const feeds = new Set<AbortController>();
   const notifications = createInvocationNotifications(pool);
 
   async function pending(runId: string): Promise<PendingInvocation[]> {
-    const { rows } = await pool.query<PendingInvocation>(
-      `SELECT request_id, payload FROM workflow.workflow_invocations
-       WHERE run_id = $1 AND responded_at IS NULL ORDER BY sequence LIMIT 32`,
-      [runId]
-    );
-    return rows;
+    return (
+      await pool.query<PendingInvocation>(
+        `SELECT request_id, payload FROM workflow.workflow_invocations
+       WHERE run_id = $1 AND responded_at IS NULL AND expired_at IS NULL AND payload IS NOT NULL
+       ORDER BY sequence LIMIT 32`,
+        [runId]
+      )
+    ).rows;
   }
 
   return {
@@ -49,7 +76,11 @@ export function createInvocations(pool: Pool) {
       runId: string,
       payload: unknown,
       options: InvokeOptions | undefined,
-      enqueue: (client: PoolClient, requestId: string) => Promise<void>
+      enqueue: (
+        client: PoolClient,
+        id: string,
+        run: InvocationRunState
+      ) => Promise<void>
     ): Promise<unknown> {
       shutdown.signal.throwIfAborted();
       const id = options?.idempotencyKey ?? randomUUID();
@@ -70,23 +101,27 @@ export function createInvocations(pool: Pool) {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
+        const run = await runState(client, runId);
+        if (invocationDataExpired(run)) throw invocationExpiredError();
         await client.query(
           `INSERT INTO workflow.workflow_invocations(run_id, request_id, payload, fingerprint)
            VALUES ($1, $2, $3, $4) ON CONFLICT (run_id, request_id) DO NOTHING`,
           [runId, id, bytes, fingerprint]
         );
-        const { rows } = await client.query<{ fingerprint: string }>(
-          'SELECT fingerprint FROM workflow.workflow_invocations WHERE run_id = $1 AND request_id = $2',
+        const { rows } = await client.query<{
+          fingerprint: string | null;
+          expired_at: Date | null;
+        }>(
+          'SELECT fingerprint, expired_at FROM workflow.workflow_invocations WHERE run_id = $1 AND request_id = $2',
           [runId, id]
         );
-        if (rows[0]?.fingerprint !== fingerprint) {
+        if (rows[0]?.expired_at) throw invocationExpiredError();
+        if (rows[0]?.fingerprint !== fingerprint)
           throw new EntityConflictError(
             'Invocation identity reused with different contents'
           );
-        }
-        // Every call wakes, even when the row already has a result. Never
-        // coalesce this with the active executor's job key.
-        await enqueue(client, id);
+        // Every eligible invoke wakes, including an already-responded retry.
+        await enqueue(client, id, run);
         await client.query('SELECT pg_notify($1, $2)', [
           INVOCATION_INPUT_TOPIC,
           invocationNotificationKey(runId),
@@ -107,25 +142,24 @@ export function createInvocations(pool: Pool) {
       try {
         for (;;) {
           shutdown.signal.throwIfAborted();
-          // Capture before the read: a signal arriving during it must not be
-          // forgotten when we subsequently decide whether to sleep.
           const revision = watch.revision;
           const { rows } = await pool.query<{
             result: Buffer | null;
             responded_at: Date | null;
+            expired_at: Date | null;
           }>(
-            'SELECT result, responded_at FROM workflow.workflow_invocations WHERE run_id = $1 AND request_id = $2',
+            'SELECT result, responded_at, expired_at FROM workflow.workflow_invocations WHERE run_id = $1 AND request_id = $2',
             [runId, id]
           );
+          if (rows[0]?.expired_at) throw invocationExpiredError();
           if (rows[0]?.responded_at && rows[0].result)
             return decode(rows[0].result);
           const remaining = deadline - Date.now();
-          if (remaining <= 0) {
+          if (remaining <= 0)
             throw new WorkflowWorldError(
               'Timed out awaiting invocation result; outcome is unknown',
               { status: 408 }
             );
-          }
           await watch.wait(
             revision,
             Math.min(INVOCATION_FALLBACK_MS, remaining),
@@ -137,10 +171,65 @@ export function createInvocations(pool: Pool) {
       }
     },
 
+    /** Sequentially follows the core handler's event writes; never writes events. */
+    async respond(
+      runId: string,
+      requestId: string,
+      result: unknown
+    ): Promise<void> {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const run = await runState(client, runId);
+        if (invocationDataExpired(run)) {
+          await client.query(
+            `UPDATE workflow.workflow_invocations SET payload = NULL, result = NULL,
+               fingerprint = NULL, expired_at = coalesce(expired_at, now())
+             WHERE run_id = $1 AND request_id = $2`,
+            [runId, requestId]
+          );
+        } else {
+          const bytes = serialize(result);
+          const updated = await client.query(
+            `UPDATE workflow.workflow_invocations SET result = $3, responded_at = now()
+             WHERE run_id = $1 AND request_id = $2 AND responded_at IS NULL AND expired_at IS NULL`,
+            [runId, requestId, bytes]
+          );
+          if (updated.rowCount === 0) {
+            const prior = await client.query<{
+              result: Buffer | null;
+              expired_at: Date | null;
+            }>(
+              'SELECT result, expired_at FROM workflow.workflow_invocations WHERE run_id = $1 AND request_id = $2',
+              [runId, requestId]
+            );
+            if (
+              !prior.rows[0]?.expired_at &&
+              !prior.rows[0]?.result?.equals(bytes)
+            ) {
+              throw new EntityConflictError(
+                'Invocation already has a different response or is missing'
+              );
+            }
+          }
+        }
+        await client.query('SELECT pg_notify($1, $2)', [
+          INVOCATION_RESULT_TOPIC,
+          invocationNotificationKey(runId, requestId),
+        ]);
+        await client.query('COMMIT');
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+
     feed(
       runId: string,
       initial: PendingInvocation[]
-    ): AsyncIterableIterator<Invocation> {
+    ): AsyncIterableIterator<Input> {
       shutdown.signal.throwIfAborted();
       const stop = new AbortController();
       feeds.add(stop);
@@ -148,10 +237,9 @@ export function createInvocations(pool: Pool) {
         INVOCATION_INPUT_TOPIC,
         invocationNotificationKey(runId)
       );
-      // Only selected rows are marked delivered. Reading never consumes them.
       const delivered = new Set<string>();
       let buffered = initial;
-      const iterator: AsyncIterableIterator<Invocation> = {
+      return {
         [Symbol.asyncIterator]() {
           return this;
         },
@@ -163,37 +251,7 @@ export function createInvocations(pool: Pool) {
               delivered.add(row.request_id);
               return {
                 done: false,
-                value: {
-                  id: row.request_id,
-                  payload: decode(row.payload),
-                  async respond(result) {
-                    const bytes = serialize(result);
-                    const updated = await pool.query(
-                      `WITH responded AS (
-                         UPDATE workflow.workflow_invocations SET result = $3, responded_at = now()
-                         WHERE run_id = $1 AND request_id = $2 AND responded_at IS NULL RETURNING request_id
-                       ) SELECT pg_notify($4, $5) FROM responded`,
-                      [
-                        runId,
-                        row.request_id,
-                        bytes,
-                        INVOCATION_RESULT_TOPIC,
-                        invocationNotificationKey(runId, row.request_id),
-                      ]
-                    );
-                    if (updated.rowCount === 0) {
-                      const prior = await pool.query<{ result: Buffer }>(
-                        'SELECT result FROM workflow.workflow_invocations WHERE run_id = $1 AND request_id = $2',
-                        [runId, row.request_id]
-                      );
-                      if (!prior.rows[0]?.result?.equals(bytes)) {
-                        throw new EntityConflictError(
-                          'Invocation already has a different response'
-                        );
-                      }
-                    }
-                  },
-                },
+                value: { id: row.request_id, payload: decode(row.payload) },
               };
             }
             const revision = watch.revision;
@@ -217,7 +275,6 @@ export function createInvocations(pool: Pool) {
           return { done: true, value: undefined };
         },
       };
-      return iterator;
     },
     async close() {
       shutdown.abort();

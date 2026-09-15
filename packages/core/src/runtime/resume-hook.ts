@@ -633,7 +633,11 @@ async function resumeHookImpl<T = any>(
           span?.addLink?.(originLink);
         }
 
-        if (world.capabilities?.invoke === true) {
+        if (
+          world.capabilities?.invoke === true &&
+          !v1Compat &&
+          dehydratedPayload instanceof Uint8Array
+        ) {
           if (!world.invoke) {
             throw new WorkflowRuntimeError(
               'World advertises invoke without implementing it'

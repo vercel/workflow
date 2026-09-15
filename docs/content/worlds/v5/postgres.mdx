@@ -95,10 +95,15 @@ job prefix replaces `workflow_` in these names. Each invoke schedules a wake,
 even if a live executor already handled its input.
 
 Only deliveries verified against an active Graphile executor job on the run's
-named queue receive an invocation feed. Updated workers/HTTP handlers redirect
+named queue start mailbox service. Updated workers/HTTP handlers redirect
 legacy, unmarked orchestration deliveries into that queue before acknowledging
 them. Step jobs and health checks never consume the mailbox. The entry check
 does not fence a handler that continues after its job is reclaimed.
+
+The World invokes the SDK handler with `invoke: true`, a stable `requestId`, and
+the input. The SDK inspects and persists the hook event, then returns a result;
+the World stores that result for the caller. No World mailbox or response callback
+is exposed to the runtime.
 
 Inputs/results are stored in a Postgres table. A shared, lazily opened
 `LISTEN/NOTIFY` connection wakes the active input feed and waiting callers when
@@ -107,12 +112,16 @@ table. A 1-second fallback handles missed signals, and listener failures permit
 reconnection with a 1-second backoff. The listener requires a session-capable
 database connection; polling preserves progress if LISTEN is unavailable.
 Every invoke still schedules a Graphile wake.
+Listener degradation/restoration is logged once per state transition without
+printing payloads or connection details.
 
 The default invoke response timeout is 30 seconds, and the encoded input/result limit is
 1 MiB each. A timeout does not undo processing. Event persistence precedes
-response persistence, but the two are not atomic: a crash in between may cause
-duplicate hook events. Result cleanup, stale-executor fencing and routing across
-incompatible code versions are not implemented by this experimental mode.
+response persistence; durable resume identities deduplicate the event if response
+storage fails. `$retention: 0` also purges invocation data and prevents late writes
+from restoring it; callers whose result has expired receive a 410 error with code
+`INVOCATION_DATA_EXPIRED`. General result cleanup, stale-executor fencing and
+routing across incompatible code versions remain limitations.
 
 ### Server startup
 

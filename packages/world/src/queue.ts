@@ -309,6 +309,11 @@ export type HookResumeTiming = z.infer<typeof HookResumeTimingSchema>;
 export const WorkflowInvokePayloadSchema = z.compile(
   z.object({
     runId: z.string(),
+    /** Request/response input delivery. Return data rather than queue control. */
+    invoke: z.literal(true).optional(),
+    /** Stable logical input identity, distinct from the queue delivery ID. */
+    requestId: z.string().optional(),
+    input: z.unknown().optional(),
     traceCarrier: TraceCarrierSchema.optional(),
     requestedAt: z.coerce.date().optional(),
     /**
@@ -505,14 +510,6 @@ export type QueueBatchResult =
       retryable: boolean;
     };
 
-/** One input offered to the current executor, not yet a workflow event. */
-export interface Invocation {
-  id: string;
-  payload: unknown;
-  /** Respond only after the runner's decision and any required event writes. */
-  respond(result: unknown): Promise<void>;
-}
-
 export interface InvokeOptions {
   /** Retries of one request reuse this key and the exact same payload. */
   idempotencyKey?: string;
@@ -593,6 +590,8 @@ export interface Queue {
   /**
    * Creates an HTTP queue handler for processing messages from a specific queue.
    * A rejected handler must retry the same message with an incremented attempt.
+   * With `invoke: true`, the return value is response data delivered by World.
+   * Only ordinary wake results interpret `{ timeoutSeconds }` as queue control.
    *
    * `meta.messageId` SHOULD be stable across redeliveries of the same message
    * (one ID per enqueued message, reused on every delivery attempt). The
@@ -613,15 +612,7 @@ export interface Queue {
         queueName: ValidQueueName;
         messageId: MessageId;
         requestId?: string;
-        /**
-         * Run-scoped request stream, present on invoke-capable executor wakes.
-         * The backend owns reading and response storage. Closing the iterator
-         * must interrupt a pending next(); unresponded inputs remain pending.
-         * The runner must service it while steps are awaiting work.
-         */
-        invocations?: AsyncIterable<Invocation>;
       }
-      // biome-ignore lint/suspicious/noConfusingVoidType: it is what it is
-    ) => Promise<void | { timeoutSeconds: number }>
+    ) => Promise<unknown>
   ): (req: Request) => Promise<Response>;
 }

@@ -36,6 +36,7 @@ describe('shared invocation notifications', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
     clients = [];
     mocks.client.mockReset().mockImplementation(() => {
       const client = new FakeClient();
@@ -48,6 +49,7 @@ describe('shared invocation notifications', () => {
   afterEach(async () => {
     await notifications.close();
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   async function ready(watch: InvocationWatch) {
@@ -175,6 +177,9 @@ describe('shared invocation notifications', () => {
     const watch = notifications.watch(INVOCATION_INPUT_TOPIC, inputKey);
     await ready(watch); // disconnect wakes the initial read
     expect(failed.end).toHaveBeenCalledOnce();
+    expect(console.warn).toHaveBeenCalledExactlyOnceWith(
+      expect.stringContaining('using fallback reads')
+    );
     const waiting = watch.wait(watch.revision, 1_000, signal);
     await vi.advanceTimersByTimeAsync(1_000);
     await waiting;
@@ -183,6 +188,10 @@ describe('shared invocation notifications', () => {
     await vi.waitFor(() => expect(watch.revision).toBeGreaterThan(before));
     await retry;
     expect(mocks.client).toHaveBeenCalledTimes(2);
+    expect(console.warn).toHaveBeenCalledTimes(2);
+    expect(console.warn).toHaveBeenLastCalledWith(
+      '[world-postgres] Invocation notifications restored'
+    );
     watch.dispose();
   });
 
@@ -203,6 +212,27 @@ describe('shared invocation notifications', () => {
     });
     expect(watch.revision).toBe(revision);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('logs one degradation per outage rather than on every failed reconnect', async () => {
+    const first = new FakeClient();
+    const second = new FakeClient();
+    first.connect.mockRejectedValue(new Error('sensitive connection details'));
+    second.connect.mockRejectedValue(new Error('sensitive connection details'));
+    mocks.client.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    const watch = notifications.watch(INVOCATION_INPUT_TOPIC, inputKey);
+    await ready(watch);
+    const fallback = watch.wait(watch.revision, 1_000, signal);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await fallback;
+    const revision = watch.revision;
+    await watch.wait(revision, 10_000, signal);
+    expect(mocks.client).toHaveBeenCalledTimes(2);
+    expect(console.warn).toHaveBeenCalledOnce();
+    expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain(
+      'sensitive'
+    );
+    watch.dispose();
   });
 
   it('closes during connection setup without issuing LISTEN or reopening', async () => {

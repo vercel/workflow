@@ -6,6 +6,11 @@ Stores workflow data as JSON files on disk and provides in-memory queuing. Autom
 
 Used by default on `next dev` and `next start`.
 
+The queue-handler callback accepts generic return values. An `invoke: true`
+message returns its value as response data rather than interpreting a
+`timeoutSeconds` property as scheduling control. The local World does not yet
+advertise the optional `invoke` sending capability.
+
 ## Programmatic configuration
 
 ```ts

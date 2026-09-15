@@ -2,7 +2,7 @@ import { connect } from 'node:net';
 import * as Stream from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
-import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
+import { WorkflowWorldError } from '@workflow/errors';
 import {
   createWorkflowBaseUrl,
   createWorkflowHealthEndpoint,
@@ -33,6 +33,7 @@ import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
+import { executeWithInputs } from './executor.js';
 import { createInvocations } from './invocations.js';
 import { MessageData } from './message.js';
 
@@ -226,15 +227,35 @@ export function createQueue(
               'Executor delivery is not active on the run queue',
               { status: 409 }
             );
+          if (input.invoke) {
+            if (!input.requestId)
+              throw new WorkflowWorldError('Invocation requestId is required', {
+                status: 400,
+              });
+            const result = await handler(message, metadata);
+            await invocations.respond(input.runId, input.requestId, result);
+            return result;
+          }
           const initial = await invocations.pending(input.runId);
           // A responded input may have committed just before the previous executor
           // died. Always drive the run; an empty mailbox alone is not a no-op proof.
           const feed = invocations.feed(input.runId, initial);
-          try {
-            return await handler(message, { ...metadata, invocations: feed });
-          } finally {
-            await feed.return?.();
-          }
+          return executeWithInputs(
+            feed,
+            () => handler(message, metadata),
+            async (pending) => {
+              const result = await handler(
+                {
+                  runId: input.runId,
+                  invoke: true,
+                  requestId: pending.id,
+                  input: pending.payload,
+                },
+                metadata
+              );
+              await invocations.respond(input.runId, pending.id, result);
+            }
+          );
         }
       )(req);
     };
@@ -670,31 +691,31 @@ export function createQueue(
   ) => {
     if (!invocations) throw new Error('Postgres invoke is not enabled');
     await start();
-    return invocations.invoke(runId, payload, options, async (client) => {
-      const { rows } = await client.query<{ name: string }>(
-        'SELECT name FROM workflow.workflow_runs WHERE id = $1',
-        [runId]
-      );
-      if (!rows[0]) throw new WorkflowRunNotFoundError(runId);
-      const wake = MessageData.encode({
-        id: rows[0].name,
-        data: transport.serialize({ runId }) as Buffer,
-        messageId: MessageId.parse(`msg_${generateMessageId()}`),
-        attempt: 1,
-      });
-      // The mailbox insertion and wake share this transaction. No job_key:
-      // every invoke (including a completed request's retry) gets a wake.
-      await client.query(
-        `SELECT graphile_worker.add_job(identifier => $1, payload => $2::json,
+    return invocations.invoke(
+      runId,
+      payload,
+      options,
+      async (client, _id, run) => {
+        const wake = MessageData.encode({
+          id: run.workflowName,
+          data: transport.serialize({ runId }) as Buffer,
+          messageId: MessageId.parse(`msg_${generateMessageId()}`),
+          attempt: 1,
+        });
+        // The mailbox insertion and wake share this transaction. No job_key:
+        // every invoke (including a completed request's retry) gets a wake.
+        await client.query(
+          `SELECT graphile_worker.add_job(identifier => $1, payload => $2::json,
           queue_name => $3, max_attempts => $4)`,
-        [
-          executorTask(),
-          JSON.stringify(wake),
-          executorQueueName(runId),
-          MAX_GRAPHILE_JOB_ATTEMPTS,
-        ]
-      );
-    });
+          [
+            executorTask(),
+            JSON.stringify(wake),
+            executorQueueName(runId),
+            MAX_GRAPHILE_JOB_ATTEMPTS,
+          ]
+        );
+      }
+    );
   };
 
   async function deserializeMessageBody(data: Buffer): Promise<unknown> {
