@@ -754,7 +754,9 @@ describe('workflow arguments', () => {
         // `write()` early-acks, so the failure lands on `closed` — catchable,
         // with the world error preserved in the cause chain.
         await writer.write('payload').catch(() => {});
-        await expect(writer.closed).rejects.toThrow();
+        await expect(writer.closed).rejects.toMatchObject({
+          cause: { code: 'TIMEOUT' },
+        });
         expect(runsGet).toHaveBeenCalledTimes(1);
 
         await settle();
