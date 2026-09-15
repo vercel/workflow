@@ -212,6 +212,28 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(lines.join('\n')).toContain('"ws_send_callback"');
     expect(lines.join('\n')).toContain('"pending_resolve"');
   });
+  it('does not attach a diagnostic settlement observer when diagnostics are off', async () => {
+    const rejection = new Error('ignored write');
+    const { session, writeHttp } = makeSession(undefined, true);
+    writeHttp.mockRejectedValueOnce(rejection);
+    const originalThen = Promise.prototype.then;
+    let callsFromWrite = 0;
+    // biome-ignore lint/suspicious/noThenProperty: regression seam counts observers attached synchronously by write()
+    Promise.prototype.then = function (...args) {
+      callsFromWrite++;
+      return originalThen.apply(this, args);
+    } as typeof Promise.prototype.then;
+    const write = session.write(0, ['one']);
+    // biome-ignore lint/suspicious/noThenProperty: restore regression seam before awaiting
+    Promise.prototype.then = originalThen;
+    // enqueue owns exactly tail.then(operation) + result.catch(noop). A third
+    // call here would be a diagnostic observer that marks ignored rejection
+    // handled before the caller receives its promise.
+    expect(callsFromWrite).toBe(2);
+    expect(write).toBeInstanceOf(Promise);
+    await expect(write).rejects.toBe(rejection);
+  });
+
   it('keeps HTTP as the default without constructing a socket', async () => {
     const { session, writeHttp, closeHttp } = makeSession();
     await session.write(0, ['one']);

@@ -272,19 +272,20 @@ describe('streams.get', () => {
     setStreamDiagnosticSinkForTest((line) => lines.push(line));
     const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
     let canceledWith: unknown;
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(new Uint8Array(0));
-            controller.enqueue(new Uint8Array([1, 2]));
-          },
-          cancel(reason) {
-            canceledWith = reason;
-          },
-        }),
-        { status: 200 }
-      )
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array(0));
+              controller.enqueue(new Uint8Array([1, 2]));
+            },
+            cancel(reason) {
+              canceledWith = reason;
+            },
+          }),
+          { status: 200 }
+        )
     );
 
     const streamer = await getStreamer();
@@ -305,6 +306,19 @@ describe('streams.get', () => {
     expect(canceledWith).toBe('stop');
     expect(lines.join('\n')).toContain('"raw_first_nonempty_body_chunk"');
     expect(lines.join('\n')).toContain('"cancel"');
+    const firstSession = (
+      JSON.parse(lines.at(-1) ?? '{}') as { session: number }
+    ).session;
+
+    const next = await streamer.streams.get(
+      `wrun_${ulid}`,
+      `strm_${ulid}_user_YmVuY2gtY3R0`
+    );
+    await next.cancel('again');
+    const secondSession = (
+      JSON.parse(lines.at(-1) ?? '{}') as { session: number }
+    ).session;
+    expect(secondSession).not.toBe(firstSession);
   });
 
   it('throws a typed terminal error with the retention details on 410', async () => {

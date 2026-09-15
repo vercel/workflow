@@ -132,6 +132,23 @@ describe('stream slowdown diagnostic bounds and safety', () => {
     ]);
   });
 
+  it('removes a finished shared session so repeated canceled reads stay independent', () => {
+    enable();
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    for (let i = 0; i < 300; i++) {
+      const diagnostic = createStreamDiagnostic('read', RUN, STREAM);
+      if (!diagnostic) throw new Error('expected diagnostic');
+      diagnostic.event('reader_entry', i);
+      diagnostic.finish('cancel');
+    }
+    const records = lines.map(
+      (line) => JSON.parse(line) as { session: number }
+    );
+    expect(records).toHaveLength(300);
+    expect(new Set(records.map(({ session }) => session))).toHaveLength(300);
+  });
+
   it('accounts for tuples lost to a throwing sink', () => {
     enable();
     const lines: string[] = [];

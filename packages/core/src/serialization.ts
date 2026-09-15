@@ -800,6 +800,8 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
     // emitted when the stream drains.
     let chunksDelivered = 0;
     let bytesDelivered = 0;
+    const diagnostic = createStreamDiagnostic('read', runId, name);
+    diagnostic?.event('reader_session_entry', startIndex);
     super({
       // @ts-expect-error Not sure why TypeScript is complaining about this
       type: 'bytes',
@@ -815,6 +817,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
           reader = this.#reader = stream.getReader();
         }
         if (!reader) {
+          diagnostic?.finish('reader_unavailable');
           controller.error(new Error('Failed to get reader'));
           return;
         }
@@ -831,6 +834,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
               bytesDelivered
             );
           }
+          diagnostic?.finish('reader_eof');
           controller.close();
         } else {
           // The server flushes a leading zero-length chunk (v3+) to commit
@@ -858,6 +862,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         }
       },
       cancel: async (reason) => {
+        diagnostic?.finish('reader_cancel');
         if (this.#reader) {
           await this.#reader.cancel(reason).catch(() => {});
           this.#reader = undefined;
@@ -1089,7 +1094,7 @@ export function createReconnectingFramedStream(
             if (!(await connect())) return;
           } catch (err) {
             if (canceled) return;
-            diagnostic?.checkpoint('initial_connect_rejected');
+            diagnostic?.finish('initial_connect_rejected');
             controller.error(err);
             return;
           }
@@ -1102,14 +1107,14 @@ export function createReconnectingFramedStream(
         } catch (err) {
           if (canceled) return;
           if (!reconnectSupported) {
-            diagnostic?.checkpoint('body_read_rejected');
+            diagnostic?.finish('body_read_rejected');
             controller.error(err);
             return;
           }
           try {
             if (!(await reconnect())) return;
           } catch (reconnectErr) {
-            diagnostic?.checkpoint('reconnect_exhausted');
+            diagnostic?.finish('reconnect_exhausted');
             controller.error(reconnectErr);
             return;
           }
@@ -1133,7 +1138,7 @@ export function createReconnectingFramedStream(
             try {
               if (!(await reconnect())) return;
             } catch (reconnectErr) {
-              diagnostic?.checkpoint('reconnect_exhausted');
+              diagnostic?.finish('reconnect_exhausted');
               controller.error(reconnectErr);
               return;
             }
@@ -1218,7 +1223,7 @@ export function createReconnectingFramedStream(
       }
     },
     cancel: async (reason) => {
-      diagnostic?.checkpoint('reader_cancel');
+      diagnostic?.finish('reader_cancel');
       canceled = true;
       cancelReason = reason;
       const currentReader = reader;

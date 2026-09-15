@@ -262,21 +262,24 @@ class VercelStreamWriteSession implements StreamWriteSession {
       sessionFirstWrite: !this.sessionHasWrite,
     };
     this.sessionHasWrite = true;
-    const result = this.enqueue(() =>
-      this.writeInternal(chunkSeq, chunks, timing)
-    );
-    void result.then(
-      () =>
+    if (!this.diagnostic) {
+      return this.enqueue(() => this.writeInternal(chunkSeq, chunks, timing));
+    }
+    return this.enqueue(async () => {
+      try {
+        await this.writeInternal(chunkSeq, chunks, timing);
         this.diagnostic?.event(
           'session_write_return',
           groupOrdinal,
           chunkSeq,
           chunks.length,
           bytes
-        ),
-      () => this.diagnostic?.event('session_write_reject', groupOrdinal)
-    );
-    return result;
+        );
+      } catch (error) {
+        this.diagnostic?.event('session_write_reject', groupOrdinal);
+        throw error;
+      }
+    });
   }
 
   private async writeInternal(
