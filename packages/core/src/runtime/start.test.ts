@@ -68,6 +68,46 @@ describe('start', () => {
 
     it.each([
       [
+        'explicit resource management syntax',
+        `async function workflow() {
+  "use workflow";
+  using resource = null;
+  return resource;
+}`,
+      ],
+      [
+        'regular expression modifiers',
+        `async function workflow() {
+  "use workflow";
+  return /(?i:a)/.test("A");
+}`,
+      ],
+    ])('rejects unsupported %s before start side effects', async (_label, unsupportedSource) => {
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getBackendCapabilities: vi
+          .fn()
+          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        uploadDynamicWorkflowCode: upload,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start(unsupportedSource, {
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        })
+      ).rejects.toThrow(/not valid JavaScript/);
+      expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
         'nested declaration',
         'function outer() { async function workflow() { "use workflow"; } }',
       ],
@@ -114,6 +154,7 @@ describe('start', () => {
       ['steps', 'var steps = null;'],
       ['sleep', 'const sleep = null;'],
       ['createHook', 'let createHook = null;'],
+      ['Error', 'class Error {}'],
     ])('starts safely with caller %s declarations', async (_binding, declaration) => {
       eventsCreate.mockImplementation(async (runId, event) => ({
         run: {
