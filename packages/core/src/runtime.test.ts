@@ -3759,4 +3759,41 @@ describe('workflowEntrypoint run-failure logging', () => {
     expect(runFailureLog).toContain('user workflow blew up');
     expect(runFailureLog).toMatch(/^\s+at /m);
   });
+
+  /**
+   * Message and stack are not enough when the terminal error is a wrapper.
+   * A world-layer transport failure names the request it was making, and the
+   * `TypeError: fetch failed` under it names nothing at all — the socket/DNS
+   * failure that actually happened is only reachable through `cause`, which
+   * nothing in the log pipeline used to read.
+   */
+  it('emits the cause chain of a wrapped terminal error', async () => {
+    const workflowRun = await failingRun();
+
+    await runWorkflowHandlerWithEvents(
+      `async function workflow() {
+        throw new Error('POST /v4/runs/wrun_1/events transport failure (UND_ERR_SOCKET)', {
+          cause: new TypeError('fetch failed', {
+            cause: Object.assign(new Error('other side closed'), {
+              name: 'SocketError',
+              code: 'UND_ERR_SOCKET',
+            }),
+          }),
+        });
+      };globalThis.__private_workflows = new Map();
+      globalThis.__private_workflows.set("workflow", workflow);`,
+      workflowRun,
+      []
+    );
+
+    const runFailureLog = errorSpy.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.includes('Error while running workflow'));
+    expect(runFailureLog).toBeDefined();
+
+    expect(runFailureLog).toContain('TypeError: fetch failed');
+    expect(runFailureLog).toContain(
+      'SocketError: other side closed (UND_ERR_SOCKET)'
+    );
+  });
 });
