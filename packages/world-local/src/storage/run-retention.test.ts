@@ -142,6 +142,13 @@ describe('run retention (world-local)', () => {
       expect((await storage.runs.get(run.runId)).dynamicWorkflowCode).toEqual(
         DYNAMIC_CODE
       );
+      const createdEvent = (
+        await storage.events.list({ runId: run.runId, pagination: {} })
+      ).data.find((event) => event.eventType === 'run_created');
+      expect(
+        (createdEvent as { eventData?: Record<string, unknown> }).eventData
+          ?.dynamicWorkflowCode
+      ).toBeUndefined();
 
       await complete(run.runId);
 
