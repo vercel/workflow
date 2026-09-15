@@ -5,7 +5,7 @@ type: conceptual
 summary: Pass workflow source to start() to run orchestration whose shape is only known after deployment.
 prerequisites:
   - /docs/foundations/starting-workflows
-  - /docs/advanced/code-transform
+  - /docs/how-it-works/code-transform
 related:
   - /docs/api-reference/workflow-api/start
   - /docs/how-it-works/encryption
@@ -16,7 +16,7 @@ related:
 Dynamic workflows are **experimental**. The API may change without a major version bump. They also require a World with dynamic-source storage — see [World support](#world-support).
 </Callout>
 
-Normally a workflow function is compiled into your build: the [code transform](/docs/advanced/code-transform) rewrites every `"use workflow"` function, the build bundles them, and `start()` names one by importing it.
+Normally a workflow function is compiled into your build: the [code transform](/docs/how-it-works/code-transform) rewrites every `"use workflow"` function, the build bundles them, and `start()` names one by importing it.
 
 A dynamic workflow skips that. You hand `start()` a string of JavaScript, and it runs — no build, no deploy:
 
@@ -37,7 +37,7 @@ async function workflow(input) {
 `,
   [{ userId: 'user_123' }],
   {
-    dynamic: {
+    experimental_dynamic: {
       steps: { fetchUser, sendEmail },
     },
   }
@@ -46,7 +46,7 @@ async function workflow(input) {
 console.log(await run.status); // 'running'
 ```
 
-Only the *orchestration* is dynamic. Every step the source can call was deployed with your app — you choose which ones by passing them in `dynamic.steps`. There is no way to define a new step from source.
+Only the *orchestration* is dynamic. Every step the source can call was deployed with your app — you choose which ones by passing them in `experimental_dynamic.steps`. There is no way to define a new step from source.
 
 ## When to use this
 
@@ -65,13 +65,13 @@ Dynamic source has no imports. Instead, the generated code predefines a small ru
 
 | Binding | What it is |
 | --- | --- |
-| `steps` | Frozen object of the aliases you passed in `dynamic.steps`. Calling one dispatches that registered step. |
+| `steps` | Frozen object of the aliases you passed in `experimental_dynamic.steps`. Calling one dispatches that registered step. |
 | `sleep` | The [durable sleep](/docs/api-reference/workflow/sleep) primitive. |
 | `createHook` | The [hook](/docs/foundations/hooks) primitive, for waiting on an external signal. |
 
 The source also runs inside the normal deterministic workflow VM, so the usual [workflow globals](/docs/api-reference/workflow-globals) — `Date`, `Math.random`, `crypto`, `URL`, `TextEncoder`, `structuredClone`, and the rest — are available with the same determinism guarantees as a static workflow.
 
-`createWebhook` and `getWritable` are **not** available to dynamic source.
+Dynamic source exposes only the small set of primitives injected by its generated wrapper. `createWebhook()` also needs the static workflow module's URL and metadata helper, and `getWritable()` needs its workflow-stream helper, so neither is currently injected into dynamic source. Use `createHook()` with server-side `resumeHook()`, and perform streaming through registered steps or a statically compiled workflow.
 
 Here is a longer example using a timer and a hook to wait for an approval:
 
@@ -86,7 +86,7 @@ async function workflow(input) {
 
   await sleep("15m");
 
-  const approval = createHook({ token: "approval-" + input.userId });
+  const approval = createHook({ token: input.approvalToken });
   const result = await Promise.race([
     approval,
     sleep("1d").then(() => ({ approved: false, timedOut: true })),
@@ -99,24 +99,30 @@ async function workflow(input) {
   return result;
 }
 `,
-  [{ userId: 'user_123', email: 'ada@example.com' }],
+  [{
+    userId: 'user_123',
+    email: 'ada@example.com',
+    approvalToken: 'approval-req_01J...',
+  }],
   {
-    dynamic: {
+    experimental_dynamic: {
       steps: { sendEmail },
     },
   }
 );
 ```
 
+Supply a unique, deterministic approval token from the caller. The workflow must recreate the same token during replay, while the external service needs that token to call `resumeHook()`; do not use a tenant or user ID alone when concurrent runs can overlap.
+
 ## Rules for the source
 
 `start()` validates the source before it writes anything, so a definition that could never run fails at the call site rather than on a queue delivery:
 
-- It must declare `async function workflow(...)`. Pass `dynamic.exportName` to use a different name.
+- It must declare `async function workflow(...)`. Pass `experimental_dynamic.exportName` to use a different name.
 - The function's first statement must be the `"use workflow"` directive.
 - No `import` or `export`. Reach steps through `steps`, not through modules.
 - JavaScript only — no TypeScript syntax, no npm dependencies, no bundling.
-- No inline `"use step"` functions. Steps come from `dynamic.steps`.
+- No inline `"use step"` functions. Steps come from `experimental_dynamic.steps`.
 - At most 128 KB of source.
 
 Everything a static workflow must obey still applies: the body has to be [deterministic](/docs/foundations/workflows-and-steps), and any side effect belongs in a step.
@@ -190,7 +196,7 @@ createWebhook, or getWritable.
 });
 
 const run = await start(source, [{ customerId: 'cus_123' }], {
-  dynamic: { steps: stepCatalog },
+  experimental_dynamic: { steps: stepCatalog },
 });
 ```
 
