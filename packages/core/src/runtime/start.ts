@@ -47,7 +47,11 @@ import {
   type DynamicWorkflowMetadata,
 } from './dynamic-workflow.js';
 import { getWorldLazy } from './get-world-lazy.js';
-import { getWorkflowQueueName, healthCheck } from './helpers.js';
+import {
+  DYNAMIC_WORKFLOW_VERSION,
+  getWorkflowQueueName,
+  healthCheck,
+} from './helpers.js';
 import { Run } from './run.js';
 import { getWorkflowVmFromEnv } from './vm-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
@@ -437,8 +441,21 @@ export async function start<TArgs extends unknown[], TResult>(
           : ulid()
       }`;
 
+      if (dynamicWorkflow) {
+        const backendCapabilities = await world.getBackendCapabilities?.();
+        if (
+          backendCapabilities?.dynamicWorkflowStorageVersion !==
+          DYNAMIC_WORKFLOW_VERSION
+        ) {
+          throw new WorkflowRuntimeError(
+            `Dynamic workflows require backend storage capability version ${DYNAMIC_WORKFLOW_VERSION}. No compatible capability was attested, so no run was created.`
+          );
+        }
+      }
+
       let framedByteStreams: boolean;
       let targetSupportsCompression: boolean;
+      let targetDynamicWorkflowVersion: number | undefined;
       // The consumer's hook-resume protocol version, stamped onto the new
       // run. Current producers write the hook_received event durably before
       // publishing the wake and never read it; OLDER producers gate their
@@ -455,6 +472,7 @@ export async function start<TArgs extends unknown[], TResult>(
         // Same deployment: this process is the consumer, so its own constant
         // is authoritative.
         targetHookResumeInputVersion = HOOK_RESUME_INPUT_VERSION;
+        targetDynamicWorkflowVersion = DYNAMIC_WORKFLOW_VERSION;
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
         targetSupportsCompression = false;
@@ -462,6 +480,7 @@ export async function start<TArgs extends unknown[], TResult>(
         // honors `hookInput`; leave the marker off (older producers fail
         // closed to their sequential path).
         targetHookResumeInputVersion = undefined;
+        targetDynamicWorkflowVersion = undefined;
       } else {
         // Ask for this run's public key while we're here. The probe already
         // blocks `start()` on every cross-deployment call, and the responder
@@ -475,7 +494,15 @@ export async function start<TArgs extends unknown[], TResult>(
           runId,
           timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
           namespace: opts.namespace,
-        }).catch(() => undefined);
+        }).catch((error) => {
+          if (dynamicWorkflow) {
+            throw new WorkflowRuntimeError(
+              `Dynamic workflows require target runtime capability version ${DYNAMIC_WORKFLOW_VERSION}; the target probe failed before run creation.`,
+              { cause: error }
+            );
+          }
+          return undefined;
+        });
         probedRunPublicKey = probe?.encryptionPublicKey;
         const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
         framedByteStreams = capabilities.framedByteStreams;
@@ -486,6 +513,16 @@ export async function start<TArgs extends unknown[], TResult>(
         // `hookResumeInputVersion` reflects the consumer. Undefined on an
         // older target or a probe timeout, leaving the marker off.
         targetHookResumeInputVersion = probe?.hookResumeInputVersion;
+        targetDynamicWorkflowVersion = probe?.dynamicWorkflowVersion;
+      }
+
+      if (
+        dynamicWorkflow &&
+        targetDynamicWorkflowVersion !== DYNAMIC_WORKFLOW_VERSION
+      ) {
+        throw new WorkflowRuntimeError(
+          `Dynamic workflows require target runtime capability version ${DYNAMIC_WORKFLOW_VERSION}. The target did not attest that exact version, so no run was created.`
+        );
       }
 
       const ops: Promise<void>[] = [];
@@ -642,6 +679,26 @@ export async function start<TArgs extends unknown[], TResult>(
           : undefined;
       }
 
+      // Build and validate the complete execution context before serializing or
+      // uploading dynamic source and before either run-creation side effect.
+      const workflowVm = getWorkflowVmFromEnv();
+      const executionContext = {
+        traceCarrier,
+        workflowCoreVersion,
+        features: { encryption: !!encryptionKey },
+        ...(targetHookResumeInputVersion !== undefined
+          ? { hookResumeInputVersion: targetHookResumeInputVersion }
+          : {}),
+        ...(workflowVm ? { workflowVm } : {}),
+        ...(opts.replayedFromRunId
+          ? { replayedFromRunId: opts.replayedFromRunId }
+          : {}),
+        ...(dynamicWorkflow
+          ? { dynamicWorkflow: dynamicWorkflow.metadata }
+          : {}),
+      };
+      world.validateRunExecutionContext?.(executionContext);
+
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it
       // Compress workflow arguments only when the run itself is marked as
@@ -729,43 +786,6 @@ export async function start<TArgs extends unknown[], TResult>(
       // executing. Worlds with a single tenant return undefined and the field
       // is absent.
       const creatorEnvironment = world.getEnvironment?.();
-
-      // If WORKFLOW_VM is set on the client starting the run, stamp the
-      // engine choice into the run's executionContext so the run keeps
-      // executing on the engine it started on (the same deployment can
-      // serve both VM engines). Unknown values throw; see
-      // getWorkflowVmFromEnv().
-      const workflowVm = getWorkflowVmFromEnv();
-
-      const executionContext = {
-        traceCarrier,
-        workflowCoreVersion,
-        features: { encryption: !!encryptionKey },
-        // Attest that the *consumer* deployment's runtime re-ensures a
-        // `hook_received` event from a queue message's `hookInput` on replay.
-        // An OLDER producer resuming this run reads the marker (mirrored onto
-        // the hook's resumeContext by the server) to decide whether its lazy
-        // fast path is safe. For a cross-deployment start the consumer is the
-        // target deployment, so we stamp the *target's* value carried back on
-        // the health-check probe, never the caller's. Omitted when we could
-        // not attest the target (older target, timeout, or no probe channel),
-        // which fails the resume gate closed to the sequential path.
-        ...(targetHookResumeInputVersion !== undefined
-          ? { hookResumeInputVersion: targetHookResumeInputVersion }
-          : {}),
-        ...(workflowVm ? { workflowVm } : {}),
-        ...(opts.replayedFromRunId
-          ? { replayedFromRunId: opts.replayedFromRunId }
-          : {}),
-        // Plaintext marker for a dynamic run: the runtime reads it to decide
-        // whether to replay from the deployment's bundle or from the run's
-        // own stored code, and observability reads it to show that a run is
-        // dynamic (and which steps it could call) without decrypting the code
-        // itself. Small by construction — see DynamicWorkflowMetadata.
-        ...(dynamicWorkflow
-          ? { dynamicWorkflow: dynamicWorkflow.metadata }
-          : {}),
-      };
 
       // Call events.create (run_created) and queue in parallel.
       // If events.create fails with 429/5xx, the run was still accepted

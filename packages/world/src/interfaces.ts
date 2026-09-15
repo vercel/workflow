@@ -487,6 +487,12 @@ export interface Storage {
   };
 }
 
+/** Durable storage capabilities advertised by a World backend. */
+export interface BackendCapabilities {
+  /** Version of durable dynamic-workflow storage supported by the backend. */
+  dynamicWorkflowStorageVersion?: number;
+}
+
 /**
  * Optional feature capabilities a World implementation declares so the core
  * runtime can enable optimizations that depend on backend behavior, instead
@@ -641,6 +647,18 @@ export interface World extends Queue, Streamer, Storage {
    * "unsupported": runtime optimizations gated on a capability fail closed.
    */
   capabilities?: WorldCapabilities;
+
+  /**
+   * Fetches live backend capabilities. Dynamic starts require exact version
+   * support and fail closed when this method or its attestation is absent.
+   */
+  getBackendCapabilities?(): Promise<BackendCapabilities>;
+
+  /**
+   * Validates the complete execution context against World-specific limits.
+   * Implementations must throw before any durable start side effect.
+   */
+  validateRunExecutionContext?(value: Record<string, unknown>): void;
 
   /**
    * Absolute wall-clock time when the current function invocation will be
