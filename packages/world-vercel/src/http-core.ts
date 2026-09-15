@@ -133,11 +133,10 @@ const REQUEST_CONSTRUCTION_ERROR_CODES = new Set([
  * Classify a rejection from `fetch()` / `nodeHttpFetch()`, calls that only
  * settle once the response headers are in hand.
  *
- * A rejection there means *no response was produced*, which is the definition
- * of a transport failure: the backend never got to answer, so nothing about
- * the outcome can be attributed to the workflow's own code. So the default is
- * inverted relative to {@link getTransientTransportCode}: everything is a
- * transport failure unless it is a request-construction fault.
+ * A rejection leaves the request outcome unknown: it may have failed locally,
+ * or the backend may have applied it without a response reaching the caller.
+ * Preserve known request-construction faults; route other failures through
+ * the existing retry policies instead of attributing them to user code.
  *
  * {@link TRANSIENT_TRANSPORT_ERROR_CODES} alone could not hold that line,
  * because it can only list failures someone has already seen. The ones it
@@ -164,7 +163,18 @@ export function describeTransportFailure(error: unknown): string | undefined {
   let innermostName: string | undefined;
   let current = error;
   for (let depth = 0; current && depth < 8; depth++) {
-    const { code, name } = current as { code?: unknown; name?: unknown };
+    const { code, name, message } = current as {
+      code?: unknown;
+      name?: unknown;
+      message?: unknown;
+    };
+    // Node Fetch enforces the Fetch Standard's port blocking after Request
+    // construction. Its `TypeError: fetch failed` wraps a code-less
+    // `Error: bad port`; retrying cannot make that URL acceptable. Preserve
+    // the original rejection without duplicating Fetch's blocked-port list.
+    if (name === 'Error' && message === 'bad port' && code === undefined) {
+      return undefined;
+    }
     if (typeof code === 'string' && code) {
       if (REQUEST_CONSTRUCTION_ERROR_CODES.has(code)) return undefined;
       firstCode ??= code;

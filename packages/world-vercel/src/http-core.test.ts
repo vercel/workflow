@@ -142,6 +142,32 @@ describe('instrumentedFetch URL validation', () => {
   });
 
   it.each([
+    'TRANSPORT',
+    'STREAM_ERROR',
+  ] as const)('preserves Fetch port-blocking errors instead of wrapping them as %s', async (transportErrorCode) => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+    // Use real Fetch: Request construction accepts this URL, but Fetch
+    // rejects it locally with a code-less `Error: bad port` cause.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const rejection = await instrumentedFetch({
+      method: 'GET',
+      url: 'http://127.0.0.1:21/events',
+      headers: new Headers(),
+      peerService: 'workflow-server',
+      transportErrorCode,
+    }).catch((error: unknown) => error);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await expect(fetchSpy.mock.results[0].value).rejects.toBe(rejection);
+    expect(rejection).toMatchObject({
+      name: 'TypeError',
+      message: 'fetch failed',
+      cause: { message: 'bad port' },
+    });
+    expect(WorkflowWorldError.is(rejection)).toBe(false);
+  });
+
+  it.each([
     '0',
     '1',
   ])('rejects unsupported protocols before dispatch (WORKFLOW_NODE_HTTP=%s)', async (mode) => {
