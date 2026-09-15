@@ -187,10 +187,14 @@ async function sha256Hex(input: string): Promise<string> {
     .join('');
 }
 
+// Pinned to the oldest supported replay engine (Node 22 / V8 12.4).
+// Raise only after every supported Node and QuickJS runtime accepts the grammar.
+const DYNAMIC_WORKFLOW_ECMA_VERSION = 2024;
+
 function parseDynamicWorkflowSource(source: string): Program {
   try {
     return parse(source, {
-      ecmaVersion: 'latest',
+      ecmaVersion: DYNAMIC_WORKFLOW_ECMA_VERSION,
       sourceType: 'script',
     });
   } catch (error) {
@@ -204,7 +208,7 @@ function parseDynamicWorkflowSource(source: string): Program {
 function assertGeneratedWorkflowCodeParses(workflowCode: string): void {
   try {
     parse(workflowCode, {
-      ecmaVersion: 'latest',
+      ecmaVersion: DYNAMIC_WORKFLOW_ECMA_VERSION,
       sourceType: 'script',
     });
   } catch (error) {
@@ -334,7 +338,7 @@ export async function compileDynamicWorkflow(
   const stepBindings = stepEntries
     .map(
       ([alias, stepId]) =>
-        `  ${JSON.stringify(alias)}: __dynamicUseStep(${JSON.stringify(stepId)})`
+        `  [${JSON.stringify(alias)}]: __dynamicUseStep(${JSON.stringify(stepId)})`
     )
     .join(',\n');
 
