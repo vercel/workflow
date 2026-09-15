@@ -64,6 +64,46 @@ describe('promoteAbortErrorToFatal', () => {
 });
 
 describe('formatErrorCauseChain', () => {
+  it.each([
+    'cause',
+    'name',
+    'message',
+    'code',
+    'errors',
+  ])('tolerates a throwing %s getter in the cause chain', (property) => {
+    const cause = new Error('inner');
+    Object.defineProperty(cause, property, {
+      get() {
+        throw new Error('getter failed');
+      },
+    });
+
+    expect(formatErrorCauseChain(new Error('outer', { cause }))).toContain(
+      '[unavailable cause]'
+    );
+  });
+
+  it('preserves readable links before an inaccessible cause', () => {
+    const { proxy, revoke } = Proxy.revocable({}, {});
+    revoke();
+    const middle = new Error('middle', { cause: proxy });
+
+    expect(formatErrorCauseChain(new Error('outer', { cause: middle }))).toBe(
+      'Error: middle\n[unavailable cause]'
+    );
+  });
+
+  it('tolerates a throwing getter on the outer cause', () => {
+    const error = new Error('outer');
+    Object.defineProperty(error, 'cause', {
+      get() {
+        throw new Error('getter failed');
+      },
+    });
+
+    expect(formatErrorCauseChain(error)).toBe('[unavailable cause]');
+  });
+
   it('returns an empty string when there is no cause', () => {
     expect(formatErrorCauseChain(new Error('boom'))).toBe('');
     expect(formatErrorCauseChain('not an error')).toBe('');

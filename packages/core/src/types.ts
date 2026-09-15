@@ -61,19 +61,25 @@ export function formatErrorCauseChain(value: unknown): string {
   const lines: string[] = [];
   const seen = new Set<unknown>();
 
-  for (
-    let current = causeOf(value);
-    current != null && lines.length <= MAX_CAUSE_LINKS;
-    current = causeOf(current)
-  ) {
-    if (typeof current !== 'object') {
-      lines.push(String(current));
-      break;
+  try {
+    for (
+      let current = causeOf(value);
+      current != null && lines.length <= MAX_CAUSE_LINKS;
+      current = causeOf(current)
+    ) {
+      if (typeof current !== 'object') {
+        lines.push(String(current));
+        break;
+      }
+      // A cause chain can loop (`err.cause = err`) or repeat a shared error.
+      if (seen.has(current)) break;
+      seen.add(current);
+      lines.push(describeErrorLink(current), ...aggregatedLinks(current));
     }
-    // A cause chain can loop (`err.cause = err`) or repeat a shared error.
-    if (seen.has(current)) break;
-    seen.add(current);
-    lines.push(describeErrorLink(current), ...aggregatedLinks(current));
+  } catch {
+    // Causes can contain getters or proxies that throw. Logging must not
+    // replace the original error or prevent the run_failed event from being written.
+    lines.push('[unavailable cause]');
   }
 
   return lines.length > MAX_CAUSE_LINKS

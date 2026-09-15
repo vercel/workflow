@@ -615,6 +615,36 @@ describe('makeRequest body-parse retry', () => {
   });
 });
 
+describe('makeRequest URL validation', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    '0',
+    '1',
+  ])('rejects unsupported backend protocols before dispatch (WORKFLOW_NODE_HTTP=%s)', async (mode) => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, mode);
+    vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', 'ftp://localhost');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    await expect(
+      makeRequest({
+        endpoint: '/v3/runs/wrun_test/events',
+        options: { method: 'GET' },
+        schema: z.unknown(),
+        config: { token: 'test-token' },
+      })
+    ).rejects.toThrow(TypeError);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe('makeRequest transport errors', () => {
   const schema = z.object({ value: z.string() });
   const originalEnv = process.env;

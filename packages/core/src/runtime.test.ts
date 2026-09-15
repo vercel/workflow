@@ -3760,6 +3760,38 @@ describe('workflowEntrypoint run-failure logging', () => {
     expect(runFailureLog).toMatch(/^\s+at /m);
   });
 
+  it('records run_failed when a cause code getter throws', async () => {
+    const createdEvents: any[] = [];
+
+    await runWorkflowHandlerWithEvents(
+      `async function workflow() {
+        const cause = new Error('inner');
+        Object.defineProperty(cause, 'code', {
+          get() { throw new Error('code getter failed'); }
+        });
+        throw new Error('original failure', { cause });
+      };globalThis.__private_workflows = new Map();
+      globalThis.__private_workflows.set("workflow", workflow);`,
+      await failingRun(),
+      [],
+      { createdEvents }
+    );
+
+    expect(createdEvents).toContainEqual(
+      expect.objectContaining({
+        eventType: 'run_failed',
+        eventData: expect.objectContaining({
+          errorCode: RUN_ERROR_CODES.USER_ERROR,
+        }),
+      })
+    );
+    const runFailureLog = errorSpy.mock.calls
+      .map((call) => String(call[0]))
+      .find((line) => line.includes('Error while running workflow'));
+    expect(runFailureLog).toContain('original failure');
+    expect(runFailureLog).toContain('[unavailable cause]');
+  });
+
   /**
    * Message and stack are not enough when the terminal error is a wrapper.
    * A world-layer transport failure names the request it was making, and the

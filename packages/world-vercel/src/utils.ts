@@ -22,6 +22,7 @@ import {
   httpLog,
   logCurlRepro,
   parseRetryAfter,
+  validateHttpUrl,
 } from './http-core.js';
 
 import {
@@ -354,6 +355,7 @@ export async function makeRequest<T>({
   const method = (options.method || 'GET').toUpperCase();
   const { baseUrl, headers } = await getHttpConfig(config);
   const url = `${baseUrl}${endpoint}`;
+  validateHttpUrl(url);
 
   // Standard OTEL span name for HTTP client: "{method}"
   // See: https://opentelemetry.io/docs/specs/semconv/http/http-spans/#name

@@ -95,6 +95,18 @@ export function getTransientTransportCode(error: unknown): string | undefined {
   return undefined;
 }
 
+/** Reject invalid URLs before dispatch, where a failure would be retryable. */
+export function validateHttpUrl(url: string): void {
+  const { protocol } = new URL(url);
+  // Both fetch and nodeHttpFetch can reject unsupported schemes without an
+  // error code, so describeTransportFailure cannot identify these faults.
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    throw new TypeError(
+      `Unsupported URL protocol ${protocol}; expected http: or https:`
+    );
+  }
+}
+
 /**
  * Codes that mean the request was never *formed*, as opposed to formed and
  * then failed on the wire. `fetch()` reports a malformed URL, an invalid
@@ -663,6 +675,7 @@ export async function instrumentedFetch(
     transportErrorCode = 'TRANSPORT',
   } = opts;
   const label = logLabel ?? url;
+  validateHttpUrl(url);
 
   return withHttpClientSpan(
     { method, url, peerService, spanName, attributes },

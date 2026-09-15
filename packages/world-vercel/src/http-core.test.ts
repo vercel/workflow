@@ -6,6 +6,7 @@ import {
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   describeTransportFailure,
@@ -14,6 +15,7 @@ import {
   getRequestTimeoutMs,
   getTransientTransportCode,
   getVercelDiagnostics,
+  instrumentedFetch,
   parseRetryAfter,
   REQUEST_TIMEOUT_MS,
   resolveVercelApiToken,
@@ -130,6 +132,37 @@ describe('errorForResponse', () => {
     const err = errorForResponse(503, 'unavailable');
     expect(err).toBeInstanceOf(WorkflowWorldError);
     expect((err as WorkflowWorldError).status).toBe(503);
+  });
+});
+
+describe('instrumentedFetch URL validation', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    '0',
+    '1',
+  ])('rejects unsupported protocols before dispatch (WORKFLOW_NODE_HTTP=%s)', async (mode) => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, mode);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const onTransportOutcome = vi.fn();
+    const onRequestDispatched = vi.fn();
+
+    await expect(
+      instrumentedFetch({
+        method: 'GET',
+        url: 'ftp://localhost/events',
+        headers: new Headers(),
+        peerService: 'workflow-server',
+        onTransportOutcome,
+        onRequestDispatched,
+      })
+    ).rejects.toThrow(TypeError);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(onTransportOutcome).not.toHaveBeenCalled();
+    expect(onRequestDispatched).not.toHaveBeenCalled();
   });
 });
 
