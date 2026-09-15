@@ -9,30 +9,34 @@ and the same ULID in the exact `strm_<ulid>_user_YmVuY2gtY3R0` (`bench-ctt`)
 stream ID. Writes additionally require a canonical `wrtr_` ULID. Headers and
 payloads cannot enable the diagnostic.
 
-Each JSON line has schema version `v: 3`, diagnostic/lane/kind, run/stream/session
+Each JSON line has schema version `v: 4`, diagnostic/lane/kind, run/stream/session
 continuity, `clock: "performance.now"`, `timeOrigin`, exact attempted/emitted/
 omitted group/chunk/byte counters, overflow and sink-failure counters. No
 payload, authorization, headers, secrets, stack, or error text is recorded.
-Offsets are comparable only within a session with the same `timeOrigin`; they do
-not measure server work or cross-process time.
+Monotonic values are comparable only within a process with the same
+`timeOrigin`; they do not measure server work or cross-process time.
 
 ## Write schema
 
-`writeTupleSchema: "completed-group-v1"` identifies one tuple per terminal
+`writeTupleSchema: "completed-group-v2"` identifies one tuple per terminal
 successful or rejected core group:
 
 ```text
 [groupOrdinal, reqId|null, chunkSeq, chunkCount, chunkBytes,
  connectionGeneration|null, connectionAttempt|null,
  outcome,
- coreDispatch, sessionEntry, encodeBegin, encodeEnd,
+ coreDispatchAt, coreDispatch, sessionEntry, encodeBegin, encodeEnd,
  wsSendCall, wsSendReturn, wsSendCallback, rawMessageCallback,
  decodeComplete, pendingResolve, sessionReturn, coreSettle]
 ```
 
-The twelve phases are same-clock offsets from `coreDispatch`. A `null` means the
-phase did not occur or was not observable at an existing seam; it is never a
-fabricated timestamp. Initial HTTP bootstrap/control and HTTP fallback groups
+`coreDispatchAt` is the group's absolute `performance.now()` monotonic anchor.
+The twelve phases remain same-clock offsets from that dispatch, including the
+`coreDispatch` zero offset. An absolute phase time is reconstructed exactly as
+`coreDispatchAt + phaseOffset`; `timeOrigin + coreDispatchAt` gives an
+approximate Unix-epoch wall time. A `null` means the phase did not occur or was
+not observable at an existing seam; it is never a fabricated timestamp. Initial
+HTTP bootstrap/control and HTTP fallback groups
 therefore have no `reqId` or WS phases. Rejected groups retain the phases that
 actually occurred. Connection generation and attempt currently advance together
 because each accepted socket generation is created by one numbered connection

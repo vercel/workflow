@@ -29,6 +29,7 @@ export type CompletedWriteTuple = readonly [
   connectionGeneration: number | null,
   connectionAttempt: number | null,
   outcome: 'ws_success' | 'http_success' | 'http_fallback_success' | 'rejected',
+  coreDispatchAt: Offset,
   coreDispatch: Offset,
   sessionEntry: Offset,
   encodeBegin: Offset,
@@ -133,7 +134,7 @@ type DiagnosticState = {
 
 const state = globalSingleton<DiagnosticState>(
   'workflow.stream.slowdown-diagnostics',
-  3,
+  4,
   () => ({ nextSession: 1, sessions: new Map() })
 );
 
@@ -202,6 +203,7 @@ function completeGroup(shared: Session, group: GroupTiming): void {
     group.generation ?? null,
     group.attempt ?? null,
     outcome,
+    group.coreDispatch ?? null,
     offset(group.coreDispatch, group.coreDispatch),
     offset(group.sessionEntry, group.coreDispatch),
     offset(group.encodeBegin, group.coreDispatch),
@@ -260,7 +262,7 @@ function emit(
       : [];
   const incidents = kind === 'terminal' ? shared.incidents : [];
   const record = {
-    v: 3,
+    v: 4,
     diagnostic: 'workflow-stream-slowdown',
     lane: shared.lane,
     kind,
@@ -271,7 +273,7 @@ function emit(
     clock: 'performance.now',
     timeOrigin: performance.timeOrigin,
     writeTupleSchema:
-      shared.lane === 'write' ? 'completed-group-v1' : undefined,
+      shared.lane === 'write' ? 'completed-group-v2' : undefined,
     tuples,
     readConnections,
     readAggregate:

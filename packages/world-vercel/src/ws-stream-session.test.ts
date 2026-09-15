@@ -223,7 +223,7 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     ]);
     // This direct world-session test has no core-dispatch clock origin, so
     // phase offsets are intentionally null rather than fabricated.
-    expect(completed[0].slice(8)).toEqual(Array(12).fill(null));
+    expect(completed[0].slice(8)).toEqual(Array(13).fill(null));
   });
   it('keeps the real WS close handshake out of data capacity accounting', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
@@ -343,7 +343,7 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     );
     await expect(writing).rejects.toThrow('timed out with no reply');
     const terminal = JSON.parse(lines.at(-1) ?? '{}');
-    expect(terminal.tuples[0][15]).toBeNull();
+    expect(terminal.tuples[0][16]).toBeNull();
     expect(
       terminal.incidents.some(
         ([, phase]: [number, string]) => phase === 'raw_control_message'

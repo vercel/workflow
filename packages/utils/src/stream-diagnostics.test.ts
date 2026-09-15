@@ -21,7 +21,47 @@ function enable(): void {
   process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
 }
 
+type ParsedWriteTimes = {
+  dispatch: number;
+  wallDispatch: number;
+  send: number | null;
+  rawCallback: number | null;
+  decode: number | null;
+  resolve: number | null;
+  coreSettle: number | null;
+};
+
+function parseWriteTimes(record: {
+  v: number;
+  timeOrigin: number;
+  writeTupleSchema?: string;
+  tuples: Array<Array<number | string | null>>;
+}): ParsedWriteTimes[] {
+  if (record.v !== 4 || record.writeTupleSchema !== 'completed-group-v2') {
+    throw new Error('unsupported stream diagnostic write tuple schema');
+  }
+  return record.tuples.map((tuple) => {
+    const dispatch = tuple[8];
+    if (typeof dispatch !== 'number')
+      throw new Error('missing dispatch anchor');
+    const absolute = (index: number): number | null => {
+      const phaseOffset = tuple[index];
+      return typeof phaseOffset === 'number' ? dispatch + phaseOffset : null;
+    };
+    return {
+      dispatch,
+      wallDispatch: record.timeOrigin + dispatch,
+      send: absolute(13),
+      rawCallback: absolute(16),
+      decode: absolute(17),
+      resolve: absolute(18),
+      coreSettle: absolute(20),
+    };
+  });
+}
+
 afterEach(() => {
+  vi.restoreAllMocks();
   delete process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS;
   delete process.env.VERCEL_ENV;
   delete process.env.VERCEL_PROJECT_ID;
@@ -103,6 +143,111 @@ describe('stream slowdown diagnostic gate', () => {
   });
 });
 
+describe('stream slowdown diagnostic write parser', () => {
+  it('reconstructs captured monotonic phases and an approximate wall clock exactly', () => {
+    enable();
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const captured = {
+      sessionStart: 100,
+      dispatch: 110,
+      entry: 112,
+      encodeBegin: 114,
+      encodeEnd: 116,
+      send: 120,
+      sendCallback: 124,
+      sendReturn: 126,
+      rawEvent: 132,
+      rawCallback: 130,
+      decode: 134,
+      resolve: 136,
+      sessionReturn: 138,
+      coreSettle: 140,
+      finish: 142,
+    };
+    const now = vi
+      .spyOn(performance, 'now')
+      .mockImplementationOnce(() => captured.sessionStart)
+      .mockImplementationOnce(() => captured.dispatch)
+      .mockImplementationOnce(() => captured.entry)
+      .mockImplementationOnce(() => captured.encodeBegin)
+      .mockImplementationOnce(() => captured.encodeEnd)
+      .mockImplementationOnce(() => captured.send)
+      .mockImplementationOnce(() => captured.sendCallback)
+      .mockImplementationOnce(() => captured.sendReturn)
+      .mockImplementationOnce(() => captured.rawEvent)
+      .mockImplementationOnce(() => captured.decode)
+      .mockImplementationOnce(() => captured.resolve)
+      .mockImplementationOnce(() => captured.sessionReturn)
+      .mockImplementationOnce(() => captured.coreSettle)
+      .mockImplementationOnce(() => captured.finish);
+    const diagnostic = createStreamDiagnostic('write', RUN, STREAM, WRITER);
+    if (!diagnostic) throw new Error('expected diagnostic');
+    diagnostic.event('core_buffer_dispatch', 1, 0, 1, 37);
+    diagnostic.event('session_write_entry', 1, 0, 1, 37);
+    diagnostic.event('encode_begin', 1, 0, 1, 1);
+    diagnostic.event('encode_end', 1, 49, 1);
+    diagnostic.event('ws_send_call', 1, 49, 1);
+    diagnostic.event('ws_send_callback', 1, 0, 1);
+    diagnostic.event('ws_send_return', 1, 1);
+    diagnostic.event('raw_correlated_message', 1, 9, captured.rawCallback);
+    diagnostic.event('decode_complete', 1, 9);
+    diagnostic.event('pending_resolve', 1);
+    diagnostic.event('session_write_return', 1, 0, 1, 37);
+    diagnostic.event('core_flush_settle', 1, 0, 1, 37);
+    diagnostic.finish('closed_ws');
+
+    expect(now).toHaveBeenCalledTimes(13);
+    const record = JSON.parse(lines[0]);
+    const [times] = parseWriteTimes(record);
+    expect(times).toEqual({
+      dispatch: captured.dispatch,
+      wallDispatch: record.timeOrigin + captured.dispatch,
+      send: captured.send,
+      rawCallback: captured.rawCallback,
+      decode: captured.decode,
+      resolve: captured.resolve,
+      coreSettle: captured.coreSettle,
+    });
+    expect(record.timeOrigin + times.dispatch).toBe(
+      record.timeOrigin + captured.dispatch
+    );
+    expect(record.tuples[0].slice(9)).toEqual([
+      0,
+      captured.entry - captured.dispatch,
+      captured.encodeBegin - captured.dispatch,
+      captured.encodeEnd - captured.dispatch,
+      captured.send - captured.dispatch,
+      captured.sendReturn - captured.dispatch,
+      captured.sendCallback - captured.dispatch,
+      captured.rawCallback - captured.dispatch,
+      captured.decode - captured.dispatch,
+      captured.resolve - captured.dispatch,
+      captured.sessionReturn - captured.dispatch,
+      captured.coreSettle - captured.dispatch,
+    ]);
+  });
+
+  it('rejects records whose envelope or tuple layout version differs', () => {
+    expect(() =>
+      parseWriteTimes({
+        v: 3,
+        timeOrigin: 1_700_000_000_000,
+        writeTupleSchema: 'completed-group-v1',
+        tuples: [],
+      })
+    ).toThrow('unsupported stream diagnostic write tuple schema');
+    expect(() =>
+      parseWriteTimes({
+        v: 4,
+        timeOrigin: 1_700_000_000_000,
+        writeTupleSchema: 'completed-group-v1',
+        tuples: [],
+      })
+    ).toThrow('unsupported stream diagnostic write tuple schema');
+  });
+});
+
 describe('stream slowdown diagnostic aggregation and bounds', () => {
   function recordCompletedGroup(
     diagnostic: NonNullable<ReturnType<typeof createStreamDiagnostic>>,
@@ -175,6 +320,12 @@ describe('stream slowdown diagnostic aggregation and bounds', () => {
       );
     }
     const records = lines.map((line) => JSON.parse(line));
+    expect(records.every((record) => record.v === 4)).toBe(true);
+    expect(
+      records.every(
+        (record) => record.writeTupleSchema === 'completed-group-v2'
+      )
+    ).toBe(true);
     const tuples = records.flatMap((record) => record.tuples);
     expect(tuples).toHaveLength(2_593);
     expect(tuples.map((tuple: number[]) => tuple[0])).toEqual(
@@ -187,6 +338,9 @@ describe('stream slowdown diagnostic aggregation and bounds', () => {
       cadence.sizes.map((bytes, index) => [index, 1, bytes])
     );
     expect(tuples.at(-1)?.[7]).toBe('ws_success');
+    expect(
+      tuples.every((tuple: number[]) => typeof tuple[8] === 'number')
+    ).toBe(true);
     expect(records.at(-1)).toMatchObject({
       kind: 'terminal',
       outcome: 'closed_ws',
@@ -246,6 +400,12 @@ describe('stream slowdown diagnostic aggregation and bounds', () => {
       groups.map(({ chunkSeq, count, bytes }) => [chunkSeq, count, bytes])
     );
     expect(groups.at(-1)?.chunkSeq + (groups.at(-1)?.count ?? 0)).toBe(2_593);
+    expect(groups.every(({ count }) => count <= MAX_CHUNKS_PER_BATCH)).toBe(
+      true
+    );
+    expect(groups.every(({ bytes }) => bytes <= MAX_BYTES_PER_BATCH)).toBe(
+      true
+    );
     expect(records.at(-1)).toMatchObject({
       chunksAttempted: 2_593,
       chunksEmitted: 2_593,
@@ -288,7 +448,7 @@ describe('stream slowdown diagnostic aggregation and bounds', () => {
       null,
       'http_success',
     ]);
-    expect(tuples[0].slice(10, 18)).toEqual(Array(8).fill(null));
+    expect(tuples[0].slice(11, 19)).toEqual(Array(8).fill(null));
     expect(tuples[1][7]).toBe('rejected');
     expect(tuples[2][7]).toBe('http_fallback_success');
     expect(JSON.parse(lines.at(-1) ?? '{}')).toMatchObject({
@@ -343,7 +503,7 @@ describe('stream slowdown diagnostic aggregation and bounds', () => {
     diagnostic.event('session_write_reject', 1);
     diagnostic.finish('poisoned');
     const record = JSON.parse(lines.at(-1) ?? '{}');
-    expect(record.tuples[0][15]).toBeNull();
+    expect(record.tuples[0][16]).toBeNull();
     expect(
       record.incidents.some(
         ([, phase]: [number, string]) => phase === 'raw_control_message'
