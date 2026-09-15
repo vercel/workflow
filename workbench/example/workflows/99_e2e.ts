@@ -209,7 +209,7 @@ export async function sleepingWorkflow(durationMs = 10_000) {
 export async function parallelSleepWorkflow() {
   'use workflow';
   const startTime = Date.now();
-  await Promise.all(Array.from({ length: 10 }, () => sleep('1s')));
+  await Promise.all(Array.from({ length: 10 }, () => sleep('6s')));
   const endTime = Date.now();
   return { startTime, endTime };
 }
@@ -227,7 +227,7 @@ export async function sleepWinsRaceWorkflow() {
   const startTime = Date.now();
   const winner = await Promise.race([
     delayMsStep(10_000, 'step'),
-    sleep('1s').then(() => 'sleep'),
+    sleep('6s').then(() => 'sleep'),
   ]);
   const endTime = Date.now();
   return { winner, durationMs: endTime - startTime };
@@ -277,7 +277,7 @@ export async function retainedInterleavingWorkflow(token: string) {
     sleep('30s').then(() => 'sleep'),
   ]); // 'step'
   // Wait boundary: plain sleep.
-  await sleep('1s');
+  await sleep('6s');
   // Hook boundary: hook payload awaited in parallel with a primitive step.
   using hook = createHook<{ delta: number }>({ token });
   const [payload, g] = await Promise.all([hook, add(e + f, 100)]); // _, 137
@@ -356,15 +356,15 @@ export async function outputStreamWorkflow() {
   'use workflow';
   const writable = getWritable();
   const namedWritable = getWritable({ namespace: 'test' });
-  await sleep('1s');
+  await sleep('6s');
   await stepWithOutputStreamBinary(writable, 'Hello, world!');
-  await sleep('1s');
+  await sleep('6s');
   await stepWithOutputStreamBinary(namedWritable, 'Hello, named stream!');
-  await sleep('1s');
+  await sleep('6s');
   await stepWithOutputStreamObject(writable, { foo: 'test' });
-  await sleep('1s');
+  await sleep('6s');
   await stepWithOutputStreamObject(namedWritable, { foo: 'bar' });
-  await sleep('1s');
+  await sleep('6s');
   await stepCloseOutputStream(writable);
   await stepCloseOutputStream(namedWritable);
   return 'done';
@@ -402,17 +402,17 @@ async function stepCloseOutputStreamInsideStep(namespace?: string) {
 
 export async function outputStreamInsideStepWorkflow() {
   'use workflow';
-  await sleep('1s');
+  await sleep('6s');
   await stepWithOutputStreamInsideStep('Hello from step!');
-  await sleep('1s');
+  await sleep('6s');
   await stepWithNamedOutputStreamInsideStep('step-ns', {
     message: 'Hello from named stream in step!',
   });
-  await sleep('1s');
+  await sleep('6s');
   await stepWithOutputStreamInsideStep('Second message');
-  await sleep('1s');
+  await sleep('6s');
   await stepWithNamedOutputStreamInsideStep('step-ns', { counter: 42 });
-  await sleep('1s');
+  await sleep('6s');
   await stepCloseOutputStreamInsideStep();
   await stepCloseOutputStreamInsideStep('step-ns');
   return 'done';
@@ -441,7 +441,7 @@ async function stepWriteUtf8Json(writable: WritableStream, value: unknown) {
 export async function utf8StreamWorkflow() {
   'use workflow';
   const writable = getWritable();
-  await sleep('1s');
+  await sleep('6s');
   await stepWriteUtf8Text(writable, 'Hello, world!');
   await stepWriteUtf8Text(writable, 'Café — naïve résumé');
   await stepWriteUtf8Text(writable, '你好，世界！🌍✨');
@@ -2549,7 +2549,7 @@ export async function abortSurvivesReplayWorkflow() {
   const before = await checkSignalState(controller.signal);
 
   // Sleep causes workflow to suspend and replay
-  await sleep('1s');
+  await sleep('6s');
 
   // Abort after replay
   controller.abort('after-replay');
@@ -2922,7 +2922,7 @@ export async function abortDeterministicBranchFromStepWorkflow() {
   // which only runs at the next checkpoint that drains the promise queue —
   // not synchronously after the step's await resolves. This mirrors how
   // step return values become visible: only at a suspension boundary.
-  await sleep('1s');
+  await sleep('6s');
 
   // Post-abort read. MUST be true on first-run AND replay — the events
   // consumer has now drained `_setAborted` for the hook_received event.
