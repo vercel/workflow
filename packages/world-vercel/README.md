@@ -17,6 +17,8 @@ both producers and receivers, or pass `invoke: { endpoint }` to `createWorld()`.
 The default is disabled; disabled Worlds do not expose `invoke`.
 
 ```ts
+import { createWorld } from '@workflow/world-vercel';
+
 const world = createWorld({
   invoke: {
     endpoint: 'https://example.vercel.app/.well-known/workflow/v1/flow',
