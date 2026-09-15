@@ -101,6 +101,7 @@
     "@workflow/world": "workspace:*",
     "@workflow/world-local": "workspace:*",
     "@workflow/world-vercel": "workspace:*",
+    "acorn": "8.15.0",
     "debug": "4.4.3",
     "devalue": "5.9.2",
     "ms": "2.1.3",

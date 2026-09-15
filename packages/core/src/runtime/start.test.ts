@@ -66,6 +66,73 @@ describe('start', () => {
       vi.clearAllMocks();
     });
 
+    it.each([
+      [
+        'nested declaration',
+        'function outer() { async function workflow() { "use workflow"; } }',
+      ],
+      [
+        'comment spoof',
+        '// async function workflow() { "use workflow"; }\nconst value = 1;',
+      ],
+      [
+        'string spoof',
+        'const value = `async function workflow() { "use workflow"; }`;',
+      ],
+    ])('rejects a %s before start side effects', async (_label, invalidSource) => {
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getBackendCapabilities: vi
+          .fn()
+          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        uploadDynamicWorkflowCode: upload,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start(invalidSource, {
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        })
+      ).rejects.toThrow(/at top level/);
+      expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('allows a genuine top-level declaration to reach start side effects', async () => {
+      eventsCreate.mockImplementation(async (runId, event) => ({
+        run: {
+          runId,
+          status: 'pending',
+          dynamicWorkflowCode: event.eventData.dynamicWorkflowCode,
+        },
+      }));
+      queue.mockResolvedValue(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getBackendCapabilities: vi
+          .fn()
+          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start(source, {
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        })
+      ).resolves.toBeDefined();
+      expect(eventsCreate).toHaveBeenCalledOnce();
+      expect(queue).toHaveBeenCalledOnce();
+    });
+
     it('rejects absent backend attestation before start side effects', async () => {
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
