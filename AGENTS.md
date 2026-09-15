@@ -489,14 +489,14 @@ Changesets that a "Version Packages (beta)" merge has already turned into a beta
 3. The next "Version Packages" PR will publish the final GA version to npm under the `latest` dist-tag. That PR is enormous — exiting pre mode consumes every `.changeset/pre/*.md` at once, so it deletes hundreds of files and rewrites every CHANGELOG. Review it for *shape* (version bumps and changelogs only, nothing else touched), not line by line.
 4. Retire the outgoing major — see below.
 
-Note that between the `pre exit` merge and the "Version Packages" merge, `main` cannot cut another beta: the pending changesets all belong to the GA release now. Do not exit pre mode until you intend to ship GA promptly.
+Note that between the `pre exit` merge and the "Version Packages" merge, `main` cannot cut another beta: the pending changesets all belong to the GA release now. Do not exit pre mode until you intend to ship GA promptly. Throughout that window the manifests on `main` are still `5.0.0-beta.N` — `pre exit` bumps nothing, it only flips `.changeset/pre.json` to `{"mode": "exit"}` so the next `changeset version` writes GA versions and deletes the file. Anything that keys off the release channel has to treat exit mode as still-a-prerelease for that reason; `scripts/check-published.mjs` does.
 
 ### Retiring a major
 
 When a new major takes over `latest`, the outgoing major moves to a maintenance branch (`stable`) and needs its own dist-tag so its patches never reclaim `latest`:
 
 - Pin the maintenance branch's `ci:publish` to that tag: `changeset publish --tag previous`. The tag must not parse as a semver range — npm rejects `v4` and `4.x` (`Tag name must not be a valid SemVer range`), which is why it is `previous` and not version-numbered.
-- Pass the same tag to the publication check: `node scripts/check-published.mjs --tag previous`. That script defaults to the pre-release tag from `.changeset/pre.json` when in pre mode and `latest` otherwise, so on a maintenance branch it would otherwise assert that `latest` points at the version just published and fail every release.
+- Pass the same tag to the publication check: `node scripts/check-published.mjs --tag previous`. That script defaults to the tag in `.changeset/pre.json` when that file exists and `latest` otherwise, so on a maintenance branch — which is in regular mode and has no `pre.json` — it would otherwise assert that `latest` points at the version just published and fail every release.
 
 **Order matters, and getting it wrong is a user-visible regression.** The maintenance branch must keep publishing to `latest` right up until the new major's GA actually lands on npm. Pinning it to `previous` early does not "leave `latest` where it is" — it *freezes* `latest` at the last release before the pin, so `npm install workflow` silently stops picking up maintenance patches. This happened once: #3091 pinned 4.x to `previous` on 2026-07-24 while 4.x was still the GA line, and #3168 reverted it four days later, about three hours before `4.7.0` would have shipped without moving `latest`. Land the maintenance-branch pin **after** the new major's GA publish, not before.
 
