@@ -293,6 +293,7 @@ const attributeOrder: AttributeKey[] = [
   'eventData',
   'input',
   'output',
+  'dynamicWorkflowCode',
   'attributes',
   'resumeAt',
 ];
@@ -343,6 +344,7 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   lastReceivedAt: 'Last Received',
   disposedAt: 'Disposed',
   receivedCount: 'Times Resolved',
+  dynamicWorkflowCode: 'Workflow Code',
 };
 
 /**
@@ -680,6 +682,38 @@ const attributeToDisplayFn: Record<
   // cross-run writers to seal payloads to this run. Not actionable for users
   // and not secret, so hidden rather than rendered as 44 opaque base64 chars.
   encryptionPublicKey: (_value: unknown) => null,
+  // A dynamic run's own workflow code — the code the run actually executed,
+  // which for these runs exists nowhere in the deployment's source. Shown as
+  // its own collapsed section: it is the most useful thing on a dynamic run's
+  // detail view, and irrelevant (absent) on every other run.
+  //
+  // Follows the same locked-by-default treatment as input/output: generated
+  // orchestration names internal step ids, prompts and business rules, so the
+  // decrypt flow is the gate on reading it.
+  dynamicWorkflowCode: (value: unknown, context?: DisplayContext) => {
+    if (isEncryptedMarker(value)) {
+      return (
+        <Collapsible
+          label="Workflow Code"
+          defaultOpen={context?.sectionOpen}
+          onOpenChange={context?.onSectionOpenChange}
+        >
+          <EncryptedFieldBlock />
+        </Collapsible>
+      );
+    }
+    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
+    if (typeof value !== 'string' || value.trim().length === 0) return null;
+    return (
+      <Collapsible
+        label="Workflow Code"
+        defaultOpen={context?.sectionOpen}
+        onOpenChange={context?.onSectionOpenChange}
+      >
+        <CopyableDataBlock data={value} />
+      </Collapsible>
+    );
+  },
 };
 
 const resolvableAttributes = [
@@ -689,6 +723,7 @@ const resolvableAttributes = [
   'metadata',
   'attributes',
   'eventData',
+  'dynamicWorkflowCode',
 ];
 
 // Attributes whose displayFn renders its own section header via Collapsible,
@@ -700,6 +735,7 @@ const selfHeaderedAttributes = new Set([
   'metadata',
   'attributes',
   'eventData',
+  'dynamicWorkflowCode',
 ]);
 
 const ExpiredDataMessage = () => (
@@ -730,6 +766,7 @@ const loadingSectionLabels: Partial<Record<AttributeKey, string>> = {
   input: 'Input',
   output: 'Output',
   eventData: 'Event Data',
+  dynamicWorkflowCode: 'Workflow Code',
 };
 
 export const AttributeBlock = ({

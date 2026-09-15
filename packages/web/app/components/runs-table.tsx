@@ -56,6 +56,7 @@ import {
 } from '~/lib/client/listing-window';
 import { useTableSelection } from '~/lib/hooks/use-table-selection';
 import { fetchEvents, fetchRun } from '~/lib/rpc-client';
+import { getRunReplayDisabledReason } from '~/lib/run-replay';
 import type { EnvMap } from '~/lib/types';
 import {
   bulkCancelRuns,
@@ -86,30 +87,40 @@ function RunActionsDropdownContentInner({
   onSuccess: () => void;
 }) {
   const [events, setEvents] = useState<Event[] | undefined>(undefined);
-  const [isLoading, setIsLoading] = useState(true);
+  const [eventsLoading, setEventsLoading] = useState(true);
   const [run, setRun] = useState<WorkflowRun | undefined>(undefined);
+  const [runIdentityLoading, setRunIdentityLoading] = useState(true);
   const status = run?.status || runStatus;
 
   useEffect(() => {
-    setIsLoading(true);
-
-    Promise.all([
-      fetchRun(env, runId, 'none'),
-      fetchEvents(env, runId, { limit: 1000, sortOrder: 'desc' }),
-    ])
-      .then(([runResult, eventsResult]) => {
+    setRun(undefined);
+    setRunIdentityLoading(true);
+    fetchRun(env, runId, 'none')
+      .then((runResult) => {
         if (runResult.success) {
           setRun(runResult.data);
         }
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to fetch run:', err);
+      })
+      .finally(() => {
+        setRunIdentityLoading(false);
+      });
+
+    setEvents(undefined);
+    setEventsLoading(true);
+    fetchEvents(env, runId, { limit: 1000, sortOrder: 'desc' })
+      .then((eventsResult) => {
         if (eventsResult.success) {
           setEvents(eventsResult.data.data);
         }
       })
       .catch((err: unknown) => {
-        console.error('Failed to fetch run or events:', err);
+        console.error('Failed to fetch events:', err);
       })
       .finally(() => {
-        setIsLoading(false);
+        setEventsLoading(false);
       });
   }, [env, runId]);
 
@@ -119,7 +130,8 @@ function RunActionsDropdownContentInner({
       runId={runId}
       runStatus={status}
       events={events}
-      eventsLoading={isLoading}
+      eventsLoading={eventsLoading}
+      replayDisabledReason={getRunReplayDisabledReason(run, runIdentityLoading)}
       stopPropagation
       callbacks={{ onSuccess }}
     />

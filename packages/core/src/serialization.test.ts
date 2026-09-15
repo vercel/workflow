@@ -6,10 +6,12 @@ import {
   RetryableError,
   RUN_ERROR_CODES,
   RuntimeDecryptionError,
+  SerializationError,
   StreamError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
+import { stringify } from 'devalue';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { decrypt, encrypt, importKey } from './encryption.js';
@@ -27,17 +29,20 @@ import {
 import {
   cancelAbortReaders,
   decodeFormatPrefix,
+  dehydrateDynamicWorkflowCode,
   dehydrateRunError,
   dehydrateStepArguments,
   dehydrateStepError,
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   dehydrateWorkflowReturnValue,
+  encodeWithFormatPrefix,
   getCommonRevivers,
   getDeserializeStream,
   getSerializeStream,
   getStreamType,
   getWorkflowReducers,
+  hydrateDynamicWorkflowCode,
   hydrateRunError,
   hydrateStepArguments,
   hydrateStepError,
@@ -4786,6 +4791,73 @@ describe('dehydrate/hydrateStepError', () => {
     await expect(
       hydrateStepError(bogus, mockRunId, noEncryptionKey)
     ).rejects.toThrow(/(Unknown|Invalid) (serialization )?format/i);
+  });
+});
+
+describe('dehydrate/hydrateDynamicWorkflowCode', () => {
+  const code =
+    'globalThis.__private_workflows ??= new Map();\nasync function workflow() { "use workflow"; return 1; }\n';
+
+  it('round-trips through compression and encryption', async () => {
+    const previousCodec = process.env.WORKFLOW_COMPRESSION_CODEC;
+    process.env.WORKFLOW_COMPRESSION_CODEC = 'gzip';
+    try {
+      const compressibleCode = `${code}${'// repetitive generated code\n'.repeat(100)}`;
+      const material = new Uint8Array(32).fill(0x7d);
+      const keys = runPayloadKeys(
+        await importKey(material),
+        await deriveRunKeyPair(material)
+      );
+      const stored = await dehydrateDynamicWorkflowCode(
+        compressibleCode,
+        keys,
+        true
+      );
+      expect(isEncrypted(stored)).toBe(true);
+      const decrypted = await decryptEnvelope(stored, keys);
+      expect(decodeFormatPrefix(decrypted as Uint8Array).format).toBe(
+        SerializationFormat.GZIP
+      );
+      expect(await hydrateDynamicWorkflowCode(stored, keys)).toBe(
+        compressibleCode
+      );
+    } finally {
+      if (previousCodec === undefined) {
+        delete process.env.WORKFLOW_COMPRESSION_CODEC;
+      } else {
+        process.env.WORKFLOW_COMPRESSION_CODEC = previousCodec;
+      }
+    }
+  });
+
+  it('round-trips unencrypted and uncompressed', async () => {
+    const stored = await dehydrateDynamicWorkflowCode(code, undefined);
+    expect(await hydrateDynamicWorkflowCode(stored, undefined)).toBe(code);
+  });
+
+  it('is readable by the generic hydrator the CLI and UI use', async () => {
+    const stored = await dehydrateDynamicWorkflowCode(code, undefined);
+    expect(hydrateData(stored, {})).toBe(code);
+  });
+
+  it('rejects a payload that is not a string with SerializationError', async () => {
+    const prefixed = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new TextEncoder().encode(stringify({ a: 1 }))
+    );
+    await expect(
+      hydrateDynamicWorkflowCode(prefixed, undefined)
+    ).rejects.toBeInstanceOf(SerializationError);
+  });
+
+  it('rejects a corrupt payload with SerializationError, not a raw SyntaxError', async () => {
+    const prefixed = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      new TextEncoder().encode('{not json')
+    );
+    await expect(
+      hydrateDynamicWorkflowCode(prefixed, undefined)
+    ).rejects.toBeInstanceOf(SerializationError);
   });
 });
 

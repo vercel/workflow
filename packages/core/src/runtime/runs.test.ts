@@ -204,6 +204,30 @@ describe('recreateRunFromExisting', () => {
       })
     );
   });
+
+  it('refuses a dynamic run rather than creating one with no code behind it', async () => {
+    // Starting by name alone would create a run carrying the dynamic
+    // workflow id and none of the stored code, which no delivery could run.
+    const world = createMockWorld({
+      run: {
+        runId: 'wrun_dynamic',
+        workflowName: 'workflow//dynamic/abc123//workflow',
+        executionContext: {
+          dynamicWorkflow: {
+            version: 1,
+            sourceHash: 'abc123',
+            exportName: 'workflow',
+            steps: {},
+          },
+        },
+      },
+    });
+
+    await expect(
+      recreateRunFromExisting(world, 'wrun_dynamic')
+    ).rejects.toThrow(/dynamic workflow run; re-running it is not supported/);
+    expect(start).not.toHaveBeenCalled();
+  });
 });
 
 describe('Run.exists', () => {
