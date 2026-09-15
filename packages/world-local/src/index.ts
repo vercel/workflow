@@ -73,6 +73,9 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
     specVersion: mintedSpecVersion(),
+    getBackendCapabilities: async () => ({
+      dynamicWorkflowStorageVersion: 1,
+    }),
     capabilities: {
       hookRetention: { active: true },
       // world-local deduplicates concurrent `hook_received` writes sharing a

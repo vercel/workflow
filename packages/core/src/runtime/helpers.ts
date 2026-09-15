@@ -79,6 +79,9 @@ function getHealthCheckStreamName(correlationId: string): string {
   return `__health_check__${correlationId}`;
 }
 
+/** Version of the dynamic-workflow runtime contract advertised by deployments. */
+export const DYNAMIC_WORKFLOW_VERSION = 1;
+
 /**
  * Result of a health check operation.
  */
@@ -127,6 +130,8 @@ export interface HealthCheckResult {
    * field is missing or malformed.
    */
   format?: 'json' | 'text';
+  /** Version of dynamic-workflow execution supported by the target runtime. */
+  dynamicWorkflowVersion?: number;
 }
 
 /**
@@ -205,6 +210,7 @@ export async function handleHealthCheckMessage(
     // the *consumer's* hook-resume protocol version, exactly what a
     // cross-deployment caller needs to gate its parallel resume path on.
     hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
+    dynamicWorkflowVersion: DYNAMIC_WORKFLOW_VERSION,
     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
     timestamp: Date.now(),
   });
@@ -364,6 +370,9 @@ function parseHealthCheckResponse(
   }
   if (typeof r.hookResumeInputVersion === 'number') {
     parsed.hookResumeInputVersion = r.hookResumeInputVersion;
+  }
+  if (typeof r.dynamicWorkflowVersion === 'number') {
+    parsed.dynamicWorkflowVersion = r.dynamicWorkflowVersion;
   }
   return parsed;
 }
