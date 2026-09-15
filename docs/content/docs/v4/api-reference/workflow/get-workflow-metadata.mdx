@@ -30,7 +30,7 @@ async function testWorkflow() {
 }
 ```
 
-### Detecting Workflow Runtime
+### Detecting workflow runtime
 
 You can use `getWorkflowMetadata` to detect whether your code is running inside a workflow context. This is useful when building shared utilities that need to behave differently inside and outside of workflows.
 
@@ -64,7 +64,7 @@ function log(message: string) {
 }
 ```
 
-### Detecting Encryption
+### Detecting encryption
 
 The `features` object indicates which capabilities are active for the current run. Library authors can use `features.encryption` to control whether sensitive data is included in step return values, which are serialized to the event log:
 
@@ -90,7 +90,7 @@ async function fetchUserProfile(userId: string) {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 

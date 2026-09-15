@@ -12,11 +12,10 @@ If you want to use any other ORM, query builder or underlying database client, y
 graph LR
     Client --> PG[graphile-worker queue]
     PG --> Worker[Embedded Worker]
-    Worker --> HTTP[Workflow HTTP routes]
-    HTTP --> Handler[Workflow or Step Handler]
+    Worker --> HTTP[Combined flow HTTP route]
+    HTTP --> Handler[Workflow Handler]
 
-    PG -.-> F["${prefix}flows<br/>(workflows)"]
-    PG -.-> S["${prefix}steps<br/>(steps)"]
+    PG -.-> F["${prefix}flows<br/>(orchestration and steps)"]
 ```
 
 Jobs include retry logic (3 attempts), idempotency keys, durable delayed rescheduling, and configurable worker concurrency (default: 10).
@@ -37,7 +36,7 @@ Call `world.start()` to initialize graphile-worker workers. When `.start()` is c
 
 When the runtime returns `{ timeoutSeconds }`, the worker schedules a new Graphile job with a future `runAt` time before finishing the current task.
 
-The worker targets the HTTP-compatible workflow endpoints directly: `.well-known/workflow/v1/flow` for workflows and `.well-known/workflow/v1/step` for steps.
+The worker sends workflow orchestration and queued step messages to the combined `.well-known/workflow/v1/flow` endpoint.
 
 In **Next.js**, the `world.start()` call needs to be added to `instrumentation.ts|js` to ensure workers start before request handling. Use `workflow/runtime` for `getWorld` (same as the testing server and other framework plugins):
 

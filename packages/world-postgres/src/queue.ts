@@ -9,7 +9,6 @@ import {
 } from '@workflow/utils';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
-  getQueuePrefixKind,
   getQueueTopicPrefix,
   MessageId,
   parseQueueName,
@@ -20,6 +19,11 @@ import {
   type ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from '@workflow/world';
+import {
+  createNodeHttpAgents,
+  destroyNodeHttpAgents,
+  nodeHttpFetch,
+} from '@workflow/world/node-http.js';
 import { createWorld } from '@workflow/world-local';
 import {
   Logger,
@@ -34,6 +38,40 @@ import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
 import { MessageData } from './message.js';
 
+/**
+ * Serialize Graphile Worker log metadata. `JSON.stringify` alone renders an
+ * `Error` as `{}` because `name`, `message`, `stack`, and `cause` are
+ * non-enumerable, which is how a failed delivery used to log `"error": {}`.
+ * Errors are expanded to those fields plus their enumerable properties (such as
+ * a transport `code`), recursively through `cause` and `AggregateError.errors`.
+ * An error that has already been expanded is replaced with a marker: a cyclic
+ * cause chain would otherwise make `JSON.stringify` throw from inside the
+ * logger, and Graphile has no fallback for a logger that throws.
+ */
+export function serializeGraphileMeta(meta: unknown): string {
+  const seen = new WeakSet<object>();
+  const expandError = (error: Error): Record<string, unknown> => {
+    if (seen.has(error)) {
+      return { name: error.name, message: error.message, repeated: true };
+    }
+    seen.add(error);
+    const expanded: Record<string, unknown> = {
+      ...error,
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+    if (error.cause !== undefined) expanded.cause = error.cause;
+    if (error instanceof AggregateError) expanded.errors = error.errors;
+    return expanded;
+  };
+  return JSON.stringify(
+    meta,
+    (_key, value) => (value instanceof Error ? expandError(value) : value),
+    2
+  );
+}
+
 function createGraphileLogger() {
   const isJsonMode = () => process.env.WORKFLOW_JSON_MODE === '1';
   const isVerbose = () => Boolean(process.env.DEBUG);
@@ -44,7 +82,7 @@ function createGraphileLogger() {
     const pipe = level === 'error' ? process.stderr : process.stdout;
     if (meta) {
       pipe.write(
-        `[Graphile Worker] ${message} ${JSON.stringify(meta, null, 2)}\n`
+        `[Graphile Worker] ${message} ${serializeGraphileMeta(meta)}\n`
       );
     } else {
       pipe.write(`[Graphile Worker] ${message}\n`);
@@ -53,13 +91,54 @@ function createGraphileLogger() {
 }
 
 const graphileLogger = createGraphileLogger();
+
+/**
+ * Default deadlines for a queue delivery's response: none. A delivery executes
+ * the workflow body inline, so response headers arrive only once that work is
+ * done, and a bound here declares a slow-but-healthy delivery crashed and
+ * redelivers it while the original is still running (two executions of the
+ * same steps). Crash recovery is covered by Graphile releasing the job when
+ * the worker dies, plus `reenqueueActiveRuns` on start.
+ */
+export const DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS = 0;
+export const DEFAULT_DELIVERY_BODY_TIMEOUT_MS = 0;
+
+function envTimeoutMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/**
+ * Per-request deadlines for the loopback delivery request. `0` disables the
+ * deadline. An operator who prefers a hung handler to be redelivered rather
+ * than hold its worker slot until restart sets these to a value above the
+ * longest inline step they expect.
+ */
+export function getDeliveryTimeouts() {
+  return {
+    headersTimeoutMs: envTimeoutMs(
+      'WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS',
+      DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS
+    ),
+    bodyTimeoutMs: envTimeoutMs(
+      'WORKFLOW_POSTGRES_BODY_TIMEOUT_MS',
+      DEFAULT_DELIVERY_BODY_TIMEOUT_MS
+    ),
+  };
+}
 const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
-const GraphileHelpers = z.object({
-  abortSignal: z.instanceof(AbortSignal).optional(),
-  job: z.object({
-    attempts: z.number().int().positive(),
-  }),
-});
+// Core records MAX_DELIVERIES_EXCEEDED on delivery 49.
+const MAX_GRAPHILE_JOB_ATTEMPTS = 49;
+const GraphileHelpers = z.compile(
+  z.object({
+    abortSignal: z.instanceof(AbortSignal).optional(),
+    job: z.object({
+      attempts: z.number().int().positive(),
+    }),
+  })
+);
 
 type HttpExecutionResult =
   | { type: 'completed' }
@@ -75,14 +154,7 @@ type RunnerStart = { controller: AbortController; promise: Promise<void> };
 type LoopbackTarget = { hosts: string[]; port: number };
 
 /**
- * The Postgres queue works by creating two job types in graphile-worker:
- * - `workflow` for workflow jobs
- *   - `step` for step jobs
- *
- * When a message is queued, it is sent to graphile-worker with the appropriate job type.
- * When a job is processed, it is deserialized and then re-queued into the _local world_, showing that
- * we can reuse the local world, mix and match worlds to build
- * hybrid architectures, and even migrate between worlds.
+ * The Postgres queue stores messages under one graphile-worker flow task.
  */
 export type PostgresQueue = Queue & {
   start(): Promise<void>;
@@ -95,6 +167,16 @@ export function createQueue(
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createWorld({ dataDir: undefined, port });
+  // Deliveries go over Node's core HTTP client rather than the global `fetch`:
+  // undici's default 300s headers/body deadlines cannot be lifted without a
+  // custom dispatcher, and a queue-owned pool keeps these sockets out of the
+  // process-global agent. Concurrency is bounded by the Graphile runner, so
+  // the pool itself does not need a socket cap.
+  const httpAgents = createNodeHttpAgents({
+    maxSockets: Infinity,
+    keepAliveMs: 30_000,
+  });
+  const deliveryTimeouts = getDeliveryTimeouts();
 
   // JSON transport that preserves Uint8Array values via a tagged
   // envelope ({ __type: 'Uint8Array', data: '<base64>' }).  Required
@@ -131,12 +213,9 @@ export function createQueue(
   };
   const generateMessageId = monotonicFactory();
 
-  function getJobQueueName(queuePrefix: QueuePrefix): string {
+  function getJobQueueName(): string {
     const jobPrefix = config.jobPrefix || 'workflow_';
-
-    return getQueuePrefixKind(queuePrefix) === 'workflow'
-      ? `${jobPrefix}flows`
-      : `${jobPrefix}steps`;
+    return `${jobPrefix}flows`;
   }
 
   const createQueueHandler = localWorld.createQueueHandler;
@@ -169,7 +248,6 @@ export function createQueue(
   }
 
   async function addGraphileJob({
-    queuePrefix,
     queueId,
     body,
     messageId,
@@ -179,7 +257,6 @@ export function createQueue(
     delaySeconds,
     jobKey,
   }: {
-    queuePrefix: QueuePrefix;
     queueId: string;
     body: Buffer | Uint8Array;
     messageId: MessageId;
@@ -200,7 +277,7 @@ export function createQueue(
         : undefined;
 
     await utils.addJob(
-      getJobQueueName(queuePrefix),
+      getJobQueueName(),
       MessageData.encode({
         id: queueId,
         data: Buffer.from(body),
@@ -212,7 +289,7 @@ export function createQueue(
       {
         ...(jobKey ? { jobKey } : {}),
         ...(runAt ? { runAt } : {}),
-        maxAttempts: 3,
+        maxAttempts: MAX_GRAPHILE_JOB_ATTEMPTS,
       }
     );
   }
@@ -337,10 +414,6 @@ export function createQueue(
     runnerStart = { controller, promise };
   }
 
-  function getQueueRoute(queueName: ValidQueueName): 'flow' | 'step' {
-    return parseQueueName(queueName).kind === 'workflow' ? 'flow' : 'step';
-  }
-
   async function executeMessageOverHttp({
     queueName,
     messageId,
@@ -367,17 +440,18 @@ export function createQueue(
     if (!baseUrl) {
       throw new Error('Unable to resolve base URL for workflow queue.');
     }
-    const pathname = getQueueRoute(queueName);
-
-    const response = await fetch(
-      createWorkflowUrl(baseUrl, { type: pathname }),
+    // Queue shutdown aborts the delivery through Graphile's signal; the
+    // deadlines are the operator's (see `getDeliveryTimeouts`).
+    const response = await nodeHttpFetch(
+      createWorkflowUrl(baseUrl, { type: 'flow' }),
       {
         method: 'POST',
-        duplex: 'half',
-        headers,
+        headers: new Headers(headers),
         body,
         signal: abortSignal,
-      } as any
+        agents: httpAgents,
+        ...deliveryTimeouts,
+      }
     );
     const text = await response.text();
 
@@ -401,7 +475,7 @@ export function createQueue(
   }
 
   async function migratePgBossJobs(utils: WorkerUtils): Promise<void> {
-    // Scenario A: Drizzle migration already ran — staging table exists
+    // Scenario A: Drizzle migration already ran, so the staging table exists
     const hasStaging = await pool.query(
       `SELECT EXISTS (
         SELECT 1 FROM information_schema.tables
@@ -417,14 +491,18 @@ export function createQueue(
       for (const job of jobs.rows) {
         await utils.addJob(job.name, job.data as Record<string, unknown>, {
           jobKey: job.singleton_key ?? undefined,
-          maxAttempts: job.retry_limit ?? 3,
+          maxAttempts: Math.max(
+            job.retry_limit ?? 0,
+            MAX_GRAPHILE_JOB_ATTEMPTS
+          ),
         });
       }
       await pool.query(`DROP TABLE "workflow"."_pgboss_pending_jobs"`);
       return;
     }
 
-    // Scenario B: Drizzle migration didn't run — pgboss schema still exists
+    // Scenario B: Drizzle migration didn't run, so the pgboss schema still
+    // exists
     const hasPgBoss = await pool.query(
       `SELECT EXISTS (
         SELECT 1 FROM information_schema.schemata
@@ -440,7 +518,10 @@ export function createQueue(
       for (const job of jobs.rows) {
         await utils.addJob(job.name, job.data as Record<string, unknown>, {
           jobKey: job.singleton_key ?? undefined,
-          maxAttempts: job.retry_limit ?? 3,
+          maxAttempts: Math.max(
+            job.retry_limit ?? 0,
+            MAX_GRAPHILE_JOB_ATTEMPTS
+          ),
         });
       }
       await pool.query(`DROP SCHEMA pgboss CASCADE`);
@@ -508,11 +589,10 @@ export function createQueue(
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await start();
-    const { prefix: queuePrefix, id: queueId } = parseQueueName(queue);
+    const { id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
     await addGraphileJob({
-      queuePrefix,
       queueId,
       body,
       messageId,
@@ -525,9 +605,12 @@ export function createQueue(
     return { messageId };
   };
 
-  function createTaskHandler(queue: QueuePrefix) {
-    const queueKind = getQueuePrefixKind(queue);
+  async function deserializeMessageBody(data: Buffer): Promise<unknown> {
+    const bodyStream = Stream.Readable.toWeb(Stream.Readable.from([data]));
+    return transport.deserialize(bodyStream as ReadableStream<Uint8Array>);
+  }
 
+  function createTaskHandler(queue: QueuePrefix) {
     return async (payload: unknown, helpers: unknown) => {
       const messageData = MessageData.parse(payload);
       const graphileHelpers = GraphileHelpers.safeParse(helpers);
@@ -535,23 +618,12 @@ export function createQueue(
         ? graphileHelpers.data.job.attempts
         : messageData.attempt;
       const queueName = `${queue}${messageData.id}` as ValidQueueName;
-      const bodyStream = Stream.Readable.toWeb(
-        Stream.Readable.from([messageData.data])
-      );
-      const body = await transport.deserialize(
-        bodyStream as ReadableStream<Uint8Array>
-      );
+      const body = await deserializeMessageBody(messageData.data);
       QueuePayloadSchema.parse(body);
+      const workflowInvoke = WorkflowInvokePayloadSchema.safeParse(body);
       const workflowRunSerializationKey =
-        queueKind === 'workflow'
-          ? (() => {
-              const workflowInvoke =
-                WorkflowInvokePayloadSchema.safeParse(body);
-              if (!workflowInvoke.success) {
-                return undefined;
-              }
-              return `workflow:${workflowInvoke.data.runId}`;
-            })()
+        workflowInvoke.success && !workflowInvoke.data.stepId
+          ? `workflow:${workflowInvoke.data.runId}`
           : undefined;
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
         const result = await executeMessageOverHttp({
@@ -573,7 +645,6 @@ export function createQueue(
           // Schedule the follow-up job before we return so a crash cannot
           // lose the wake-up request.
           await addGraphileJob({
-            queuePrefix: queue,
             queueId: messageData.id,
             body: messageData.data,
             messageId: messageData.messageId,
@@ -650,10 +721,7 @@ export function createQueue(
     > = {};
     const namespace = resolveQueueNamespace(config.namespace);
     const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
-    const stepPrefix = getQueueTopicPrefix('step', namespace);
-    taskList[getJobQueueName(workflowPrefix)] =
-      createTaskHandler(workflowPrefix);
-    taskList[getJobQueueName(stepPrefix)] = createTaskHandler(stepPrefix);
+    taskList[getJobQueueName()] = createTaskHandler(workflowPrefix);
 
     runner = await run({
       pgPool: pool,
@@ -661,8 +729,8 @@ export function createQueue(
       // workflows that use parent→child polling patterns (e.g. awaiting a
       // child workflow via `childRun.returnValue` inside the parent).
       // Every such poll holds a worker slot for the duration of the child
-      // run. Recursive workflows like `fibonacciWorkflow` fan out quickly
-      // — fib(6) produces ~24 concurrent polling steps at peak, and at
+      // run. Recursive workflows like `fibonacciWorkflow` fan out rapidly.
+      // fib(6) produces ~24 concurrent polling steps at peak, and at
       // concurrency=10 (the previous default) it would deadlock on the
       // default Postgres setup. See packages/core/src/runtime/run.ts and
       // docs/content/docs/changelog/eager-processing.mdx for context.
@@ -709,6 +777,7 @@ export function createQueue(
         workerUtils = null;
       }
       startPromise = null;
+      destroyNodeHttpAgents(httpAgents);
       await localWorld.close?.();
     },
   };

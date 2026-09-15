@@ -25,13 +25,21 @@ vi.mock('../serialization.js', async (importActual) => {
 });
 
 import { registerSerializationClass } from '../class-serialization.js';
+import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import {
   dehydrateRunError,
   dehydrateStepReturnValue,
+  dehydrateWorkflowReturnValue,
+  getSerializeStream,
   hydrateStepReturnValue,
 } from '../serialization.js';
-import { Run } from './run.js';
-import { recreateRunFromExisting, reenqueueRun, wakeUpRun } from './runs.js';
+import { getReturnValuePollIntervalMs, Run } from './run.js';
+import {
+  cancelRuns,
+  recreateRunFromExisting,
+  reenqueueRun,
+  wakeUpRun,
+} from './runs.js';
 import { start } from './start.js';
 import { setWorld } from './world.js';
 
@@ -97,6 +105,11 @@ describe('wakeUpRun', () => {
     const result = await wakeUpRun(world, 'wrun_123');
 
     expect(result.stoppedCount).toBe(1);
+    expect(world.events.list).toHaveBeenCalledWith({
+      runId: 'wrun_123',
+      pagination: { sortOrder: 'asc' },
+      resolveData: 'none',
+    });
     expect(world.queue).toHaveBeenCalled();
   });
 
@@ -233,10 +246,43 @@ describe('Run.exists', () => {
   });
 });
 
+describe('Run.status', () => {
+  afterEach(() => {
+    setWorld(undefined as unknown as World);
+  });
+
+  it('reads metadata without resolving run payloads', async () => {
+    const world = createMockWorld();
+    setWorld(world);
+
+    await expect(new Run('wrun_123').status).resolves.toBe('running');
+
+    expect(world.runs.get).toHaveBeenCalledOnce();
+    expect(world.runs.get).toHaveBeenCalledWith('wrun_123', {
+      resolveData: 'none',
+    });
+  });
+});
+
 describe('Run.getReadable', () => {
   afterEach(() => {
     setWorld(undefined as unknown as World);
   });
+
+  async function encryptedFrames(value: unknown, material: Uint8Array) {
+    const serialize = getSerializeStream(
+      {},
+      await deriveRunPayloadKeys(material)
+    );
+    const reader = serialize.readable.getReader();
+    const read = reader.read();
+    const writer = serialize.writable.getWriter();
+    await writer.write(value);
+    await writer.close();
+    const first = await read;
+    if (!first.value) throw new Error('Expected serialized frame');
+    return first.value;
+  }
 
   it('does not fetch the run encryption key for an empty stream', async () => {
     const world = createMockWorld();
@@ -255,8 +301,147 @@ describe('Run.getReadable', () => {
     new Run('wrun_123').getReadable();
     await new Promise((resolve) => setTimeout(resolve, 0));
 
+    expect(world.streams.get).not.toHaveBeenCalled();
     expect(world.runs.get).not.toHaveBeenCalled();
     expect(world.getEncryptionKeyForRun).not.toHaveBeenCalled();
+  });
+
+  it('prefetches the run key when a consumed stream is empty', async () => {
+    const world = createMockWorld();
+    world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
+    world.streams = {
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    await expect(
+      new Run('wrun_123').getReadable().getReader().read()
+    ).resolves.toMatchObject({ done: true });
+    expect(world.streams.get).toHaveBeenCalledOnce();
+    expect(world.runs.get).toHaveBeenCalledOnce();
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalledOnce();
+  });
+
+  it('resolves supplied ops when the caller releases an open readable lock', async () => {
+    const ops: Promise<any>[] = [];
+    const material = new Uint8Array(32).fill(6);
+    const frame = await encryptedFrames({ open: true }, material);
+    const world = createMockWorld();
+    world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(material);
+    world.streams = {
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(frame);
+            // Deliberately remain open: releaseLock(), not EOF, is the signal.
+          },
+        })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    const reader = new Run('wrun_123').getReadable({ ops }).getReader();
+    await reader.read();
+    reader.releaseLock();
+    await expect(Promise.all(ops)).resolves.toEqual([undefined]);
+  });
+
+  it('starts stream GET and the cached run-key lookup on first read', async () => {
+    const material = new Uint8Array(32).fill(7);
+    const frame = await encryptedFrames({ first: true }, material);
+    let resolveRun: (run: any) => void;
+    const runPromise = new Promise<any>((resolve) => {
+      resolveRun = resolve;
+    });
+    const world = createMockWorld();
+    world.runs.get = vi.fn().mockReturnValue(runPromise);
+    world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(material);
+    world.streams = {
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(frame);
+            controller.close();
+          },
+        })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    const read = new Run('wrun_123').getReadable().getReader().read();
+    await vi.waitFor(() => {
+      expect(world.streams.get).toHaveBeenCalledOnce();
+      expect(world.runs.get).toHaveBeenCalledOnce();
+    });
+    resolveRun?.({
+      runId: 'wrun_123',
+      deploymentId: 'test-deployment',
+    });
+
+    await expect(read).resolves.toMatchObject({ value: { first: true } });
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalledOnce();
+  });
+
+  it('reuses one run-key promise across readable sessions', async () => {
+    const material = new Uint8Array(32).fill(8);
+    const frame = await encryptedFrames({ reusable: true }, material);
+    const world = createMockWorld();
+    world.getEncryptionKeyForRun = vi.fn().mockResolvedValue(material);
+    world.streams = {
+      get: vi.fn().mockImplementation(
+        async () =>
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(frame);
+              controller.close();
+            },
+          })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    const run = new Run('wrun_123');
+    await expect(run.getReadable().getReader().read()).resolves.toMatchObject({
+      value: { reusable: true },
+    });
+    await expect(run.getReadable().getReader().read()).resolves.toMatchObject({
+      value: { reusable: true },
+    });
+
+    expect(world.runs.get).toHaveBeenCalledOnce();
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalledOnce();
+    expect(world.streams.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces a prefetched key failure when an encrypted frame is consumed', async () => {
+    const material = new Uint8Array(32).fill(9);
+    const frame = await encryptedFrames({ secret: true }, material);
+    const keyError = new Error('key lookup failed');
+    const world = createMockWorld();
+    world.getEncryptionKeyForRun = vi.fn().mockRejectedValue(keyError);
+    world.streams = {
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(frame);
+            controller.close();
+          },
+        })
+      ),
+    } as unknown as World['streams'];
+    setWorld(world);
+
+    await expect(
+      new Run('wrun_123').getReadable().getReader().read()
+    ).rejects.toThrow('key lookup failed');
+    expect(world.runs.get).toHaveBeenCalledOnce();
+    expect(world.getEncryptionKeyForRun).toHaveBeenCalledOnce();
   });
 });
 
@@ -396,6 +581,63 @@ describe('Run custom serialization', () => {
   });
 });
 
+describe('Run.returnValue polling interval', () => {
+  const envName = 'WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS';
+  const originalValue = process.env[envName];
+
+  afterEach(() => {
+    if (originalValue === undefined) {
+      delete process.env[envName];
+    } else {
+      process.env[envName] = originalValue;
+    }
+  });
+
+  it('defaults to one second', () => {
+    delete process.env[envName];
+
+    expect(getReturnValuePollIntervalMs()).toBe(1_000);
+  });
+
+  it('accepts a runtime override', () => {
+    process.env[envName] = '5000';
+
+    expect(getReturnValuePollIntervalMs()).toBe(5_000);
+  });
+});
+
+describe('Run.returnValue payload resolution', () => {
+  afterEach(() => {
+    setWorld(undefined as unknown as World);
+  });
+
+  it('polls metadata before resolving a completed run payload', async () => {
+    const output = await dehydrateWorkflowReturnValue(
+      42,
+      'wrun_123',
+      undefined
+    );
+    const world = createMockWorld({
+      run: {
+        status: 'completed',
+        output,
+        completedAt: new Date(),
+      },
+    });
+    setWorld(world);
+
+    await expect(new Run<number>('wrun_123').returnValue).resolves.toBe(42);
+
+    expect(world.runs.get).toHaveBeenCalledTimes(2);
+    expect(world.runs.get).toHaveBeenNthCalledWith(1, 'wrun_123', {
+      resolveData: 'none',
+    });
+    expect(world.runs.get).toHaveBeenNthCalledWith(2, 'wrun_123', {
+      resolveData: 'all',
+    });
+  });
+});
+
 describe('Run.returnValue when run.status === "failed"', () => {
   // Register the FatalError class so the run-error serialization pipeline
   // can find it during hydration (the SWC plugin does this in production).
@@ -443,7 +685,8 @@ describe('Run.returnValue when run.status === "failed"', () => {
       'wrun_failed',
       undefined
     );
-    setWorld(makeFailedRunWorld(serialized, 'USER_ERROR'));
+    const world = makeFailedRunWorld(serialized, 'USER_ERROR');
+    setWorld(world);
 
     const run = new Run('wrun_failed');
     let caught: WorkflowRunFailedError | undefined;
@@ -464,6 +707,13 @@ describe('Run.returnValue when run.status === "failed"', () => {
     expect(cause).toBeInstanceOf(FatalError);
     expect((cause as FatalError).message).toBe('boom');
     expect((cause as FatalError).fatal).toBe(true);
+    expect(world.runs.get).toHaveBeenCalledTimes(2);
+    expect(world.runs.get).toHaveBeenNthCalledWith(1, 'wrun_failed', {
+      resolveData: 'none',
+    });
+    expect(world.runs.get).toHaveBeenNthCalledWith(2, 'wrun_failed', {
+      resolveData: 'all',
+    });
   });
 
   it('should preserve a plain Error cause through hydration', async () => {
@@ -563,5 +813,124 @@ describe('Run.returnValue when run.status === "failed"', () => {
     expect((caught?.cause as Error).message).toContain(
       'Failed to hydrate workflow run error'
     );
+  });
+});
+
+describe('cancelRuns', () => {
+  it('fast path: delegates the whole batch to world.runs.cancelMany once', async () => {
+    const cancelMany = vi.fn().mockResolvedValue({
+      summary: {
+        requested: 3,
+        cancelled: 3,
+        alreadyCancelled: 0,
+        notCancellable: 0,
+        notFound: 0,
+        failed: 0,
+      },
+      results: [
+        { runId: 'a', outcome: 'cancelled' },
+        { runId: 'b', outcome: 'cancelled' },
+        { runId: 'c', outcome: 'cancelled' },
+      ],
+    });
+    const world = {
+      runs: { get: vi.fn(), cancelMany },
+      events: { create: vi.fn() },
+    } as unknown as World;
+
+    const result = await cancelRuns(world, ['a', 'b', 'c'], {
+      cancelReason: 'cleanup',
+    });
+
+    expect(cancelMany).toHaveBeenCalledTimes(1);
+    expect(cancelMany).toHaveBeenCalledWith({
+      runIds: ['a', 'b', 'c'],
+      cancelReason: 'cleanup',
+    });
+    // The single-run path must not be touched on the fast path.
+    expect(world.events.create).not.toHaveBeenCalled();
+    expect(result.summary.cancelled).toBe(3);
+  });
+
+  it('fallback: runs single-run cancellation with at most 20 concurrent operations', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    const create = vi.fn().mockImplementation(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // Yield so overlapping calls accumulate before any resolve.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight--;
+      return { event: {} };
+    });
+
+    // No cancelMany → forces the fallback path.
+    const world = {
+      runs: {
+        get: vi.fn().mockResolvedValue({
+          runId: 'r',
+          workflowName: 'wf',
+          status: 'running',
+          specVersion: 2,
+          deploymentId: 'dpl',
+        }),
+      },
+      events: { create },
+    } as unknown as World;
+
+    const runIds = Array.from({ length: 100 }, (_, i) => `wrun_${i}`);
+    const result = await cancelRuns(world, runIds);
+
+    expect(create).toHaveBeenCalledTimes(100);
+    expect(maxInFlight).toBeGreaterThan(0);
+    expect(maxInFlight).toBeLessThanOrEqual(20);
+    expect(result.summary.requested).toBe(100);
+    expect(result.summary.cancelled).toBe(100);
+    // Order preserved.
+    expect(result.results.map((r) => r.runId)).toEqual(runIds);
+  });
+
+  it('fallback: reports failures as failed/internal_error/retryable', async () => {
+    const world = {
+      runs: {
+        get: vi.fn().mockRejectedValue(new Error('boom')),
+      },
+      events: { create: vi.fn() },
+    } as unknown as World;
+
+    const result = await cancelRuns(world, ['a', 'b']);
+
+    expect(result.summary.failed).toBe(2);
+    expect(result.results).toEqual([
+      {
+        runId: 'a',
+        outcome: 'failed',
+        code: 'internal_error',
+        retryable: true,
+      },
+      {
+        runId: 'b',
+        outcome: 'failed',
+        code: 'internal_error',
+        retryable: true,
+      },
+    ]);
+  });
+
+  it('rejects an empty list', async () => {
+    const world = { runs: {}, events: {} } as unknown as World;
+    await expect(cancelRuns(world, [])).rejects.toThrow(/at least one/i);
+  });
+
+  it('rejects duplicate IDs', async () => {
+    const world = { runs: {}, events: {} } as unknown as World;
+    await expect(cancelRuns(world, ['a', 'a'])).rejects.toThrow(/unique/i);
+  });
+
+  it('rejects more than 500 IDs', async () => {
+    const world = { runs: {}, events: {} } as unknown as World;
+    const runIds = Array.from({ length: 501 }, (_, i) => `wrun_${i}`);
+    await expect(cancelRuns(world, runIds)).rejects.toThrow(/at most 500/i);
   });
 });

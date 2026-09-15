@@ -26,12 +26,12 @@ try {
   await world.events.create(runId, event);
 } catch (error) {
   if (EntityConflictError.is(error)) { // [!code highlight]
-    // Event already exists — safe to ignore during replay
+    // Event already exists, safe to ignore during replay
   }
 }
 ```
 
-## API Signature
+## API signature
 
 ### Properties
 
@@ -44,11 +44,11 @@ interface EntityConflictError {
 export default EntityConflictError;`}
 />
 
-### Static Methods
+### Static methods
 
 #### `EntityConflictError.is(value)`
 
-Type-safe check for `EntityConflictError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+Type-safe check for `EntityConflictError` instances. Preferred over `instanceof` because it works across module boundaries and virtual machine contexts.
 
 ```typescript
 import { EntityConflictError } from "workflow/errors"

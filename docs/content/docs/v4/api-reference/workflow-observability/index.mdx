@@ -1,6 +1,6 @@
 ---
 title: "workflow/observability"
-description: Utilities to hydrate serialized step I/O and parse machine-readable workflow names for display.
+description: Utilities to hydrate serialized step input/output (I/O) and parse machine-readable workflow names for display.
 type: overview
 summary: Explore utilities for hydrating serialized workflow data and parsing display names in observability tools.
 keywords:
@@ -16,9 +16,7 @@ keywords:
   - display name parsing
 ---
 
-API reference for observability utilities from the `workflow/observability` package.
-
-The observability package provides utilities for working with workflow data in observability and debugging tools — hydrating serialized step I/O for display, and parsing machine-readable names into display-friendly formats.
+The `workflow/observability` package provides utilities for observability and debugging tools. Use it to hydrate serialized step input/output (I/O) for display and parse machine-readable names into display-friendly formats.
 
 ```typescript lineNumbers
 import { // [!code highlight]
@@ -31,7 +29,7 @@ import { // [!code highlight]
 } from "workflow/observability"; // [!code highlight]
 ```
 
-## Data Hydration
+## Data hydration
 
 <Cards>
     <Card href="/docs/api-reference/workflow-observability/hydrate-resource-io" title="hydrateResourceIO()">
@@ -45,7 +43,7 @@ import { // [!code highlight]
     </Card>
 </Cards>
 
-## Name Parsing
+## Name parsing
 
 <Cards>
     <Card href="/docs/api-reference/workflow-observability/parse-step-name" title="parseStepName()">
@@ -59,6 +57,6 @@ import { // [!code highlight]
     </Card>
 </Cards>
 
-## Encrypted Data
+## Encrypted data
 
-When a [World](/docs/api-reference/workflow-runtime/world) stores encrypted data, the hydration utilities intentionally leave encrypted values untouched: [`hydrateData()`](/docs/api-reference/workflow-observability/hydrate-data) and [`hydrateResourceIO()`](/docs/api-reference/workflow-observability/hydrate-resource-io) return encrypted fields as raw `Uint8Array` values so observability tools can detect them and decide how to render them (for example, the Workflow CLI shows an "Encrypted" placeholder). Decryption is handled by the runtime and the World implementation — see [Encryption](/docs/how-it-works/encryption) for how keys are managed.
+When a [World](/docs/api-reference/workflow-runtime/world) stores encrypted data, the hydration utilities intentionally leave encrypted values untouched: [`hydrateData()`](/docs/api-reference/workflow-observability/hydrate-data) and [`hydrateResourceIO()`](/docs/api-reference/workflow-observability/hydrate-resource-io) return encrypted fields as raw `Uint8Array` values so observability tools can detect them and decide how to render them (for example, the Workflow CLI shows an "Encrypted" placeholder). Decryption is handled by the runtime and the World implementation. See [Encryption](/docs/how-it-works/encryption) for how keys are managed.

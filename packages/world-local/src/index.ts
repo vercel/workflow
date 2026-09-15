@@ -2,7 +2,8 @@ import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { QueuePrefix, World } from '@workflow/world';
-import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
+import { mintedSpecVersion, reenqueueActiveRuns } from '@workflow/world';
+import { warnIfRunningInVercelDeployment } from './build-target-mismatch.js';
 import type { Config } from './config.js';
 import { config, resolveRecoverActiveRuns } from './config.js';
 import {
@@ -22,6 +23,7 @@ import { resetHookIndexEnsureCache } from './storage/hook-index.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
+export { UnwritableDataDirError } from './build-target-mismatch.js';
 // Re-export init types and utilities for consumers
 export {
   DataDirAccessError,
@@ -61,6 +63,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       )
     : {};
   const mergedConfig = { ...config.value, ...definedArgs };
+  warnIfRunningInVercelDeployment(mergedConfig.dataDir);
   const tag = mergedConfig.tag;
   const queue = createQueue(mergedConfig);
   const { clearCache: clearStorageCache, ...storage } = createStorage(
@@ -69,7 +72,15 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
   );
   const recoverActiveRuns = resolveRecoverActiveRuns(mergedConfig);
   return {
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: mintedSpecVersion(),
+    capabilities: {
+      hookRetention: { active: true },
+      // world-local deduplicates concurrent `hook_received` writes sharing a
+      // `(runId, resumeId)` via a filesystem sidecar claim (see
+      // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
+      // path converges on one event in dev exactly as it does on Vercel.
+      hookResumeDedup: true,
+    },
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {
@@ -88,7 +99,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // untagged filter, an untagged dev server sharing the data directory with
       // the vitest harness would list tagged runs (list enumerates every file)
       // and re-enqueue them, but run_started's tagged-or-untagged read can't
-      // resolve a foreign tag — yielding "did not return the run entity" 500s
+      // resolve a foreign tag, yielding "did not return the run entity" 500s
       // on startup until the message exhausts its deliveries.
       const fileIdFilter = tag
         ? (fileId: string) => hasTag(fileId, tag)
@@ -118,7 +129,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
         // to read each hook to extract its token hash. Constraint
         // files and markers are untagged (`{sha256}.json` and
         // `{sha256}.recovery.json`) so listTaggedFiles won't find
-        // them — we must resolve them via the hook data.
+        // them. We must resolve them via the hook data.
         const hooksDir = path.join(basedir, 'hooks');
         const taggedHookFiles = await listTaggedFiles(hooksDir, tag);
         const { HookSchema } = await import('@workflow/world');
@@ -192,7 +203,7 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
           .catch(() => {});
         // Delete tagged stream chunks (.{tag}.bin files). Chunks are sharded
         // one directory per stream (streams/chunks/<streamName>/<chunkId>.{tag}.bin),
-        // so iterate each per-stream directory — the top-level chunks dir now
+        // so iterate each per-stream directory: the top-level chunks dir now
         // holds only subdirectories, so listing it directly would match nothing
         // and silently leak tagged chunk files across test sessions.
         const chunksDir = path.join(basedir, 'streams', 'chunks');
@@ -232,11 +243,4 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       }
     },
   };
-}
-
-/**
- * @deprecated Use `createWorld()` instead.
- */
-export function createLocalWorld(args?: Partial<Config>): LocalWorld {
-  return createWorld(args);
 }

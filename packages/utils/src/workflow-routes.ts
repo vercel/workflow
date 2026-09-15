@@ -17,7 +17,7 @@ export function createWorkflowBaseUrl(origin: string): string {
 }
 
 export type WorkflowUrlRoute =
-  | { type: 'flow' | 'step' }
+  | { type: 'flow' }
   | { type: 'manifest' }
   | { type: 'webhook'; token: string }
   | { type: 'health' };
@@ -38,15 +38,14 @@ function getWorkflowRouteEndpoint(route: WorkflowUrlRoute): string {
     case 'flow':
     case 'health':
       return 'flow';
-    case 'step':
-      return 'step';
     case 'manifest':
       return 'manifest.json';
     case 'webhook':
       return `webhook/${encodeURIComponent(route.token)}`;
   }
-  const exhaustive: never = route;
-  return exhaustive;
+  throw new Error(
+    `Unsupported workflow route: ${String((route as { type?: unknown }).type)}`
+  );
 }
 
 export function createWorkflowHealthEndpoint(): string {

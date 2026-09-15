@@ -1,7 +1,7 @@
+import { LogoWorkflowSdk } from '@vercel/geistdocs/assets/logos/logo-workflow-sdk';
 import type { GeistdocsAgentReadinessConfig } from '@vercel/geistdocs/config';
-import { LogoWorkflow } from '@/components/geistcn-fallbacks/geistcn-assets/logos/logo-workflow';
 
-export const Logo = () => <LogoWorkflow height={15} />;
+export const Logo = () => <LogoWorkflowSdk />;
 
 export const github = {
   branch: 'main',

@@ -23,12 +23,12 @@ interface RepoProjectConfig {
   id: string;
   name: string;
   directory: string;
-  /** Per-project orgId — added in vercel/vercel#14967. Prefer this over root-level orgId. */
+  /** Per-project orgId, added in vercel/vercel#14967. Prefer this over root-level orgId. */
   orgId?: string;
 }
 
 interface RepoProjectsConfig {
-  /** Legacy root-level orgId — older Vercel CLI versions put orgId here. */
+  /** Legacy root-level orgId: older Vercel CLI versions put orgId here. */
   orgId?: string;
   remoteName: string;
   projects: RepoProjectConfig[];

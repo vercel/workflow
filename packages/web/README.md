@@ -71,6 +71,7 @@ The UI reads configuration on the server via environment variables.
   - `WORKFLOW_VERCEL_TEAM`
   - `WORKFLOW_VERCEL_PROJECT`
   - `WORKFLOW_VERCEL_ENV` (optional; defaults to `production`)
+  - `VERCEL_WORKFLOW_SERVER_URL` (optional; routes all Vercel analytics and primary-storage requests to a different workflow-server deployment)
 
 - **Local (filesystem-backed observability)**:
   - `WORKFLOW_TARGET_WORLD=local`

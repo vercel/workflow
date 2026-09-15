@@ -6,6 +6,7 @@ export type {
   StopSleepResult,
   WorkflowReadableStreamOptions,
   WorkflowRun,
+  WorkflowRunWritableStreamOptions,
 } from '@workflow/core/runtime';
 
 export { Run } from '@workflow/core/runtime/run';

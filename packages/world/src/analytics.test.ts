@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { AnalyticsRunSchema } from './analytics.js';
+import {
+  AnalyticsAttributeKeySchema,
+  AnalyticsEventSchema,
+  AnalyticsRunSchema,
+} from './analytics.js';
 
 const base = {
   runId: 'wrun_01KX2M5N3RBNC12RYWYYH4WWQJ',
@@ -8,6 +12,27 @@ const base = {
   workflowName: 'workflow//./src/w//myWorkflow',
   updatedAt: '2026-07-13 17:09:11.593',
 };
+
+describe('AnalyticsEventSchema', () => {
+  it('preserves vercelId and computeInstanceId as distinct provenance fields', () => {
+    const event = AnalyticsEventSchema.parse({
+      runId: 'wrun_01KX2M5N3RBNC12RYWYYH4WWQJ',
+      eventId: 'evnt_01KX2M5N3RBNC12RYWYYH4WWQJ',
+      eventType: 'run_started',
+      workflowName: 'test-workflow',
+      deploymentId: 'dpl_1',
+      runCreatedAt: '2026-07-13 17:09:11.000',
+      createdAt: '2026-07-13 17:09:11.593',
+      vercelId: 'request-grain-id',
+      requestId: 'sibling-request-column',
+      computeInstanceId: 'compute-instance-id',
+    });
+
+    expect(event.vercelId).toBe('request-grain-id');
+    expect(event.requestId).toBe('sibling-request-column');
+    expect(event.computeInstanceId).toBe('compute-instance-id');
+  });
+});
 
 describe('analytics date coercion', () => {
   it('parses timezone-naive datetime strings as UTC regardless of process TZ', () => {
@@ -26,6 +51,21 @@ describe('analytics date coercion', () => {
       createdAt: '2026-07-13 17:09:11',
     });
     expect(run.createdAt.toISOString()).toBe('2026-07-13T17:09:11.000Z');
+  });
+
+  // These two were the only analytics timestamps left on a plain coercion,
+  // which reads a naive string in the process's local zone.
+  it('parses attribute key timestamps as UTC', () => {
+    const attribute = AnalyticsAttributeKeySchema.parse({
+      key: 'source',
+      runCount: '42',
+      firstSeenAt: '2026-07-13 17:09:11.593',
+      lastSeenAt: '2026-07-14 09:30:00',
+    });
+    expect(attribute.firstSeenAt.toISOString()).toBe(
+      '2026-07-13T17:09:11.593Z'
+    );
+    expect(attribute.lastSeenAt.toISOString()).toBe('2026-07-14T09:30:00.000Z');
   });
 
   it('leaves timezone-aware strings untouched', () => {

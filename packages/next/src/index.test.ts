@@ -187,7 +187,7 @@ describe('withWorkflow builder config', () => {
     });
   });
 
-  it('externalizes the built-in Vercel world while preserving user externals', async () => {
+  it('externalizes the non-bundlable Vercel packages while preserving user externals', async () => {
     const config = withWorkflow({
       serverExternalPackages: ['@node-rs/xxhash'],
     });
@@ -196,10 +196,11 @@ describe('withWorkflow builder config', () => {
       defaultConfig: {},
     });
 
+    // @workflow/world-vercel and @vercel/queue are deliberately absent: they
+    // are bundled into the server output so a cold start does not resolve their
+    // module graphs from disk one file at a time.
     expect(nextConfig.serverExternalPackages).toEqual([
       '@node-rs/xxhash',
-      '@workflow/world-vercel',
-      '@vercel/queue',
       '@vercel/oidc',
       '@vercel/cli-auth',
       '@napi-rs/keyring',
@@ -207,122 +208,66 @@ describe('withWorkflow builder config', () => {
     expect(nextConfig.outputFileTracingIncludes).toBeUndefined();
   });
 
-  it('normalizes and aliases the workflow target world for Next bundlers', async () => {
-    process.env.WORKFLOW_TARGET_WORLD = 'vercel';
-    const userWebpack = vi.fn((webpackConfig: any) => {
-      webpackConfig.resolve = {
-        alias: {
-          existing: 'existing-target',
+  function writeProjectWithQueueVersion(version: string): string {
+    const projectDir = mkdtempSync(
+      join(realTmpDir, 'workflow-next-queue-version-')
+    );
+    writeFile(
+      join(projectDir, 'node_modules', '@vercel', 'queue', 'package.json'),
+      JSON.stringify({
+        name: '@vercel/queue',
+        version,
+        main: 'index.js',
+        // The published package exports `.` and nothing else, so asking Node
+        // for the manifest by subpath throws. Mirroring the map here keeps a
+        // resolver-based lookup from passing against a fixture that the real
+        // package layout would reject.
+        exports: {
+          '.': {
+            require: './index.js',
+          },
         },
-      };
-      return webpackConfig;
-    });
-    const config = withWorkflow({
-      transpilePackages: ['user-package'],
-      webpack: userWebpack,
-      turbopack: {
-        resolveAlias: {
-          existing: 'existing-target',
-        },
-      } as any,
-    });
+      })
+    );
+    writeFile(
+      join(projectDir, 'node_modules', '@vercel', 'queue', 'index.js'),
+      'module.exports = {};'
+    );
+    return projectDir;
+  }
 
-    const nextConfig = await config('phase-production-build', {
+  it('keeps an unbundlable @vercel/queue external', async () => {
+    // Older releases leave their dynamic `import()` unannotated, which Turbopack
+    // cannot resolve, so bundling that copy risks failing the build. Any version
+    // below the bundlable floor works here, without restating the floor.
+    process.chdir(writeProjectWithQueueVersion('0.0.1'));
+
+    const nextConfig = await withWorkflow({})('phase-production-build', {
       defaultConfig: {},
     });
-    const webpackConfig = nextConfig.webpack?.(
-      {
-        externals: [],
-        module: {
-          rules: [],
-        },
-      },
-      {} as any
-    );
 
-    expect(process.env.WORKFLOW_TARGET_WORLD).toBe('@workflow/world-vercel');
-    expect(nextConfig.env?.WORKFLOW_TARGET_WORLD).toBe(
-      '@workflow/world-vercel'
-    );
-    expect(nextConfig.transpilePackages).toEqual([
-      'user-package',
-      'workflow',
-      '@workflow/core',
-      '@workflow/serde',
-      '@workflow/errors',
-      '@workflow/utils',
-      '@workflow/ai',
-    ]);
-    expect((nextConfig.turbopack?.resolveAlias as any)?.existing).toBe(
-      'existing-target'
-    );
-    expect(
-      (nextConfig.turbopack?.resolveAlias as any)?.[
-        '@workflow/core/runtime/world-target'
-      ]
-    ).toBe('@workflow/world-vercel');
-    expect(webpackConfig?.resolve?.alias).toMatchObject({
-      existing: 'existing-target',
+    expect(nextConfig.serverExternalPackages).toContain('@vercel/queue');
+  });
+
+  it('bundles a @vercel/queue version that carries the bundler-ignore hints', async () => {
+    // Any version above the bundlable floor, without restating the floor here.
+    process.chdir(writeProjectWithQueueVersion('99.0.0'));
+
+    const nextConfig = await withWorkflow({})('phase-production-build', {
+      defaultConfig: {},
     });
-    expect(
-      webpackConfig?.resolve?.alias?.['@workflow/core/runtime/world-target']
-    ).toMatch(/packages[\\/]world-vercel[\\/]dist[\\/]index\.js$/);
+
+    expect(nextConfig.serverExternalPackages).not.toContain('@vercel/queue');
   });
 
-  it('aliases relative workflow target modules without treating them as packages', async () => {
-    const testDir = mkdtempSync(join(realTmpDir, 'workflow-next-target-'));
-    try {
-      writeFile(
-        join(testDir, 'my-world.ts'),
-        'export function createWorld() {}'
-      );
-      process.chdir(testDir);
-      process.env.WORKFLOW_TARGET_WORLD = './my-world.ts';
+  it('keeps the Vercel world external for the workflow/step bundles', async () => {
+    const config = withWorkflow({});
 
-      const config = withWorkflow({
-        transpilePackages: ['user-package'],
-        turbopack: {
-          resolveAlias: {
-            existing: 'existing-target',
-          },
-        } as any,
-      });
+    await config('phase-production-build', { defaultConfig: {} });
 
-      const nextConfig = await config('phase-production-build', {
-        defaultConfig: {},
-      });
-      const webpackConfig = nextConfig.webpack?.(
-        {
-          externals: [],
-          module: {
-            rules: [],
-          },
-        },
-        {} as any
-      );
-
-      expect(process.env.WORKFLOW_TARGET_WORLD).toBe('./my-world.ts');
-      expect(nextConfig.transpilePackages).toContain('user-package');
-      expect(nextConfig.transpilePackages).not.toContain('./my-world.ts');
-      expect(
-        (nextConfig.turbopack?.resolveAlias as any)?.[
-          '@workflow/core/runtime/world-target'
-        ]
-      ).toBe(join(testDir, 'my-world.ts'));
-      expect(
-        webpackConfig?.resolve?.alias?.['@workflow/core/runtime/world-target']
-      ).toBe(join(testDir, 'my-world.ts'));
-    } finally {
-      process.chdir(originalCwd);
-      rmSync(testDir, { recursive: true, force: true });
-    }
-  });
-
-  it('defaults local builds to the local world package and data directory', () => {
-    withWorkflow({});
-
-    expect(process.env.WORKFLOW_TARGET_WORLD).toBe('@workflow/world-local');
-    expect(process.env.WORKFLOW_LOCAL_DATA_DIR).toBe('.next/workflow-data');
+    expect(builderConfigs[0].externalPackages).toEqual(
+      expect.arrayContaining(['@workflow/world-vercel', '@vercel/queue'])
+    );
   });
 
   it('preserves user webpack externals without adding Vercel world dependency externals', async () => {
@@ -404,8 +349,6 @@ describe('withWorkflow builder config', () => {
 
       expect(resolvedConfig.serverExternalPackages).toEqual([
         'plain-external-a',
-        '@workflow/world-vercel',
-        '@vercel/queue',
         '@vercel/oidc',
         '@vercel/cli-auth',
         '@napi-rs/keyring',
@@ -416,11 +359,11 @@ describe('withWorkflow builder config', () => {
           'server-only',
           'client-only',
           'plain-external-a',
-          '@workflow/world-vercel',
-          '@vercel/queue',
           '@vercel/oidc',
           '@vercel/cli-auth',
           '@napi-rs/keyring',
+          '@workflow/world-vercel',
+          '@vercel/queue',
         ],
       });
 
@@ -469,8 +412,6 @@ describe('withWorkflow builder config', () => {
 
       expect(resolvedConfig.serverExternalPackages).toEqual([
         'plain-external-b',
-        '@workflow/world-vercel',
-        '@vercel/queue',
         '@vercel/oidc',
         '@vercel/cli-auth',
         '@napi-rs/keyring',
@@ -481,11 +422,11 @@ describe('withWorkflow builder config', () => {
           'server-only',
           'client-only',
           'plain-external-b',
-          '@workflow/world-vercel',
-          '@vercel/queue',
           '@vercel/oidc',
           '@vercel/cli-auth',
           '@napi-rs/keyring',
+          '@workflow/world-vercel',
+          '@vercel/queue',
         ],
       });
       expect(warnSpy).not.toHaveBeenCalled();

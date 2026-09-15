@@ -9,10 +9,7 @@ interface ConversationViewProps {
 export function ConversationView({ messages }: ConversationViewProps) {
   if (messages.length === 0) {
     return (
-      <div
-        className="text-center py-8 text-[11px]"
-        style={{ color: 'var(--ds-gray-600)' }}
-      >
+      <div className="py-8 text-center text-[11px] text-gray-600">
         No messages
       </div>
     );
@@ -30,23 +27,13 @@ export function ConversationView({ messages }: ConversationViewProps) {
 function MessageBubble({ message }: { message: ModelMessage }) {
   const role = message.role;
   const parts = parseContent(message.content);
-  const style = getRoleStyle(role);
+  const roleClasses = getRoleClasses(role);
 
   return (
-    <div
-      className="rounded-md border text-[11px]"
-      style={{
-        backgroundColor: style.bg,
-        borderColor: style.border,
-      }}
-    >
+    <div className={`rounded-md border text-[11px] ${roleClasses.bubble}`}>
       {/* Role header */}
       <div
-        className="px-2.5 py-1 border-b text-[10px] font-medium uppercase tracking-wide"
-        style={{
-          borderColor: style.border,
-          color: style.label,
-        }}
+        className={`border-b px-2.5 py-1 font-medium text-[10px] uppercase tracking-wide ${roleClasses.label}`}
       >
         {role}
       </div>
@@ -76,20 +63,14 @@ function ContentPart({ part, role }: { part: ParsedPart; role: string }) {
     // Use Streamdown for assistant messages (they often contain markdown)
     if (role === 'assistant') {
       return (
-        <div
-          className="prose prose-sm max-w-none text-[11px] [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
-          style={{ color: 'var(--ds-gray-1000)' }}
-        >
+        <div className="prose prose-sm max-w-none text-[11px] text-gray-1000 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
           <Streamdown>{part.text}</Streamdown>
         </div>
       );
     }
 
     return (
-      <div
-        className="whitespace-pre-wrap break-words"
-        style={{ color: 'var(--ds-gray-1000)' }}
-      >
+      <div className="whitespace-pre-wrap break-words text-gray-1000">
         {part.text}
       </div>
     );
@@ -97,29 +78,15 @@ function ContentPart({ part, role }: { part: ParsedPart; role: string }) {
 
   if (part.type === 'tool-call') {
     return (
-      <div
-        className="rounded border px-2 py-1.5"
-        style={{
-          backgroundColor: 'var(--ds-purple-100)',
-          borderColor: 'var(--ds-purple-300)',
-        }}
-      >
+      <div className="rounded border border-purple-300 bg-purple-100 px-2 py-1.5">
         <div className="flex items-center gap-1.5 text-[10px] font-medium">
           <span>🔧</span>
-          <span style={{ color: 'var(--ds-purple-900)' }}>{part.toolName}</span>
+          <span className="text-purple-900">{part.toolName}</span>
         </div>
         {part.input != null && (
-          <div
-            className="mt-1.5 overflow-x-auto p-1.5 rounded"
-            style={{ backgroundColor: 'var(--ds-gray-100)' }}
-          >
+          <div className="mt-1.5 overflow-x-auto rounded bg-gray-100 p-1.5">
             {typeof part.input === 'string' ? (
-              <pre
-                className="text-[10px]"
-                style={{ color: 'var(--ds-gray-800)' }}
-              >
-                {part.input}
-              </pre>
+              <pre className="text-[10px] text-gray-800">{part.input}</pre>
             ) : (
               <DataInspector data={part.input} />
             )}
@@ -131,31 +98,15 @@ function ContentPart({ part, role }: { part: ParsedPart; role: string }) {
 
   if (part.type === 'tool-result') {
     return (
-      <div
-        className="rounded border px-2 py-1.5"
-        style={{
-          backgroundColor: 'var(--ds-green-100)',
-          borderColor: 'var(--ds-green-300)',
-        }}
-      >
+      <div className="rounded border border-green-300 bg-green-100 px-2 py-1.5">
         <div className="flex items-center gap-1.5 text-[10px] font-medium">
           <span>✓</span>
-          <span style={{ color: 'var(--ds-green-900)' }}>
-            {part.toolName} result
-          </span>
+          <span className="text-green-900">{part.toolName} result</span>
         </div>
         {part.output != null && (
-          <div
-            className="mt-1.5 overflow-x-auto max-h-[200px] overflow-y-auto p-1.5 rounded"
-            style={{ backgroundColor: 'var(--ds-gray-100)' }}
-          >
+          <div className="mt-1.5 max-h-[200px] overflow-x-auto overflow-y-auto rounded bg-gray-100 p-1.5">
             {typeof part.output === 'string' ? (
-              <pre
-                className="text-[10px]"
-                style={{ color: 'var(--ds-gray-800)' }}
-              >
-                {part.output}
-              </pre>
+              <pre className="text-[10px] text-gray-800">{part.output}</pre>
             ) : (
               <DataInspector data={part.output} expandLevel={1} />
             )}
@@ -168,37 +119,32 @@ function ContentPart({ part, role }: { part: ParsedPart; role: string }) {
   return null;
 }
 
-function getRoleStyle(role: string) {
+function getRoleClasses(role: string): { bubble: string; label: string } {
   switch (role) {
     case 'user':
       return {
-        bg: 'var(--ds-blue-100)',
-        border: 'var(--ds-blue-300)',
-        label: 'var(--ds-blue-700)',
+        bubble: 'border-blue-300 bg-blue-100',
+        label: 'border-blue-300 text-blue-700',
       };
     case 'assistant':
       return {
-        bg: 'var(--ds-gray-100)',
-        border: 'var(--ds-gray-300)',
-        label: 'var(--ds-gray-700)',
+        bubble: 'border-gray-300 bg-gray-100',
+        label: 'border-gray-300 text-gray-700',
       };
     case 'system':
       return {
-        bg: 'var(--ds-amber-100)',
-        border: 'var(--ds-amber-300)',
-        label: 'var(--ds-amber-700)',
+        bubble: 'border-amber-300 bg-amber-100',
+        label: 'border-amber-300 text-amber-700',
       };
     case 'tool':
       return {
-        bg: 'var(--ds-green-50)',
-        border: 'var(--ds-green-300)',
-        label: 'var(--ds-green-700)',
+        bubble: 'border-green-300 bg-green-100',
+        label: 'border-green-300 text-green-700',
       };
     default:
       return {
-        bg: 'var(--ds-gray-100)',
-        border: 'var(--ds-gray-300)',
-        label: 'var(--ds-gray-700)',
+        bubble: 'border-gray-300 bg-gray-100',
+        label: 'border-gray-300 text-gray-700',
       };
   }
 }

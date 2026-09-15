@@ -3,7 +3,7 @@ title: "@workflow/vitest"
 description: Vitest plugin and test helpers for integration testing workflows in-process.
 ---
 
-The `@workflow/vitest` package provides a Vitest plugin and test helpers for running full workflow integration tests in-process — no server required.
+The `@workflow/vitest` package provides a Vitest plugin and test helpers for running full workflow integration tests in-process, no server required.
 
 ## Plugin
 
@@ -21,7 +21,7 @@ export default defineConfig({
 });
 ```
 
-Pass a [`WorkflowTestOptions`](#workflowtestoptions) object when your project uses a non-standard layout — for example, a monorepo where `workflows/` does not live at the Vitest config's directory, or when the default `.workflow-data` / `.workflow-vitest` output locations need to move. The plugin forwards these paths to `buildWorkflowTests()` and `setupWorkflowTests()` through Vitest's per-project provided context, so each Vitest workspace project stays isolated.
+Pass a [`WorkflowTestOptions`](#workflowtestoptions) object when your project uses a non-standard layout, for example, a monorepo where `workflows/` does not live at the Vitest config's directory, or when the default `.workflow-data` / `.workflow-vitest` output locations need to move. The plugin forwards these paths to `buildWorkflowTests()` and `setupWorkflowTests()` through Vitest's per-project provided context, so each Vitest workspace project stays isolated.
 
 
 ```typescript
@@ -46,7 +46,7 @@ export default defineConfig({
 
 **Returns:** `Plugin[]`
 
-## Setup Functions
+## Setup functions
 
 ### `buildWorkflowTests()`
 
@@ -108,11 +108,11 @@ Tears down the workflow test world. Clears the global world and closes the Local
 | `dataDir` | `string` | `<rootDir>/.workflow-data` | Directory for workflow runtime data written by the test world. Relative paths resolve against `cwd`. |
 | `outDir` | `string` | `<rootDir>/.workflow-vitest` | Directory for generated workflow and step bundles. Relative paths resolve against `cwd`. |
 
-## Test Helpers
+## Test helpers
 
 ### `waitForSleep()`
 
-Polls the event log until the workflow has a pending `sleep()` call — one with a `wait_created` event but no corresponding `wait_completed` event. Returns the correlation ID of the pending sleep, which can be passed to [`wakeUp()`](/docs/api-reference/workflow-api/get-run) to target a specific sleep.
+Polls the event log until the workflow has a pending `sleep()` call, one with a `wait_created` event but no corresponding `wait_completed` event. Returns the correlation ID of the pending sleep, which can be passed to [`wakeUp()`](/docs/api-reference/workflow-api/get-run) to target a specific sleep.
 
 
 ```typescript
@@ -131,9 +131,9 @@ await getRun(run.runId).wakeUp({ correlationIds: [sleepId] }); // [!code highlig
 | `run` | `Run<any>` | The workflow run to monitor |
 | `options?` | `WaitOptions` | Polling and timeout configuration |
 
-**Returns:** `Promise<string>` — The correlation ID of the first pending sleep. Pass this to `wakeUp({ correlationIds: [id] })` to target a specific sleep.
+**Returns:** `Promise<string>`, the correlation ID of the first pending sleep. Pass this to `wakeUp({ correlationIds: [id] })` to target a specific sleep.
 
-#### Behavior with Multiple Sleeps
+#### Behavior with multiple sleeps
 
 - **Sequential sleeps**: `waitForSleep()` returns each sleep as the workflow reaches it. After waking one, call `waitForSleep()` again for the next.
 - **Parallel sleeps**: `waitForSleep()` returns whichever pending sleep is found first. After waking it, call `waitForSleep()` again to get the next one.
@@ -159,7 +159,7 @@ await resumeHook(hook.token, { approved: true }); // [!code highlight]
 | `run` | `Run<any>` | The workflow run to monitor |
 | `options?` | `WaitOptions & { token?: string }` | Polling, timeout, and optional token filter |
 
-**Returns:** `Promise<Hook>` — The first pending hook matching the filter. The hook object includes `token`, `hookId`, and `runId`.
+**Returns:** `Promise<Hook>`, the first pending hook matching the filter. The hook object includes `token`, `hookId`, and `runId`.
 
 ### `WaitOptions`
 

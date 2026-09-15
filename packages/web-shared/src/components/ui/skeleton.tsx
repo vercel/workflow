@@ -8,8 +8,8 @@ function Skeleton({
   return (
     <div
       {...props}
-      className={cn('rounded-md', className)}
-      style={{ backgroundColor: 'var(--ds-gray-200)', ...style }}
+      className={cn('rounded-md bg-gray-200', className)}
+      style={style}
     />
   );
 }

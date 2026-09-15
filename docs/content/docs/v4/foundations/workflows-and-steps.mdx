@@ -14,18 +14,18 @@ import { File, Folder, Files } from "fumadocs-ui/components/files";
 
 Workflows (a.k.a. *durable functions*) are a programming model for building long-running, stateful application logic that can maintain its execution state across restarts, failures, or user events. Unlike traditional serverless functions that lose all state when they terminate, workflows persist their progress and can resume exactly where they left off.
 
-Moreover, workflows let you easily model complex multi-step processes in simple, elegant code. To do this, we introduce two fundamental entities:
+Workflows let you model complex multi-step processes in code. To do this, we introduce two fundamental entities:
 
 1. **Workflow Functions**: Functions that orchestrate/organize steps
 2. **Step Functions**: Functions that carry out the actual work
 
-## Workflow Functions
+## Workflow functions
 
 *Directive: `"use workflow"`*
 
 Workflow functions define the entrypoint of a workflow and organize how step functions are called. This type of function does not have access to the Node.js runtime, and usable `npm` packages are limited.
 
-Although this may seem limiting initially, this feature is important in order to suspend and accurately resume execution of workflows.
+Although this may seem limiting initially, this feature is required to suspend and accurately resume workflow execution.
 
 It helps to think of the workflow function less like a full JavaScript runtime and more like "stitching together" various steps using conditionals, loops, try/catch handlers, `Promise.all`, and other language primitives.
 
@@ -51,7 +51,7 @@ Determinism in the workflow is required to resume the workflow from a suspension
 
 The sandboxed environment that workflows run in already ensures determinism. For instance, `Math.random` and `Date` constructors are fixed in workflow runs, so you are safe to use them, and the framework ensures that the values don't change across replays.
 
-## Step Functions
+## Step functions
 
 *Directive: `"use step"`*
 
@@ -115,10 +115,10 @@ export async function POST() {
 ```
 
 <Callout type="info">
-Keep in mind that calling a step function outside of a workflow function will not have retry semantics, nor will it be observable. Additionally, certain workflow-specific functions like [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) will throw an error when used inside a step that's called outside a workflow.
+Calling a step function outside a workflow function provides neither retry semantics nor observability. Additionally, certain workflow-specific functions like [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) will throw an error when used inside a step that's called outside a workflow.
 </Callout>
 
-### Suspension and Resumption
+### Suspension and resumption
 
 Workflow functions have the ability to automatically suspend while they wait on asynchronous work. While suspended, the workflow's state is stored via the [event log](/docs/how-it-works/event-sourcing) and no compute resources are used until the workflow resumes execution.
 
@@ -129,6 +129,8 @@ There are multiple ways a workflow can suspend:
 - Waiting on a step function: the workflow yields while the step runs in the step runtime.
 - Using `sleep()` to pause for some fixed duration.
 - Awaiting on a promise returned by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), which resumes the workflow when an external system passes data into the workflow.
+
+These suspension primitives, along with the rest of the core API, are documented in the [`workflow` package reference](/docs/api-reference/workflow).
 
 ```typescript lineNumbers
 import { sleep, createWebhook } from "workflow";
@@ -150,9 +152,9 @@ export async function documentReviewProcess(userId: string) {
 }
 ```
 
-## Writing Workflows
+## Writing workflows
 
-### Basic Structure
+### Basic structure
 
 The simplest workflow consists of a workflow function and one or more step functions.
 

@@ -1,3 +1,4 @@
+export type { Span, SpanEvent } from '../lib/trace-types';
 export { ErrorBoundary } from './error-boundary';
 export { EventListView } from './event-list-view';
 export type {
@@ -13,8 +14,6 @@ export {
   ResolveHookModal,
   useHookActions,
 } from './hook-actions';
-export { TraceViewerSkeleton } from './new-trace-viewer/components/trace-viewer-skeleton';
-export { RunTraceView } from './run-trace-view';
 export { ConversationView } from './sidebar/conversation-view';
 export type {
   SelectedSpanInfo,
@@ -29,8 +28,9 @@ export type {
   FetchSpanDetail,
 } from './sidebar/use-selected-span-detail';
 export { type StreamChunk, StreamViewer } from './stream-viewer';
-export type { Span, SpanEvent } from './trace-viewer/types';
-export { NewTraceViewer } from './trace-viewer-new';
+export { StreamViewerSkeleton } from './stream-viewer-skeleton';
+export { TraceViewer } from './trace-viewer';
+export { TraceViewerSkeleton } from './trace-viewer/components/trace-viewer-skeleton';
 export {
   DataInspector,
   type DataInspectorProps,
@@ -43,4 +43,3 @@ export { Kbd } from './ui/kbd';
 export { LoadMoreButton } from './ui/load-more-button';
 export { MenuDropdown, type MenuDropdownOption } from './ui/menu-dropdown';
 export { Spinner } from './ui/spinner';
-export { WorkflowTraceViewer } from './workflow-trace-view';

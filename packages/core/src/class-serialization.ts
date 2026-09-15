@@ -52,31 +52,31 @@ export function registerSerializationClass(classId: string, cls: Function) {
 }
 
 /**
- * Stable, well-known registry id for the SDK's `Run` class.
+ * Stable, well-known registry ID for the SDK's `Run` class.
  *
- * The SWC plugin auto-registers `Run` under a *path-derived* id (e.g.
+ * The SWC plugin auto-registers `Run` under a *path-derived* ID (e.g.
  * `class//./node_modules/@workflow/core/dist/runtime/run//Run`), which
  * varies with the app's dependency layout and bundler. Host-side code
  * that needs to construct `Run` instances inside the workflow VM (e.g.
  * the hook event consumer resolving `hook.getConflict()`) cannot know
- * that id statically, so the workflow-mode `create-hook` module also
- * aliases the bundle's `Run` under this stable id at evaluation time.
+ * that ID statically, so the workflow-mode `create-hook` module also
+ * aliases the bundle's `Run` under this stable ID at evaluation time.
  *
- * The `workflow` pseudo-path cannot collide with plugin-derived ids,
+ * The `workflow` pseudo-path cannot collide with plugin-derived IDs,
  * which always use real relative module paths (`./…` / `../…`).
  */
 export const RUN_CLASS_ID = 'class//workflow//Run';
 
 /**
- * Register an additional registry id for a class without touching its
+ * Register an additional registry ID for a class without touching its
  * `classId` property.
  *
  * Unlike {@link registerSerializationClass}, this is safe to call for a
  * class the SWC plugin has already registered: the plugin's inlined IIFE
  * defines `classId` as non-configurable, so a second `defineProperty`
- * would throw. Aliasing only adds a registry entry — the class keeps
+ * would throw. Aliasing only adds a registry entry: the class keeps
  * serializing under its primary (path-derived) id, while lookups succeed
- * under both.
+ * under both IDs.
  *
  * Registration is per-global by construction: evaluated inside the
  * workflow VM it registers the VM's compiled class on the VM's registry;

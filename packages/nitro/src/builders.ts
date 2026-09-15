@@ -12,9 +12,9 @@ import { join } from 'pathe';
  * workflow builder's esbuild `external` option. RegExp and function entries
  * are skipped since esbuild's `external` only supports literal strings.
  *
- * Note: `externals.external` is on Nitro v2's options shape — v3 dropped it
- * in favour of `noExternals`. Reading it through a v2-shaped view lets us
- * still pick it up on v2 setups; on v3 the chained optional access just
+ * Note: `externals.external` is on Nitro v2's options shape; v3 dropped it
+ * in favor of `noExternals`. Reading it through a v2-shaped view lets us
+ * still pick it up on v2 setups; on v3 the chained optional access
  * returns undefined.
  */
 type NitroV2ExternalsOptions = { externals?: { external?: unknown[] } };
@@ -80,6 +80,21 @@ export class LocalBuilder extends BaseBuilder {
     this.#outDir = outDir;
   }
 
+  /**
+   * The dev handler in `../src/index.ts` cache-busts its dynamic import of
+   * `workflow/steps.mjs` using the mtime of `workflow/workflows.mjs`, so an
+   * unchanged `workflows.mjs` must still be rewritten: a step-body-only edit
+   * changes `steps.mjs` alone, and skipping the `workflows.mjs` write would
+   * freeze the version key and serve the previous step code until restart.
+   *
+   * Nothing is lost by opting out. These files are generated into
+   * `<buildDir>/workflow`, which no dev server watches, so skipping the write
+   * would not have saved a recompile here.
+   */
+  protected override get skipsUnchangedGeneratedWrites(): boolean {
+    return false;
+  }
+
   // Serialize concurrent build() calls so overlapping dev rebuilds don't
   // stomp on each other's temp files or partially overwrite output.
   #buildQueue: Promise<void> = Promise.resolve();
@@ -109,8 +124,8 @@ export class LocalBuilder extends BaseBuilder {
       stepsOutfile: join(this.#outDir, 'steps.mjs'),
       flowOutfile: join(this.#outDir, 'workflows.mjs'),
       format: 'esm',
-      // bundleFinalOutput: false — Nitro externalizes the workflow build dir
-      // during dev, and its own rollup pipeline handles bundling for prod.
+      // bundleFinalOutput: false, since Nitro externalizes the workflow build
+      // dir during dev, and its own rollup pipeline handles bundling for prod.
       // Using true causes "Dynamic require of X is not supported" errors
       // because esbuild wraps CJS require() calls in ESM output.
       bundleFinalOutput: false,

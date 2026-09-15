@@ -1,7 +1,7 @@
 /**
  * VM/step-bundle stub for `@workflow/core/runtime/world-init`.
  *
- * Resolved via the `workflow` export condition. Empty by design — the host
+ * Resolved via the `workflow` export condition. Empty by design: the host
  * is responsible for loading `world.ts` and populating the globalThis
  * world cache before any VM or step code executes. Including this module
  * (rather than letting the resolver fall through to the host file) keeps

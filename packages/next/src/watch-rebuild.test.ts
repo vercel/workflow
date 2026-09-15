@@ -3,6 +3,7 @@ import {
   classifyRebuild,
   createSourceSnapshotFromSource,
   extractImportSignature,
+  pinBaselinesAcrossFullRebuild,
   type SourceSnapshot,
   stripCommentsFromSource,
 } from './watch-rebuild.js';
@@ -147,6 +148,203 @@ export const allWorkflows = {} as const;
             detectWorkflowPatterns
           ),
         sourceSnapshots: new Map(),
+      })
+    ).resolves.toEqual({ kind: 'full' });
+  });
+
+  test('an edit landing during a full rebuild is not absorbed into the baseline', async () => {
+    // Reproduces the flow-route HMR race: a step definition is added to an
+    // already-discovered step file while a full rebuild is in flight. The
+    // post-rebuild baseline refresh reads the file from disk (post-edit), so
+    // without reconciliation the queued watcher event diffs the edit against
+    // itself and classifies as a no-op — the added step never reaches the
+    // manifest.
+    const stepFile = '/app/workflows/hmr-fuzz-step.ts';
+    const pageFile = '/app/app/page.tsx';
+    const preBuildSource = `export async function hmrFuzzStep() {
+  'use step';
+  return 'step-value';
+}
+`;
+    const postEditSource = `export async function hmrFuzzStep() {
+  'use step';
+  return 'step-value';
+}
+
+export async function hmrFuzzAddedStep() {
+  'use step';
+  return 'added-step';
+}
+`;
+    const discoveredEntries = {
+      discoveredSteps: new Set([stepFile]),
+      discoveredWorkflows: new Set<string>(),
+      discoveredSerdeFiles: new Set<string>(),
+      discoveredFiles: new Set([pageFile, stepFile]),
+    };
+    const sources = new Map<string, string>([
+      [stepFile, preBuildSource],
+      [pageFile, ''],
+    ]);
+    const readSnapshot = async (file: string) =>
+      createSourceSnapshotFromSource(
+        sources.get(file) ?? '',
+        detectWorkflowPatterns
+      );
+
+    const sourceSnapshots = new Map<string, SourceSnapshot>();
+
+    // Full rebuild: the helper captures what the build reads before invoking
+    // the rebuild; the edit lands mid-rebuild and the post-rebuild refresh
+    // reads it from disk.
+    await pinBaselinesAcrossFullRebuild({
+      discoveredEntries,
+      inputFiles: [pageFile],
+      readSnapshot,
+      sourceSnapshots,
+      rebuild: async () => {
+        sources.set(stepFile, postEditSource);
+        sourceSnapshots.set(stepFile, await readSnapshot(stepFile));
+        sourceSnapshots.set(pageFile, await readSnapshot(pageFile));
+      },
+    });
+
+    // The queued watcher event for the edit must still trigger a rebuild.
+    await expect(
+      classifyRebuild({
+        discoveredEntries,
+        fileChanges: {
+          addedFiles: [],
+          modifiedFiles: [stepFile],
+          removedFiles: [],
+        },
+        inputFiles: [pageFile],
+        parentHasChild: () => false,
+        readSnapshot,
+        sourceSnapshots,
+      })
+    ).resolves.toEqual({ kind: 'full' });
+  });
+
+  test('a duplicate watcher event landing during a full rebuild stays a no-op', async () => {
+    // Watchers routinely emit several events for one edit, and the edit that
+    // triggered a full rebuild is itself a source of such stragglers landing
+    // mid-rebuild. The straggler carries the same content the rebuild
+    // consumed, so it must diff equal against the pinned pre-build baseline
+    // and classify as 'none' — evicting the baseline instead cascades into
+    // back-to-back full rebuilds.
+    const stepFile = '/app/workflows/hmr-fuzz-step.ts';
+    const pageFile = '/app/app/page.tsx';
+    const source = `export async function hmrFuzzStep() {
+  'use step';
+  return 'step-value';
+}
+`;
+    const discoveredEntries = {
+      discoveredSteps: new Set([stepFile]),
+      discoveredWorkflows: new Set<string>(),
+      discoveredSerdeFiles: new Set<string>(),
+      discoveredFiles: new Set([pageFile, stepFile]),
+    };
+    const sources = new Map<string, string>([
+      [stepFile, source],
+      [pageFile, ''],
+    ]);
+    const readSnapshot = async (file: string) =>
+      createSourceSnapshotFromSource(
+        sources.get(file) ?? '',
+        detectWorkflowPatterns
+      );
+
+    // Full rebuild (triggered by the edit that wrote `source`): the helper's
+    // capture reads that same content before the rebuild, and the refresh
+    // reads it again after.
+    const sourceSnapshots = new Map<string, SourceSnapshot>();
+    await pinBaselinesAcrossFullRebuild({
+      discoveredEntries,
+      inputFiles: [pageFile],
+      readSnapshot,
+      sourceSnapshots,
+      rebuild: async () => {
+        sourceSnapshots.set(stepFile, await readSnapshot(stepFile));
+        sourceSnapshots.set(pageFile, await readSnapshot(pageFile));
+      },
+    });
+
+    // The baseline survives (pinned, not evicted), so the queued duplicate
+    // classifies as a no-op instead of another full rebuild.
+    expect(sourceSnapshots.has(stepFile)).toBe(true);
+    const decision = await classifyRebuild({
+      discoveredEntries,
+      fileChanges: {
+        addedFiles: [],
+        modifiedFiles: [stepFile],
+        removedFiles: [],
+      },
+      inputFiles: [pageFile],
+      parentHasChild: () => false,
+      readSnapshot,
+      sourceSnapshots,
+    });
+    expect(decision.kind).toBe('none');
+  });
+
+  test('a file created mid-rebuild that the build missed still forces a follow-up rebuild', async () => {
+    // A file the rebuild never discovered has no baseline after the
+    // post-rebuild refresh either, so its queued add event classifies
+    // conservatively — no eviction machinery required.
+    const stepFile = '/app/workflows/newly-created-step.ts';
+    const pageFile = '/app/app/page.tsx';
+    const source = `export async function newStep() {
+  'use step';
+  return 'new-step';
+}
+`;
+    const sources = new Map<string, string>([
+      [stepFile, source],
+      [pageFile, ''],
+    ]);
+    const readSnapshot = async (file: string) =>
+      createSourceSnapshotFromSource(
+        sources.get(file) ?? '',
+        detectWorkflowPatterns
+      );
+
+    // The build that just finished never saw stepFile: it is in neither the
+    // discovered entries nor the refreshed baseline.
+    const sourceSnapshots = new Map<string, SourceSnapshot>();
+    await pinBaselinesAcrossFullRebuild({
+      discoveredEntries: {
+        discoveredSteps: new Set<string>(),
+        discoveredWorkflows: new Set<string>(),
+        discoveredSerdeFiles: new Set<string>(),
+        discoveredFiles: new Set([pageFile]),
+      },
+      inputFiles: [pageFile],
+      readSnapshot,
+      sourceSnapshots,
+      rebuild: async () => {
+        sourceSnapshots.set(pageFile, await readSnapshot(pageFile));
+      },
+    });
+
+    await expect(
+      classifyRebuild({
+        discoveredEntries: {
+          discoveredSteps: new Set<string>(),
+          discoveredWorkflows: new Set<string>(),
+          discoveredSerdeFiles: new Set<string>(),
+          discoveredFiles: new Set([pageFile]),
+        },
+        fileChanges: {
+          addedFiles: [stepFile],
+          modifiedFiles: [],
+          removedFiles: [],
+        },
+        inputFiles: [pageFile],
+        parentHasChild: () => false,
+        readSnapshot,
+        sourceSnapshots,
       })
     ).resolves.toEqual({ kind: 'full' });
   });

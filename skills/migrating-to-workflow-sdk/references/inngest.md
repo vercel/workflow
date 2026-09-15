@@ -20,7 +20,7 @@
 - `serve()` handler and function registration
 - Event-schema dispatch layer and event type definitions used only for routing
 - Inline `step.run()` closures after extracting them into named `"use step"` functions
-- `step.waitForEvent()` match expressions — hook tokens replace event matching
+- `step.waitForEvent()` match expressions; hook tokens replace event matching
 
 ## Add
 

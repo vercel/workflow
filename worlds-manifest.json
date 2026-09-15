@@ -130,6 +130,48 @@
       ]
     },
     {
+      "id": "surrealdb",
+      "type": "community",
+      "package": "workflow-world-surrealdb",
+      "name": "SurrealDB",
+      "description": "SurrealDB world using LIVE SELECT for queueing and real-time streaming",
+      "repository": "https://github.com/sepcnt/workflow-world-surrealdb",
+      "docs": "https://github.com/sepcnt/workflow-world-surrealdb",
+      "features": [],
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "workflow-world-surrealdb",
+        "WORKFLOW_SURREAL_URL": "ws://127.0.0.1:8000/rpc",
+        "WORKFLOW_SURREAL_NAMESPACE": "workflow",
+        "WORKFLOW_SURREAL_DATABASE": "workflow",
+        "WORKFLOW_SURREAL_USERNAME": "root",
+        "WORKFLOW_SURREAL_PASSWORD": "root"
+      },
+      "services": [
+        {
+          "name": "surrealdb",
+          "image": "surrealdb/surrealdb:v3",
+          "args": [
+            "start",
+            "--user",
+            "root",
+            "--pass",
+            "root",
+            "--bind",
+            "0.0.0.0:8000",
+            "memory"
+          ],
+          "ports": ["8000:8000"],
+          "healthCheck": {
+            "cmd": "curl -sf http://localhost:8000/health || exit 1",
+            "interval": "5s",
+            "timeout": "3s",
+            "retries": 10
+          }
+        }
+      ],
+      "setup": "pnpm exec workflow-surreal-setup"
+    },
+    {
       "id": "jazz",
       "type": "community",
       "package": "workflow-world-jazz",
@@ -327,6 +369,42 @@
           }
         }
       ]
+    },
+    {
+      "id": "eveland",
+      "type": "community",
+      "package": "@evelandhq/workflow-world",
+      "name": "Eveland",
+      "description": "Multi-tenant PostgreSQL World with an out-of-process dispatcher for scale-to-zero deployments.",
+      "repository": "https://github.com/evelandhq/workflow-world",
+      "docs": "https://github.com/evelandhq/workflow-world#readme",
+      "features": [],
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@evelandhq/workflow-world",
+        "WORKFLOW_WORLD_URL": "postgres://world:world@localhost:5432/world",
+        "WORKFLOW_WORLD_TENANT_ID": "eveland-ci",
+        "WORKFLOW_WORLD_DEPLOYMENT_ID": "eveland-ci-v1",
+        "WORKFLOW_WORLD_RUNNER": "embedded"
+      },
+      "services": [
+        {
+          "name": "postgres",
+          "image": "postgres:18-alpine",
+          "ports": ["5432:5432"],
+          "env": {
+            "POSTGRES_USER": "world",
+            "POSTGRES_PASSWORD": "world",
+            "POSTGRES_DB": "world"
+          },
+          "healthCheck": {
+            "cmd": "pg_isready",
+            "interval": "10s",
+            "timeout": "5s",
+            "retries": 5
+          }
+        }
+      ],
+      "setup": "pnpm exec workflow-world-setup && node --input-type=module -e 'import { createRequire } from \"node:module\"; import { ensureTenantPartitions } from \"@evelandhq/workflow-world\"; const { Pool } = createRequire(import.meta.resolve(\"@evelandhq/workflow-world\"))(\"pg\"); const pool = new Pool({ connectionString: process.env.WORKFLOW_WORLD_URL }); try { await ensureTenantPartitions(pool, process.env.WORKFLOW_WORLD_TENANT_ID); } finally { await pool.end(); }'"
     }
   ]
 }

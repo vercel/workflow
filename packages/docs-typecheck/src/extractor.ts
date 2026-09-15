@@ -100,12 +100,8 @@ export function extractCodeSamples(
   content: string
 ): CodeSample[] {
   const samples: CodeSample[] = [];
-  let match: RegExpExecArray | null;
 
-  // Reset regex state
-  CODE_BLOCK_REGEX.lastIndex = 0;
-
-  while ((match = CODE_BLOCK_REGEX.exec(content)) !== null) {
+  for (const match of content.matchAll(CODE_BLOCK_REGEX)) {
     const [, language, rawCode] = match;
     const matchIndex = match.index;
 

@@ -1,8 +1,8 @@
 ---
 title: Sequential & Parallel Execution
-description: Compose steps with familiar async/await patterns — sequential await, Promise.all, and Promise.race.
+description: Compose steps with familiar async/await patterns, sequential await, Promise.all, and Promise.race.
 type: guide
-summary: Workflows are just async functions, so all the standard composition primitives (await, Promise.all, Promise.race) apply unchanged — including racing webhooks against durable sleeps.
+summary: Workflows are plain async functions, so all the standard composition primitives (await, Promise.all, Promise.race) apply unchanged, including racing webhooks against durable sleeps.
 related:
   - /docs/foundations/workflows-and-steps
   - /cookbook/common-patterns/timeouts
@@ -10,17 +10,17 @@ related:
 ---
 
 <CopyPrompt
-  text="Compose these workflow steps with standard async/await patterns. In the exported &quot;use workflow&quot; function, chain dependent &quot;use step&quot; calls with sequential `await`; run independent steps concurrently by starting them without `await` and awaiting `Promise.all([...])`; and use `Promise.race([...])` to act on whichever promise settles first. These compose with durable primitives — race a step or a webhook from `createWebhook()` against `sleep()` from `workflow` for deadlines. Keep every step input and output serializable, and remember `Promise.race` does not cancel the losing branch — it keeps running — so side-effectful losers need idempotency keys. Verify sequential ordering, parallel execution, and both race outcomes."
+  text="Compose these workflow steps with standard async/await patterns. In the exported &quot;use workflow&quot; function, chain dependent &quot;use step&quot; calls with sequential `await`; run independent steps concurrently by starting them without `await` and awaiting `Promise.all([...])`; and use `Promise.race([...])` to act on whichever promise settles first. These compose with durable primitives: race a step or a webhook from `createWebhook()` against `sleep()` from `workflow` for deadlines. Keep every step input and output serializable, and remember `Promise.race` does not cancel the losing branch (it keeps running), so side-effectful losers need idempotency keys. Verify sequential ordering, parallel execution, and both race outcomes."
 />
 
-Workflows are written in plain async/await — there's no new control-flow API to learn. Sequential awaits chain steps that depend on each other, `Promise.all` runs independent steps in parallel, and `Promise.race` returns whichever finishes first. These compose with workflow primitives like [`sleep()`](/docs/api-reference/workflow/sleep) and [`createWebhook()`](/docs/api-reference/workflow/create-webhook) since those are also just promises.
+Workflows are written in plain async/await: there's no new control-flow API to learn. Sequential awaits chain steps that depend on each other, `Promise.all` runs independent steps in parallel, and `Promise.race` returns whichever finishes first. These compose with workflow primitives like [`sleep()`](/docs/api-reference/workflow/sleep) and [`createWebhook()`](/docs/api-reference/workflow/create-webhook) since those are also promises.
 
 ## When to use this
 
-- **Pipelines** — each step depends on the previous step's output (validate → process → store)
-- **Independent fan-out** — fetch multiple resources or perform multiple actions that don't depend on each other
-- **Race conditions** — return as soon as one of N operations completes (timeout, first-responder, deadline)
-- **Mixing primitives** — running steps, sleeps, and webhooks side-by-side in the same control-flow expression
+- **Pipelines**: Each step depends on the previous step's output (validate → process → store).
+- **Independent fan-out**: Fetch multiple resources or perform multiple actions that don't depend on each other.
+- **Race conditions**: Return as soon as one operation completes, such as for a timeout, first responder, or deadline.
+- **Mixing primitives**: Run steps, sleeps, and webhooks side by side in the same control-flow expression.
 
 ## Pattern
 
@@ -68,7 +68,7 @@ export async function fetchUserData(userId: string) {
 
 ### Race with `Promise.race`
 
-`Promise.race` resolves as soon as the first promise settles. Since [`sleep()`](/docs/api-reference/workflow/sleep) and [`createWebhook()`](/docs/api-reference/workflow/create-webhook) return promises, they compose naturally — for example, waiting for a webhook callback with a deadline:
+`Promise.race` resolves as soon as the first promise settles. Since [`sleep()`](/docs/api-reference/workflow/sleep) and [`createWebhook()`](/docs/api-reference/workflow/create-webhook) return promises, they compose naturally. For example, waiting for a webhook callback with a deadline:
 
 ```typescript lineNumbers
 import { sleep, createWebhook } from "workflow";
@@ -90,11 +90,11 @@ export async function runExternalTask(userId: string) {
 }
 ```
 
-For racing operations against deadlines specifically (timeouts), see the dedicated [Timeouts](/cookbook/common-patterns/timeouts) recipe — it covers result discrimination, `FatalError` semantics, and the "loser keeps running" caveat.
+For racing operations against deadlines specifically (timeouts), see the dedicated [Timeouts](/cookbook/common-patterns/timeouts) recipe, which covers result discrimination, `FatalError` semantics, and the "loser keeps running" caveat.
 
 ### Combining sequential, parallel, and durable primitives
 
-Most real workflows combine all three. Here's a simplified version of the [birthday card generator demo](https://github.com/vercel/workflow-examples/tree/main/birthday-card-generator) — sequential card generation, parallel RSVP fan-out, non-blocking webhook collection, and a durable sleep until the birthday:
+Most workflows combine all three patterns. The following simplified version of the [birthday card generator demo](https://github.com/vercel/workflow-examples/tree/main/birthday-card-generator) uses sequential card generation, parallel invitation-response fan-out, non-blocking webhook collection, and a durable sleep until the birthday:
 
 ```typescript lineNumbers
 import { createWebhook, sleep, type Webhook } from "workflow";
@@ -136,24 +136,24 @@ export async function birthdayWorkflow(
 
 ## How it works
 
-1. **`await` is durable.** When the workflow awaits a step, the runtime persists the step's input, suspends the workflow, runs the step, and replays the workflow with the step's result on resume. The same applies to `sleep()` and `createWebhook()`.
-2. **`Promise.all` runs steps concurrently.** Each promise in the array is suspended on its own and the workflow resumes only when all have settled. Failures propagate — if any promise rejects, the whole `Promise.all` rejects.
-3. **`Promise.race` resolves on the first settle.** The losing promises keep running in the background but their results are discarded by the workflow.
-4. **All primitives are promises.** `sleep("1 day")` and `createWebhook()` return promises, so they compose with `Promise.all` / `Promise.race` exactly like steps do — this is what makes patterns like "race a webhook against a 24-hour deadline" a one-liner.
+1. **`await` is durable**: When the workflow awaits a step, the runtime persists the step's input, suspends the workflow, runs the step, and replays the workflow with the step's result on resume. The same applies to `sleep()` and `createWebhook()`.
+2. **`Promise.all` runs steps concurrently**: Each promise in the array is suspended on its own, and the workflow resumes only when all have settled. If any promise rejects, the whole `Promise.all` rejects.
+3. **`Promise.race` resolves when the first promise settles**: The losing promises keep running in the background, but the workflow discards their results.
+4. **All primitives are promises**: `sleep("1 day")` and `createWebhook()` return promises, so they compose with `Promise.all` and `Promise.race` like steps do. This behavior enables patterns such as racing a webhook against a 24-hour deadline.
 
 ## Adapting to your use case
 
-- **Replace `Promise.all` with `Promise.allSettled`** when partial failures should not abort the rest. You'll get an array of `{ status, value | reason }` instead of throwing on the first rejection.
-- **Bound the parallelism** — `Promise.all` over 1000 items will fan out 1000 concurrent steps. If your downstream APIs can't handle that, batch the array into chunks (see [Batching](/cookbook/common-patterns/batching)).
-- **Add a deadline to any race** — pair the operation with `sleep("30s").then(() => "timeout" as const)` and check the discriminated result. See [Timeouts](/cookbook/common-patterns/timeouts).
-- **Mix steps and hooks in a race** — wait for an external signal *or* a deadline *or* a step result, all in the same `Promise.race`. The first one to resolve wins.
+- **Replace `Promise.all` with `Promise.allSettled`**: Use this option when partial failures shouldn't abort the remaining operations. You'll get an array of `{ status, value | reason }` instead of an error on the first rejection.
+- **Bound the parallelism**: `Promise.all` over 1,000 items will fan out 1,000 concurrent steps. If your downstream APIs can't handle that, batch the array into chunks (see [Batching](/cookbook/common-patterns/batching)).
+- **Add a deadline to any race**: Pair the operation with `sleep("30s").then(() => "timeout" as const)` and check the discriminated result. See [Timeouts](/cookbook/common-patterns/timeouts).
+- **Mix steps and hooks in a race**: Wait for an external signal, a deadline, or a step result in the same `Promise.race`. The first promise to resolve wins.
 
 ## Key APIs
 
-- [`"use workflow"`](/docs/foundations/workflows-and-steps) — marks the orchestrator function
-- [`"use step"`](/docs/foundations/workflows-and-steps) — marks functions with full Node.js access
-- [`sleep()`](/docs/api-reference/workflow/sleep) — durable sleep that survives restarts
-- [`createWebhook()`](/docs/api-reference/workflow/create-webhook) — webhook URL the workflow can race against
-- [`Promise.all()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/all) — wait for all promises
-- [`Promise.race()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race) — wait for the first to settle
-- [`Promise.allSettled()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/allSettled) — wait for all, including failures
+- [`"use workflow"`](/docs/foundations/workflows-and-steps): Marks the orchestrator function.
+- [`"use step"`](/docs/foundations/workflows-and-steps): Marks functions with full Node.js access.
+- [`sleep()`](/docs/api-reference/workflow/sleep): Provides durable sleep that survives restarts.
+- [`createWebhook()`](/docs/api-reference/workflow/create-webhook): Provides a webhook URL that the workflow can race against.
+- [`Promise.all()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/all): Waits for all promises.
+- [`Promise.race()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race): Waits for the first promise to settle.
+- [`Promise.allSettled()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/allSettled): Waits for all promises, including failures.

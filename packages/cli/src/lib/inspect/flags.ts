@@ -118,11 +118,23 @@ export const cliFlags = {
     helpGroup: 'Output',
     helpLabel: '--localUi',
   }),
+  standalone: Flags.boolean({
+    description:
+      'Always start the standalone web UI, even if an embedded dashboard (e.g. /_workflow) is already running',
+    required: false,
+    default: false,
+    env: 'WORKFLOW_STANDALONE_UI',
+    helpGroup: 'Output',
+    helpLabel: '--standalone',
+  }),
   sort: Flags.string({
     description: 'sort order for list commands',
     required: false,
     options: ['asc', 'desc'],
-    default: 'desc',
+    // No parser-level default: every time-ordered listing already falls back
+    // to `desc` itself, and a default here made the flag indistinguishable
+    // from an explicit one, so `inspect attributes` could not tell that it
+    // should leave the backend's alphabetical key order alone.
     helpGroup: 'Filtering',
     helpLabel: '--sort',
     helpValue: ['asc', 'desc'],

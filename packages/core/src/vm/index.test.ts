@@ -49,6 +49,64 @@ describe('createContext', () => {
     expect(result).toEqual(specificTime);
   });
 
+  it('should support subclassing `Date`', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = vm.runInContext(
+      `
+      class Sub extends Date {
+        constructor(...args) {
+          super(...args);
+          this.tag = 'sub';
+        }
+        label() {
+          return 'sub';
+        }
+      }
+      const sub = new Sub(2026, 6, 29);
+      const defaulted = new Sub();
+      ({
+        isSub: sub instanceof Sub,
+        isDate: sub instanceof Date,
+        keepsMethods: sub.label(),
+        keepsFields: sub.tag,
+        argsForwarded: sub.getTime() === new Date(2026, 6, 29).getTime(),
+        defaultedIsFixed: defaulted.getTime(),
+      })
+      `,
+      context
+    );
+
+    expect(result.isSub).toBe(true);
+    expect(result.isDate).toBe(true);
+    expect(result.keepsMethods).toBe('sub');
+    expect(result.keepsFields).toBe('sub');
+    expect(result.argsForwarded).toBe(true);
+    expect(result.defaultedIsFixed).toEqual(fixedTimestamp);
+  });
+
+  it('should keep `Date()` callable without `new`, returning the fixed time string', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = vm.runInContext('Date()', context);
+
+    expect(result).toBeTypeOf('string');
+    expect(result).toEqual(vm.runInContext('new Date().toString()', context));
+    // Per spec, `Date()` as a function ignores its arguments
+    expect(vm.runInContext('Date(2000, 0, 1)', context)).toEqual(result);
+  });
+
+  it('should preserve `Date` static methods', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    expect(
+      vm.runInContext("Date.parse('2000-01-01T00:00:00.000Z')", context)
+    ).toEqual(946684800000);
+    expect(vm.runInContext('Date.UTC(2000, 0, 1)', context)).toEqual(
+      946684800000
+    );
+  });
+
   it('should have deterministic `crypto.getRandomValues()`', () => {
     const { context } = createContext({ seed, fixedTimestamp });
 
@@ -171,6 +229,22 @@ describe('createContext', () => {
     expect(err?.message).toContain('not available inside a workflow function');
   });
 
+  it('throws for the remaining async `crypto.subtle` methods', () => {
+    // These would settle on host threadpool timing (breaking the quiescence
+    // invariant a retained VM relies on), so they must stay unreachable.
+    const { context } = createContext({ seed, fixedTimestamp });
+    for (const call of [
+      'crypto.subtle.importKey("raw", new Uint8Array(16), { name: "AES-GCM" }, false, ["encrypt"])',
+      'crypto.subtle.encrypt({ name: "AES-GCM" }, {}, new Uint8Array(4))',
+      'crypto.subtle.sign("HMAC", {}, new Uint8Array(4))',
+      'crypto.subtle.deriveBits({ name: "PBKDF2" }, {}, 128)',
+    ]) {
+      expect(() => vm.runInContext(call, context)).toThrow(
+        /not available inside a workflow function/
+      );
+    }
+  });
+
   it('should call `onWorkflowError` when a workflow error occurs', async () => {
     const { context } = createContext({ seed, fixedTimestamp });
 
@@ -255,5 +329,144 @@ describe('createContext', () => {
 
     const result = vm.runInContext('typeof Buffer', context);
     expect(result).toBe('undefined');
+  });
+});
+
+describe('host-timed async', () => {
+  it('does not expose any API that settles on host timing', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    expect(vm.runInContext('typeof Atomics.waitAsync', context)).toBe(
+      'undefined'
+    );
+    expect(vm.runInContext('typeof WebAssembly.compile', context)).toBe(
+      'undefined'
+    );
+    expect(vm.runInContext('typeof WebAssembly.instantiate', context)).toBe(
+      'undefined'
+    );
+    expect(
+      vm.runInContext('typeof WebAssembly.compileStreaming', context)
+    ).toBe('undefined');
+    expect(
+      vm.runInContext('typeof WebAssembly.instantiateStreaming', context)
+    ).toBe('undefined');
+    // Deterministic synchronous WebAssembly stays available.
+    expect(vm.runInContext('typeof WebAssembly.Module', context)).toBe(
+      'function'
+    );
+  });
+
+  it('does not expose WeakRef or FinalizationRegistry', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    expect(vm.runInContext('typeof WeakRef', context)).toBe('undefined');
+    expect(vm.runInContext('typeof FinalizationRegistry', context)).toBe(
+      'undefined'
+    );
+    // WeakMap/WeakSet do not expose GC state and stay available.
+    expect(vm.runInContext('typeof WeakMap', context)).toBe('function');
+    expect(vm.runInContext('typeof WeakSet', context)).toBe('function');
+  });
+});
+
+describe('crypto.subtle.digest', () => {
+  it.each([
+    'SHA-1',
+    'SHA-256',
+    'SHA-384',
+    'SHA-512',
+  ])('matches WebCrypto for %s', async (algorithm) => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = await vm.runInContext(
+      `crypto.subtle.digest(${JSON.stringify(algorithm)}, new Uint8Array([1,2,3,4,5,255,0,128]))`,
+      context
+    );
+    const expected = await globalThis.crypto.subtle.digest(
+      algorithm,
+      new Uint8Array([1, 2, 3, 4, 5, 255, 0, 128])
+    );
+    expect(result).toBeInstanceOf(ArrayBuffer);
+    expect(new Uint8Array(result)).toEqual(new Uint8Array(expected));
+  });
+
+  it('accepts the { name } algorithm form and ArrayBuffer input', async () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = await vm.runInContext(
+      'crypto.subtle.digest({ name: "sha-256" }, new ArrayBuffer(4))',
+      context
+    );
+    const expected = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      new ArrayBuffer(4)
+    );
+    expect(new Uint8Array(result)).toEqual(new Uint8Array(expected));
+  });
+
+  it('respects typed-array subviews', async () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = await vm.runInContext(
+      'const bytes = new Uint8Array([9, 1, 2, 9]); crypto.subtle.digest("SHA-256", bytes.subarray(1, 3))',
+      context
+    );
+    const expected = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      new Uint8Array([1, 2])
+    );
+    expect(new Uint8Array(result)).toEqual(new Uint8Array(expected));
+  });
+
+  it('rejects unsupported algorithms like WebCrypto does', async () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    await expect(
+      vm.runInContext('crypto.subtle.digest("MD5", new Uint8Array(1))', context)
+    ).rejects.toMatchObject({ name: 'NotSupportedError' });
+  });
+
+  it.each([
+    ['a number', '2000000000'],
+    ['a plain object', '({})'],
+    ['a string', '"data"'],
+    ['null', 'null'],
+  ])('rejects %s with TypeError', async (_label, expression) => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    await expect(
+      vm.runInContext(`crypto.subtle.digest("SHA-256", ${expression})`, context)
+    ).rejects.toThrow(TypeError);
+  });
+
+  it('rejects SharedArrayBuffer-backed views like WebCrypto does', async () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    await expect(
+      vm.runInContext(
+        'crypto.subtle.digest("SHA-256", new Uint8Array(new SharedArrayBuffer(4)))',
+        context
+      )
+    ).rejects.toThrow(TypeError);
+  });
+
+  it('reads view ranges from internal slots, ignoring shadowed properties', async () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = await vm.runInContext(
+      `(() => {
+        const view = new Uint8Array([1, 2, 3, 4]);
+        Object.defineProperty(view, "byteLength", { value: 0 });
+        Object.defineProperty(view, "byteOffset", { value: 2 });
+        return crypto.subtle.digest("SHA-256", view);
+      })()`,
+      context
+    );
+    const expected = await globalThis.crypto.subtle.digest(
+      'SHA-256',
+      new Uint8Array([1, 2, 3, 4])
+    );
+    expect(new Uint8Array(result)).toEqual(new Uint8Array(expected));
   });
 });

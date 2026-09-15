@@ -17,7 +17,7 @@ import { getWorld } from "workflow/runtime";
 const world = await getWorld(); // [!code highlight]
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -50,7 +50,7 @@ The World object provides access to several entity interfaces. See the [World SD
     </Card>
 </Cards>
 
-## Data Hydration
+## Data hydration
 
 Step and run data is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format. Use `workflow/observability` to hydrate it for display:
 
@@ -63,7 +63,7 @@ const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highl
 
 See [`workflow/observability`](/docs/api-reference/workflow-observability) for the full hydration and parsing API.
 
-### List Workflow Runs (Display Names)
+### List workflow runs (display names)
 
 List workflow runs and derive human-readable names from the `workflowName` field:
 
@@ -114,7 +114,7 @@ export async function GET(req: Request) {
   and `moduleSpecifier` for display in your UI.
 </Callout>
 
-## Related Functions
+## Related functions
 
 - [`getRun()`](/docs/api-reference/workflow-api/get-run) - Higher-level API for working with individual runs by ID.
 - [`start()`](/docs/api-reference/workflow-api/start) - Start a new workflow run.

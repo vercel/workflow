@@ -105,7 +105,4 @@ export interface HookTokenResult {
   token: string;
 }
 
-export type {
-  HealthCheckEndpoint,
-  HealthCheckResult,
-} from '@workflow/core/runtime/helpers';
+export type { HealthCheckResult } from '@workflow/core/runtime/helpers';

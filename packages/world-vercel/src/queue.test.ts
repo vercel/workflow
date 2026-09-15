@@ -1,21 +1,39 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { context, trace as otelTrace, propagation } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import { W3CTraceContextPropagator } from '@opentelemetry/core';
+import {
+  BasicTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
+import {
+  afterAll,
+  afterEach,
+  assert,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 
 const {
   mockSend,
-  MockDuplicateMessageError,
+  mockSendBatch,
+  MockConsumerDiscoveryError,
   MockQueueClient,
   mockHandleCallback,
 } = vi.hoisted(() => {
-  class MockDuplicateMessageError extends Error {
-    public readonly idempotencyKey?: string;
-    constructor(message: string, idempotencyKey?: string) {
+  class MockConsumerDiscoveryError extends Error {
+    constructor(message: string) {
       super(message);
-      this.name = 'DuplicateMessageError';
-      this.idempotencyKey = idempotencyKey;
+      this.name = 'ConsumerDiscoveryError';
     }
   }
 
   const mockSend = vi.fn();
+  const mockSendBatch = vi.fn();
   const mockHandleCallback = vi.fn();
   // Must be a `function` (not an arrow): queue.ts calls `new QueueClient(...)`,
   // and an arrow function cannot be used as a constructor.
@@ -23,13 +41,15 @@ const {
   const MockQueueClient = vi.fn().mockImplementation(function () {
     return {
       send: mockSend,
+      experimental_sendBatch: mockSendBatch,
       handleCallback: mockHandleCallback,
     };
   });
 
   return {
     mockSend,
-    MockDuplicateMessageError,
+    mockSendBatch,
+    MockConsumerDiscoveryError,
     MockQueueClient,
     mockHandleCallback,
   };
@@ -37,7 +57,7 @@ const {
 
 vi.mock('@vercel/queue', () => ({
   QueueClient: MockQueueClient,
-  DuplicateMessageError: MockDuplicateMessageError,
+  ConsumerDiscoveryError: MockConsumerDiscoveryError,
 }));
 
 vi.mock('./utils.js', () => ({
@@ -47,6 +67,7 @@ vi.mock('./utils.js', () => ({
   getHeaders: vi.fn().mockReturnValue(new Map()),
 }));
 
+import { missingDeploymentIdMessage } from './deployment-id.js';
 import { createQueue } from './queue.js';
 import { getHttpUrl } from './utils.js';
 
@@ -57,6 +78,19 @@ describe('createQueue', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('classifies only consumer discovery failures as unavailable deployments', () => {
+    const queue = createQueue();
+
+    expect(
+      queue.isDeploymentUnavailableError?.(
+        new MockConsumerDiscoveryError('deployment not found')
+      )
+    ).toBe(true);
+    expect(
+      queue.isDeploymentUnavailableError?.(new Error('transient send failure'))
+    ).toBe(false);
   });
 
   describe('proxy region header', () => {
@@ -160,7 +194,22 @@ describe('createQueue', () => {
         await expect(
           queue.queue('__wkf_workflow_test', { runId: 'run-123' })
         ).rejects.toThrow(
-          'No deploymentId provided and VERCEL_DEPLOYMENT_ID environment variable is not set'
+          missingDeploymentIdMessage('Enqueuing a workflow message')
+        );
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        }
+      }
+    });
+
+    it('should throw an actionable error from getDeploymentId, which start() calls before writing any state', async () => {
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      delete process.env.VERCEL_DEPLOYMENT_ID;
+
+      try {
+        await expect(createQueue().getDeploymentId()).rejects.toThrow(
+          missingDeploymentIdMessage('Starting a workflow run')
         );
       } finally {
         if (originalEnv !== undefined) {
@@ -219,13 +268,10 @@ describe('createQueue', () => {
       }
     });
 
-    it('should silently handle idempotency key conflicts', async () => {
-      mockSend.mockRejectedValue(
-        new MockDuplicateMessageError(
-          'Duplicate idempotency key detected',
-          'my-key'
-        )
-      );
+    it('returns the message id for a repeated idempotency key', async () => {
+      // Repeated keys are accepted and deduplicated after the send, so the
+      // caller sees an ordinary message id rather than a conflict.
+      mockSend.mockResolvedValue({ messageId: 'msg-456' });
 
       const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
       process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
@@ -238,7 +284,12 @@ describe('createQueue', () => {
           { idempotencyKey: 'my-key' }
         );
 
-        expect(result.messageId).toBe('msg_duplicate_my-key');
+        expect(result.messageId).toBe('msg-456');
+        expect(mockSend).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.anything(),
+          expect.objectContaining({ idempotencyKey: 'my-key' })
+        );
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
@@ -277,7 +328,7 @@ describe('createQueue', () => {
       }
     });
 
-    it('should auto-inject x-vercel-workflow-run-id and x-vercel-workflow-step-id headers for step payloads', async () => {
+    it('should auto-inject run and step headers for inline step payloads', async () => {
       mockSend.mockResolvedValue({ messageId: 'msg-123' });
 
       const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
@@ -285,11 +336,10 @@ describe('createQueue', () => {
 
       try {
         const queue = createQueue();
-        await queue.queue('__wkf_step_myStep', {
-          workflowName: 'test-workflow',
-          workflowRunId: 'wrun_abc123',
-          workflowStartedAt: Date.now(),
+        await queue.queue('__wkf_workflow_test', {
+          runId: 'wrun_abc123',
           stepId: 'step_xyz789',
+          stepName: 'myStep',
         });
 
         expect(mockSend).toHaveBeenCalledTimes(1);
@@ -469,20 +519,6 @@ describe('createQueue', () => {
       expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_test');
     });
 
-    it('does not rewrite step topics even when the flag is set', async () => {
-      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
-
-      const queue = createQueue();
-      await queue.queue('__wkf_step_myStep', {
-        workflowName: 'test-workflow',
-        workflowRunId: 'wrun_abc',
-        workflowStartedAt: Date.now(),
-        stepId: 'step_xyz',
-      });
-
-      expect(mockSend.mock.calls[0][0]).toBe('__wkf_step_myStep');
-    });
-
     it('gives inline step executions (flow topic + stepId) a per-step topic for full parallelism', async () => {
       process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
 
@@ -538,6 +574,32 @@ describe('createQueue', () => {
       );
     });
 
+    it('keeps a per-probe topic for a health check that carries a runId', async () => {
+      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
+
+      const queue = createQueue();
+      // A probe issued to prepare a cross-deployment `start()` carries the run
+      // id it is about to create. It must still get its per-probe topic rather
+      // than being routed to that run's serialized replay topic, which would
+      // queue the probe behind the run it is trying to prepare.
+      await queue.queue('__wkf_workflow_health_check', {
+        __healthCheck: true as const,
+        correlationId: 'corr_123',
+        runId: 'wrun_abc',
+      });
+
+      expect(mockSend.mock.calls[0][0]).toBe(
+        '__wkf_workflow_health_check_corr_123'
+      );
+      // The payload must survive intact so the handler dispatches it as a
+      // health check rather than as a workflow invoke.
+      expect(mockSend.mock.calls[0][1].payload).toEqual({
+        __healthCheck: true,
+        correlationId: 'corr_123',
+        runId: 'wrun_abc',
+      });
+    });
+
     it('does not rewrite health check topics when the flag is unset', async () => {
       delete process.env.WORKFLOW_SEQUENTIAL_REPLAYS;
 
@@ -548,18 +610,6 @@ describe('createQueue', () => {
       });
 
       expect(mockSend.mock.calls[0][0]).toBe('__wkf_workflow_health_check');
-    });
-
-    it('does not rewrite step health check topics even when the flag is set', async () => {
-      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
-
-      const queue = createQueue();
-      await queue.queue('__wkf_step_health_check', {
-        __healthCheck: true as const,
-        correlationId: 'corr_123',
-      });
-
-      expect(mockSend.mock.calls[0][0]).toBe('__wkf_step_health_check');
     });
 
     it('appends runId to namespaced flow topics so it composes with WORKFLOW_QUEUE_NAMESPACE', async () => {
@@ -574,20 +624,6 @@ describe('createQueue', () => {
       expect(mockSend.mock.calls[0][1].queueName).toBe(
         '__custom_wkf_workflow_test'
       );
-    });
-
-    it('does not rewrite namespaced step topics even when the flag is set', async () => {
-      process.env.WORKFLOW_SEQUENTIAL_REPLAYS = '1';
-
-      const queue = createQueue();
-      await queue.queue('__custom_wkf_step_myStep', {
-        workflowName: 'test-workflow',
-        workflowRunId: 'wrun_abc',
-        workflowStartedAt: Date.now(),
-        stepId: 'step_xyz',
-      });
-
-      expect(mockSend.mock.calls[0][0]).toBe('__custom_wkf_step_myStep');
     });
   });
 
@@ -620,6 +656,34 @@ describe('createQueue', () => {
       expect(mockHandleCallback).toHaveBeenCalledWith(expect.any(Function), {
         retry: expect.any(Function),
       });
+    });
+
+    it('should pass handler rejections to QueueClient', async () => {
+      let capturedHandler: (
+        message: unknown,
+        metadata: unknown
+      ) => Promise<void>;
+      mockHandleCallback.mockImplementation((handler) => {
+        capturedHandler = handler;
+        return async () => new Response('ok');
+      });
+      const handlerError = new Error('retry delivery');
+
+      const queue = createQueue();
+      queue.createQueueHandler('__wkf_workflow_', async () => {
+        throw handlerError;
+      });
+
+      assert(capturedHandler);
+      await expect(
+        capturedHandler(
+          {
+            payload: { runId: 'run-123' },
+            queueName: '__wkf_workflow_test',
+          },
+          { messageId: 'msg-123', deliveryCount: 1 }
+        )
+      ).rejects.toBe(handlerError);
     });
 
     it('should ask VQS to retry handler errors with bounded backoff', () => {
@@ -917,21 +981,20 @@ describe('createQueue', () => {
       );
     });
 
-    it('should auto-inject step headers on delayed re-enqueue for step payloads', async () => {
+    it('should auto-inject step headers on delayed inline-step re-enqueue', async () => {
       mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
       const handler = setupHandler({ timeoutSeconds: 300 });
 
       const stepPayload = {
-        workflowName: 'test-workflow',
-        workflowRunId: 'wrun_abc123',
-        workflowStartedAt: Date.now(),
+        runId: 'wrun_abc123',
         stepId: 'step_xyz789',
+        stepName: 'myStep',
       };
 
       await handler(
         {
           payload: stepPayload,
-          queueName: '__wkf_step_myStep',
+          queueName: '__wkf_workflow_test',
           deploymentId: 'dpl_original',
         },
         { messageId: 'msg-123', deliveryCount: 1, createdAt: new Date() }
@@ -1019,7 +1082,7 @@ describe('createQueue', () => {
       expect(capturedMeta.requestId).toBeUndefined();
     });
 
-    it('should handle step payloads correctly', async () => {
+    it('should re-enqueue inline step payloads correctly', async () => {
       mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
 
       let capturedHandler: (
@@ -1036,28 +1099,27 @@ describe('createQueue', () => {
 
       try {
         const stepPayload = {
-          workflowName: 'test-workflow',
-          workflowRunId: 'run-123',
-          workflowStartedAt: Date.now(),
+          runId: 'run-123',
           stepId: 'step-456',
+          stepName: 'myStep',
         };
 
         const queue = createQueue();
-        queue.createQueueHandler('__wkf_step_', async () => ({
+        queue.createQueueHandler('__wkf_workflow_', async () => ({
           timeoutSeconds: 3600,
         }));
 
         await capturedHandler!(
           {
             payload: stepPayload,
-            queueName: '__wkf_step_myStep',
+            queueName: '__wkf_workflow_test',
             deploymentId: 'dpl_original',
           },
           {
             messageId: 'msg-123',
             deliveryCount: 1,
             createdAt: new Date(),
-            topicName: '__wkf_step_myStep',
+            topicName: '__wkf_workflow_test',
             consumerGroup: 'test',
           }
         );
@@ -1067,7 +1129,7 @@ describe('createQueue', () => {
         // inside serialize(), but the mock bypasses the transport.
         const wrapper = mockSend.mock.calls[0][1];
         expect(wrapper.payload).toEqual(stepPayload);
-        expect(wrapper.queueName).toBe('__wkf_step_myStep');
+        expect(wrapper.queueName).toBe('__wkf_workflow_test');
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
@@ -1140,16 +1202,15 @@ describe('createQueue', () => {
       expect(sendTimeCall.region).toBe('sfo1');
     });
 
-    it('extracts the region from a tagged step payload workflowRunId', async () => {
+    it('extracts the region from a tagged inline step payload runId', async () => {
       const { encode } = await import('./run-id/index.js');
-      const workflowRunId = `wrun_${encode('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'pdx1')}`;
+      const runId = `wrun_${encode('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'pdx1')}`;
 
       const queue = createQueue();
-      await queue.queue('__wkf_step_test', {
-        workflowName: 'wf',
-        workflowRunId,
-        workflowStartedAt: Date.now(),
+      await queue.queue('__wkf_workflow_test', {
+        runId,
         stepId: 'step-1',
+        stepName: 'myStep',
       });
 
       const ctorCalls = (
@@ -1251,5 +1312,243 @@ describe('createQueue', () => {
       };
       expect(sendTimeCall.region).toBe('iad1');
     });
+  });
+});
+
+describe('queueBatch', () => {
+  const RUN = 'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV';
+  const sent = (id: string) => ({ status: 'sent' as const, messageId: id });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VERCEL_DEPLOYMENT_ID = 'dpl_batch';
+  });
+  afterEach(() => {
+    delete process.env.VERCEL_DEPLOYMENT_ID;
+  });
+
+  const entries = (n: number, runId = RUN) =>
+    Array.from({ length: n }, (_, i) => ({
+      message: { runId, stepId: `step-${i}`, stepName: 'myStep' },
+      opts: { idempotencyKey: `key-${i}` },
+    }));
+
+  it('publishes a whole fan-out in one request and preserves input order', async () => {
+    mockSendBatch.mockResolvedValueOnce(
+      Array.from({ length: 5 }, (_, i) => sent(`m${i}`))
+    );
+    const queue = createQueue();
+    assert(queue.queueBatch);
+
+    const results = await queue.queueBatch('__wkf_workflow_test', entries(5));
+
+    expect(mockSendBatch).toHaveBeenCalledTimes(1);
+    expect(mockSend).not.toHaveBeenCalled();
+    const [topic, messages] = mockSendBatch.mock.calls[0];
+    expect(topic).toBe('__wkf_workflow_test');
+    expect(messages).toHaveLength(5);
+    // Each message keeps its own idempotency key: the recovery for a failed
+    // batch is to republish it, which must not redeliver what already landed.
+    expect(
+      messages.map((m: { idempotencyKey?: string }) => m.idempotencyKey)
+    ).toEqual(['key-0', 'key-1', 'key-2', 'key-3', 'key-4']);
+    expect(results.map((r) => r.messageId)).toEqual([
+      'm0',
+      'm1',
+      'm2',
+      'm3',
+      'm4',
+    ]);
+  });
+
+  it('splits at the 100-message VQS cap', async () => {
+    mockSendBatch
+      .mockResolvedValueOnce(
+        Array.from({ length: 100 }, (_, i) => sent(`a${i}`))
+      )
+      .mockResolvedValueOnce(
+        Array.from({ length: 40 }, (_, i) => sent(`b${i}`))
+      );
+    const queue = createQueue();
+    assert(queue.queueBatch);
+
+    const results = await queue.queueBatch('__wkf_workflow_test', entries(140));
+
+    expect(mockSendBatch).toHaveBeenCalledTimes(2);
+    expect(mockSendBatch.mock.calls[0][1]).toHaveLength(100);
+    expect(mockSendBatch.mock.calls[1][1]).toHaveLength(40);
+    // The split must not be observable in the returned order.
+    expect(results).toHaveLength(140);
+    expect(results[0].messageId).toBe('a0');
+    expect(results[99].messageId).toBe('a99');
+    expect(results[100].messageId).toBe('b0');
+    expect(results[139].messageId).toBe('b39');
+  });
+
+  it('reports per-entry failures without rejecting', async () => {
+    mockSendBatch.mockResolvedValueOnce([
+      sent('m0'),
+      {
+        status: 'failed',
+        statusCode: 429,
+        error: 'rate limited',
+        retryable: true,
+      },
+      { status: 'deferred', messageId: null },
+    ]);
+    const queue = createQueue();
+    assert(queue.queueBatch);
+
+    const results = await queue.queueBatch('__wkf_workflow_test', entries(3));
+
+    expect(results[0]).toEqual({ messageId: 'm0' });
+    expect(results[1]).toEqual({
+      messageId: null,
+      error: 'rate limited',
+      retryable: true,
+    });
+    // Deferred is an acceptance, not a failure: no `error`, so callers that
+    // test `error === undefined` treat it as sent.
+    expect(results[2]).toEqual({ messageId: null });
+  });
+
+  it('flags a short result array as a retryable per-entry failure', async () => {
+    mockSendBatch.mockResolvedValueOnce([sent('m0')]);
+    const queue = createQueue();
+    assert(queue.queueBatch);
+
+    const results = await queue.queueBatch('__wkf_workflow_test', entries(2));
+
+    expect(results[0]).toEqual({ messageId: 'm0' });
+    expect(results[1]?.error).toMatch(/no result/i);
+    assert(results[1]?.error !== undefined);
+    expect(results[1].retryable).toBe(true);
+  });
+
+  it('routes messages for different regions through separate requests', async () => {
+    const { encode } = await import('./run-id/index.js');
+    const sfo = `wrun_${encode('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'sfo1')}`;
+    const fra = `wrun_${encode('01ARZ3NDEKTSV4RRFFQ69G5FAV', 'fra1')}`;
+    mockSendBatch.mockResolvedValue([sent('x'), sent('y')]);
+    const queue = createQueue();
+    assert(queue.queueBatch);
+
+    const results = await queue.queueBatch('__wkf_workflow_test', [
+      ...entries(2, sfo),
+      ...entries(2, fra),
+    ]);
+
+    expect(mockSendBatch).toHaveBeenCalledTimes(2);
+    const regions = (
+      MockQueueClient as unknown as { mock: { calls: [{ region?: string }][] } }
+    ).mock.calls.map((call) => call[0].region);
+    expect(new Set(regions)).toEqual(new Set(['sfo1', 'fra1']));
+    expect(results).toHaveLength(4);
+    expect(results.every((r) => r.error === undefined)).toBe(true);
+  });
+
+  it('returns an empty result set without touching the transport', async () => {
+    const queue = createQueue();
+    assert(queue.queueBatch);
+    await expect(queue.queueBatch('__wkf_workflow_test', [])).resolves.toEqual(
+      []
+    );
+    expect(mockSendBatch).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * A batched message carries its producer context on its OWN headers. The SDK
+ * injects into the multipart request's headers, which VQS does not store per
+ * message, so world-vercel injects per entry; without it a consumer's
+ * `vqs.process` span has no link back to the producer (vqs-server re-emits a
+ * stored `traceparent` as `x-vercel-queue-traceparent` at delivery).
+ */
+describe('queueBatch trace propagation', () => {
+  const exporter = new InMemorySpanExporter();
+  const provider = new BasicTracerProvider();
+  const contextManager = new AsyncLocalStorageContextManager();
+
+  beforeAll(() => {
+    provider.addSpanProcessor(new SimpleSpanProcessor(exporter));
+    contextManager.enable();
+    context.setGlobalContextManager(contextManager);
+    propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+    otelTrace.setGlobalTracerProvider(provider);
+  });
+
+  afterAll(async () => {
+    await provider.shutdown();
+    context.disable();
+    propagation.disable();
+    otelTrace.disable();
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.VERCEL_DEPLOYMENT_ID = 'dpl_trace';
+  });
+
+  afterEach(() => {
+    delete process.env.VERCEL_DEPLOYMENT_ID;
+    delete process.env.VERCEL_QUEUE_TRACE_PROPAGATION;
+  });
+
+  const entries = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      message: { runId: 'wrun_trace', stepId: `step-${i}` },
+      opts: { idempotencyKey: `key-${i}` },
+    }));
+
+  /** Publishes inside an active span and returns the sent message headers. */
+  async function publishInSpan(
+    count: number
+  ): Promise<
+    { headers: Record<string, string> | undefined; spanId: string }[]
+  > {
+    mockSendBatch.mockResolvedValueOnce(
+      Array.from({ length: count }, (_, i) => ({
+        status: 'sent' as const,
+        messageId: `m${i}`,
+      }))
+    );
+    const queue = createQueue();
+    assert(queue.queueBatch);
+    const span = provider.getTracer('test').startSpan('publish');
+    const spanId = span.spanContext().spanId;
+    await context.with(otelTrace.setSpan(context.active(), span), async () => {
+      await queue.queueBatch?.('__wkf_workflow_test', entries(count));
+    });
+    span.end();
+    const sent = mockSendBatch.mock.calls[0]?.[1] as
+      | { headers?: Record<string, string> }[]
+      | undefined;
+    return (sent ?? []).map((m) => ({ headers: m.headers, spanId }));
+  }
+
+  it('puts the producer traceparent on EVERY message in the batch', async () => {
+    const sent = await publishInSpan(64);
+
+    expect(sent).toHaveLength(64);
+    for (const { headers, spanId } of sent) {
+      // Same span on every entry: one publish, one producer context.
+      expect(headers?.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-/);
+      expect(headers?.traceparent).toContain(spanId);
+    }
+    // The payload-derived headers the single send also carries survive it.
+    expect(sent[0].headers?.['x-vercel-workflow-run-id']).toBe('wrun_trace');
+    expect(sent[0].headers?.['x-vercel-workflow-step-id']).toBe('step-0');
+  });
+
+  it('honors VERCEL_QUEUE_TRACE_PROPAGATION=off, like the SDK does', async () => {
+    process.env.VERCEL_QUEUE_TRACE_PROPAGATION = 'off';
+    const sent = await publishInSpan(2);
+
+    expect(sent).toHaveLength(2);
+    for (const { headers } of sent) {
+      expect(headers?.traceparent).toBeUndefined();
+      // The kill switch is trace-only; message routing headers stay.
+      expect(headers?.['x-vercel-workflow-run-id']).toBe('wrun_trace');
+    }
   });
 });

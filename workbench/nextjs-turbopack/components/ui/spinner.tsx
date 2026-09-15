@@ -1,5 +1,5 @@
-import type { ComponentProps } from 'react';
 import { Loader2Icon } from 'lucide-react';
+import type { ComponentProps } from 'react';
 
 import { cn } from '@/lib/utils';
 

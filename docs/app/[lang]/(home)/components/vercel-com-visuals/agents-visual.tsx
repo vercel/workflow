@@ -1,15 +1,15 @@
 'use client';
 
-import type { JSX } from 'react';
 import {
-  motion,
-  useMotionValue,
-  useTransform,
   animate,
+  motion,
   useInView,
+  useMotionValue,
   useReducedMotion,
+  useTransform,
 } from 'motion/react';
-import { useEffect, useRef, useState, useCallback } from 'react';
+import type { JSX } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
 
 const ANIMATION_CONFIG = {

@@ -2,10 +2,10 @@
 
 This workbench demonstrates how to test workflows with Vitest using the `@workflow/vitest` plugin.
 
-## How It Works
+## How it works
 
-1. **Vitest Plugin**: The `workflow()` plugin from `@workflow/vitest` handles SWC transforms, bundle building, and in-process handler registration automatically.
-2. **No Server Required**: Workflows execute entirely in-process using a [Local World](/docs/worlds/local) instance — no HTTP server needed.
+1. **Vitest plugin**: The `workflow()` plugin from `@workflow/vitest` handles SWC transforms, bundle building, and in-process handler registration automatically.
+2. **No server required**: Workflows execute entirely in-process using a [Local World](/docs/worlds/local) instance, so they don't need an HTTP server.
 3. **Tests**: Use `start(workflow, args)` and await `run.returnValue`, plus helpers like `waitForSleep()` and `waitForHook()`.
 
 ## Usage
@@ -14,9 +14,9 @@ This workbench demonstrates how to test workflows with Vitest using the `@workfl
 pnpm test
 ```
 
-## Project Structure
+## Project structure
 
-```
+```text
 workbench/vitest/
 ├── workflows/
 │   ├── simple.ts          # Basic workflow with arithmetic steps
@@ -30,9 +30,9 @@ workbench/vitest/
 └── package.json
 ```
 
-## Test Coverage
+## Test coverage
 
-- **Simple workflow**: Start and await return value
+- **Basic workflow**: Start and await return value
 - **Sleep workflow**: `waitForSleep()` → `wakeUp()` to skip sleep
 - **Multi-sleep workflow**: Targeted `wakeUp()` with correlation IDs
 - **Hook workflow**: `waitForHook()` → `resumeHook()` with approval/rejection

@@ -61,7 +61,7 @@ export interface RawReasoningPart {
 
 /**
  * File chunk captured during streaming. `data` is the raw value emitted by the
- * model — a base64 string or a Uint8Array. The type is derived from the V3 file
+ * model: a base64 string or a Uint8Array. The type is derived from the V3 file
  * stream part so it tracks the SDK: if a future provider version widens it (e.g.
  * a URL), `buildStepResult`'s base64 decode path stops type-checking and forces
  * us to handle the new shape rather than silently corrupting it.
@@ -84,7 +84,7 @@ export interface RawResponseMetadata {
  * Minimal aggregates needed to reconstruct a `StepResult` outside the step
  * boundary. By returning only these fields (instead of a fully-populated
  * StepResult), we avoid serializing the redundant copies the AI SDK keeps
- * in StepResult — `toolCalls`/`dynamicToolCalls`/`staticToolCalls`,
+ * in StepResult: `toolCalls`/`dynamicToolCalls`/`staticToolCalls`,
  * `content`, `reasoningText`, the always-empty `*ToolResults` arrays, the
  * dual base64+uint8Array file encoding, and `request.body` (a JSON dump of
  * the input prompt). The caller reconstructs the full StepResult from
@@ -379,7 +379,7 @@ export async function doStreamStep(
                         chunk.providerMetadata as SharedV3ProviderOptions;
                     }
                   } else {
-                    // Delta without a preceding start — still collect it
+                    // Delta without a preceding start, so still collect it
                     reasoningById.set(chunk.id, {
                       text: chunk.delta,
                       providerMetadata: chunk.providerMetadata as

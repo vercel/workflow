@@ -2,13 +2,13 @@ import { TooltipProvider } from '@radix-ui/react-tooltip';
 import { ThemeProvider, useTheme } from 'next-themes';
 import { useEffect, useRef } from 'react';
 import {
+  isRouteErrorResponse,
   Link,
   Links,
   Meta,
   Outlet,
   Scripts,
   ScrollRestoration,
-  isRouteErrorResponse,
   useNavigate,
   useRouteError,
   useSearchParams,
@@ -25,10 +25,12 @@ import { getPublicServerConfig } from '~/server/workflow-server-actions.server';
 import type { Route } from './+types/root';
 import './globals.css';
 
-// Server-side loader: provides config data on initial render and navigation
-export async function loader() {
+// Server-side loader: provides config data on initial render and navigation.
+// `basename` is the embed mount path (e.g. "/_workflow"), threaded through the
+// load context by the embedded handler; "" when served standalone at the root.
+export async function loader({ context }: Route.LoaderArgs) {
   const serverConfig = await getPublicServerConfig();
-  return { serverConfig };
+  return { serverConfig, basename: context?.basename ?? '' };
 }
 
 // Catch-all action: handles stray POST requests (e.g. from Radix UI dialogs
@@ -205,6 +207,11 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
 }
 
 export default function App({ loaderData }: Route.ComponentProps) {
+  // Surface the embed mount path to client-only fetches (RPC + stream reads).
+  // Set during the first (hydration) render, before any post-mount data fetch.
+  if (typeof window !== 'undefined') {
+    window.__WORKFLOW_BASENAME__ = loaderData.basename ?? '';
+  }
   return (
     <ThemeProvider
       attribute="class"

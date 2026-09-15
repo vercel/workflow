@@ -1,17 +1,15 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
-import { WorkflowChatTransport } from '@workflow/ai';
+import { WorkflowChatTransport } from '@ai-sdk/workflow';
 import type { UIMessage } from 'ai';
 import {
-  AlertTriangle,
   Calculator,
   CheckCircle2,
   Cloud,
   CopyIcon,
   ExternalLink,
   MessageSquare,
-  XCircle,
 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useCallback, useMemo, useState } from 'react';
@@ -56,6 +54,7 @@ import {
   ToolOutput,
 } from '@/components/ai-elements/tool';
 import { Spinner } from '@/components/ui/spinner';
+import { AI_MODELS, DEFAULT_AI_MODEL } from '@/lib/ai-models';
 
 const SUGGESTIONS = [
   "What's the weather in Tokyo?",
@@ -65,24 +64,14 @@ const SUGGESTIONS = [
   'Compare weather in London vs Sydney',
 ];
 
-const MODELS = [
-  { id: 'anthropic/claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
-  { id: 'anthropic/claude-sonnet-4-20250514', name: 'Claude Sonnet 4' },
-  { id: 'anthropic/claude-opus-4-5', name: 'Claude Opus 4.5' },
-  { id: 'openai/gpt-5.2', name: 'GPT-5.2' },
-  { id: 'openai/gpt-5.3-chat-latest', name: 'GPT-5.3' },
-];
-
 function FeatureItem({
   icon,
   title,
   description,
-  status,
 }: {
   icon: ReactNode;
   title: string;
   description: string;
-  status: 'working' | 'gap';
 }) {
   return (
     <div className="flex gap-2 text-xs">
@@ -90,11 +79,7 @@ function FeatureItem({
       <div>
         <div className="flex items-center gap-1.5">
           <span className="font-medium">{title}</span>
-          {status === 'working' ? (
-            <CheckCircle2 className="size-3 text-green-500" />
-          ) : (
-            <XCircle className="size-3 text-orange-400" />
-          )}
+          <CheckCircle2 className="size-3 text-green-500" />
         </div>
         <p className="text-muted-foreground leading-relaxed">{description}</p>
       </div>
@@ -106,7 +91,7 @@ function Sidebar() {
   return (
     <div className="w-72 shrink-0 border-r overflow-y-auto p-4 space-y-6 text-sm">
       <div>
-        <h2 className="font-semibold text-base">DurableAgent Chat</h2>
+        <h2 className="font-semibold text-base">WorkflowAgent Chat</h2>
         <p className="text-xs text-muted-foreground mt-1">
           Powered by Workflow SDK
         </p>
@@ -121,13 +106,11 @@ function Sidebar() {
             icon={<Cloud className="size-3.5 text-blue-500" />}
             title="getWeather"
             description={'Try: "What\'s the weather in Tokyo?"'}
-            status="working"
           />
           <FeatureItem
             icon={<Calculator className="size-3.5 text-purple-500" />}
             title="calculate"
             description='Try: "What is 42 * 17 + 3?"'
-            status="working"
           />
         </div>
       </div>
@@ -141,82 +124,31 @@ function Sidebar() {
             icon={<CheckCircle2 className="size-3.5" />}
             title="instructions"
             description="System prompt via constructor"
-            status="working"
           />
           <FeatureItem
             icon={<CheckCircle2 className="size-3.5" />}
-            title="onStepFinish"
+            title="onStepEnd"
             description="Constructor + stream callbacks"
-            status="working"
           />
           <FeatureItem
             icon={<CheckCircle2 className="size-3.5" />}
-            title="onFinish"
+            title="onEnd"
             description="With text, finishReason, totalUsage"
-            status="working"
           />
           <FeatureItem
             icon={<CheckCircle2 className="size-3.5" />}
-            title="timeout"
-            description="AbortSignal-based timeout"
-            status="working"
+            title="Model-call timeout"
+            description="AbortSignal stops active model calls; tools finish normally"
           />
           <FeatureItem
             icon={<CheckCircle2 className="size-3.5" />}
             title="Tool execution"
             description="Step-based with retry + FatalError"
-            status="working"
           />
           <FeatureItem
             icon={<CheckCircle2 className="size-3.5" />}
             title="Multi-step"
             description="Sequential tool calls"
-            status="working"
-          />
-        </div>
-      </div>
-
-      <div className="space-y-3">
-        <h3 className="font-medium text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-          <AlertTriangle className="size-3 text-orange-400" />
-          Known Gaps
-        </h3>
-        <div className="space-y-3">
-          <FeatureItem
-            icon={<XCircle className="size-3.5" />}
-            title="experimental_onStart"
-            description="Callback before first LLM call"
-            status="gap"
-          />
-          <FeatureItem
-            icon={<XCircle className="size-3.5" />}
-            title="experimental_onStepStart"
-            description="Callback before each step"
-            status="gap"
-          />
-          <FeatureItem
-            icon={<XCircle className="size-3.5" />}
-            title="onToolCallStart/Finish"
-            description="Callbacks around tool execution"
-            status="gap"
-          />
-          <FeatureItem
-            icon={<XCircle className="size-3.5" />}
-            title="prepareCall"
-            description="Transform LLM call params"
-            status="gap"
-          />
-          <FeatureItem
-            icon={<XCircle className="size-3.5" />}
-            title="needsApproval"
-            description="Tool approval flow"
-            status="gap"
-          />
-          <FeatureItem
-            icon={<XCircle className="size-3.5" />}
-            title="Telemetry integrations"
-            description="Integration listener dispatch"
-            status="gap"
           />
         </div>
       </div>
@@ -265,7 +197,7 @@ function MessageParts({
           return null; // reasoning handled above, step-start is internal
         }
 
-        // AI SDK v6: tool parts use "tool-{toolName}" as the type
+        // Tool parts use "tool-{toolName}" as the type.
         // Properties: input, output, state ("output-available" when done)
         if (partType.startsWith('tool-')) {
           const toolPart = part as any;
@@ -297,7 +229,7 @@ function MessageParts({
 
 export function ChatClient() {
   const [input, setInput] = useState('');
-  const [model, setModel] = useState(MODELS[0].id);
+  const [model, setModel] = useState(DEFAULT_AI_MODEL);
   const [runId, setRunId] = useState<string | null>(null);
   const [observabilityBase, setObservabilityBase] = useState<string | null>(
     null
@@ -307,7 +239,7 @@ export function ChatClient() {
     () =>
       new WorkflowChatTransport({
         api: '/api/chat',
-        onChatSendMessage: (response: any) => {
+        onChatSendMessage: (response) => {
           const id = response.headers.get('x-workflow-run-id');
           if (id) setRunId(id);
           const team = response.headers.get('x-workflow-team-slug');
@@ -340,7 +272,7 @@ export function ChatClient() {
   }, [runId, observabilityBase]);
 
   const { messages, sendMessage, status } = useChat({
-    transport: transport as any,
+    transport,
   });
 
   const handleSubmit = (message: PromptInputMessage) => {
@@ -363,7 +295,7 @@ export function ChatClient() {
             {messages.length === 0 ? (
               <ConversationEmptyState
                 icon={<MessageSquare className="size-12" />}
-                title="DurableAgent Chat"
+                title="WorkflowAgent Chat"
                 description="Chat with tools, streaming through a durable workflow."
               />
             ) : (
@@ -441,7 +373,7 @@ export function ChatClient() {
                   <PromptInputSelectValue />
                 </PromptInputSelectTrigger>
                 <PromptInputSelectContent>
-                  {MODELS.map((m) => (
+                  {AI_MODELS.map((m) => (
                     <PromptInputSelectItem key={m.id} value={m.id}>
                       {m.name}
                     </PromptInputSelectItem>

@@ -1,0 +1,18 @@
+[project]
+name = "workflow-example-python"
+version = "0.0.0"
+description = "Python conformance target for the @workflow/core e2e suite"
+requires-python = ">=3.10"
+dependencies = [
+  "vercel-workflow",
+  "uvicorn>=0.30",
+]
+
+[tool.uv.sources]
+vercel-workflow = { git = "https://github.com/vercel/vercel-py", branch = "main", subdirectory = "src/vercel-workflow" }
+
+[tool.vercel]
+entrypoint = "app:app"
+
+[[tool.vercel.workflows]]
+entrypoint = "app:registry"

@@ -13,7 +13,7 @@ Use batching when you need to process a large list of items in parallel while co
 
 ## When to use this
 
-- Bulk data imports (contacts, orders, products from a CSV)
+- Bulk data imports (contacts, orders, or products from a comma-separated values (CSV) file)
 - Processing hundreds or thousands of items against external APIs
 - Calling rate-limited APIs where you need to control concurrency
 - Any fan-out where you want failure isolation between groups
@@ -21,7 +21,7 @@ Use batching when you need to process a large list of items in parallel while co
 ## How it works
 
 1. Records are split into fixed-size batches.
-2. Each batch runs in parallel via `Promise.allSettled` — failures in one record don't affect others.
+2. Each batch runs in parallel through `Promise.allSettled`, so failures in one record don't affect others.
 3. A `sleep()` between batches paces requests to avoid overloading downstream services.
 4. After all batches, a summary is returned with succeeded/failed counts.
 
@@ -45,7 +45,7 @@ export async function batchImport(records: Record[], batchSize: number) {
   for (let i = 0; i < records.length; i += batchSize) {
     const batch = records.slice(i, i + batchSize);
 
-    // Run batch in parallel — failures are isolated per record
+    // Run batch in parallel: failures are isolated per record
     const outcomes = await Promise.allSettled( // [!code highlight]
       batch.map((record) => processRecord(record))
     );
@@ -89,21 +89,21 @@ async function processRecord(record: Record): Promise<string> {
 
 ## Adapting to your use case
 
-- Replace the `Record` type with your actual data shape (orders, images, products, etc.).
-- Replace `processRecord()` with your real import logic — DB upserts, API calls, file processing.
+- Replace the `Record` type with your actual data shape, such as orders, images, or products.
+- Replace `processRecord()` with your import logic, such as database upserts, API calls, or file processing.
 - Tune `batchSize` and the `sleep()` duration to match your downstream rate limits.
-- Add or remove tracking as needed — the pattern works with any item type.
+- Add or remove tracking as needed; the pattern works with any item type.
 
 ## Tips
 
-- **Use `Promise.allSettled` over `Promise.all`** when you want to continue even if some items fail. `Promise.all` rejects on the first failure; `allSettled` waits for everything and tells you what failed.
-- **Tune batch size to your downstream API limits.** If the API allows 10 concurrent requests, use `batchSize: 10`.
-- **Add pacing with `sleep()`** between batches to respect rate limits. The sleep is durable — it survives cold starts.
-- **Each `processRecord` call is an independent step.** If one fails, it retries up to 3 times without affecting other items in the batch.
+- **Use `Promise.allSettled` instead of `Promise.all`**: Use this pattern when you want to continue even if some items fail. `Promise.all` rejects on the first failure, while `allSettled` waits for everything and identifies failures.
+- **Tune batch size to your downstream API limits**: If the API allows 10 concurrent requests, use `batchSize: 10`.
+- **Add pacing with `sleep()`**: Add a delay between batches to respect rate limits. The sleep is durable and survives cold starts.
+- **Treat each `processRecord` call as an independent step**: If one call fails, it retries up to three times without affecting other items in the batch.
 
 ## Key APIs
 
-- [`"use workflow"`](/docs/foundations/workflows-and-steps) -- marks the orchestrator function
-- [`"use step"`](/docs/foundations/workflows-and-steps) -- marks functions that run with full Node.js access
-- [`sleep()`](/docs/api-reference/workflow/sleep) -- pacing delay between batches
-- [`Promise.allSettled()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/allSettled) -- runs items in parallel, isolating failures
+- [`"use workflow"`](/docs/foundations/workflows-and-steps): Marks the orchestrator function.
+- [`"use step"`](/docs/foundations/workflows-and-steps): Marks functions that run with full Node.js access.
+- [`sleep()`](/docs/api-reference/workflow/sleep): Adds a pacing delay between batches.
+- [`Promise.allSettled()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/allSettled): Runs items in parallel and isolates failures.

@@ -48,7 +48,7 @@ export function formatSerializationError(
   if (error instanceof DevalueError && error.path) {
     message += ` at path "${error.path}"`;
   }
-  // Workflow can serialize a much richer set than the devalue defaults —
+  // Workflow can serialize a much richer set than the devalue defaults:
   // classes registered via `WORKFLOW_SERIALIZE`, FatalError / RetryableError
   // subclasses, AbortSignal, etc. Pointing at the foundations doc keeps
   // this hint accurate as the supported set grows, instead of repeating

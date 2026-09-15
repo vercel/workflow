@@ -12,9 +12,9 @@ const kbdVariants = cva(
           'border border-gray-alpha-400 bg-background-100 font-medium text-gray-900',
       },
       size: {
-        default: 'h-5 min-w-5 text-xs leading-none',
+        default: 'h-5 min-w-5 text-label-12 leading-none',
         compact: 'h-4 min-h-4 min-w-4 text-[11px] leading-none',
-        search: 'h-5 min-h-5 min-w-5 text-[13px] leading-[1.7em]',
+        search: 'h-5 min-h-5 min-w-5 text-label-13 leading-[1.7em]',
       },
     },
     defaultVariants: {

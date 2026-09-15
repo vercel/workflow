@@ -1,3 +1,8 @@
+export { debugLog, isWorkflowDebugEnabled } from './debug-log.js';
+export {
+  globalSingleton,
+  resetGlobalSingletonForTest,
+} from './global-singleton.js';
 export {
   formatStepName,
   formatWorkflowName,
@@ -15,13 +20,11 @@ export {
   createWorkflowHealthEndpoint,
   createWorkflowUrl,
   setWorkflowBasePath,
-  type WorkflowUrlRoute,
   WORKFLOW_ROUTE_BASE,
+  type WorkflowUrlRoute,
 } from './workflow-routes.js';
 export {
-  getWorldImport,
   isVercelWorldTarget,
-  normalizeWorkflowTargetWorldImport,
   resolveWorkflowTargetWorld,
   usesVercelWorld,
 } from './world-target.js';

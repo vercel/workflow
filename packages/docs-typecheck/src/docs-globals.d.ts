@@ -186,6 +186,8 @@ declare global {
     runs: {
       get: (...args: any[]) => Promise<any>;
       list: (...args: any[]) => Promise<any>;
+      // Optional on World, so reference snippets call it through `?.`
+      waitForTerminalStatus?: (...args: any[]) => Promise<any>;
     };
     steps: {
       get: (...args: any[]) => Promise<any>;
@@ -247,6 +249,7 @@ declare global {
       };
       events: {
         get: (...args: any[]) => Promise<any>;
+        getMany: (...args: any[]) => Promise<any>;
         list: (...args: any[]) => Promise<any>;
         listByCorrelationId: (...args: any[]) => Promise<any>;
       };
@@ -264,13 +267,15 @@ declare global {
     queue: (...args: any[]) => Promise<any>;
     createQueueHandler: (...args: any[]) => any;
   };
-  /** Resolves the configured World (async — may perform dynamic import / env-based setup). */
+  /** Resolves the configured World (async, since it may perform dynamic import / env-based setup). */
   function getWorld(): Promise<typeof world>;
 
   const streamId: string;
   const streamName: string;
   const hookId: string;
   const eventId: string;
+  const eventIds: string[];
+  const waitId: string;
   const correlationId: string;
   const cursor: string | undefined;
   const name: string;

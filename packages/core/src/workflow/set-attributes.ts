@@ -27,11 +27,6 @@ export interface SetAttributesOptions {
 }
 
 /**
- * @deprecated Use {@link SetAttributesOptions} instead.
- */
-export type ExperimentalSetAttributesOptions = SetAttributesOptions;
-
-/**
  * Attach plaintext string key/value metadata to the current workflow run.
  *
  * Callable only from a workflow body (`'use workflow'`). The call is
@@ -46,7 +41,7 @@ export type ExperimentalSetAttributesOptions = SetAttributesOptions;
  * framework/library code (telemetry, agent metadata, etc.). User code
  * trying to write a `$`-prefixed key throws `FatalError`. If you are a
  * framework author and need to set a reserved key, pass
- * `{ allowReservedAttributes: true }` as the second argument — see
+ * `{ allowReservedAttributes: true }` as the second argument; see
  * `SetAttributesOptions` for the trade-offs.
  *
  * **WARNING**: Calling e.g.
@@ -101,9 +96,3 @@ export async function setAttributes(
     allowReservedAttributes ? { allowReservedAttributes: true } : {}
   );
 }
-
-/**
- * @deprecated The feature is no longer experimental — use
- * {@link setAttributes} instead.
- */
-export const experimental_setAttributes = setAttributes;

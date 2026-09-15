@@ -41,10 +41,10 @@ export function ErrorCard({
         >
           <div className="flex items-center gap-2">
             <AlertCircle className="h-4 w-4 shrink-0" />
-            <span className="font-medium text-sm">{title}</span>
+            <span className="font-medium text-label-14">{title}</span>
           </div>
           <div className="flex items-center gap-1.5 opacity-70">
-            <span className="text-xs">Click to show details</span>
+            <span className="text-label-12">Click to show details</span>
             <ChevronDown
               className={cn(
                 'h-4 w-4 transition-transform duration-200',
@@ -60,7 +60,7 @@ export function ErrorCard({
             style={{ borderTop: '1px solid var(--ds-red-400)' }}
           >
             <pre
-              className="mt-3 p-3 rounded-md text-xs font-mono whitespace-pre-wrap break-words overflow-auto"
+              className="mt-3 p-3 rounded-md text-label-12-mono whitespace-pre-wrap break-words overflow-auto"
               style={{
                 background: 'var(--ds-red-200)',
                 color: 'var(--ds-red-900)',

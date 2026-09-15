@@ -4,14 +4,14 @@ import { nitro } from 'nitro/vite';
 import { defineConfig } from 'vite';
 import { workflow } from 'workflow/vite';
 
-const nitroPlugins =
-  process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres'
-    ? ['./plugins/start-pg-world.ts']
-    : [];
-
 export default defineConfig({
   plugins: [workflow(), tanstackStart(), nitro(), viteReact()],
   nitro: {
-    plugins: nitroPlugins,
+    plugins: ['./plugins/start-pg-world.ts'],
+    // NOTE: `ws`'s optional native accelerators (`bufferutil`,
+    // `utf-8-validate`) used to be externalized here. That now happens in
+    // `@workflow/rollup`'s `workflowTransformPlugin`, which every Nitro-based
+    // integration already installs — so a real user gets the fix without
+    // copying this block into their own config.
   },
 });

@@ -1,14 +1,15 @@
 import type { World } from '@workflow/world';
-import { SPEC_VERSION_SUPPORTS_COMPRESSION } from '@workflow/world';
+import { mintedSpecVersion } from '@workflow/world';
 import { createAnalytics } from './analytics.js';
 import { createRunId, describeRun } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
+import { getDeadline } from './get-deadline.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
 import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
-import type { APIConfig } from './utils.js';
+import { type APIConfig, resolveClientEnvironment } from './utils.js';
 
 export { createAnalytics } from './analytics.js';
 export { createRunId, describeRun, regionForRunId } from './create-run-id.js';
@@ -29,31 +30,34 @@ export function createWorld(config?: APIConfig): World {
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
 
   return {
-    // Spec v5: new runs may carry gzip-compressed payloads (compression is
-    // entirely client-side — the workflow-server stores payloads opaquely
-    // via RemoteRef and never deserializes them). Spec 5 is a superset of
-    // spec 4, so native `attr_set` events and initial run attributes still
-    // work. New runs are stamped with this version; the server must support
-    // at least it — workflow-server declared spec-5 support in
-    // vercel/workflow-server#520.
-    specVersion: SPEC_VERSION_SUPPORTS_COMPRESSION,
+    // The version is what tells the backend which id scheme a run uses: it is
+    // stamped on `run_created` and read back on every later write, so a run
+    // created before spec 6 keeps its ULIDs for its whole life even though this
+    // adapter now asks for slot-numbered ids.
+    //
+    // Declared as the runtime's current version rather than as the literal
+    // version that introduced slots: a bump has to move this declaration with
+    // it, or the runtime's compatibility floor rises past the adapter shipped
+    // alongside it and rejects it (see `assertWorldSupportsRuntimeProtocol`).
+    specVersion: mintedSpecVersion(),
     capabilities: {
-      // workflow-server enforces the `stateUpdatedAt` optimistic-concurrency
-      // guard: creations carrying a stale snapshot are rejected with 412
-      // (PreconditionFailedError) when the run's outside-event marker is
-      // newer. See vercel/workflow-server#484.
-      preconditionGuard: true,
+      hookRetention: { active: true },
       // Vercel Queues supports maxConcurrency-limited consumers, which
       // WORKFLOW_SEQUENTIAL_REPLAYS=1 uses for per-run `maxConcurrency: 1`
       // flow topics (see queue.ts and @workflow/builders).
       maxConcurrency: true,
+      // Vercel deployments are atomic and immutable, so a deployment id names
+      // one fixed build for its whole lifetime.
+      deploymentAffinity: true,
+      // NOTE: the backend half of resumeHook()'s lazy path (that
+      // the server enforces the `(runId, resumeId)` dedup constraint) is
+      // NO LONGER a static world capability here. It is attested per-lookup by
+      // the server via `Hook.resumeCapabilities.hookResumeDedupVersion`
+      // (response-only, recomputed every by-token read). This lets a server
+      // rollback or kill switch drop new resumes to the sequential path
+      // immediately, without a redeploy of this adapter.
     },
-    // On Vercel the platform fails the function invocation when the
-    // process exits non-zero, and VQS redelivers the queue message via a
-    // fresh invocation. The core runtime uses this to decide whether
-    // `process.exit(1)` is an acceptable response to an exhausted replay
-    // budget.
-    processExitTriggersQueueRedelivery: true,
+    getRuntimeDeadline: getDeadline,
     ...createQueue(config),
     ...createStorage(config),
     // Analytics list reads are served from an eventually-ingested store.
@@ -67,6 +71,10 @@ export function createWorld(config?: APIConfig): World {
     ...instrumentObject('world.streams', createStreamer(config)),
     createRunId,
     describeRun,
+    // Reports the environment this client's writes land in, so `start()` can
+    // stamp it into the queue message and the consuming deployment can detect
+    // that it was handed a run created against a different environment.
+    getEnvironment: () => resolveClientEnvironment(config),
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(
       projectId,
       config?.projectConfig?.teamId,
@@ -75,11 +83,4 @@ export function createWorld(config?: APIConfig): World {
     ),
     resolveLatestDeploymentId: createResolveLatestDeploymentId(config),
   };
-}
-
-/**
- * @deprecated Use `createWorld()` instead.
- */
-export function createVercelWorld(config?: APIConfig): World {
-  return createWorld(config);
 }

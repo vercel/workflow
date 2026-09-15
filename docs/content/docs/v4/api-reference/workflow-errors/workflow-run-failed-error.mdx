@@ -11,7 +11,7 @@ related:
 
 `WorkflowRunFailedError` is thrown when awaiting `run.returnValue` on a workflow run whose status is `'failed'`. This indicates that the workflow encountered a fatal error during execution and cannot produce a return value.
 
-The `cause` property holds the original thrown value, hydrated through the workflow serialization pipeline so its type identity (e.g. `FatalError`, `RetryableError`, custom `Error` subclasses), `cause` chain, and custom properties are preserved. Because any JavaScript value can be thrown, `cause` is typed as `unknown` — narrow it with `instanceof Error` (or a more specific check) before accessing fields like `message`. The high-level error classification is exposed as the top-level `errorCode` property.
+The `cause` property holds the original thrown value, hydrated through the workflow serialization pipeline so its type identity (e.g. `FatalError`, `RetryableError`, custom `Error` subclasses), `cause` chain, and custom properties are preserved. Because any JavaScript value can be thrown, `cause` is typed as `unknown`, so narrow it with `instanceof Error` (or a more specific check) before accessing fields like `message`. The high-level error classification is exposed as the top-level `errorCode` property.
 
 ```typescript lineNumbers
 import { WorkflowRunFailedError } from "workflow/errors"
@@ -31,7 +31,7 @@ try {
 }
 ```
 
-## API Signature
+## API signature
 
 ### Properties
 
@@ -45,7 +45,7 @@ interface WorkflowRunFailedError {
    * the workflow serialization pipeline. Preserves the original type identity
    * (Error subclasses, FatalError, custom classes with WORKFLOW_SERIALIZE,
    * etc.) and custom properties. Typed as \`unknown\` because any value can
-   * be thrown — narrow with \`instanceof Error\` before accessing fields.
+   * be thrown, so narrow with \`instanceof Error\` before accessing fields.
    */
   cause: unknown;
   /** The high-level error category (e.g. \`USER_ERROR\`, \`RUNTIME_ERROR\`). */
@@ -56,11 +56,11 @@ interface WorkflowRunFailedError {
 export default WorkflowRunFailedError;`}
 />
 
-### Static Methods
+### Static methods
 
 #### `WorkflowRunFailedError.is(value)`
 
-Type-safe check for `WorkflowRunFailedError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+Type-safe check for `WorkflowRunFailedError` instances. Preferred over `instanceof` because it works across module boundaries and virtual machine contexts.
 
 ```typescript
 import { WorkflowRunFailedError } from "workflow/errors"

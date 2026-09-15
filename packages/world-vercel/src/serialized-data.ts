@@ -1,5 +1,4 @@
 import { WorkflowWorldError } from '@workflow/errors';
-import { getEventDataRefFields } from '@workflow/world';
 
 const FORMAT_PREFIX_LENGTH = 4;
 const DEVALUE_FORMAT_PREFIX = 'devl';
@@ -102,35 +101,4 @@ export function normalizeHookData<T extends Record<string, unknown>>(
     ...hook,
     metadata: normalizeSerializedData(hook.metadata),
   };
-}
-
-export function normalizeEventData<T extends Record<string, unknown>>(
-  event: T
-): T {
-  const eventData = event.eventData;
-  if (!eventData || typeof eventData !== 'object') {
-    return event;
-  }
-
-  const eventType = typeof event.eventType === 'string' ? event.eventType : '';
-  const refFields = getEventDataRefFields(eventType);
-  if (refFields.length === 0) {
-    return event;
-  }
-
-  const normalizedEventData = { ...(eventData as Record<string, unknown>) };
-  let changed = false;
-  for (const field of refFields) {
-    if (!(field in normalizedEventData)) {
-      continue;
-    }
-    const before = normalizedEventData[field];
-    const after = normalizeSerializedData(before);
-    if (after !== before) {
-      normalizedEventData[field] = after;
-      changed = true;
-    }
-  }
-
-  return changed ? { ...event, eventData: normalizedEventData } : event;
 }

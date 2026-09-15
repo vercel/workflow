@@ -6,10 +6,10 @@ summary: Schedule future actions with durable sleep that survives cold starts, a
 ---
 
 <CopyPrompt
-  text="Create an interruptible scheduled workflow. Import `defineHook` and `sleep` from `workflow`. Define a cancellation hook such as `export const cancelDrip = defineHook<{ reason?: string }>()`. In an exported workflow function with &quot;use workflow&quot;, create the hook once, send the first message in a &quot;use step&quot; helper, then `await Promise.race([sleep(&quot;2d&quot;).then(() => false), cancelHook.then(() => true)])` before each delayed action. If the hook wins, return a cancelled status; if sleep wins, continue to the next step. Add an API route that calls `cancelDrip.resume(runIdOrToken, { reason })` or `resumeHook()` from `workflow/api`. Verify scheduled delivery, cancellation before sleep completes, and resume after server restart."
+  text="Create an interruptible scheduled workflow. Import `defineHook` and `sleep` from `workflow`. Define a cancellation hook such as `export const cancelDrip = defineHook<{ reason?: string }>()`. In an exported workflow function with &quot;use workflow&quot;, create the hook once, send the first message in a &quot;use step&quot; helper, then `await Promise.race([sleep(&quot;2d&quot;).then(() => false), cancelHook.then(() => true)])` before each delayed action. If the hook wins, return a canceled status; if sleep wins, continue to the next step. Add an API route that calls `cancelDrip.resume(runIdOrToken, { reason })` or `resumeHook()` from `workflow/api`. Verify scheduled delivery, cancellation before sleep completes, and resume after server restart."
 />
 
-Workflow's `sleep()` is durable — it survives cold starts, restarts, and deployments. Combined with `defineHook()` and `Promise.race()`, it becomes the foundation for interruptible scheduled workflows like drip campaigns, reminders, and timed sequences.
+Workflow's `sleep()` is durable: it survives cold starts, restarts, and deployments. Combined with `defineHook()` and `Promise.race()`, it becomes the foundation for interruptible scheduled workflows like drip campaigns, reminders, and timed sequences.
 
 <Callout type="info">
 Scheduled workflows are still pinned to the deployment that started them. If you are building recurring or indefinitely running schedules that should adopt newer code over time, see [Versioning](/docs/foundations/versioning) for the explicit `deploymentId: "latest"` continuation pattern.
@@ -17,13 +17,13 @@ Scheduled workflows are still pinned to the deployment that started them. If you
 
 ## When to use this
 
-- Sending emails on a schedule (drip campaigns, onboarding sequences, reminders)
-- Waiting for a deadline but allowing early cancellation
-- Any pattern where "do X, wait N hours, then do Y" needs to be both reliable and interruptible
+- Sending emails on a schedule, such as drip campaigns, onboarding sequences, or reminders
+- Waiting for a deadline while allowing early cancellation
+- Reliable, interruptible patterns that perform one action, wait for a specified time, and then perform another action
 
 ## Drip campaign with cancellation
 
-A drip campaign sends emails at intervals, sleeping between each. Each sleep races against a cancellation hook — if an external event fires the hook (e.g. user converts, unsubscribes), the campaign stops immediately.
+A drip campaign sends emails at intervals, sleeping between each message. Each sleep races against a cancellation hook. If an external event fires the hook, such as when a user converts or unsubscribes, the campaign stops immediately.
 
 ```typescript
 import { defineHook, sleep } from "workflow";
@@ -105,10 +105,10 @@ export async function POST(req: Request) {
 
 ## How it works
 
-1. **Durable sleep** — `sleep("2d")` persists through restarts at zero compute cost. The workflow resumes precisely when the timer fires.
-2. **Hook creation** — `cancelDrip.create({ token })` registers a hook that resolves when any external system calls `.resume()` with the same token.
-3. **Race** — `Promise.race([sleep(...), hook])` blocks until either the timer fires or the hook is resumed, whichever comes first.
-4. **Fresh hooks per window** — after a sleep completes normally, the previous hook instance is consumed. A new `.create()` call registers a fresh hook for the next sleep window, reusing the same token.
+1. **Durable sleep**: `sleep("2d")` persists through restarts at zero compute cost. The workflow resumes when the timer fires.
+2. **Hook creation**: `cancelDrip.create({ token })` registers a hook that resolves when any external system calls `.resume()` with the same token.
+3. **Race**: `Promise.race([sleep(...), hook])` blocks until either the timer fires or the hook is resumed, whichever comes first.
+4. **Fresh hooks per window**: After a sleep completes normally, the previous hook instance is consumed. A new `.create()` call registers a fresh hook for the next sleep window, reusing the same token.
 
 <Callout type="info">
 Deterministic hook tokens can also serve as the idempotency point for scheduled runs. If duplicate schedule starts would send duplicate campaigns or reminders, create a hook with a token derived from the campaign key near the beginning of the workflow and route retries through that hook. If two scheduled starts race, the duplicate run can detect the conflict early with `await hook.getConflict()`, which resolves with the active owner so the duplicate can defer to it. See [Idempotency](/docs/foundations/idempotency).
@@ -116,22 +116,22 @@ Deterministic hook tokens can also serve as the idempotency point for scheduled 
 
 ## Adapting to your use case
 
-- **Change durations** — replace `"2d"` with any duration string (`"1h"`, `"7d"`, `"30m"`) or a `Date` object for absolute times.
-- **Add more steps** — the pattern scales to any number of email-then-sleep pairs.
-- **Snooze instead of cancel** — resolve the hook with a `snooze` payload and sleep again: `sleep(new Date(Date.now() + payload.snoozeMs))`.
-- **Timeout any operation** — the same `Promise.race(sleep, work)` pattern works for adding deadlines to slow steps.
-- **Real providers** — swap the `sendEmail` step body for Resend, Postmark, or any HTTP API. The `"use step"` function has full Node.js access.
+- **Change durations**: Replace `"2d"` with any duration string (`"1h"`, `"7d"`, or `"30m"`) or a `Date` object for absolute times.
+- **Add more steps**: The pattern scales to any number of email-then-sleep pairs.
+- **Snooze instead of cancel**: Resolve the hook with a `snooze` payload and sleep again with `sleep(new Date(Date.now() + payload.snoozeMs))`.
+- **Set a timeout for any operation**: Use the same `Promise.race(sleep, work)` pattern to add deadlines to slow steps.
+- **Use production providers**: Replace the `sendEmail` step body with Resend, Postmark, or any HTTP API. The `"use step"` function has full Node.js access.
 
 ## Tips
 
-- **`sleep()` accepts** duration strings (`"1d"`, `"2h"`, `"30s"`), milliseconds, or `Date` objects for sleeping until a specific time.
-- **Durable means durable.** A `sleep("7d")` workflow costs nothing while sleeping — no compute, no memory.
-- **Use `sleep()` in workflow context only.** Step functions cannot call `sleep()` directly. If a step needs a delay, use `setTimeout` inside the step.
+- **Pass supported values to `sleep()`**: Use duration strings (`"1d"`, `"2h"`, or `"30s"`), milliseconds, or `Date` objects for sleeping until a specific time.
+- **Sleeping consumes no compute or memory**: A workflow waiting on `sleep("7d")` consumes no compute or memory while sleeping.
+- **Use `sleep()` only in workflow context**: Step functions cannot call `sleep()` directly. If a step needs a delay, use `setTimeout` inside the step.
 
 ## Key APIs
 
-- [`"use workflow"`](/docs/foundations/workflows-and-steps) — marks the orchestrator function
-- [`"use step"`](/docs/foundations/workflows-and-steps) — marks functions that run with full Node.js access
-- [`sleep()`](/docs/api-reference/workflow/sleep) — durable wait (survives restarts, zero compute cost)
-- [`defineHook()`](/docs/api-reference/workflow/define-hook) — creates a typed hook that external systems can fire
-- [`Promise.race()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race) — races sleep against hooks for interruptible waits
+- [`"use workflow"`](/docs/foundations/workflows-and-steps): Marks the orchestrator function.
+- [`"use step"`](/docs/foundations/workflows-and-steps): Marks functions that run with full Node.js access.
+- [`sleep()`](/docs/api-reference/workflow/sleep): Provides a durable wait that survives restarts with zero compute cost.
+- [`defineHook()`](/docs/api-reference/workflow/define-hook): Creates a typed hook that external systems can fire.
+- [`Promise.race()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race): Races sleep against hooks for interruptible waits.

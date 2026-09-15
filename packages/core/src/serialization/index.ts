@@ -1,12 +1,12 @@
 /**
- * Serialization module — public API.
+ * Serialization module: public API.
  *
  * Re-exports the mode-specific serialize/deserialize functions and
  * the codec/format/encryption abstractions.
  */
 
 // Re-export codec interface and mode type
-export type { Codec, SerializationMode } from './codec.js';
+export type { Codec, CodecOptions, SerializationMode } from './codec.js';
 export { devalueCodec } from './codec-devalue.js';
 // Re-export composable compression
 export {
@@ -24,7 +24,6 @@ export {
   type EncryptionKeyParam,
   encrypt,
 } from './encryption.js';
-
 // Re-export format prefix utilities
 export {
   decodeFormatPrefix,
@@ -32,6 +31,9 @@ export {
   isEncrypted,
   peekFormatPrefix,
 } from './format.js';
+// Re-export hardened-serialization observation types (populated via
+// `CodecOptions.guestCodeStats`)
+export type { GuestCodeExecution, GuestCodeStats } from './hardened.js';
 // Re-export types
 export type {
   FormatPrefix,

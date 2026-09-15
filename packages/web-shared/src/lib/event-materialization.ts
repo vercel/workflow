@@ -17,6 +17,7 @@ import {
   isWaitEventType,
   type StepStatus,
 } from '@workflow/world';
+import { findDuplicateEventIds } from './duplicate-events';
 
 // ---------------------------------------------------------------------------
 // Materialized entity types
@@ -105,9 +106,24 @@ function getEventTimestamp(event: Event | undefined): Date | undefined {
  *
  * Handles partial event lists gracefully: a step may only have a
  * step_created event with no completion yet.
+ *
+ * The derived status and timestamps come from the events the run acted on. A
+ * repeat of a class the log already records is read past by every replay, so
+ * a second terminal event written by a concurrent replay does not move a step
+ * off the outcome the first one recorded. Every event stays on the entity's
+ * `events` list.
+ *
+ * That reduction needs the whole log to be sound, so it only runs when
+ * `isCompleteHistory` says `events` is it. See {@link findDuplicateEventIds}.
  */
-export function materializeSteps(events: Event[]): MaterializedStep[] {
+export function materializeSteps(
+  events: Event[],
+  { isCompleteHistory = false }: { isCompleteHistory?: boolean } = {}
+): MaterializedStep[] {
   const groups = groupByCorrelationId(events, isStepEventType);
+  const duplicateEventIds = findDuplicateEventIds(events, {
+    isCompleteHistory,
+  });
   const steps: MaterializedStep[] = [];
 
   for (const [correlationId, stepEvents] of groups) {
@@ -121,6 +137,7 @@ export function materializeSteps(events: Event[]): MaterializedStep[] {
     let updatedAt = getEventTimestamp(created) ?? created.createdAt;
 
     for (const e of stepEvents) {
+      if (duplicateEventIds.has(e.eventId)) continue;
       switch (e.eventType) {
         case 'step_started':
           status = 'running';
@@ -248,9 +265,12 @@ export function materializeWaits(events: Event[]): MaterializedWait[] {
  * Convenience function that materializes all entity types from a flat
  * event list.
  */
-export function materializeAll(events: Event[]): MaterializedEntities {
+export function materializeAll(
+  events: Event[],
+  options: { isCompleteHistory?: boolean } = {}
+): MaterializedEntities {
   return {
-    steps: materializeSteps(events),
+    steps: materializeSteps(events, options),
     hooks: materializeHooks(events),
     waits: materializeWaits(events),
   };

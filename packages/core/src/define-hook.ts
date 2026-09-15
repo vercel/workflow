@@ -76,7 +76,7 @@ export function defineHook<TInput, TOutput = TInput>({
   function create(_options?: HookOptions): Hook<TOutput> {
     // NOTE: `create` is referenced by name (not `this.create`) so the stack
     // strip still works if the caller destructured the hook (`const { create }
-    // = defineHook(); create()`) — in that case `this` is undefined.
+    // = defineHook(); create()`), since in that case `this` is undefined.
     throwNotInWorkflowContext(
       'defineHook().create()',
       'https://workflow-sdk.dev/docs/api-reference/workflow/define-hook',

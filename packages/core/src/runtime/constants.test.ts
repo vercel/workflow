@@ -11,6 +11,7 @@ import {
   isOptimisticInlineStartEnabled,
   isOptimisticInlineStartExplicitlyDisabled,
   isTurboEnabled,
+  MAX_BATCH_FANOUT_EVENTS,
   MAX_INLINE_OWNERSHIP_LEASE_SECONDS,
   MAX_INLINE_STEPS,
   MAX_MAX_INLINE_STEPS,
@@ -391,5 +392,24 @@ describe('getInlineOwnershipLeaseSeconds', () => {
   it('clamps a non-positive override up to 1', () => {
     process.env[ENV] = '0';
     expect(getInlineOwnershipLeaseSeconds()).toBe(1);
+  });
+});
+
+describe('pre-claimed inline pairs fit one batch chunk', () => {
+  it('keeps two rows per inline step inside MAX_BATCH_FANOUT_EVENTS', () => {
+    // The suspension fold folds each lazy-inline step into an adjacent
+    // [step_created, step_started] pair and commits the pairs in chunk(s)
+    // of their own, ahead of the plain creates — so every pair lands in ONE
+    // leading chunk exactly while two rows per inline step fit inside one
+    // chunk, and the inline bodies gate on a single small commit.
+    //
+    // Past that, pairs spill into a second pair chunk. `handleSuspension`
+    // gates its return on every pair-carrying chunk so that degrades
+    // safely, but the bodies then wait for two commits instead of one.
+    // Raising MAX_MAX_INLINE_STEPS therefore has to raise the chunk cap with
+    // it (and re-check the server's per-batch transaction budget).
+    expect(2 * MAX_MAX_INLINE_STEPS).toBeLessThanOrEqual(
+      MAX_BATCH_FANOUT_EVENTS
+    );
   });
 });

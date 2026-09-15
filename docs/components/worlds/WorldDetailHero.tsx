@@ -97,7 +97,7 @@ export function WorldDetailHero({
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_200px] gap-8 lg:gap-12">
         {/* Left side - Title and description */}
         <div className="space-y-4 min-w-0">
-          <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl flex items-center gap-4">
+          <h1 className="text-heading-40 sm:text-heading-48 flex items-center gap-4">
             {world.name}
             {world.type === 'official' ? (
               <Tooltip>

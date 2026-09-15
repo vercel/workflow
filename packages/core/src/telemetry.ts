@@ -1,6 +1,6 @@
 import type * as api from '@opentelemetry/api';
 import type { Span, SpanKind, SpanOptions } from '@opentelemetry/api';
-import { once } from '@workflow/utils';
+import { globalSingleton, once } from '@workflow/utils';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import * as Attr from './telemetry/semantic-conventions.js';
@@ -23,8 +23,16 @@ import * as Attr from './telemetry/semantic-conventions.js';
  */
 export type WorkflowTraceMode = 'linked' | 'continuous';
 
-/** Unrecognized `WORKFLOW_TRACE_MODE` values we already warned about. */
-const warnedUnrecognizedTraceModes = new Set<string>();
+/**
+ * Unrecognized `WORKFLOW_TRACE_MODE` values we already warned about. On
+ * `globalThis` (see `globalSingleton`) so the warning stays once per process
+ * rather than once per bundler layer.
+ */
+const traceModeWarnings = globalSingleton(
+  '@workflow/core//traceModeWarnings',
+  1,
+  () => ({ unrecognized: new Set<string>() })
+);
 
 /**
  * Resolves the active trace mode from the `WORKFLOW_TRACE_MODE` env var.
@@ -35,8 +43,12 @@ const warnedUnrecognizedTraceModes = new Set<string>();
 export function getWorkflowTraceMode(): WorkflowTraceMode {
   const value = process.env.WORKFLOW_TRACE_MODE;
   if (value === 'continuous') return 'continuous';
-  if (value && value !== 'linked' && !warnedUnrecognizedTraceModes.has(value)) {
-    warnedUnrecognizedTraceModes.add(value);
+  if (
+    value &&
+    value !== 'linked' &&
+    !traceModeWarnings.unrecognized.has(value)
+  ) {
+    traceModeWarnings.unrecognized.add(value);
     runtimeLogger.warn(
       `Unrecognized WORKFLOW_TRACE_MODE value "${value}"; expected "linked" or "continuous". Falling back to "linked".`
     );
@@ -48,7 +60,7 @@ export function getWorkflowTraceMode(): WorkflowTraceMode {
  * Returns whether a serialized trace carrier is usable, i.e. present and
  * non-empty. `serializeTraceCarrier()` returns `{}` when no OTEL SDK is
  * registered or no span is active, and `start()` always attaches the
- * carrier to the first queue message — so an empty carrier must be treated
+ * carrier to the first queue message, so an empty carrier must be treated
  * the same as an absent one wherever the trace-mode logic branches.
  */
 export function isUsableTraceCarrier(
@@ -61,7 +73,7 @@ export function isUsableTraceCarrier(
  * Returns the trace carrier to attach to messages the current invocation
  * enqueues. In `linked` mode the ORIGINAL run-origin carrier is forwarded
  * unchanged (when usable) so every future invocation links back to the same
- * origin; otherwise — `continuous` mode, or no usable incoming carrier —
+ * origin; otherwise (`continuous` mode, or no usable incoming carrier)
  * the current (active) context is serialized, so the trace keeps chaining
  * (continuous) or the first instrumented invocation becomes the de-facto
  * origin (linked).
@@ -81,7 +93,7 @@ export function getNextTraceCarrier(
  *
  * - In `linked` mode the invocation span is a CHILD of the local delivery
  *   (flow-route) context, so the only link is to the run-origin context
- *   from the message's trace carrier — connecting this bounded per-invocation
+ *   from the message's trace carrier, connecting this bounded per-invocation
  *   trace back to where the run was started. The run-origin context is a
  *   link, never a parent, and re-enqueues forward the original carrier
  *   unchanged, so the whole run is never stitched into one giant trace.
@@ -157,7 +169,7 @@ const OtelApi = once(async () => {
   // is intentional: esbuild-bundled targets (the CLI's
   // `vercel-build-output-api` build, Nitro, Astro) ship a self-contained
   // bundle with no node_modules, so the package must be *inlined* at build
-  // time for spans to work at runtime — a runtime-built specifier is opaque to
+  // time for spans to work at runtime; a runtime-built specifier is opaque to
   // esbuild and would silently disable tracing there. Bundlers that reject an
   // unresolvable static `import()` when the peer isn't installed (Rollup/Vite,
   // e.g. SvelteKit) instead externalize `@opentelemetry/api` in the workflow
@@ -180,13 +192,45 @@ const Tracer = once(async () => {
   return tracer;
 });
 
+const StepExecutionDurationHistogram = once(async () => {
+  const otel = await OtelApi.value;
+  if (!otel) return null;
+  // service.name is a resource attribute, applied by the configured provider.
+  return otel.metrics
+    .getMeter('workflow')
+    .createHistogram('workflow.step.execute.duration', {
+      description: 'Duration of user step execution',
+      unit: 'ms',
+    });
+});
+
 /**
  * One-shot runtime diagnostic (DEBUG=workflow:* only), same shape as the one
  * world-vercel emits tagged `world-vercel`: prints how this module instance
  * of `@opentelemetry/api` sees the global registration, so a deployment's
  * logs show the two packages' views side by side.
  */
+// per-copy-ok: this diagnostic reports how THIS module instance sees the global
+// OTel registration, which is the whole point of the log. With several copies
+// in a process, each one's view is what is worth seeing.
 let otelDiagLogged = false;
+
+function describeThrownValue(value: unknown): string {
+  try {
+    if (
+      typeof value === 'object' &&
+      value !== null &&
+      'message' in value &&
+      typeof value.message === 'string'
+    ) {
+      return value.message;
+    }
+    return String(value);
+  } catch {
+    return 'Unknown error';
+  }
+}
+
 function logOtelDiagnosticOnce(otel: typeof api, tracer: api.Tracer): void {
   const debugEnabled =
     typeof process !== 'undefined' &&
@@ -245,16 +289,74 @@ export async function trace<T>(
       span.setStatus({ code: otel.SpanStatusCode.OK });
       return result;
     } catch (e) {
-      span.setStatus({
-        code: otel.SpanStatusCode.ERROR,
-        message: (e as Error).message,
-      });
-      applyWorkflowSuspensionToSpan(e, otel, span);
+      if (WorkflowSuspension.is(e)) {
+        span.setStatus({ code: otel.SpanStatusCode.OK });
+        applyWorkflowSuspensionToSpan(e, span);
+      } else {
+        span.setStatus({
+          code: otel.SpanStatusCode.ERROR,
+          message: describeThrownValue(e),
+        });
+      }
       throw e;
     } finally {
       span.end();
     }
   });
+}
+
+/** Starts a child span without installing it as the active context. */
+export async function startTraceSpan(spanName: string) {
+  const [tracer, otel] = await Promise.all([Tracer.value, OtelApi.value]);
+  if (!tracer || !otel) return { end() {}, fail() {} };
+
+  const span = tracer.startSpan(spanName);
+  let ended = false;
+  const finish = (status: api.SpanStatus) => {
+    if (ended) return;
+    ended = true;
+    span.setStatus(status);
+    span.end();
+  };
+
+  return {
+    end: () => finish({ code: otel.SpanStatusCode.OK }),
+    fail: (error: unknown) =>
+      finish({
+        code: otel.SpanStatusCode.ERROR,
+        message: describeThrownValue(error),
+      }),
+  };
+}
+
+/** Bind work to the currently active span even when it starts from a child. */
+export async function bindActiveTraceContext<Args extends unknown[], Result>(
+  fn: (...args: Args) => Result
+): Promise<(...args: Args) => Result> {
+  const otel = await OtelApi.value;
+  return otel ? otel.context.bind(otel.context.active(), fn) : fn;
+}
+
+/** Keeps a parked workflow's ambient trace context aligned with each resume. */
+export async function createRefreshableTraceContext() {
+  const otel = await OtelApi.value;
+  if (!otel) {
+    return { refresh() {}, run: <T>(fn: () => T): T => fn() };
+  }
+
+  let current = otel.context.active();
+  const context: api.Context = {
+    getValue: (key) => current.getValue(key),
+    setValue: (key, value) => current.setValue(key, value),
+    deleteValue: (key) => current.deleteValue(key),
+  };
+
+  return {
+    refresh: () => {
+      current = otel.context.active();
+    },
+    run: <T>(fn: () => T): T => otel.context.with(context, fn),
+  };
 }
 
 /**
@@ -275,19 +377,25 @@ export async function recordElapsedSpan(
 }
 
 /**
- * Applies workflow suspension attributes to the given span if the error is a WorkflowSuspension
- * which is technically not an error, but an algebraic effect indicating suspension.
+ * Records the same user-code interval as the inner `step.execute` span. The
+ * configured OpenTelemetry meter provider attaches resource dimensions such as
+ * service.name, so this avoids accepting a caller-controlled service tag.
  */
-function applyWorkflowSuspensionToSpan(
-  error: unknown,
-  otel: typeof api,
-  span: api.Span
-) {
-  if (!error || !WorkflowSuspension.is(error)) {
-    return;
-  }
+export async function recordStepExecutionDuration(
+  durationMs: number,
+  status: 'ok' | 'error'
+): Promise<void> {
+  const histogram = await StepExecutionDurationHistogram.value;
+  histogram?.record(durationMs, { 'workflow.step.status': status });
+}
 
-  span.setStatus({ code: otel.SpanStatusCode.OK });
+/**
+ * Applies the workflow suspension algebraic effect to an active span.
+ */
+export function applyWorkflowSuspensionToSpan(
+  error: WorkflowSuspension,
+  span: api.Span
+): void {
   span.setAttributes({
     ...Attr.WorkflowSuspensionState('suspended'),
     ...Attr.WorkflowSuspensionStepCount(error.stepCount),

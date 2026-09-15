@@ -1,4 +1,51 @@
 import { originalPositionFor, TraceMap } from '@jridgewell/trace-mapping';
+import { globalSingleton } from '@workflow/utils';
+
+/** Marker prefix of an inline source map comment emitted by bundlers. */
+const INLINE_SOURCE_MAP_MARKER =
+  '//# sourceMappingURL=data:application/json;base64,';
+
+/**
+ * Strip the trailing `//# sourceMappingURL=data:…` comment from a JS
+ * bundle. Returns the input unchanged if no trailing inline map is
+ * present.
+ *
+ * Use this on the host side before evaluating workflow bundles inside
+ * the QuickJS VM: the inline map can account for several MB of bundle
+ * text (measured ~30%+ of VM heap bytes on the example workbench's
+ * bundle), and the VM never needs it; only host-side `remapErrorStack`
+ * reads the map (and it can do so against the original, unstripped
+ * string).
+ *
+ * Implemented as a linear `lastIndexOf` + character scan rather than a
+ * regex: on webpack dev-server bundles (tens of MB, with hundreds of
+ * per-module inline map comments embedded in eval strings) a
+ * `String.replace` regex over the bundle blows V8's call stack
+ * ("RangeError: Maximum call stack size exceeded"), wedging every
+ * workflow invocation on that framework.
+ */
+export function stripInlineSourceMap(workflowCode: string): string {
+  const idx = workflowCode.lastIndexOf(INLINE_SOURCE_MAP_MARKER);
+  if (idx === -1) return workflowCode;
+  // Only strip when the comment is the TRAILING content: everything
+  // after the marker must be base64 payload followed by optional
+  // whitespace. A mid-bundle occurrence (e.g. inside a string literal)
+  // is left untouched.
+  let i = idx + INLINE_SOURCE_MAP_MARKER.length;
+  const payloadStart = i;
+  const n = workflowCode.length;
+  while (i < n && isBase64Char(workflowCode.charCodeAt(i))) i++;
+  if (i === payloadStart) return workflowCode;
+  while (i < n) {
+    const c = workflowCode.charCodeAt(i);
+    // space, tab, newline, carriage return
+    if (c !== 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d) {
+      return workflowCode;
+    }
+    i++;
+  }
+  return workflowCode.slice(0, idx);
+}
 
 function isBase64Char(code: number): boolean {
   return (
@@ -61,18 +108,23 @@ function extractInlineSourceMapBase64(source: string): string | undefined {
  * Keyed by the bundle `code`. Insertion-ordered LRU capped at `MAX_TRACERS`,
  * mirroring `vm/script-cache.ts`: production serves a single build-time bundle
  * literal for the process lifetime, while dev/watch produces a new bundle
- * string per edit — the bound keeps the few most-recent ones and evicts the
+ * string per edit; the bound keeps the few most-recent ones and evicts the
  * rest instead of pinning every historical version.
  */
-const tracerCache = new Map<string, TraceMap | null>();
+// On `globalThis` (see `globalSingleton`): the cache exists to avoid re-parsing
+// one build-time bundle for the life of the process, which per-copy state would
+// do once per bundler layer.
+const tracers = globalSingleton('@workflow/core//sourceMapTracers', 1, () => ({
+  byCode: new Map<string, TraceMap | null>(),
+}));
 const MAX_TRACERS = 8;
 
 function getTraceMapForCode(workflowCode: string): TraceMap | null {
-  const cached = tracerCache.get(workflowCode);
+  const cached = tracers.byCode.get(workflowCode);
   if (cached !== undefined) {
     // Move to most-recently-used position (end of insertion order).
-    tracerCache.delete(workflowCode);
-    tracerCache.set(workflowCode, cached);
+    tracers.byCode.delete(workflowCode);
+    tracers.byCode.set(workflowCode, cached);
     return cached;
   }
 
@@ -85,18 +137,18 @@ function getTraceMapForCode(workflowCode: string): TraceMap | null {
       // Use TraceMap (pure JS, no WASM required)
       tracer = new TraceMap(sourceMapData);
     } catch {
-      // Malformed inline map — treat as absent so we don't retry parsing it.
+      // Malformed inline map: treat as absent so we don't retry parsing it.
       tracer = null;
     }
   }
 
-  tracerCache.set(workflowCode, tracer);
+  tracers.byCode.set(workflowCode, tracer);
   // Evict the least-recently-used entries when over the cap. New entries are
   // appended at the end, so the oldest live at the front.
-  while (tracerCache.size > MAX_TRACERS) {
-    const oldest = tracerCache.keys().next().value;
+  while (tracers.byCode.size > MAX_TRACERS) {
+    const oldest = tracers.byCode.keys().next().value;
     if (oldest === undefined) break;
-    tracerCache.delete(oldest);
+    tracers.byCode.delete(oldest);
   }
   return tracer;
 }

@@ -1,0 +1,9 @@
+{
+  "extends": "@workflow/tsconfig/base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "types": ["node"]
+  },
+  "include": ["run.ts", "scenarios", "workflows"]
+}

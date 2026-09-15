@@ -1,5 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "changeset-release/main": false
+    }
+  },
   "buildCommand": "pnpm turbo build --filter=tarballs",
   "installCommand": "pnpm install --frozen-lockfile",
   "outputDirectory": "dist",

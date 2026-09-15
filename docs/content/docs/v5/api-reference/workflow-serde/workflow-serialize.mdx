@@ -2,7 +2,7 @@
 title: WORKFLOW_SERIALIZE
 ---
 
-A symbol used to define custom serialization for user-defined class instances. The static method should accept an instance and return serializable data.
+`WORKFLOW_SERIALIZE` defines custom serialization for user-defined class instances. The static method accepts an instance and returns serializable data.
 
 ## Usage
 
@@ -23,7 +23,7 @@ class Point {
 }
 ```
 
-## API Signature
+## API signature
 
 {/* @skip-typecheck: type-only signature snippet, not compilable code */}
 
@@ -60,15 +60,16 @@ The method should return serializable data. This can be:
 The method must be implemented as a **static** method on the class. Instance methods are not supported.
 </Callout>
 
-- Both `WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE` must be implemented together
-- The returned data must itself be serializable
-- The SWC compiler plugin automatically detects and registers classes that implement these symbols
+- Both `WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE` must be implemented together.
+- The returned data must itself be serializable.
+- The SWC compiler plugin automatically detects and registers classes that implement these symbols.
 
 <Callout type="warn">
 This method runs inside the workflow context and is subject to the same constraints as `"use workflow"` functions:
 - No Node.js-specific APIs (like `fs`, `path`, `crypto`, etc.)
 - No non-deterministic operations (like `Math.random()` or `Date.now()`)
 - No external network calls
+- No side effects on workflow state: the method may run outside deterministic replay, so mutations would not be reconstructed
 
-Keep this method simple and focused on extracting data from the instance.
+Keep this method focused on extracting data from the instance.
 </Callout>

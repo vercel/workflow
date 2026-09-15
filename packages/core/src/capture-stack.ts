@@ -5,7 +5,7 @@
  * code frame at our `throw` site inside `@workflow/core`, which is useless
  * to the user.
  *
- * No-op on engines that don't expose `Error.captureStackTrace` — the stack
+ * No-op on engines that don't expose `Error.captureStackTrace`: the stack
  * degrades gracefully to the default behavior.
  *
  * Kept in its own tiny module so callers that can't participate in the

@@ -40,9 +40,9 @@ import { WorkflowModule } from "workflow/nest";
 export class AppModule {}
 ```
 
-## API Signature
+## API signature
 
-### Static Methods
+### Static methods
 
 #### `forRoot(options?)`
 
@@ -56,7 +56,7 @@ Configures the module and returns a NestJS `DynamicModule` registered as `global
 
 #### WorkflowModuleOptions
 
-Extends [`NestBuilderOptions`](/docs/api-reference/workflow-nest/nest-local-builder#nestbuilderoptions) — all builder options are accepted, plus `skipBuild`:
+Extends [`NestBuilderOptions`](/docs/api-reference/workflow-nest/nest-local-builder#nestbuilderoptions): all builder options are accepted, plus `skipBuild`:
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -65,7 +65,7 @@ Extends [`NestBuilderOptions`](/docs/api-reference/workflow-nest/nest-local-buil
 | `dirs` | `string[]` | `['src']` | Directories to scan for workflow files. |
 | `outDir` | `string` | `'.nestjs/workflow'` (relative to `workingDir`) | Output directory for generated workflow bundles. |
 | `watch` | `boolean` | `false` | Enable watch mode for development. |
-| `moduleType` | `'es6' \| 'commonjs'` | `'es6'` | SWC module compilation type. Set to `'commonjs'` if your NestJS project compiles to CJS via SWC. |
+| `moduleType` | `'es6' \| 'commonjs'` | `'es6'` | SWC module compilation type. Set to `'commonjs'` if your NestJS project compiles to CommonJS (CJS) through SWC. |
 | `distDir` | `string` | `'dist'` | Directory where NestJS compiles `.ts` source files to `.js` (relative to `workingDir`). Used when `moduleType` is `'commonjs'`. Should match the `outDir` in your `tsconfig.json`. |
 
 ### Returns

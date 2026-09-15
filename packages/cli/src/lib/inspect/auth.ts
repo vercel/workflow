@@ -47,7 +47,7 @@ export async function getAuthToken(): Promise<string | null> {
     return credentials.token;
   }
 
-  // Token is expired — attempt refresh
+  // Token is expired, so attempt refresh
   if (!credentials.refreshToken) {
     logger.debug('Auth token expired and no refresh token available');
     return null;

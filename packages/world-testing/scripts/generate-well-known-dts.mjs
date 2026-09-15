@@ -6,13 +6,17 @@
  * to the .mjs files makes TypeScript use the declarations instead of
  * parsing the bundled JavaScript.
  */
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
 
 const dir = '.well-known/workflow/v1';
 const stub =
   'export declare const POST: (req: Request) => Response | Promise<Response>;\n';
 
-for (const name of ['flow', 'step', 'webhook']) {
+// Remove the declaration generated for the retired standalone step route. This
+// also cleans stale build output in worktrees that were built before its removal.
+rmSync(`${dir}/step.d.mts`, { force: true });
+
+for (const name of ['flow', 'webhook']) {
   const dts = `${dir}/${name}.d.mts`;
   if (!existsSync(dts)) {
     writeFileSync(dts, stub);

@@ -42,6 +42,8 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     replayPayloadCache: new ReplayPayloadCache(undefined),
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
+      // Fake context: no deliveries are modeled, so the gate is a no-op here.
+      isDeliveryIdle: () => true,
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => Promise.resolve(),
     }),
@@ -53,7 +55,20 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     onWorkflowError: vi.fn(),
     promiseQueue: Promise.resolve(),
     pendingDeliveries: 0,
+    suspensionGeneration: 0,
   };
+}
+
+/**
+ * Let the idle poll behind `scheduleWhenIdle` make progress. Each poll is one
+ * `setTimeout(0)` turn (plus a `promiseQueue` hop while a delivery is held),
+ * so a handful of explicit macrotask turns covers arming, re-polling against
+ * a held delivery, and firing once it is released, without a wall-clock wait.
+ */
+async function settleTimers(turns = 4): Promise<void> {
+  for (let i = 0; i < turns; i++) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 describe('createCreateHook', () => {
@@ -211,7 +226,7 @@ describe('createCreateHook', () => {
     const hook = createHook();
 
     // Start awaiting the hook - it will process events asynchronously
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
@@ -241,7 +256,7 @@ describe('createCreateHook', () => {
     const hook = createHook();
 
     // Start awaiting the hook - it will process events asynchronously
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
@@ -339,11 +354,63 @@ describe('createCreateHook', () => {
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
     if (WorkflowSuspension.is(workflowError)) {
       expect(workflowError.hookCount).toBe(1);
-      expect(workflowError.steps[0]).toMatchObject({
+      expect(workflowError.items[0]).toMatchObject({
         type: 'hook',
         hasConflictAwaiter: true,
       });
     }
+  });
+
+  // The hook consumer's suspension signal carries the generation guard (see
+  // `scheduleWorkflowSuspension`), which is what lets the runtime resume a
+  // retained VM over the `hook_created` (or `hook_conflict`) it just committed
+  // instead of re-invoking. Without it, a signal armed at the boundary the
+  // resume moved past would raise a suspension the workflow never reached —
+  // carrying none of the work the resume kicked off, leaving the run dormant.
+  it('drops a suspension signal armed for a boundary the run has moved past', async () => {
+    const ctx = setupWorkflowContext([]);
+    const errors: Error[] = [];
+    ctx.onWorkflowError = (error) => {
+      errors.push(error);
+    };
+    // Hold the idle gate so the signal is armed but cannot fire yet — the
+    // window a resume lands in.
+    ctx.pendingDeliveries = 1;
+
+    const hook = createCreateHook(ctx)({ token: 'stale-signal' });
+    void hook.getConflict();
+    await settleTimers();
+    expect(errors).toHaveLength(0);
+
+    // What the runtime does when it resumes the parked VM.
+    ctx.suspensionGeneration++;
+    ctx.pendingDeliveries = 0;
+    await settleTimers();
+
+    expect(errors).toHaveLength(0);
+  });
+
+  it('still signals when the run has not moved past the boundary', async () => {
+    // The control for the test above: the same held-then-released signal
+    // reaches the runtime when the generation has not moved, so the guard
+    // cannot be swallowing signals that are still wanted.
+    const ctx = setupWorkflowContext([]);
+    const errors: Error[] = [];
+    ctx.onWorkflowError = (error) => {
+      errors.push(error);
+    };
+    ctx.pendingDeliveries = 1;
+
+    const hook = createCreateHook(ctx)({ token: 'live-signal' });
+    void hook.getConflict();
+    await settleTimers();
+    expect(errors).toHaveLength(0);
+
+    ctx.pendingDeliveries = 0;
+    await settleTimers();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(WorkflowSuspension);
   });
 
   it('should resolve getConflict with the conflicting run when hook_conflict event is received', async () => {
@@ -450,7 +517,7 @@ describe('createCreateHook', () => {
     ]);
 
     const createHook = createCreateHook(ctx);
-    const hook = createHook({ token: 'test-token' });
+    const _hook = createHook({ token: 'test-token' });
 
     // Wait for event processing (hook_disposed removes from invocationsQueue)
     await vi.waitFor(() => {
@@ -561,7 +628,7 @@ describe('createCreateHook', () => {
     const hook = createHook({ token: 'my-custom-token' });
 
     // Start awaiting the hook
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(ReplayDivergenceError);
@@ -733,9 +800,9 @@ describe('createCreateHook', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
+    let _workflowError: Error | undefined;
     ctx.onWorkflowError = (err) => {
-      workflowError = err;
+      _workflowError = err;
     };
 
     const createHook = createCreateHook(ctx);
@@ -884,9 +951,9 @@ describe('createCreateHook', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
+    let _workflowError: Error | undefined;
     ctx.onWorkflowError = (err) => {
-      workflowError = err;
+      _workflowError = err;
     };
 
     const createHook = createCreateHook(ctx);
@@ -956,7 +1023,7 @@ describe('createCreateHook', () => {
 
     const createHook = createCreateHook(ctx);
     const hook1 = createHook({ token: 'token-a' });
-    const hook2 = createHook({ token: 'token-b' });
+    const _hook2 = createHook({ token: 'token-b' });
 
     // Only dispose the first hook
     hook1.dispose();
@@ -1112,7 +1179,7 @@ describe('createCreateHook', () => {
     });
 
     // Start awaiting — this pushes a resolver to promises[] since payloadsQueue is empty
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     // Now dispose while the promise is pending — this should drain promises
     // and trigger suspension (not leave an orphaned promise)
@@ -1140,7 +1207,7 @@ describe('createCreateHook', () => {
     hook.dispose();
 
     // Then await — the event log is empty, so this should trigger suspension
-    const hookPromise = hook.then((v) => v);
+    const _hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
@@ -1262,7 +1329,7 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
 
     expect(() => createHook({ token: '' })).toThrow(
-      '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a randomly generated one.'
+      '`createHook()` was called with an empty string token. Pass a non-empty token, or omit the `token` option to use a generated one.'
     );
 
     // The rejected hook must not be registered in the invocations queue.
@@ -1288,7 +1355,7 @@ describe('createCreateHook', () => {
 describe('createWebhook', () => {
   it('should throw when a token option is passed', () => {
     expect(() => (createWebhook as any)({ token: 'anything' })).toThrow(
-      '`createWebhook()` does not accept a `token` option. Webhook tokens are always randomly generated. Use `createHook()` with `resumeHook()` for deterministic token patterns.'
+      '`createWebhook()` does not accept a `token` option. Webhook tokens are always generated for you. Use `createHook()` with `resumeHook()` for deterministic token patterns.'
     );
   });
 });

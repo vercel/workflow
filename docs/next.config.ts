@@ -132,6 +132,70 @@ const config: NextConfig = {
         destination: '/cookbook',
         permanent: true,
       },
+      // The Migration Guides section was replaced by Comparisons (#2676):
+      // each migrating-from-* page's content folded into the matching
+      // workflow-sdk-vs-* comparison page. Permanent redirects keep old
+      // links and indexed search results working. The /v5-prefixed
+      // equivalents are intentionally omitted: those URLs carried noindex,
+      // and the /v5 prefix collapses into the unprefixed space when v5
+      // becomes the default docs version.
+      {
+        source: '/docs/migration-guides',
+        destination: '/docs/comparisons',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-inngest',
+        destination: '/docs/comparisons/workflow-sdk-vs-inngest',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-temporal',
+        destination: '/docs/comparisons/workflow-sdk-vs-temporal',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-trigger-dev',
+        destination: '/docs/comparisons/workflow-sdk-vs-trigger-dev',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-aws-step-functions',
+        destination: '/docs/comparisons/workflow-sdk-vs-aws-step-functions',
+        permanent: true,
+      },
+      // Docs pages also expose text/markdown alternates at `<page>.md`.
+      {
+        source: '/docs/migration-guides.md',
+        destination: '/docs/comparisons.md',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-inngest.md',
+        destination: '/docs/comparisons/workflow-sdk-vs-inngest.md',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-temporal.md',
+        destination: '/docs/comparisons/workflow-sdk-vs-temporal.md',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-trigger-dev.md',
+        destination: '/docs/comparisons/workflow-sdk-vs-trigger-dev.md',
+        permanent: true,
+      },
+      {
+        source: '/docs/migration-guides/migrating-from-aws-step-functions.md',
+        destination: '/docs/comparisons/workflow-sdk-vs-aws-step-functions.md',
+        permanent: true,
+      },
+      // Anything else under the retired section lands on the index.
+      {
+        source: '/docs/migration-guides/:path*',
+        destination: '/docs/comparisons',
+        permanent: false,
+      },
       // Cookbook: child-workflows and distributed-abort-controller moved
       // from common-patterns (now "Reliability Patterns") to advanced
       {

@@ -8,7 +8,7 @@ related:
   - /docs/api-reference/workflow-observability/parse-class-name
 ---
 
-Workflow names are stored as machine-readable identifiers like `workflow//./src/workflows/order//processOrder`. This function parses them into components suitable for display in a UI — for example when listing runs from the [World SDK](/docs/api-reference/workflow-runtime/world/storage), where `run.workflowName` holds the machine-readable form.
+Workflow names are stored as machine-readable identifiers like `workflow//./src/workflows/order//processOrder`. This function parses them into components suitable for display in a user interface, for example when listing runs from the [World SDK](/docs/api-reference/workflow-runtime/world/storage), where `run.workflowName` holds the machine-readable form.
 
 ```typescript lineNumbers
 import { parseWorkflowName } from "workflow/observability"; // [!code highlight]
@@ -19,7 +19,7 @@ const parsed = parseWorkflowName("workflow//./src/workflows/order//processOrder"
 // parsed?.functionName → "processOrder"
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 
@@ -34,12 +34,12 @@ const parsed = parseWorkflowName("workflow//./src/workflows/order//processOrder"
 | Property | Description |
 |----------|-------------|
 | `shortName` | The display name. For default exports, falls back to the module's short name (e.g. `"order"` for `./src/workflows/order`). |
-| `moduleSpecifier` | The module the workflow is defined in — a relative path (`./src/workflows/order`) or a package specifier (`@myorg/flows@1.0.0`). |
+| `moduleSpecifier` | The module the workflow is defined in: a relative path (`./src/workflows/order`) or a package specifier (`@myorg/flows@1.0.0`). |
 | `functionName` | The full exported function name. |
 
 Returns `null` when the input is not a valid workflow name.
 
-## Example: List Runs with Display Names
+## Example: list runs with display names
 
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";

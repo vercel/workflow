@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { dimensionFor } = require('./generate-e2e-flake-history.js');
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -42,7 +43,7 @@ function findJsonFiles(dir, prefix, excludePrefixes = []) {
         files.push(fullPath);
       }
     }
-  } catch (e) {
+  } catch (_e) {
     // Directory doesn't exist or can't be read
   }
   return files;
@@ -53,9 +54,16 @@ function findResultFiles(dir) {
   return findJsonFiles(dir, 'e2e-', [
     'e2e-metadata-',
     'e2e-failures-',
+    'e2e-flaky-',
+    'e2e-infra-',
     'e2e-diagnostics-',
     'e2e-runtime-logs-',
-  ]);
+    // Not a report: the per-app cross-language conformance declaration
+    // (`workbench/*/e2e-conformance.json` and its `.example` sibling). The
+    // trailing dot matters — the Python lane's report is
+    // `e2e-conformance-python.json` and must keep matching.
+    'e2e-conformance.',
+  ]).filter((file) => !file.endsWith('.flaky.json'));
 }
 
 // Find all e2e metadata JSON files
@@ -74,7 +82,7 @@ function findMetadataFiles(dir) {
         files.push(fullPath);
       }
     }
-  } catch (e) {
+  } catch (_e) {
     // Directory doesn't exist or can't be read
   }
   return files;
@@ -95,7 +103,7 @@ function loadMetadata(dir) {
         const appName = match[1];
         metadata.set(appName, content);
       }
-    } catch (e) {
+    } catch (_e) {
       // Skip invalid metadata files
     }
   }
@@ -117,7 +125,7 @@ function loadDiagnostics(dir) {
           diagnostics.set(entry.testName, entry);
         }
       }
-    } catch (e) {
+    } catch (_e) {
       // Skip invalid files
     }
   }
@@ -139,12 +147,169 @@ function loadFailures(dir) {
           failures.set(entry.testName, entry);
         }
       }
-    } catch (e) {
+    } catch (_e) {
       // Skip invalid files
     }
   }
 
   return failures;
+}
+
+// Load flaky-test sidecar files (tests that passed only after a retry,
+// written by github-reporter). Grouped per app; the same test flaking in
+// several jobs for one app is collapsed into a single entry with an
+// occurrence count so the section stays scannable.
+function loadFlaky(dir) {
+  // New sidecars pair 1:1 with exact result files; keep reading legacy names
+  // while artifacts from older branches can still reach the aggregator.
+  const flaky = new Map();
+  const paired = findJsonFiles(dir, 'e2e-').filter((file) =>
+    file.endsWith('.flaky.json')
+  );
+  const legacy = findJsonFiles(dir, 'e2e-flaky-');
+
+  for (const file of [...paired, ...legacy]) {
+    const basename = path.basename(file);
+    const pairedReport = basename.replace(/\.flaky\.json$/, '.json');
+    const dimension = basename.endsWith('.flaky.json')
+      ? dimensionFor(pairedReport)
+      : null;
+    const legacyMatch = path
+      .basename(file, '.json')
+      .match(/^e2e-flaky-(.+)-(?:vercel|local)$/);
+    const app = dimension?.app || legacyMatch?.[1] || 'unknown';
+    const lane = dimension
+      ? [dimension.lane, dimension.world, dimension.vm, dimension.variant]
+          .filter(Boolean)
+          .join(' / ')
+      : null;
+    try {
+      const entries = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      for (const entry of entries) {
+        if (!entry.testName) continue;
+        const key = `${lane || app}\u0000${entry.fullName || entry.testName}`;
+        const existing = flaky.get(key);
+        if (existing) {
+          existing.occurrences++;
+          existing.retryCount = Math.max(
+            existing.retryCount,
+            entry.retryCount || 1
+          );
+        } else {
+          flaky.set(key, {
+            app,
+            lane,
+            testName: entry.testName,
+            retryCount: entry.retryCount || 1,
+            occurrences: 1,
+          });
+        }
+      }
+    } catch (_e) {
+      // Skip invalid files
+    }
+  }
+
+  return [...flaky.values()];
+}
+
+// Load infra-event sidecar files (platform anomalies the harness observed
+// and absorbed, e.g. runs the queue never picked up — written by the e2e
+// suites' pickup watchdog). Kept separate from flaky tests: a cluster of
+// infra events in one time window is backend signal, not test signal.
+function loadInfra(dir) {
+  const events = [];
+  const files = findJsonFiles(dir, 'e2e-infra-');
+
+  for (const file of files) {
+    const basename = path.basename(file, '.json');
+    const match = basename.match(/^e2e-infra-(.+)-(?:vercel|local)$/);
+    const app = match ? match[1] : 'unknown';
+    try {
+      const entries = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      for (const entry of entries) {
+        if (!entry.kind) continue;
+        events.push({ ...entry, app });
+      }
+    } catch (_e) {
+      // Skip invalid files
+    }
+  }
+
+  return events.sort((a, b) =>
+    (a.timestamp || '').localeCompare(b.timestamp || '')
+  );
+}
+
+// Render the infra-events section shared by the PR comment and the per-job
+// step summary. Several events inside one narrow time window across
+// different apps read as the platform blip they are, rather than as
+// unrelated flaky tests.
+function renderInfraSection(infraEvents) {
+  if (infraEvents.length === 0) return;
+
+  console.log('### \ud83d\udee0 Infra Events (absorbed by the harness)\n');
+  console.log(
+    '_Platform anomalies the e2e harness detected and worked around (e.g. a run the queue never picked up, replaced by a fresh run). Clustered timestamps indicate a backend blip; a steady drip indicates a platform issue worth escalating._\n'
+  );
+
+  const collapse = infraEvents.length >= 10;
+  if (collapse) {
+    console.log('<details>');
+    console.log(`<summary>${infraEvents.length} infra events</summary>\n`);
+  }
+  for (const event of infraEvents) {
+    const time = (event.timestamp || '').slice(11, 19);
+    const parts = [
+      `\`${event.kind}\``,
+      `${event.testName} (${event.app})`,
+      time ? `at ${time}Z` : null,
+      event.runId ? `abandoned \`${event.runId}\`` : null,
+      // cold-start-warmup events carry every stalled probe; the first is
+      // rendered as the abandoned run, the rest as a count.
+      Array.isArray(event.stalledProbeRunIds) &&
+      event.stalledProbeRunIds.length > 1
+        ? `(+${event.stalledProbeRunIds.length - 1} more)`
+        : null,
+    ].filter(Boolean);
+    console.log(`- ${parts.join(' · ')}`);
+  }
+  console.log('');
+  if (collapse) {
+    console.log('</details>\n');
+  }
+}
+
+// Render the flaky-tests section shared by the PR comment and the per-job
+// step summary. Retried-to-green tests would otherwise be invisible — the
+// job is green — so this is the only place a recurring race stays visible.
+function renderFlakySection(flakyTests) {
+  if (flakyTests.length === 0) return;
+
+  console.log('### ⚠️ Flaky E2E Tests (passed on retry)\n');
+  console.log(
+    '_These tests failed at least once and passed on a retry. A recurring entry here is a real race worth investigating._\n'
+  );
+
+  const sorted = [...flakyTests].sort(
+    (a, b) =>
+      b.occurrences - a.occurrences || a.testName.localeCompare(b.testName)
+  );
+  const collapse = sorted.length >= 10;
+  if (collapse) {
+    console.log('<details>');
+    console.log(`<summary>${sorted.length} flaky tests</summary>\n`);
+  }
+  for (const test of sorted) {
+    const jobs =
+      test.occurrences > 1 ? ` — flaked in ${test.occurrences} jobs` : '';
+    const location = test.lane ? `${test.app} · ${test.lane}` : test.app;
+    console.log(`- \`${test.testName}\` (${location})${jobs}`);
+  }
+  console.log('');
+  if (collapse) {
+    console.log('</details>\n');
+  }
 }
 
 // vitest's JSON reporter serializes only error stacks. For test timeouts the
@@ -260,6 +425,9 @@ function parseJobInfo(filename) {
           'mongodb',
           'redis',
           'starter',
+          'python',
+          'nest',
+          'tanstack',
         ].some((app) => p.startsWith(app))
     );
 
@@ -356,7 +524,7 @@ function aggregateByCategory(files) {
 }
 
 // Render markdown summary for single job (step summary)
-function renderSingleJobSummary(summary) {
+function renderSingleJobSummary(summary, flakyTests = [], infraEvents = []) {
   const total =
     summary.totalPassed + summary.totalFailed + summary.totalSkipped;
   const statusEmoji = summary.totalFailed > 0 ? '❌' : '✅';
@@ -395,6 +563,9 @@ function renderSingleJobSummary(summary) {
     }
   }
 
+  renderFlakySection(flakyTests);
+  renderInfraSection(infraEvents);
+
   // Results by file
   if (summary.fileResults.length > 1) {
     console.log('<details>');
@@ -418,6 +589,7 @@ const categoryNames = {
   'local-prod': '📦 Local Production',
   'local-postgres': '🐘 Local Postgres',
   windows: '🪟 Windows',
+  conformance: '🌐 Cross-language Conformance',
   community: '🌍 Community Worlds',
   other: '📋 Other',
 };
@@ -429,6 +601,7 @@ const categoryOrder = [
   'local-prod',
   'local-postgres',
   'windows',
+  'conformance',
   'community',
   'other',
 ];
@@ -444,7 +617,9 @@ function renderAggregatedSummary(
   overallSummary,
   metadata,
   diagnostics,
-  failures
+  failures,
+  flakyTests,
+  infraEvents
 ) {
   const total =
     overallSummary.totalPassed +
@@ -554,6 +729,9 @@ function renderAggregatedSummary(
     }
   }
 
+  renderFlakySection(flakyTests);
+  renderInfraSection(infraEvents);
+
   // Everything else lives under one collapsible summary section.
   console.log('### E2E Test Summary\n');
 
@@ -622,13 +800,17 @@ if (mode === 'aggregate') {
   const metadata = loadMetadata(resultsDir);
   const diagnostics = loadDiagnostics(resultsDir);
   const failures = loadFailures(resultsDir);
+  const flakyTests = loadFlaky(resultsDir);
+  const infraEvents = loadInfra(resultsDir);
   enrichFailedTestMessages(overallSummary.allFailedTests, failures);
   renderAggregatedSummary(
     categories,
     overallSummary,
     metadata,
     diagnostics,
-    failures
+    failures,
+    flakyTests,
+    infraEvents
   );
 
   // Exit with non-zero if any tests failed
@@ -638,7 +820,7 @@ if (mode === 'aggregate') {
 } else {
   const summary = aggregateResults(resultFiles);
   enrichFailedTestMessages(summary.allFailedTests, loadFailures(resultsDir));
-  renderSingleJobSummary(summary);
+  renderSingleJobSummary(summary, loadFlaky(resultsDir), loadInfra(resultsDir));
 
   // Exit with non-zero if any tests failed
   if (summary.totalFailed > 0) {

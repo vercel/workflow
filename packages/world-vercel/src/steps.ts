@@ -26,30 +26,34 @@ import {
  * For backward compatibility with legacy wire formats, we also accept
  * any other shape and let the resolved `errorRef` supersede it when present.
  */
-export const StepWireSchema = StepSchema.omit({
-  error: true,
-}).extend({
-  error: z.union([SerializedDataSchema, z.any()]).optional(),
-  errorRef: z.any().optional(),
-});
+export const StepWireSchema = z.compile(
+  StepSchema.omit({
+    error: true,
+  }).extend({
+    error: z.union([SerializedDataSchema, z.any()]).optional(),
+    errorRef: z.any().optional(),
+  })
+);
 
 // Wire schema for lazy mode with refs instead of data
-const StepWireWithRefsSchema = StepWireSchema.omit({
-  input: true,
-  output: true,
-}).extend({
-  // We discard the results of the refs, so we don't care about the type here
-  inputRef: z.any().optional(),
-  outputRef: z.any().optional(),
-  input: z.instanceof(Uint8Array).optional(),
-  output: z.instanceof(Uint8Array).optional(),
-});
+const StepWireWithRefsSchema = z.compile(
+  StepWireSchema.omit({
+    input: true,
+    output: true,
+  }).extend({
+    // We discard the results of the refs, so we don't care about the type here
+    inputRef: z.any().optional(),
+    outputRef: z.any().optional(),
+    input: z.instanceof(Uint8Array).optional(),
+    output: z.instanceof(Uint8Array).optional(),
+  })
+);
 
 /**
  * Transform step from wire format to Step interface format.
  *
  * The `error` field on Step is SerializedData (Uint8Array) from the
- * serialization pipeline — we pass through the wire-format `error` (or
+ * serialization pipeline. We pass through the wire-format `error` (or
  * the resolved `errorRef`) as-is. Consumers hydrate via `hydrateStepError`.
  *
  * Wire→shape only: this does NOT decompress. The runtime write paths
@@ -82,7 +86,7 @@ function filterStepData(
 //
 // This is the read/display entry point, so it decompresses gzip/zstd
 // payload wrappers via `normalizeStepData` (the runtime write paths use
-// `deserializeStep` directly and skip this — see its doc comment).
+// `deserializeStep` directly and skip this (see its doc comment).
 function filterStepData(
   step: any,
   resolveData: 'none' | 'all'

@@ -1,4 +1,6 @@
+import type { BulkCancelWorkflowRunsResult } from '@workflow/world';
 import {
+  bulkCancelRuns as bulkCancelRunsServerAction,
   cancelRun as cancelRunServerAction,
   fetchHookToken as fetchHookTokenServerAction,
   recreateRun as recreateRunServerAction,
@@ -17,6 +19,14 @@ import { unwrapOrThrow } from './workflow-errors';
 /** Cancel a workflow run */
 export async function cancelRun(env: EnvMap, runId: string): Promise<void> {
   await unwrapOrThrow(cancelRunServerAction(env, runId));
+}
+
+/** Bulk-cancel workflow runs in a single operation. */
+export async function bulkCancelRuns(
+  env: EnvMap,
+  runIds: string[]
+): Promise<BulkCancelWorkflowRunsResult> {
+  return unwrapOrThrow(bulkCancelRunsServerAction(env, runIds));
 }
 
 /** Start a new workflow run */

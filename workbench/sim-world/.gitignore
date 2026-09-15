@@ -1,0 +1,6 @@
+.workflow-sim/
+/.swc
+# Written by `pnpm test` (--summary-file) and by CI runs that pass
+# --detail-file; both are reports about a run, not inputs to one.
+/sim-summary.md
+/sim-detail.txt

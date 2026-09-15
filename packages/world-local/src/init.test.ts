@@ -22,6 +22,7 @@ import {
   parseVersionFile,
   upgradeVersion,
 } from './init.js';
+import { permissionEnforcement } from './test-helpers.js';
 
 describe('parseVersion', () => {
   it('should parse a simple version string', () => {
@@ -208,9 +209,10 @@ describe('ensureDataDir', () => {
   });
 
   describe('permission errors', () => {
-    const isWindows = process.platform === 'win32';
-
-    it.skipIf(isWindows)(
+    // These cases simulate the failure with `chmod`, so they can only run
+    // where the permission bits are actually enforced — see
+    // `permissionEnforcement`.
+    it.skipIf(!permissionEnforcement.accessCheck)(
       'should throw DataDirAccessError if directory is not readable',
       async () => {
         const dataDir = path.join(testBaseDir, 'unreadable-dir');
@@ -228,7 +230,7 @@ describe('ensureDataDir', () => {
       }
     );
 
-    it.skipIf(isWindows)(
+    it.skipIf(!permissionEnforcement.write)(
       'should throw DataDirAccessError if directory is not writable',
       async () => {
         const dataDir = path.join(testBaseDir, 'readonly-dir');
@@ -246,7 +248,7 @@ describe('ensureDataDir', () => {
       }
     );
 
-    it.skipIf(isWindows)(
+    it.skipIf(!permissionEnforcement.write)(
       'should throw DataDirAccessError if parent directory is not writable',
       async () => {
         const parentDir = path.join(testBaseDir, 'readonly-parent');

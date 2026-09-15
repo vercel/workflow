@@ -1,4 +1,4 @@
-import { copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { BaseBuilder } from './base-builder.js';
 import { getWorkflowQueueTrigger } from './constants.js';
@@ -11,6 +11,11 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
 
     // Ensure output directories exist
     await mkdir(workflowGeneratedDir, { recursive: true });
+    // Build caches may still contain the retired standalone step function.
+    await rm(join(workflowGeneratedDir, 'step.func'), {
+      recursive: true,
+      force: true,
+    });
 
     const inputFiles = await this.getInputFiles();
     const tsconfigPath = await this.findTsConfigPath();
@@ -34,7 +39,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.createVcConfig(workflowsFuncDir, {
       handler: 'index.mjs',
       // Skip the source-map-support runtime shim when sourcemaps are
-      // disabled — it's a meaningful chunk of the function bundle and
+      // disabled: it's a meaningful chunk of the function bundle and
       // serves no purpose without maps.
       shouldAddSourcemapSupport: this.sourcemapsEnabled,
       maxDuration: 'max',

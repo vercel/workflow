@@ -13,14 +13,14 @@ Performs an end-to-end health check of a deployment's workflow infrastructure by
 import { getWorld, healthCheck } from "workflow/runtime";
 
 const world = await getWorld();
-const result = await healthCheck(world, "workflow"); // [!code highlight]
+const result = await healthCheck(world); // [!code highlight]
 
 if (!result.healthy) {
   console.error("Workflow infrastructure unhealthy:", result.error);
 }
 ```
 
-## API Signature
+## API signature
 
 ### Parameters
 

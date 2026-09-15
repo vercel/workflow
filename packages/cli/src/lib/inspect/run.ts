@@ -90,7 +90,7 @@ export const startRun = async (
   // (e.g. old deployment without health check support).
   let specVersion = run.specVersion;
   try {
-    const hc = await healthCheck(world, 'workflow', {
+    const hc = await healthCheck(world, {
       deploymentId,
       timeout: 10_000,
     });
@@ -98,7 +98,7 @@ export const startRun = async (
       specVersion = hc.specVersion;
     }
   } catch {
-    // Health check failed — use run's specVersion as fallback
+    // Health check failed, so use run's specVersion as fallback
   }
 
   const newRun = await start({ workflowId }, jsonArgs, {

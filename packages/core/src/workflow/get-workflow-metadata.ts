@@ -43,7 +43,7 @@ export function getWorkflowMetadata(): WorkflowMetadata {
   // behind a symbol.
   const ctx = (globalThis as any)[WORKFLOW_CONTEXT_SYMBOL] as WorkflowMetadata;
   if (!ctx) {
-    // Use the shared `NotInWorkflowOrStepContextError` — it lives in
+    // Use the shared `NotInWorkflowOrStepContextError`: it lives in
     // `context-violation-error.ts` specifically so this file can throw it
     // without creating a module-init cycle (the full `context-errors.ts`
     // depends on this file's `WORKFLOW_CONTEXT_SYMBOL`).

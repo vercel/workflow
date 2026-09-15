@@ -2,8 +2,8 @@ import type { Node, Root } from 'fumadocs-core/page-tree';
 import {
   categoryLabels,
   categoryOrder,
-  recipes,
   type RecipeCategory,
+  recipes,
 } from '../cookbook-tree';
 import { source, v5Source } from './source';
 
