@@ -161,7 +161,7 @@ Dynamic workflows need a World that can store the run's workflow code.
 | [Local](/worlds/local) | Stored on the run record in the local filesystem store. |
 | Others | Whatever the World explicitly attests through the versioned dynamic-workflow storage capability. |
 
-Before looking up keys, uploading code, creating an event, or publishing a queue message, `start()` requires the backend and target runtime to attest the exact dynamic-workflow protocol version. Missing, malformed, unavailable, or unknown capabilities fail closed, so an unsupported start does not create a run that could never replay.
+`start()` requires the backend and target runtime to attest the exact dynamic-workflow protocol version before looking up run key material. It then constructs the final execution context from the read-only key result and validates that complete context before serializing or uploading code, creating an event, or publishing a queue message. Missing, malformed, unavailable, or unknown capabilities fail closed, and all validation finishes before durable or executable start side effects, so an unsupported start does not create a run that could never replay.
 
 ## AI-generated workflows
 
