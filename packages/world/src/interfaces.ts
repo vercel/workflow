@@ -495,6 +495,11 @@ export interface Storage {
  * one must fail closed (keep their conservative behavior) unless the World
  * explicitly declares it.
  */
+export interface BackendCapabilities {
+  /** Version of durable dynamic-workflow storage supported by the backend. */
+  dynamicWorkflowStorageVersion?: number;
+}
+
 export interface WorldCapabilities {
   /**
    * Supports `experimental_minRetention` for Hooks. Missing or inactive means
@@ -604,6 +609,18 @@ export interface World extends Queue, Streamer, Storage {
    * "unsupported": runtime optimizations gated on a capability fail closed.
    */
   capabilities?: WorldCapabilities;
+
+  /**
+   * Fetches live backend capabilities. Dynamic starts require exact version
+   * support and fail closed when this method or its attestation is absent.
+   */
+  getBackendCapabilities?(): Promise<BackendCapabilities>;
+
+  /**
+   * Validates the complete execution context against World-specific limits.
+   * Implementations must throw before any durable start side effect.
+   */
+  validateRunExecutionContext?(value: Record<string, unknown>): void;
 
   /**
    * Absolute wall-clock time when the current function invocation will be

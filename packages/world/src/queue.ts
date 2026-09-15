@@ -1,4 +1,5 @@
 import { z } from 'zod/v4';
+import { SerializedDataSchema } from './serialization.js';
 
 export type QueueKind = 'workflow';
 

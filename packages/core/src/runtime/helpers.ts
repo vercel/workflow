@@ -82,6 +82,8 @@ function getHealthCheckStreamName(correlationId: string): string {
 /**
  * Result of a health check operation.
  */
+export const DYNAMIC_WORKFLOW_VERSION = 1;
+
 export interface HealthCheckResult {
   healthy: boolean;
   /** Error message if health check failed */
@@ -119,6 +121,8 @@ export interface HealthCheckResult {
    * which fails that gate closed.
    */
   hookResumeInputVersion?: number;
+  /** Version of dynamic-workflow execution supported by the target runtime. */
+  dynamicWorkflowVersion?: number;
 }
 
 /**
@@ -197,6 +201,7 @@ export async function handleHealthCheckMessage(
     // the *consumer's* hook-resume protocol version, exactly what a
     // cross-deployment caller needs to gate its parallel resume path on.
     hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
+    dynamicWorkflowVersion: DYNAMIC_WORKFLOW_VERSION,
     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
     timestamp: Date.now(),
   });
@@ -309,6 +314,8 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   specVersion?: number;
   workflowCoreVersion?: string;
   encryptionPublicKey?: string;
+  hookResumeInputVersion?: number;
+  dynamicWorkflowVersion?: number;
 } | null {
   if (chunks.length === 0) return null;
 
@@ -350,6 +357,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
     workflowCoreVersion?: string;
     encryptionPublicKey?: string;
     hookResumeInputVersion?: number;
+    dynamicWorkflowVersion?: number;
   } = {
     healthy: r.healthy as boolean,
   };
@@ -364,6 +372,9 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   }
   if (typeof r.hookResumeInputVersion === 'number') {
     parsed.hookResumeInputVersion = r.hookResumeInputVersion;
+  }
+  if (typeof r.dynamicWorkflowVersion === 'number') {
+    parsed.dynamicWorkflowVersion = r.dynamicWorkflowVersion;
   }
   return parsed;
 }

@@ -49,6 +49,69 @@ vi.mock('../telemetry.js', () => ({
 }));
 
 describe('start', () => {
+  describe('dynamic workflow preflight', () => {
+    const source = 'async function workflow() { "use workflow"; return 1; }';
+    let eventsCreate: ReturnType<typeof vi.fn>;
+    let queue: ReturnType<typeof vi.fn>;
+    let upload: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      eventsCreate = vi.fn();
+      queue = vi.fn();
+      upload = vi.fn();
+    });
+
+    afterEach(() => {
+      setWorld(undefined);
+      vi.clearAllMocks();
+    });
+
+    it('rejects absent backend attestation before start side effects', async () => {
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getEncryptionKeyForRun: vi.fn(),
+        uploadDynamicWorkflowCode: upload,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start(source, {
+          dynamic: { steps: { noop: { stepId: 'step//./test//noop' } } },
+        })
+      ).rejects.toThrow(/backend storage capability version 1/);
+      expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('rejects execution-context validation before upload, create, or queue', async () => {
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getBackendCapabilities: vi
+          .fn()
+          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        validateRunExecutionContext: vi.fn(() => {
+          throw new Error('execution context too large');
+        }),
+        uploadDynamicWorkflowCode: upload,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+
+      await expect(
+        start(source, {
+          dynamic: { steps: { noop: { stepId: 'step//./test//noop' } } },
+        })
+      ).rejects.toThrow('execution context too large');
+      expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+  });
+
   describe('error handling', () => {
     it('should throw WorkflowRuntimeError when workflow is undefined', async () => {
       await expect(
