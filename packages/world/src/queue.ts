@@ -523,6 +523,9 @@ export interface Queue {
   /**
    * Request a decision from a run's executor. Enable through capabilities.invoke.
    * Resolves with the executor's response, never merely with transport acceptance.
+   * Handler failures are delivered as InvocationOutcome errors and rethrown by
+   * the adapter with their known Workflow error class and diagnostic fields.
+   * Failure to deliver/store a response remains an unknown transport outcome.
    * Every call, including retries, schedules a wake; redundant wakes may no-op.
    * A transport error is an unknown outcome. Do not fall back to a direct write.
    */

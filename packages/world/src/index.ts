@@ -83,6 +83,10 @@ export {
   HookSchema,
 } from './hooks.js';
 export type * from './interfaces.js';
+export type {
+  InvocationOutcome,
+  SerializedWorkflowError,
+} from './invocation.js';
 // The client this flag selects lives in `./node-http.js`, which is reachable
 // only by subpath: it imports node builtins statically, and this index is also
 // pulled into browser bundles.

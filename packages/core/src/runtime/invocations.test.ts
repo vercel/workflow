@@ -1,4 +1,8 @@
-import { HookNotFoundError } from '@workflow/errors';
+import {
+  HookNotFoundError,
+  RunExpiredError,
+  WorkflowRunNotFoundError,
+} from '@workflow/errors';
 import { MessageId, type World } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
 import { handleInvocation, withRunInputs } from './invocations.js';
@@ -54,7 +58,7 @@ describe('handler-return invocation', () => {
     getHook.mockResolvedValue({ runId: 'another-run', token: 't' });
     await expect(
       handleInvocation(world, 'r', 'request', payload)
-    ).resolves.toEqual({ status: 'rejected', code: 'HOOK_NOT_FOUND' });
+    ).rejects.toBeInstanceOf(HookNotFoundError);
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -63,7 +67,7 @@ describe('handler-return invocation', () => {
     create.mockRejectedValueOnce(new HookNotFoundError('h'));
     await expect(
       handleInvocation(world, 'r', 'request', payload)
-    ).resolves.toEqual({ status: 'rejected', code: 'HOOK_NOT_FOUND' });
+    ).rejects.toBeInstanceOf(HookNotFoundError);
     const error = new Error('database unavailable');
     create.mockRejectedValueOnce(error);
     await expect(handleInvocation(world, 'r', 'request', payload)).rejects.toBe(
@@ -84,11 +88,22 @@ describe('handler-return invocation', () => {
     expect(create).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    new RunExpiredError('expired', 'r', 'completed', new Date('2026-01-01')),
+    new WorkflowRunNotFoundError('r'),
+  ])('preserves $name from event persistence rather than mapping it to hook-not-found', async (error) => {
+    const { world, payload, create } = fixture();
+    create.mockRejectedValue(error);
+    await expect(handleInvocation(world, 'r', 'request', payload)).rejects.toBe(
+      error
+    );
+  });
+
   it('rejects unknown input protocols without journaling', async () => {
     const { world, create } = fixture();
     await expect(
       handleInvocation(world, 'r', 'request', { type: 'unknown' })
-    ).resolves.toEqual({ status: 'rejected', code: 'INVALID_INPUT' });
+    ).rejects.toMatchObject({ status: 400, code: 'INVALID_INPUT' });
     expect(create).not.toHaveBeenCalled();
   });
 

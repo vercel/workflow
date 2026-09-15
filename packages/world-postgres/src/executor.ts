@@ -21,7 +21,7 @@ export async function executeWithInputs<T>(
   const pump = (async () => {
     while (!stopped) {
       const input = await iterator.next();
-      if (input.done) return;
+      if (input.done || stopped) return;
       await deliver(input.value);
       revision++;
       changed();
@@ -31,13 +31,25 @@ export async function executeWithInputs<T>(
     changed();
   });
   const deadline = Date.now() + 120_000;
+  let stopping: Promise<void> | undefined;
+  const stopInputs = () => {
+    stopped = true;
+    stopping ??= (async () => {
+      try {
+        await iterator.return?.();
+      } finally {
+        await pump;
+      }
+      checkFailure();
+    })();
+    return stopping;
+  };
   try {
     for (;;) {
       const before = revision;
       const result = await execute();
       checkFailure();
-      if (Date.now() >= deadline) return result;
-      if (revision === before) {
+      if (Date.now() < deadline && revision === before) {
         await new Promise<void>((resolve) => {
           const finish = () => {
             clearTimeout(timer);
@@ -49,12 +61,15 @@ export async function executeWithInputs<T>(
         });
       }
       checkFailure();
-      if (revision === before) return result;
+      if (Date.now() >= deadline || revision === before) {
+        // Stop intake before deciding this job is finished. A delivery can be
+        // in flight throughout the idle window (or the execution deadline).
+        // Once it commits, this may be its only remaining durable wake.
+        await stopInputs();
+        return revision === before ? result : await execute();
+      }
     }
   } finally {
-    stopped = true;
-    await iterator.return?.();
-    await pump;
-    checkFailure();
+    await stopInputs();
   }
 }

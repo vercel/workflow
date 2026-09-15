@@ -261,9 +261,14 @@ inputs while the run's normal execution is awaiting step work. There is no publi
 mailbox/feed or response callback in this contract.
 
 Only ordinary wake results interpret `{ timeoutSeconds }` as queue control.
-In invocation mode that property is ordinary response data. A returned domain
-rejection is distinct from a thrown infrastructure failure, which remains
-retryable/uncertain according to the transport. Event and response persistence
+In invocation mode that property is ordinary response data. Transport handler
+results as `InvocationOutcome`: `{ ok: true, value }` or
+`{ ok: false, error: SerializedWorkflowError }`. The adapter returns `value` or
+rehydrates and throws the handler's error. The `@workflow/errors/invocation`
+helpers capture/unwrap these outcomes and preserve known Workflow error classes
+and diagnostic fields. Failure to store or deliver an outcome remains a distinct
+unknown transport failure. A handler error does not imply rollback of its writes.
+Event and response persistence
 need not share a transaction; the backend must implement any deduplication
 guarantees it advertises through `hookResumeDedup`.
 

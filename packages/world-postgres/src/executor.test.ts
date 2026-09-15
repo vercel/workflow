@@ -57,14 +57,14 @@ describe('World-owned input delivery', () => {
     const commit = Promise.withResolvers<void>();
     const entered = Promise.withResolvers<void>();
     let returned = false;
-    const run = executeWithInputs(
-      source([1]),
-      async () => {},
-      async () => {
-        entered.resolve();
-        await commit.promise;
-      }
-    ).then(() => {
+    let committed = false;
+    const execute = vi.fn(async () => committed);
+    const run = executeWithInputs(source([1]), execute, async () => {
+      entered.resolve();
+      await commit.promise;
+      committed = true;
+    }).then((result) => {
+      expect(result).toBe(true);
       returned = true;
     });
     await entered.promise;
@@ -73,5 +73,48 @@ describe('World-owned input delivery', () => {
     commit.resolve();
     await run;
     expect(returned).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it('replays after an in-flight delivery settles beyond the execution deadline', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(0);
+    const entered = Promise.withResolvers<void>();
+    const commit = Promise.withResolvers<void>();
+    let committed = false;
+    const execute = vi.fn(async () => {
+      await entered.promise;
+      now.mockReturnValue(120_001);
+      return committed;
+    });
+    try {
+      const run = executeWithInputs(source([1]), execute, async () => {
+        entered.resolve();
+        await commit.promise;
+        committed = true;
+      });
+      await entered.promise;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(execute).toHaveBeenCalledOnce();
+      commit.resolve();
+      await expect(run).resolves.toBe(true);
+      expect(execute).toHaveBeenCalledTimes(2);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('does not acknowledge when the final replay fails', async () => {
+    const commit = Promise.withResolvers<void>();
+    const error = new Error('final replay failed');
+    const execute = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValue(error);
+    const run = executeWithInputs(source([1]), execute, () => commit.promise);
+    const failed = expect(run).rejects.toBe(error);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    commit.resolve();
+    await failed;
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 });

@@ -4,7 +4,8 @@ import {
   WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import type { InvokeOptions } from '@workflow/world';
+import { unwrapInvocationOutcome } from '@workflow/errors/invocation';
+import type { InvocationOutcome, InvokeOptions } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { Pool, PoolClient } from 'pg';
 import {
@@ -70,7 +71,7 @@ export function createInvocations(pool: Pool) {
     ).rows;
   }
 
-  return {
+  const mailbox = {
     pending,
     async invoke(
       runId: string,
@@ -147,13 +148,23 @@ export function createInvocations(pool: Pool) {
             result: Buffer | null;
             responded_at: Date | null;
             expired_at: Date | null;
+            result_version: number;
           }>(
-            'SELECT result, responded_at, expired_at FROM workflow.workflow_invocations WHERE run_id = $1 AND request_id = $2',
+            'SELECT result, result_version, responded_at, expired_at FROM workflow.workflow_invocations WHERE run_id = $1 AND request_id = $2',
             [runId, id]
           );
           if (rows[0]?.expired_at) throw invocationExpiredError();
-          if (rows[0]?.responded_at && rows[0].result)
-            return decode(rows[0].result);
+          const row = rows[0];
+          if (row?.responded_at && row.result) {
+            const result = decode(row.result);
+            if (row.result_version === 0) return result;
+            if (row.result_version !== 1)
+              throw new WorkflowWorldError(
+                'Unsupported invocation result version',
+                { status: 502 }
+              );
+            return unwrapInvocationOutcome(result);
+          }
           const remaining = deadline - Date.now();
           if (remaining <= 0)
             throw new WorkflowWorldError(
@@ -177,6 +188,18 @@ export function createInvocations(pool: Pool) {
       requestId: string,
       result: unknown
     ): Promise<void> {
+      await mailbox.respondOutcome(runId, requestId, {
+        ok: true,
+        value: result,
+      });
+    },
+
+    /** Persist handler errors too; response storage errors still fail the delivery. */
+    async respondOutcome(
+      runId: string,
+      requestId: string,
+      outcome: InvocationOutcome
+    ): Promise<void> {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
@@ -189,9 +212,9 @@ export function createInvocations(pool: Pool) {
             [runId, requestId]
           );
         } else {
-          const bytes = serialize(result);
+          const bytes = serialize(outcome);
           const updated = await client.query(
-            `UPDATE workflow.workflow_invocations SET result = $3, responded_at = now()
+            `UPDATE workflow.workflow_invocations SET result = $3, result_version = 1, responded_at = now()
              WHERE run_id = $1 AND request_id = $2 AND responded_at IS NULL AND expired_at IS NULL`,
             [runId, requestId, bytes]
           );
@@ -199,13 +222,18 @@ export function createInvocations(pool: Pool) {
             const prior = await client.query<{
               result: Buffer | null;
               expired_at: Date | null;
+              result_version: number;
             }>(
-              'SELECT result, expired_at FROM workflow.workflow_invocations WHERE run_id = $1 AND request_id = $2',
+              'SELECT result, result_version, expired_at FROM workflow.workflow_invocations WHERE run_id = $1 AND request_id = $2',
               [runId, requestId]
             );
             if (
               !prior.rows[0]?.expired_at &&
-              !prior.rows[0]?.result?.equals(bytes)
+              !prior.rows[0]?.result?.equals(
+                prior.rows[0]?.result_version === 0 && outcome.ok
+                  ? serialize(outcome.value)
+                  : bytes
+              )
             ) {
               throw new EntityConflictError(
                 'Invocation already has a different response or is missing'
@@ -283,4 +311,5 @@ export function createInvocations(pool: Pool) {
       await notifications.close();
     },
   };
+  return mailbox;
 }

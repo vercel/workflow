@@ -105,6 +105,17 @@ the input. The SDK inspects and persists the hook event, then returns a result;
 the World stores that result for the caller. No World mailbox or response callback
 is exposed to the runtime.
 
+Both handler results and handler-thrown errors are stored as versioned invocation
+outcomes. The caller receives the value or a restored Workflow error (including
+fields such as status, code, run ID, and expiry time). A stored handler error is
+distinct from failure to persist/deliver an outcome, which remains unknown.
+Migration 0022 preserves the interpretation of legacy stored return values;
+upgrade invocation producers and workers together.
+
+Before acknowledging an idle executor or ending its input-intake budget, the
+World joins in-flight input delivery and replays any newly committed input. A
+slow hook write cannot consume its only wake without a subsequent replay.
+
 Inputs/results are stored in a Postgres table. A shared, lazily opened
 `LISTEN/NOTIFY` connection wakes the active input feed and waiting callers when
 their rows change. Notifications carry identifiers only; waiters reread the

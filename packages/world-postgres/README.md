@@ -211,6 +211,15 @@ no exported World invocation feed or `respond()` callback. Invocation returns
 are data (even if they contain `timeoutSeconds`); only normal wake returns use
 that field as queue control.
 
+Responses use the shared `InvocationOutcome` envelope: `{ ok: true, value }` or
+`{ ok: false, error: SerializedWorkflowError }`. `invoke()` unwraps successes and
+throws restored Workflow error classes with their diagnostic fields. A handler
+exception settles that logical request; retrying its identity returns the stored
+error. It does not imply that the handler rolled back earlier writes. Failure to
+persist/read the response remains an unknown transport outcome. Migration 0022
+versions stored results so arbitrary values from earlier previews remain values,
+even if they resemble an error envelope. Upgrade producers and workers together.
+
 Postgres stores inputs and responses in `workflow.workflow_invocations`. Input
 insertion and enqueueing an executor wake share one transaction. **Every invoke
 enqueues a wake**, even when retrying an input whose response is already stored;
@@ -233,6 +242,9 @@ stays unacknowledged while the World delivers inputs alongside existing
 workflow execution. Input admission is serviced while inline steps wait. Node
 VM retention remains bounded by existing replay boundaries and the executor's
 idle window; a later executor may use another process and replay.
+At idle or the 120-second intake deadline, the wrapper stops taking new inputs,
+joins any in-flight delivery, and performs a final replay if inputs committed
+since the last replay began. Only then can it acknowledge this executor wake.
 
 Only verified executor deliveries start mailbox service. The executor task
 checks Graphile's actual named queue, then forwards its job ID, worker ID and
@@ -267,8 +279,9 @@ pooling alone cannot provide reliable LISTEN); fallback reads preserve progress.
 Degradation and restoration are logged once per state transition to stderr,
 without connection details or payloads; repeated failed retries do not spam logs.
 Invoke defaults to a 30-second response timeout
-(overridable with `timeoutMs`). A timeout leaves the input pending and does not
-undo execution. Encoded input and result size are each limited to 1 MiB. Closing
+(overridable with `timeoutMs`). A timeout does not establish whether the input
+was processed and does not undo execution. Encoded input and outcome size are
+each limited to 1 MiB. Closing
 the World aborts local response waits and closes its input feeds and listener.
 
 Event writes and response writes remain **sequential, not atomic**. Postgres now

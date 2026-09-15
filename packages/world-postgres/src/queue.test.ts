@@ -35,7 +35,7 @@ const invocationTransport = vi.hoisted(() => ({
   feed: vi.fn(),
   close: vi.fn(),
   invoke: vi.fn(),
-  respond: vi.fn(),
+  respondOutcome: vi.fn(),
 }));
 vi.mock('./invocations.js', () => ({
   createInvocations: () => invocationTransport,
@@ -85,7 +85,7 @@ describe('postgres queue http execution', () => {
     vi.clearAllMocks();
     invocationTransport.pending.mockResolvedValue([]);
     invocationTransport.close.mockResolvedValue(undefined);
-    invocationTransport.respond.mockResolvedValue(undefined);
+    invocationTransport.respondOutcome.mockResolvedValue(undefined);
     createQueueHandler.mockImplementation(() => wrappedHandler);
     pool.query.mockResolvedValue({ rows: [{ exists: false }] });
 
@@ -869,10 +869,10 @@ describe('postgres queue http execution', () => {
       },
       expect.not.objectContaining({ invocations: expect.anything() })
     );
-    expect(invocationTransport.respond).toHaveBeenCalledExactlyOnceWith(
+    expect(invocationTransport.respondOutcome).toHaveBeenCalledExactlyOnceWith(
       'run_a',
       'request',
-      { timeoutSeconds: 123, value: 'data' }
+      { ok: true, value: { timeoutSeconds: 123, value: 'data' } }
     );
     expect(feed.return).toHaveBeenCalledOnce();
     handler.mockClear();

@@ -3,6 +3,7 @@ import * as Stream from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
 import { WorkflowWorldError } from '@workflow/errors';
+import { captureInvocationOutcome } from '@workflow/errors/invocation';
 import {
   createWorkflowBaseUrl,
   createWorkflowHealthEndpoint,
@@ -318,9 +319,15 @@ export function createQueue(
               throw new WorkflowWorldError('Invocation requestId is required', {
                 status: 400,
               });
-            const result = await handler(message, metadata);
-            await invocations.respond(input.runId, input.requestId, result);
-            return result;
+            const outcome = await captureInvocationOutcome(() =>
+              handler(message, metadata)
+            );
+            await invocations.respondOutcome(
+              input.runId,
+              input.requestId,
+              outcome
+            );
+            return;
           }
           const initial = await invocations.pending(input.runId);
           // A responded input may have committed just before the previous executor
@@ -330,16 +337,22 @@ export function createQueue(
             feed,
             () => handler(message, metadata),
             async (pending) => {
-              const result = await handler(
-                {
-                  runId: input.runId,
-                  invoke: true,
-                  requestId: pending.id,
-                  input: pending.payload,
-                },
-                metadata
+              const outcome = await captureInvocationOutcome(() =>
+                handler(
+                  {
+                    runId: input.runId,
+                    invoke: true,
+                    requestId: pending.id,
+                    input: pending.payload,
+                  },
+                  metadata
+                )
               );
-              await invocations.respond(input.runId, pending.id, result);
+              await invocations.respondOutcome(
+                input.runId,
+                pending.id,
+                outcome
+              );
             }
           );
         }

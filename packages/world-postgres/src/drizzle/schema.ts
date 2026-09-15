@@ -306,6 +306,7 @@ export const invocations = schema.table(
     payload: bytea('payload'),
     fingerprint: varchar('fingerprint'),
     result: bytea('result'),
+    resultVersion: integer('result_version').notNull().default(0),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     respondedAt: timestamp('responded_at'),
     expiredAt: timestamp('expired_at'),

@@ -25,6 +25,12 @@ step work; the runtime must direct them to that run's admission path. This adds
 no public mailbox, response callback, acquisition or atomic-commit API. Worlds
 without invocation support leave the capability unset.
 
+Invocation transports can use `InvocationOutcome` to distinguish returned values
+from serialized handler errors. Adapters unwrap the outcome for callers, restoring
+known Workflow error classes via `@workflow/errors/invocation`. Delivery or
+response-storage failure is distinct from a handler error; neither proves that
+earlier handler writes were rolled back.
+
 ## Step dispatch context
 
 `WorkflowInvokePayload.runContext` carries the run's deployment ID, spec version,

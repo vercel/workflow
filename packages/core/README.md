@@ -21,3 +21,7 @@ after hook disposal/run completion. Other Worlds and legacy payloads retain the
 producer-write/wake path. Input admission remains active during inline steps;
 workflow code advances at existing replay boundaries, reusing a retained Node VM
 when available.
+
+Invocation handlers propagate typed lifecycle and World errors to the adapter's
+outcome transport. Hook callers receive those errors rather than an eventual
+response timeout or a generic hook-not-found mapping of other lifecycle failures.

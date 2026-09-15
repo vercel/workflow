@@ -3,6 +3,13 @@ import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
+import {
+  EntityConflictError,
+  HookNotFoundError,
+  RunExpiredError,
+  WorkflowRunNotFoundError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { drizzle } from 'drizzle-orm/node-postgres';
@@ -245,6 +252,130 @@ describe.skipIf(process.platform === 'win32')(
         expect(maximum.get(runId)).toBe(1);
       });
     }
+
+    it('replays after a slow hook commit even when the invocation has only one wake', async () => {
+      const token = randomUUID();
+      const runId = await start('oneHook', [token]);
+      await hook(token);
+      await until(
+        async () => active.get(runId) ?? 0,
+        (count) => count === 0
+      );
+      const original = world.events.create;
+      const write = vi
+        .spyOn(world.events, 'create')
+        .mockImplementation(async (...args) => {
+          if (args[0] === runId && args[1].eventType === 'hook_received') {
+            await new Promise((resolve) => setTimeout(resolve, 350));
+          }
+          return original(...args);
+        });
+      try {
+        await resumeHook(token, 'slow input');
+        await until(
+          () => world.runs.get(runId),
+          (run) => run.status === 'completed'
+        );
+        await expect(getRun(runId).returnValue).resolves.toBe('slow input');
+      } finally {
+        write.mockRestore();
+      }
+    });
+
+    it.each([
+      new WorkflowWorldError('invalid field', {
+        status: 422,
+        code: 'INVALID_ARGUMENT',
+        field: 'payload',
+        retryAfter: 5,
+      }),
+      new EntityConflictError('already changed'),
+      new HookNotFoundError('gone-token'),
+      new WorkflowRunNotFoundError('missing-run'),
+      new RunExpiredError(
+        'expired',
+        'expired-run',
+        'completed',
+        new Date('2026-01-01')
+      ),
+    ])('returns persisted $name outcomes instead of timing out', async (error) => {
+      const runId = `wrun_${ulid()}`;
+      await seedTransportRun(runId);
+      const requestId = randomUUID();
+      let deliveries = 0;
+      overrides.set(
+        runId,
+        world.createQueueHandler('__wkf_workflow_', async (message) => {
+          if ((message as { invoke?: boolean }).invoke) {
+            deliveries++;
+            throw error;
+          }
+        })
+      );
+      try {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const restored = await world.invoke!(
+            runId,
+            {},
+            { idempotencyKey: requestId, timeoutMs: 5000 }
+          ).catch((err) => err);
+          expect(restored).toBeInstanceOf(error.constructor);
+          for (const key of Object.getOwnPropertyNames(error)) {
+            expect(Reflect.get(restored, key)).toEqual(Reflect.get(error, key));
+          }
+          expect(restored.message).toBe(error.message);
+        }
+        expect(deliveries).toBe(1);
+        const rows = await pool.query(
+          'SELECT result_version, responded_at FROM workflow.workflow_invocations WHERE run_id = $1',
+          [runId]
+        );
+        expect(rows.rows[0]).toMatchObject({
+          result_version: 1,
+          responded_at: expect.any(Date),
+        });
+        await until(
+          async () =>
+            (
+              await pool.query(
+                'SELECT id FROM graphile_worker.jobs WHERE queue_name = $1',
+                [`workflow_flows:${runId}:executor`]
+              )
+            ).rowCount,
+          (count) => count === 0
+        );
+      } finally {
+        overrides.delete(runId);
+      }
+    });
+
+    it('reads legacy results without treating error-looking values as envelopes', async () => {
+      const runId = `transport-${randomUUID()}`;
+      await seedTransportRun(runId);
+      const id = randomUUID();
+      const value = {
+        ok: false,
+        error: { name: 'Error', message: 'application data', fields: {} },
+      };
+      const result = transport.invoke(
+        runId,
+        {},
+        { idempotencyKey: id },
+        async () => {}
+      );
+      await until(
+        () => transport.pending(runId),
+        (rows) => rows.length === 1
+      );
+      await pool.query(
+        'UPDATE workflow.workflow_invocations SET result = $3, responded_at = now() WHERE run_id = $1 AND request_id = $2',
+        [runId, id, Buffer.from(encode(value))]
+      );
+      await expect(result).resolves.toEqual(value);
+      await expect(
+        transport.respond(runId, id, value)
+      ).resolves.toBeUndefined();
+    });
 
     it('delivers two hooks through one run queue, with another run free to execute', async () => {
       const tokens = [randomUUID(), randomUUID()];

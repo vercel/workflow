@@ -45,60 +45,58 @@ export async function handleInvocation(
 ): Promise<HookInvocationResult> {
   const parsed = HookInvocationSchema.safeParse(payload);
   if (!parsed.success || !requestId)
-    return { status: 'rejected', code: 'INVALID_INPUT' };
+    throw new WorkflowWorldError('Invalid invocation input', {
+      status: 400,
+      code: 'INVALID_INPUT',
+    });
   const input = parsed.data;
   const digest = Buffer.from(
     await crypto.subtle.digest('SHA-256', input.payload)
   ).toString('hex');
   try {
-    try {
-      const hook = await world.hooks.get(input.hookId);
-      if (hook.runId !== runId || hook.token !== input.token)
-        throw new HookNotFoundError(input.token);
-      const run = await world.runs.get(runId, { resolveData: 'none' });
-      if (isTerminalWorkflowRunStatus(run.status))
-        throw new HookNotFoundError(input.token);
-    } catch (error) {
-      if (!isHookGone(error)) throw error;
-      const run = await world.runs.get(runId, { resolveData: 'none' });
-      if (
-        run.expiredAt ||
-        (isTerminalWorkflowRunStatus(run.status) &&
-          readRunRetention(run.attributes).mode === 'none')
-      ) {
-        throw new WorkflowWorldError(
-          'Invocation data has expired under the run retention policy',
-          { status: 410, code: 'INVOCATION_DATA_EXPIRED' }
-        );
-      }
-      // Only the uncommon disposed/terminal retry needs this read. A prior
-      // durable identity lets events.create validate/converge before lifecycle
-      // rejection; a new input still cannot resurrect a disposed hook.
-      if (
-        !world.capabilities?.hookResumeDedup ||
-        !(await hasResume(world, runId, input.hookId, requestId))
-      ) {
-        return { status: 'rejected', code: 'HOOK_NOT_FOUND' };
-      }
-    }
-    await world.events.create(
-      runId,
-      {
-        eventType: 'hook_received',
-        correlationId: input.hookId,
-        specVersion: SPEC_VERSION_CURRENT,
-        eventData: { token: input.token, payload: input.payload },
-      },
-      {
-        ...(world.capabilities?.hookResumeDedup
-          ? { resumeId: requestId, resumePayloadDigest: digest }
-          : {}),
-      }
-    );
+    const hook = await world.hooks.get(input.hookId);
+    if (hook.runId !== runId || hook.token !== input.token)
+      throw new HookNotFoundError(input.token);
+    const run = await world.runs.get(runId, { resolveData: 'none' });
+    if (isTerminalWorkflowRunStatus(run.status))
+      throw new HookNotFoundError(input.token);
   } catch (error) {
     if (!isHookGone(error)) throw error;
-    return { status: 'rejected', code: 'HOOK_NOT_FOUND' };
+    const run = await world.runs.get(runId, { resolveData: 'none' });
+    if (
+      run.expiredAt ||
+      (isTerminalWorkflowRunStatus(run.status) &&
+        readRunRetention(run.attributes).mode === 'none')
+    ) {
+      throw new WorkflowWorldError(
+        'Invocation data has expired under the run retention policy',
+        { status: 410, code: 'INVOCATION_DATA_EXPIRED' }
+      );
+    }
+    // Only the uncommon disposed/terminal retry needs this read. A prior
+    // durable identity lets events.create validate/converge before lifecycle
+    // rejection; a new input still cannot resurrect a disposed hook.
+    if (
+      !world.capabilities?.hookResumeDedup ||
+      !(await hasResume(world, runId, input.hookId, requestId))
+    ) {
+      throw error;
+    }
   }
+  await world.events.create(
+    runId,
+    {
+      eventType: 'hook_received',
+      correlationId: input.hookId,
+      specVersion: SPEC_VERSION_CURRENT,
+      eventData: { token: input.token, payload: input.payload },
+    },
+    {
+      ...(world.capabilities?.hookResumeDedup
+        ? { resumeId: requestId, resumePayloadDigest: digest }
+        : {}),
+    }
+  );
   return { status: 'accepted' };
 }
 
