@@ -148,12 +148,12 @@ A dynamic run's workflow function is not in your deployment's bundle, so the run
 
 That code uses the same serialization path as workflow inputs. It is compressed when the run protocol supports compression and compression is worthwhile, and encrypted when the World supplies run key material (see [Encryption](/docs/how-it-works/encryption)). Vercel's supported configuration provides encrypted storage; world-local is unencrypted by default. Retention and deletion apply whether the stored bytes are plaintext or ciphertext.
 
-On Vercel it is stored behind a ref rather than inline on the run record, and the size decides where:
+On Vercel, durable workflow code storage is ref-backed on the run. The definition's size changes only how those bytes reach the backend:
 
-- **Small definitions** (the overwhelming majority) ride the run-creation request and are stored inline in the run's row. No extra round-trip, and no object-storage read on any replay.
-- **Larger definitions** are uploaded separately and stored in object storage, with the run holding a reference. Costs one extra request at `start()`.
+- **Small definitions** (the overwhelming majority) ride inline in the `run_created` request frame. The backend materializes those bytes into the run's ref-backed storage, with no upload request from `start()`.
+- **Larger definitions** are uploaded first, and `run_created` carries the resulting reference. This costs one extra request at `start()`.
 
-Both are transparent — there is nothing to configure. The split exists because a dynamic replay needs the code *before* it can evaluate anything, so keeping the common case out of object storage keeps it off the critical path of every delivery.
+Both paths are transparent — there is nothing to configure. Here, “inline” describes request transport, not a second durable storage shape.
 
 Alongside the serialized code, the run records small plaintext metadata: the source hash, the export name, and the alias-to-step-ID map. That is what lets a run be identified as dynamic — and its step allowlist audited — without decoding the source.
 

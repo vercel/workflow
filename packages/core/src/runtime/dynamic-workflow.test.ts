@@ -212,6 +212,41 @@ describe('compileDynamicWorkflow', () => {
       ).rejects.toThrow(/cannot declare "use step"/);
     });
 
+    it.each([
+      [
+        'nested declaration',
+        'function outer() { async function workflow() { "use workflow"; } }',
+      ],
+      [
+        'comment spoof',
+        '// async function workflow() { "use workflow"; }\nconst value = 1;',
+      ],
+      [
+        'string spoof',
+        'const value = `async function workflow() { "use workflow"; }`;',
+      ],
+    ])('rejects a %s instead of a top-level declaration', async (_label, source) => {
+      await expect(
+        compileDynamicWorkflow(source, { steps: STEPS })
+      ).rejects.toThrow(/at top level/);
+    });
+
+    it('accepts a genuine top-level async declaration without evaluating source', async () => {
+      const marker = '__dynamicWorkflowValidationExecuted';
+      delete (globalThis as Record<string, unknown>)[marker];
+      const source = `
+globalThis.${marker} = true;
+async function workflow() {
+  "use workflow";
+  return 1;
+}
+`;
+      await expect(
+        compileDynamicWorkflow(source, { steps: STEPS })
+      ).resolves.toMatchObject({ metadata: { exportName: 'workflow' } });
+      expect((globalThis as Record<string, unknown>)[marker]).toBeUndefined();
+    });
+
     it('rejects a missing "use workflow" directive', async () => {
       await expect(
         compileDynamicWorkflow(

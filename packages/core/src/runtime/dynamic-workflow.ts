@@ -25,6 +25,12 @@
  */
 
 import { WorkflowRuntimeError } from '@workflow/errors';
+import {
+  type ExpressionStatement,
+  type FunctionDeclaration,
+  type Program,
+  parse,
+} from 'acorn';
 import type { StartOptions } from './start.js';
 
 /**
@@ -135,10 +141,9 @@ const SAFE_DYNAMIC_IDENTIFIER = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/;
  * identifiers that merely start with the word — `importData = …`,
  * `exports.x = …` — are not mistaken for module syntax.
  *
- * Intentionally a regex and not a parser. The MVP's contract is "one async
- * function, no modules", which is cheap to check conservatively; a real parser
- * is the right answer once the accepted surface grows past that (see the open
- * questions on the RFC).
+ * This is only an early, targeted diagnostic. Acorn subsequently parses the
+ * complete source in script mode, so module forms this expression does not
+ * recognize still fail before the run is created.
  */
 const UNSUPPORTED_DYNAMIC_MODULE_SYNTAX =
   /^[ \t]*(?:import(?:\s+[\w$]|\s*(?:[*{(]|['"]))|export(?:\s+(?:async\s+)?(?:function|const|let|var|class|default)\b|\s*[{*]))/m;
@@ -182,6 +187,20 @@ async function sha256Hex(input: string): Promise<string> {
     .join('');
 }
 
+function parseDynamicWorkflowSource(source: string): Program {
+  try {
+    return parse(source, {
+      ecmaVersion: 'latest',
+      sourceType: 'script',
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new WorkflowRuntimeError(
+      `Dynamic workflow source is not valid JavaScript: ${message}. The source is evaluated as-is, so it cannot contain TypeScript syntax or module declarations.`
+    );
+  }
+}
+
 function validateDynamicWorkflowSource(
   source: string,
   exportName: string
@@ -199,6 +218,30 @@ function validateDynamicWorkflowSource(
     );
   }
 
+  const program = parseDynamicWorkflowSource(source);
+  const declarations = program.body.filter(
+    (node): node is FunctionDeclaration =>
+      node.type === 'FunctionDeclaration' && node.id.name === exportName
+  );
+  const declaration = declarations.length === 1 ? declarations[0] : undefined;
+  if (!declaration || !declaration.async || declaration.generator) {
+    throw new WorkflowRuntimeError(
+      `Dynamic workflow source must declare \`async function ${exportName}(...)\` at top level.`
+    );
+  }
+
+  const firstStatement = declaration.body.body[0] as
+    | ExpressionStatement
+    | undefined;
+  if (
+    firstStatement?.type !== 'ExpressionStatement' ||
+    firstStatement.directive !== 'use workflow'
+  ) {
+    throw new WorkflowRuntimeError(
+      `Dynamic workflow function ${JSON.stringify(exportName)} must open with a "use workflow" directive.`
+    );
+  }
+
   // No transform runs over dynamic source, so a `"use step"` directive in it
   // would not split a step out: the function would simply run inside the
   // workflow VM, as ordinary (and non-deterministic) workflow code. Steps
@@ -207,51 +250,6 @@ function validateDynamicWorkflowSource(
     throw new WorkflowRuntimeError(
       'Dynamic workflow source cannot declare "use step" functions. Register the step with the deployment and expose it through `experimental_dynamic.steps` instead.'
     );
-  }
-
-  const functionMatch = new RegExp(
-    `\\basync\\s+function\\s+${exportName}\\s*\\([^)]*\\)\\s*\\{`
-  ).exec(source);
-  if (!functionMatch) {
-    throw new WorkflowRuntimeError(
-      `Dynamic workflow source must declare \`async function ${exportName}(...)\`.`
-    );
-  }
-
-  const bodyStart = functionMatch.index + functionMatch[0].length;
-  const bodyPrefix = source.slice(bodyStart, bodyStart + 200);
-  if (!/^\s*(?:"use workflow"|'use workflow')\s*;?/.test(bodyPrefix)) {
-    throw new WorkflowRuntimeError(
-      `Dynamic workflow function ${JSON.stringify(exportName)} must open with a "use workflow" directive.`
-    );
-  }
-}
-
-/**
- * Parse the generated code once, here, so a definition that can never run
- * fails the `start()` call instead of every delivery of the run it created.
- *
- * The regex checks above are deliberately shallow (see
- * `UNSUPPORTED_DYNAMIC_MODULE_SYNTAX`), so they let through anything the
- * engine would reject: TypeScript annotations, a reserved word as the
- * function name, an unbalanced brace. `new Function` parses without
- * evaluating, which is exactly the check wanted; the body is never run.
- *
- * Runtimes that forbid code generation from strings (edge under a strict
- * CSP) throw an `EvalError` rather than a `SyntaxError`. That is not a
- * verdict on the source, so the check is skipped there and the replay-time
- * error stays the backstop.
- */
-function assertGeneratedCodeParses(workflowCode: string): void {
-  try {
-    new Function(workflowCode);
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new WorkflowRuntimeError(
-        `Dynamic workflow source is not valid JavaScript: ${error.message}. The source is evaluated as-is, so it cannot contain TypeScript syntax or use a reserved word as the function name.`
-      );
-    }
-    // Code generation disabled in this runtime: nothing to conclude.
   }
 }
 
@@ -349,8 +347,6 @@ Object.defineProperty(${exportName}, "workflowId", {
 });
 globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${exportName});
 `;
-
-  assertGeneratedCodeParses(workflowCode);
 
   return {
     workflowName,
