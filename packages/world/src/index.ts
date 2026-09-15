@@ -13,6 +13,7 @@ export {
 } from './analytics.js';
 export type * from './attributes.js';
 export {
+  ATTRIBUTE_EVENT_DATA_MAX_BYTES,
   ATTRIBUTE_KEY_MAX_LENGTH,
   ATTRIBUTE_MAX_PER_RUN,
   ATTRIBUTE_VALUE_MAX_BYTES,
@@ -33,6 +34,7 @@ export {
   type RunRetention,
   readRunRetention,
   validateAttributeChanges,
+  validateAttributeEventDataSize,
 } from './attributes.js';
 export {
   _resetEnvWarnCacheForTests,
