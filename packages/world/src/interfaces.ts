@@ -496,7 +496,7 @@ export interface Storage {
  * explicitly declares it.
  */
 export interface WorldCapabilities {
-  /** Supports invoke and request/response queue-handler delivery. */
+  /** Legacy declaration; an available invoke method also enables input delivery. */
   invoke?: boolean;
 
   /**

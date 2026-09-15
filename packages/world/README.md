@@ -8,10 +8,13 @@ Used internally by `@workflow/core` and world implementations. Should not be use
 
 ## Optional invocation delivery
 
-`WorldCapabilities.invoke` enables `world.invoke(runId, payload, options?)`, a
-request/response operation. `InvokeOptions` supports an `idempotencyKey` and
-`timeoutMs`. Every call schedules a run wake, including retries; resolving means
-the executor has responded, not merely that a transport accepted the input.
+An available `world.invoke(runId, payload, options?)` enables executor-directed
+request/response input delivery. The legacy `WorldCapabilities.invoke` declaration
+is also recognized. To disable delivery, omit the method rather than leaving it
+present with a false capability flag. `InvokeOptions` supports an `idempotencyKey` and
+`timeoutMs`. Delivery may be direct or queue-backed; resolving means the executor
+has processed the input and responded, not merely that a transport admitted it.
+Postgres additionally schedules a durable wake on every invocation/retry.
 
 An implementing World calls the existing `createQueueHandler` callback with
 `{ runId, invoke: true, requestId, input }`. The callback returns `unknown`:

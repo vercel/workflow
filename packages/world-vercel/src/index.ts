@@ -5,6 +5,7 @@ import { createRunId, describeRun } from './create-run-id.js';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { getDeadline } from './get-deadline.js';
 import { instrumentObject } from './instrumentObject.js';
+import { invocationConfig } from './invocation.js';
 import { createQueue } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
 import { createStorage } from './storage.js';
@@ -18,6 +19,7 @@ export {
   deriveRunKey,
   fetchRunKey,
 } from './encryption.js';
+export type { InvocationTarget, VercelInvokeConfig } from './invocation.js';
 export { createQueue } from './queue.js';
 export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';
@@ -49,6 +51,7 @@ export function createWorld(config?: APIConfig): World {
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
+      ...(invocationConfig(config) ? { invoke: true } : {}),
       // NOTE: the backend half of resumeHook()'s lazy path (that
       // the server enforces the `(runId, resumeId)` dedup constraint) is
       // NO LONGER a static world capability here. It is attested per-lookup by
