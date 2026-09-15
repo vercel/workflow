@@ -158,6 +158,7 @@ import {
 } from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
 import {
+  compileDynamicWorkflowBundle,
   compileWorkflowBundle,
   replayWorkflow,
   resumeWorkflow,
@@ -2990,6 +2991,16 @@ export function workflowEntrypoint(
                     world,
                     awaitRunReady
                   );
+                  const dynamicWorkflowMetadata = readDynamicWorkflowMetadata(
+                    workflowRun.executionContext
+                  );
+                  const dynamicWorkflowScripts =
+                    dynamicWorkflowMetadata && !useQuickJSVm(workflowRun)
+                      ? compileDynamicWorkflowBundle(
+                          effectiveWorkflowCode,
+                          workflowRun.workflowName
+                        )
+                      : undefined;
 
                   // The live VM parked at the previous boundary, when the
                   // retention decision kept it. null → this iteration cold-
@@ -3483,16 +3494,11 @@ export function workflowEntrypoint(
                       if (workflowResult.type === 'replay') {
                         retainedSession = null;
                         const compiled = startWorkflowCompile(workflowRun);
-                        // Dynamic runs are the one Node replay with no
-                        // pre-compiled scripts: the warm-up above skips them
-                        // because their code is not the bundle. They compile
-                        // `effectiveWorkflowCode` inside `replayWorkflow`
-                        // instead, which is also cached by (code, filename).
+                        // Static bundles use the process-wide cache; dynamic
+                        // source is compiled once per invocation without
+                        // entering that shared cache.
                         assert(
-                          compiled ||
-                            readDynamicWorkflowMetadata(
-                              workflowRun.executionContext
-                            ),
+                          compiled || dynamicWorkflowScripts,
                           'Node workflow replay requires compiled scripts'
                         );
                         workflowResult = await replayWorkflow({
@@ -3501,8 +3507,11 @@ export function workflowEntrypoint(
                           events: eventLog.events,
                           encryptionKey: await encryptionKey.value,
                           replayPayloadCache,
-                          ...(compiled
-                            ? { compiledWorkflowScripts: await compiled }
+                          ...((compiled ?? dynamicWorkflowScripts)
+                            ? {
+                                compiledWorkflowScripts: await (compiled ??
+                                  dynamicWorkflowScripts),
+                              }
                             : {}),
                           // Turbo: the end-of-run drain inside workflow
                           // execution commits fire-and-forget `*_created`

@@ -1,5 +1,9 @@
 import { type Context, runInContext } from 'node:vm';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  compileDynamicWorkflowBundle,
+  compileWorkflowBundle,
+} from '../workflow.js';
 import { createContext } from './index.js';
 import {
   clearWorkflowScriptCache,
@@ -47,6 +51,31 @@ function runScript(code: string, filename: string, context: Context) {
 describe('script-cache', () => {
   afterEach(() => {
     clearWorkflowScriptCache();
+  });
+
+  it('keeps dynamic workflow compilation out of the static cache', async () => {
+    const staticScripts = await compileWorkflowBundle(
+      SAMPLE_BUNDLE,
+      'my/workflow'
+    );
+    const staticCacheSize = workflowScriptCacheSize();
+
+    for (let i = 0; i < 12; i++) {
+      const name = `dynamic/workflow-${i}`;
+      const code = `globalThis.__private_workflows = new Map(); globalThis.__private_workflows.set(${JSON.stringify(name)}, async function workflow() { return ${i}; });`;
+      const dynamic = await compileDynamicWorkflowBundle(code, name);
+      const { context } = createContext({ seed, fixedTimestamp });
+      dynamic.bundleScript.runInContext(context);
+      const workflow = dynamic.workflowLookupScript.runInContext(
+        context
+      ) as () => Promise<number> | number;
+      expect(await workflow()).toBe(i);
+    }
+
+    expect(workflowScriptCacheSize()).toBe(staticCacheSize);
+    expect(
+      (await compileWorkflowBundle(SAMPLE_BUNDLE, 'my/workflow')).bundleScript
+    ).toBe(staticScripts.bundleScript);
   });
 
   it('returns the same compiled Script for identical (code, filename)', () => {
