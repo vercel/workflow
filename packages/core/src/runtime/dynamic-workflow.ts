@@ -69,7 +69,7 @@ export interface DynamicWorkflowOptions {
 
 /** `start()` options for the dynamic-source overload. */
 export type DynamicStartOptions = StartOptions & {
-  dynamic: DynamicWorkflowOptions;
+  experimental_dynamic: DynamicWorkflowOptions;
 };
 
 /**
@@ -202,10 +202,10 @@ function validateDynamicWorkflowSource(
   // No transform runs over dynamic source, so a `"use step"` directive in it
   // would not split a step out: the function would simply run inside the
   // workflow VM, as ordinary (and non-deterministic) workflow code. Steps
-  // come from `dynamic.steps` only.
+  // come from `experimental_dynamic.steps` only.
   if (/(?:"use step"|'use step')/.test(source)) {
     throw new WorkflowRuntimeError(
-      'Dynamic workflow source cannot declare "use step" functions. Register the step with the deployment and expose it through `dynamic.steps` instead.'
+      'Dynamic workflow source cannot declare "use step" functions. Register the step with the deployment and expose it through `experimental_dynamic.steps` instead.'
     );
   }
 
@@ -298,7 +298,7 @@ export async function compileDynamicWorkflow(
 
   if (!options.steps || Object.keys(options.steps).length === 0) {
     throw new WorkflowRuntimeError(
-      'Dynamic workflow options must expose at least one registered step through `dynamic.steps`.'
+      'Dynamic workflow options must expose at least one registered step through `experimental_dynamic.steps`.'
     );
   }
 

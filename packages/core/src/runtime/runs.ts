@@ -101,7 +101,7 @@ export async function recreateRunFromExisting(
     // that fails on its first delivery.
     if (readDynamicWorkflowMetadata(run.executionContext)) {
       throw new WorkflowRuntimeError(
-        `Run ${runId} is a dynamic workflow run; re-running it is not supported. Start it again from its source with start(source, args, { dynamic }).`
+        `Run ${runId} is a dynamic workflow run; re-running it is not supported. Start it again from its source with start(source, args, { experimental_dynamic }).`
       );
     }
     const rawKey = await world.getEncryptionKeyForRun?.(run);

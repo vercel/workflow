@@ -349,10 +349,11 @@ export async function start<TArgs extends unknown[], TResult>(
       | undefined;
     let workflowName: string | undefined;
     if (typeof workflow === 'string') {
-      const dynamicOptions = (opts as Partial<DynamicStartOptions>).dynamic;
+      const dynamicOptions = (opts as Partial<DynamicStartOptions>)
+        .experimental_dynamic;
       if (!dynamicOptions) {
         throw new WorkflowRuntimeError(
-          "'start' was given workflow source but no `dynamic` options. Pass `{ dynamic: { steps } }` to declare which registered steps the source may call."
+          "'start' was given workflow source but no `experimental_dynamic` options. Pass `{ experimental_dynamic: { steps } }` to declare which registered steps the source may call."
         );
       }
       const compiled = await compileDynamicWorkflow(workflow, dynamicOptions);

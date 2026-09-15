@@ -78,7 +78,9 @@ describe('start', () => {
 
       await expect(
         start(source, {
-          dynamic: { steps: { noop: { stepId: 'step//./test//noop' } } },
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
         })
       ).rejects.toThrow(/backend storage capability version 1/);
       expect(upload).not.toHaveBeenCalled();
@@ -103,7 +105,9 @@ describe('start', () => {
 
       await expect(
         start(source, {
-          dynamic: { steps: { noop: { stepId: 'step//./test//noop' } } },
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
         })
       ).rejects.toThrow('execution context too large');
       expect(upload).not.toHaveBeenCalled();
@@ -113,6 +117,12 @@ describe('start', () => {
   });
 
   describe('error handling', () => {
+    it('requires experimental_dynamic for source at runtime', async () => {
+      await expect(
+        start('async function workflow() { "use workflow"; }' as never, [])
+      ).rejects.toThrow(/no `experimental_dynamic` options/);
+    });
+
     it('should throw WorkflowRuntimeError when workflow is undefined', async () => {
       await expect(
         // @ts-expect-error - intentionally passing undefined

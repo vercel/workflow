@@ -3925,7 +3925,7 @@ ${pause}  const total = await steps.add(doubled, 1);
  * Starts a dynamic run from inside the deployment.
  *
  * This is the shape that matters for dynamic workflows and the reason it lives
- * in the app rather than in the test runner: `dynamic.steps` is given the
+ * in the app rather than in the test runner: `experimental_dynamic.steps` is given the
  * *imported* `add` function, so the `.stepId` the build-time transform stamped
  * on it is what binds the source to a registered step. A caller outside the
  * deployment cannot do that — it has no handle on the function — and would
@@ -3937,7 +3937,7 @@ ${pause}  const total = await steps.add(doubled, 1);
 async function startDynamicRun(value: number, sleepFor?: string) {
   'use step';
   const run = await start(generateDynamicSource({ sleepFor }), [{ value }], {
-    dynamic: { steps: { add } },
+    experimental_dynamic: { steps: { add } },
   });
   return { runId: run.runId };
 }
@@ -3981,7 +3981,7 @@ async function workflow(input) {
 }
 `,
     [{ value }],
-    { dynamic: { steps: { add } } }
+    { experimental_dynamic: { steps: { add } } }
   );
   return { runId: run.runId };
 }
@@ -3990,7 +3990,7 @@ async function workflow(input) {
  * Generates source that reaches for a step it was never given.
  *
  * `steps` is frozen and holds only the aliases passed through
- * `dynamic.steps`, so the child must fail rather than dispatch a step the app
+ * `experimental_dynamic.steps`, so the child must fail rather than dispatch a step the app
  * did not authorize. Returns the child's run ID for the runner to inspect —
  * the *child* failing is the expected outcome, so the parent must not.
  */
