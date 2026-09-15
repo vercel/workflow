@@ -422,7 +422,10 @@ function processWriteEvent(
   }
   if (phase === 'encode_begin' && a !== undefined) {
     const ordinal = d;
-    group = ordinal === undefined ? undefined : shared.groups.get(ordinal);
+    // Close/control requests intentionally have no data-group ordinal. Their
+    // lifecycle is handled below without claiming data phases or capacity.
+    if (ordinal === undefined) return true;
+    group = shared.groups.get(ordinal);
     if (!group || shared.requests.size >= MAX_LIVE_REQUESTS) {
       shared.overflow = true;
       addIncident(shared, 'live_request_overflow', at, a);

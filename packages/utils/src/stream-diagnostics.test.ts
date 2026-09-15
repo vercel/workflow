@@ -296,6 +296,32 @@ describe('stream slowdown diagnostic aggregation and bounds', () => {
     });
   });
 
+  it('ignores an unscoped control request without hiding a malformed data group', () => {
+    enable();
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const diagnostic = createStreamDiagnostic('write', RUN, STREAM, WRITER);
+    if (!diagnostic) throw new Error('expected diagnostic');
+
+    diagnostic.event('encode_begin', 1);
+    diagnostic.event('encode_end', 1, 12, 1);
+    diagnostic.event('ws_send_call', 1, 12, 1);
+    diagnostic.event('ws_send_callback', 1, 0, 1);
+    diagnostic.event('ws_send_return', 1, 1);
+    diagnostic.event('raw_correlated_message', 1, 9, performance.now());
+    diagnostic.event('decode_complete', 1, 9);
+    diagnostic.event('pending_resolve', 1);
+    diagnostic.event('encode_begin', 2, 0, 1, 99);
+    diagnostic.finish('closed_ws');
+
+    expect(JSON.parse(lines.at(-1) ?? '{}')).toMatchObject({
+      overflow: true,
+      liveGroups: 0,
+      liveRequests: 0,
+      incidents: [expect.arrayContaining(['live_request_overflow', 2])],
+    });
+  });
+
   it('does not attribute an uncorrelated control message to a pending write', () => {
     enable();
     const lines: string[] = [];

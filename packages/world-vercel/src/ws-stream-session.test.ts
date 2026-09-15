@@ -225,6 +225,94 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     // phase offsets are intentionally null rather than fabricated.
     expect(completed[0].slice(8)).toEqual(Array(12).fill(null));
   });
+  it('keeps the real WS close handshake out of data capacity accounting', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const writeHttp = vi.fn().mockResolvedValue(undefined);
+    const closeHttp = vi.fn().mockResolvedValue(undefined);
+    const session = createStreamWriteSession(
+      `wrun_${ulid}`,
+      `strm_${ulid}_user_YmVuY2gtY3R0`,
+      `wrtr_${ulid}`,
+      { token: 'token' },
+      writeHttp,
+      closeHttp,
+      false
+    );
+    activeSessions.push(session);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+
+    for (const [chunkSeq, body] of [
+      [4, new Uint8Array([1, 2, 3])],
+      [5, new Uint8Array([4, 5])],
+    ] as const) {
+      const writing = session.write(chunkSeq, [body]);
+      await vi.waitFor(() => expect(socket.sent).toHaveLength(chunkSeq - 3));
+      const request = await decodeOne(socket.sent.at(-1) as Uint8Array);
+      socket.reply(
+        encodeFrame(
+          { type: 'write_ack', reqId: request.meta.reqId },
+          new Uint8Array()
+        )
+      );
+      await writing;
+    }
+
+    let closeSettled = false;
+    const closing = session.close().then(() => {
+      closeSettled = true;
+    });
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
+    expect(closeSettled).toBe(false);
+    expect((await decodeOne(socket.sent[2])).meta).toEqual({
+      type: 'close',
+      reqId: 3,
+    });
+    socket.reply(
+      encodeFrame({ type: 'close_ack', reqId: 3 }, new Uint8Array())
+    );
+    await closing;
+
+    expect(closeSettled).toBe(true);
+    expect(socket.closed).toContainEqual([1000, 'stream closed']);
+    expect(writeHttp).not.toHaveBeenCalled();
+    expect(closeHttp).not.toHaveBeenCalled();
+    const records = lines.map((line) => JSON.parse(line));
+    const terminal = records.at(-1);
+    expect(records.flatMap((record) => record.tuples)).toEqual([
+      expect.arrayContaining([1, 1, 4, 1, 3]),
+      expect.arrayContaining([2, 2, 5, 1, 2]),
+    ]);
+    expect(terminal).toMatchObject({
+      kind: 'terminal',
+      outcome: 'closed_ws',
+      groupsAttempted: 2,
+      groupsEmitted: 2,
+      groupsOmitted: 0,
+      chunksAttempted: 2,
+      chunksEmitted: 2,
+      chunksOmitted: 0,
+      bytesAttempted: 5,
+      bytesEmitted: 5,
+      bytesOmitted: 0,
+      overflow: false,
+      sinkFailures: 0,
+      liveGroups: 0,
+      liveRequests: 0,
+    });
+    expect(
+      terminal.incidents.some(
+        ([, phase]: [number, string]) => phase === 'live_request_overflow'
+      )
+    ).toBe(false);
+  });
+
   it('keeps an uncorrelated drain arrival out of a pending write tuple', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
     process.env.VERCEL_ENV = 'preview';
