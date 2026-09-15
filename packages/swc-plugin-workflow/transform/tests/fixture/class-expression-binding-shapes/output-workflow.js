@@ -10,7 +10,7 @@ var FileSystem = function(__wf_cls) {
     __wf_cls.prototype["readFile"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//FileSystem#readFile");
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//FileSystem", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//FileSystem",
         writable: false,
         enumerable: false,
@@ -27,7 +27,7 @@ var Alpha = function(__wf_cls) {
     __wf_cls.prototype["run"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//Alpha#run");
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//Alpha", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//Alpha",
         writable: false,
         enumerable: false,
@@ -39,7 +39,7 @@ var Alpha = function(__wf_cls) {
     __wf_cls.prototype["run"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//Beta#run");
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//Beta", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//Beta",
         writable: false,
         enumerable: false,
@@ -54,7 +54,7 @@ Gamma = function(__wf_cls) {
     __wf_cls.prototype["run"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//Gamma#run");
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//Gamma", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//Gamma",
         writable: false,
         enumerable: false,
@@ -68,7 +68,7 @@ var Delta = function(__wf_cls) {
     __wf_cls.prototype["run"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//Delta#run");
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//Delta", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//Delta",
         writable: false,
         enumerable: false,
@@ -82,7 +82,7 @@ var Epsilon = exports.Epsilon = function(__wf_cls) {
     __wf_cls.make = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//Epsilon.make");
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//Epsilon", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//Epsilon",
         writable: false,
         enumerable: false,
@@ -99,7 +99,7 @@ exports.Zeta = function(__wf_cls) {
     __wf_cls.prototype["run"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//Zeta#run");
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//Zeta", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//Zeta",
         writable: false,
         enumerable: false,
@@ -118,7 +118,7 @@ export const handlers = {
         __wf_cls.execute = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//Job.execute");
         var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
         __wf_cls_reg.set("class//./input//Job", __wf_cls);
-        Object.defineProperty(__wf_cls, "classId", {
+        if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
             value: "class//./input//Job",
             writable: false,
             enumerable: false,
@@ -142,7 +142,7 @@ export const handlers = {
         });
         var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
         __wf_cls_reg.set("class//./input//kebab-job", __wf_cls);
-        Object.defineProperty(__wf_cls, "classId", {
+        if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
             value: "class//./input//kebab-job",
             writable: false,
             enumerable: false,
@@ -157,7 +157,7 @@ export const handlers = {
 const Unreferenced = function(__wf_cls) {
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//Unreferenced", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//Unreferenced",
         writable: false,
         enumerable: false,
@@ -181,7 +181,7 @@ registerPlugin(function(__wf_cls) {
     __wf_cls.prototype["run"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//Plugin#run");
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//Plugin", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//Plugin",
         writable: false,
         enumerable: false,

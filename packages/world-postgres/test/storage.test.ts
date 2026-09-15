@@ -491,6 +491,48 @@ describe('Storage (Postgres integration)', () => {
         expect(page2.data).toHaveLength(2);
         expect(page2.data[0].runId).not.toBe(page1.data[0].runId);
       });
+
+      it('filters by a single status', async () => {
+        await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w1',
+          input: new Uint8Array(),
+        });
+        const result = await runs.list({ status: 'pending' });
+        expect(result.data).toHaveLength(1);
+        expect(result.data[0].status).toBe('pending');
+      });
+
+      it('filters by an array of statuses (matches any)', async () => {
+        await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w1',
+          input: new Uint8Array(),
+        });
+        const result = await runs.list({ status: ['pending', 'running'] });
+        expect(result.data).toHaveLength(1);
+        expect(['pending', 'running']).toContain(result.data[0].status);
+      });
+
+      it('returns no runs when status is an empty array (matches SQL `IN ()`)', async () => {
+        await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w1',
+          input: new Uint8Array(),
+        });
+        const result = await runs.list({ status: [] });
+        expect(result.data).toHaveLength(0);
+      });
+
+      it('leaves the filter unset when status field is omitted', async () => {
+        await createRun(events, {
+          deploymentId: 'd',
+          workflowName: 'w1',
+          input: new Uint8Array(),
+        });
+        const result = await runs.list({});
+        expect(result.data).toHaveLength(1);
+      });
     });
 
     describe('experimentalSetAttributes', () => {
@@ -2902,6 +2944,69 @@ describe('Storage (Postgres integration)', () => {
             error: 'Should not work',
           })
         ).rejects.toThrow(/terminal/i);
+      });
+    });
+  });
+
+  describe('terminal-run step_started fencing', () => {
+    describe.each([
+      ['run_completed', { output: new Uint8Array([3]) }],
+      ['run_failed', { error: 'run failed' }],
+      ['run_cancelled', undefined],
+    ] as const)('%s', (terminalEvent, terminalData) => {
+      it.each([
+        ['step_completed', { result: new Uint8Array([1]) }, 'completed'],
+        ['step_failed', { error: 'step failed' }, 'failed'],
+      ] as const)('rejects restarting a running step but accepts %s', async (stepEvent, stepData, stepStatus) => {
+        const run = await createRun(events, {
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          input: new Uint8Array(),
+        });
+        await updateRun(events, run.runId, 'run_started');
+        const stepId = 'step_in_progress';
+        await createStep(events, run.runId, {
+          stepId,
+          stepName: 'test-step',
+          input: new Uint8Array(),
+        });
+        const started = await updateStep(
+          events,
+          run.runId,
+          stepId,
+          'step_started'
+        );
+        expect(started.status).toBe('running');
+        const terminal = await events.create(run.runId, {
+          eventType: terminalEvent,
+          eventData: terminalData,
+        });
+        const eventsBefore = await events.list({ runId: run.runId });
+
+        // Redelivery must not claim another attempt, even while the step is running.
+        await expect(
+          updateStep(events, run.runId, stepId, 'step_started')
+        ).rejects.toMatchObject({ name: 'RunExpiredError' });
+        expect(await steps.get(run.runId, stepId)).toEqual(started);
+        expect(await events.list({ runId: run.runId })).toEqual(eventsBefore);
+
+        const finished = await updateStep(
+          events,
+          run.runId,
+          stepId,
+          stepEvent,
+          stepData
+        );
+        expect(finished.status).toBe(stepStatus);
+        expect(finished.attempt).toBe(started.attempt);
+        expect(await steps.get(run.runId, stepId)).toEqual(finished);
+        expect(await runs.get(run.runId)).toEqual(terminal.run);
+        const eventsAfter = await events.list({ runId: run.runId });
+        expect(eventsAfter.data).toHaveLength(eventsBefore.data.length + 1);
+        expect(eventsAfter.data.at(-1)).toMatchObject({
+          eventType: stepEvent,
+          correlationId: stepId,
+        });
       });
     });
   });

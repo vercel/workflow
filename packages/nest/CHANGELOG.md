@@ -1,5 +1,21 @@
 # @workflow/nest
 
+## 5.0.0-beta.52
+
+### Patch Changes
+
+- [#4144](https://github.com/vercel/workflow/pull/4144) [`93e76fc`](https://github.com/vercel/workflow/commit/93e76fc34f1993d61e845273ad447f081d0e0c33) Thanks [@torsello](https://github.com/torsello)! - Fix the CommonJS steps bundle declaring `require` twice, which made it throw on import.
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.52
+
+## 5.0.0-beta.51
+
+### Patch Changes
+
+- Updated dependencies [[`c29200f`](https://github.com/vercel/workflow/commit/c29200fac5848fb8e40bf77351b5b69d10a31357)]:
+  - @workflow/swc-plugin@5.0.0-beta.7
+  - @workflow/builders@5.0.0-beta.51
+
 ## 5.0.0-beta.50
 
 ### Patch Changes
