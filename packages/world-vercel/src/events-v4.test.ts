@@ -16,8 +16,8 @@ import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { splitEventDataForV4 } from './events.js';
 import {
-  createWorkflowRunEventV4,
   createWorkflowRunEventsBatchV4,
+  createWorkflowRunEventV4,
   createWorkflowRunStartedEventV4,
   getEventsByCorrelationIdV4,
   getEventV4,
@@ -2248,6 +2248,55 @@ describe('v4 transport reports failures to the events recycler', () => {
       ).rejects.toSatisfy(StreamError.is);
     }
 
+    expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
+  });
+
+  it.each([
+    'pre-header',
+    'post-header',
+  ])('keeps %s HTTP/2 session failures retryable and rebuilds the shared pool', async (phase) => {
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(
+      now + (phase === 'pre-header' ? 60_000 : 80_000)
+    );
+    const error = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('Session received GOAWAY'), {
+        code: 'ERR_HTTP2_GOAWAY_SESSION',
+      }),
+    });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('', { status: 404 }))
+      .mockImplementation(async () => {
+        if (phase === 'pre-header') throw error;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.error(error);
+            },
+          }),
+          { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+        );
+      });
+
+    // A completed response resets any failure streak from earlier requests
+    // that used this process-wide pool, even when the HTTP status is an error.
+    await expect(
+      getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
+    ).rejects.toMatchObject({ status: 404 });
+
+    const before = getEventsDispatcher({ token: 'test-token' });
+    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
+      const rejection = await getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        { token: 'test-token' }
+      ).catch((cause: unknown) => cause);
+      expect(StreamError.is(rejection)).toBe(true);
+      expect(rejection).toHaveProperty('cause', error);
+      if (i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1) {
+        expect(getEventsDispatcher({ token: 'test-token' })).toBe(before);
+      }
+    }
     expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
   });
 });
