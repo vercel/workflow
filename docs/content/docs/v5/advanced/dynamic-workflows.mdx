@@ -163,7 +163,7 @@ Dynamic workflows need a World that can store the run's workflow code.
 
 | World | Support |
 | --- | --- |
-| [Vercel](/worlds/vercel) | Encrypted, ref-backed storage (inline for small definitions, object storage for large ones). |
+| [Vercel](/worlds/vercel) | Encrypted, ref-backed storage (small definitions transported inline; large definitions uploaded first). |
 | [Local](/worlds/local) | Stored on the run record in the local filesystem store. |
 | Others | Whatever the World explicitly attests through the versioned dynamic-workflow storage capability. |
 
@@ -223,5 +223,5 @@ Treat dynamic source the way you would treat code in a pull request: generated u
 - Steps must already be registered in the deployment; no runtime step registration.
 - No inline `"use step"` functions, `createWebhook`, or `getWritable`.
 - No caller-provided workflow IDs.
-- Source is validated by pattern matching, not a full parser, so validation is conservative: a rejected definition is not always invalid JavaScript.
+- Parser-based validation checks JavaScript syntax and the required source/wrapper shape without executing it. It does not validate behavior, determinism, or intent.
 - Requires a World with dynamic-source storage.
