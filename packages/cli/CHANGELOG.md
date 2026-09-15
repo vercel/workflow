@@ -1,5 +1,14 @@
 # @workflow/cli
 
+## 4.3.14
+
+### Patch Changes
+
+- Updated dependencies [[`e1f712b`](https://github.com/vercel/workflow/commit/e1f712bb52c551614b43e0726db33c4583ec5984)]:
+  - @workflow/core@4.8.10
+  - @workflow/builders@4.1.15
+  - @workflow/web@4.1.26
+
 ## 4.3.13
 
 ### Patch Changes

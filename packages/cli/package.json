@@ -1,6 +1,6 @@
 {
   "name": "@workflow/cli",
-  "version": "4.3.13",
+  "version": "4.3.14",
   "description": "Command-line interface for Workflow SDK",
   "type": "module",
   "bin": {

@@ -1,5 +1,11 @@
 # @workflow/core
 
+## 4.8.10
+
+### Patch Changes
+
+- [#4176](https://github.com/vercel/workflow/pull/4176) [`e1f712b`](https://github.com/vercel/workflow/commit/e1f712bb52c551614b43e0726db33c4583ec5984) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix an unhandled rejection that could exit the process when the encryption-key lookup for a forwarded writable stream failed (for example a run metadata read that timed out) before anything was written to that stream. The lookup now starts on the first write, and a failure rejects that stream instead.
+
 ## 4.8.9
 
 ### Patch Changes
