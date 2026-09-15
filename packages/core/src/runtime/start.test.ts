@@ -103,6 +103,44 @@ describe('start', () => {
       expect(queue).not.toHaveBeenCalled();
     });
 
+    it.each([
+      '__dynamicUseStep',
+      'steps',
+      'sleep',
+      'createHook',
+    ])('rejects a top-level %s wrapper collision before start side effects', async (binding) => {
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        getBackendCapabilities: vi
+          .fn()
+          .mockResolvedValue({ dynamicWorkflowStorageVersion: 1 }),
+        uploadDynamicWorkflowCode: upload,
+        events: { create: eventsCreate },
+        queue,
+      } as any);
+      const collidingSource = `
+const ${binding} = null;
+async function workflow() {
+  "use workflow";
+  return 1;
+}
+`;
+
+      await expect(
+        start(collidingSource, {
+          experimental_dynamic: {
+            steps: { noop: { stepId: 'step//./test//noop' } },
+          },
+        })
+      ).rejects.toThrow(
+        /Generated dynamic workflow code is not valid JavaScript/
+      );
+      expect(upload).not.toHaveBeenCalled();
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(queue).not.toHaveBeenCalled();
+    });
+
     it('allows a genuine top-level declaration to reach start side effects', async () => {
       eventsCreate.mockImplementation(async (runId, event) => ({
         run: {
