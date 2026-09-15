@@ -422,13 +422,27 @@ function processWriteEvent(
   }
   if (phase === 'encode_begin' && a !== undefined) {
     const ordinal = d;
-    // Close/control requests intentionally have no data-group ordinal. Their
-    // lifecycle is handled below without claiming data phases or capacity.
-    if (ordinal === undefined) return true;
+    // Close/control requests have neither write metadata nor a data-group
+    // ordinal. A write with missing identity remains fail-visible.
+    if (ordinal === undefined) {
+      if (b !== undefined || c !== undefined) {
+        shared.overflow = true;
+        addIncident(shared, 'live_request_overflow', at, a, b, c);
+      }
+      return true;
+    }
     group = shared.groups.get(ordinal);
     if (!group || shared.requests.size >= MAX_LIVE_REQUESTS) {
       shared.overflow = true;
-      addIncident(shared, 'live_request_overflow', at, a);
+      addIncident(shared, 'live_request_overflow', at, a, ordinal);
+      return true;
+    }
+    // The diagnostic schema currently emits one tuple per logical group. Keep
+    // its aggregate counts exact and make an uncommon transport split visible
+    // rather than overwriting the first subrequest's phases with the last.
+    if (group.reqId !== undefined) {
+      shared.overflow = true;
+      addIncident(shared, 'unsupported_split_request', at, a, ordinal, b);
       return true;
     }
     group.reqId = a;

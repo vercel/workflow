@@ -334,7 +334,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
               batch
             ),
           offset === 0 ? timing : undefined,
-          { chunkSeq: chunkSeq + offset, numChunks: batch.length }
+          { chunkSeq: chunkSeq + offset, numChunks: batch.length },
+          timing.groupOrdinal
         );
       } catch (error) {
         if (!(error instanceof StreamWsRequestNotSentError)) throw error;
@@ -862,7 +863,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
   private async request(
     buildFrame: (reqId: number) => Uint8Array,
     writeTiming?: WriteTiming,
-    writeMetadata?: WriteMetadata
+    writeMetadata?: WriteMetadata,
+    diagnosticGroupOrdinal?: number
   ): Promise<Record<string, unknown>> {
     this.assertUsable();
     const ws = this.socket;
@@ -879,7 +881,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
         reqId,
         writeMetadata?.chunkSeq,
         writeMetadata?.numChunks,
-        writeTiming?.groupOrdinal
+        diagnosticGroupOrdinal
       );
       frame = buildFrame(reqId);
       this.diagnostic?.event(

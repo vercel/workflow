@@ -311,15 +311,22 @@ describe('stream slowdown diagnostic aggregation and bounds', () => {
     diagnostic.event('raw_correlated_message', 1, 9, performance.now());
     diagnostic.event('decode_complete', 1, 9);
     diagnostic.event('pending_resolve', 1);
-    diagnostic.event('encode_begin', 2, 0, 1, 99);
+    diagnostic.event('encode_begin', 2, 0, 1);
+    diagnostic.event('encode_begin', 3, 0, 1, 99);
     diagnostic.finish('closed_ws');
 
-    expect(JSON.parse(lines.at(-1) ?? '{}')).toMatchObject({
+    const terminal = JSON.parse(lines.at(-1) ?? '{}');
+    expect(terminal).toMatchObject({
       overflow: true,
       liveGroups: 0,
       liveRequests: 0,
-      incidents: [expect.arrayContaining(['live_request_overflow', 2])],
     });
+    expect(terminal.incidents).toEqual(
+      expect.arrayContaining([
+        expect.arrayContaining(['live_request_overflow', 2, 0, 1]),
+        expect.arrayContaining(['live_request_overflow', 3, 99]),
+      ])
+    );
   });
 
   it('does not attribute an uncorrelated control message to a pending write', () => {

@@ -737,17 +737,38 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(closeHttp).not.toHaveBeenCalled();
   });
 
-  it('splits groups above the v1 request-work limit without resetting sequence', async () => {
+  it('keeps split data requests distinct from close/control diagnostics', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
-    const { session } = makeSession();
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const session = createStreamWriteSession(
+      `wrun_${ulid}`,
+      `strm_${ulid}_user_YmVuY2gtY3R0`,
+      `wrtr_${ulid}`,
+      { token: 'token' },
+      vi.fn().mockResolvedValue(undefined),
+      vi.fn().mockResolvedValue(undefined),
+      false
+    );
+    activeSessions.push(session);
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     const socket = sockets[0];
     socket.open();
 
-    const chunks = Array.from({ length: 1001 }, () => new Uint8Array([1]));
-    const writing = session.write(9, chunks);
+    const chunks = [
+      ...Array.from({ length: 1000 }, () => new Uint8Array([1])),
+      new Uint8Array([2, 3]),
+    ];
+    let settled = false;
+    const writing = session.write(9, chunks).then(() => {
+      settled = true;
+    });
     await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
     expect((await decodeOne(socket.sent[0])).meta).toMatchObject({
+      reqId: 1,
       chunkSeq: 9,
       numChunks: 1000,
     });
@@ -755,7 +776,9 @@ describe('v1 stream WebSocket writer lifecycle', () => {
       encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
     );
     await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    expect(settled).toBe(false);
     expect((await decodeOne(socket.sent[1])).meta).toMatchObject({
+      reqId: 2,
       chunkSeq: 1009,
       numChunks: 1,
     });
@@ -763,6 +786,41 @@ describe('v1 stream WebSocket writer lifecycle', () => {
       encodeFrame({ type: 'write_ack', reqId: 2 }, new Uint8Array())
     );
     await writing;
+    expect(settled).toBe(true);
+    session.dispose?.();
+
+    const terminal = JSON.parse(lines.at(-1) ?? '{}');
+    expect(terminal.tuples[0].slice(0, 8)).toEqual([
+      1,
+      1,
+      9,
+      1001,
+      1002,
+      1,
+      1,
+      'ws_success',
+    ]);
+    expect(terminal).toMatchObject({
+      groupsAttempted: 1,
+      groupsEmitted: 1,
+      chunksAttempted: 1001,
+      chunksEmitted: 1001,
+      bytesAttempted: 1002,
+      bytesEmitted: 1002,
+      liveGroups: 0,
+      liveRequests: 0,
+      overflow: true,
+    });
+    expect(terminal.incidents).toEqual(
+      expect.arrayContaining([
+        expect.arrayContaining(['unsupported_split_request', 2, 1, 1009]),
+      ])
+    );
+    expect(
+      terminal.incidents.some(
+        ([, phase]: [number, string]) => phase === 'live_request_overflow'
+      )
+    ).toBe(false);
   });
 
   it('falls back to HTTP when frame construction fails before send', async () => {
