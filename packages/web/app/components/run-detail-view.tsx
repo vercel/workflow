@@ -457,12 +457,15 @@ export function RunDetailView({
     }
   };
 
+  const isDynamicRun = Boolean(run.executionContext?.dynamicWorkflow);
+
   const handleRerunClick = () => {
+    if (isDynamicRun) return;
     setShowRerunDialog(true);
   };
 
   const handleConfirmRerun = async () => {
-    if (rerunning) return;
+    if (rerunning || isDynamicRun) return;
 
     try {
       setRerunning(true);
@@ -590,6 +593,11 @@ export function RunDetailView({
                   events={allEvents}
                   eventsLoading={loading}
                   loading={loading}
+                  replayDisabledReason={
+                    isDynamicRun
+                      ? 'Dynamic runs cannot be replayed as a new run.'
+                      : undefined
+                  }
                   onRerunClick={handleRerunClick}
                   onCancelClick={handleCancelClick}
                   callbacks={{ onSuccess: update }}
