@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Flame graph</title>
+  <link rel="stylesheet" href="app.css" />
+  <link rel="stylesheet" href="flame.css" />
+</head>
+<body class="flamepage">
+  <div class="topbar">
+    <a href="index.html">← traces</a>
+    <h1><span class="run-id" id="runId">…</span></h1>
+    <a class="viewswitch" id="toWaterfall">waterfall ↗</a>
+    <span class="spacer"></span>
+    <span id="origin" class="sub" style="margin:0"></span>
+  </div>
+
+  <div class="controls">
+    <input type="search" id="filter" placeholder="dim non-matching (name / service)…" />
+    <label title="Reattach each server-side event write to the client WS frame that caused it">
+      <input type="checkbox" id="reparent" checked /> reparent WS spans <span class="rp-stat" id="rpStat"></span>
+    </label>
+    <label><input type="checkbox" id="onlyOurs" /> only ours (workflow + AI)</label>
+    <span class="legend" id="legend"></span>
+  </div>
+
+  <div class="flamewrap">
+    <aside class="stso" id="stso">
+      <div class="stso-head">
+        <h2>STSO <span class="hint">step → step overhead</span></h2>
+        <div class="stso-sort">
+          <button data-sort="time" class="on">by time</button>
+          <button data-sort="size">by size</button>
+        </div>
+        <div class="stso-sum" id="stsoSum"></div>
+      </div>
+      <div class="stso-list" id="stsoList"></div>
+    </aside>
+
+    <main class="flamemain">
+      <div class="flamebar">
+        <div class="crumbs" id="crumbs"></div>
+        <span class="spacer"></span>
+        <span class="zoomhint">scroll to zoom · drag to pan · dbl-click a frame</span>
+        <span class="viewrange" id="viewRange"></span>
+        <button id="zoomOutBtn" title="pop one zoom level">◂ back</button>
+        <button id="resetBtn" title="fit whole run">reset</button>
+      </div>
+      <div class="ruler" id="ruler"><div class="sel" id="rulerSel"></div></div>
+      <div class="flame" id="flame">
+        <div class="frames" id="frames"></div>
+      </div>
+      <div class="breakdown" id="breakdown"></div>
+    </main>
+  </div>
+
+  <div class="tip" id="tip"></div>
+
+  <script type="module" src="flame.js"></script>
+</body>
+</html>
