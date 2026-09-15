@@ -687,11 +687,6 @@ class VercelStreamWriteSession implements StreamWriteSession {
           });
           ws.on('message', (raw) => {
             const receivedAt = now();
-            this.diagnostic?.event(
-              'raw_message_callback',
-              timing.attempt,
-              asBytes(raw).byteLength
-            );
             this.inbound = this.inbound.then(() =>
               this.handleMessage(asBytes(raw), receivedAt)
             );
@@ -714,6 +709,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
         raw.byteLength
       );
       if (reply.type === 'drain') {
+        this.diagnostic?.event('raw_control_message', raw.byteLength);
         this.handleDrain(reply.reason, reply.graceMs);
         return;
       }
@@ -730,6 +726,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
         }
         throw new Error('stream WebSocket reply cannot be correlated');
       }
+      this.diagnostic?.event(
+        'raw_correlated_message',
+        pending.reqId,
+        raw.byteLength,
+        receivedAt
+      );
       this.pending = undefined;
       pending.replyReceivedAt = receivedAt;
       clearTimeout(pending.timer);

@@ -103,6 +103,8 @@ type Session = {
   readEnqueuedBytes: number;
   readLatencyTotal: number;
   readLatencyMax: number;
+  readLatencySamples: number;
+  readLatencyOmitted: number;
   lastDecodedAt?: number;
   incidents: Array<readonly [number, string, number?, number?, number?]>;
   attempted: number;
@@ -281,6 +283,8 @@ function emit(
             enqueuedBytes: shared.readEnqueuedBytes,
             latencyTotalMs: shared.readLatencyTotal,
             latencyMaxMs: shared.readLatencyMax,
+            latencySamples: shared.readLatencySamples,
+            latencyOmitted: shared.readLatencyOmitted,
           }
         : undefined,
     incidents,
@@ -436,6 +440,7 @@ function processWriteEvent(
       'ws_send_call',
       'ws_send_return',
       'ws_send_callback',
+      'raw_correlated_message',
       'decode_complete',
       'pending_resolve',
     ].includes(phase)
@@ -453,17 +458,13 @@ function processWriteEvent(
       group.generation = c;
     } else if (phase === 'ws_send_return') group.wsSendReturn = at;
     else if (phase === 'ws_send_callback') group.wsSendCallback = at;
-    else if (phase === 'decode_complete') group.decodeComplete = at;
+    else if (phase === 'raw_correlated_message') {
+      group.rawMessageCallback = c ?? at;
+    } else if (phase === 'decode_complete') group.decodeComplete = at;
     else {
       group.pendingResolve = at;
       shared.requests.delete(a);
     }
-    return true;
-  }
-  if (phase === 'raw_message_callback') {
-    const ordinal = [...shared.requests.values()][0];
-    group = ordinal === undefined ? undefined : shared.groups.get(ordinal);
-    if (group) group.rawMessageCallback = at;
     return true;
   }
   if (phase.startsWith('fallback_http')) {
@@ -552,6 +553,7 @@ function processReadEvent(
   if (phase === 'decoded_delivery') {
     shared.readDecoded++;
     shared.readDecodedBytes += b ?? 0;
+    if (shared.lastDecodedAt !== undefined) shared.readLatencyOmitted++;
     shared.lastDecodedAt = at;
     return true;
   }
@@ -563,6 +565,7 @@ function processReadEvent(
       const latency = at - shared.lastDecodedAt;
       shared.readLatencyTotal += latency;
       shared.readLatencyMax = Math.max(shared.readLatencyMax, latency);
+      shared.readLatencySamples++;
       shared.lastDecodedAt = undefined;
     }
     return true;
@@ -604,6 +607,8 @@ export function createStreamDiagnostic(
       readEnqueuedBytes: 0,
       readLatencyTotal: 0,
       readLatencyMax: 0,
+      readLatencySamples: 0,
+      readLatencyOmitted: 0,
       incidents: [],
       attempted: 0,
       emitted: 0,
@@ -650,6 +655,10 @@ export function createStreamDiagnostic(
       for (const group of shared.groups.values()) {
         group.rejected = true;
         completeGroup(shared, group);
+      }
+      if (shared.lane === 'read' && shared.lastDecodedAt !== undefined) {
+        shared.readLatencyOmitted++;
+        shared.lastDecodedAt = undefined;
       }
       if (
         shared.lane === 'read' &&

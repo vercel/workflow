@@ -1,4 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { BENCH_CADENCES } from '../../../workbench/example/workflows/97_bench_cadence.js';
+import {
+  MAX_BYTES_PER_BATCH,
+  MAX_CHUNKS_PER_BATCH,
+} from '../../core/src/flushable-stream.js';
 import {
   createStreamDiagnostic,
   isStreamSlowdownDiagnosticsEnabled,
@@ -102,36 +107,60 @@ describe('stream slowdown diagnostic aggregation and bounds', () => {
   function recordCompletedGroup(
     diagnostic: NonNullable<ReturnType<typeof createStreamDiagnostic>>,
     ordinal: number,
-    bytes = 37
+    bytes = 37,
+    chunkSeq = ordinal - 1,
+    chunkCount = 1
   ): void {
     const reqId = ordinal;
-    const chunkSeq = ordinal - 1;
-    diagnostic.event('core_buffer_dispatch', ordinal, chunkSeq, 1, bytes);
-    diagnostic.event('session_write_entry', ordinal, chunkSeq, 1, bytes);
-    diagnostic.event('encode_begin', reqId, chunkSeq, 1, ordinal);
+    diagnostic.event(
+      'core_buffer_dispatch',
+      ordinal,
+      chunkSeq,
+      chunkCount,
+      bytes
+    );
+    diagnostic.event(
+      'session_write_entry',
+      ordinal,
+      chunkSeq,
+      chunkCount,
+      bytes
+    );
+    diagnostic.event('encode_begin', reqId, chunkSeq, chunkCount, ordinal);
     diagnostic.event('encode_end', reqId, bytes + 12, 1);
     diagnostic.event('ws_send_call', reqId, bytes + 12, 1);
     diagnostic.event('ws_send_callback', reqId, 0, 1);
     diagnostic.event('ws_send_return', reqId, 1);
-    diagnostic.event('raw_message_callback', 1, 9);
+    diagnostic.event('raw_correlated_message', reqId, 9, performance.now());
     diagnostic.event('decode_complete', reqId, 9);
     diagnostic.event('pending_resolve', reqId);
-    diagnostic.event('session_write_return', ordinal, chunkSeq, 1, bytes);
-    diagnostic.event('core_flush_settle', ordinal, chunkSeq, 1, bytes);
+    diagnostic.event(
+      'session_write_return',
+      ordinal,
+      chunkSeq,
+      chunkCount,
+      bytes
+    );
+    diagnostic.event('core_flush_settle', ordinal, chunkSeq, chunkCount, bytes);
   }
 
-  it('retains the exact 2,593-event single-chunk cadence through the tail', () => {
+  it('retains the actual 2,593-event single-chunk cadence through the tail', () => {
     enable();
     const lines: string[] = [];
     setStreamDiagnosticSinkForTest((line) => lines.push(line));
     const diagnostic = createStreamDiagnostic('write', RUN, STREAM, WRITER);
     if (!diagnostic) throw new Error('expected diagnostic');
 
-    // Exact derived shape of eve-gpt-5.6-sol-2000t: one completed transport
-    // group for each of its 2,593 event chunks.
-    for (let ordinal = 1; ordinal <= 2_593; ordinal++) {
-      recordCompletedGroup(diagnostic, ordinal, 37 + (ordinal % 19));
-    }
+    const cadence = BENCH_CADENCES['eve-gpt-5.6-sol-2000t'];
+    expect(cadence.sizes).toHaveLength(cadence.events);
+    expect(cadence.sizes.reduce((sum, bytes) => sum + bytes, 0)).toBe(
+      cadence.totalBytes
+    );
+    // Worst-case transport shape: every real captured event settles before the
+    // next arrives, so all 2,593 captured sizes form singleton groups.
+    cadence.sizes.forEach((bytes, index) => {
+      recordCompletedGroup(diagnostic, index + 1, bytes);
+    });
     diagnostic.finish('closed_ws');
 
     const totalBytes = lines.reduce(
@@ -155,7 +184,7 @@ describe('stream slowdown diagnostic aggregation and bounds', () => {
       Array.from({ length: 2_593 }, (_, i) => i + 1)
     );
     expect(tuples.map((tuple: number[]) => tuple.slice(2, 5))).toEqual(
-      Array.from({ length: 2_593 }, (_, i) => [i, 1, 37 + ((i + 1) % 19)])
+      cadence.sizes.map((bytes, index) => [index, 1, bytes])
     );
     expect(tuples.at(-1)?.[7]).toBe('ws_success');
     expect(records.at(-1)).toMatchObject({
@@ -167,10 +196,64 @@ describe('stream slowdown diagnostic aggregation and bounds', () => {
       chunksAttempted: 2_593,
       chunksEmitted: 2_593,
       chunksOmitted: 0,
+      bytesAttempted: 17_144_887,
+      bytesEmitted: 17_144_887,
+      bytesOmitted: 0,
       overflow: false,
       sinkFailures: 0,
       liveGroups: 0,
       liveRequests: 0,
+    });
+  });
+
+  it('preserves actual fixture ranges when packed to production request caps', () => {
+    enable();
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const diagnostic = createStreamDiagnostic('write', RUN, STREAM, WRITER);
+    if (!diagnostic) throw new Error('expected diagnostic');
+    const cadence = BENCH_CADENCES['eve-gpt-5.6-sol-2000t'];
+    const groups: Array<{ chunkSeq: number; count: number; bytes: number }> =
+      [];
+    for (let chunkSeq = 0; chunkSeq < cadence.sizes.length; ) {
+      let count = 0;
+      let bytes = 0;
+      while (
+        chunkSeq + count < cadence.sizes.length &&
+        count < MAX_CHUNKS_PER_BATCH &&
+        (count === 0 ||
+          bytes + cadence.sizes[chunkSeq + count] <= MAX_BYTES_PER_BATCH)
+      ) {
+        bytes += cadence.sizes[chunkSeq + count];
+        count++;
+      }
+      groups.push({ chunkSeq, count, bytes });
+      chunkSeq += count;
+    }
+    groups.forEach((group, index) => {
+      recordCompletedGroup(
+        diagnostic,
+        index + 1,
+        group.bytes,
+        group.chunkSeq,
+        group.count
+      );
+    });
+    diagnostic.finish('closed_ws');
+    const records = lines.map((line) => JSON.parse(line));
+    const tuples = records.flatMap((record) => record.tuples);
+    expect(tuples.map((tuple: number[]) => tuple.slice(2, 5))).toEqual(
+      groups.map(({ chunkSeq, count, bytes }) => [chunkSeq, count, bytes])
+    );
+    expect(groups.at(-1)?.chunkSeq + (groups.at(-1)?.count ?? 0)).toBe(2_593);
+    expect(records.at(-1)).toMatchObject({
+      chunksAttempted: 2_593,
+      chunksEmitted: 2_593,
+      chunksOmitted: 0,
+      bytesAttempted: cadence.totalBytes,
+      bytesEmitted: cadence.totalBytes,
+      bytesOmitted: 0,
+      overflow: false,
     });
   });
 
@@ -211,6 +294,28 @@ describe('stream slowdown diagnostic aggregation and bounds', () => {
     expect(JSON.parse(lines.at(-1) ?? '{}')).toMatchObject({
       outcome: 'poisoned',
     });
+  });
+
+  it('does not attribute an uncorrelated control message to a pending write', () => {
+    enable();
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const diagnostic = createStreamDiagnostic('write', RUN, STREAM, WRITER);
+    if (!diagnostic) throw new Error('expected diagnostic');
+    diagnostic.event('core_buffer_dispatch', 1, 0, 1, 12);
+    diagnostic.event('session_write_entry', 1, 0, 1, 12);
+    diagnostic.event('encode_begin', 1, 0, 1, 1);
+    diagnostic.event('ws_send_call', 1, 12, 1);
+    diagnostic.event('raw_control_message', 9);
+    diagnostic.event('session_write_reject', 1);
+    diagnostic.finish('poisoned');
+    const record = JSON.parse(lines.at(-1) ?? '{}');
+    expect(record.tuples[0][15]).toBeNull();
+    expect(
+      record.incidents.some(
+        ([, phase]: [number, string]) => phase === 'raw_control_message'
+      )
+    ).toBe(true);
   });
 
   it('keeps terminal reserve after a throwing sink and reports continuity loss', () => {
@@ -292,9 +397,34 @@ describe('stream slowdown diagnostic aggregation and bounds', () => {
     });
     expect(record.readAggregate.latencyTotalMs).toBeGreaterThanOrEqual(0);
     expect(record.readAggregate.latencyMaxMs).toBeGreaterThanOrEqual(0);
+    expect(record.readAggregate.latencySamples).toBe(2_593);
+    expect(record.readAggregate.latencyOmitted).toBe(0);
     expect(record.incidents.length).toBeLessThanOrEqual(
       STREAM_DIAGNOSTIC_LIMITS.maxRecordsPerLane
     );
+  });
+
+  it('accounts for latency coverage when one raw pull yields multiple frames', () => {
+    enable();
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const diagnostic = createStreamDiagnostic('read', RUN, STREAM);
+    if (!diagnostic) throw new Error('expected diagnostic');
+    diagnostic.event('decoded_delivery', 0, 10);
+    diagnostic.event('decoded_delivery', 1, 20);
+    diagnostic.event('decoded_delivery', 2, 30);
+    diagnostic.event('consumer_enqueue', 6);
+    diagnostic.event('consumer_enqueue', 7);
+    diagnostic.event('consumer_enqueue', 8);
+    diagnostic.finish('reader_eof');
+    expect(JSON.parse(lines.at(-1) ?? '{}').readAggregate).toMatchObject({
+      decoded: 3,
+      decodedBytes: 60,
+      enqueued: 3,
+      enqueuedBytes: 21,
+      latencySamples: 1,
+      latencyOmitted: 2,
+    });
   });
 
   it('caps unfinished unique sessions without evicting live continuity', () => {

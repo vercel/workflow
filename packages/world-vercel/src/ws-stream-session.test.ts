@@ -225,6 +225,44 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     // phase offsets are intentionally null rather than fabricated.
     expect(completed[0].slice(8)).toEqual(Array(12).fill(null));
   });
+  it('keeps an uncorrelated drain arrival out of a pending write tuple', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
+    vi.stubEnv('WORKFLOW_REQUEST_TIMEOUT_MS', '5');
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const session = createStreamWriteSession(
+      `wrun_${ulid}`,
+      `strm_${ulid}_user_YmVuY2gtY3R0`,
+      `wrtr_${ulid}`,
+      { token: 'token' },
+      vi.fn().mockResolvedValue(undefined),
+      vi.fn().mockResolvedValue(undefined),
+      false
+    );
+    activeSessions.push(session);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].open();
+    const writing = session.write(0, ['one']);
+    await vi.waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    sockets[0].reply(
+      encodeFrame(
+        { type: 'drain', reason: 'max_duration', graceMs: 10_000 },
+        new Uint8Array()
+      )
+    );
+    await expect(writing).rejects.toThrow('timed out with no reply');
+    const terminal = JSON.parse(lines.at(-1) ?? '{}');
+    expect(terminal.tuples[0][15]).toBeNull();
+    expect(
+      terminal.incidents.some(
+        ([, phase]: [number, string]) => phase === 'raw_control_message'
+      )
+    ).toBe(true);
+  });
+
   it('does not attach a diagnostic settlement observer when diagnostics are off', async () => {
     const rejection = new Error('ignored write');
     const { session, writeHttp } = makeSession(undefined, true);

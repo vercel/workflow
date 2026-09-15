@@ -60,8 +60,11 @@ the separate bounded incident reserve.
 Per-chunk coverage is intentionally supplied by the complete CTT and server
 reader ranges. The client selection answers setup/reconnect attribution and
 verifies aggregate continuity without logging 2,593 nearly identical decode and
-enqueue tuples. Enqueue means the downstream stream accepted the value, not that
-user code ran.
+enqueue tuples. `latencySamples` counts decoded-delivery/consumer-enqueue pairs;
+`latencyOmitted` explicitly counts deliveries whose timestamp was superseded
+when one raw pull decoded multiple frames before downstream enqueue. Their sum
+makes latency coverage self-describing while counts and bytes remain complete.
+Enqueue means the downstream stream accepted the value, not that user code ran.
 
 All handles in core and world-vercel for one run/stream/lane share the
 process-global aggregation and terminal ownership, including reconnect GETs.
@@ -69,4 +72,6 @@ Terminal completion/cancel/error frees its slot and clears live maps. Logging is
 best effort and throwing sinks are swallowed. Instrumentation adds no operational
 awaits or catches and does not change promise ownership, serialization,
 callback ordering, timeout, read pull/backpressure/cancel, reconnect, fallback,
-or error precedence.
+or error precedence. A raw WS arrival is assigned to a write only after decode
+confirms its request ID; uncorrelated control-frame arrivals use the bounded
+incident reserve instead.
