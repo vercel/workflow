@@ -1,3 +1,4 @@
+import { createContext, runInContext } from 'node:vm';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
 import {
@@ -29,12 +30,12 @@ describe('compileDynamicWorkflow', () => {
         /^workflow\/\/dynamic\/[0-9a-f]{32}\/\/workflow$/
       );
       expect(compiled.workflowCode).toContain(
-        `globalThis.__private_workflows.set(${JSON.stringify(compiled.workflowName)}, workflow)`
+        `__dynamicGlobalThis.__private_workflows.set(${JSON.stringify(compiled.workflowName)}, __dynamicWorkflow)`
       );
       // The id has to be on the function too — the runtime reads it back off
       // the registered function, same as a build-time transform stamps it.
       expect(compiled.workflowCode).toContain(
-        `Object.defineProperty(workflow, "workflowId"`
+        `Object.defineProperty(__dynamicWorkflow, "workflowId"`
       );
       expect(compiled.workflowCode).toContain(SOURCE.trim());
     });
@@ -50,7 +51,9 @@ describe('compileDynamicWorkflow', () => {
       );
       // Frozen so ordinary generated code that reaches for a step it was not
       // given fails the run rather than silently adding one.
-      expect(compiled.workflowCode).toContain('Object.freeze({');
+      expect(compiled.workflowCode).toContain(
+        'const __dynamicSteps = Object.freeze({'
+      );
       expect(compiled.workflowCode).not.toContain('notAllowed');
     });
 
@@ -58,10 +61,10 @@ describe('compileDynamicWorkflow', () => {
       const compiled = await compileDynamicWorkflow(SOURCE, { steps: STEPS });
 
       expect(compiled.workflowCode).toContain(
-        'const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")]'
+        'const __dynamicSleep = __dynamicGlobalThis[Symbol.for("WORKFLOW_SLEEP")]'
       );
       expect(compiled.workflowCode).toContain(
-        'const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")]'
+        'const __dynamicCreateHook = __dynamicGlobalThis[Symbol.for("WORKFLOW_CREATE_HOOK")]'
       );
     });
 
@@ -76,7 +79,7 @@ describe('compileDynamicWorkflow', () => {
       expect(compiled.workflowName).toMatch(/\/\/orchestrate$/);
       expect(compiled.metadata.exportName).toBe('orchestrate');
       expect(compiled.workflowCode).toContain(
-        'globalThis.__private_workflows.set('
+        '__dynamicGlobalThis.__private_workflows.set('
       );
     });
   });
@@ -232,23 +235,69 @@ describe('compileDynamicWorkflow', () => {
     });
 
     it.each([
-      '__dynamicUseStep',
-      'steps',
-      'sleep',
-      'createHook',
-    ])('rejects a top-level %s binding that collides with the generated wrapper', async (binding) => {
+      ['Object', 'const Object = null;'],
+      ['Map', 'let Map = null;'],
+      ['Symbol', 'function Symbol() {}'],
+      ['globalThis', 'var globalThis = null;'],
+      ['__dynamicUseStep', 'const __dynamicUseStep = null;'],
+      ['__dynamicWorkflow', 'let __dynamicWorkflow = null;'],
+      ['__dynamicGlobalThis', 'function __dynamicGlobalThis() {}'],
+      ['steps', 'var steps = null;'],
+      ['sleep', 'const sleep = null;'],
+      ['createHook', 'let createHook = null;'],
+    ])('isolates caller %s declarations from wrapper bindings', async (_binding, declaration) => {
       const source = `
-const ${binding} = null;
+${declaration}
 async function workflow() {
   "use workflow";
   return 1;
 }
 `;
-      await expect(
-        compileDynamicWorkflow(source, { steps: STEPS })
-      ).rejects.toThrow(
-        /Generated dynamic workflow code is not valid JavaScript/
-      );
+      const compiled = await compileDynamicWorkflow(source, { steps: STEPS });
+      const sandbox = {
+        [Symbol.for('WORKFLOW_USE_STEP')]: () => async () => undefined,
+        [Symbol.for('WORKFLOW_SLEEP')]: async () => undefined,
+        [Symbol.for('WORKFLOW_CREATE_HOOK')]: () => Promise.resolve(),
+      };
+      const context = createContext(sandbox);
+      runInContext(compiled.workflowCode, context);
+      const workflow = runInContext(
+        `globalThis.__private_workflows.get(${JSON.stringify(compiled.workflowName)})`,
+        context
+      ) as { workflowId?: string };
+      expect(workflow).toBeTypeOf('function');
+      expect(workflow.workflowId).toBe(compiled.workflowName);
+    });
+
+    it('registers a workflow that closes over all injected bindings', async () => {
+      const source = `
+async function workflow() {
+  "use workflow";
+  await steps.fetchUser("u_1");
+  await sleep("1s");
+  return createHook({ token: "hook_1" });
+}
+`;
+      const compiled = await compileDynamicWorkflow(source, { steps: STEPS });
+      const calls: string[] = [];
+      const hook = Promise.resolve('hook-result');
+      const sandbox = {
+        [Symbol.for('WORKFLOW_USE_STEP')]: (stepId: string) => async () => {
+          calls.push(stepId);
+        },
+        [Symbol.for('WORKFLOW_SLEEP')]: async () => {
+          calls.push('sleep');
+        },
+        [Symbol.for('WORKFLOW_CREATE_HOOK')]: () => hook,
+      };
+      const context = createContext(sandbox);
+      runInContext(compiled.workflowCode, context);
+      const workflow = runInContext(
+        `globalThis.__private_workflows.get(${JSON.stringify(compiled.workflowName)})`,
+        context
+      ) as () => Promise<unknown>;
+      expect(await workflow()).toBe('hook-result');
+      expect(calls).toEqual(['step//./src/steps//fetchUser', 'sleep']);
     });
 
     it('accepts a genuine top-level async declaration without evaluating source', async () => {
