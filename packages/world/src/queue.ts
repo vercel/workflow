@@ -521,12 +521,14 @@ export interface Queue {
   getDeploymentId(): Promise<string>;
 
   /**
-   * Request a decision from a run's executor. Enable through capabilities.invoke.
+   * Request a decision from a run's executor. Availability enables input delivery;
+   * capabilities.invoke is retained for compatibility with earlier adapters.
    * Resolves with the executor's response, never merely with transport acceptance.
    * Handler failures are delivered as InvocationOutcome errors and rethrown by
    * the adapter with their known Workflow error class and diagnostic fields.
    * Failure to deliver/store a response remains an unknown transport outcome.
-   * Every call, including retries, schedules a wake; redundant wakes may no-op.
+   * Delivery may be direct or queue-backed. An implementation must hand the
+   * input to its executor and return only after processing, not merely admission.
    * A transport error is an unknown outcome. Do not fall back to a direct write.
    */
   invoke?(

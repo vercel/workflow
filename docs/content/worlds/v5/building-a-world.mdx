@@ -249,11 +249,17 @@ interface Queue {
 
 ### Invocation delivery
 
-An optional `invoke` implementation advertises `capabilities.invoke`. It delivers
+An available `invoke` method enables executor-directed input delivery; the legacy
+`capabilities.invoke` declaration remains recognized. Disabled implementations
+should omit the method. It delivers
 `{ runId, invoke: true, requestId, input }` to the existing handler and returns the
 handler's result to the original caller. `requestId` is the stable logical input
 identity; it is separate from the physical queue delivery ID. `InvokeOptions`
 accepts an `idempotencyKey` and response-wait `timeoutMs`.
+
+Delivery may be direct or queue-backed. Resolve only after the executor processes
+the input, not merely after mailbox admission. A queue wake is not required by the
+shared interface; Postgres supplies one as part of its durable delivery strategy.
 
 The runtime interprets the input, awaits required event writes, and returns a
 value. World owns delivery, response correlation and storage. It must service

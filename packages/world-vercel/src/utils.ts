@@ -23,7 +23,7 @@ import {
   logCurlRepro,
   parseRetryAfter,
 } from './http-core.js';
-
+import type { VercelInvokeConfig } from './invocation.js';
 import {
   ErrorType,
   getSpanKind,
@@ -99,6 +99,8 @@ const getTestLimitOverridesHeader = (): string =>
   process.env.WORKFLOW_TEST_LIMIT_OVERRIDES?.trim() || '';
 
 export interface APIConfig {
+  /** Experimental direct invocation transport; absent by default. */
+  invoke?: VercelInvokeConfig;
   token?: string;
   headers?: RequestInit['headers'];
   /**
