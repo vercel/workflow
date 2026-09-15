@@ -29,7 +29,6 @@ import {
 import {
   cancelAbortReaders,
   decodeFormatPrefix,
-  encodeWithFormatPrefix,
   dehydrateDynamicWorkflowCode,
   dehydrateRunError,
   dehydrateStepArguments,
@@ -37,6 +36,7 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   dehydrateWorkflowReturnValue,
+  encodeWithFormatPrefix,
   getCommonRevivers,
   getDeserializeStream,
   getSerializeStream,
@@ -4799,14 +4799,35 @@ describe('dehydrate/hydrateDynamicWorkflowCode', () => {
     'globalThis.__private_workflows ??= new Map();\nasync function workflow() { "use workflow"; return 1; }\n';
 
   it('round-trips through compression and encryption', async () => {
-    const material = new Uint8Array(32).fill(0x7d);
-    const keys = runPayloadKeys(
-      await importKey(material),
-      await deriveRunKeyPair(material)
-    );
-    const stored = await dehydrateDynamicWorkflowCode(code, keys, true);
-    expect(isEncrypted(stored)).toBe(true);
-    expect(await hydrateDynamicWorkflowCode(stored, keys)).toBe(code);
+    const previousCodec = process.env.WORKFLOW_COMPRESSION_CODEC;
+    process.env.WORKFLOW_COMPRESSION_CODEC = 'gzip';
+    try {
+      const compressibleCode = `${code}${'// repetitive generated code\n'.repeat(100)}`;
+      const material = new Uint8Array(32).fill(0x7d);
+      const keys = runPayloadKeys(
+        await importKey(material),
+        await deriveRunKeyPair(material)
+      );
+      const stored = await dehydrateDynamicWorkflowCode(
+        compressibleCode,
+        keys,
+        true
+      );
+      expect(isEncrypted(stored)).toBe(true);
+      const decrypted = await decryptEnvelope(stored, keys);
+      expect(decodeFormatPrefix(decrypted as Uint8Array).format).toBe(
+        SerializationFormat.GZIP
+      );
+      expect(await hydrateDynamicWorkflowCode(stored, keys)).toBe(
+        compressibleCode
+      );
+    } finally {
+      if (previousCodec === undefined) {
+        delete process.env.WORKFLOW_COMPRESSION_CODEC;
+      } else {
+        process.env.WORKFLOW_COMPRESSION_CODEC = previousCodec;
+      }
+    }
   });
 
   it('round-trips unencrypted and uncompressed', async () => {
