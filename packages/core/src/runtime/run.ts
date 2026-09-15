@@ -291,7 +291,12 @@ export class Run<TResult> {
         }
 
         if (run.status === 'failed') {
-          throw new WorkflowRunFailedError(this.runId, run.error);
+          // Terminal run data can be returned lazily, so the error payload
+          // may not be materialized. Fall back to a generic message.
+          throw new WorkflowRunFailedError(
+            this.runId,
+            run.error ?? { message: 'Workflow run failed' }
+          );
         }
 
         throw new WorkflowRunNotCompletedError(this.runId, run.status);
