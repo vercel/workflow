@@ -9,4 +9,4 @@
 'workflow': minor
 ---
 
-Add experimental dynamic workflows: `start()` accepts workflow source as a string, compiled and stored encrypted with the run and replayed from there. Steps are exposed to the source through an explicit `dynamic.steps` allowlist.
+Add experimental dynamic workflows: `start()` accepts workflow source as a string, compiles and stores it with the run through the run-payload serialization pipeline, and replays from that stored code. Steps are exposed to the source through an explicit `dynamic.steps` allowlist.
