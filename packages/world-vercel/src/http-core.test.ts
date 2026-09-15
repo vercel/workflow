@@ -168,6 +168,26 @@ describe('instrumentedFetch URL validation', () => {
   });
 
   it.each([
+    ['TRANSPORT', { Expect: '100-continue' }, 'UND_ERR_NOT_SUPPORTED'],
+    ['STREAM_ERROR', { Expect: '100-continue' }, 'UND_ERR_NOT_SUPPORTED'],
+    ['TRANSPORT', { Connection: 'invalid' }, 'UND_ERR_INVALID_ARG'],
+    ['STREAM_ERROR', { Connection: 'invalid' }, 'UND_ERR_INVALID_ARG'],
+  ] as const)('preserves %s request-validation errors for %j', async (transportErrorCode, headers, code) => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const rejection = await instrumentedFetch({
+      method: 'GET',
+      url: 'http://127.0.0.1:12345/events',
+      headers: new Headers(headers),
+      transportErrorCode,
+    }).catch((error: unknown) => error);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await expect(fetchSpy.mock.results[0].value).rejects.toBe(rejection);
+    expect(rejection).toMatchObject({ name: 'TypeError', cause: { code } });
+    expect(WorkflowWorldError.is(rejection)).toBe(false);
+  });
+
+  it.each([
     '0',
     '1',
   ])('rejects unsupported protocols before dispatch (WORKFLOW_NODE_HTTP=%s)', async (mode) => {

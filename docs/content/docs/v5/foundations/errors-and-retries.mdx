@@ -168,7 +168,7 @@ Uncaught, the run fails immediately with the `USER_ERROR` code, without retrying
 
 On Vercel, backend connection failures and interrupted event streams use the existing retry policies, even when their error codes are unrecognized. This lets workflows recover from network failures instead of immediately failing with `USER_ERROR`. Persistent failures can still exhaust the retry budget.
 
-The SDK also replaces its shared events connection pool after repeated HTTP/2 session failures. Invalid backend URLs, including unsupported protocols and embedded credentials, fail immediately. Fetch requests to blocked ports also fail without retrying.
+The SDK also replaces its shared events connection pool after repeated HTTP/2 session failures. Invalid backend URLs, including unsupported protocols and embedded credentials, fail immediately. Fetch requests to blocked ports or with unsupported headers (such as `Expect`) also fail without retrying. Interrupted event writes retain their existing retries; caller cancellations do not trigger another write.
 
 A connection failure does not prove that the backend rejected a write: it may have accepted it before the response was lost. Continue to make step side effects [idempotent](/docs/foundations/idempotency).
 

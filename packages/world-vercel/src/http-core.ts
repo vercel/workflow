@@ -135,6 +135,10 @@ const REQUEST_CONSTRUCTION_ERROR_CODES = new Set([
   'ERR_INVALID_HTTP_TOKEN',
   'ERR_HTTP_INVALID_HEADER_VALUE',
   'ERR_UNESCAPED_CHARACTERS',
+  // Undici validates request options and headers during dispatch, after
+  // Fetch has constructed the Request (e.g. unsupported Expect headers).
+  'UND_ERR_INVALID_ARG',
+  'UND_ERR_NOT_SUPPORTED',
 ]);
 
 /**

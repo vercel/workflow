@@ -14,7 +14,7 @@ import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { splitEventDataForV4 } from './events.js';
+import { createWorkflowRunEventBatch, splitEventDataForV4 } from './events.js';
 import {
   createWorkflowRunEventsBatchV4,
   createWorkflowRunEventV4,
@@ -2351,6 +2351,26 @@ describe('v4 transport wraps pre-response failures the allowlist misses', () => 
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it('preserves unsupported headers from the backend configuration as non-retryable', async () => {
+    vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', 'http://127.0.0.1:12345');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const rejection = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      {
+        token: 'test-token',
+        headers: { Expect: '100-continue' },
+      }
+    ).catch((error: unknown) => error);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await expect(fetchSpy.mock.results[0].value).rejects.toBe(rejection);
+    expect(rejection).toMatchObject({
+      name: 'TypeError',
+      cause: { code: 'UND_ERR_NOT_SUPPORTED' },
+    });
+    expect(StreamError.is(rejection)).toBe(false);
+  });
+
   it('maps an unrecognized post-header batch failure to a StreamError', async () => {
     const sessionFailure = Object.assign(
       new Error('The session has been destroyed'),
@@ -2407,5 +2427,67 @@ describe('v4 transport wraps pre-response failures the allowlist misses', () => 
         { token: 'test-token', dispatcher: {} }
       )
     ).rejects.toBe(constructionFault);
+  });
+});
+
+describe('V4 event-write retries after interrupted response bodies', () => {
+  beforeEach(() => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    [
+      'HTTP/2 GOAWAY',
+      Object.assign(new Error('session destroyed'), {
+        code: 'ERR_HTTP2_GOAWAY_SESSION',
+      }),
+      true,
+    ],
+    ['an uncoded body failure', new Error('connection lost'), true],
+    ['caller cancellation', new DOMException('cancelled', 'AbortError'), false],
+  ] as const)('handles %s through the event-write retry policy', async (_label, cause, retryable) => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.error(cause);
+            },
+          }),
+          { status: 200 }
+        )
+      )
+      // The original write landed; a retry observes its terminal state.
+      .mockResolvedValue(new Response('{}', { status: 409 }));
+    const result = createWorkflowRunEventBatch(
+      'wrun_1',
+      [
+        {
+          event: {
+            eventType: 'step_completed',
+            specVersion: 6,
+            correlationId: 'step_1',
+          },
+        },
+      ],
+      undefined,
+      { token: 'test-token', dispatcher: {} }
+    ).catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+    const rejection = await result;
+    expect(fetchSpy).toHaveBeenCalledTimes(retryable ? 2 : 1);
+    if (retryable) {
+      expect(EntityConflictError.is(rejection)).toBe(true);
+    } else {
+      expect(StreamError.is(rejection)).toBe(true);
+      expect(rejection).toHaveProperty('cause', cause);
+    }
   });
 });
