@@ -1,8 +1,8 @@
 ---
 title: Run
-description: Retrieve a Python workflow run by ID, check its status, and access its output.
+description: Retrieve a Python workflow run by ID, check its status, cancel it, and access its output.
 type: reference
-summary: Use Run to check status without blocking, await a result, and read run attributes and streams.
+summary: Use Run to check status, cancel a run, await a result, and read run attributes and streams.
 prerequisites:
   - /docs/foundations/starting-workflows
 related:
@@ -15,8 +15,8 @@ related:
 handle provides immediate access without waiting for completion; individual
 operations read from the workflow backend asynchronously.
 
-Use this class when you need to check workflow status, await a return value,
-access run attributes, or read streaming output.
+Use this class when you need to check workflow status, cancel a run, await a
+return value, access run attributes, or read streaming output.
 
 ```python
 from vercel.workflow import Run
@@ -55,6 +55,7 @@ backend's error if the ID is unknown.
 | --- | --- | --- |
 | `run_id` | `str` | The run's durable ID. This property is synchronous. |
 | `await status()` | `"pending" \| "running" \| "completed" \| "failed" \| "cancelled"` | Read the current status. |
+| `await cancel(*, cancel_reason=None)` | `None` | Cancel the run, optionally recording a reason. |
 | `await return_value()` | `T` | Wait for the run to complete and return its output. |
 | `await attributes()` | `dict[str, str]` | Read the run's plaintext attributes. |
 | `readable(...)` | `AsyncGenerator[Any, None]` | Read values from the default or a namespaced stream. |
@@ -64,6 +65,16 @@ backend's error if the ID is unknown.
 
 See [reading streams](/docs/api-reference/python/read-stream) for the stream
 method signatures and resume behavior.
+
+## Cancelling a run
+
+```python
+run = Run("wrun_...")
+await run.cancel(cancel_reason="superseded by a newer run")
+```
+
+`cancel_reason` is optional. It is stored as plaintext on the cancellation
+event and is limited to 512 UTF-16 code units.
 
 ## Awaiting a result
 
@@ -104,7 +115,7 @@ async def get_run(run_id: str):
 
 <Callout type="info">
 Unlike the TypeScript `Run` object, the Python `Run` class does not currently
-expose `exists`, cancellation, early wake-up, or writable-stream operations.
+expose `exists`, early wake-up, or writable-stream operations.
 Python stream reads use async generators through `readable()` and
 `readable_bytes()` rather than a Web `ReadableStream`.
 </Callout>

@@ -48,7 +48,7 @@ async def get_hook_by_token(token: str) -> Hook
 
 | Parameter | Type | Description |
 | --- | --- | --- |
-| `token` | `str` | Custom token used when the workflow called `BaseHook.wait()`. |
+| `token` | `str` | Generated or custom token exposed by [`HookEvent.token`](/docs/api-reference/python/base-hook#token) after calling `BaseHook.wait()`. The hook must be registered before it can be looked up. |
 
 ### Returns
 

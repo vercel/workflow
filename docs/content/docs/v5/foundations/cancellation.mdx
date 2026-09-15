@@ -13,11 +13,11 @@ related:
   - /docs/how-it-works/cancellation
 ---
 
-Workflow DevKit supports fine-grained, cooperative cancellation of individual steps and run cancellation for stopping an entire workflow. This guide covers both.
-
-## Fine-grained step cancellation
-
 <LanguageContent value="ts">
+
+Workflow DevKit supports two cancellation mechanisms: **AbortSignal** for fine-grained, cooperative cancellation of individual operations, and **run cancellation** for stopping an entire workflow. This guide covers both.
+
+## AbortSignal
 
 `AbortController` and `AbortSignal` work across workflow and step boundaries. Create an `AbortController` with `new AbortController()` in a workflow function, pass its signal to steps, and call `abort()` using the standard [AbortController](https://developer.mozilla.org/en-US/docs/Web/API/AbortController) API.
 
@@ -66,20 +66,16 @@ To learn how `AbortController` works durably across workflow suspensions, replay
 </LanguageContent>
 <LanguageContent value="py">
 
-Mark a step with `cancellable=True`, run its call as an `asyncio` task, and cancel that task from the workflow. The runtime delivers the request durably to the running step:
+Workflow DevKit supports two cancellation mechanisms: **step cancellation** and **run cancellation**.
+
+## Step Cancellation
+
+Step cancellation builds on Python's `asyncio` cancellation. Steps must first opt in with `@wf.step(cancellable=True)`. Once enabled, cancelling the `asyncio` task in the workflow that is awaiting the step causes the runtime to durably forward the request to the step. Inside the step, `asyncio.CancelledError` is raised at an await point, giving the step an opportunity to clean up before exiting:
 
 ```python lineNumbers
 import asyncio
 
 from app.workflow import wf
-
-@wf.step(cancellable=True)
-async def long_running_step():
-    try:
-        await call_slow_api()
-    except asyncio.CancelledError:
-        await clean_up()
-        raise
 
 @wf.workflow
 async def cancellable_workflow():
@@ -93,11 +89,17 @@ async def cancellable_workflow():
         return await task
     except asyncio.CancelledError:
         return {"status": "cancelled"}
+
+@wf.step(cancellable=True)
+async def long_running_step():
+    try:
+        await call_slow_api()
+    except asyncio.CancelledError:
+        await clean_up()
+        raise
 ```
 
-Cancellation is cooperative. `task.cancel()` requests cancellation; awaiting the task waits for the step to terminate. The step receives `asyncio.CancelledError` at an await point. If the step catches that exception and keeps running, it can still complete normally.
-
-Only steps declared with `cancellable=True` can receive durable cancellation requests. The task-based mechanism composes with ordinary `asyncio` patterns but does not create a reusable signal object that can be passed between functions.
+Cancellation is **cooperative**: `task.cancel()` requests cancellation, and `await task` waits for the step to finish. A step can catch `asyncio.CancelledError` to perform cleanup, as shown above, then re-raise it to propagate cancellation. If the step suppresses the exception, it can continue running and return normally.
 
 </LanguageContent>
 
@@ -138,7 +140,7 @@ async function fetchUrl(url: string, signal: AbortSignal) {
 </LanguageContent>
 <LanguageContent value="py">
 
-`asyncio.timeout()` provides the same timeout pattern. Use `asyncio.wait_for()` when you only need to put a timeout around one await. The step must opt in to cancellation:
+Building on `asyncio` cancellation makes step cancellation work naturally with `asyncio.timeout()`. Simply wrap the step call in a timeout block:
 
 ```python lineNumbers
 import asyncio
@@ -146,23 +148,21 @@ import httpx
 
 from app.workflow import wf
 
+@wf.workflow
+async def fetch_with_timeout(url: str):
+    try:
+        async with asyncio.timeout(10):  # [!code highlight]
+            return await fetch_url(url)
+    except TimeoutError:
+        raise RuntimeError(f"Request to {url} timed out after 10s")
+
 @wf.step(cancellable=True)
 async def fetch_url(url: str):
     async with httpx.AsyncClient() as client:
         response = await client.get(url)
         response.raise_for_status()
         return response.json()
-
-@wf.workflow
-async def fetch_with_timeout(url: str):
-    try:
-        async with asyncio.timeout(10):
-            return await fetch_url(url)
-    except TimeoutError:
-        raise RuntimeError(f"Request to {url} timed out after 10s")
 ```
-
-When the timeout expires, the context manager cancels the task awaiting `fetch_url()` and waits for the step to terminate.
 
 </LanguageContent>
 
@@ -197,7 +197,7 @@ async function fetchUrl(url: string, signal: AbortSignal) {
 </LanguageContent>
 <LanguageContent value="py">
 
-Create one task per cancellable step, wait for the first result, then cancel and await the remaining tasks:
+Use `asyncio.TaskGroup` to manage the step tasks, wait for the first result, and cancel the remaining tasks. The task group waits for them to finish before exiting:
 
 ```python lineNumbers
 import asyncio
@@ -205,33 +205,33 @@ import httpx
 
 from app.workflow import wf
 
+@wf.workflow
+async def first_responder(urls: list[str]):
+    async with asyncio.TaskGroup() as group:
+        tasks = [group.create_task(fetch_url(url)) for url in urls]
+        done, pending = await asyncio.wait(  # [!code highlight]
+            tasks,  # [!code highlight]
+            return_when=asyncio.FIRST_COMPLETED,  # [!code highlight]
+        )  # [!code highlight]
+
+        winner = next(task for task in tasks if task in done)
+        for task in pending:
+            task.cancel("another request finished first")  # Cancel remaining fetches # [!code highlight]
+
+    return winner.result()
+
 @wf.step(cancellable=True)
 async def fetch_url(url: str):
     async with httpx.AsyncClient() as client:
         response = await client.get(url)
         return {"url": url, "data": response.json()}
-
-@wf.workflow
-async def first_responder(urls: list[str]):
-    tasks = [asyncio.ensure_future(fetch_url(url)) for url in urls]
-    done, pending = await asyncio.wait(
-        tasks,
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-
-    winner = min(done, key=tasks.index)
-    for task in pending:
-        task.cancel("another request finished first")
-    await asyncio.gather(*pending, return_exceptions=True)
-
-    return await winner
 ```
 
 </LanguageContent>
 
-### Passing signal through a pipeline
-
 <LanguageContent value="ts">
+
+### Passing signal through a pipeline
 
 Pass the same signal to a chain of steps. Aborting cancels whichever step is currently running:
 
@@ -290,43 +290,7 @@ async function uploadData(data: ArrayBuffer, signal: AbortSignal) {
 }
 ```
 
-</LanguageContent>
-<LanguageContent value="py">
-
-Python has no serializable cancellation signal to thread through a pipeline. Instead, wrap the pipeline coroutine in one task. Cancelling it propagates to whichever awaited step is currently running, provided that step is declared `cancellable=True`:
-
-```python lineNumbers
-import asyncio
-
-from app.workflow import wf
-
-@wf.step(cancellable=True)
-async def download_data(url: str) -> bytes:
-    # ... download ...
-    return b"data"
-
-@wf.step(cancellable=True)
-async def transform_data(data: bytes) -> bytes:
-    return data
-
-async def run_pipeline(url: str):
-    raw = await download_data(url)
-    return await transform_data(raw)
-
-@wf.workflow
-async def pipeline_workflow(url: str):
-    task = asyncio.ensure_future(run_pipeline(url))
-    still_needed = await check_whether_still_needed()
-    if not still_needed:
-        task.cancel("pipeline cancelled")
-    return await task
-```
-
-</LanguageContent>
-
 ### Step-initiated abort
-
-<LanguageContent value="ts">
 
 A step can receive the full `AbortController` and call `abort()` to cancel parallel work. This is useful for watchdog/monitor patterns where one step observes an external condition and cancels other in-flight steps:
 
@@ -370,11 +334,6 @@ async function monitorQuota(userId: string, controller: AbortController) {
   }
 }
 ```
-
-</LanguageContent>
-<LanguageContent value="py">
-
-Python task objects are not serializable, so a step cannot cancel a sibling task directly. Have the monitor step return its decision to the workflow, then call `task.cancel()` from the workflow body. The target step must use `cancellable=True`.
 
 </LanguageContent>
 
@@ -441,54 +400,51 @@ from vercel import workflow
 class CancelRequest(pydantic.BaseModel, workflow.BaseHook):
     reason: str
 
-@wf.step(cancellable=True)
-async def do_expensive_work():
-    return await call_expensive_api()
-
 @wf.workflow
 async def user_cancellable_workflow(job_id: str):
-    work_task = asyncio.ensure_future(do_expensive_work())
+    async with (
+        CancelRequest.wait(token=f"cancel:{job_id}") as hook,
+        asyncio.TaskGroup() as group,
+    ):
+        async def wait_for_cancel():
+            return await hook
 
-    async with CancelRequest.wait(token=f"cancel:{job_id}") as hook:
-        cancel_task = asyncio.ensure_future(hook)
-        done, _ = await asyncio.wait(
+        work_task = group.create_task(do_expensive_work())
+        cancel_task = group.create_task(wait_for_cancel())
+        done, _ = await asyncio.wait(  # [!code highlight]
             [work_task, cancel_task],
             return_when=asyncio.FIRST_COMPLETED,
         )
 
-        if cancel_task in done:
-            request = await cancel_task
-            work_task.cancel(request.reason)
-            try:
-                await work_task
-            except asyncio.CancelledError:
-                pass
+        if cancel_task in done:  # [!code highlight]
+            request = cancel_task.result()
+            work_task.cancel(request.reason)  # [!code highlight]
             return {"status": "cancelled", "reason": request.reason}
 
         cancel_task.cancel()
-        await asyncio.gather(cancel_task, return_exceptions=True)
-        return {"status": "completed", "data": await work_task}
+        return {"status": "completed", "data": work_task.result()}
+
+@wf.step(cancellable=True)
+async def do_expensive_work():
+    return await call_expensive_api()
 ```
 
 Resume the hook from an HTTP route:
 
 ```python title="app/api/cancel.py" lineNumbers
-from starlette.requests import Request
-
 from app.workflows.user_cancellable import CancelRequest
 
 @app.post("/api/cancel/{job_id}")
-async def cancel(job_id: str, request: Request):
-    payload = CancelRequest.model_validate(await request.json())
+async def cancel(job_id: str, payload: CancelRequest):
     await payload.resume(f"cancel:{job_id}")
     return {"cancelled": True}
 ```
 
 </LanguageContent>
 
-### How steps handle cancellation
-
 <LanguageContent value="ts">
+
+### How steps handle abort
 
 When an `AbortSignal` is aborted, the behavior depends on how the step uses it:
 
@@ -499,11 +455,6 @@ When an `AbortSignal` is aborted, the behavior depends on how the step uses it:
 | `signal.aborted` check | Returns `true`, step can exit gracefully |
 | `signal.addEventListener('abort', fn)` | Callback fires, step can clean up |
 | Ignored | Step runs to completion (abort is cooperative) |
-
-</LanguageContent>
-<LanguageContent value="py">
-
-When a cancellable step receives a request, `asyncio.CancelledError` is raised at its next await point. The step can clean up and re-raise, or suppress the exception and finish normally. CPU-bound code that never awaits will not observe the request until it yields control.
 
 </LanguageContent>
 
@@ -546,34 +497,40 @@ async function cancellableStep(signal: AbortSignal) {
 </LanguageContent>
 <LanguageContent value="py">
 
-If a step lets `asyncio.CancelledError` propagate, the runtime records a fatal step failure and does not retry it. The workflow task receives `asyncio.CancelledError`, so catch it only when cancellation is an expected outcome:
+When a step is cancelled by the workflow, the runtime treats the cancellation as intentional and **skips retries**. Retrying would just result in another cancellation. You don't need to manually wrap `asyncio.CancelledError` in `FatalError`.
 
 ```python lineNumbers
 import asyncio
+import httpx
 
 from app.workflow import wf
-
-@wf.step(cancellable=True)
-async def cancellable_step():
-    return await call_slow_api()
+from vercel import workflow
 
 @wf.workflow
-async def workflow():
-    task = asyncio.ensure_future(cancellable_step())
-    await decide_to_cancel()
-    task.cancel("no longer needed")
+async def cancellable_workflow():
+    task = asyncio.create_task(cancellable_step())
+    await workflow.sleep("5s")
+    task.cancel()
 
     try:
         return await task
     except asyncio.CancelledError:
+        # CancelledError arrives with no retries attempted # [!code highlight]
         return {"status": "cancelled"}
+
+@wf.step(cancellable=True)
+async def cancellable_step():
+    # Let CancelledError propagate when the workflow requests cancellation
+    async with httpx.AsyncClient() as client:
+        response = await client.get("https://api.example.com/slow")
+        return response.json()
 ```
 
 </LanguageContent>
 
-### External fine-grained cancellation
-
 <LanguageContent value="ts">
+
+### Passing AbortSignal as workflow input
 
 You can pass an `AbortSignal` from external code into a workflow via `start()`:
 
@@ -597,15 +554,10 @@ For reliable external cancellation that works regardless of process lifetime, pr
 </Callout>
 
 </LanguageContent>
-<LanguageContent value="py">
-
-Python does not support passing an external cancellation signal as a workflow input. Use the [hook pattern above](#user-triggered-cancellation-with-hooks) for durable external cancellation that survives the caller process.
-
-</LanguageContent>
 
 ## Run cancellation
 
-Run cancellation stops an entire workflow at the next suspension point. Unlike fine-grained step cancellation, the workflow does not continue executing after cancellation.
+Run cancellation stops an entire workflow at the next suspension point. Unlike <LanguageText code ts="AbortSignal" py="CancelledError" />, it is not cooperative. The workflow does not continue executing after cancellation.
 
 <LanguageContent value="ts">
 
@@ -622,20 +574,25 @@ export async function POST(request: Request) {
 }
 ```
 
-<Callout type="info">
-Calling `run.cancel()` is the same action as clicking the **Cancel** button on a run in the observability UI. Both produce identical `run_cancelled` events in the event log.
-</Callout>
-
 </LanguageContent>
 <LanguageContent value="py">
 
-The Python `Run` object does not currently expose `cancel()`. Cancel the run from the observability UI or with the Workflow CLI:
+```python title="app/api/cancel_run.py" lineNumbers
+from vercel import workflow
 
-```bash
-npx workflow cancel <run-id> --backend vercel
+@app.post("/api/runs/{run_id}/cancel")
+async def cancel_run(run_id: str):
+    run = workflow.Run(run_id)
+    await run.cancel()  # [!code highlight]
+
+    return {"cancelled": True}
 ```
 
 </LanguageContent>
+
+<Callout type="info">
+Calling `run.cancel()` is the same action as clicking the **Cancel** button on a run in the observability UI. Both produce identical `run_cancelled` events in the event log.
+</Callout>
 
 When a run is canceled:
 - The workflow stops at its next suspension point (step call, hook await, or sleep)
@@ -643,24 +600,13 @@ When a run is canceled:
 - All associated hooks are disposed and their tokens released
 - Streams are closed
 
-<LanguageContent value="ts">
-
 <Callout type="info">
-Run cancellation does **not** automatically abort any outstanding `AbortSignal`s. Steps that are currently executing will run to completion. If you need in-flight cancellation of specific operations, use `AbortSignal`.
+Run cancellation does **not** automatically <LanguageContent value="ts" inline>abort any outstanding `AbortSignal`s</LanguageContent><LanguageContent value="py" inline>issue any `CancelledError`s</LanguageContent>. Steps that are currently executing will run to completion. If you need in-flight cancellation of specific operations, use <LanguageText code ts="AbortSignal" py="task.cancel()" />.
 </Callout>
 
-</LanguageContent>
-<LanguageContent value="py">
-
-<Callout type="info">
-Run cancellation does **not** cancel a currently executing step task. That step runs to completion. Use a task backed by a `cancellable=True` step when you need in-flight cancellation of a specific operation.
-</Callout>
-
-</LanguageContent>
-
-## Fine-grained vs. run cancellation
-
 <LanguageContent value="ts">
+
+## AbortSignal vs. run cancellation
 
 | | AbortSignal | Run Cancellation |
 |---|---|---|
@@ -675,20 +621,21 @@ Use `AbortSignal` when you need fine-grained, in-flight cancellation of specific
 </LanguageContent>
 <LanguageContent value="py">
 
-| | Cancellable step task | Run cancellation |
-|---|---|---|
-| **Scope** | One step task | Entire workflow run |
-| **Triggered by** | Workflow code calling `task.cancel()` | UI or CLI |
-| **Cooperative** | Yes; the step must reach an await point | No; the workflow stops at the next suspension point |
-| **In-flight step** | Receives `asyncio.CancelledError` | Runs to completion |
+## Step vs. run cancellation
 
-Use a cancellable step task for an operation you need to interrupt in flight. Use run cancellation to stop the workflow as a whole.
+| | Step cancellation | Run cancellation |
+|---|---|---|
+| **Scope** | One running step | Entire workflow run |
+| **Triggered by** | `task.cancel()` in workflow code | `run.cancel()` from external code |
+| **Running step** | Receives `asyncio.CancelledError` | Continues to completion |
+
+Use step cancellation when you need to interrupt a specific step in flight. Use run cancellation when you want to stop the entire workflow.
 
 </LanguageContent>
 
-## Best practices
-
 <LanguageContent value="ts">
+
+## Best practices
 
 **Use `throwIfAborted()` before expensive work.** This throws the signal's abort reason if the signal is already aborted, preventing wasted compute:
 
@@ -759,17 +706,6 @@ export async function workflow() {
 ```
 
 This is safe even if both steps have already completed because aborting a finished operation is a no-op.
-
-</LanguageContent>
-<LanguageContent value="py">
-
-**Opt in only where cancellation is safe.** Declare a step with `cancellable=True` only when its code can stop at an await point and clean up partial side effects.
-
-**Always await a task after cancelling it.** `task.cancel()` is a request, not proof that the step has stopped. Await it and handle `asyncio.CancelledError` before the workflow continues or returns.
-
-**Re-raise `asyncio.CancelledError` after cleanup.** Suppressing it tells the runtime that the step completed normally and can return a result.
-
-**Use hooks for external requests.** Python task objects exist only inside the workflow body and cannot be recreated from a run ID. A deterministic hook token provides the durable external control point.
 
 </LanguageContent>
 

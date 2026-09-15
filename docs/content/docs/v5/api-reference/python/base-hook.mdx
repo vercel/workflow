@@ -57,7 +57,7 @@ class BaseHook:
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `token` | `str \| None` | `None` | Token application code uses to find and resume the hook. When omitted, the SDK generates one. Use a deterministic custom token when an external caller needs to know it. |
+| `token` | `str \| None` | `None` | Token application code uses to find and resume the hook. When omitted or `None`, the SDK generates one, available through `event.token`. Custom tokens must be non-empty; use a deterministic token when an external caller needs to reconstruct it. |
 | `metadata` | `Any` | `None` | Serializable context stored on the hook and returned by `get_hook_by_token()`. It is separate from the resume payload. |
 
 ```python
@@ -70,6 +70,9 @@ async def approval_workflow(request_id: str) -> bool:
 `wait()` can only be called from a workflow body. Calling it elsewhere raises
 `RuntimeError`.
 
+Passing `token=""` raises `ValueError`. Omit `token` or pass `None` to generate
+one instead. Non-empty custom tokens are preserved exactly, including whitespace.
+
 ### HookEvent
 
 `HookEvent[T]` is awaitable, asynchronously iterable, and an async context
@@ -77,6 +80,7 @@ manager:
 
 | Operation | Behavior |
 | --- | --- |
+| `event.token` | Read the generated or custom token as a `str`. This property is read-only. |
 | `await event` | Suspend until the next payload arrives, then return one `T`. |
 | `async for value in event` | Receive multiple payloads in order until the loop ends or the event is disposed. |
 | `await event.get_conflict()` | Commit hook registration without waiting for a payload. Return `None` if this run owns the token, or a [`Run`](/docs/api-reference/python/run) for the existing owner. |
@@ -86,6 +90,26 @@ manager:
 A bare `await event` after disposal raises
 [`HookDisposedError`](/docs/api-reference/python/errors#hookdisposederror).
 Asynchronous iteration ends normally when the event is disposed.
+
+#### token
+
+The read-only `token: str` property is available as soon as `wait()` returns.
+It contains the SDK-generated token or the exact custom token passed to
+`wait()`. Assigning to it raises `AttributeError`.
+
+```python
+@wf.workflow
+async def approval_workflow() -> bool:
+    async with Approval.wait() as event:
+        print("Send approval to token:", event.token)
+        approval = await event
+        return approval.approved
+```
+
+External code can use this token with `resume()` or
+[`get_hook_by_token()`](/docs/api-reference/python/get-hook-by-token).
+Reading the property does not register the hook; registration is committed
+when the workflow suspends, as described in [get_conflict()](#get_conflict).
 
 #### get_conflict()
 
