@@ -1,5 +1,12 @@
 # @workflow/nuxt
 
+## 4.0.25
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.1.15
+
 ## 4.0.24
 
 ### Patch Changes

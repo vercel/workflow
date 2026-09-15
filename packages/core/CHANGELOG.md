@@ -1,5 +1,26 @@
 # @workflow/core
 
+## 4.8.9
+
+### Patch Changes
+
+- [#3882](https://github.com/vercel/workflow/pull/3882) [`b7385f0`](https://github.com/vercel/workflow/commit/b7385f0eb6838f6228bbd1c75aaaf43b6ebce1b5) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Stop framed stream reconnects after the consumer cancels, including while completion checks or reconnect acquisition are still pending.
+
+- [#3843](https://github.com/vercel/workflow/pull/3843) [`284d7c0`](https://github.com/vercel/workflow/commit/284d7c0e6874691248d1a74ccd9f58b32d164c8b) Thanks [@Rich-Harris](https://github.com/Rich-Harris)! - Bump `devalue` to 5.9.2 to address published security advisory.
+
+- [#4070](https://github.com/vercel/workflow/pull/4070) [`a158f81`](https://github.com/vercel/workflow/commit/a158f8162064af30bf211e41967af0eeabfd96e1) Thanks [@torsello](https://github.com/torsello)! - Allow parentheses and square brackets in workflow names
+
+  A workflow name is derived from the module path it is defined in, so Next.js App
+  Router conventions end up in the name verbatim. `SAFE_WORKFLOW_NAME_PATTERN` did
+  not permit `(`, `)`, `[` or `]`, so any workflow inside a route group
+  (`app/(dashboard)/…`) or a dynamic segment (`app/[teamId]/…`, `app/[...slug]/…`)
+  threw `Invalid workflow name` before it could be enqueued, with no way to
+  override the generated name.
+
+  These characters are inert in the queue name the pattern guards: `ValidQueueName`
+  already accepts any suffix after its prefix, and the name is never interpolated
+  into a URL or a SQL identifier.
+
 ## 4.8.8
 
 ### Patch Changes
