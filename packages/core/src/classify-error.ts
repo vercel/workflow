@@ -6,6 +6,7 @@ import {
   type RunErrorCode,
   RuntimeDecryptionError,
   StepNotRegisteredError,
+  StreamError,
   ThrottleError,
   WorkflowDeploymentMismatchError,
   WorkflowNotRegisteredError,
@@ -29,7 +30,11 @@ const WORLD_CONTRACT_ERROR_CODES = new Set([
  * from. Kept distinct from `WORLD_CONTRACT_ERROR_CODES` so a transport blip is
  * never misclassified as the server returning a malformed response.
  */
-const RETRYABLE_WORLD_ERROR_CODES = new Set(['TRANSPORT', 'TIMEOUT']);
+const RETRYABLE_WORLD_ERROR_CODES = new Set([
+  'TRANSPORT',
+  'TIMEOUT',
+  RUN_ERROR_CODES.STREAM_ERROR,
+]);
 
 /**
  * Set of error names that should classify as generic `RUNTIME_ERROR`. Each
@@ -100,6 +105,9 @@ export function isRetryableWorldError(err: unknown): boolean {
   if (ThrottleError.is(err)) {
     return true;
   }
+  if (StreamError.is(err)) {
+    return err.status === undefined || err.status >= 500;
+  }
   if (!WorkflowWorldError.is(err)) {
     return false;
   }
@@ -133,6 +141,10 @@ export function classifyRunError(err: unknown): RunErrorCode {
   // attribute an outage correctly. Note the retryable variants are normally
   // redelivered via the queue (see `isRetryableWorldError`) and only reach this
   // terminal classification if the run ultimately gives up.
+  if (StreamError.is(err)) {
+    return RUN_ERROR_CODES.STREAM_ERROR;
+  }
+
   if (isWorldContractError(err) || isRetryableWorldError(err)) {
     return RUN_ERROR_CODES.WORLD_CONTRACT_ERROR;
   }

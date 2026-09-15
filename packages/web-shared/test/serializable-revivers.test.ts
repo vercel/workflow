@@ -163,6 +163,13 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
   ],
   Set: [['Set', 1], [2], 'value'],
   StepFunction: [['StepFunction', 1], { stepId: 2 }, 'step//example'],
+  StreamError: [
+    ['StreamError', 1],
+    { message: 2, status: 3, url: 4 },
+    'stream failed',
+    503,
+    'https://workflow.example/stream',
+  ],
   SyntaxError: [['SyntaxError', 1], { message: 2 }, 'boom'],
   TypeError: [['TypeError', 1], { message: 2 }, 'boom'],
   URIError: [['URIError', 1], { message: 2 }, 'boom'],

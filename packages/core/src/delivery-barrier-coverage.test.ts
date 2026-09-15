@@ -720,7 +720,7 @@ function expectSuspensionSnapshotSteps(error: unknown, expected: string[]) {
     );
   }
   expect(
-    (error as WorkflowSuspension).steps.flatMap((item) =>
+    (error as WorkflowSuspension).items.flatMap((item) =>
       item.type === 'step' ? [item.stepName] : []
     )
   ).toEqual(expected);

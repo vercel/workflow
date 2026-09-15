@@ -211,6 +211,119 @@ describe('createSwcPlugin externalizeNonSteps', () => {
     expect(onAfterTransform).toHaveBeenCalledOnce();
   });
 
+  it('deduplicates identical pnpm peer-variant copies emitting the same step id', async () => {
+    // pnpm materializes the same package version once per peer-dependency
+    // resolution. Both copies are byte-identical and generate the same
+    // canonical step ID, which must not fail the build.
+    const source = `export const sendMessage = true;`;
+    const firstCopy = join(
+      testRoot,
+      'node_modules/.pnpm/shared-package@1.0.0_peer-a@1.0.0/node_modules/shared-package/index.ts'
+    );
+    const secondCopy = join(
+      testRoot,
+      'node_modules/.pnpm/shared-package@1.0.0_peer-b@2.0.0/node_modules/shared-package/index.ts'
+    );
+    const onAfterTransform = vi.fn();
+    const workflowManifest = {};
+
+    writeFile(firstCopy, source);
+    writeFile(secondCopy, source);
+
+    applySwcTransformMock.mockImplementation(
+      async (filename: string, fileSource: string) => ({
+        code: fileSource,
+        workflowManifest: {
+          steps: {
+            [filename]: {
+              sendMessage: {
+                stepId: 'step//shared-package@1.0.0//sendMessage',
+              },
+            },
+          },
+        },
+      })
+    );
+
+    const result = await esbuild.build({
+      entryPoints: [firstCopy, secondCopy],
+      absWorkingDir: testRoot,
+      outdir: join(testRoot, 'out'),
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          workflowManifest,
+          onAfterTransform,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    expect(onAfterTransform).toHaveBeenCalledTimes(2);
+    // Both copies stay in the manifest under the same step ID.
+    const steps = (
+      workflowManifest as {
+        steps?: Record<string, Record<string, { stepId: string }>>;
+      }
+    ).steps;
+    expect(Object.keys(steps ?? {})).toHaveLength(2);
+    for (const entries of Object.values(steps ?? {})) {
+      expect(entries.sendMessage.stepId).toBe(
+        'step//shared-package@1.0.0//sendMessage'
+      );
+    }
+  });
+
+  it('fails the build when pnpm-style copies with different contents emit the same step id', async () => {
+    const firstCopy = join(
+      testRoot,
+      'node_modules/.pnpm/shared-package@1.0.0_peer-a@1.0.0/node_modules/shared-package/index.ts'
+    );
+    const secondCopy = join(
+      testRoot,
+      'node_modules/.pnpm/shared-package@1.0.0_peer-b@2.0.0/node_modules/shared-package/index.ts'
+    );
+
+    writeFile(firstCopy, `export const sendMessage = 1;`);
+    writeFile(secondCopy, `export const sendMessage = 2;`);
+
+    applySwcTransformMock.mockImplementation(
+      async (filename: string, fileSource: string) => ({
+        code: fileSource,
+        workflowManifest: {
+          steps: {
+            [filename]: {
+              sendMessage: {
+                stepId: 'step//shared-package@1.0.0//sendMessage',
+              },
+            },
+          },
+        },
+      })
+    );
+
+    await expect(
+      esbuild.build({
+        entryPoints: [firstCopy, secondCopy],
+        absWorkingDir: testRoot,
+        outdir: join(testRoot, 'out'),
+        bundle: true,
+        format: 'esm',
+        platform: 'node',
+        write: false,
+        plugins: [
+          createSwcPlugin({
+            mode: 'step',
+          }),
+        ],
+      })
+    ).rejects.toThrow(/Duplicate workflow step ID/);
+  });
+
   it('fails the build when two files emit the same workflow id', async () => {
     const srcDir = join(testRoot, 'src');
     const firstWorkflowFile = join(srcDir, 'confirmation.ts');

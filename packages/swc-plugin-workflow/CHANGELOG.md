@@ -1,5 +1,17 @@
 # @workflow/swc-plugin
 
+## 5.0.0-beta.7
+
+### Patch Changes
+
+- [#3891](https://github.com/vercel/workflow/pull/3891) [`c29200f`](https://github.com/vercel/workflow/commit/c29200fac5848fb8e40bf77351b5b69d10a31357) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Fix a crash ("Cannot redefine property: classId") when a bundler pipeline re-runs the transform over its own output for a dependency that ships custom serialization methods, such as `@ai-sdk/gateway`.
+
+## 5.0.0-beta.6
+
+### Patch Changes
+
+- [#3971](https://github.com/vercel/workflow/pull/3971) [`ae5ee5b`](https://github.com/vercel/workflow/commit/ae5ee5ba2e68ca9850a5cb7b2b253388d06fdd8f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Register class expressions through an IIFE that closes over the class instead of module-level code that references it by name, fixing the unresolvable `AnonymousClass` reference emitted for shapes such as `var Foo = class { ... }` in pre-bundled packages.
+
 ## 5.0.0-beta.5
 
 ### Patch Changes

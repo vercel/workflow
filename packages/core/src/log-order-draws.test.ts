@@ -93,7 +93,7 @@ async function blockedBranchEntities(
     if (suspension.name !== 'WorkflowSuspension') {
       throw error;
     }
-    return suspension.steps.map((item) => ({
+    return suspension.items.map((item) => ({
       type: item.type,
       correlationId: item.correlationId,
       stepName: (item as { stepName?: string }).stepName,

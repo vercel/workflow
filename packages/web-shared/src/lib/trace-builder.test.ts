@@ -9,7 +9,11 @@ let nextId = 0;
 
 function event(
   eventType: EventType,
-  options: { correlationId?: string; at: number }
+  options: {
+    correlationId?: string;
+    at: number;
+    externalAttemptId?: string;
+  }
 ): Event {
   nextId += 1;
   return {
@@ -20,6 +24,7 @@ function event(
     createdAt: new Date(BASE_TIME + options.at * 1000),
     occurredAt: new Date(BASE_TIME + options.at * 1000),
     eventData: eventType === 'step_created' ? { stepName: 'doWork' } : {},
+    externalAttemptId: options.externalAttemptId,
   } as unknown as Event;
 }
 
@@ -31,6 +36,42 @@ const run = {
 } as unknown as WorkflowRun;
 
 describe('buildTrace', () => {
+  it('adds caller-derived attributes to step span data', () => {
+    const events = [
+      event('run_created', { at: 0 }),
+      event('run_started', { at: 0 }),
+      event('step_created', { correlationId: 'step_a', at: 1 }),
+      event('step_started', {
+        correlationId: 'step_a',
+        at: 2,
+        externalAttemptId: 'attempt_first',
+      }),
+      event('step_retrying', { correlationId: 'step_a', at: 3 }),
+      event('step_started', {
+        correlationId: 'step_a',
+        at: 4,
+        externalAttemptId: 'attempt_latest',
+      }),
+    ];
+
+    const trace = buildTrace(run, events, new Date(BASE_TIME + 5000), {
+      getStepAttributes(stepEvents) {
+        const latestStart = stepEvents
+          .slice()
+          .reverse()
+          .find((candidate) => candidate.eventType === 'step_started') as
+          | (Event & { externalAttemptId?: string })
+          | undefined;
+        return { externalAttemptId: latestStart?.externalAttemptId };
+      },
+    });
+    const stepSpan = trace.spans.find((span) => span.resource === 'step');
+
+    expect(stepSpan?.attributes.data).toMatchObject({
+      externalAttemptId: 'attempt_latest',
+    });
+  });
+
   it('ends a step span on the terminal event the run acted on', () => {
     const events = [
       event('run_created', { at: 0 }),

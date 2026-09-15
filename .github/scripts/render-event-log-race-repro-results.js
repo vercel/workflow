@@ -283,6 +283,7 @@ function renderConfigScale(config) {
     config.blockedBranchAttempts
       ? `blocked-branch ${config.blockedBranchAttempts}`
       : '',
+    config.wakeLoopAttempts ? `wake-loop ${config.wakeLoopAttempts}` : '',
     config.hookSleepAttempts ? `hook-sleep ${config.hookSleepAttempts}` : '',
     // Historical entries from the pre-storm harness, kept so an old sticky
     // comment still renders its own configuration rather than a blank line.
@@ -312,6 +313,9 @@ function renderConfigTiming(config) {
       ? `step ${config.stepDelayMs}±${config.stepDelayJitterMs ?? 0}ms`
       : '',
     config.hookResumeStaggerMs ? `stagger ${config.hookResumeStaggerMs}ms` : '',
+    config.wakeLoopAttempts && config.wakeLoopHeartbeatMs
+      ? `heartbeat ${config.wakeLoopHeartbeatMs}ms`
+      : '',
     config.resumeBurstOffsetMs && config.blockedBranchAttempts
       ? `burst ${config.resumeBurstOffsetMs}+${config.resumeBurstJitterMs ?? 0}ms`
       : '',
@@ -342,6 +346,7 @@ function compactConfig(config = {}) {
     stepStormAttempts: config.stepStormAttempts,
     hookStormAttempts: config.hookStormAttempts,
     blockedBranchAttempts: config.blockedBranchAttempts,
+    wakeLoopAttempts: config.wakeLoopAttempts,
     hookSleepAttempts: config.hookSleepAttempts,
     concurrency: config.concurrency,
     rounds: config.rounds,
@@ -357,6 +362,7 @@ function compactConfig(config = {}) {
     hookResumeStaggerMs: config.hookResumeStaggerMs,
     launchStaggerMs: config.launchStaggerMs,
     resumeBurstOffsetMs: config.resumeBurstOffsetMs,
+    wakeLoopHeartbeatMs: config.wakeLoopHeartbeatMs,
     resumeBurstJitterMs: config.resumeBurstJitterMs,
     blockedBranchWatchdogMs: config.blockedBranchWatchdogMs,
     runTimeoutMs: config.runTimeoutMs,

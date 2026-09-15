@@ -1,3 +1,4 @@
+export { debugLog, isWorkflowDebugEnabled } from './debug-log.js';
 export {
   globalSingleton,
   resetGlobalSingletonForTest,

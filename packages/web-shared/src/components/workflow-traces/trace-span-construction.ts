@@ -150,6 +150,10 @@ export function waitToSpan(
   };
 }
 
+export type GetStepAttributes = (
+  events: Event[]
+) => Record<string, unknown> | undefined;
+
 export const stepEventsToStepEntity = (
   events: Event[]
 ): {
@@ -231,7 +235,11 @@ export const stepEventsToStepEntity = (
 /**
  * Converts step events to an OpenTelemetry Span
  */
-export function stepToSpan(stepEvents: Event[], maxEndTime: Date): Span | null {
+export function stepToSpan(
+  stepEvents: Event[],
+  maxEndTime: Date,
+  getStepAttributes?: GetStepAttributes
+): Span | null {
   const step = stepEventsToStepEntity(stepEvents);
   if (!step) {
     return null;
@@ -242,7 +250,11 @@ export function stepToSpan(stepEvents: Event[], maxEndTime: Date): Span | null {
 
   const attributes = {
     resource: 'step' as const,
-    data: step,
+    data: {
+      ...getStepAttributes?.(stepEvents),
+      // Canonical event-derived fields cannot be overridden by extensions.
+      ...step,
+    },
   };
 
   const resource = 'step';

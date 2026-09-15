@@ -816,11 +816,11 @@ Two step bodies inside one delivery are genuinely concurrent and separately
 steerable, which is enough to reach the interesting corruption without a second
 invocation. That is why the limit has been acceptable so far.
 
-**The parallel hook-resume path is never exercised.** `resumeHook` picks
-parallel ("lazy") vs sequential from `world.capabilities.hookResumeDedup` (or a
-fresh server attestation). `world-local` declares it and `world-vercel` attests
-it per lookup, so **every real world takes the parallel path**, where the queue
-publish races the `hook_received` write and the consumer re-ensures the event
+**The lazy hook-resume path is never exercised.** `resumeHook` picks lazy vs
+sequential from `world.capabilities.hookResumeDedup` (or a fresh server
+attestation). `world-local` declares it and `world-vercel` attests it per
+lookup, so **every real world takes the lazy path**, where the producer writes
+no event and the consumer materializes `hook_received` from the queue message
 through the durable `(runId, resumeId)` claim. The sim advertises neither the
 capability nor a `resumeId` dedupe, so every sim hook delivery takes the
 sequential path, meaning the hook-timing shapes in this book are the *legacy*

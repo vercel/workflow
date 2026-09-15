@@ -1,8 +1,9 @@
 import {
+  classifyEntityEvent,
   type EntityEventClass,
   type Event,
-  entityEventClass,
   isSlotEventId,
+  TERMINAL_EVENT_CLASSES,
 } from '@workflow/world';
 
 /**
@@ -10,13 +11,13 @@ import {
  *
  * Concurrent replays of one run write to a shared log, so a replay working
  * from a stale prefix can commit a second `step_created` / `step_started` /
- * `wait_created` for an entity the log already records one of. Every replay
- * reads the first event of that class at the same position, so a later one
- * cannot change what the workflow observes.
+ * `wait_created` / `attr_set` for an entity the log already records one of.
+ * Every replay reads the first event of that class at the same position, so a
+ * later one cannot change what the workflow observes.
  *
- * The classification mirrors `entityEventClass` in `@workflow/world`, which is
- * what the runtime keys its own duplicate detection on. What it cannot mirror
- * is consumer state: the runtime passes over an event only after every
+ * The classification comes from `classifyEntityEvent` in `@workflow/world`,
+ * the same function the runtime keys its own duplicate detection on. What it
+ * cannot share is consumer state: the runtime passes over an event only after every
  * registered callback has declined it, and a callback registered for a
  * still-open entity legitimately claims a repeat (each retry of a step writes
  * another `step_started`, and a live step consumer absorbs a second
@@ -25,26 +26,10 @@ import {
  * consumer remains.
  */
 
-/**
- * Classes whose event closes its entity: no consumer is left for it after.
- *
- * The run's own terminal events are absent because `entityEventClass` gives
- * them no class. The runtime exits rather than replaying the body once the log
- * holds one, so nothing ever consumes them and nothing can repeat them.
- */
-const TERMINAL_EVENT_CLASSES: ReadonlySet<EntityEventClass> = new Set([
-  'step_terminal',
-  'wait_completed',
-  'hook_disposed',
-]);
-
 /** Classes with no entity to close first: the log records one per run. */
 const SINGLETON_EVENT_CLASSES: ReadonlySet<EntityEventClass> = new Set([
   'run_started',
 ]);
-
-/** Entity key for events that carry no correlation ID (the run itself). */
-const RUN_ENTITY_KEY = '';
 
 /**
  * Shown against an event this module reports. Deliberately says what the log
@@ -122,10 +107,13 @@ function foldDuplicates(ordered: readonly Event[]): Set<string> {
   const closedEntities = new Set<string>();
 
   for (const event of ordered) {
-    const eventClass = entityEventClass(event.eventType);
-    if (eventClass === undefined) continue;
+    // Shared with the runtime's own duplicate detection, deliberately: an
+    // event it tracks under no class is one it never reads past, so naming it
+    // here would grey out an event the run acted on.
+    const classification = classifyEntityEvent(event);
+    if (classification === undefined) continue;
 
-    const entity = event.correlationId ?? RUN_ENTITY_KEY;
+    const { eventClass, entity } = classification;
     const classKey = `${eventClass}:${entity}`;
     const repeatsClass = seenClasses.has(classKey);
     const entityWasClosed = closedEntities.has(entity);
