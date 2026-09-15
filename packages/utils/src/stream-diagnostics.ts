@@ -102,6 +102,7 @@ export function createStreamDiagnostic(
   name: string,
   writerId?: string
 ): StreamDiagnostic | undefined {
+  if (lane === 'write' && (!writerId || !WRITER.test(writerId))) return;
   if (!isStreamSlowdownDiagnosticsEnabled(runId, name, writerId)) return;
   const key = sessionKey(lane, runId, name);
   let session = state.sessions.get(key);

@@ -57,6 +57,20 @@ describe('stream slowdown diagnostic gate', () => {
     expect(isStreamSlowdownDiagnosticsEnabled(RUN, STREAM, WRITER)).toBe(false);
   });
 
+  it('requires a canonical writer ID when creating write diagnostics', () => {
+    enable();
+    const sink = vi.fn();
+    setStreamDiagnosticSinkForTest(sink);
+
+    expect(createStreamDiagnostic('write', RUN, STREAM)).toBeUndefined();
+    expect(
+      createStreamDiagnostic('write', RUN, STREAM, `writer_${ULID}`)
+    ).toBeUndefined();
+    expect(sink).not.toHaveBeenCalled();
+
+    expect(createStreamDiagnostic('read', RUN, STREAM)).toBeDefined();
+  });
+
   it('cannot be enabled by request data and emits no payload/header/error text', () => {
     const sink = vi.fn();
     setStreamDiagnosticSinkForTest(sink);
