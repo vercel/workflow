@@ -190,6 +190,30 @@ describe('instrumentedFetch URL validation', () => {
     expect(onTransportOutcome).not.toHaveBeenCalled();
     expect(onRequestDispatched).not.toHaveBeenCalled();
   });
+
+  it.each([
+    '0',
+    '1',
+  ])('rejects embedded URL credentials before dispatch (WORKFLOW_NODE_HTTP=%s)', async (mode) => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, mode);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const onTransportOutcome = vi.fn();
+    const onRequestDispatched = vi.fn();
+
+    await expect(
+      instrumentedFetch({
+        method: 'GET',
+        url: 'http://user:password@localhost/events',
+        headers: new Headers(),
+        peerService: 'workflow-server',
+        onTransportOutcome,
+        onRequestDispatched,
+      })
+    ).rejects.toThrow('HTTP(S) URLs with embedded credentials are unsupported');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(onTransportOutcome).not.toHaveBeenCalled();
+    expect(onRequestDispatched).not.toHaveBeenCalled();
+  });
 });
 
 describe('describeTransportFailure', () => {

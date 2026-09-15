@@ -97,12 +97,20 @@ export function getTransientTransportCode(error: unknown): string | undefined {
 
 /** Reject invalid URLs before dispatch, where a failure would be retryable. */
 export function validateHttpUrl(url: string): void {
-  const { protocol } = new URL(url);
+  const { protocol, username, password } = new URL(url);
   // Both fetch and nodeHttpFetch can reject unsupported schemes without an
   // error code, so describeTransportFailure cannot identify these faults.
   if (protocol !== 'http:' && protocol !== 'https:') {
     throw new TypeError(
       `Unsupported URL protocol ${protocol}; expected http: or https:`
+    );
+  }
+  // Fetch rejects URL userinfo locally with a code-less TypeError. Keep that
+  // permanent configuration fault outside the transport classifier, and make
+  // the node:http and Fetch paths agree instead of allowing one to send it.
+  if (username || password) {
+    throw new TypeError(
+      'HTTP(S) URLs with embedded credentials are unsupported'
     );
   }
 }

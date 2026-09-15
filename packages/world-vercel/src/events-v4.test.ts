@@ -2284,6 +2284,24 @@ describe('v4 transport wraps pre-response failures the allowlist misses', () => 
     expect(rejection.message).toContain('transport failure');
   });
 
+  it('rejects a credential-bearing backend URL without dispatch or retry', async () => {
+    vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', 'http://user:password@127.0.0.1');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    const rejection = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token' }
+    ).catch((error: unknown) => error);
+
+    expect(rejection).toMatchObject({
+      name: 'TypeError',
+      message: 'HTTP(S) URLs with embedded credentials are unsupported',
+    });
+    expect(StreamError.is(rejection)).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('maps an unrecognized post-header batch failure to a StreamError', async () => {
     const sessionFailure = Object.assign(
       new Error('The session has been destroyed'),
