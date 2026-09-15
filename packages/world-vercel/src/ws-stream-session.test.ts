@@ -823,6 +823,88 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     ).toBe(false);
   });
 
+  it('attributes split secondary preflight fallback to its logical group', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    let releaseHttp: (() => void) | undefined;
+    const httpPending = new Promise<void>((resolve) => {
+      releaseHttp = resolve;
+    });
+    const writeHttp = vi.fn(async () => httpPending);
+    const session = createStreamWriteSession(
+      `wrun_${ulid}`,
+      `strm_${ulid}_user_YmVuY2gtY3R0`,
+      `wrtr_${ulid}`,
+      { token: 'token' },
+      writeHttp,
+      vi.fn().mockResolvedValue(undefined),
+      false
+    );
+    activeSessions.push(session);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+
+    const oversized = new Uint8Array(10 * 1024 * 1024 + 1);
+    const chunks = [
+      ...Array.from({ length: 1000 }, () => new Uint8Array([1])),
+      oversized,
+    ];
+    let settled = false;
+    const writing = session.write(9, chunks).then(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+    socket.reply(
+      encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
+    );
+    await vi.waitFor(() => expect(writeHttp).toHaveBeenCalledTimes(1));
+    expect(settled).toBe(false);
+    expect(writeHttp).toHaveBeenCalledWith([oversized]);
+    releaseHttp?.();
+    await writing;
+    expect(settled).toBe(true);
+    expect(socket.sent).toHaveLength(1);
+    expect(socket.closed).toContainEqual([1000, 'HTTP fallback before send']);
+    session.dispose?.();
+
+    const terminal = JSON.parse(lines.at(-1) ?? '{}');
+    expect(terminal.tuples[0].slice(0, 8)).toEqual([
+      1,
+      1,
+      9,
+      1001,
+      10 * 1024 * 1024 + 1001,
+      1,
+      1,
+      'http_fallback_success',
+    ]);
+    expect(terminal).toMatchObject({
+      groupsAttempted: 1,
+      groupsEmitted: 1,
+      groupsOmitted: 0,
+      chunksAttempted: 1001,
+      chunksEmitted: 1001,
+      chunksOmitted: 0,
+      bytesAttempted: 10 * 1024 * 1024 + 1001,
+      bytesEmitted: 10 * 1024 * 1024 + 1001,
+      bytesOmitted: 0,
+      liveGroups: 0,
+      liveRequests: 0,
+      overflow: true,
+    });
+    expect(terminal.incidents).toEqual(
+      expect.arrayContaining([
+        expect.arrayContaining(['unsupported_split_request', 2, 1, 1009]),
+        expect.arrayContaining(['fallback_http_before_send', 1, 1]),
+      ])
+    );
+  });
+
   it('falls back to HTTP when frame construction fails before send', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
     const { session, writeHttp } = makeSession();

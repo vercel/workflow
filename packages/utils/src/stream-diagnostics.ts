@@ -486,6 +486,8 @@ function processWriteEvent(
   }
   if (phase.startsWith('fallback_http')) {
     shared.writeHttpFallback = true;
+    const explicitGroup = b === undefined ? undefined : shared.groups.get(b);
+    if (explicitGroup) explicitGroup.httpFallback = true;
     for (const ordinal of shared.requests.values()) {
       group = shared.groups.get(ordinal);
       if (group) group.httpFallback = true;

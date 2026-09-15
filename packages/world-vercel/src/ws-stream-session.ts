@@ -339,7 +339,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
         );
       } catch (error) {
         if (!(error instanceof StreamWsRequestNotSentError)) throw error;
-        this.fallbackToHttpBeforeSend();
+        this.fallbackToHttpBeforeSend(timing.groupOrdinal);
         await this.writeHttp(chunks.slice(offset));
         return;
       }
@@ -996,8 +996,12 @@ class VercelStreamWriteSession implements StreamWriteSession {
     release?.();
   }
 
-  private fallbackToHttpBeforeSend(): void {
-    this.diagnostic?.event('fallback_http_before_send', this.connectionAttempt);
+  private fallbackToHttpBeforeSend(diagnosticGroupOrdinal?: number): void {
+    this.diagnostic?.event(
+      'fallback_http_before_send',
+      this.connectionAttempt,
+      diagnosticGroupOrdinal
+    );
     this.diagnostic?.checkpoint('fallback_http_before_send');
     this.mode = 'http';
     this.socket?.close(1000, 'HTTP fallback before send');
