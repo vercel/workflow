@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { splitEventDataForV4 } from './events.js';
 import {
   createWorkflowRunEventV4,
+  createWorkflowRunEventsBatchV4,
   createWorkflowRunStartedEventV4,
   getEventsByCorrelationIdV4,
   getEventV4,
@@ -1093,10 +1094,16 @@ describe('v4 transport uses global fetch (observability)', () => {
 
 describe('createWorkflowRunEventV4 over HTTP', () => {
   it.each([
-    ['an empty body', () => new Response(), 'PARSE_ERROR'],
+    [
+      'an empty body',
+      () => new Response(),
+      'WorkflowWorldError',
+      'PARSE_ERROR',
+    ],
     [
       'malformed CBOR',
       () => new Response(new Uint8Array([0xff, 0xfe, 0xfd])),
+      'WorkflowWorldError',
       'PARSE_ERROR',
     ],
     [
@@ -1109,9 +1116,10 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
             },
           })
         ),
-      'TRANSPORT',
+      'StreamError',
+      'STREAM_ERROR',
     ],
-  ])('classifies %s', async (_case, response, code) => {
+  ])('classifies %s', async (_case, response, name, code) => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(response());
@@ -1128,7 +1136,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
           { token: 'test-token' }
         )
       ).rejects.toMatchObject({
-        name: 'WorkflowWorldError',
+        name,
         code,
       });
     } finally {
@@ -2274,6 +2282,44 @@ describe('v4 transport wraps pre-response failures the allowlist misses', () => 
 
     expect(StreamError.is(rejection)).toBe(true);
     expect(rejection.message).toContain('transport failure');
+  });
+
+  it('maps an unrecognized post-header batch failure to a StreamError', async () => {
+    const sessionFailure = Object.assign(
+      new Error('The session has been destroyed'),
+      { code: 'ERR_HTTP2_GOAWAY_SESSION' }
+    );
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(sessionFailure);
+          },
+        }),
+        { status: 200 }
+      )
+    );
+
+    const rejection = await createWorkflowRunEventsBatchV4(
+      {
+        runId: 'wrun_1',
+        events: [
+          {
+            runId: 'wrun_1',
+            eventType: 'step_completed',
+            specVersion: 6,
+            correlationId: 'step_1',
+          },
+        ],
+      },
+      { token: 'test-token', dispatcher: {} }
+    ).catch((error: unknown) => error);
+
+    expect(StreamError.is(rejection)).toBe(true);
+    expect(rejection).toMatchObject({
+      code: 'STREAM_ERROR',
+      cause: sessionFailure,
+    });
   });
 
   it('rethrows a request-construction fault unchanged', async () => {
