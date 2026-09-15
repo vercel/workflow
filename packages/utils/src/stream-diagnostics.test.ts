@@ -149,6 +149,39 @@ describe('stream slowdown diagnostic bounds and safety', () => {
     expect(new Set(records.map(({ session }) => session))).toHaveLength(300);
   });
 
+  it('caps unfinished unique sessions without evicting live continuity', () => {
+    enable();
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const handles = Array.from(
+      { length: STREAM_DIAGNOSTIC_LIMITS.maxActiveSessions + 10 },
+      (_, i) => {
+        const ulid = `0${i.toString().padStart(25, '0')}`;
+        return createStreamDiagnostic(
+          'read',
+          `wrun_${ulid}`,
+          `strm_${ulid}_user_YmVuY2gtY3R0`
+        );
+      }
+    );
+    expect(handles.filter(Boolean)).toHaveLength(
+      STREAM_DIAGNOSTIC_LIMITS.maxActiveSessions
+    );
+    expect(lines).toHaveLength(0);
+
+    handles[0]?.event('retained');
+    handles[0]?.finish('cancel');
+    const replacementUlid = `0${'Z'.repeat(25)}`;
+    const replacement = createStreamDiagnostic(
+      'read',
+      `wrun_${replacementUlid}`,
+      `strm_${replacementUlid}_user_YmVuY2gtY3R0`
+    );
+    expect(replacement).toBeDefined();
+    for (const handle of handles.slice(1)) handle?.finish('cleanup');
+    replacement?.finish('cleanup');
+  });
+
   it('accounts for tuples lost to a throwing sink', () => {
     enable();
     const lines: string[] = [];

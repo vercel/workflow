@@ -460,12 +460,12 @@ export function createStreamer(config?: APIConfig): Streamer {
             buildError: createStreamReadError,
           });
         } catch (error) {
-          diagnostic?.finish('fetch_rejected');
+          diagnostic?.checkpoint('fetch_rejected');
           throw error;
         }
         diagnostic?.event('headers_received', response.status);
         if (!response.body) {
-          diagnostic?.finish('missing_body');
+          diagnostic?.checkpoint('missing_body');
           throw new StreamError('No response body for stream', {
             url: url.toString(),
           });
@@ -481,11 +481,11 @@ export function createStreamer(config?: APIConfig): Streamer {
             try {
               result = await reader.read();
             } catch (error) {
-              diagnostic.finish('body_read_rejected');
+              diagnostic.checkpoint('body_read_rejected');
               throw error;
             }
             if (result.done || !result.value) {
-              diagnostic?.finish('eof');
+              diagnostic?.checkpoint('eof');
               controller.close();
               return;
             }

@@ -1,4 +1,8 @@
 import { StreamError, StreamExpiredError } from '@workflow/errors';
+import {
+  createStreamDiagnostic,
+  setStreamDiagnosticSinkForTest,
+} from '@workflow/utils';
 import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -101,6 +105,62 @@ function makeWorldWithScriptedStreams(
 describe('createReconnectingFramedStream', () => {
   afterEach(() => {
     setWorld(undefined as unknown as World);
+    setStreamDiagnosticSinkForTest(undefined);
+    delete process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS;
+    delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL_PROJECT_ID;
+  });
+
+  it('keeps raw connection checkpoints and core reconnect delivery in one continuous session', async () => {
+    process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS = 'true';
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const runId = `wrun_${ulid}`;
+    const name = `strm_${ulid}_user_YmVuY2gtY3R0`;
+    let connection = 0;
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      streams: {
+        get: async () => {
+          const raw = createStreamDiagnostic('read', runId, name);
+          raw?.event('raw_connection', connection);
+          const current = connection++;
+          return current === 0
+            ? scriptedStream([
+                { kind: 'value', value: payloadFrame(1) },
+                { kind: 'error', err: new Error('cut') },
+              ])
+            : scriptedStream([
+                { kind: 'value', value: payloadFrame(2) },
+                { kind: 'close' },
+              ]);
+        },
+        getInfo: async () => ({ tailIndex: 1, done: true }),
+      },
+    } as unknown as World);
+
+    expect(await readAll(createReconnectingFramedStream(runId, name))).toEqual([
+      payloadFrame(1),
+      payloadFrame(2),
+    ]);
+    const records = lines.map(
+      (line) =>
+        JSON.parse(line) as {
+          session: number;
+          tuples: [number, number, string][];
+        }
+    );
+    expect(new Set(records.map(({ session }) => session)).size).toBe(1);
+    const tuples = records.flatMap(({ tuples }) => tuples);
+    expect(tuples.map(([sequence]) => sequence)).toEqual(
+      Array.from({ length: tuples.length }, (_, i) => i + 1)
+    );
+    expect(
+      tuples.filter(([, , phase]) => phase === 'raw_connection')
+    ).toHaveLength(2);
   });
 
   it('passes through complete frames and closes cleanly on EOF', async () => {

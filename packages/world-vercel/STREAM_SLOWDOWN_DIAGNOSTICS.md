@@ -29,7 +29,10 @@ time, and enqueue is not proof that user code has run.
 All handles in core and world-vercel for one run/stream/lane share a process-global
 sequence, budget, and session, including reconnect GETs. Read and write lanes are
 independently capped at 192 attempted tuples and eight lines per logical session.
-Lines carry at most 64 tuples and are refused above 16 KiB. Teardown/checkpoints
+At most 64 logical sessions may be active process-wide; a new key over that cap
+gets no diagnostic handle, with no application-stream effect and no live-session
+eviction or per-refusal bookkeeping. Terminal completion/cancel/error frees its
+slot. Lines carry at most 64 tuples and are refused above 16 KiB. Teardown/checkpoints
 report omissions and sink failures; tuples rejected by the sink count as omitted.
 Logging is best effort and throwing sinks
 are swallowed. Instrumentation does not add operational awaits, change promise

@@ -1156,7 +1156,7 @@ export function createReconnectingFramedStream(
               totalReconnectCount
             );
           }
-          diagnostic?.checkpoint('reader_eof');
+          diagnostic?.finish('reader_eof');
           controller.close();
           return;
         }

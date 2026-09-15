@@ -9,6 +9,7 @@ const MAX_TUPLES = 64;
 const MAX_LINE_BYTES = 16 * 1024;
 const MAX_RECORDS_PER_LANE = 192;
 const MAX_LINES_PER_LANE = 8;
+const MAX_ACTIVE_SESSIONS = 64;
 
 type Lane = 'read' | 'write';
 type Sink = (line: string) => void;
@@ -102,6 +103,9 @@ export function createStreamDiagnostic(
   const key = sessionKey(lane, runId, name);
   let session = state.sessions.get(key);
   if (!session || session.finished) {
+    // Never evict a live session: doing so would silently fork its continuity.
+    // New keys fail closed until a terminal owner frees capacity.
+    if (state.sessions.size >= MAX_ACTIVE_SESSIONS) return;
     session = {
       lane,
       runId,
@@ -211,4 +215,5 @@ export const STREAM_DIAGNOSTIC_LIMITS = {
   maxLineBytes: MAX_LINE_BYTES,
   maxRecordsPerLane: MAX_RECORDS_PER_LANE,
   maxLinesPerLane: MAX_LINES_PER_LANE,
+  maxActiveSessions: MAX_ACTIVE_SESSIONS,
 } as const;
