@@ -191,6 +191,18 @@ const sleepAfterStepWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SL
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
+// The common polling shape: the sleep is created only after the step, so it
+// did not exist when the step's delta was taken and nothing can sit above that
+// delta for it. Parking on it must not pay a read.
+const stepThenSleepWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  async function workflow() {
+    const a = await s1();
+    await sleep("5s");
+    return a + 7;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
 // The payload arrives while the workflow is waiting on s1, before any hook
 // consumer exists. The next pass buffers it, advances through s1, and suspends
 // on s2; delivery idle retires the payload's unarmed barrier at that boundary.
@@ -1102,6 +1114,20 @@ describe('retained VM through the inline replay loop', () => {
       // The first suspension (sleep and s1 together) armed the wait's
       // continuation, as every suspension holding a pending wait does. The
       // park pass that would have re-armed it for the original 1h never ran.
+      expect(queueSends).toBe(1);
+    });
+
+    it('does not re-read when the wait was created by the parking suspension itself', async () => {
+      const { result, listCalls, queueSends, committedTypes } = await drive(
+        'wrun_step_then_sleep',
+        stepThenSleepWorkflow
+      );
+      expect(result).toBeUndefined();
+      expect(committedTypes).not.toContain('run_completed');
+      // s1's terminal write carried the delta; the sleep came after it, so
+      // the park reads nothing: the initial load is the only list.
+      expect(listCalls).toBe(1);
+      // The wait continuation, armed once at the park.
       expect(queueSends).toBe(1);
     });
 

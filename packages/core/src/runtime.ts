@@ -3847,33 +3847,44 @@ export function workflowEntrypoint(
 
                         // About to park on a wait (nothing to run or queue,
                         // only a wait timer to arm), over a log whose last
-                        // extension was an inline delta. The delta is the log
-                        // as of the step's terminal write; a `wait_completed`
-                        // appended after it is not in this view. The wait
-                        // timer's own completion cannot have landed yet (the
-                        // delta was requested only because no pending wait
-                        // was due within this invocation), but `run.wakeUp()`
-                        // completes waits regardless of `resumeAt`, from the
-                        // public API and the dashboard's "cancel sleeps"
-                        // action. Parking here on that stale view would arm a
-                        // continuation for the ORIGINAL `resumeAt` (chained
-                        // up to 23h for a long sleep) while a completion the
-                        // user already requested sits unread in the log, and
-                        // the wake message `run.wakeUp()` sent may have
-                        // deferred to this invocation's own in-flight step
-                        // and be gone. One `events.list` from the cursor
-                        // settles it: a completion that landed is replayed
-                        // over now, and an unchanged log parks on the next
-                        // pass. Paid once per park, which is a queue hand-off
-                        // boundary anyway, and never on a boundary that runs
-                        // a step. Only the delta's own partial-page fallback
-                        // and every real read clear the flag, so this fires
-                        // at most once per park.
+                        // extension was an inline delta, and that log holds a
+                        // wait that was already open when the delta's step
+                        // ran. The delta is the log as of the step's terminal
+                        // write; a `wait_completed` appended after it is not
+                        // in this view. The wait timer's own completion cannot
+                        // have landed yet (the delta was requested only
+                        // because no pending wait was due within this
+                        // invocation), but `run.wakeUp()` completes waits
+                        // regardless of `resumeAt`, from the public API and
+                        // the dashboard's "cancel sleeps" action. Parking here
+                        // on that stale view would arm a continuation for the
+                        // ORIGINAL `resumeAt` (chained up to 23h for a long
+                        // sleep) while a completion the user already requested
+                        // sits unread in the log, and the wake message
+                        // `run.wakeUp()` sent may have deferred to this
+                        // invocation's own in-flight step and be gone. One
+                        // `events.list` from the cursor settles it: a
+                        // completion that landed is replayed over now, and an
+                        // unchanged log parks on the next pass.
+                        //
+                        // `openWait` is the right test for "already open": a
+                        // wait this suspension created (`await step(); await
+                        // sleep(...)`, the common polling shape) did not exist
+                        // when the delta was taken, so nothing can sit above
+                        // the delta for it, and its `wait_created` is not in
+                        // the scanned log (wait creates do not fold a delta
+                        // back; hook creates do). That shape parks without the
+                        // read. Only a wait that predates the step, the
+                        // `Promise.race` loser this gate exists for, pays it,
+                        // once per park, at a queue hand-off boundary. Every
+                        // real read and the delta's own partial-page fallback
+                        // clear the flag, so this fires at most once per park.
                         if (
                           eventLogFromInlineDelta &&
                           suspensionResult.waitTimeout !== undefined &&
                           pendingSteps.length === 0 &&
-                          !suspensionResult.hasAwaitedHookCreation
+                          !suspensionResult.hasAwaitedHookCreation &&
+                          openHookWait.value.openWait
                         ) {
                           runtimeLogger.debug(
                             'Re-reading the event log before parking on a wait over an inline delta',
@@ -4376,14 +4387,19 @@ export function workflowEntrypoint(
                         // deadline across both is what the window is tested
                         // against. See `OPEN_WAIT_CLOCK_SKEW_MS`.
                         const openHookWaitState = openHookWait.value;
+                        // Written as `!(resumeAt > deadline)` so an
+                        // unreadable deadline (NaN) gates, matching the log
+                        // scan's treatment of an unparseable `resumeAt`.
                         const waitDueThisInvocation =
                           hasOpenWaitDueBy(
                             openHookWaitState,
                             openWaitDueDeadlineMs
                           ) ||
                           (suspensionResult.waitTimeout !== undefined &&
-                            suspensionResult.waitTimeout.resumeAtMs <=
-                              openWaitDueDeadlineMs);
+                            !(
+                              suspensionResult.waitTimeout.resumeAtMs >
+                              openWaitDueDeadlineMs
+                            ));
 
                         // Inline-delta fast path gate. We request the delta
                         // (and on the next iteration consume it in place of the
@@ -4462,6 +4478,20 @@ export function workflowEntrypoint(
                           lazyInlineSteps.length === 1 &&
                           ownedRecoverySteps.length === 0 &&
                           !waitDueThisInvocation;
+                        // The delta was taken while a wait is pending, which
+                        // the gate admits only for a wait due after this
+                        // invocation's window. Surfaced so traces can count
+                        // how often the relaxed gate is exercised and, should
+                        // a run misbehave, whether it was on this path.
+                        if (
+                          requestInlineDelta &&
+                          (openHookWaitState.openWait ||
+                            suspensionResult.waitTimeout !== undefined)
+                        ) {
+                          span?.setAttributes({
+                            'workflow.inline_delta_over_pending_wait': true,
+                          });
+                        }
 
                         // Stale-sensitive batch: a hook is open in the run (or
                         // was created by this suspension, so its hook_received
