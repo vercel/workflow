@@ -104,11 +104,25 @@ describe('start', () => {
     });
 
     it.each([
-      '__dynamicUseStep',
-      'steps',
-      'sleep',
-      'createHook',
-    ])('rejects a top-level %s wrapper collision before start side effects', async (binding) => {
+      ['Object', 'const Object = null;'],
+      ['Map', 'let Map = null;'],
+      ['Symbol', 'function Symbol() {}'],
+      ['globalThis', 'var globalThis = null;'],
+      ['__dynamicUseStep', 'const __dynamicUseStep = null;'],
+      ['__dynamicWorkflow', 'let __dynamicWorkflow = null;'],
+      ['__dynamicGlobalThis', 'function __dynamicGlobalThis() {}'],
+      ['steps', 'var steps = null;'],
+      ['sleep', 'const sleep = null;'],
+      ['createHook', 'let createHook = null;'],
+    ])('starts safely with caller %s declarations', async (_binding, declaration) => {
+      eventsCreate.mockImplementation(async (runId, event) => ({
+        run: {
+          runId,
+          status: 'pending',
+          dynamicWorkflowCode: event.eventData.dynamicWorkflowCode,
+        },
+      }));
+      queue.mockResolvedValue(undefined);
       setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
@@ -119,8 +133,8 @@ describe('start', () => {
         events: { create: eventsCreate },
         queue,
       } as any);
-      const collidingSource = `
-const ${binding} = null;
+      const isolatedSource = `
+${declaration}
 async function workflow() {
   "use workflow";
   return 1;
@@ -128,17 +142,15 @@ async function workflow() {
 `;
 
       await expect(
-        start(collidingSource, {
+        start(isolatedSource, {
           experimental_dynamic: {
             steps: { noop: { stepId: 'step//./test//noop' } },
           },
         })
-      ).rejects.toThrow(
-        /Generated dynamic workflow code is not valid JavaScript/
-      );
+      ).resolves.toBeDefined();
       expect(upload).not.toHaveBeenCalled();
-      expect(eventsCreate).not.toHaveBeenCalled();
-      expect(queue).not.toHaveBeenCalled();
+      expect(eventsCreate).toHaveBeenCalledOnce();
+      expect(queue).toHaveBeenCalledOnce();
     });
 
     it('allows a genuine top-level declaration to reach start side effects', async () => {
