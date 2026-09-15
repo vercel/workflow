@@ -19,10 +19,10 @@ export async function generateMetadata({
   params,
 }: PageProps): Promise<Metadata> {
   const { id } = await params;
-  return generateWorldMetadata(id, 'v5');
+  return generateWorldMetadata(id, 'v4');
 }
 
 export default async function Page({ params }: PageProps) {
   const { id } = await params;
-  return <WorldDetailPage id={id} version="v5" />;
+  return <WorldDetailPage id={id} version="v4" />;
 }

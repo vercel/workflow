@@ -195,10 +195,41 @@ const result = await world.runs.list({ // [!code highlight]
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
+| `params.workflowName` | `string` | Only return runs of this workflow |
+| `params.status` | `WorkflowRunStatus \| WorkflowRunStatus[]` | Only return runs in this status. With an array, runs matching any of the listed statuses are returned |
 | `params.pagination.cursor` | `string` | Cursor for the next page |
 | `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data |
 
 **Returns:** `{ data: WorkflowRun[], cursor?: string }`
+
+The array form of `status` lets you express set filters without restating the
+status vocabulary. `@workflow/world` exports
+`TERMINAL_WORKFLOW_RUN_STATUSES` (`['completed', 'failed', 'cancelled']`) for
+that purpose:
+
+```typescript lineNumbers
+import { TERMINAL_WORKFLOW_RUN_STATUSES } from "@workflow/world";
+
+// Every run that has not reached a terminal status
+const inFlight = await world.runs.list({
+  status: ["pending", "running"],
+});
+
+// The complement, without hardcoding the list
+const finished = await world.runs.list({
+  status: [...TERMINAL_WORKFLOW_RUN_STATUSES],
+});
+```
+
+<Callout type="warn">
+  `status: []` matches **no** runs, mirroring SQL `IN ()`. To leave the filter
+  unset, omit the field entirely.
+
+  Support for the array form is per World. The Local and Postgres Worlds accept
+  it; the Vercel World's `/v2/runs` endpoint takes a single status today and
+  throws a `WorkflowWorldError` (`INVALID_ARGUMENT`) when given an array, rather
+  than silently filtering on something else.
+</Callout>
 
 <Callout type="warn">
   Observability and inspection usage of `world.runs.list()` is deprecated. Use
