@@ -1780,6 +1780,33 @@ async function getForwardedWritableEncryptionKey(
 }
 
 /**
+ * Defer a forwarded writable's key lookup until the first chunk is written.
+ *
+ * Calling {@link getForwardedWritableEncryptionKey} starts the lookup, and the
+ * only consumer of the promise it returns is the serialize transform, which
+ * awaits it on the first write. Handing the reviver that promise directly
+ * therefore leaves a rejection unobserved on every forwarded writable nobody
+ * writes to — and its slow path (`runs.get` for a descriptor from an older
+ * deployment) is exactly the kind of request that times out. Node kills the
+ * process for an unhandled rejection, so a stream the caller never touched
+ * could take down an unrelated invocation.
+ *
+ * This is the resolver form {@link EncryptionKeyParam} documents: the lookup
+ * runs at most once, starts only when a write needs the key, and a failure
+ * rejects the write that asked for it.
+ */
+function lazyForwardedWritableEncryptionKey(
+  runId: string,
+  deploymentId: string | undefined
+): () => Promise<CryptoKey | undefined> {
+  let keyPromise: Promise<CryptoKey | undefined> | undefined;
+  return () => {
+    keyPromise ??= getForwardedWritableEncryptionKey(runId, deploymentId);
+    return keyPromise;
+  };
+}
+
+/**
  * Revivers for deserialization boundary from the client side,
  * receiving the return value from the workflow handler.
  *
@@ -1897,7 +1924,7 @@ export function getExternalRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(targetRunId, value.deploymentId);
+          : lazyForwardedWritableEncryptionKey(targetRunId, value.deploymentId);
 
       const serialize = getSerializeStream(
         getExternalReducers(global, ops, targetRunId, targetKey),
@@ -2254,12 +2281,13 @@ function getStepRevivers(
       // Cross-run case (parent → child via `start()`): the descriptor
       // carries the original `runId` and `name`. Open a server writable
       // against the original `(runId, name)` and resolve THAT run's key
-      // for encryption. The resolution is async but doesn't need to
-      // block reviver return — `getSerializeStream` accepts the
-      // `Promise<CryptoKey | undefined>` directly and awaits it lazily
-      // on the first chunk written. The key is imported encrypt-only
-      // so the receiving run can never decrypt anything else on the
-      // owning run's stream — it can only contribute new writes.
+      // for encryption. The lookup does not start until the first chunk
+      // is written — `getSerializeStream` accepts an `EncryptionKeyParam`
+      // resolver and calls it on demand, so a failed lookup errors the
+      // stream that needed the key instead of leaving an unobserved
+      // rejection behind. The key is imported encrypt-only so the
+      // receiving run can never decrypt anything else on the owning
+      // run's stream — it can only contribute new writes.
       const targetRunId = typeof value.runId === 'string' ? value.runId : runId;
       const targetDeploymentId =
         typeof value.deploymentId === 'string'
@@ -2270,7 +2298,7 @@ function getStepRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(targetRunId, targetDeploymentId);
+          : lazyForwardedWritableEncryptionKey(targetRunId, targetDeploymentId);
 
       const serialize = getSerializeStream(
         getStepReducers(global, ops, targetRunId, targetKey),
