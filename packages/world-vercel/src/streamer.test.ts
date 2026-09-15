@@ -265,7 +265,6 @@ describe('streams.get', () => {
   });
 
   it('observes raw first byte without changing chunk delivery or cancellation', async () => {
-    vi.stubEnv('WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS', 'true');
     vi.stubEnv('VERCEL_ENV', 'preview');
     vi.stubEnv('VERCEL_PROJECT_ID', 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm');
     const lines: string[] = [];

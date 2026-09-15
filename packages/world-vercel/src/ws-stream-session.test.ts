@@ -124,7 +124,6 @@ beforeEach(() => {
   writeSpans.length = 0;
   delete process.env.WORKFLOW_STREAMS_TRANSPORT;
   delete process.env.WORKFLOW_REQUEST_TIMEOUT_MS;
-  delete process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS;
   delete process.env.VERCEL_ENV;
   delete process.env.VERCEL_PROJECT_ID;
   setStreamDiagnosticSinkForTest(undefined);
@@ -166,7 +165,6 @@ function makeSession(
 describe('v1 stream WebSocket writer lifecycle', () => {
   it('keeps serialization, callback acknowledgement, and promise settlement unchanged when diagnostics are enabled', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
-    process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS = 'true';
     process.env.VERCEL_ENV = 'preview';
     process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
     const lines: string[] = [];

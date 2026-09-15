@@ -1,7 +1,9 @@
 # Temporary stream slowdown diagnostic
 
-`WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS=true` enables a temporary client-side
-attribution log only when all fail-closed gates match: `VERCEL_ENV=preview`,
+This diagnostic is a disposable draft PR artifact for PR #4178 and is not
+intended to merge to `main`. It has no runtime toggle. The temporary client-side
+attribution log activates automatically only when all fail-closed gates match:
+`VERCEL_ENV=preview`,
 `VERCEL_PROJECT_ID=prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm`, a canonical `wrun_` ULID,
 and the same ULID in the exact `strm_<ulid>_user_YmVuY2gtY3R0` (`bench-ctt`)
 stream ID. Writes additionally require a canonical `wrtr_` ULID. Headers and

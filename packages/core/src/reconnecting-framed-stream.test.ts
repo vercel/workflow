@@ -106,13 +106,11 @@ describe('createReconnectingFramedStream', () => {
   afterEach(() => {
     setWorld(undefined as unknown as World);
     setStreamDiagnosticSinkForTest(undefined);
-    delete process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS;
     delete process.env.VERCEL_ENV;
     delete process.env.VERCEL_PROJECT_ID;
   });
 
   it('keeps raw connection checkpoints and core reconnect delivery in one continuous session', async () => {
-    process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS = 'true';
     process.env.VERCEL_ENV = 'preview';
     process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
     const lines: string[] = [];

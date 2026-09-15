@@ -82,7 +82,6 @@ describe('WorkflowServerReadableStream read telemetry', () => {
   afterEach(() => {
     setWorld(undefined);
     setStreamDiagnosticSinkForTest(undefined);
-    delete process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS;
     delete process.env.VERCEL_ENV;
     delete process.env.VERCEL_PROJECT_ID;
     vi.clearAllMocks();
@@ -92,7 +91,6 @@ describe('WorkflowServerReadableStream read telemetry', () => {
     'get',
     'read',
   ] as const)('releases diagnostic capacity on terminal %s rejection', async (seam) => {
-    process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS = 'true';
     process.env.VERCEL_ENV = 'preview';
     process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
     setStreamDiagnosticSinkForTest(() => {});

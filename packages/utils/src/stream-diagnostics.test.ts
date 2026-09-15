@@ -12,7 +12,6 @@ const STREAM = `strm_${ULID}_user_YmVuY2gtY3R0`;
 const WRITER = `wrtr_${ULID}`;
 
 function enable(): void {
-  process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS = 'true';
   process.env.VERCEL_ENV = 'preview';
   process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
 }
@@ -25,9 +24,16 @@ afterEach(() => {
 });
 
 describe('stream slowdown diagnostic gate', () => {
-  it('requires the exact opt-in, preview, project, run, stream, and writer', () => {
+  it('activates with no runtime toggle when preview, project, and canonical IDs match', () => {
     enable();
+    delete process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS;
     expect(isStreamSlowdownDiagnosticsEnabled(RUN, STREAM, WRITER)).toBe(true);
+    process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS = 'false';
+    expect(isStreamSlowdownDiagnosticsEnabled(RUN, STREAM, WRITER)).toBe(true);
+  });
+
+  it('fails closed for the wrong environment, project, run, stream, or writer', () => {
+    enable();
     for (const [run, stream, writer] of [
       [
         `wrun_${'A'.repeat(26)}`,
@@ -49,9 +55,6 @@ describe('stream slowdown diagnostic gate', () => {
     process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
     process.env.VERCEL_ENV = 'production';
     expect(isStreamSlowdownDiagnosticsEnabled(RUN, STREAM, WRITER)).toBe(false);
-    process.env.VERCEL_ENV = 'preview';
-    process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS = 'TRUE';
-    expect(isStreamSlowdownDiagnosticsEnabled(RUN, STREAM, WRITER)).toBe(false);
   });
 
   it('cannot be enabled by request data and emits no payload/header/error text', () => {
@@ -60,7 +63,6 @@ describe('stream slowdown diagnostic gate', () => {
     process.env = {
       ...process.env,
       authorization: 'secret',
-      WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS: 'false',
     };
     expect(createStreamDiagnostic('read', RUN, STREAM)).toBeUndefined();
     expect(sink).not.toHaveBeenCalled();

@@ -71,7 +71,6 @@ export function isStreamSlowdownDiagnosticsEnabled(
   writerId?: string
 ): boolean {
   return (
-    process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS === 'true' &&
     process.env.VERCEL_ENV === 'preview' &&
     process.env.VERCEL_PROJECT_ID === PROJECT_ID &&
     isCanonicalBenchCttStream(runId, name) &&
