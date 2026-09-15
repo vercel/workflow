@@ -231,6 +231,26 @@ describe('compileDynamicWorkflow', () => {
       ).rejects.toThrow(/at top level/);
     });
 
+    it.each([
+      '__dynamicUseStep',
+      'steps',
+      'sleep',
+      'createHook',
+    ])('rejects a top-level %s binding that collides with the generated wrapper', async (binding) => {
+      const source = `
+const ${binding} = null;
+async function workflow() {
+  "use workflow";
+  return 1;
+}
+`;
+      await expect(
+        compileDynamicWorkflow(source, { steps: STEPS })
+      ).rejects.toThrow(
+        /Generated dynamic workflow code is not valid JavaScript/
+      );
+    });
+
     it('accepts a genuine top-level async declaration without evaluating source', async () => {
       const marker = '__dynamicWorkflowValidationExecuted';
       delete (globalThis as Record<string, unknown>)[marker];

@@ -201,6 +201,20 @@ function parseDynamicWorkflowSource(source: string): Program {
   }
 }
 
+function assertGeneratedWorkflowCodeParses(workflowCode: string): void {
+  try {
+    parse(workflowCode, {
+      ecmaVersion: 'latest',
+      sourceType: 'script',
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new WorkflowRuntimeError(
+      `Generated dynamic workflow code is not valid JavaScript: ${message}. Avoid top-level bindings named __dynamicUseStep, steps, sleep, or createHook because those names are provided by the dynamic workflow runtime.`
+    );
+  }
+}
+
 function validateDynamicWorkflowSource(
   source: string,
   exportName: string
@@ -347,6 +361,11 @@ Object.defineProperty(${exportName}, "workflowId", {
 });
 globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${exportName});
 `;
+
+  // The caller's source can be valid in isolation but collide with bindings
+  // supplied by the generated wrapper. Parse the complete script without
+  // evaluating it so such a run fails before upload, creation, or queueing.
+  assertGeneratedWorkflowCodeParses(workflowCode);
 
   return {
     workflowName,
