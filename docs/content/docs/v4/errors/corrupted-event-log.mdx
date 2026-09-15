@@ -35,12 +35,12 @@ Common scenarios that produce this error:
 
 This error indicates a bug in the Workflow SDK or Workflow server, not in your workflow code. Your workflow code does not need to change. Follow these steps to resolve the issue:
 
-### 1. Upgrade to the latest `workflow` package
+### 1. Upgrade to the latest 4.x `workflow` package
 
-The bug that caused the corrupted event log may have already been identified and fixed in a newer version. Update to the latest version:
+The bug that caused the corrupted event log may have already been identified and fixed in a newer version. Update to the latest 4.x release:
 
 ```bash
-npm install workflow@latest
+npm install workflow@4
 ```
 
 ### 2. Retry the failed run
