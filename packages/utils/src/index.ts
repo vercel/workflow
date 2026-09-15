@@ -16,6 +16,7 @@ export { pluralize } from './pluralize.js';
 export { once, type PromiseWithResolvers, withResolvers } from './promise.js';
 export {
   createStreamDiagnostic,
+  getActiveStreamDiagnosticSessionsForTest,
   isCanonicalBenchCttStream,
   isStreamSlowdownDiagnosticsEnabled,
   STREAM_DIAGNOSTIC_LIMITS,

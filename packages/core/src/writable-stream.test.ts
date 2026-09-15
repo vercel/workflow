@@ -1,3 +1,7 @@
+import {
+  getActiveStreamDiagnosticSessionsForTest,
+  setStreamDiagnosticSinkForTest,
+} from '@workflow/utils';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFlushableState, flushablePipe } from './flushable-stream.js';
@@ -56,7 +60,46 @@ describe('WorkflowServerWritableStream', () => {
 
   afterEach(() => {
     setWorld(undefined);
+    setStreamDiagnosticSinkForTest(undefined);
+    delete process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS;
+    delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL_PROJECT_ID;
     vi.clearAllMocks();
+  });
+
+  describe('diagnostic terminal ownership', () => {
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const runId = `wrun_${ulid}`;
+    const name = `strm_${ulid}_user_YmVuY2gtY3R0`;
+
+    beforeEach(() => {
+      process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS = 'true';
+      process.env.VERCEL_ENV = 'preview';
+      process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
+      setStreamDiagnosticSinkForTest(() => {});
+    });
+
+    it.each([
+      ['successful close', undefined],
+      ['rejected close', new Error('close rejected')],
+    ])('releases capacity after %s', async (_label, closeError) => {
+      if (closeError) mockStreams.close.mockRejectedValueOnce(closeError);
+      const writer = new WorkflowServerWritableStream(runId, name).getWriter();
+      expect(getActiveStreamDiagnosticSessionsForTest()).toBe(1);
+      const result = writer.close();
+      if (closeError) await expect(result).rejects.toBe(closeError);
+      else await expect(result).resolves.toBeUndefined();
+      expect(getActiveStreamDiagnosticSessionsForTest()).toBe(0);
+    });
+
+    it('releases capacity after default HTTP abort without changing reason', async () => {
+      const reason = new Error('producer failed');
+      const writer = new WorkflowServerWritableStream(runId, name).getWriter();
+      expect(getActiveStreamDiagnosticSessionsForTest()).toBe(1);
+      await expect(writer.abort(reason)).resolves.toBeUndefined();
+      expect(getActiveStreamDiagnosticSessionsForTest()).toBe(0);
+      expect(mockStreams.close).not.toHaveBeenCalled();
+    });
   });
 
   describe('constructor validation', () => {

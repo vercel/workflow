@@ -807,58 +807,63 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
       type: 'bytes',
 
       pull: async (controller) => {
-        let reader = this.#reader;
-        if (!reader) {
-          if (readStart === undefined) readStart = Date.now();
-          const world = await getWorldLazy();
-          const connectStart = Date.now();
-          const stream = await world.streams.get(runId, name, startIndex);
-          connectMs = Date.now() - connectStart;
-          reader = this.#reader = stream.getReader();
-        }
-        if (!reader) {
-          diagnostic?.finish('reader_unavailable');
-          controller.error(new Error('Failed to get reader'));
-          return;
-        }
+        try {
+          let reader = this.#reader;
+          if (!reader) {
+            if (readStart === undefined) readStart = Date.now();
+            const world = await getWorldLazy();
+            const connectStart = Date.now();
+            const stream = await world.streams.get(runId, name, startIndex);
+            connectMs = Date.now() - connectStart;
+            reader = this.#reader = stream.getReader();
+          }
+          if (!reader) {
+            diagnostic?.finish('reader_unavailable');
+            controller.error(new Error('Failed to get reader'));
+            return;
+          }
 
-        const result = await reader.read();
-        if (result.done) {
-          this.#reader = undefined;
-          if (readStart !== undefined) {
-            recordStreamReadComplete(
-              readStart,
-              runId,
-              name,
-              chunksDelivered,
-              bytesDelivered
-            );
+          const result = await reader.read();
+          if (result.done) {
+            this.#reader = undefined;
+            if (readStart !== undefined) {
+              recordStreamReadComplete(
+                readStart,
+                runId,
+                name,
+                chunksDelivered,
+                bytesDelivered
+              );
+            }
+            diagnostic?.finish('reader_eof');
+            controller.close();
+          } else {
+            // The server flushes a leading zero-length chunk (v3+) to commit
+            // response headers before any data; skip empties so TTFC measures to
+            // the first real chunk.
+            if (
+              !firstChunkReported &&
+              result.value.byteLength > 0 &&
+              readStart !== undefined
+            ) {
+              firstChunkReported = true;
+              recordReadTimeToFirstChunk(
+                readStart,
+                runId,
+                name,
+                startIndex,
+                connectMs
+              );
+            }
+            chunksDelivered += 1;
+            bytesDelivered += result.value.byteLength;
+            // Forward raw bytes; encryption/decryption is handled at the
+            // framing level by getSerializeStream/getDeserializeStream.
+            controller.enqueue(result.value);
           }
-          diagnostic?.finish('reader_eof');
-          controller.close();
-        } else {
-          // The server flushes a leading zero-length chunk (v3+) to commit
-          // response headers before any data; skip empties so TTFC measures to
-          // the first real chunk.
-          if (
-            !firstChunkReported &&
-            result.value.byteLength > 0 &&
-            readStart !== undefined
-          ) {
-            firstChunkReported = true;
-            recordReadTimeToFirstChunk(
-              readStart,
-              runId,
-              name,
-              startIndex,
-              connectMs
-            );
-          }
-          chunksDelivered += 1;
-          bytesDelivered += result.value.byteLength;
-          // Forward raw bytes; encryption/decryption is handled at the
-          // framing level by getSerializeStream/getDeserializeStream.
-          controller.enqueue(result.value);
+        } catch (error) {
+          diagnostic?.finish('reader_rejected');
+          throw error;
         }
       },
       cancel: async (reason) => {
@@ -1720,25 +1725,28 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         if (sinkError !== undefined) throw sinkError;
       },
       async close() {
-        // Everything accepted must be durable before the server stream is
-        // closed: the server fences post-close writes.
-        await drain();
+        try {
+          // Everything accepted must be durable before the server stream is
+          // closed: the server fences post-close writes.
+          await drain();
 
-        // A close with an empty buffer skips the dispatch path (and its
-        // barrier), but can itself be the first write to a brand-new
-        // stream, so gate it too.
-        await ensureRunReady();
+          // A close with an empty buffer skips the dispatch path (and its
+          // barrier), but can itself be the first write to a brand-new
+          // stream, so gate it too.
+          await ensureRunReady();
 
-        const world = await worldPromise;
-        const session = await writeSessionPromise;
-        const closeStart = Date.now();
-        if (session) {
-          await session.close();
-        } else {
-          await world.streams.close(runId, name);
+          const world = await worldPromise;
+          const session = await writeSessionPromise;
+          const closeStart = Date.now();
+          if (session) {
+            await session.close();
+          } else {
+            await world.streams.close(runId, name);
+          }
+          recordStreamClose(closeStart, runId, name);
+        } finally {
+          diagnostic?.finish('core_closed');
         }
-        recordStreamClose(closeStart, runId, name);
-        diagnostic?.finish('core_closed');
       },
       async abort(reason) {
         // Buffered chunks were already ACKED to their writers (early-ack
@@ -1776,7 +1784,11 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // stateful World releases its socket without sending close; stateless
         // Worlds keep the existing no-op behavior.
         const session = await writeSessionPromise.catch(() => undefined);
-        await session?.dispose?.();
+        try {
+          await session?.dispose?.();
+        } finally {
+          diagnostic?.finish('core_aborted');
+        }
       },
     });
 

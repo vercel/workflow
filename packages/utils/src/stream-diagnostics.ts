@@ -79,7 +79,11 @@ export function isStreamSlowdownDiagnosticsEnabled(
   );
 }
 
-/** Test seam only. The sink is process-global because bundled module copies are not. */
+/** Test seams only. State is process-global because bundled module copies are not. */
+export function getActiveStreamDiagnosticSessionsForTest(): number {
+  return state.sessions.size;
+}
+
 export function setStreamDiagnosticSinkForTest(sink?: Sink): void {
   state.sink = sink;
   state.sessions.clear();
