@@ -120,6 +120,11 @@ function RunActionsDropdownContentInner({
       runStatus={status}
       events={events}
       eventsLoading={isLoading}
+      replayDisabledReason={
+        run?.executionContext?.dynamicWorkflow
+          ? 'Dynamic runs cannot be replayed as a new run.'
+          : undefined
+      }
       stopPropagation
       callbacks={{ onSuccess }}
     />
