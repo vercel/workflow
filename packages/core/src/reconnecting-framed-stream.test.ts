@@ -148,16 +148,21 @@ describe('createReconnectingFramedStream', () => {
       (line) =>
         JSON.parse(line) as {
           session: number;
-          tuples: [number, number, string][];
+          readConnections: unknown[];
+          readAggregate: { decoded: number; decodedBytes: number };
+          incidents: Array<[number, string]>;
         }
     );
     expect(new Set(records.map(({ session }) => session)).size).toBe(1);
-    const tuples = records.flatMap(({ tuples }) => tuples);
-    expect(tuples.map(([sequence]) => sequence)).toEqual(
-      Array.from({ length: tuples.length }, (_, i) => i + 1)
-    );
+    expect(records.at(-1)?.readConnections).toHaveLength(2);
+    expect(records.at(-1)?.readAggregate).toMatchObject({
+      decoded: 2,
+      decodedBytes: payloadFrame(1).byteLength + payloadFrame(2).byteLength,
+    });
     expect(
-      tuples.filter(([, , phase]) => phase === 'raw_connection')
+      records
+        .at(-1)
+        ?.incidents.filter(([, phase]) => phase === 'raw_connection')
     ).toHaveLength(2);
   });
 

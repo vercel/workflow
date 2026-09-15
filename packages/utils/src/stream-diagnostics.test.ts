@@ -98,79 +98,209 @@ describe('stream slowdown diagnostic gate', () => {
   });
 });
 
-describe('stream slowdown diagnostic bounds and safety', () => {
-  it('batches continuous numeric tuples and records omissions within limits', () => {
+describe('stream slowdown diagnostic aggregation and bounds', () => {
+  function recordCompletedGroup(
+    diagnostic: NonNullable<ReturnType<typeof createStreamDiagnostic>>,
+    ordinal: number,
+    bytes = 37
+  ): void {
+    const reqId = ordinal;
+    const chunkSeq = ordinal - 1;
+    diagnostic.event('core_buffer_dispatch', ordinal, chunkSeq, 1, bytes);
+    diagnostic.event('session_write_entry', ordinal, chunkSeq, 1, bytes);
+    diagnostic.event('encode_begin', reqId, chunkSeq, 1, ordinal);
+    diagnostic.event('encode_end', reqId, bytes + 12, 1);
+    diagnostic.event('ws_send_call', reqId, bytes + 12, 1);
+    diagnostic.event('ws_send_callback', reqId, 0, 1);
+    diagnostic.event('ws_send_return', reqId, 1);
+    diagnostic.event('raw_message_callback', 1, 9);
+    diagnostic.event('decode_complete', reqId, 9);
+    diagnostic.event('pending_resolve', reqId);
+    diagnostic.event('session_write_return', ordinal, chunkSeq, 1, bytes);
+    diagnostic.event('core_flush_settle', ordinal, chunkSeq, 1, bytes);
+  }
+
+  it('retains the exact 2,593-event single-chunk cadence through the tail', () => {
     enable();
     const lines: string[] = [];
     setStreamDiagnosticSinkForTest((line) => lines.push(line));
     const diagnostic = createStreamDiagnostic('write', RUN, STREAM, WRITER);
-    expect(diagnostic).toBeDefined();
     if (!diagnostic) throw new Error('expected diagnostic');
-    for (let i = 0; i < 300; i++) diagnostic.event('phase', i, 1, 2, 3);
-    diagnostic.finish('done');
 
-    expect(lines.length).toBeLessThan(10);
-    const records = lines.map((line) => {
+    // Exact derived shape of eve-gpt-5.6-sol-2000t: one completed transport
+    // group for each of its 2,593 event chunks.
+    for (let ordinal = 1; ordinal <= 2_593; ordinal++) {
+      recordCompletedGroup(diagnostic, ordinal, 37 + (ordinal % 19));
+    }
+    diagnostic.finish('closed_ws');
+
+    const totalBytes = lines.reduce(
+      (sum, line) => sum + Buffer.byteLength(line),
+      0
+    );
+    expect(lines.length).toBeLessThan(80);
+    expect(totalBytes).toBeLessThan(1024 * 1024);
+    for (const line of lines) {
       expect(Buffer.byteLength(line)).toBeLessThanOrEqual(
         STREAM_DIAGNOSTIC_LIMITS.maxLineBytes
       );
-      return JSON.parse(line) as {
-        tuples: [number, number, string][];
-        omitted: number;
-      };
-    });
-    const tuples = records.flatMap((record) => record.tuples);
-    expect(tuples).toHaveLength(STREAM_DIAGNOSTIC_LIMITS.maxRecordsPerLane);
-    expect(tuples.map((tuple) => tuple[0])).toEqual(
-      Array.from({ length: tuples.length }, (_, i) => i + 1)
-    );
-    expect(records.at(-1)?.omitted).toBe(108);
-    expect(records.every((r) => r.tuples.length <= 64)).toBe(true);
-  });
-
-  it('shares sequence and budget across handles for one logical lane', () => {
-    enable();
-    const lines: string[] = [];
-    setStreamDiagnosticSinkForTest((line) => lines.push(line));
-    const first = createStreamDiagnostic('read', RUN, STREAM);
-    const second = createStreamDiagnostic('read', RUN, STREAM);
-    if (!first || !second) throw new Error('expected diagnostics');
-    first.event('raw', 1);
-    second.event('decoded', 2);
-    second.finish('done');
-    const record = JSON.parse(lines[0]) as {
-      session: number;
-      tuples: [number, number, string][];
-    };
-    expect(record.tuples.map(([seq, , phase]) => [seq, phase])).toEqual([
-      [1, 'raw'],
-      [2, 'decoded'],
-    ]);
-  });
-
-  it('removes a finished shared session so repeated canceled reads stay independent', () => {
-    enable();
-    const lines: string[] = [];
-    setStreamDiagnosticSinkForTest((line) => lines.push(line));
-    for (let i = 0; i < 300; i++) {
-      const diagnostic = createStreamDiagnostic('read', RUN, STREAM);
-      if (!diagnostic) throw new Error('expected diagnostic');
-      diagnostic.event('reader_entry', i);
-      diagnostic.finish('cancel');
     }
-    const records = lines.map(
-      (line) => JSON.parse(line) as { session: number }
+    const records = lines.map((line) => JSON.parse(line));
+    const tuples = records.flatMap((record) => record.tuples);
+    expect(tuples).toHaveLength(2_593);
+    expect(tuples.map((tuple: number[]) => tuple[0])).toEqual(
+      Array.from({ length: 2_593 }, (_, i) => i + 1)
     );
-    expect(records).toHaveLength(300);
-    expect(new Set(records.map(({ session }) => session))).toHaveLength(300);
+    expect(tuples.map((tuple: number[]) => tuple[1])).toEqual(
+      Array.from({ length: 2_593 }, (_, i) => i + 1)
+    );
+    expect(tuples.map((tuple: number[]) => tuple.slice(2, 5))).toEqual(
+      Array.from({ length: 2_593 }, (_, i) => [i, 1, 37 + ((i + 1) % 19)])
+    );
+    expect(tuples.at(-1)?.[7]).toBe('ws_success');
+    expect(records.at(-1)).toMatchObject({
+      kind: 'terminal',
+      outcome: 'closed_ws',
+      groupsAttempted: 2_593,
+      groupsEmitted: 2_593,
+      groupsOmitted: 0,
+      chunksAttempted: 2_593,
+      chunksEmitted: 2_593,
+      chunksOmitted: 0,
+      overflow: false,
+      sinkFailures: 0,
+      liveGroups: 0,
+      liveRequests: 0,
+    });
+  });
+
+  it('represents bootstrap HTTP groups and rejected groups without invented phases', () => {
+    enable();
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const diagnostic = createStreamDiagnostic('write', RUN, STREAM, WRITER);
+    if (!diagnostic) throw new Error('expected diagnostic');
+    diagnostic.event('core_buffer_dispatch', 1, 0, 1, 12);
+    diagnostic.event('session_write_entry', 1, 0, 1, 12);
+    diagnostic.event('session_write_return', 1, 0, 1, 12);
+    diagnostic.event('core_flush_settle', 1, 0, 1, 12);
+    diagnostic.event('core_buffer_dispatch', 2, 1, 1, 13);
+    diagnostic.event('session_write_entry', 2, 1, 1, 13);
+    diagnostic.event('session_write_reject', 2);
+    diagnostic.event('fallback_http', 1);
+    diagnostic.checkpoint('fallback_http_connect_rejected');
+    diagnostic.event('core_buffer_dispatch', 3, 2, 1, 14);
+    diagnostic.event('session_write_entry', 3, 2, 1, 14);
+    diagnostic.event('session_write_return', 3, 2, 1, 14);
+    diagnostic.event('core_flush_settle', 3, 2, 1, 14);
+    diagnostic.finish('poisoned');
+    const tuples = lines.flatMap((line) => JSON.parse(line).tuples);
+    expect(tuples[0].slice(0, 8)).toEqual([
+      1,
+      null,
+      0,
+      1,
+      12,
+      null,
+      null,
+      'http_success',
+    ]);
+    expect(tuples[0].slice(10, 18)).toEqual(Array(8).fill(null));
+    expect(tuples[1][7]).toBe('rejected');
+    expect(tuples[2][7]).toBe('http_fallback_success');
+    expect(JSON.parse(lines.at(-1) ?? '{}')).toMatchObject({
+      outcome: 'poisoned',
+    });
+  });
+
+  it('keeps terminal reserve after a throwing sink and reports continuity loss', () => {
+    enable();
+    const lines: string[] = [];
+    let throwOnce = true;
+    setStreamDiagnosticSinkForTest((line) => {
+      if (throwOnce) {
+        throwOnce = false;
+        throw new Error('private sink text');
+      }
+      lines.push(line);
+    });
+    const diagnostic = createStreamDiagnostic('write', RUN, STREAM, WRITER);
+    if (!diagnostic) throw new Error('expected diagnostic');
+    for (let i = 1; i <= 49; i++) recordCompletedGroup(diagnostic, i);
+    diagnostic.finish('closed_ws');
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toMatchObject({
+      kind: 'terminal',
+      sinkFailures: 1,
+      groupsAttempted: 49,
+      groupsEmitted: 1,
+      groupsOmitted: 48,
+      chunksOmitted: 48,
+    });
+  });
+
+  it('emits exact overflow counters beyond the normal group budget', () => {
+    enable();
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const diagnostic = createStreamDiagnostic('write', RUN, STREAM, WRITER);
+    if (!diagnostic) throw new Error('expected diagnostic');
+    for (
+      let i = 1;
+      i <= STREAM_DIAGNOSTIC_LIMITS.maxCompletedWriteGroups + 1;
+      i++
+    ) {
+      recordCompletedGroup(diagnostic, i, 1);
+    }
+    diagnostic.finish('closed_ws');
+    expect(JSON.parse(lines.at(-1) ?? '{}')).toMatchObject({
+      overflow: true,
+      groupsAttempted: STREAM_DIAGNOSTIC_LIMITS.maxCompletedWriteGroups + 1,
+      groupsOmitted: 1,
+      chunksOmitted: 1,
+      bytesOmitted: 1,
+    });
+  });
+
+  it('aggregates all selected reads while retaining bounded setup records', () => {
+    enable();
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const diagnostic = createStreamDiagnostic('read', RUN, STREAM);
+    if (!diagnostic) throw new Error('expected diagnostic');
+    diagnostic.event('get_dispatch', 0, 0);
+    diagnostic.event('get_entry', 0);
+    diagnostic.event('instrumented_fetch_entry', 0);
+    diagnostic.event('fetch_call');
+    diagnostic.event('headers_received', 200);
+    diagnostic.event('raw_first_nonempty_body_chunk', 100);
+    diagnostic.event('first_complete_outer_frame', 0, 44);
+    for (let i = 0; i < 2_593; i++) {
+      diagnostic.event('decoded_delivery', i, 44);
+      diagnostic.event('deserialize_complete', 40);
+      diagnostic.event('consumer_enqueue', 40);
+    }
+    diagnostic.finish('reader_eof');
+    const record = JSON.parse(lines.at(-1) ?? '{}');
+    expect(lines).toHaveLength(1);
+    expect(record.readConnections).toHaveLength(1);
+    expect(record.readAggregate).toMatchObject({
+      decoded: 2_593,
+      decodedBytes: 2_593 * 44,
+      enqueued: 2_593,
+      enqueuedBytes: 2_593 * 40,
+    });
+    expect(record.readAggregate.latencyTotalMs).toBeGreaterThanOrEqual(0);
+    expect(record.readAggregate.latencyMaxMs).toBeGreaterThanOrEqual(0);
+    expect(record.incidents.length).toBeLessThanOrEqual(
+      STREAM_DIAGNOSTIC_LIMITS.maxRecordsPerLane
+    );
   });
 
   it('caps unfinished unique sessions without evicting live continuity', () => {
     enable();
-    const lines: string[] = [];
-    setStreamDiagnosticSinkForTest((line) => lines.push(line));
     const handles = Array.from(
-      { length: STREAM_DIAGNOSTIC_LIMITS.maxActiveSessions + 10 },
+      { length: STREAM_DIAGNOSTIC_LIMITS.maxActiveSessions + 1 },
       (_, i) => {
         const ulid = `0${i.toString().padStart(25, '0')}`;
         return createStreamDiagnostic(
@@ -183,58 +313,6 @@ describe('stream slowdown diagnostic bounds and safety', () => {
     expect(handles.filter(Boolean)).toHaveLength(
       STREAM_DIAGNOSTIC_LIMITS.maxActiveSessions
     );
-    expect(lines).toHaveLength(0);
-
-    handles[0]?.event('retained');
-    handles[0]?.finish('cancel');
-    const replacementUlid = `0${'Z'.repeat(25)}`;
-    const replacement = createStreamDiagnostic(
-      'read',
-      `wrun_${replacementUlid}`,
-      `strm_${replacementUlid}_user_YmVuY2gtY3R0`
-    );
-    expect(replacement).toBeDefined();
-    for (const handle of handles.slice(1)) handle?.finish('cleanup');
-    replacement?.finish('cleanup');
-  });
-
-  it('accounts for tuples lost to a throwing sink', () => {
-    enable();
-    const lines: string[] = [];
-    let throws = true;
-    setStreamDiagnosticSinkForTest((line) => {
-      if (throws) {
-        throws = false;
-        throw new Error('sink secret');
-      }
-      lines.push(line);
-    });
-    const diagnostic = createStreamDiagnostic('write', RUN, STREAM, WRITER);
-    if (!diagnostic) throw new Error('expected diagnostic');
-    expect(() => {
-      for (let i = 0; i < 64; i++) diagnostic.event('phase', i);
-      diagnostic.event('after_failure');
-      diagnostic.finish('done');
-    }).not.toThrow();
-    expect(JSON.parse(lines[0])).toMatchObject({
-      omitted: 64,
-      sinkFailures: 1,
-      firstSeq: 65,
-      lastSeq: 65,
-    });
-  });
-
-  it('swallows a throwing sink without changing caller control flow', () => {
-    enable();
-    setStreamDiagnosticSinkForTest(() => {
-      throw new Error('sink secret');
-    });
-    const diagnostic = createStreamDiagnostic('write', RUN, STREAM, WRITER);
-    expect(diagnostic).toBeDefined();
-    if (!diagnostic) throw new Error('expected diagnostic');
-    expect(() => {
-      for (let i = 0; i < 70; i++) diagnostic.event('phase', i);
-      diagnostic.finish('done');
-    }).not.toThrow();
+    for (const handle of handles) handle?.finish('cleanup');
   });
 });

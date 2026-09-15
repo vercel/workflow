@@ -9,33 +9,64 @@ and the same ULID in the exact `strm_<ulid>_user_YmVuY2gtY3R0` (`bench-ctt`)
 stream ID. Writes additionally require a canonical `wrtr_` ULID. Headers and
 payloads cannot enable the diagnostic.
 
-Each JSON line has schema version `v` (currently 2), diagnostic/lane/kind, run/stream/session
-continuity fields, `clock: "performance.now"`, `timeOrigin`, first/last tuple
-sequence, numeric tuples, and attempted/emitted/omitted/sink-failure counters.
-Tuple shape is `[sequence, timestampMs, phase, a?, b?, c?, d?]`; phase defines
-the numeric positions. IDs are correlation fields only and are never metric
-tags. No payload, authorization, headers, secrets, stack, or error text is
-recorded.
+Each JSON line has schema version `v: 3`, diagnostic/lane/kind, run/stream/session
+continuity, `clock: "performance.now"`, `timeOrigin`, exact attempted/emitted/
+omitted group/chunk/byte counters, overflow and sink-failure counters. No
+payload, authorization, headers, secrets, stack, or error text is recorded.
+Offsets are comparable only within a session with the same `timeOrigin`; they do
+not measure server work or cross-process time.
 
-Write phases cover core group dispatch/settle, session entry/return, encoding,
-`ws.send` call/return/callback, raw reply/decode/resolve, connection attempts,
-fallback, poison, and teardown. Numeric write values carry group ordinal,
-request ID, writer-local chunk range/count/bytes, and connection attempt where
-available. Read phases distinguish the first non-empty **raw response-body
-chunk** (transport bytes, possibly a partial frame) from the first complete
-outer frame and decoded delivery, then deserialization and consumer enqueue.
-These are same-process monotonic timestamps; compare tuples only when their
-`timeOrigin` matches. They do not measure server work or cross-process clock
-time, and enqueue is not proof that user code has run.
+## Write schema
 
-All handles in core and world-vercel for one run/stream/lane share a process-global
-sequence, budget, and session, including reconnect GETs. Read and write lanes are
-independently capped at 192 attempted tuples and eight lines per logical session.
-At most 64 logical sessions may be active process-wide; a new key over that cap
-gets no diagnostic handle, with no application-stream effect and no live-session
-eviction or per-refusal bookkeeping. Terminal completion/cancel/error frees its
-slot. Lines carry at most 64 tuples and are refused above 16 KiB. Teardown/checkpoints
-report omissions and sink failures; tuples rejected by the sink count as omitted.
-Logging is best effort and throwing sinks
-are swallowed. Instrumentation does not add operational awaits, change promise
-ownership, inspect frame payloads, or alter timeout/reconnect/fallback policy.
+`writeTupleSchema: "completed-group-v1"` identifies one tuple per terminal
+successful or rejected core group:
+
+```text
+[groupOrdinal, reqId|null, chunkSeq, chunkCount, chunkBytes,
+ connectionGeneration|null, connectionAttempt|null,
+ outcome,
+ coreDispatch, sessionEntry, encodeBegin, encodeEnd,
+ wsSendCall, wsSendReturn, wsSendCallback, rawMessageCallback,
+ decodeComplete, pendingResolve, sessionReturn, coreSettle]
+```
+
+The twelve phases are same-clock offsets from `coreDispatch`. A `null` means the
+phase did not occur or was not observable at an existing seam; it is never a
+fabricated timestamp. Initial HTTP bootstrap/control and HTTP fallback groups
+therefore have no `reqId` or WS phases. Rejected groups retain the phases that
+actually occurred. Connection generation and attempt currently advance together
+because each accepted socket generation is created by one numbered connection
+attempt.
+
+Completed groups are accumulated in fixed per-live-group/request state, deleted
+at settle/reject, and emitted 48 per envelope under 16 KiB. The normal reserve
+holds 2,720 completed groups (headroom over the 2,593-event canonical cadence)
+and uses at most 72 batch lines. A separate 192-record incident reserve and a
+terminal envelope survive normal-budget exhaustion. The terminal envelope
+reports live-map sizes and all continuity counters. At most eight groups and two
+requests may be live, and at most 64 logical diagnostic sessions may exist
+process-wide. New sessions fail closed rather than evicting live continuity.
+
+## Read schema and selection
+
+Reads do **not** emit per-chunk phase triplets. `readConnections` retains one
+compact setup tuple/object per connection: core dispatch, world entry, fetch
+call, headers, first non-empty raw body bytes, first complete outer frame, start
+index/reconnect ordinal, HTTP status, byte counts, and setup outcome where
+observed. `readAggregate` reports complete decoded and consumer-enqueued counts
+and bytes plus bounded latency aggregates. Progress/slow/fallback/error facts use
+the separate bounded incident reserve.
+
+Per-chunk coverage is intentionally supplied by the complete CTT and server
+reader ranges. The client selection answers setup/reconnect attribution and
+verifies aggregate continuity without logging 2,593 nearly identical decode and
+enqueue tuples. Enqueue means the downstream stream accepted the value, not that
+user code ran.
+
+All handles in core and world-vercel for one run/stream/lane share the
+process-global aggregation and terminal ownership, including reconnect GETs.
+Terminal completion/cancel/error frees its slot and clears live maps. Logging is
+best effort and throwing sinks are swallowed. Instrumentation adds no operational
+awaits or catches and does not change promise ownership, serialization,
+callback ordering, timeout, read pull/backpressure/cancel, reconnect, fallback,
+or error precedence.

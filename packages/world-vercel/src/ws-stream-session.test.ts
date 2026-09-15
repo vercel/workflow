@@ -207,8 +207,23 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     await write;
     expect(settled).toBe(true);
     session.dispose?.();
-    expect(lines.join('\n')).toContain('"ws_send_callback"');
-    expect(lines.join('\n')).toContain('"pending_resolve"');
+    const completed = lines.flatMap(
+      (line) => JSON.parse(line).tuples as unknown[][]
+    );
+    expect(completed).toHaveLength(1);
+    expect(completed[0].slice(0, 8)).toEqual([
+      1,
+      1,
+      7,
+      1,
+      3,
+      1,
+      1,
+      'ws_success',
+    ]);
+    // This direct world-session test has no core-dispatch clock origin, so
+    // phase offsets are intentionally null rather than fabricated.
+    expect(completed[0].slice(8)).toEqual(Array(12).fill(null));
   });
   it('does not attach a diagnostic settlement observer when diagnostics are off', async () => {
     const rejection = new Error('ignored write');

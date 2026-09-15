@@ -40,6 +40,7 @@ type Mode =
 type WriteTiming = {
   startedAt: number;
   sessionFirstWrite: boolean;
+  groupOrdinal: number;
 };
 type WriteMetadata = {
   chunkSeq: number;
@@ -260,6 +261,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
     const timing: WriteTiming = {
       startedAt: now(),
       sessionFirstWrite: !this.sessionHasWrite,
+      groupOrdinal,
     };
     this.sessionHasWrite = true;
     if (!this.diagnostic) {
@@ -875,7 +877,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
         reqId,
         writeMetadata?.chunkSeq,
         writeMetadata?.numChunks,
-        this.connectionAttempt
+        writeTiming?.groupOrdinal
       );
       frame = buildFrame(reqId);
       this.diagnostic?.event(

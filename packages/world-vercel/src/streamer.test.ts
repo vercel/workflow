@@ -303,11 +303,14 @@ describe('streams.get', () => {
     });
     await reader.cancel('stop');
     expect(canceledWith).toBe('stop');
-    expect(lines.join('\n')).toContain('"raw_first_nonempty_body_chunk"');
-    expect(lines.join('\n')).toContain('"cancel"');
-    const firstSession = (
-      JSON.parse(lines.at(-1) ?? '{}') as { session: number }
-    ).session;
+    const firstRecord = JSON.parse(lines.at(-1) ?? '{}') as {
+      session: number;
+      outcome: string;
+      readConnections: Array<{ rawBytes?: number }>;
+    };
+    expect(firstRecord.outcome).toBe('cancel');
+    expect(firstRecord.readConnections[0]?.rawBytes).toBe(2);
+    const firstSession = firstRecord.session;
 
     const next = await streamer.streams.get(
       `wrun_${ulid}`,
