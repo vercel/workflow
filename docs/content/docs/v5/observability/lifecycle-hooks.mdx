@@ -1,0 +1,93 @@
+---
+title: Lifecycle Hooks
+description: Register global handlers that observe workflow runs completing or failing, for centralized reporting to services like Sentry.
+type: guide
+summary: Observe run completions and failures from a single place with registerLifecycleHooks.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/observability
+  - /docs/observability/tracing
+  - /docs/errors
+---
+
+Lifecycle hooks let you register global handlers that observe workflow runs completing or failing on your app's compute. They can observe even the failures that never reach a `try/catch` in workflow code, such as a replay timing out or a run exhausting its queue deliveries. Use them for best-effort centralized error reporting, such as forwarding failed runs to Sentry without wrapping each workflow body.
+
+## Registering hooks
+
+Call `registerLifecycleHooks` from `workflow/api` early in your application's lifecycle, so the handlers exist before the first run finishes. In Next.js, [`instrumentation.ts`](https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation) is the natural place; in any other app, any module that loads at startup works.
+
+```typescript title="instrumentation.ts" lineNumbers
+export async function register() {
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { registerLifecycleHooks } = await import("workflow/api")
+
+    registerLifecycleHooks({
+      async onRunCompleted({ run, workflowName }) {
+        console.log(`Run ${run.runId} (${workflowName}) completed`)
+      },
+      async onRunFailed({ run, workflowName, error }) {
+        console.error(
+          `Run ${run.runId} (${workflowName}) failed with ${error.errorCode}:`,
+          error.cause
+        )
+      },
+    })
+  }
+}
+```
+
+Keep the dynamic `workflow/api` import inside the `NEXT_RUNTIME === "nodejs"` guard. Next.js also compiles `instrumentation.ts` for the Edge runtime. A top-level static import pulls Node.js-only dependencies into that compilation and breaks webpack Edge builds, even if the registration call is guarded.
+
+`registerLifecycleHooks` returns an unregister function. You can register multiple hook sets, and handlers run in registration order.
+
+## Handler parameters
+
+Both handlers receive a `workflowName` string and the [`Run`](/docs/api-reference/workflow-api/get-run) instance for the transitioned run. `workflowName` is the machine-readable workflow identifier, such as `workflow//./src/workflows/order//processOrder`. Use this parameter to filter runs without a backend read. `run.runId` is also available without a read.
+
+The `Run` instance hydrates lazily. Accessors such as `run.workflowName`, `run.status`, and `run.returnValue` still fetch from the backend when used. Lazy access defers those reads; it does not make them free.
+
+`onRunFailed` additionally receives the failure as a `WorkflowRunFailedError`, the same shape `run.returnValue` rejects with:
+
+- `error.errorCode`: the failure classification (`USER_ERROR`, `RUNTIME_ERROR`, `MAX_DELIVERIES_EXCEEDED`, and more). See [error codes](/docs/errors) for the full list.
+- `error.cause`: the thrown value hydrated from the persisted error data, with registered Error subclass identity, message, stack, and cause chain preserved. Streamed values load lazily when consumed, and abort signals reflect their persisted state without live subscriptions. If hydration fails, the cause is a generic `Error`, matching `run.returnValue`'s fallback. Any JavaScript value can be thrown, so this is typed `unknown`.
+
+In `onRunFailed`, `run.returnValue` rejects because the run failed. Use `error.cause` to inspect or report the thrown value instead of awaiting `run.returnValue`.
+
+## Reporting failed runs to Sentry
+
+This example reports failures for workflows named `processOrder`. Remove the filter to report failures from all workflows.
+
+```typescript title="instrumentation.ts" lineNumbers
+export async function register() {
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { registerLifecycleHooks } = await import("workflow/api")
+    const Sentry = await import("@sentry/nextjs")
+
+    Sentry.init({ dsn: process.env.SENTRY_DSN })
+
+    registerLifecycleHooks({
+      async onRunFailed({ run, workflowName, error }) {
+        if (!workflowName.endsWith("//processOrder")) return
+
+        Sentry.captureException(error.cause ?? error, {
+          tags: {
+            workflowRunId: run.runId,
+            workflowName,
+            errorCode: error.errorCode,
+          },
+        })
+        await Sentry.flush(2000)
+      },
+    })
+  }
+}
+```
+
+## How handlers behave
+
+- **Host-only.** Handlers run with full Node.js access, never inside the workflow's sandboxed VM. Calling `registerLifecycleHooks` from workflow code throws.
+- **Fire-and-forget.** Handlers cannot delay or change the run's outcome. The runtime logs and swallows a throwing handler, and the remaining handlers still run. On Vercel, `waitUntil` keeps the invocation alive while handlers finish, subject to the invocation's duration limit. On other hosts, handlers run as detached work. If the host freezes or terminates the process after the response, handlers may not complete.
+- **Best-effort delivery.** Each registered handler is invoked at most once by the invocation that writes the terminal event. For a failure, this happens after any workflow or step retries are exhausted. Callbacks are not retried if they throw or the process dies, so a callback may never run or may stop before completing. The [event log](/docs/how-it-works/event-sourcing) is the system of record, not lifecycle callbacks.
+- **Fires where the transition is recorded.** Terminal transitions recorded outside your app's compute do **not** fire handlers. For example, when you cancel a run from the CLI or the Vercel dashboard, the backend writes that transition, so no handler runs.
+- **Register everywhere your workflows run.** The terminal write can happen in any function invocation that processes the run's queue messages, so registration must run at startup in every instance of the app (which `instrumentation.ts` guarantees).

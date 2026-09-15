@@ -52,7 +52,7 @@ describe('guardDeploymentAffinity', () => {
     const reenqueue = vi.fn();
 
     await expect(
-      guardDeploymentAffinity({ world, run, reenqueue })
+      guardDeploymentAffinity({ world, run, workflowName: 'wf', reenqueue })
     ).resolves.toMatchObject({ outcome: 'continue' });
     expect(reenqueue).not.toHaveBeenCalled();
     expect(eventsCreate).not.toHaveBeenCalled();
@@ -65,7 +65,7 @@ describe('guardDeploymentAffinity', () => {
     const reenqueue = vi.fn();
 
     await expect(
-      guardDeploymentAffinity({ world, run, reenqueue })
+      guardDeploymentAffinity({ world, run, workflowName: 'wf', reenqueue })
     ).resolves.toMatchObject({ outcome: 'continue' });
     expect(reenqueue).not.toHaveBeenCalled();
     expect(eventsCreate).not.toHaveBeenCalled();
@@ -76,7 +76,13 @@ describe('guardDeploymentAffinity', () => {
     const reenqueue = vi.fn();
 
     await expect(
-      guardDeploymentAffinity({ world, run, reenqueue, requestId: 'req_test' })
+      guardDeploymentAffinity({
+        world,
+        run,
+        workflowName: 'wf',
+        reenqueue,
+        requestId: 'req_test',
+      })
     ).resolves.toMatchObject({ outcome: 'rerouted' });
 
     expect(reenqueue).toHaveBeenCalledWith({
@@ -96,6 +102,7 @@ describe('guardDeploymentAffinity', () => {
         guardDeploymentAffinity({
           world,
           run,
+          workflowName: 'wf',
           retryCount,
           reenqueue: async ({ deploymentMismatchRetryCount, delaySeconds }) => {
             sent.push({
@@ -123,6 +130,7 @@ describe('guardDeploymentAffinity', () => {
       guardDeploymentAffinity({
         world,
         run,
+        workflowName: 'wf',
         retryCount: 3,
         reenqueue,
         requestId: 'req_test',
@@ -169,6 +177,7 @@ describe('guardDeploymentAffinity', () => {
       guardDeploymentAffinity({
         world,
         run,
+        workflowName: 'wf',
         reenqueue,
         isDeploymentUnavailableError: (error) => error === enqueueError,
       })
@@ -190,6 +199,7 @@ describe('guardDeploymentAffinity', () => {
       guardDeploymentAffinity({
         world,
         run,
+        workflowName: 'wf',
         reenqueue,
         isDeploymentUnavailableError: () => false,
       })
@@ -202,7 +212,7 @@ describe('guardDeploymentAffinity', () => {
     const { world, eventsCreate } = createWorld('dpl_current');
 
     await expect(
-      guardDeploymentAffinity({ world, run })
+      guardDeploymentAffinity({ world, run, workflowName: 'wf' })
     ).resolves.toMatchObject({ outcome: 'failed' });
     expect(eventsCreate).toHaveBeenCalledTimes(1);
   });
@@ -213,7 +223,7 @@ describe('guardDeploymentAffinity', () => {
     const reenqueue = vi.fn();
 
     await expect(
-      guardDeploymentAffinity({ world, run, reenqueue })
+      guardDeploymentAffinity({ world, run, workflowName: 'wf', reenqueue })
     ).resolves.toMatchObject({ outcome: 'failed' });
     expect(reenqueue).not.toHaveBeenCalled();
     expect(eventsCreate).toHaveBeenCalledTimes(1);
@@ -229,6 +239,7 @@ describe('guardDeploymentAffinity', () => {
       await guardDeploymentAffinity({
         world,
         run,
+        workflowName: 'wf',
         retryCount,
         beforeStop,
         reenqueue: async () => {
@@ -248,6 +259,7 @@ describe('guardDeploymentAffinity', () => {
       guardDeploymentAffinity({
         world: target.world,
         run: { ...run, deploymentId: 'dpl_explicit_target' },
+        workflowName: 'wf',
       })
     ).resolves.toMatchObject({ outcome: 'continue' });
     expect(target.eventsCreate).not.toHaveBeenCalled();
@@ -259,6 +271,7 @@ describe('guardDeploymentAffinity', () => {
       guardDeploymentAffinity({
         world: creator.world,
         run: { ...run, deploymentId: 'dpl_explicit_target' },
+        workflowName: 'wf',
         reenqueue,
       })
     ).resolves.toMatchObject({ outcome: 'rerouted' });
