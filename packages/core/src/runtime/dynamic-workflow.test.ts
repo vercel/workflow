@@ -1,4 +1,4 @@
-import { createContext, runInContext } from 'node:vm';
+import { createContext, runInContext, Script } from 'node:vm';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
 import {
@@ -44,10 +44,10 @@ describe('compileDynamicWorkflow', () => {
       const compiled = await compileDynamicWorkflow(SOURCE, { steps: STEPS });
 
       expect(compiled.workflowCode).toContain(
-        '"fetchUser": __dynamicUseStep("step//./src/steps//fetchUser")'
+        '["fetchUser"]: __dynamicUseStep("step//./src/steps//fetchUser")'
       );
       expect(compiled.workflowCode).toContain(
-        '"sendEmail": __dynamicUseStep("step//./src/steps//sendEmail")'
+        '["sendEmail"]: __dynamicUseStep("step//./src/steps//sendEmail")'
       );
       // Frozen so ordinary generated code that reaches for a step it was not
       // given fails the run rather than silently adding one.
@@ -217,6 +217,40 @@ describe('compileDynamicWorkflow', () => {
 
     it.each([
       [
+        'explicit resource management syntax',
+        `async function workflow() {
+  "use workflow";
+  using resource = null;
+  return resource;
+}`,
+      ],
+      [
+        'regular expression modifiers',
+        `async function workflow() {
+  "use workflow";
+  return /(?i:a)/.test("A");
+}`,
+      ],
+    ])('rejects syntax newer than the pinned 2024 grammar: %s', async (_label, source) => {
+      await expect(
+        compileDynamicWorkflow(source, { steps: STEPS })
+      ).rejects.toThrow(/not valid JavaScript/);
+    });
+
+    it('accepts representative ECMAScript 2024 syntax', async () => {
+      const source = `
+async function workflow(input = {}) {
+  "use workflow";
+  const copy = structuredClone(input);
+  return { ...copy, value: copy?.value ?? 1 };
+}
+`;
+      const compiled = await compileDynamicWorkflow(source, { steps: STEPS });
+      expect(() => new Script(compiled.workflowCode)).not.toThrow();
+    });
+
+    it.each([
+      [
         'nested declaration',
         'function outer() { async function workflow() { "use workflow"; } }',
       ],
@@ -245,6 +279,7 @@ describe('compileDynamicWorkflow', () => {
       ['steps', 'var steps = null;'],
       ['sleep', 'const sleep = null;'],
       ['createHook', 'let createHook = null;'],
+      ['Error', 'class Error {}'],
     ])('isolates caller %s declarations from wrapper bindings', async (_binding, declaration) => {
       const source = `
 ${declaration}
@@ -267,6 +302,44 @@ async function workflow() {
       ) as { workflowId?: string };
       expect(workflow).toBeTypeOf('function');
       expect(workflow.workflowId).toBe(compiled.workflowName);
+    });
+
+    it('emits __proto__ as a callable own step without changing the catalog prototype', async () => {
+      const source = `
+async function workflow() {
+  "use workflow";
+  return {
+    own: Object.hasOwn(steps, "__proto__"),
+    ordinaryPrototype: Object.getPrototypeOf(steps) === Object.prototype,
+    result: await steps.__proto__(),
+  };
+}
+`;
+      const stepId = 'step//./src/steps//prototypeAlias';
+      const compiled = await compileDynamicWorkflow(source, {
+        steps: { ['__proto__']: { stepId } },
+      });
+      const sandbox = {
+        [Symbol.for('WORKFLOW_USE_STEP')]: (id: string) => async () => id,
+        [Symbol.for('WORKFLOW_SLEEP')]: async () => undefined,
+        [Symbol.for('WORKFLOW_CREATE_HOOK')]: () => Promise.resolve(),
+      };
+      const context = createContext(sandbox);
+      runInContext(compiled.workflowCode, context);
+      const workflow = runInContext(
+        `globalThis.__private_workflows.get(${JSON.stringify(compiled.workflowName)})`,
+        context
+      ) as () => Promise<Record<string, unknown>>;
+
+      expect(await workflow()).toEqual({
+        own: true,
+        ordinaryPrototype: true,
+        result: stepId,
+      });
+      expect(compiled.metadata.steps).toEqual(
+        Object.fromEntries([['__proto__', stepId]])
+      );
+      expect(compiled.workflowCode).toContain('["__proto__"]:');
     });
 
     it('registers a workflow that closes over all injected bindings', async () => {
