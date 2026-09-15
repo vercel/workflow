@@ -104,45 +104,56 @@ export type TraceCarrier = z.infer<typeof TraceCarrierSchema>;
  * run_started event so the server can create the run if it doesn't exist yet.
  */
 export const RunInputSchema = z.compile(
-  z.object({
-    input: z.unknown(),
-    deploymentId: z.string(),
-    workflowName: z.string(),
-    specVersion: z.number(),
-    executionContext: z.record(z.string(), z.any()).optional(),
-    /** Dynamic workflow code carried for resilient run creation. */
-    dynamicWorkflowCode: SerializedDataSchema.optional(),
-    /** Ref for deferred dynamic workflow code; mutually exclusive with bytes. */
-    dynamicWorkflowCodeRef: z.string().optional(),
-    /** Initial plaintext run attributes, for resilient run creation. */
-    attributes: z.record(z.string(), z.string()).optional(),
-    /**
-     * Permits reserved `$`-prefixed keys in `attributes`, mirrored from the
-     * `start()` option so resilient run creation validates the same way as
-     * the original `run_created` attempt.
-     */
-    allowReservedAttributes: z.literal(true).optional(),
-    /**
-     * The environment the creating client's writes are attributed to, as
-     * reported by {@link World.getEnvironment} at `start()` time (on Vercel:
-     * `'production' | 'preview' | 'development'`).
-     *
-     * This exists so the resilient-start path can be checked for a tenant
-     * mismatch. `start()` writes `run_created` under the caller's own
-     * credentials while pinning the queue message to a deployment, and those
-     * two can disagree: if the message is consumed by a deployment in a
-     * DIFFERENT environment, that consumer's `run_started` re-creates the run
-     * under ITS tenant, so the same client-minted `wrun_` id ends up existing
-     * in two environments: one stuck pending forever, the other executing.
-     * Carrying the creator's environment lets the consumer compare it against
-     * its own and refuse the delivery instead of forking the run.
-     *
-     * Absent for worlds with no environment dimension (local, Postgres), and
-     * for older SDKs. Consumers must treat it as advisory and skip the check
-     * when it is missing.
-     */
-    environment: z.string().optional(),
-  })
+  z
+    .object({
+      input: z.unknown(),
+      deploymentId: z.string(),
+      workflowName: z.string(),
+      specVersion: z.number(),
+      executionContext: z.record(z.string(), z.any()).optional(),
+      /** Dynamic workflow code carried for resilient run creation. */
+      dynamicWorkflowCode: SerializedDataSchema.optional(),
+      /** Ref for deferred dynamic workflow code; mutually exclusive with bytes. */
+      dynamicWorkflowCodeRef: z.string().optional(),
+      /** Initial plaintext run attributes, for resilient run creation. */
+      attributes: z.record(z.string(), z.string()).optional(),
+      /**
+       * Permits reserved `$`-prefixed keys in `attributes`, mirrored from the
+       * `start()` option so resilient run creation validates the same way as
+       * the original `run_created` attempt.
+       */
+      allowReservedAttributes: z.literal(true).optional(),
+      /**
+       * The environment the creating client's writes are attributed to, as
+       * reported by {@link World.getEnvironment} at `start()` time (on Vercel:
+       * `'production' | 'preview' | 'development'`).
+       *
+       * This exists so the resilient-start path can be checked for a tenant
+       * mismatch. `start()` writes `run_created` under the caller's own
+       * credentials while pinning the queue message to a deployment, and those
+       * two can disagree: if the message is consumed by a deployment in a
+       * DIFFERENT environment, that consumer's `run_started` re-creates the run
+       * under ITS tenant, so the same client-minted `wrun_` id ends up existing
+       * in two environments: one stuck pending forever, the other executing.
+       * Carrying the creator's environment lets the consumer compare it against
+       * its own and refuse the delivery instead of forking the run.
+       *
+       * Absent for worlds with no environment dimension (local, Postgres), and
+       * for older SDKs. Consumers must treat it as advisory and skip the check
+       * when it is missing.
+       */
+      environment: z.string().optional(),
+    })
+    .refine(
+      (value) =>
+        value.dynamicWorkflowCode === undefined ||
+        value.dynamicWorkflowCodeRef === undefined,
+      {
+        path: ['dynamicWorkflowCodeRef'],
+        message:
+          'dynamicWorkflowCode and dynamicWorkflowCodeRef are mutually exclusive',
+      }
+    )
 );
 export type RunInput = z.infer<typeof RunInputSchema>;
 
