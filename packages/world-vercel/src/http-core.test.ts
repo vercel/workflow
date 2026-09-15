@@ -8,9 +8,11 @@ import {
 } from '@workflow/errors';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  describeTransportFailure,
   errorForResponse,
   formatVercelDiagnostics,
   getRequestTimeoutMs,
+  getTransientTransportCode,
   getVercelDiagnostics,
   parseRetryAfter,
   REQUEST_TIMEOUT_MS,
@@ -128,6 +130,66 @@ describe('errorForResponse', () => {
     const err = errorForResponse(503, 'unavailable');
     expect(err).toBeInstanceOf(WorkflowWorldError);
     expect((err as WorkflowWorldError).status).toBe(503);
+  });
+});
+
+describe('describeTransportFailure', () => {
+  it('reports the allowlisted code when the cause chain carries one', () => {
+    // Known codes keep naming themselves, so messages and the
+    // `UND_ERR_CONNECT_TIMEOUT` retry branch in makeRequest are unchanged.
+    const cause = Object.assign(new Error('Request failed'), {
+      code: 'UND_ERR_REQ_RETRY',
+    });
+    const err = Object.assign(new TypeError('fetch failed'), { cause });
+    expect(describeTransportFailure(err)).toBe('UND_ERR_REQ_RETRY');
+    expect(getTransientTransportCode(err)).toBe('UND_ERR_REQ_RETRY');
+  });
+
+  it.each([
+    ['an h2 session error', 'ERR_HTTP2_GOAWAY_SESSION'],
+    ['an unreachable network', 'ENETUNREACH'],
+    ['a TLS handshake failure', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'],
+  ])('reports %s the allowlist has never seen', (_label, code) => {
+    // These are the failures the allowlist misses today. Each one still means
+    // no response was produced, so each one is a transport failure.
+    const cause = Object.assign(new Error('nope'), { code });
+    const err = Object.assign(new TypeError('fetch failed'), { cause });
+    expect(getTransientTransportCode(err)).toBeUndefined();
+    expect(describeTransportFailure(err)).toBe(code);
+  });
+
+  it('falls back to the innermost error name when no code is present', () => {
+    // A happy-eyeballs connect rejects with an AggregateError whose codes live
+    // on `errors[]`, out of reach of a `cause` walk.
+    const cause = new AggregateError([new Error('ECONNREFUSED')], '');
+    const err = Object.assign(new TypeError('fetch failed'), { cause });
+    expect(describeTransportFailure(err)).toBe('AggregateError');
+  });
+
+  it('describes a bare `TypeError: fetch failed`', () => {
+    expect(describeTransportFailure(new TypeError('fetch failed'))).toBe(
+      'TypeError'
+    );
+  });
+
+  it.each([
+    ['a malformed URL', 'ERR_INVALID_URL'],
+    ['an invalid header value', 'ERR_HTTP_INVALID_HEADER_VALUE'],
+    ['a bad argument', 'ERR_INVALID_ARG_TYPE'],
+  ])('returns undefined for %s', (_label, code) => {
+    // The request was never formed. Redelivering it just re-forms the same
+    // broken request until the run runs out of deliveries.
+    const cause = Object.assign(new TypeError('Invalid URL'), { code });
+    const err = Object.assign(new TypeError('Failed to parse URL from x'), {
+      cause,
+    });
+    expect(describeTransportFailure(err)).toBeUndefined();
+  });
+
+  it('stops walking a self-referential cause chain', () => {
+    const err = new Error('loop') as Error & { cause?: unknown };
+    err.cause = err;
+    expect(describeTransportFailure(err)).toBe('Error');
   });
 });
 

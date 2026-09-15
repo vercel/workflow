@@ -13,10 +13,10 @@ import {
   NODE_HTTP_HEADERS_TIMEOUT_MS,
 } from './http-client.js';
 import {
+  describeTransportFailure,
   errorForResponse,
   formatVercelDiagnostics,
   getRequestTimeoutMs,
-  getTransientTransportCode,
   HTTP_DEBUG_ENABLED,
   httpClientSpanAttributes,
   httpLog,
@@ -408,19 +408,28 @@ export async function makeRequest<T>({
         const signal = options.signal
           ? AbortSignal.any([options.signal, timeoutSignal])
           : timeoutSignal;
+        // `WORKFLOW_NODE_HTTP` takes this request off undici entirely, rather
+        // than leaving it on the undici behind `fetch`. `getNodeHttpAgents`
+        // returns the pool only when no caller dispatcher was supplied, so
+        // an explicit `config.dispatcher` still keeps the request on `fetch`.
+        //
+        // Agent selection and `Request` construction (which validates the URL
+        // and the headers) sit outside the try on purpose: the catch below
+        // reads everything it sees as a failure of the request on the wire,
+        // and these run before there is one.
+        const nodeAgents = getNodeHttpAgents(config);
+        const undiciRequest = nodeAgents
+          ? undefined
+          : new Request(url, { ...options, body, headers, signal });
+        const undiciDispatcher = nodeAgents ? undefined : getDispatcher(config);
+        // Both transports issue the same span against the same URL, so this
+        // is the only thing that tells them apart in a trace.
+        span?.setAttributes({
+          ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
+        });
         const fetchStart = Date.now();
         let response: Response;
         try {
-          // `WORKFLOW_NODE_HTTP` takes this request off undici entirely, rather
-          // than leaving it on the undici behind `fetch`. `getNodeHttpAgents`
-          // returns the pool only when no caller dispatcher was supplied, so
-          // an explicit `config.dispatcher` still keeps the request on `fetch`.
-          const nodeAgents = getNodeHttpAgents(config);
-          // Both transports issue the same span against the same URL, so this
-          // is the only thing that tells them apart in a trace.
-          span?.setAttributes({
-            ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
-          });
           response = nodeAgents
             ? await nodeHttpFetch(url, {
                 method,
@@ -435,10 +444,10 @@ export async function makeRequest<T>({
                 bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
               })
             : await fetch(
-                new Request(url, { ...options, body, headers, signal }),
+                undiciRequest as Request,
                 {
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-                  dispatcher: getDispatcher(config),
+                  dispatcher: undiciDispatcher,
                 } as any
               );
         } catch (error) {
@@ -458,11 +467,14 @@ export async function makeRequest<T>({
             span?.recordException?.(timeoutError);
             throw timeoutError;
           }
-          // Transient transport failure (RetryAgent retries exhausted, socket
-          // reset, connect/DNS failure). Surface as a retryable
-          // WorkflowWorldError so the runtime redrives via the queue instead
-          // of failing the run. See TRANSIENT_TRANSPORT_ERROR_CODES.
-          const transportCode = getTransientTransportCode(error);
+          // The request produced no response (RetryAgent retries exhausted,
+          // socket reset, connect/DNS/TLS failure, dead h2 session, …), so
+          // this is a transport failure whether or not the code is one we
+          // have seen before. Surface it as a retryable WorkflowWorldError so
+          // the runtime redrives via the queue instead of failing the run
+          // with a backend outage attributed to user code. See
+          // describeTransportFailure.
+          const transportCode = describeTransportFailure(error);
           if (transportCode) {
             if (
               retryConnectTimeout &&

@@ -2243,3 +2243,56 @@ describe('v4 transport reports failures to the events recycler', () => {
     expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
   });
 });
+
+/**
+ * A rejection from `fetch` means no response was produced, which is a
+ * transport failure regardless of what the cause chain says. Left raw, a
+ * `TypeError: fetch failed` reaches the runtime as an ordinary throw:
+ * `classifyRunError` reads it as USER_ERROR and the queue never redelivers
+ * the run, so a backend blip fails the run and blames customer code.
+ */
+describe('v4 transport wraps pre-response failures the allowlist misses', () => {
+  beforeEach(() => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('maps a bare `TypeError: fetch failed` to a StreamError', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(
+      new TypeError('fetch failed')
+    );
+
+    const rejection = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token', dispatcher: {} }
+    ).catch((e) => e);
+
+    expect(StreamError.is(rejection)).toBe(true);
+    expect(rejection.message).toContain('transport failure');
+  });
+
+  it('rethrows a request-construction fault unchanged', async () => {
+    const constructionFault = Object.assign(
+      new TypeError('Failed to parse URL from nonsense'),
+      {
+        cause: Object.assign(new TypeError('Invalid URL'), {
+          code: 'ERR_INVALID_URL',
+        }),
+      }
+    );
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(constructionFault);
+
+    await expect(
+      getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        { token: 'test-token', dispatcher: {} }
+      )
+    ).rejects.toBe(constructionFault);
+  });
+});
