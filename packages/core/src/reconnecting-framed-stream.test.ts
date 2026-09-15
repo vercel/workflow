@@ -1,4 +1,8 @@
 import { StreamError, StreamExpiredError } from '@workflow/errors';
+import {
+  createStreamDiagnostic,
+  setStreamDiagnosticSinkForTest,
+} from '@workflow/utils';
 import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -101,6 +105,65 @@ function makeWorldWithScriptedStreams(
 describe('createReconnectingFramedStream', () => {
   afterEach(() => {
     setWorld(undefined as unknown as World);
+    setStreamDiagnosticSinkForTest(undefined);
+    delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL_PROJECT_ID;
+  });
+
+  it('keeps raw connection checkpoints and core reconnect delivery in one continuous session', async () => {
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const runId = `wrun_${ulid}`;
+    const name = `strm_${ulid}_user_YmVuY2gtY3R0`;
+    let connection = 0;
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      streams: {
+        get: async () => {
+          const raw = createStreamDiagnostic('read', runId, name);
+          raw?.event('raw_connection', connection);
+          const current = connection++;
+          return current === 0
+            ? scriptedStream([
+                { kind: 'value', value: payloadFrame(1) },
+                { kind: 'error', err: new Error('cut') },
+              ])
+            : scriptedStream([
+                { kind: 'value', value: payloadFrame(2) },
+                { kind: 'close' },
+              ]);
+        },
+        getInfo: async () => ({ tailIndex: 1, done: true }),
+      },
+    } as unknown as World);
+
+    expect(await readAll(createReconnectingFramedStream(runId, name))).toEqual([
+      payloadFrame(1),
+      payloadFrame(2),
+    ]);
+    const records = lines.map(
+      (line) =>
+        JSON.parse(line) as {
+          session: number;
+          readConnections: unknown[];
+          readAggregate: { decoded: number; decodedBytes: number };
+          incidents: Array<[number, string]>;
+        }
+    );
+    expect(new Set(records.map(({ session }) => session)).size).toBe(1);
+    expect(records.at(-1)?.readConnections).toHaveLength(2);
+    expect(records.at(-1)?.readAggregate).toMatchObject({
+      decoded: 2,
+      decodedBytes: payloadFrame(1).byteLength + payloadFrame(2).byteLength,
+    });
+    expect(
+      records
+        .at(-1)
+        ?.incidents.filter(([, phase]) => phase === 'raw_connection')
+    ).toHaveLength(2);
   });
 
   it('passes through complete frames and closes cleanly on EOF', async () => {

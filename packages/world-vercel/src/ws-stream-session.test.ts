@@ -1,3 +1,4 @@
+import { setStreamDiagnosticSinkForTest } from '@workflow/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { decodeFrames, encodeFrame } from './frames.js';
 
@@ -123,6 +124,9 @@ beforeEach(() => {
   writeSpans.length = 0;
   delete process.env.WORKFLOW_STREAMS_TRANSPORT;
   delete process.env.WORKFLOW_REQUEST_TIMEOUT_MS;
+  delete process.env.VERCEL_ENV;
+  delete process.env.VERCEL_PROJECT_ID;
+  setStreamDiagnosticSinkForTest(undefined);
 });
 
 afterEach(() => {
@@ -159,6 +163,216 @@ function makeSession(
 }
 
 describe('v1 stream WebSocket writer lifecycle', () => {
+  it('keeps serialization, callback acknowledgement, and promise settlement unchanged when diagnostics are enabled', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const writeHttp = vi.fn().mockResolvedValue(undefined);
+    const closeHttp = vi.fn().mockResolvedValue(undefined);
+    const session = createStreamWriteSession(
+      `wrun_${ulid}`,
+      `strm_${ulid}_user_YmVuY2gtY3R0`,
+      `wrtr_${ulid}`,
+      { token: 'token' },
+      writeHttp,
+      closeHttp,
+      false
+    );
+    activeSessions.push(session);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].open();
+
+    let settled = false;
+    const write = session.write(7, [new Uint8Array([1, 2, 3])]);
+    void write.then(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    expect(settled).toBe(false);
+    const frame = await decodeOne(sockets[0].sent[0]);
+    expect(frame.meta).toMatchObject({
+      type: 'write',
+      reqId: 1,
+      chunkSeq: 7,
+      numChunks: 1,
+    });
+    expect(frame.body).toEqual(new Uint8Array([0, 0, 0, 3, 1, 2, 3]));
+
+    sockets[0].reply(
+      encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
+    );
+    await write;
+    expect(settled).toBe(true);
+    session.dispose?.();
+    const completed = lines.flatMap(
+      (line) => JSON.parse(line).tuples as unknown[][]
+    );
+    expect(completed).toHaveLength(1);
+    expect(completed[0].slice(0, 8)).toEqual([
+      1,
+      1,
+      7,
+      1,
+      3,
+      1,
+      1,
+      'ws_success',
+    ]);
+    // This direct world-session test has no core-dispatch clock origin, so
+    // phase offsets are intentionally null rather than fabricated.
+    expect(completed[0].slice(8)).toEqual(Array(13).fill(null));
+  });
+  it('keeps the real WS close handshake out of data capacity accounting', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const writeHttp = vi.fn().mockResolvedValue(undefined);
+    const closeHttp = vi.fn().mockResolvedValue(undefined);
+    const session = createStreamWriteSession(
+      `wrun_${ulid}`,
+      `strm_${ulid}_user_YmVuY2gtY3R0`,
+      `wrtr_${ulid}`,
+      { token: 'token' },
+      writeHttp,
+      closeHttp,
+      false
+    );
+    activeSessions.push(session);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+
+    for (const [chunkSeq, body] of [
+      [4, new Uint8Array([1, 2, 3])],
+      [5, new Uint8Array([4, 5])],
+    ] as const) {
+      const writing = session.write(chunkSeq, [body]);
+      await vi.waitFor(() => expect(socket.sent).toHaveLength(chunkSeq - 3));
+      const request = await decodeOne(socket.sent.at(-1) as Uint8Array);
+      socket.reply(
+        encodeFrame(
+          { type: 'write_ack', reqId: request.meta.reqId },
+          new Uint8Array()
+        )
+      );
+      await writing;
+    }
+
+    let closeSettled = false;
+    const closing = session.close().then(() => {
+      closeSettled = true;
+    });
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
+    expect(closeSettled).toBe(false);
+    expect((await decodeOne(socket.sent[2])).meta).toEqual({
+      type: 'close',
+      reqId: 3,
+    });
+    socket.reply(
+      encodeFrame({ type: 'close_ack', reqId: 3 }, new Uint8Array())
+    );
+    await closing;
+
+    expect(closeSettled).toBe(true);
+    expect(socket.closed).toContainEqual([1000, 'stream closed']);
+    expect(writeHttp).not.toHaveBeenCalled();
+    expect(closeHttp).not.toHaveBeenCalled();
+    const records = lines.map((line) => JSON.parse(line));
+    const terminal = records.at(-1);
+    expect(records.flatMap((record) => record.tuples)).toEqual([
+      expect.arrayContaining([1, 1, 4, 1, 3]),
+      expect.arrayContaining([2, 2, 5, 1, 2]),
+    ]);
+    expect(terminal).toMatchObject({
+      kind: 'terminal',
+      outcome: 'closed_ws',
+      groupsAttempted: 2,
+      groupsEmitted: 2,
+      groupsOmitted: 0,
+      chunksAttempted: 2,
+      chunksEmitted: 2,
+      chunksOmitted: 0,
+      bytesAttempted: 5,
+      bytesEmitted: 5,
+      bytesOmitted: 0,
+      overflow: false,
+      sinkFailures: 0,
+      liveGroups: 0,
+      liveRequests: 0,
+    });
+    expect(
+      terminal.incidents.some(
+        ([, phase]: [number, string]) => phase === 'live_request_overflow'
+      )
+    ).toBe(false);
+  });
+
+  it('keeps an uncorrelated drain arrival out of a pending write tuple', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
+    vi.stubEnv('WORKFLOW_REQUEST_TIMEOUT_MS', '5');
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const session = createStreamWriteSession(
+      `wrun_${ulid}`,
+      `strm_${ulid}_user_YmVuY2gtY3R0`,
+      `wrtr_${ulid}`,
+      { token: 'token' },
+      vi.fn().mockResolvedValue(undefined),
+      vi.fn().mockResolvedValue(undefined),
+      false
+    );
+    activeSessions.push(session);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].open();
+    const writing = session.write(0, ['one']);
+    await vi.waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    sockets[0].reply(
+      encodeFrame(
+        { type: 'drain', reason: 'max_duration', graceMs: 10_000 },
+        new Uint8Array()
+      )
+    );
+    await expect(writing).rejects.toThrow('timed out with no reply');
+    const terminal = JSON.parse(lines.at(-1) ?? '{}');
+    expect(terminal.tuples[0][16]).toBeNull();
+    expect(
+      terminal.incidents.some(
+        ([, phase]: [number, string]) => phase === 'raw_control_message'
+      )
+    ).toBe(true);
+  });
+
+  it('does not attach a diagnostic settlement observer when diagnostics are off', async () => {
+    const rejection = new Error('ignored write');
+    const { session, writeHttp } = makeSession(undefined, true);
+    writeHttp.mockRejectedValueOnce(rejection);
+    const originalThen = Promise.prototype.then;
+    let callsFromWrite = 0;
+    // biome-ignore lint/suspicious/noThenProperty: regression seam counts observers attached synchronously by write()
+    Promise.prototype.then = function (...args) {
+      callsFromWrite++;
+      return originalThen.apply(this, args);
+    } as typeof Promise.prototype.then;
+    const write = session.write(0, ['one']);
+    // biome-ignore lint/suspicious/noThenProperty: restore regression seam before awaiting
+    Promise.prototype.then = originalThen;
+    // enqueue owns exactly tail.then(operation) + result.catch(noop). A third
+    // call here would be a diagnostic observer that marks ignored rejection
+    // handled before the caller receives its promise.
+    expect(callsFromWrite).toBe(2);
+    expect(write).toBeInstanceOf(Promise);
+    await expect(write).rejects.toBe(rejection);
+  });
+
   it('keeps HTTP as the default without constructing a socket', async () => {
     const { session, writeHttp, closeHttp } = makeSession();
     await session.write(0, ['one']);
@@ -523,17 +737,38 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(closeHttp).not.toHaveBeenCalled();
   });
 
-  it('splits groups above the v1 request-work limit without resetting sequence', async () => {
+  it('keeps split data requests distinct from close/control diagnostics', async () => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
-    const { session } = makeSession();
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const session = createStreamWriteSession(
+      `wrun_${ulid}`,
+      `strm_${ulid}_user_YmVuY2gtY3R0`,
+      `wrtr_${ulid}`,
+      { token: 'token' },
+      vi.fn().mockResolvedValue(undefined),
+      vi.fn().mockResolvedValue(undefined),
+      false
+    );
+    activeSessions.push(session);
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
     const socket = sockets[0];
     socket.open();
 
-    const chunks = Array.from({ length: 1001 }, () => new Uint8Array([1]));
-    const writing = session.write(9, chunks);
+    const chunks = [
+      ...Array.from({ length: 1000 }, () => new Uint8Array([1])),
+      new Uint8Array([2, 3]),
+    ];
+    let settled = false;
+    const writing = session.write(9, chunks).then(() => {
+      settled = true;
+    });
     await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
     expect((await decodeOne(socket.sent[0])).meta).toMatchObject({
+      reqId: 1,
       chunkSeq: 9,
       numChunks: 1000,
     });
@@ -541,7 +776,9 @@ describe('v1 stream WebSocket writer lifecycle', () => {
       encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
     );
     await vi.waitFor(() => expect(socket.sent).toHaveLength(2));
+    expect(settled).toBe(false);
     expect((await decodeOne(socket.sent[1])).meta).toMatchObject({
+      reqId: 2,
       chunkSeq: 1009,
       numChunks: 1,
     });
@@ -549,6 +786,123 @@ describe('v1 stream WebSocket writer lifecycle', () => {
       encodeFrame({ type: 'write_ack', reqId: 2 }, new Uint8Array())
     );
     await writing;
+    expect(settled).toBe(true);
+    session.dispose?.();
+
+    const terminal = JSON.parse(lines.at(-1) ?? '{}');
+    expect(terminal.tuples[0].slice(0, 8)).toEqual([
+      1,
+      1,
+      9,
+      1001,
+      1002,
+      1,
+      1,
+      'ws_success',
+    ]);
+    expect(terminal).toMatchObject({
+      groupsAttempted: 1,
+      groupsEmitted: 1,
+      chunksAttempted: 1001,
+      chunksEmitted: 1001,
+      bytesAttempted: 1002,
+      bytesEmitted: 1002,
+      liveGroups: 0,
+      liveRequests: 0,
+      overflow: true,
+    });
+    expect(terminal.incidents).toEqual(
+      expect.arrayContaining([
+        expect.arrayContaining(['unsupported_split_request', 2, 1, 1009]),
+      ])
+    );
+    expect(
+      terminal.incidents.some(
+        ([, phase]: [number, string]) => phase === 'live_request_overflow'
+      )
+    ).toBe(false);
+  });
+
+  it('attributes split secondary preflight fallback to its logical group', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    let releaseHttp: (() => void) | undefined;
+    const httpPending = new Promise<void>((resolve) => {
+      releaseHttp = resolve;
+    });
+    const writeHttp = vi.fn(async () => httpPending);
+    const session = createStreamWriteSession(
+      `wrun_${ulid}`,
+      `strm_${ulid}_user_YmVuY2gtY3R0`,
+      `wrtr_${ulid}`,
+      { token: 'token' },
+      writeHttp,
+      vi.fn().mockResolvedValue(undefined),
+      false
+    );
+    activeSessions.push(session);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+
+    const oversized = new Uint8Array(10 * 1024 * 1024 + 1);
+    const chunks = [
+      ...Array.from({ length: 1000 }, () => new Uint8Array([1])),
+      oversized,
+    ];
+    let settled = false;
+    const writing = session.write(9, chunks).then(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+    socket.reply(
+      encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
+    );
+    await vi.waitFor(() => expect(writeHttp).toHaveBeenCalledTimes(1));
+    expect(settled).toBe(false);
+    expect(writeHttp).toHaveBeenCalledWith([oversized]);
+    releaseHttp?.();
+    await writing;
+    expect(settled).toBe(true);
+    expect(socket.sent).toHaveLength(1);
+    expect(socket.closed).toContainEqual([1000, 'HTTP fallback before send']);
+    session.dispose?.();
+
+    const terminal = JSON.parse(lines.at(-1) ?? '{}');
+    expect(terminal.tuples[0].slice(0, 8)).toEqual([
+      1,
+      1,
+      9,
+      1001,
+      10 * 1024 * 1024 + 1001,
+      1,
+      1,
+      'http_fallback_success',
+    ]);
+    expect(terminal).toMatchObject({
+      groupsAttempted: 1,
+      groupsEmitted: 1,
+      groupsOmitted: 0,
+      chunksAttempted: 1001,
+      chunksEmitted: 1001,
+      chunksOmitted: 0,
+      bytesAttempted: 10 * 1024 * 1024 + 1001,
+      bytesEmitted: 10 * 1024 * 1024 + 1001,
+      bytesOmitted: 0,
+      liveGroups: 0,
+      liveRequests: 0,
+      overflow: true,
+    });
+    expect(terminal.incidents).toEqual(
+      expect.arrayContaining([
+        expect.arrayContaining(['unsupported_split_request', 2, 1, 1009]),
+        expect.arrayContaining(['fallback_http_before_send', 1, 1]),
+      ])
+    );
   });
 
   it('falls back to HTTP when frame construction fails before send', async () => {

@@ -5,7 +5,7 @@ import {
   StreamExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { once } from '@workflow/utils';
+import { createStreamDiagnostic, once } from '@workflow/utils';
 import type { StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
@@ -360,8 +360,16 @@ export function getSerializeStream(
 
 export function getDeserializeStream(
   revivers: Partial<Revivers>,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  diagnosticContext?: { runId: string; name: string }
 ): TransformStream<Uint8Array, any> {
+  const diagnostic = diagnosticContext
+    ? createStreamDiagnostic(
+        'read',
+        diagnosticContext.runId,
+        diagnosticContext.name
+      )
+    : undefined;
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
   // Resolve the key input once on first use and cache the result.
@@ -428,6 +436,7 @@ export function getDeserializeStream(
           ? isRunPayloadKeys(keyState.key)
           : aesKeyOf(keyState.key) !== undefined;
         if (!usable) {
+          diagnostic?.finish('deserialize_key_unavailable');
           controller.error(
             new RuntimeDecryptionError(
               sealed
@@ -470,44 +479,55 @@ export function getDeserializeStream(
 
       if (format === SerializationFormat.DEVALUE_V1) {
         const text = decoder.decode(payload);
-        controller.enqueue(parse(text, revivers));
+        const value = parse(text, revivers);
+        diagnostic?.event('deserialize_complete', frameLength);
+        controller.enqueue(value);
+        diagnostic?.event('consumer_enqueue', frameLength);
       }
     }
   }
 
   const stream = new TransformStream<Uint8Array, any>({
     async transform(chunk, controller) {
-      // First, try to detect if this is length-prefixed framed data
-      // by checking if the first 4 bytes form a plausible length.
-      if (buffer.length === 0 && chunk.length >= FRAME_HEADER_SIZE) {
-        const possibleLength = new DataView(
-          chunk.buffer,
-          chunk.byteOffset,
-          chunk.byteLength
-        ).getUint32(0, false);
-        if (
-          possibleLength > 0 &&
-          possibleLength < 100_000_000 // sanity check: < 100MB
-        ) {
-          // Looks like framed data
+      try {
+        // First, try to detect if this is length-prefixed framed data
+        // by checking if the first 4 bytes form a plausible length.
+        if (buffer.length === 0 && chunk.length >= FRAME_HEADER_SIZE) {
+          const possibleLength = new DataView(
+            chunk.buffer,
+            chunk.byteOffset,
+            chunk.byteLength
+          ).getUint32(0, false);
+          if (
+            possibleLength > 0 &&
+            possibleLength < 100_000_000 // sanity check: < 100MB
+          ) {
+            // Looks like framed data
+            appendToBuffer(chunk);
+            await processFrames(controller);
+            return;
+          }
+        } else if (buffer.length > 0) {
+          // Already in framed mode (have buffered data)
           appendToBuffer(chunk);
           await processFrames(controller);
           return;
         }
-      } else if (buffer.length > 0) {
-        // Already in framed mode (have buffered data)
-        appendToBuffer(chunk);
-        await processFrames(controller);
-        return;
-      }
 
-      // Legacy format: newline-delimited devalue text (no framing)
-      const text = decoder.decode(chunk);
-      const lines = text.split('\n');
-      for (const line of lines) {
-        if (line.length > 0) {
-          controller.enqueue(parse(line, revivers));
+        // Legacy format: newline-delimited devalue text (no framing)
+        const text = decoder.decode(chunk);
+        const lines = text.split('\n');
+        for (const line of lines) {
+          if (line.length > 0) {
+            const value = parse(line, revivers);
+            diagnostic?.event('deserialize_complete', line.length);
+            controller.enqueue(value);
+            diagnostic?.event('consumer_enqueue', line.length);
+          }
         }
+      } catch (error) {
+        diagnostic?.finish('deserialize_rejected');
+        throw error;
       }
     },
     async flush(controller) {
@@ -515,6 +535,7 @@ export function getDeserializeStream(
       if (buffer.length > 0) {
         await processFrames(controller);
       }
+      diagnostic?.finish('deserialize_eof');
     },
   });
   return stream;
@@ -779,64 +800,74 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
     // emitted when the stream drains.
     let chunksDelivered = 0;
     let bytesDelivered = 0;
+    const diagnostic = createStreamDiagnostic('read', runId, name);
+    diagnostic?.event('reader_session_entry', startIndex);
     super({
       // @ts-expect-error Not sure why TypeScript is complaining about this
       type: 'bytes',
 
       pull: async (controller) => {
-        let reader = this.#reader;
-        if (!reader) {
-          if (readStart === undefined) readStart = Date.now();
-          const world = await getWorldLazy();
-          const connectStart = Date.now();
-          const stream = await world.streams.get(runId, name, startIndex);
-          connectMs = Date.now() - connectStart;
-          reader = this.#reader = stream.getReader();
-        }
-        if (!reader) {
-          controller.error(new Error('Failed to get reader'));
-          return;
-        }
+        try {
+          let reader = this.#reader;
+          if (!reader) {
+            if (readStart === undefined) readStart = Date.now();
+            const world = await getWorldLazy();
+            const connectStart = Date.now();
+            const stream = await world.streams.get(runId, name, startIndex);
+            connectMs = Date.now() - connectStart;
+            reader = this.#reader = stream.getReader();
+          }
+          if (!reader) {
+            diagnostic?.finish('reader_unavailable');
+            controller.error(new Error('Failed to get reader'));
+            return;
+          }
 
-        const result = await reader.read();
-        if (result.done) {
-          this.#reader = undefined;
-          if (readStart !== undefined) {
-            recordStreamReadComplete(
-              readStart,
-              runId,
-              name,
-              chunksDelivered,
-              bytesDelivered
-            );
+          const result = await reader.read();
+          if (result.done) {
+            this.#reader = undefined;
+            if (readStart !== undefined) {
+              recordStreamReadComplete(
+                readStart,
+                runId,
+                name,
+                chunksDelivered,
+                bytesDelivered
+              );
+            }
+            diagnostic?.finish('reader_eof');
+            controller.close();
+          } else {
+            // The server flushes a leading zero-length chunk (v3+) to commit
+            // response headers before any data; skip empties so TTFC measures to
+            // the first real chunk.
+            if (
+              !firstChunkReported &&
+              result.value.byteLength > 0 &&
+              readStart !== undefined
+            ) {
+              firstChunkReported = true;
+              recordReadTimeToFirstChunk(
+                readStart,
+                runId,
+                name,
+                startIndex,
+                connectMs
+              );
+            }
+            chunksDelivered += 1;
+            bytesDelivered += result.value.byteLength;
+            // Forward raw bytes; encryption/decryption is handled at the
+            // framing level by getSerializeStream/getDeserializeStream.
+            controller.enqueue(result.value);
           }
-          controller.close();
-        } else {
-          // The server flushes a leading zero-length chunk (v3+) to commit
-          // response headers before any data; skip empties so TTFC measures to
-          // the first real chunk.
-          if (
-            !firstChunkReported &&
-            result.value.byteLength > 0 &&
-            readStart !== undefined
-          ) {
-            firstChunkReported = true;
-            recordReadTimeToFirstChunk(
-              readStart,
-              runId,
-              name,
-              startIndex,
-              connectMs
-            );
-          }
-          chunksDelivered += 1;
-          bytesDelivered += result.value.byteLength;
-          // Forward raw bytes; encryption/decryption is handled at the
-          // framing level by getSerializeStream/getDeserializeStream.
-          controller.enqueue(result.value);
+        } catch (error) {
+          diagnostic?.finish('reader_rejected');
+          throw error;
         }
       },
       cancel: async (reason) => {
+        diagnostic?.finish('reader_cancel');
         if (this.#reader) {
           await this.#reader.cancel(reason).catch(() => {});
           this.#reader = undefined;
@@ -939,6 +970,9 @@ export function createReconnectingFramedStream(
   let chunksDelivered = 0;
   let bytesDelivered = 0;
   let keyPrefetched = false;
+  let firstCompleteFrameReported = false;
+  const diagnostic = createStreamDiagnostic('read', runId, name);
+  diagnostic?.event('reader_session_entry', currentStartIndex);
 
   function prefetchKey(): void {
     if (keyPrefetched) return;
@@ -967,7 +1001,9 @@ export function createReconnectingFramedStream(
       ? currentStartIndex + consumedFrames
       : startIndex;
     const connectStart = Date.now();
+    diagnostic?.event('get_dispatch', effectiveStartIndex, totalReconnectCount);
     const stream = await world.streams.get(runId, name, effectiveStartIndex);
+    diagnostic?.event('get_return', effectiveStartIndex, totalReconnectCount);
     if (canceled) {
       await stream.cancel(cancelReason).catch(() => {});
       return false;
@@ -1063,6 +1099,7 @@ export function createReconnectingFramedStream(
             if (!(await connect())) return;
           } catch (err) {
             if (canceled) return;
+            diagnostic?.finish('initial_connect_rejected');
             controller.error(err);
             return;
           }
@@ -1075,12 +1112,14 @@ export function createReconnectingFramedStream(
         } catch (err) {
           if (canceled) return;
           if (!reconnectSupported) {
+            diagnostic?.finish('body_read_rejected');
             controller.error(err);
             return;
           }
           try {
             if (!(await reconnect())) return;
           } catch (reconnectErr) {
+            diagnostic?.finish('reconnect_exhausted');
             controller.error(reconnectErr);
             return;
           }
@@ -1104,6 +1143,7 @@ export function createReconnectingFramedStream(
             try {
               if (!(await reconnect())) return;
             } catch (reconnectErr) {
+              diagnostic?.finish('reconnect_exhausted');
               controller.error(reconnectErr);
               return;
             }
@@ -1121,6 +1161,7 @@ export function createReconnectingFramedStream(
               totalReconnectCount
             );
           }
+          diagnostic?.finish('reader_eof');
           controller.close();
           return;
         }
@@ -1145,7 +1186,20 @@ export function createReconnectingFramedStream(
           if (buffer.length < total) break;
           // Forward the entire framed chunk (header + payload) to the
           // downstream deserializer, which already expects this layout.
+          if (!firstCompleteFrameReported) {
+            firstCompleteFrameReported = true;
+            diagnostic?.event(
+              'first_complete_outer_frame',
+              currentStartIndex + consumedFrames,
+              total
+            );
+          }
           controller.enqueue(buffer.slice(0, total));
+          diagnostic?.event(
+            'decoded_delivery',
+            currentStartIndex + consumedFrames,
+            total
+          );
           buffer = buffer.slice(total);
           consumedFrames++;
           chunksDelivered++;
@@ -1174,6 +1228,7 @@ export function createReconnectingFramedStream(
       }
     },
     cancel: async (reason) => {
+      diagnostic?.finish('reader_cancel');
       canceled = true;
       cancelReason = reason;
       const currentReader = reader;
@@ -1326,6 +1381,9 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         return world.streams.createWriteSession?.(runId, name, { writerId });
       });
     let nextChunkSeq = 0;
+    let groupOrdinal = 0;
+    const diagnostic = createStreamDiagnostic('write', runId, name, writerId);
+    diagnostic?.event('core_session_entry');
 
     // ------------------------------------------------------------------
     // Group-commit buffering.
@@ -1446,6 +1504,14 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       const world = await worldPromise;
       const session = await writeSessionPromise;
       const dispatchAt = Date.now();
+      const ordinal = ++groupOrdinal;
+      diagnostic?.event(
+        'core_buffer_dispatch',
+        ordinal,
+        nextChunkSeq,
+        group.length,
+        bytes
+      );
       if (session) {
         await session.write(nextChunkSeq, group);
       } else if (
@@ -1462,6 +1528,13 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       // `inFlight` admits only one dispatch loop, so no second group can read
       // this sequence space until the current group has advanced it.
       nextChunkSeq += group.length;
+      diagnostic?.event(
+        'core_flush_settle',
+        ordinal,
+        nextChunkSeq - group.length,
+        group.length,
+        bytes
+      );
       if (groupT0 !== undefined) {
         recordStreamWriteFlush(
           groupT0,
@@ -1540,6 +1613,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         (error) => {
           inFlight = null;
           sinkError ??= error;
+          diagnostic?.finish('core_flush_rejected');
           rejectWaiters(sinkError);
         }
       );
@@ -1651,24 +1725,28 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         if (sinkError !== undefined) throw sinkError;
       },
       async close() {
-        // Everything accepted must be durable before the server stream is
-        // closed: the server fences post-close writes.
-        await drain();
+        try {
+          // Everything accepted must be durable before the server stream is
+          // closed: the server fences post-close writes.
+          await drain();
 
-        // A close with an empty buffer skips the dispatch path (and its
-        // barrier), but can itself be the first write to a brand-new
-        // stream, so gate it too.
-        await ensureRunReady();
+          // A close with an empty buffer skips the dispatch path (and its
+          // barrier), but can itself be the first write to a brand-new
+          // stream, so gate it too.
+          await ensureRunReady();
 
-        const world = await worldPromise;
-        const session = await writeSessionPromise;
-        const closeStart = Date.now();
-        if (session) {
-          await session.close();
-        } else {
-          await world.streams.close(runId, name);
+          const world = await worldPromise;
+          const session = await writeSessionPromise;
+          const closeStart = Date.now();
+          if (session) {
+            await session.close();
+          } else {
+            await world.streams.close(runId, name);
+          }
+          recordStreamClose(closeStart, runId, name);
+        } finally {
+          diagnostic?.finish('core_closed');
         }
-        recordStreamClose(closeStart, runId, name);
       },
       async abort(reason) {
         // Buffered chunks were already ACKED to their writers (early-ack
@@ -1706,7 +1784,11 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // stateful World releases its socket without sending close; stateless
         // Worlds keep the existing no-op behavior.
         const session = await writeSessionPromise.catch(() => undefined);
-        await session?.dispose?.();
+        try {
+          await session?.dispose?.();
+        } finally {
+          diagnostic?.finish('core_aborted');
+        }
       },
     });
 
@@ -3119,7 +3201,8 @@ export function getExternalRevivers(
         );
         const transform = getDeserializeStream(
           getExternalRevivers(global, ops, runId, resolveKey),
-          resolveKey
+          resolveKey,
+          { runId, name: value.name }
         );
         const state = createFlushableState();
         ops.push(state.promise);

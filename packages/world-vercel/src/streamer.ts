@@ -9,6 +9,7 @@ import {
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { createStreamDiagnostic } from '@workflow/utils';
 import {
   envNumber,
   type GetChunksOptions,
@@ -418,6 +419,8 @@ export function createStreamer(config?: APIConfig): Streamer {
       },
 
       async get(runId: string, name: string, startIndex?: number) {
+        const diagnostic = createStreamDiagnostic('read', runId, name);
+        diagnostic?.event('get_entry', startIndex);
         const httpConfig = await getHttpConfig(config);
         // Stream bytes themselves are untyped binary, but any pre-header error
         // is a JSON envelope. Asking explicitly avoids a CBOR 410 that this
@@ -435,29 +438,71 @@ export function createStreamer(config?: APIConfig): Streamer {
         // consumer, so it includes deframing and doesn't need a wrapper here.
         // Live read: keep the global dispatcher and no request timeout so the
         // long-lived, reconnecting read isn't truncated.
-        const response = await instrumentedFetch({
-          method: 'GET',
-          url: url.toString(),
-          headers: httpConfig.headers,
-          dispatcher: undefined,
-          timeoutMs: null,
-          transportErrorCode: 'STREAM_ERROR',
-          logLabel: url.pathname,
-          spanName: 'workflow.stream.read.connect',
-          attributes: streamSpanAttributes({
-            runId,
-            name,
-            operation: 'read',
-            startIndex,
-          }),
-          buildError: createStreamReadError,
-        });
+        diagnostic?.event('instrumented_fetch_entry', startIndex);
+        let response: Response;
+        try {
+          response = await instrumentedFetch({
+            method: 'GET',
+            url: url.toString(),
+            headers: httpConfig.headers,
+            dispatcher: undefined,
+            timeoutMs: null,
+            transportErrorCode: 'STREAM_ERROR',
+            logLabel: url.pathname,
+            spanName: 'workflow.stream.read.connect',
+            attributes: streamSpanAttributes({
+              runId,
+              name,
+              operation: 'read',
+              startIndex,
+            }),
+            onRequestDispatched: () => diagnostic?.event('fetch_call'),
+            buildError: createStreamReadError,
+          });
+        } catch (error) {
+          diagnostic?.checkpoint('fetch_rejected');
+          throw error;
+        }
+        diagnostic?.event('headers_received', response.status);
         if (!response.body) {
+          diagnostic?.checkpoint('missing_body');
           throw new StreamError('No response body for stream', {
             url: url.toString(),
           });
         }
-        return response.body as ReadableStream<Uint8Array>;
+        if (!diagnostic) {
+          return response.body as ReadableStream<Uint8Array>;
+        }
+        const reader = response.body.getReader();
+        let firstRaw = false;
+        return new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            let result: { done: boolean; value?: Uint8Array };
+            try {
+              result = await reader.read();
+            } catch (error) {
+              diagnostic.checkpoint('body_read_rejected');
+              throw error;
+            }
+            if (result.done || !result.value) {
+              diagnostic?.checkpoint('eof');
+              controller.close();
+              return;
+            }
+            if (!firstRaw && result.value.byteLength > 0) {
+              firstRaw = true;
+              diagnostic?.event(
+                'raw_first_nonempty_body_chunk',
+                result.value.byteLength
+              );
+            }
+            controller.enqueue(result.value);
+          },
+          async cancel(reason) {
+            diagnostic?.finish('cancel');
+            await reader.cancel(reason);
+          },
+        });
       },
 
       async getChunks(

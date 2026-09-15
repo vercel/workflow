@@ -3,6 +3,7 @@ import {
   StreamExpiredError,
   ThrottleError,
 } from '@workflow/errors';
+import { setStreamDiagnosticSinkForTest } from '@workflow/utils';
 import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeMultiChunks, MAX_CHUNKS_PER_REQUEST } from './streamer.js';
@@ -15,6 +16,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setStreamDiagnosticSinkForTest(undefined);
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
@@ -260,6 +262,65 @@ describe('streams.get', () => {
     // v3, not v2: the reconnecting reader relies on the server erroring the
     // body on a max-duration timeout rather than closing it cleanly.
     expect(url.pathname).toBe('/v3/runs/run-123/stream/my-stream');
+  });
+
+  it('observes raw first byte without changing chunk delivery or cancellation', async () => {
+    vi.stubEnv('VERCEL_ENV', 'preview');
+    vi.stubEnv('VERCEL_PROJECT_ID', 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm');
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    let canceledWith: unknown;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array(0));
+              controller.enqueue(new Uint8Array([1, 2]));
+            },
+            cancel(reason) {
+              canceledWith = reason;
+            },
+          }),
+          { status: 200 }
+        )
+    );
+
+    const streamer = await getStreamer();
+    const stream = await streamer.streams.get(
+      `wrun_${ulid}`,
+      `strm_${ulid}_user_YmVuY2gtY3R0`
+    );
+    const reader = stream.getReader();
+    expect(await reader.read()).toEqual({
+      done: false,
+      value: new Uint8Array(0),
+    });
+    expect(await reader.read()).toEqual({
+      done: false,
+      value: new Uint8Array([1, 2]),
+    });
+    await reader.cancel('stop');
+    expect(canceledWith).toBe('stop');
+    const firstRecord = JSON.parse(lines.at(-1) ?? '{}') as {
+      session: number;
+      outcome: string;
+      readConnections: Array<{ rawBytes?: number }>;
+    };
+    expect(firstRecord.outcome).toBe('cancel');
+    expect(firstRecord.readConnections[0]?.rawBytes).toBe(2);
+    const firstSession = firstRecord.session;
+
+    const next = await streamer.streams.get(
+      `wrun_${ulid}`,
+      `strm_${ulid}_user_YmVuY2gtY3R0`
+    );
+    await next.cancel('again');
+    const secondSession = (
+      JSON.parse(lines.at(-1) ?? '{}') as { session: number }
+    ).session;
+    expect(secondSession).not.toBe(firstSession);
   });
 
   it('throws a typed terminal error with the retention details on 410', async () => {

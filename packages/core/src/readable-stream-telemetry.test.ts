@@ -5,6 +5,10 @@ import {
   type ReadableSpan,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
+import {
+  getActiveStreamDiagnosticSessionsForTest,
+  setStreamDiagnosticSinkForTest,
+} from '@workflow/utils';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import {
   afterAll,
@@ -77,7 +81,41 @@ describe('WorkflowServerReadableStream read telemetry', () => {
 
   afterEach(() => {
     setWorld(undefined);
+    setStreamDiagnosticSinkForTest(undefined);
+    delete process.env.VERCEL_ENV;
+    delete process.env.VERCEL_PROJECT_ID;
     vi.clearAllMocks();
+  });
+
+  it.each([
+    'get',
+    'read',
+  ] as const)('releases diagnostic capacity on terminal %s rejection', async (seam) => {
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
+    setStreamDiagnosticSinkForTest(() => {});
+    const error = new Error(`${seam} rejected`);
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      streams: {
+        get: async () => {
+          if (seam === 'get') throw error;
+          return new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.error(error);
+            },
+          });
+        },
+      },
+    } as any);
+    const reader = new WorkflowServerReadableStream(
+      `wrun_${ulid}`,
+      `strm_${ulid}_user_YmVuY2gtY3R0`
+    ).getReader();
+    expect(getActiveStreamDiagnosticSessionsForTest()).toBe(1);
+    await expect(reader.read()).rejects.toBe(error);
+    expect(getActiveStreamDiagnosticSessionsForTest()).toBe(0);
   });
 
   it('emits a workflow.stream.read span with ttfc and connect durations', async () => {
