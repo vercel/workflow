@@ -1,3 +1,4 @@
+import { setStreamDiagnosticSinkForTest } from '@workflow/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { decodeFrames, encodeFrame } from './frames.js';
 
@@ -123,6 +124,10 @@ beforeEach(() => {
   writeSpans.length = 0;
   delete process.env.WORKFLOW_STREAMS_TRANSPORT;
   delete process.env.WORKFLOW_REQUEST_TIMEOUT_MS;
+  delete process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS;
+  delete process.env.VERCEL_ENV;
+  delete process.env.VERCEL_PROJECT_ID;
+  setStreamDiagnosticSinkForTest(undefined);
 });
 
 afterEach(() => {
@@ -159,6 +164,54 @@ function makeSession(
 }
 
 describe('v1 stream WebSocket writer lifecycle', () => {
+  it('keeps serialization, callback acknowledgement, and promise settlement unchanged when diagnostics are enabled', async () => {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    process.env.WORKFLOW_STREAM_SLOWDOWN_DIAGNOSTICS = 'true';
+    process.env.VERCEL_ENV = 'preview';
+    process.env.VERCEL_PROJECT_ID = 'prj_bXW1R9CdeOvxy0kOk0i4iFGrFMAm';
+    const lines: string[] = [];
+    setStreamDiagnosticSinkForTest((line) => lines.push(line));
+    const ulid = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    const writeHttp = vi.fn().mockResolvedValue(undefined);
+    const closeHttp = vi.fn().mockResolvedValue(undefined);
+    const session = createStreamWriteSession(
+      `wrun_${ulid}`,
+      `strm_${ulid}_user_YmVuY2gtY3R0`,
+      `wrtr_${ulid}`,
+      { token: 'token' },
+      writeHttp,
+      closeHttp,
+      false
+    );
+    activeSessions.push(session);
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    sockets[0].open();
+
+    let settled = false;
+    const write = session.write(7, [new Uint8Array([1, 2, 3])]);
+    void write.then(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(sockets[0].sent).toHaveLength(1));
+    expect(settled).toBe(false);
+    const frame = await decodeOne(sockets[0].sent[0]);
+    expect(frame.meta).toMatchObject({
+      type: 'write',
+      reqId: 1,
+      chunkSeq: 7,
+      numChunks: 1,
+    });
+    expect(frame.body).toEqual(new Uint8Array([0, 0, 0, 3, 1, 2, 3]));
+
+    sockets[0].reply(
+      encodeFrame({ type: 'write_ack', reqId: 1 }, new Uint8Array())
+    );
+    await write;
+    expect(settled).toBe(true);
+    session.dispose?.();
+    expect(lines.join('\n')).toContain('"ws_send_callback"');
+    expect(lines.join('\n')).toContain('"pending_resolve"');
+  });
   it('keeps HTTP as the default without constructing a socket', async () => {
     const { session, writeHttp, closeHttp } = makeSession();
     await session.write(0, ['one']);

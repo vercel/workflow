@@ -14,6 +14,14 @@ export {
 } from './parse-name.js';
 export { pluralize } from './pluralize.js';
 export { once, type PromiseWithResolvers, withResolvers } from './promise.js';
+export {
+  createStreamDiagnostic,
+  isCanonicalBenchCttStream,
+  isStreamSlowdownDiagnosticsEnabled,
+  STREAM_DIAGNOSTIC_LIMITS,
+  type StreamDiagnostic,
+  setStreamDiagnosticSinkForTest,
+} from './stream-diagnostics.js';
 export { parseDurationToDate } from './time.js';
 export {
   createWorkflowBaseUrl,

@@ -5,7 +5,7 @@ import {
   StreamExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { once } from '@workflow/utils';
+import { createStreamDiagnostic, once } from '@workflow/utils';
 import type { StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
@@ -360,8 +360,16 @@ export function getSerializeStream(
 
 export function getDeserializeStream(
   revivers: Partial<Revivers>,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  diagnosticContext?: { runId: string; name: string }
 ): TransformStream<Uint8Array, any> {
+  const diagnostic = diagnosticContext
+    ? createStreamDiagnostic(
+        'read',
+        diagnosticContext.runId,
+        diagnosticContext.name
+      )
+    : undefined;
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
   // Resolve the key input once on first use and cache the result.
@@ -470,7 +478,10 @@ export function getDeserializeStream(
 
       if (format === SerializationFormat.DEVALUE_V1) {
         const text = decoder.decode(payload);
-        controller.enqueue(parse(text, revivers));
+        const value = parse(text, revivers);
+        diagnostic?.event('deserialize_complete', frameLength);
+        controller.enqueue(value);
+        diagnostic?.event('consumer_enqueue', frameLength);
       }
     }
   }
@@ -515,6 +526,7 @@ export function getDeserializeStream(
       if (buffer.length > 0) {
         await processFrames(controller);
       }
+      diagnostic?.finish('deserialize_eof');
     },
   });
   return stream;
@@ -939,6 +951,9 @@ export function createReconnectingFramedStream(
   let chunksDelivered = 0;
   let bytesDelivered = 0;
   let keyPrefetched = false;
+  let firstCompleteFrameReported = false;
+  const diagnostic = createStreamDiagnostic('read', runId, name);
+  diagnostic?.event('reader_session_entry', currentStartIndex);
 
   function prefetchKey(): void {
     if (keyPrefetched) return;
@@ -967,7 +982,9 @@ export function createReconnectingFramedStream(
       ? currentStartIndex + consumedFrames
       : startIndex;
     const connectStart = Date.now();
+    diagnostic?.event('get_dispatch', effectiveStartIndex, totalReconnectCount);
     const stream = await world.streams.get(runId, name, effectiveStartIndex);
+    diagnostic?.event('get_return', effectiveStartIndex, totalReconnectCount);
     if (canceled) {
       await stream.cancel(cancelReason).catch(() => {});
       return false;
@@ -1121,6 +1138,7 @@ export function createReconnectingFramedStream(
               totalReconnectCount
             );
           }
+          diagnostic?.finish('reader_eof');
           controller.close();
           return;
         }
@@ -1145,7 +1163,20 @@ export function createReconnectingFramedStream(
           if (buffer.length < total) break;
           // Forward the entire framed chunk (header + payload) to the
           // downstream deserializer, which already expects this layout.
+          if (!firstCompleteFrameReported) {
+            firstCompleteFrameReported = true;
+            diagnostic?.event(
+              'first_complete_outer_frame',
+              currentStartIndex + consumedFrames,
+              total
+            );
+          }
           controller.enqueue(buffer.slice(0, total));
+          diagnostic?.event(
+            'decoded_delivery',
+            currentStartIndex + consumedFrames,
+            total
+          );
           buffer = buffer.slice(total);
           consumedFrames++;
           chunksDelivered++;
@@ -1174,6 +1205,7 @@ export function createReconnectingFramedStream(
       }
     },
     cancel: async (reason) => {
+      diagnostic?.finish('reader_cancel');
       canceled = true;
       cancelReason = reason;
       const currentReader = reader;
@@ -1326,6 +1358,9 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         return world.streams.createWriteSession?.(runId, name, { writerId });
       });
     let nextChunkSeq = 0;
+    let groupOrdinal = 0;
+    const diagnostic = createStreamDiagnostic('write', runId, name, writerId);
+    diagnostic?.event('core_session_entry');
 
     // ------------------------------------------------------------------
     // Group-commit buffering.
@@ -1446,6 +1481,14 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       const world = await worldPromise;
       const session = await writeSessionPromise;
       const dispatchAt = Date.now();
+      const ordinal = ++groupOrdinal;
+      diagnostic?.event(
+        'core_buffer_dispatch',
+        ordinal,
+        nextChunkSeq,
+        group.length,
+        bytes
+      );
       if (session) {
         await session.write(nextChunkSeq, group);
       } else if (
@@ -1462,6 +1505,13 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       // `inFlight` admits only one dispatch loop, so no second group can read
       // this sequence space until the current group has advanced it.
       nextChunkSeq += group.length;
+      diagnostic?.event(
+        'core_flush_settle',
+        ordinal,
+        nextChunkSeq - group.length,
+        group.length,
+        bytes
+      );
       if (groupT0 !== undefined) {
         recordStreamWriteFlush(
           groupT0,
@@ -1540,6 +1590,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         (error) => {
           inFlight = null;
           sinkError ??= error;
+          diagnostic?.finish('core_flush_rejected');
           rejectWaiters(sinkError);
         }
       );
@@ -1669,6 +1720,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
           await world.streams.close(runId, name);
         }
         recordStreamClose(closeStart, runId, name);
+        diagnostic?.finish('core_closed');
       },
       async abort(reason) {
         // Buffered chunks were already ACKED to their writers (early-ack
@@ -3083,7 +3135,8 @@ export function getExternalRevivers(
         );
         const transform = getDeserializeStream(
           getExternalRevivers(global, ops, runId, resolveKey),
-          resolveKey
+          resolveKey,
+          { runId, name: value.name }
         );
         const state = createFlushableState();
         ops.push(state.promise);
