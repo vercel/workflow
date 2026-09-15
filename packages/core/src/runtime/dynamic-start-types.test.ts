@@ -17,20 +17,20 @@ describe('start() overload resolution', () => {
   it('returns Run<unknown> for dynamic source, with or without args', () => {
     function _check() {
       expectTypeOf(
-        start(SOURCE, [{ userId: 'u_1' }], { dynamic: { steps } })
+        start(SOURCE, [{ userId: 'u_1' }], { experimental_dynamic: { steps } })
       ).toEqualTypeOf<Promise<Run<unknown>>>();
-      expectTypeOf(start(SOURCE, { dynamic: { steps } })).toEqualTypeOf<
-        Promise<Run<unknown>>
-      >();
+      expectTypeOf(
+        start(SOURCE, { experimental_dynamic: { steps } })
+      ).toEqualTypeOf<Promise<Run<unknown>>>();
     }
     expect(typeof _check).toBe('function');
   });
 
-  it('accepts dynamic.exportName alongside the shared start options', () => {
+  it('accepts experimental_dynamic.exportName alongside the shared start options', () => {
     function _check() {
       expectTypeOf(
         start(SOURCE, [], {
-          dynamic: { steps, exportName: 'orchestrate' },
+          experimental_dynamic: { steps, exportName: 'orchestrate' },
           attributes: { tenant: 'acme' },
         })
       ).toEqualTypeOf<Promise<Run<unknown>>>();
@@ -48,7 +48,7 @@ describe('start() overload resolution', () => {
     expect(typeof _check).toBe('function');
   });
 
-  it('accepts an imported step function in dynamic.steps', () => {
+  it('accepts an imported step function in experimental_dynamic.steps', () => {
     function _check() {
       // The documented call: real step imports, whose `.stepId` the
       // build-time transform stamps at runtime and never adds to their type.
@@ -57,21 +57,25 @@ describe('start() overload resolution', () => {
       // fixtures caught, since the runner only ever used the escape hatch.
       const add = async (a: number, b: number) => a + b;
       expectTypeOf(
-        start(SOURCE, [], { dynamic: { steps: { add } } })
+        start(SOURCE, [], { experimental_dynamic: { steps: { add } } })
       ).toEqualTypeOf<Promise<Run<unknown>>>();
       expectTypeOf(
         start(SOURCE, [], {
-          dynamic: { steps: { add: { stepId: 'step//./steps//add' } } },
+          experimental_dynamic: {
+            steps: { add: { stepId: 'step//./steps//add' } },
+          },
         })
       ).toEqualTypeOf<Promise<Run<unknown>>>();
     }
     expect(typeof _check).toBe('function');
   });
 
-  it('requires `dynamic` when the first argument is source', () => {
+  it('requires `experimental_dynamic` when the first argument is source', () => {
     function _check() {
-      // @ts-expect-error - source without dynamic options is not a valid call
+      // @ts-expect-error - source without experimental options is not valid
       start(SOURCE, []);
+      // @ts-expect-error - the unreleased old spelling is not public API
+      start(SOURCE, [], { dynamic: { steps } });
     }
     expect(typeof _check).toBe('function');
   });

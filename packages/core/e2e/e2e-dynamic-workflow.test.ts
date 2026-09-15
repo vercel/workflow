@@ -7,7 +7,7 @@
  * That is deliberate, and it is most of the reason this is worth testing end
  * to end at all:
  *
- * - `dynamic.steps` is given the *imported* `add` step function, so the
+ * - `experimental_dynamic.steps` is given the *imported* `add` step function, so the
  *   `.stepId` the build-time transform stamped on it is what binds the source
  *   to a registered step. This runner cannot do that — it holds no handle on
  *   the function — and would have to fall back to an explicit `{ stepId }`.
@@ -342,18 +342,18 @@ describeJs('dynamic workflows e2e', { timeout: 120_000 }, () => {
     const steps = { add: { stepId: 'step//./workflows/99_e2e//add' } };
 
     await expect(
-      start('const notAWorkflow = 1;', [], { dynamic: { steps } })
+      start('const notAWorkflow = 1;', [], { experimental_dynamic: { steps } })
     ).rejects.toThrow(/must declare `async function workflow/);
 
     await expect(
       start('async function workflow() { return 1; }', [], {
-        dynamic: { steps },
+        experimental_dynamic: { steps },
       })
     ).rejects.toThrow(/"use workflow" directive/);
 
     await expect(
       start('async function workflow() { "use workflow"; }', [], {
-        dynamic: { steps: {} },
+        experimental_dynamic: { steps: {} },
       })
     ).rejects.toThrow(/at least one registered step/);
   });
