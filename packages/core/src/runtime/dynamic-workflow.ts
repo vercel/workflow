@@ -210,7 +210,7 @@ function assertGeneratedWorkflowCodeParses(workflowCode: string): void {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new WorkflowRuntimeError(
-      `Generated dynamic workflow code is not valid JavaScript: ${message}. Avoid top-level bindings named __dynamicUseStep, steps, sleep, or createHook because those names are provided by the dynamic workflow runtime.`
+      `Generated dynamic workflow code is not valid JavaScript: ${message}.`
     );
   }
 }
@@ -338,28 +338,33 @@ export async function compileDynamicWorkflow(
     )
     .join(',\n');
 
-  // The generated wrapper mirrors what the build-time transform emits for a
-  // static workflow: pull the VM's primitives off the well-known symbols,
-  // then register the function on `globalThis.__private_workflows` under the
-  // name the runtime will look it up by.
-  const workflowCode = `globalThis.__private_workflows ??= new Map();
-const __dynamicUseStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")];
+  // The caller's script runs in its own nested lexical scope. Its declarations
+  // therefore keep script-like relationships with one another but cannot
+  // shadow bindings used to initialize or register the wrapper. The outer
+  // factory parameters intentionally expose only the supported runtime
+  // bindings, which the selected workflow closes over.
+  const workflowCode = `const __dynamicGlobalThis = globalThis;
+__dynamicGlobalThis.__private_workflows ??= new Map();
+const __dynamicUseStep = __dynamicGlobalThis[Symbol.for("WORKFLOW_USE_STEP")];
 if (typeof __dynamicUseStep !== "function") {
   throw new Error("Dynamic workflows require a workflow VM that provides WORKFLOW_USE_STEP.");
 }
-const steps = Object.freeze({
+const __dynamicSteps = Object.freeze({
 ${stepBindings}
 });
-const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+const __dynamicSleep = __dynamicGlobalThis[Symbol.for("WORKFLOW_SLEEP")];
+const __dynamicCreateHook = __dynamicGlobalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+const __dynamicWorkflow = ((steps, sleep, createHook) => (() => {
 ${source}
-Object.defineProperty(${exportName}, "workflowId", {
+return ${exportName};
+})())(__dynamicSteps, __dynamicSleep, __dynamicCreateHook);
+Object.defineProperty(__dynamicWorkflow, "workflowId", {
   value: ${JSON.stringify(workflowName)},
   writable: false,
   enumerable: false,
   configurable: false
 });
-globalThis.__private_workflows.set(${JSON.stringify(workflowName)}, ${exportName});
+__dynamicGlobalThis.__private_workflows.set(${JSON.stringify(workflowName)}, __dynamicWorkflow);
 `;
 
   // The caller's source can be valid in isolation but collide with bindings
