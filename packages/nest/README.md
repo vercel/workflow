@@ -128,6 +128,7 @@ WorkflowModule.forRoot({
   manageWorldLifecycle: false,
 
   // Load the generated bundles at startup instead of on the first request.
+  // Defaults to true, or false when VERCEL is set.
   preloadBundles: true,
 
   // SWC module type: 'es6' (default) or 'commonjs'
