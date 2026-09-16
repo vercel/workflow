@@ -46,8 +46,9 @@ Workflow recognizes a Vercel deployment by `VERCEL_DEPLOYMENT_ID`. Vercel expose
 <Callout type="warn">
   With the checkbox cleared, a Vercel deployment is indistinguishable from a
   non-Vercel environment as far as Workflow is concerned: the build emits local
-  output and the runtime selects the [Local World](/worlds/local), which stores
-  workflow state on the filesystem. A deployment's filesystem is read-only, so
+  output and, unless `WORKFLOW_TARGET_WORLD` is set, the runtime selects the
+  [Local World](/worlds/local), which stores workflow state on the filesystem.
+  A deployment's filesystem is read-only, so with this default selection,
   every run fails before its first step, and no runs appear in the Vercel
   dashboard because none were ever created in the Vercel World.
 </Callout>

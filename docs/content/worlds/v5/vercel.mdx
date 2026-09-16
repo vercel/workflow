@@ -46,14 +46,15 @@ Workflow recognizes a Vercel deployment by `VERCEL_DEPLOYMENT_ID`. Vercel expose
 <Callout type="warn">
   With the checkbox cleared, a Vercel deployment is indistinguishable from a
   non-Vercel environment as far as Workflow is concerned: the build emits local
-  output and the runtime selects the [Local World](/worlds/local), which stores
-  workflow state on the filesystem. A deployment's filesystem is read-only, so
+  output and, unless `WORKFLOW_TARGET_WORLD` is set, the runtime selects the
+  [Local World](/worlds/local), which stores workflow state on the filesystem.
+  A deployment's filesystem is read-only, so with this default selection,
   every run fails before its first step.
 </Callout>
 
 ### Diagnosing a missing deployment ID
 
-Nothing in the deployment announces the wrong World, so the failure is easy to mistake for a bug in the SDK:
+With no `WORKFLOW_TARGET_WORLD` override, nothing in the deployment announces the wrong World, so the failure is easy to mistake for a bug in the SDK:
 
 - Runs fail with the Local World reporting that it cannot create its data directory, naming a filesystem code such as `EROFS`.
 - No runs appear in the Vercel dashboard, because none were ever created in the Vercel World.
