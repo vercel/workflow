@@ -10,7 +10,7 @@ related:
   - /docs/api-reference/workflow-api/get-run
 ---
 
-Registers global workflow lifecycle handlers, invoked by the runtime on the compute that records a run's terminal transition. Useful for centralized reporting (for example, forwarding every failed run to Sentry) without wrapping each workflow body.
+Registers global workflow lifecycle handlers, invoked by the runtime on the compute that records a run's terminal transition. Use it for centralized reporting, such as forwarding every failed run to Sentry, without wrapping each workflow body.
 
 Register early in the process lifecycle (in Next.js, `instrumentation.ts`) so handlers exist before the first run finishes. See the [lifecycle hooks guide](/docs/observability/lifecycle-hooks) for semantics and a full Sentry example.
 
@@ -70,6 +70,6 @@ Invoked when a workflow run fails terminally (after any retries).
 ## Behavior
 
 - Handlers run on the host (full Node.js), never inside the workflow VM. Calling `registerLifecycleHooks` from workflow code throws.
-- Handlers are fire-and-forget: they cannot delay or change the run's outcome, and a throwing handler is logged and swallowed. On serverless platforms the invocation is kept alive via `waitUntil`.
+- Handlers are fire-and-forget: they cannot delay or change the run's outcome, and the runtime logs and swallows a throwing handler. On serverless platforms, the runtime keeps the invocation alive with `waitUntil`.
 - Handlers fire only on the invocation that wrote the terminal event. Transitions recorded outside your app's compute (e.g. a run cancelled from the CLI or dashboard) do not fire handlers.
-- Multiple registrations are allowed; handlers run in registration order.
+- You can register multiple hook sets, and handlers run in registration order.
