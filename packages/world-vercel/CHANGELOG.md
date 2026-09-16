@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 4.7.5
+
+### Patch Changes
+
+- [#4179](https://github.com/vercel/workflow/pull/4179) [`d437c32`](https://github.com/vercel/workflow/commit/d437c329217c711e727e4449a4c10294405f9dd1) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Route unrecognized backend connection and stream failures through existing retry policies, rebuilding shared event connections after repeated HTTP/2 failures. Keep invalid backend URLs, blocked ports, and unsupported request headers out of those retries. Include error cause chains in run-failure logs to expose underlying socket, DNS, and TLS failures.
+
 ## 4.7.4
 
 ### Patch Changes
