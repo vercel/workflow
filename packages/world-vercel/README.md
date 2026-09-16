@@ -6,6 +6,12 @@ Integrates with Vercel's infrastructure for storage, queuing, and authentication
 
 Used by default for deployments on Vercel. Authentication and API endpoints are configured automatically in Vercel deployments.
 
+## Connection failures
+
+Backend connection failures and interrupted event streams follow existing retry policies, including failures with unrecognized error codes. Repeated HTTP/2 session failures rebuild the shared events connection pool. Invalid backend URL protocols, embedded credentials, Fetch-blocked ports, and unsupported request headers fail immediately. Interrupted event writes retain their existing in-process retries; caller cancellations are excluded.
+
+See [Backend connection failures](https://workflow-sdk.dev/docs/foundations/errors-and-retries#backend-connection-failures) for retry behavior and diagnostics.
+
 ## Custom dispatcher
 
 HTTP requests (including the queue) default to a shared undici `RetryAgent` that handles connection pooling and retries. Pass a custom `dispatcher` to override it, for example, to tune undici on newer Node.js runtimes:

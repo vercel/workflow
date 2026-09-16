@@ -55,8 +55,8 @@ import {
   noteEventsTransportOutcome,
 } from './http-client.js';
 import {
+  describeTransportFailure,
   errorForResponse,
-  getTransientTransportCode,
   headersToRecord,
   httpLog,
   instrumentedFetch,
@@ -164,7 +164,10 @@ async function fetchV4(
         }
       } catch (cause) {
         noteEventsTransportOutcome(dispatcher, cause);
-        const transportCode = getTransientTransportCode(cause);
+        // A body read can fail after response headers have arrived. Classify
+        // every such failure as transport unless it has the shape of a
+        // permanent request-construction fault, just like the pre-header path.
+        const transportCode = describeTransportFailure(cause);
         controller.error(
           transportCode
             ? new StreamError(
