@@ -106,10 +106,14 @@ export interface SuspensionHandlerParams {
   /**
    * Resilient step dispatch: when provided (and the per-step eligibility gates
    * pass, see the step ops below), each newly created non-inline step's
-   * `step_created` write is parallelized with its step-execution queue
-   * publish, and the queue message carries the serialized step input
-   * (`stepInput`) so the consumer can idempotently re-ensure the event if the
-   * direct write failed transiently. Steps queued this way are reported in
+   * step-execution queue message is published without waiting for its
+   * `step_created` write to commit, and carries the serialized step input
+   * (`stepInput`) so the consumer can materialize the step itself (a lazy
+   * `step_started`) when the delivery beats the write or the write failed
+   * transiently. Inside the batched fan-out fold the message goes out as soon
+   * as the step's input is dehydrated, concurrently with the `createBatch`
+   * commits; outside the fold the write and the publish are issued in
+   * parallel. Steps queued this way are reported in
    * {@link SuspensionHandlerResult.queuedStepCorrelationIds} so the caller
    * skips them in its own dispatch pass. Omitted by callers that must not
    * queue (terminal drain, tests); creates then behave exactly as before.
@@ -179,13 +183,16 @@ export interface SuspensionHandlerResult {
    */
   failedStepCorrelationIds: Set<string>;
   /**
-   * Correlation IDs of steps this suspension call already published
-   * step-execution queue messages for, via resilient step dispatch (the
-   * `step_created` write parallelized with a `stepInput`-carrying queue
-   * publish). The caller MUST NOT dispatch these again: the message is
-   * already out (a duplicate would be deduped by its idempotency key, but
-   * costs a wasted round-trip). Empty when {@link SuspensionHandlerParams.stepDispatch}
-   * was not provided or no step was eligible.
+   * Correlation IDs of steps this suspension call already published (or, for
+   * the batched fold's trailing work, is guaranteed to publish or fail
+   * before the caller acks) step-execution queue messages for: the
+   * resilient-dispatch publishes that carry `stepInput` ahead of the
+   * `step_created` commit, and the fold's publish-after-commit sends for
+   * steps whose input could not ride the message. The caller MUST NOT
+   * dispatch these again: a duplicate would be deduped by its idempotency
+   * key, but costs a wasted round-trip. Empty when
+   * {@link SuspensionHandlerParams.stepDispatch} was not provided or no step
+   * was eligible.
    */
   queuedStepCorrelationIds: Set<string>;
   /**
@@ -237,11 +244,13 @@ export interface SuspensionHandlerResult {
    * The batched fan-out's deferred work, present only when the caller opted
    * in via {@link SuspensionHandlerParams.allowDeferredBatchWork} and
    * trailing work exists: the commits of every chunk except the pair chunk,
-   * plus every chunk's step-message publishes (each chained on ITS OWN
-   * chunk's commit, so publish-after-create holds per step). The caller
-   * MUST await it before acking: a rejection here is a failed suspension
-   * write and fails the delivery exactly as it would have at the handler's
-   * return. Steps whose messages this work publishes are already in
+   * plus every step-message publish the fold issues: the publish-first
+   * sends that went out with `stepInput` while the chunks were still in
+   * flight, and, for steps whose input could not ride the message, the
+   * publish chained on that step's own chunk commit. The caller MUST await
+   * it before acking: a rejection here is a failed suspension write and
+   * fails the delivery exactly as it would have at the handler's return.
+   * Steps whose messages this work publishes are already in
    * {@link queuedStepCorrelationIds} at return time.
    */
   deferredBatchWork?: Promise<void>;
@@ -1036,17 +1045,15 @@ export async function handleSuspension({
   //
   //  - The caller provided a dispatch target (`stepDispatch`): terminal
   //    drains and other create-only callers never queue.
-  //  - The feature is enabled (`WORKFLOW_RESILIENT_STEP_DISPATCH` opt-in).
-  //    It is off by default because the publish races the create's verdict,
-  //    and a create can come back refused: as a duplicate the replay should
-  //    stop pursuing, or (on a World that would rather refuse a stale write
-  //    than report what it missed) as a 412. Either way the queue message
-  //    carrying the payload is already out, and the consumer can materialize a
-  //    step whose create was refused. Nothing orders that verdict before the
-  //    consumer's redelivery re-ensure, so no backend-side revocation
-  //    bookkeeping can close the window: a best-effort marker that fails open
-  //    cannot carry a correctness property. The sequential path is the only
-  //    thing that gives the message a happens-after edge over the verdict.
+  //  - The feature is enabled (`WORKFLOW_RESILIENT_STEP_DISPATCH=1`, an
+  //    opt-in). Publishing ahead of the create takes away the implication
+  //    "a step message exists ⇒ its step_created is durable", and that
+  //    implication is what makes the inline lazy create-claim exclusive: a
+  //    replay that finds a step uncreated may claim and run it inline,
+  //    which is only safe while no message for it can be in flight. See
+  //    isResilientStepDispatchEnabled for the full hazard and what it would
+  //    take to close; until then the sequential create-then-publish path is
+  //    the default.
   //  - The run's queue transport preserves binary payloads (CBOR,
   //    specVersion >= 3): `stepInput.input` is the serialized (possibly
   //    encrypted) input bytes, which the JSON transport would mangle.
@@ -1058,15 +1065,16 @@ export async function handleSuspension({
   // Batched fan-out: fold this suspension's step_created + wait_created
   // writes into one `events.createBatch` call (one durable write, per-event
   // outcomes) instead of one write per event. Engages only for a CLEAN
-  // fan-out (no attribute writes, no hook writes, no resilient dispatch
-  // whose creates are each paired with a queue publish) on a World that
-  // implements the optional method and a run whose events are slot-numbered.
-  // Everything outside the gate keeps the single-event path byte-for-byte.
+  // fan-out (no attribute writes, no hook writes) on a World that implements
+  // the optional method and a run whose events are slot-numbered. Everything
+  // outside the gate keeps the single-event path byte-for-byte. Resilient
+  // dispatch composes with the fold rather than excluding it: a folded step
+  // whose input can ride the message publishes FIRST, concurrently with the
+  // createBatch commits (see the step ops and the flush below).
   const batchFanoutEligible =
     isBatchTransitionsEnabled() &&
     typeof world.events.createBatch === 'function' &&
     (run.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_SLOT_IDENTITY &&
-    !resilientDispatchEligible &&
     allHookItems.length === 0 &&
     attributeItems.length === 0;
   /**
@@ -1084,8 +1092,32 @@ export async function handleSuspension({
      *  and the dispatch idempotency key need it). */
     stepName?: string;
     event: CreateEventRequest;
+    /**
+     * Set on a `step` entry whose queue message was published up front,
+     * carrying `stepInput`, by its prep op (publish-first resilient
+     * dispatch). The flush's publish-after-commit pass skips these.
+     */
+    earlyPublished?: boolean;
   }[] = [];
   const batchPreps: Promise<void>[] = [];
+  /**
+   * Publish-first step messages, collected by the prep ops as each step's
+   * input finishes dehydrating and sent by the flush as ONE batch the moment
+   * every prep has settled — which is also the earliest the fold could POST
+   * a chunk, since the flush awaits the same preps. So the batch is still in
+   * flight before any create commits (the whole point), at one round trip
+   * instead of one per step: 32 concurrent single sends would queue behind
+   * each other on the shared connection pool and push the createBatch POSTs
+   * they run beside further back, trading total dispatch time for
+   * time-to-first-message. The send is joined by the flush's trailing work
+   * (the caller acks only after that settles), never awaited before the
+   * POSTs, so it delays neither the commits nor the handler's return.
+   */
+  const earlyPublishMessages: {
+    correlationId: string;
+    stepName: string;
+    input: Uint8Array;
+  }[] = [];
 
   // Pre-claimed inline pairs: fold each lazy-inline step's deferred
   // `step_created` (carrying its input) AND its `step_started` claim (bare,
@@ -1240,18 +1272,72 @@ export async function handleSuspension({
           },
         };
 
-        // Resilient step dispatch: fire the step_created write and the
-        // step-execution queue publish in parallel: the message carries the
-        // same serialized input (`stepInput`) so the consumer can
-        // idempotently re-ensure the event if the direct write failed
-        // transiently. Mirrors the resilient start (`runInput`) and
-        // resilient hook resume (`hookInput`) patterns. Only for inputs the
-        // queue message can safely carry (binary, under the VQS size cap).
-        if (
+        // Resilient step dispatch: the serialized input the queue message can
+        // carry (`stepInput`), or undefined when it cannot: only binary
+        // inputs under the queue's inline size cap ride the message (the
+        // JSON transport would mangle bytes, and a larger payload would pay
+        // the queue's spill-to-storage double hop for bytes the event log
+        // already holds). Decided once here; both dispatch shapes below
+        // read it.
+        const messageInput =
           resilientDispatchEligible &&
           dehydratedInput instanceof Uint8Array &&
           dehydratedInput.byteLength <= MAX_RESILIENT_STEP_INPUT_BYTES
-        ) {
+            ? dehydratedInput
+            : undefined;
+
+        if (batchFanoutEligible) {
+          // Fold into the batch instead of writing here. The enclosing
+          // promise joins `batchPreps` (see the loop below), so the flush
+          // op cannot run before this step's input finished dehydrating.
+          //
+          // Publish-first: when the message can carry the input, hand it to
+          // the flush's early-publish batch, which goes out before the
+          // fold's createBatch has even been issued rather than after this
+          // step's chunk commits. A delivery that beats the create
+          // materializes the step from the message with a lazy
+          // `step_started` (see the queued-step consumer in runtime.ts), and
+          // a create that then lands as a duplicate is the same 409 the fold
+          // already tolerates. The publish and the create run CONCURRENTLY
+          // and both must succeed before the delivery acks: the publish is
+          // only initiated early, it is joined alongside the commits (the
+          // flush's trailing work), not before them. So a durable
+          // `step_created` does NOT by itself prove its message was
+          // published: a slow or failed send can leave a committed create
+          // with an unpublished message until the redelivery re-dispatches
+          // it (deduped by the idempotency key), which is why the caller's
+          // unconditional re-enqueue of pending steps stays. A failure is
+          // exactly as fatal as on the per-step branch below. Recorded in
+          // `queuedStepCorrelationIds` up front so the caller's dispatch
+          // pass skips it.
+          if (messageInput !== undefined) {
+            earlyPublishMessages.push({
+              correlationId: queueItem.correlationId,
+              stepName: queueItem.stepName,
+              input: messageInput,
+            });
+            queuedStepCorrelationIds.add(queueItem.correlationId);
+          }
+          batchQueue.push({
+            order: stepOrder,
+            kind: 'step',
+            correlationId: queueItem.correlationId,
+            stepName: queueItem.stepName,
+            event: stepEvent,
+            earlyPublished: messageInput !== undefined,
+          });
+          return;
+        }
+
+        // Resilient step dispatch outside the fold (the suspension carries
+        // hook or attribute writes, the World has no createBatch, or the
+        // run predates slot identity): fire the step_created write and the
+        // step-execution queue publish in parallel. The message carries the
+        // same serialized input (`stepInput`) so the consumer can
+        // materialize the step itself if the direct write failed
+        // transiently. Mirrors the resilient start (`runInput`) and
+        // resilient hook resume (`hookInput`) patterns.
+        if (messageInput !== undefined) {
           await ensureRunReady();
           const traceCarrier = await getStepDispatchTraceCarrier();
           const [createResult, queueResult] = await Promise.allSettled([
@@ -1266,7 +1352,7 @@ export async function handleSuspension({
                 stepName: queueItem.stepName,
                 traceCarrier,
                 requestedAt: new Date(),
-                stepInput: { input: dehydratedInput },
+                stepInput: { input: messageInput },
                 runContext: runDispatchContext(run),
               },
               // Same key as the caller's dispatch pass and any concurrent
@@ -1307,12 +1393,26 @@ export async function handleSuspension({
               // Resilient: the write failed transiently (429 / 5xx /
               // transport) but the step message (carrying the same
               // serialized input) was published, so the consumer
-              // idempotently re-ensures the step_created before executing.
+              // materializes the step from it before executing.
+              //
+              // KNOWN GAP (part of why the feature is opt-in, see
+              // isResilientStepDispatchEnabled): tolerating the failure
+              // leaves the step UNCREATED in this replay's log while its
+              // message is out. The next pass's "first N uncreated steps"
+              // selection can therefore pick it for inline execution and
+              // claim it with an owner-stamped lazy `step_started`, and the
+              // consumer of the message already in flight bare-starts the
+              // same step — a start every World accepts on a running step.
+              // Restoring the exclusivity needs an ownership fence the
+              // consumer or the World can apply; excluding this pass's
+              // published steps from the inline selection would only cover
+              // the same-invocation case, not a redelivery or a concurrent
+              // replay.
               resilientDispatchRecovered++;
               runtimeLogger.warn(
                 'Step creation event write failed, but the step was ' +
-                  'dispatched via the queue. The step_created event will ' +
-                  'be ensured by the queue consumer.',
+                  'dispatched via the queue. The step will be materialized ' +
+                  'by the queue consumer.',
                 {
                   workflowRunId: runId,
                   correlationId: queueItem.correlationId,
@@ -1326,20 +1426,6 @@ export async function handleSuspension({
           } else {
             createdStepCorrelationIds.add(queueItem.correlationId);
           }
-          return;
-        }
-
-        if (batchFanoutEligible) {
-          // Fold into the batch instead of writing here. The enclosing
-          // promise joins `batchPreps` (see the loop below), so the flush
-          // op cannot run before this step's input finished dehydrating.
-          batchQueue.push({
-            order: stepOrder,
-            kind: 'step',
-            correlationId: queueItem.correlationId,
-            stepName: queueItem.stepName,
-            event: stepEvent,
-          });
           return;
         }
 
@@ -1429,13 +1515,15 @@ export async function handleSuspension({
   // gates the handler's return (the caller starts bodies off its claims),
   // and that chunk carries NOTHING else, so its commit is as small as the
   // inline slice (see the chunking below).
-  // Every other chunk's commit (and every chunk's step-message publishes,
-  // which fire the moment ITS creates are durable) rides
-  // `deferredBatchWork` when the caller opted in, joined before ack. A slow
-  // sibling chunk therefore delays neither the inline bodies nor another
-  // chunk's queue messages, while publish-after-create still holds per
-  // step: a step's message is only ever sent after the chunk carrying its
-  // create has committed.
+  // Every other chunk's commit, and every step-message publish, rides
+  // `deferredBatchWork` when the caller opted in, joined before ack. The
+  // publishes come in two shapes: the steps whose input rides their message
+  // (resilient dispatch) go out FIRST, in one batch, before any chunk is
+  // POSTed; a step whose input could not ride the message (oversize,
+  // non-binary, or resilient dispatch off, which is the default) is
+  // published the moment ITS chunk's creates are durable. A slow sibling
+  // chunk therefore delays neither the inline bodies nor another chunk's
+  // queue messages.
   let deferredBatchWork: Promise<void> | undefined;
   if (batchFanoutEligible) {
     ops.push(
@@ -1448,6 +1536,53 @@ export async function handleSuspension({
           return;
         }
         const entries = [...batchQueue].sort((a, b) => a.order - b.order);
+        // Publish-first: one batched send for every folded step whose input
+        // rides its message, started here and joined below (never awaited
+        // before the commits). Every prep has settled, so this is the
+        // earliest moment the fold could POST a chunk — the batch is in
+        // flight ahead of every create. Turbo: it still waits for
+        // `run_started` to settle, so no message names a run that does not
+        // exist, and it shares the memoized `ensureRunReady()` the chunking
+        // below awaits rather than queueing behind it.
+        const earlyPublishes: Promise<void>[] = [];
+        if (earlyPublishMessages.length > 0) {
+          const earlyPublish = (async () => {
+            await ensureRunReady();
+            const traceCarrier = await getStepDispatchTraceCarrier();
+            await queueMessages(
+              world,
+              // biome-ignore lint/style/noNonNullAssertion: implied by resilientDispatchEligible
+              stepDispatch!.queueName,
+              earlyPublishMessages.map((entry) => ({
+                message: {
+                  runId,
+                  stepId: entry.correlationId,
+                  stepName: entry.stepName,
+                  traceCarrier,
+                  requestedAt: new Date(),
+                  stepInput: { input: entry.input },
+                  // Immutable run identity so the consumer can start the
+                  // step without a blocking runs.get, stamped exactly like
+                  // every other step-dispatch producer (see
+                  // RunDispatchContextSchema).
+                  runContext: runDispatchContext(run),
+                },
+                // Same key as the caller's dispatch pass and any concurrent
+                // handler's, so redundant publishes for this step dedupe.
+                opts: {
+                  idempotencyKey: stepDispatchIdempotencyKey(
+                    entry.correlationId,
+                    entry.stepName
+                  ),
+                },
+              }))
+            );
+          })();
+          // Observed by the joins below; this only keeps a fast rejection
+          // from surfacing as unhandled in between.
+          earlyPublish.catch(() => {});
+          earlyPublishes.push(earlyPublish);
+        }
         await ensureRunReady();
         // The ordinary single path for a lone plain entry: a batch of ONE
         // gains nothing over the single write (same round trip) and loses
@@ -1486,7 +1621,14 @@ export async function handleSuspension({
           }
         };
         if (entries.length === 1) {
-          await commitSingle(entries[0]);
+          // The lone step's publish-first send (when there is one) has no
+          // trailing work to ride on this path, so it is joined here: the
+          // write and the send settle together, which is exactly the
+          // per-step resilient branch's shape. A lone step whose input did
+          // not ride the message is dispatched by the caller, as before;
+          // nothing on this path publishes, so the early send is never
+          // doubled.
+          await settlePhase([commitSingle(entries[0]), ...earlyPublishes]);
           return;
         }
         // Seed for the foreign-interleaving diagnostic below. With chunks
@@ -1569,12 +1711,14 @@ export async function handleSuspension({
         const singleChunk =
           plainEntries.length === 1 ? plainChunks[0] : undefined;
         const chunks: (typeof entries)[] = [...pairChunks, ...plainChunks];
-        // Steps whose queue messages THIS FLUSH will publish (the eager
-        // creates), recorded before any chunk settles so the caller's
+        // Steps whose queue messages THIS FLUSH publishes or joins (the
+        // eager creates), recorded before any chunk settles so the caller's
         // dispatch pass (which runs off the handler's return) skips them.
-        // The sends are guaranteed-or-failed by the trailing work the
-        // caller joins before acking, so "will be published by this flush"
-        // and "already published" are equivalent from the caller's side.
+        // The publish-first steps are already in the set (their prep ops
+        // added them); this covers the rest. The sends are
+        // guaranteed-or-failed by the trailing work the caller joins before
+        // acking, so "will be published by this flush" and "already
+        // published" are equivalent from the caller's side.
         const publishEagerSteps = stepDispatch !== undefined;
         if (publishEagerSteps) {
           for (const entry of entries) {
@@ -1734,15 +1878,18 @@ export async function handleSuspension({
           }
         };
 
-        // Publish the chunk's eager steps' queue messages the moment ITS
-        // creates are durable, the per-chunk half of publish-after-create.
-        // Same message shape and step-identity-scoped idempotency key as the
-        // caller's dispatch pass, so anything double-published dedupes.
+        // Publish the chunk's remaining eager steps' queue messages the
+        // moment ITS creates are durable: the steps whose input could not
+        // ride the message and so were not published first by their prep
+        // op. Same message shape and step-identity-scoped idempotency key as
+        // the caller's dispatch pass, so anything double-published dedupes.
         const publishChunkSteps = async (
           chunk: typeof entries
         ): Promise<void> => {
           if (!publishEagerSteps) return;
-          const stepEntries = chunk.filter((entry) => entry.kind === 'step');
+          const stepEntries = chunk.filter(
+            (entry) => entry.kind === 'step' && entry.earlyPublished !== true
+          );
           if (stepEntries.length === 0) return;
           const traceCarrier = await getStepDispatchTraceCarrier();
           // One batched publish per chunk instead of one round trip per step.
@@ -1778,11 +1925,15 @@ export async function handleSuspension({
         };
 
         // Launch every chunk's POST now (the lone plain entry's guarded
-        // single create included); chain each chunk's publishes on its OWN
-        // commit, so publish-after-create holds for the single too. A chunk
-        // whose commit rejected keeps its messages unsent (the rejection
-        // fails the delivery; redelivery re-creates and re-dispatches,
-        // deduped by the idempotency keys).
+        // single create included); chain each chunk's remaining publishes on
+        // its OWN commit, so publish-after-create holds for the single too.
+        // A chunk whose commit rejected keeps those messages unsent (the
+        // rejection fails the delivery; redelivery re-creates and
+        // re-dispatches, deduped by the idempotency keys). The publish-first
+        // sends are already in flight and are joined alongside; a lone plain
+        // entry's early send is excluded from `publishChunkSteps` by its
+        // `earlyPublished` flag like any other, so `commitSingle` never
+        // doubles it.
         const commits = chunks.map((chunk) =>
           chunk === singleChunk ? commitSingle(chunk[0]) : commitChunk(chunk)
         );
@@ -1795,8 +1946,14 @@ export async function handleSuspension({
           // Let every sibling settle before surfacing the first failure: a
           // chunk that committed must still get its publishes out even when
           // another chunk failed, and the caller acks only after this
-          // resolves.
-          const settled = await Promise.allSettled([...commits, ...publishes]);
+          // resolves. The publish-first sends settle here too: a step whose
+          // message failed to send has no dispatch, so the pass fails and
+          // redelivery re-dispatches it, deduped.
+          const settled = await Promise.allSettled([
+            ...commits,
+            ...publishes,
+            ...earlyPublishes,
+          ]);
           // Foreign-interleaving visibility: the batch endpoint has no
           // bump-and-report, so events other writers landed between the
           // snapshot and these commits pushed the fold to higher slots
