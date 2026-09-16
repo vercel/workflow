@@ -1,5 +1,6 @@
 import { runInNewContext } from 'node:vm';
 import {
+  CorruptedEventLogError,
   EntityConflictError,
   FatalError,
   PreconditionFailedError,
@@ -15,13 +16,21 @@ import {
   type World,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { type CryptoKey, importKey } from '../encryption.js';
 import { type QueueItem, WorkflowSuspension } from '../global.js';
-import { hydrateStepArguments, hydrateStepError } from '../serialization.js';
+import {
+  dehydrateStepArguments,
+  hydrateStepArguments,
+  hydrateStepError,
+} from '../serialization.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
 import { maxEventSlot, stepDispatchIdempotencyKey } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import { handleSuspension } from './suspension-handler.js';
-import { isUnserializableStepInputPlaceholder } from './unserializable-step.js';
+import {
+  isUnserializableStepInputPlaceholder,
+  unserializableStepInputPlaceholder,
+} from './unserializable-step.js';
 
 vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
 
@@ -2970,5 +2979,182 @@ describe('step-argument serialization failure', () => {
       })
     ).rejects.toMatchObject({ name: 'SerializationError' });
     expect(eventsCreate).not.toHaveBeenCalled();
+  });
+});
+
+describe('duplicate step_created verification', () => {
+  // Two replays that assign one correlation id to different `useStep` calls
+  // race on the same `step_created`; the World keeps the first. The loser
+  // must notice when the persisted step is not the invocation it is holding,
+  // or its branch silently receives another call's result.
+  const RUN_ID = run.runId;
+
+  function stepItem(correlationId: string, stepName: string, args: unknown[]) {
+    return { type: 'step' as const, correlationId, stepName, args };
+  }
+
+  // s1-s3 take the lazy-inline slots (default cap 3) and write no
+  // step_created here; s_dup is the eager step whose create conflicts.
+  function pending(dup = stepItem('s_dup', 'update', [42])) {
+    return new Map<string, ReturnType<typeof stepItem>>([
+      ['s1', stepItem('s1', 'a', [])],
+      ['s2', stepItem('s2', 'b', [])],
+      ['s3', stepItem('s3', 'c', [])],
+      [dup.correlationId, dup],
+    ]);
+  }
+
+  async function persistedInput(args: unknown[], key?: CryptoKey) {
+    return dehydrateStepArguments(
+      { args, closureVars: undefined, thisVal: undefined },
+      RUN_ID,
+      key,
+      globalThis
+    );
+  }
+
+  function conflictingWorld(
+    persisted: { stepName: string; input?: unknown } | Error,
+    rawKey?: Uint8Array
+  ) {
+    const eventsCreate = vi
+      .fn()
+      .mockImplementation(
+        async (_runId: string, event: { correlationId?: string }) => {
+          if (event.correlationId === 's_dup') {
+            throw new EntityConflictError('already exists');
+          }
+          return { event };
+        }
+      );
+    const stepsGet =
+      persisted instanceof Error
+        ? vi.fn().mockRejectedValue(persisted)
+        : vi.fn().mockResolvedValue({
+            runId: RUN_ID,
+            stepId: 's_dup',
+            status: 'pending',
+            attempt: 0,
+            ...persisted,
+          });
+    const world = {
+      events: { create: eventsCreate },
+      steps: { get: stepsGet },
+      queue: vi.fn().mockResolvedValue({ messageId: 'msg_123' }),
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(rawKey),
+    } as unknown as World;
+    return { world, eventsCreate, stepsGet };
+  }
+
+  const stepDispatch = () => ({
+    queueName: '__wkf_workflow_test-workflow' as ValidQueueName,
+    getTraceCarrier: vi.fn().mockResolvedValue({}),
+  });
+
+  function suspend(world: World, items = pending()) {
+    return handleSuspension({
+      suspension: new WorkflowSuspension(items, globalThis),
+      world,
+      run,
+    });
+  }
+
+  it('continues when the persisted step is the same invocation', async () => {
+    const { world, stepsGet } = conflictingWorld({
+      stepName: 'update',
+      input: await persistedInput([42]),
+    });
+
+    await expect(suspend(world)).resolves.toBeDefined();
+    expect(stepsGet).toHaveBeenCalledWith(RUN_ID, 's_dup');
+  });
+
+  it('fails the run when the persisted step has different arguments', async () => {
+    const { world } = conflictingWorld({
+      stepName: 'update',
+      input: await persistedInput([43]),
+    });
+
+    await expect(suspend(world)).rejects.toThrow(CorruptedEventLogError);
+    await expect(suspend(world)).rejects.toThrow(
+      /s_dup \("update"\) was already created with different arguments/
+    );
+  });
+
+  it('fails the run when the persisted step is a different step function', async () => {
+    const { world } = conflictingWorld({
+      stepName: 'somethingElse',
+      input: await persistedInput([42]),
+    });
+
+    await expect(suspend(world)).rejects.toThrow(
+      /already created as "somethingElse", but this replay invoked "update"/
+    );
+  });
+
+  it('compares encrypted inputs by plaintext, not ciphertext', async () => {
+    const rawKey = crypto.getRandomValues(new Uint8Array(32));
+    const key = await importKey(rawKey);
+    // A separate encryption of the same arguments: different nonce, so the
+    // stored bytes differ even though the input is identical.
+    const same = conflictingWorld(
+      { stepName: 'update', input: await persistedInput([42], key) },
+      rawKey
+    );
+    await expect(suspend(same.world)).resolves.toBeDefined();
+
+    const different = conflictingWorld(
+      { stepName: 'update', input: await persistedInput([43], key) },
+      rawKey
+    );
+    await expect(suspend(different.world)).rejects.toThrow(
+      CorruptedEventLogError
+    );
+  });
+
+  it('continues when the persisted step cannot be read', async () => {
+    const { world } = conflictingWorld(new Error('steps.get unavailable'));
+    await expect(suspend(world)).resolves.toBeDefined();
+  });
+
+  it('continues when the persisted step has no input to compare', async () => {
+    const { world } = conflictingWorld({ stepName: 'update' });
+    await expect(suspend(world)).resolves.toBeDefined();
+  });
+
+  it('leaves a concurrent serialization failure to its own step_failed', async () => {
+    // The winner could not serialize its arguments and recorded the
+    // placeholder; that branch fails the step with the real error.
+    const { world } = conflictingWorld({
+      stepName: 'update',
+      input: await dehydrateStepArguments(
+        unserializableStepInputPlaceholder(),
+        RUN_ID,
+        undefined,
+        globalThis
+      ),
+    });
+    await expect(suspend(world)).resolves.toBeDefined();
+  });
+
+  it('verifies the duplicate on the resilient dispatch path too', async () => {
+    vi.stubEnv('WORKFLOW_RESILIENT_STEP_DISPATCH', '1');
+    try {
+      const { world, stepsGet } = conflictingWorld({
+        stepName: 'update',
+        input: await persistedInput([43]),
+      });
+      await expect(
+        handleSuspension({
+          suspension: new WorkflowSuspension(pending(), globalThis),
+          world,
+          run: { ...run, specVersion: 3 },
+          stepDispatch: stepDispatch(),
+        })
+      ).rejects.toThrow(CorruptedEventLogError);
+      expect(stepsGet).toHaveBeenCalledWith(RUN_ID, 's_dup');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
