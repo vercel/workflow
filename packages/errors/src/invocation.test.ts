@@ -70,7 +70,12 @@ describe('invocation outcomes', () => {
       new HookNotFoundError('token'),
       new WorkflowRunNotFoundError('run'),
       new EntityConflictError('conflict'),
-      new RunExpiredError('expired', 'run', 'completed', new Date('2026-01-01')),
+      new RunExpiredError(
+        'expired',
+        'run',
+        'completed',
+        new Date('2026-01-01')
+      ),
       new WorkflowWorldError('bad input', {
         status: 400,
         code: 'INVALID_INPUT',
