@@ -24,3 +24,9 @@ boundaries, reusing a retained Node virtual machine when available.
 
 Errors returned by the executor propagate through `world.invoke()` to the caller
 of `resumeHook()`.
+
+Register `onRunCompleted` and `onRunFailed` handlers with `registerLifecycleHooks`
+from `workflow/api` for best-effort reporting of terminal transitions written by
+your app. Handlers receive the workflow name without a backend read, a lazy `Run`
+instance, and, for failures, an error hydrated from the persisted payload.
+Callbacks are not retried; the event log remains the system of record.

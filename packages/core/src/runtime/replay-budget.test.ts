@@ -1,6 +1,8 @@
+import { FatalError } from '@workflow/errors';
 import type { World } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../logger.js';
+import { dehydrateRunError, hydrateRunError } from '../serialization.js';
 import { registerLifecycleHooks } from './lifecycle-hooks.js';
 import {
   handleReplayBudgetExhausted,
@@ -13,13 +15,14 @@ vi.mock('./world.js', () => ({
   getWorld: vi.fn(),
 }));
 
-// Partial mock: the lifecycle-hook registry pulls in `run.ts` (for the Run
-// instance handed to handlers), whose import chain needs the real module's
-// other exports (e.g. SerializationFormat).
-vi.mock(import('../serialization.js'), async (importOriginal) => ({
-  ...(await importOriginal()),
-  dehydrateRunError: vi.fn(async () => new Uint8Array([1, 2, 3])),
-}));
+// Spy on serialization without replacing the bytes lifecycle hooks hydrate.
+vi.mock(import('../serialization.js'), async (importOriginal) => {
+  const original = await importOriginal();
+  return {
+    ...original,
+    dehydrateRunError: vi.fn(original.dehydrateRunError),
+  };
+});
 
 vi.mock('./helpers.js', () => ({
   memoizeEncryptionKey: () => async () => undefined,
@@ -287,6 +290,7 @@ describe('handleReplayBudgetExhausted', () => {
       expect(onRunFailed).not.toHaveBeenCalled();
 
       // Successful write: dispatch with the Run and classified error.
+      vi.mocked(dehydrateRunError).mockClear();
       await handleReplayBudgetExhausted({
         runId: 'wrun_test',
         workflowName: 'wf',
@@ -297,13 +301,30 @@ describe('handleReplayBudgetExhausted', () => {
       await flushLifecycleDispatches();
 
       expect(onRunFailed).toHaveBeenCalledTimes(1);
-      const { run, error } = onRunFailed.mock.calls[0][0];
+      const { run, workflowName, error } = onRunFailed.mock.calls[0][0];
       expect(run.runId).toBe('wrun_test');
+      expect(workflowName).toBe('wf');
       expect(error.errorCode).toBe('REPLAY_TIMEOUT');
-      expect(error.cause).toBeInstanceOf(Error);
+      expect(error.cause).toBeInstanceOf(FatalError);
       expect((error.cause as Error).message).toContain(
         'exceeded maximum duration'
       );
+      expect(dehydrateRunError).toHaveBeenCalledTimes(1);
+      const [originalError, runId, encryptionKey] =
+        vi.mocked(dehydrateRunError).mock.calls[0];
+      expect(error.cause).not.toBe(originalError);
+      const persistedError = mockEventsCreate.mock.calls[1][1].eventData.error;
+      expect(persistedError).toBe(
+        await vi.mocked(dehydrateRunError).mock.results[0].value
+      );
+      const revived = await hydrateRunError(
+        persistedError,
+        runId,
+        encryptionKey
+      );
+      expect(revived).toBeInstanceOf(FatalError);
+      expect(error.cause).toEqual(revived);
+      expect(error.cause).not.toBe(revived);
     } finally {
       unregister();
       waitUntilPromises.length = 0;
