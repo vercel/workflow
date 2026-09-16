@@ -32,6 +32,30 @@ Vercel automatically:
 
 <FluidComputeCallout />
 
+## System environment variables
+
+Workflow recognizes a Vercel deployment by `VERCEL_DEPLOYMENT_ID`. Vercel exposes that variable, along with the rest of its [system environment variables](https://vercel.com/docs/environment-variables/system-environment-variables), only when the project opts in. Check this before your first deployment:
+
+1. Open your project in the [Vercel dashboard](https://vercel.com/dashboard).
+2. Go to **Settings**, then **Environment Variables**.
+3. Select the **Enable access to System Environment Variables** checkbox.
+4. Redeploy. The setting applies to new deployments; it does not change deployments that already exist.
+
+`VERCEL_DEPLOYMENT_ID` is available at both build time and runtime, and Workflow reads it in both. The build uses it to decide whether to emit Vercel Function output, including the queue-triggered flow handler, or local development output. The runtime uses it to select the World.
+
+<Callout type="warn">
+  With the checkbox cleared, a Vercel deployment is indistinguishable from a
+  non-Vercel environment as far as Workflow is concerned: the build emits local
+  output and the runtime selects the [Local World](/worlds/local), which stores
+  workflow state on the filesystem. A deployment's filesystem is read-only, so
+  every run fails before its first step, and no runs appear in the Vercel
+  dashboard because none were ever created in the Vercel World.
+</Callout>
+
+To confirm this is what you are hitting, log `process.env.VERCEL_DEPLOYMENT_ID` from a deployed function. If it is undefined (as is `VERCEL`), the setting is off.
+
+Setting `WORKFLOW_TARGET_WORLD=vercel` is not a workaround. The Vercel World needs the deployment ID itself, to address queue messages to the deployment that created each run and to derive that deployment's encryption keys. Enable the checkbox and redeploy.
+
 ## Vercel platform documentation
 
 For complete details on pricing, usage limits, and included allotments on Vercel, see the official Vercel documentation:
@@ -98,7 +122,7 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 ## Configuration
 
-The Vercel World requires no configuration when deployed to Vercel. For advanced use cases, you can override settings programmatically via `createVercelWorld()`.
+The Vercel World requires no configuration when deployed to Vercel, beyond leaving [system environment variables](#system-environment-variables) enabled for the project so that `VERCEL_DEPLOYMENT_ID` reaches your build and your functions. For advanced use cases, you can override settings programmatically via `createVercelWorld()`.
 
 ### `WORKFLOW_VERCEL_ENV`
 
