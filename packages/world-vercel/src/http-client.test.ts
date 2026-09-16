@@ -950,7 +950,14 @@ describe('dispatcher recycling accounting', () => {
   // and an abort is the caller's own doing.
   it('counts only transport failures a rebuild can fix', () => {
     expect(isRecyclableTransportError(h2StreamTimeout())).toBe(true);
-    for (const code of ['UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']) {
+    for (const code of [
+      'UND_ERR_HEADERS_TIMEOUT',
+      'UND_ERR_BODY_TIMEOUT',
+      'ERR_HTTP2_GOAWAY_SESSION',
+      'ERR_HTTP2_INVALID_SESSION',
+      'ERR_HTTP2_SESSION_ERROR',
+      'ERR_HTTP2_STREAM_ERROR',
+    ]) {
       expect(
         isRecyclableTransportError(Object.assign(new Error(code), { code }))
       ).toBe(true);
@@ -961,6 +968,8 @@ describe('dispatcher recycling accounting', () => {
       'ENOTFOUND',
       'ECONNREFUSED',
       'CERT_HAS_EXPIRED',
+      'ERR_HTTP2_INVALID_HEADER_VALUE',
+      'ERR_HTTP2_STREAM_CANCEL',
     ]) {
       expect(
         isRecyclableTransportError(Object.assign(new Error(code), { code }))
