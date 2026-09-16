@@ -11,9 +11,9 @@ related:
   - /docs/errors
 ---
 
-Some failures never reach a `try/catch` in your workflow code — the run can fail in the runtime itself, after your workflow function has already suspended (for example when a replay times out, or a run exhausts its queue deliveries). Lifecycle hooks give you one place to observe every terminal transition, whatever its cause: register global handlers once, and the runtime invokes them whenever it records a run completing or failing.
+Some failures never reach a `try/catch` in your workflow code: the run can fail in the runtime itself, after your workflow function has already suspended (for example when a replay times out, or a run exhausts its queue deliveries). Lifecycle hooks give you one place to observe every terminal transition, whatever its cause. Register global handlers once, and the runtime invokes them whenever it records a run completing or failing.
 
-The most common use is centralized error reporting — forwarding every failed run to a service like Sentry without wrapping each workflow body.
+The most common use is centralized error reporting, such as forwarding every failed run to a service like Sentry without wrapping each workflow body.
 
 ## Registering hooks
 
@@ -39,16 +39,16 @@ export function register() {
 }
 ```
 
-`registerLifecycleHooks` returns an unregister function, and multiple registrations are allowed — handlers run in registration order.
+`registerLifecycleHooks` returns an unregister function, and multiple registrations are allowed. Handlers run in registration order.
 
 ## Handler parameters
 
 Both handlers receive the [`Run`](/docs/api-reference/workflow-api/get-run) instance for the transitioned run. The instance hydrates lazily: accessors like `run.workflowName` or `run.returnValue` only fetch from the backend when the handler actually uses them, so a handler that filters on cheap metadata pays nothing for the runs it ignores.
 
-`onRunFailed` additionally receives the failure as a `WorkflowRunFailedError` — the same shape `run.returnValue` rejects with:
+`onRunFailed` additionally receives the failure as a `WorkflowRunFailedError`, the same shape `run.returnValue` rejects with:
 
-- `error.errorCode` — the failure classification (`USER_ERROR`, `RUNTIME_ERROR`, `MAX_DELIVERIES_EXCEEDED`, …). See [error codes](/docs/errors) for the full list.
-- `error.cause` — the hydrated thrown value, with Error subclass identity, message, stack, and cause chain preserved. Any JavaScript value can be thrown, so this is typed `unknown`.
+- `error.errorCode`: the failure classification (`USER_ERROR`, `RUNTIME_ERROR`, `MAX_DELIVERIES_EXCEEDED`, and more). See [error codes](/docs/errors) for the full list.
+- `error.cause`: the hydrated thrown value, with Error subclass identity, message, stack, and cause chain preserved. Any JavaScript value can be thrown, so this is typed `unknown`.
 
 ## Reporting failed runs to Sentry
 
@@ -80,5 +80,5 @@ export function register() {
 
 - **Host-only.** Handlers run with full Node.js access, never inside the workflow's sandboxed VM. Calling `registerLifecycleHooks` from workflow code throws.
 - **Fire-and-forget.** Handlers cannot delay or change the run's outcome. A throwing handler is logged and swallowed; the remaining handlers still run. On serverless platforms the invocation is kept alive via `waitUntil` while handlers finish.
-- **Fires where the transition is recorded.** Handlers fire on the compute that actually wrote the terminal event — for a failure that means after any retries are exhausted, exactly once per run under normal operation. Terminal transitions recorded outside your app's compute do **not** fire handlers: cancelling a run from the CLI or the Vercel dashboard, for example, is written by the backend, so no handler runs. For a complete record of every transition, consume the [event log](/docs/how-it-works/event-sourcing) or set up alerts on the [observability](/docs/observability) surface instead.
+- **Fires where the transition is recorded.** Handlers fire on the compute that actually wrote the terminal event. For a failure, that means after any retries are exhausted, exactly once per run under normal operation. Terminal transitions recorded outside your app's compute do **not** fire handlers: cancelling a run from the CLI or the Vercel dashboard, for example, is written by the backend, so no handler runs. For a complete record of every transition, consume the [event log](/docs/how-it-works/event-sourcing) or set up alerts on the [observability](/docs/observability) surface instead.
 - **Register everywhere your workflows run.** The terminal write can happen in any function invocation that processes the run's queue messages, so registration must run at startup in every instance of the app (which `instrumentation.ts` guarantees).

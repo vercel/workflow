@@ -10,7 +10,7 @@ import { registerLifecycleHooks, resumeHook } from 'workflow/api';
  * workflow's hook. Resuming a durable hook is deliberately the observation
  * channel: the handler runs on whichever instance wrote the terminal event,
  * which on a deployed app is generally NOT the instance serving the e2e
- * test's HTTP requests — an in-memory buffer would not travel.
+ * test's HTTP requests, so an in-memory buffer would not travel.
  */
 export function registerE2eLifecycleHooks(): void {
   registerLifecycleHooks({
@@ -34,8 +34,8 @@ export function registerE2eLifecycleHooks(): void {
       });
     },
     async onRunFailed({ run, error }) {
-      // The hydrated thrown value is already on the error — no backend
-      // reads needed to filter.
+      // The hydrated thrown value is already on the error, so filtering
+      // needs no backend reads.
       const cause = error.cause;
       const causeMessage =
         cause instanceof Error ? cause.message : String(cause);

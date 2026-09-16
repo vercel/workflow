@@ -10,7 +10,7 @@ related:
   - /docs/api-reference/workflow-api/get-run
 ---
 
-Registers global workflow lifecycle handlers, invoked by the runtime on the compute that records a run's terminal transition. Useful for centralized reporting — for example forwarding every failed run to Sentry — without wrapping each workflow body.
+Registers global workflow lifecycle handlers, invoked by the runtime on the compute that records a run's terminal transition. Useful for centralized reporting (for example, forwarding every failed run to Sentry) without wrapping each workflow body.
 
 Register early in the process lifecycle (in Next.js, `instrumentation.ts`) so handlers exist before the first run finishes. See the [lifecycle hooks guide](/docs/observability/lifecycle-hooks) for semantics and a full Sentry example.
 
@@ -48,7 +48,7 @@ Returns a function that unregisters these hooks.
 
 ## Handlers
 
-Both handlers receive the run as a lazily-hydrated [`Run`](/docs/api-reference/workflow-api/get-run) instance — accessors like `run.workflowName` and `run.returnValue` only fetch from the backend when used.
+Both handlers receive the run as a lazily-hydrated [`Run`](/docs/api-reference/workflow-api/get-run) instance. Accessors like `run.workflowName` and `run.returnValue` only fetch from the backend when used.
 
 ### `onRunCompleted`
 
