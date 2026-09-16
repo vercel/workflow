@@ -142,6 +142,48 @@ describe('composeLogLine', () => {
     `);
   });
 
+  test('renders the errorCause chain under the message it explains', () => {
+    // The failure this exists for: undici's wrapper has an empty message and
+    // a stack of frames the trimmer drops, so without the chain the log says
+    // "fetch failed" and nothing about what failed.
+    const out = composeLogLine(PREFIX, 'Error while running workflow', {
+      workflowRunId: 'wrun_01ABC',
+      errorCode: 'WORLD_CONTRACT_ERROR',
+      errorName: 'WorkflowWorldError',
+      errorMessage:
+        'POST /v4/runs/wrun_01ABC/events/step_completed transport failure after 2103ms (UND_ERR_SOCKET)',
+      errorCause: [
+        'TypeError: fetch failed',
+        'SocketError: other side closed (UND_ERR_SOCKET)',
+      ].join('\n'),
+      errorStack: [
+        'WorkflowWorldError: POST /v4/runs/wrun_01ABC/events/step_completed transport failure after 2103ms (UND_ERR_SOCKET)',
+        '    at makeRequest (../../packages/world-vercel/src/utils.ts:470:19)',
+      ].join('\n'),
+    });
+    expect(out).toMatchInlineSnapshot(`
+      "[workflow-sdk] Error while running workflow
+        run    wrun_01ABC
+        code   WORLD_CONTRACT_ERROR
+        cause  TypeError: fetch failed
+               SocketError: other side closed (UND_ERR_SOCKET)
+      WorkflowWorldError: POST /v4/runs/wrun_01ABC/events/step_completed transport failure after 2103ms (UND_ERR_SOCKET)
+          at makeRequest (../../packages/world-vercel/src/utils.ts:470:19)"
+    `);
+  });
+
+  test('omits the cause row when the stack body already spells it out', () => {
+    const out = composeLogLine(PREFIX, 'Error while running workflow', {
+      errorCause: 'SocketError: other side closed',
+      errorStack: [
+        'TypeError: fetch failed',
+        '    at node:internal/deps/undici/undici:13502:13',
+        '  [cause]: SocketError: other side closed',
+      ].join('\n'),
+    });
+    expect(out).not.toMatch(/^\s+cause\s+/m);
+  });
+
   test('does not duplicate a stack the message already embeds', () => {
     const stack = [
       'Error: boom',

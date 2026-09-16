@@ -213,9 +213,11 @@ that field as queue control.
 
 Responses use the shared `InvocationOutcome` envelope: `{ ok: true, value }` or
 `{ ok: false, error: SerializedWorkflowError }`. `invoke()` unwraps successes and
-throws restored Workflow error classes with their diagnostic fields. A handler
-exception settles that logical request; retrying its identity returns the stored
-error. It does not imply that the handler rolled back earlier writes. Failure to
+throws restored Workflow error classes with their diagnostic fields. A terminal
+handler error settles that logical request; retrying its identity returns the stored
+error. Transient or unknown infrastructure errors leave the input pending and fail
+the executor delivery so Graphile retries it. A captured error does not imply that
+the handler rolled back earlier writes. Failure to
 persist/read the response remains an unknown transport outcome. Migration 0022
 versions stored results so arbitrary values from earlier previews remain values,
 even if they resemble an error envelope. Upgrade producers and workers together.

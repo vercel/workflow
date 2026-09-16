@@ -398,15 +398,11 @@ export default async function handler(req: express.Request, res: express.Respons
 }
 ```
 
-Skip the in-process build on Vercel (the bundles are pre-built) by passing `skipBuild` when
-`VERCEL` is set:
+No module change is needed for the in-process build: `skipBuild` defaults to `true` when the
+`VERCEL` environment variable is set, because the Build Output already contains the bundles and
+the deployed filesystem is read-only.
 
-{/* @skip-typecheck - config snippet, WorkflowModule imported above */}
-```typescript title="src/app.module.ts"
-WorkflowModule.forRoot({ skipBuild: Boolean(process.env.VERCEL) });
-```
-
-Then set your build command so the Build Output is produced after `nest build`:
+Set your build command so the Build Output is produced after `nest build`:
 
 ```json title="package.json" lineNumbers
 {
@@ -460,8 +456,185 @@ WorkflowModule.forRoot({
   // size limit) at the cost of stack traces pointing at generated code.
   // Can also be set via the WORKFLOW_SOURCEMAP environment variable.
   sourcemap: 'inline',
+
+  // Route prefix the workflow endpoints are served under. Leave unset to adopt
+  // app.setGlobalPrefix() automatically; set it when a reverse proxy mounts the
+  // app on a sub-path NestJS does not know about. See "Global prefixes" below.
+  basePath: '/api',
+
+  // Start the target World's background workers with the app and close them on
+  // shutdown. Self-hosted Worlds (for example @workflow/world-postgres) need
+  // this or runs are created and never picked up. Leave off on Vercel.
+  manageWorldLifecycle: false,
+
+  // Load the generated bundles during startup instead of on the first request
+  // (default: true).
+  preloadBundles: true,
 });
 ```
+
+Options can also come from other providers with `forRootAsync`:
+
+{/*@skip-typecheck - Configuration snippet, imports shown above*/}
+
+```typescript
+WorkflowModule.forRootAsync({
+  imports: [ConfigModule],
+  inject: [ConfigService],
+  useFactory: (config: ConfigService) => ({
+    basePath: config.get('API_PREFIX'),
+  }),
+});
+```
+
+---
+
+## Global prefixes and sub-paths
+
+`app.setGlobalPrefix()` moves the workflow routes. The SDK has to generate its
+queue callback and webhook URLs under the same prefix, or every delivery 404s and
+runs stay `pending`.
+
+`WorkflowModule` reads the global prefix during startup and adopts it, so this
+works with no configuration:
+
+{/*@skip-typecheck - Bootstrap snippet*/}
+
+```typescript
+const app = await NestFactory.create(AppModule);
+app.setGlobalPrefix('api'); // workflow URLs become /api/.well-known/workflow/v1/...
+await app.listen(3000);
+```
+
+Set `basePath` explicitly when the prefix is applied outside NestJS, for example
+by a reverse proxy that strips it before the request reaches your app. An
+explicit `basePath` wins over the global prefix, and a disagreement between the
+two is logged at startup.
+
+For Vercel, pass the same value to the build so the deployed queue-consumer
+function generates matching URLs:
+
+```bash
+workflow-nest build --vercel --base-path /api
+```
+
+<Callout type="warn">
+`app.enableVersioning()` moves the workflow routes the same way, and is not
+handled automatically. Exclude the workflow controller from versioning, or mount
+it where the SDK expects it.
+</Callout>
+
+---
+
+## Raw request bodies
+
+The workflow routes are a byte pipe. A webhook that verifies a signature over its
+raw body (Stripe, GitHub, Shopify, Slack) only works if the bytes the sender
+signed reach the workflow unchanged, and a body parser that has already turned
+the request into an object destroys them.
+
+Create the app with `rawBody` so the original bytes stay available:
+
+{/*@skip-typecheck - Bootstrap snippet*/}
+
+```typescript
+const app = await NestFactory.create(AppModule, { rawBody: true });
+```
+
+Without it, `@workflow/nest` falls back to re-serializing the parsed body with
+`JSON.stringify` and logs a warning once. That changes whitespace and key order,
+so signature verification fails.
+
+Content types no body parser claims (XML, `application/x-www-form-urlencoded`
+without the parser registered, custom media types) are read straight from the
+request stream and need no configuration.
+
+<Callout type="info">
+On Vercel the webhook route is served by its own function rather than by your
+NestJS app, so this only affects self-hosted deployments.
+</Callout>
+
+---
+
+## NestJS dependency injection is not available in workflows and steps
+
+Workflows and steps do not run inside your NestJS application. They are compiled
+into separate bundles, so **the Nest injector, your providers, and anything
+built on the request context are out of reach from `"use workflow"` and
+`"use step"` code.**
+
+Concretely, none of these work inside a step:
+
+- injecting a provider, or resolving one with `app.get(MyService)`
+- `@Injectable()` classes reached through a module-level reference to the app
+- request-scoped providers, and `AsyncLocalStorage` context such as `nestjs-cls`
+- guards, interceptors, pipes, and filters
+- the Nest `Logger`
+
+Two mechanics cause this, and neither has a workaround:
+
+1. A step's bundle gets **its own copy** of any application file it imports.
+   Module-level state is therefore duplicated, and a class imported into a step
+   is a different class object from the one your module registered. Nest uses the
+   class itself as the injection token, so `app.get(MyService)` from a step
+   raises `UnknownElementException` even when it can reach the app.
+2. On Vercel, workflows and steps run in the queue-consumer function, a separate
+   function from the one serving your NestJS app. There is no shared process to
+   reach into.
+
+Write steps as plain functions over their arguments, and keep the wiring in your
+controllers and providers:
+
+{/*@skip-typecheck - Illustrates the pattern, not a complete app*/}
+
+```typescript
+// A step takes what it needs as arguments and builds its own clients.
+async function chargeCustomer(customerId: string, cents: number) {
+  'use step';
+  const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+  return await stripe.charges.create({ customer: customerId, amount: cents });
+}
+
+// The controller stays a normal Nest controller with normal DI.
+@Controller('billing')
+export class BillingController {
+  constructor(private readonly customers: CustomerService) {}
+
+  @Post('charge')
+  async charge(@Body() body: { id: string }) {
+    const customer = await this.customers.find(body.id);
+    // Pass plain, serializable values into the workflow.
+    await start(billingWorkflow, [customer.id, customer.planCents]);
+    return { started: true };
+  }
+}
+```
+
+Configuration a step needs should come from the environment rather than
+`ConfigService`, and shared logic should live in plain modules that a step can
+import without pulling in `@nestjs/common`.
+
+<Callout type="info">
+Importing a file that uses `@nestjs/common` into a step is supported and builds
+correctly, it simply gives you a class with no injected dependencies. Prefer
+plain functions so the intent is clear.
+</Callout>
+
+---
+
+## Production checklist
+
+- Run `workflow-nest build` in your build step and set `skipBuild: true`, or
+  leave `skipBuild` unset so the bundles are built during startup. With
+  `skipBuild` set and no bundles present, startup fails with an explicit error
+  rather than serving broken workflow routes.
+- Create the app with `{ rawBody: true }` if you receive signed webhooks.
+- Set `basePath` (or rely on the adopted global prefix) so generated URLs match
+  the routes NestJS serves.
+- Set `manageWorldLifecycle: true` for a self-hosted World, and call
+  `app.enableShutdownHooks()` so the World is closed on a signal.
+- `skipBuild` defaults to `true` when the `VERCEL` environment variable is set,
+  so no Vercel-specific branch is needed in your module configuration.
 
 ## Troubleshooting
 

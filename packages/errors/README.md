@@ -11,3 +11,7 @@ unknown classes are restored as `Error` with their original name/fields.
 Wire transports must preserve binary values and dates in diagnostic fields.
 Getters are omitted and cyclic/deep diagnostic values are bounded. Only capture
 the handler call: transport/response-storage failures must remain unknown outcomes.
+
+Pass `isTerminalInvocationError` as the optional capture predicate when a durable
+delivery layer should retry transient/unknown failures instead of storing them as
+permanent outcomes. Postgres invocation delivery uses this policy.
