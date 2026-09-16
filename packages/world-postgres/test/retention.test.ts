@@ -117,7 +117,7 @@ describe('Retention ($retention: 0)', () => {
     await events.create(runId, {
       eventType: 'step_completed',
       correlationId: stepId,
-      eventData: { output: new Uint8Array([6, 7]) },
+      eventData: { result: new Uint8Array([6, 7]) },
     });
 
     const hookId = `hook_${ulid()}`;

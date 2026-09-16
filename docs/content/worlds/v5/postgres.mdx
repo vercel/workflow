@@ -230,6 +230,16 @@ How often a wait for a terminal run status re-reads the run, in milliseconds. De
 
 `await run.returnValue` asks the World to wait for the run to finish, and the Postgres World parks that wait on a `NOTIFY` issued by the run-terminal write. This interval is only the backstop: it bounds how long a lost notification can go unnoticed, so lowering it costs a query per waiting run per interval and buys nothing while notifications are arriving.
 
+### `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`
+
+Maximum time in milliseconds a queue delivery waits for the workflow handler to begin responding before the delivery is failed and Graphile Worker redelivers the message. Default: `0` (no deadline).
+
+A delivery executes the workflow body inline, so the handler responds only once that work is done. A deadline shorter than your longest inline step declares a healthy delivery crashed and redelivers it while the original is still running, executing the same steps twice. Set this only if you would rather a hung handler be redelivered than hold its worker slot until the process restarts, and set it above the longest inline work you expect.
+
+### `WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`
+
+Maximum gap in milliseconds between response body chunks from the workflow handler before the delivery is failed and redelivered. Default: `0` (no deadline). The same caution as `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS` applies.
+
 ### `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`
 
 Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Postgres World, in days. Default: `30`. Set this to the same limit as your production World so oversized values fail during development.

@@ -237,6 +237,16 @@ export const WorkflowBackstopWakesArmed = SemanticConvention<number>(
   'workflow.inline_ownership.backstop_wakes_armed'
 );
 
+/**
+ * Number of pending steps whose immediate step-execution enqueue this replay
+ * pass skipped because THIS invocation already published that step's message
+ * on an earlier pass (a fan-out that ran inline steps and replayed again).
+ * Invocation-local knowledge only: a fresh delivery never skips.
+ */
+export const WorkflowDispatchRepublishSkipped = SemanticConvention<number>(
+  'workflow.dispatch.republish_skipped'
+);
+
 // Route attributes
 
 /** The workflow runtime route being handled */
@@ -413,6 +423,15 @@ export const MessagingOperationType = SemanticConvention<
   'publish' | 'receive' | 'process'
 >('messaging.operation.type');
 
+/**
+ * Messages carried by one batched publish (standard OTEL:
+ * messaging.batch.message_count). Set only on the batch send, so a span
+ * without it is a single-message publish.
+ */
+export const MessagingBatchMessageCount = SemanticConvention<number>(
+  'messaging.batch.message_count'
+);
+
 /** Time taken to enqueue the message in milliseconds (workflow-specific) */
 export const QueueOverheadMs = SemanticConvention<number>(
   'workflow.queue.overhead_ms'
@@ -555,6 +574,17 @@ export const StepResilientDispatchRecovered = SemanticConvention<number>(
 export const StepResilientDispatchMaterialized = SemanticConvention<boolean>(
   'workflow.step.resilient_dispatch_materialized'
 );
+
+/**
+ * How the queued-step consumer resolved the run identity for this execution:
+ * `run_context` — carried on the dispatch message, no `runs.get` before the
+ * step (the fetch-free prologue); `runs_get` — the legacy blocking fetch
+ * (message from an older producer). Distinguishes the two paths during
+ * version-skew windows and makes the saved round trip directly measurable.
+ */
+export const StepDispatchPrologue = SemanticConvention<
+  'run_context' | 'runs_get'
+>('workflow.step.dispatch_prologue');
 
 // Hook-triggered time-to-resume (TTR) attributes
 //

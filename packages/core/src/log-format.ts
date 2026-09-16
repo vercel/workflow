@@ -15,9 +15,13 @@ import {
  *       user error · FatalError
  *       run    wrun_…
  *       step   step_… · add (./workflows/x)
+ *       cause  TypeError: fetch failed
  *       hint:  Move the call to a step function.
  *     FatalError: …
  *         at … (trimmed stack, internals collapsed)
+ *
+ * The stack body comes from the message when the caller embedded it there,
+ * and from the `errorStack` metadata field otherwise.
  *
  * Without this composition, callers passing `${framing}\n${stack}` as the
  * message and structured fields as the metadata object got `util.inspect`'s
@@ -35,7 +39,15 @@ export function composeLogLine(
   metadata: Record<string, unknown> | undefined
 ): string {
   const [framing, ...rest] = message.split('\n');
-  const body = rest.join('\n');
+  const embeddedBody = rest.join('\n');
+  // Callers supply the stack one of two ways: embedded in the message (step
+  // executor / combined runtime render `${framing}\n${stack}`) or as an
+  // `errorStack` field next to a single-line framing (the run-failure log in
+  // runtime.ts). Promote the field when the message has no body of its own so
+  // the stack survives either way, and gets the same trimming either way.
+  const body = embeddedBody.trim()
+    ? embeddedBody
+    : (pickString(metadata ?? {}, 'errorStack') ?? '');
   const fields = renderStructuredFields(framing ?? '', body, metadata);
   const trimmedBody = trimStackBody(body);
 
@@ -52,12 +64,13 @@ function renderStructuredFields(
 ): string | null {
   if (!metadata || Object.keys(metadata).length === 0) return null;
 
-  // Drop fields that the message already encodes. We render framings and
-  // stacks into the message string itself in step executor / combined runtime, so
-  // repeating them here would be pure noise. A message with neither (a WARN
-  // whose framing is a fixed sentence and whose `errorMessage` is the only
-  // place the underlying error's text appears) keeps `errorMessage` and
-  // renders it as its own row below.
+  // Drop fields the composed line already shows elsewhere. `errorStack` is
+  // always rendered as the body — embedded in the message by the step
+  // executor / combined runtime, or promoted out of the field by
+  // composeLogLine — so repeating it here would be pure noise. A message
+  // with neither (a WARN whose framing is a fixed sentence and whose
+  // `errorMessage` is the only place the underlying error's text appears)
+  // keeps `errorMessage` and renders it as its own row below.
   const redundant = new Set<string>();
   redundant.add('errorStack');
   const errorMessage = pickString(metadata, 'errorMessage');
@@ -78,6 +91,7 @@ function renderStructuredFields(
     'errorName',
     'errorMessage',
     'errorStack',
+    'errorCause',
     'hint',
     'attempt',
     'retryCount',
@@ -86,9 +100,17 @@ function renderStructuredFields(
   const lines: string[] = [];
 
   // Header: error class + attribution badge.
+  //
+  // Without a badge the row is just the class name, which the stack header
+  // below (`Name: message`) already states — so it only earns its line when
+  // the stack doesn't open with that same name. A badge always earns its
+  // line: attribution is the one thing the stack cannot express, and the
+  // class stays attached to it as the thing being attributed.
   const errorName = pickString(metadata, 'errorName');
   const attribution = pickString(metadata, 'errorAttribution');
-  if (errorName || attribution) {
+  const nameEchoedByStack =
+    errorName !== null && stackHeaderNames(body, errorName);
+  if (attribution || (errorName && !nameEchoedByStack)) {
     const badge = attribution
       ? attribution === 'sdk'
         ? Ansi.magenta('sdk error')
@@ -137,6 +159,15 @@ function renderStructuredFields(
 
   if (errorMessage && !redundant.has('errorMessage')) {
     lines.push(`  ${kvKey('error')} ${formatPassthroughValue(errorMessage)}`);
+  }
+
+  // What the error was wrapping. Sits directly under the message it explains,
+  // one link per line (see `formatErrorCauseChain`). Skipped when the stack
+  // body already spells the chain out, which happens when the stack came off
+  // an already-inspected error and carries `[cause]:` lines of its own.
+  const errorCause = pickString(metadata, 'errorCause');
+  if (errorCause && !body.includes(errorCause)) {
+    lines.push(`  ${kvKey('cause')} ${formatPassthroughValue(errorCause)}`);
   }
 
   const hint = pickString(metadata, 'hint');
@@ -253,6 +284,16 @@ function isFrameworkFrame(line: string): boolean {
     return true;
   }
   return false;
+}
+
+/**
+ * True when the stack body opens with `<errorName>:` (or the bare name), the
+ * shape V8 gives `Error#stack`. Used to avoid restating the class in a
+ * header row directly above it.
+ */
+function stackHeaderNames(body: string, errorName: string): boolean {
+  const header = body.split('\n', 1)[0]?.trim() ?? '';
+  return header === errorName || header.startsWith(`${errorName}:`);
 }
 
 function pickString(

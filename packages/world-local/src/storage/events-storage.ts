@@ -29,7 +29,6 @@ import type {
 } from '@workflow/world';
 import {
   applyAttributeChanges,
-  EventSchema,
   eventIdToSlot,
   FIRST_EVENT_SLOT,
   getMaxEventsPerRun,
@@ -107,6 +106,7 @@ import { handleLegacyEvent } from './legacy.js';
 import {
   purgeRunEntityData,
   purgesUserDataOnFinish,
+  ReadEventSchema,
   withRunPayloadsPurged,
 } from './run-retention.js';
 import { signalRunTerminal } from './run-status-signal.js';
@@ -169,9 +169,11 @@ function getHookRetentionLimitMs(): number {
  * lifetimes can never share one marker (see
  * `hookRecoveryMarkerPath`).
  */
-const HookRecoveryMarkerSchema = z.object({
-  eventId: z.string(),
-});
+const HookRecoveryMarkerSchema = z.compile(
+  z.object({
+    eventId: z.string(),
+  })
+);
 
 /**
  * Durable `(runId, resumeId)` claim for a lazy hook resume. Written via
@@ -182,13 +184,15 @@ const HookRecoveryMarkerSchema = z.object({
  * records the content hash so a reused `resumeId` carrying a different payload
  * can be rejected as a conflict, matching the server's constraint.
  */
-const HookResumeClaimSchema = z.object({
-  runId: z.string(),
-  resumeId: z.string(),
-  hookId: z.string(),
-  eventId: z.string(),
-  payloadDigest: z.string().optional(),
-});
+const HookResumeClaimSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    resumeId: z.string(),
+    hookId: z.string(),
+    eventId: z.string(),
+    payloadDigest: z.string().optional(),
+  })
+);
 
 /**
  * Whether `event` is the `hook_received` a resume claim stands for.
@@ -237,7 +241,7 @@ async function findCommittedResumeEvent(
       basedir,
       'events',
       `${runId}-${eventId}`,
-      EventSchema,
+      ReadEventSchema,
       tag
     );
     if (
@@ -361,7 +365,7 @@ async function findExistingHookCreatedEventId(
 ): Promise<string | null> {
   const result = await paginatedFileSystemQuery({
     directory: path.join(basedir, 'events'),
-    schema: EventSchema,
+    schema: ReadEventSchema,
     filePrefix: `${runId}-`,
     filter: (event) =>
       event.eventType === 'hook_created' &&
@@ -405,7 +409,7 @@ async function repairHookEntityFromPersistedEvent(
     basedir,
     'events',
     compositeKey,
-    EventSchema,
+    ReadEventSchema,
     tag
   );
   if (
@@ -851,7 +855,7 @@ export function createEventsStorage(
       return;
     }
 
-    const cachedEvent = EventSchema.safeParse(
+    const cachedEvent = ReadEventSchema.safeParse(
       JSON.parse(serializedEvent, jsonReviver)
     );
     if (cachedEvent.success) {
@@ -905,7 +909,7 @@ export function createEventsStorage(
   const queryRunEvents = (runId: string, pagination: PaginationOptions) =>
     paginatedFileSystemQuery({
       directory: path.join(basedir, 'events'),
-      schema: EventSchema,
+      schema: ReadEventSchema,
       cachedItems: eventCache,
       filePrefix: `${runId}-`,
       sortOrder: pagination.sortOrder ?? 'asc',
@@ -1344,11 +1348,21 @@ export function createEventsStorage(
               );
             }
 
-            // On terminal runs: only allow completing/failing in-progress steps
+            // On terminal runs: only allow completing/failing in-progress
+            // steps. A step_started is never that — it begins work, and no
+            // work should begin on a finished run — so it is rejected even
+            // when the step row still reads `running` (a redelivery of a
+            // start a previous delivery already claimed). Without this, a
+            // redelivered start on a cancelled/completed run passes the
+            // claim and executes the step body whose outcome nothing will
+            // ever consume.
             if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
-              if (validatedStep.status !== 'running') {
+              if (
+                validatedStep.status !== 'running' ||
+                data.eventType === 'step_started'
+              ) {
                 throw new RunExpiredError(
-                  `Cannot modify non-running step on run in terminal state "${currentRun.status}"`
+                  `Cannot ${data.eventType === 'step_started' ? 'start' : 'modify non-running'} step on run in terminal state "${currentRun.status}"`
                 );
               }
             }
@@ -1389,7 +1403,7 @@ export function createEventsStorage(
                 basedir,
                 'events',
                 `${effectiveRunId}-${committedClaim.eventId}`,
-                EventSchema,
+                ReadEventSchema,
                 tag
               );
               const committedEvent =
@@ -1482,7 +1496,7 @@ export function createEventsStorage(
                 basedir,
                 'events',
                 `${effectiveRunId}-${claim.eventId}`,
-                EventSchema,
+                ReadEventSchema,
                 tag
               );
               if (atClaimedId && isResumeEvent(atClaimedId, claim)) {
@@ -2895,7 +2909,7 @@ export function createEventsStorage(
               basedir,
               'events',
               `${effectiveRunId}-${eventId}`,
-              EventSchema,
+              ReadEventSchema,
               tag
             );
             if (
@@ -3108,7 +3122,7 @@ export function createEventsStorage(
         basedir,
         'events',
         compositeKey,
-        EventSchema,
+        ReadEventSchema,
         tag
       );
       if (!event) {
@@ -3147,7 +3161,7 @@ export function createEventsStorage(
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'events'),
-        schema: EventSchema,
+        schema: ReadEventSchema,
         cachedItems: eventCache,
         // Scoped to the run's own event files, since a correlation id
         // identifies a step or wait only within its run: a slot-numbered

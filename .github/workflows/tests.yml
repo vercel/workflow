@@ -558,9 +558,9 @@ jobs:
           name: e2e-results-vercel-prod-${{ matrix.app.name }}-${{ matrix.vm }}
           path: |
             e2e-vercel-prod-${{ matrix.app.name }}-${{ matrix.vm }}.json
+            e2e-vercel-prod-${{ matrix.app.name }}-${{ matrix.vm }}.flaky.json
             e2e-metadata-${{ matrix.app.name }}-vercel.json
             e2e-failures-${{ matrix.app.name }}-vercel.json
-            e2e-flaky-${{ matrix.app.name }}-vercel.json
             e2e-infra-${{ matrix.app.name }}-vercel.json
             e2e-diagnostics-${{ matrix.app.name }}-vercel.json
             e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
@@ -668,9 +668,9 @@ jobs:
           name: e2e-results-vercel-multi-region-nextjs-turbopack
           path: |
             e2e-vercel-multi-region-nextjs-turbopack.json
+            e2e-vercel-multi-region-nextjs-turbopack.flaky.json
             e2e-metadata-nextjs-turbopack-vercel.json
             e2e-failures-nextjs-turbopack-vercel.json
-            e2e-flaky-nextjs-turbopack-vercel.json
             e2e-infra-nextjs-turbopack-vercel.json
             e2e-diagnostics-nextjs-turbopack-vercel.json
             e2e-runtime-logs-nextjs-turbopack-vercel.json
@@ -859,9 +859,9 @@ jobs:
           name: e2e-results-vercel-ws-transport-${{ matrix.app.name }}
           path: |
             e2e-vercel-ws-transport-${{ matrix.app.name }}.json
+            e2e-vercel-ws-transport-${{ matrix.app.name }}.flaky.json
             e2e-metadata-${{ matrix.app.name }}-vercel.json
             e2e-failures-${{ matrix.app.name }}-vercel.json
-            e2e-flaky-${{ matrix.app.name }}-vercel.json
             e2e-infra-${{ matrix.app.name }}-vercel.json
             e2e-diagnostics-${{ matrix.app.name }}-vercel.json
             e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
@@ -1035,9 +1035,9 @@ jobs:
           name: e2e-results-vercel-http-transport-${{ matrix.app.name }}
           path: |
             e2e-vercel-http-transport-${{ matrix.app.name }}.json
+            e2e-vercel-http-transport-${{ matrix.app.name }}.flaky.json
             e2e-metadata-${{ matrix.app.name }}-vercel.json
             e2e-failures-${{ matrix.app.name }}-vercel.json
-            e2e-flaky-${{ matrix.app.name }}-vercel.json
             e2e-infra-${{ matrix.app.name }}-vercel.json
             e2e-diagnostics-${{ matrix.app.name }}-vercel.json
             e2e-runtime-logs-${{ matrix.app.name }}-vercel.json
@@ -1152,7 +1152,7 @@ jobs:
           name: e2e-results-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
           path: |
             e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
-            e2e-flaky-${{ matrix.app.name }}-local.json
+            e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.flaky.json
             e2e-infra-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
@@ -1251,7 +1251,7 @@ jobs:
           name: e2e-results-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
           path: |
             e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
-            e2e-flaky-${{ matrix.app.name }}-local.json
+            e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.flaky.json
             e2e-infra-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
@@ -1360,7 +1360,7 @@ jobs:
           name: e2e-results-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
           path: |
             e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
-            e2e-flaky-${{ matrix.app.name }}-local.json
+            e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.flaky.json
             e2e-infra-${{ matrix.app.name }}-local.json
           retention-days: 7
           if-no-files-found: ignore
@@ -1471,7 +1471,7 @@ jobs:
           name: e2e-results-conformance-python
           path: |
             e2e-conformance-python.json
-            e2e-flaky-python-local.json
+            e2e-conformance-python.flaky.json
             e2e-infra-python-local.json
             e2e-diagnostics-python-local.json
           retention-days: 7
@@ -1632,7 +1632,7 @@ jobs:
           name: e2e-results-windows-nextjs-turbopack-${{ matrix.vm }}
           path: |
             e2e-windows-nextjs-turbopack-${{ matrix.vm }}.json
-            e2e-flaky-nextjs-turbopack-local.json
+            e2e-windows-nextjs-turbopack-${{ matrix.vm }}.flaky.json
             e2e-infra-nextjs-turbopack-local.json
           retention-days: 7
           if-no-files-found: ignore
@@ -1697,7 +1697,7 @@ jobs:
   summary:
     name: E2E Summary
     runs-on: ubuntu-latest
-    needs: [ci-scope, e2e-vercel-prod, e2e-vercel-ws-transport, e2e-vercel-http-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-python, e2e-windows]
+    needs: [ci-scope, e2e-vercel-prod, e2e-vercel-multi-region, e2e-vercel-ws-transport, e2e-vercel-http-transport, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-python, e2e-windows]
     if: always() && !cancelled() && needs.ci-scope.outputs.fast-path != 'true'
     timeout-minutes: 10
 
@@ -1808,12 +1808,13 @@ jobs:
   publish-results:
     name: Publish E2E Results
     runs-on: ubuntu-latest
-    needs: [summary]
+    needs: [summary, e2e-vercel-multi-region]
     # Use always() because summary uses always() - without it this job gets skipped when any E2E test fails
     if: always() && !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     timeout-minutes: 5
 
     permissions:
+      actions: read
       contents: write
 
     steps:
@@ -1837,6 +1838,42 @@ jobs:
             --output docs-data/e2e-results.json \
             --commit "${{ github.sha }}" \
             --branch "${{ github.ref_name }}"
+
+      # Main Tests runs are serialized by the workflow concurrency group, so
+      # reading the previous file and publishing its successor cannot lose a
+      # concurrent main-branch update.
+      - name: Fetch previous E2E flake history
+        id: previous-flake-history
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh api --header 'Accept: application/vnd.github.raw+json' \
+            "repos/${{ github.repository }}/contents/ci/e2e-flake-history.json?ref=gh-pages" \
+            > previous-e2e-flake-history.json 2>history-fetch-error.log; then
+            test -s previous-e2e-flake-history.json
+          elif grep -q 'HTTP 404' history-fetch-error.log; then
+            : > previous-e2e-flake-history.json
+          else
+            cat history-fetch-error.log >&2
+            exit 1
+          fi
+          RUN_STARTED_AT=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq .run_started_at)
+          echo "run-started-at=$RUN_STARTED_AT" >> "$GITHUB_OUTPUT"
+
+      - name: Generate E2E flake history
+        if: steps.previous-flake-history.outcome == 'success'
+        continue-on-error: true
+        run: |
+          node .github/scripts/generate-e2e-flake-history.js \
+            --results-dir e2e-results \
+            --previous previous-e2e-flake-history.json \
+            --output docs-data/e2e-flake-history.json \
+            --run-id "${{ github.run_id }}" \
+            --attempt "${{ github.run_attempt }}" \
+            --sha "${{ github.sha }}" \
+            --started-at "${{ steps.previous-flake-history.outputs.run-started-at }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Deploy to GitHub Pages
         uses: ./.github/actions/publish-to-gh-pages

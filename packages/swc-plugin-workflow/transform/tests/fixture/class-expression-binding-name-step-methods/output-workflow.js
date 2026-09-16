@@ -9,7 +9,7 @@ var LanguageModel = function(__wf_cls) {
     __wf_cls.prototype["doStream"] = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//LanguageModel#doStream");
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//LanguageModel", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//LanguageModel",
         writable: false,
         enumerable: false,
