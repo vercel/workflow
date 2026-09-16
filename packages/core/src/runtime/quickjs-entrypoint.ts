@@ -64,11 +64,11 @@ import {
   runDispatchContext,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
-import { QuickJSLogView } from './quickjs-log-view.js';
 import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './lifecycle-hooks.js';
+import { QuickJSLogView } from './quickjs-log-view.js';
 import {
   BASELINE_BUNDLE_FILENAME,
   type PendingAttribute,
