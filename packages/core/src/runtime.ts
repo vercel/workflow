@@ -93,6 +93,10 @@ import {
 } from './runtime/helpers.js';
 import { withRunInputs } from './runtime/invocations.js';
 import {
+  dispatchRunCompletedHooks,
+  dispatchRunFailedHooks,
+} from './runtime/lifecycle-hooks.js';
+import {
   handleReplayBudgetExhausted,
   ReplayBudget,
 } from './runtime/replay-budget.js';
@@ -122,7 +126,7 @@ import {
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
 import { getWorld } from './runtime/world.js';
-import { dehydrateRunError } from './serialization.js';
+import { dehydrateRunError, type PayloadKey } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
@@ -386,6 +390,7 @@ async function recordFatalRunError({
   world,
   workflowRun,
   runId,
+  workflowName,
   requestId,
   err,
   errorCode,
@@ -394,6 +399,7 @@ async function recordFatalRunError({
   world: World;
   workflowRun: WorkflowRun | undefined;
   runId: string;
+  workflowName: string;
   requestId: string | undefined;
   err: unknown;
   errorCode: RunErrorCode;
@@ -405,21 +411,25 @@ async function recordFatalRunError({
     error: err instanceof Error ? err.message : String(err),
   });
 
+  let encryptionKey: PayloadKey | undefined;
+  let dehydratedError: Uint8Array;
   try {
     const getEncryptionKey = memoizeEncryptionKey(world, workflowRun ?? runId);
+    encryptionKey = await getEncryptionKey();
+    dehydratedError = await dehydrateRunError(
+      err,
+      runId,
+      encryptionKey,
+      globalThis,
+      (workflowRun?.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
+    );
     await world.events.create(
       runId,
       {
         eventType: 'run_failed',
         specVersion: SPEC_VERSION_CURRENT,
         eventData: {
-          error: await dehydrateRunError(
-            err,
-            runId,
-            await getEncryptionKey(),
-            globalThis,
-            (workflowRun?.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
-          ),
+          error: dehydratedError,
           errorCode,
         },
       },
@@ -442,6 +452,13 @@ async function recordFatalRunError({
     }
     throw failErr;
   }
+  dispatchRunFailedHooks(
+    runId,
+    workflowName,
+    dehydratedError,
+    encryptionKey,
+    errorCode
+  );
 }
 
 function findRecordedTerminalRunEvent(
@@ -825,21 +842,30 @@ export function workflowEntrypoint(
             const err = new FatalError(
               `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`
             );
+            const encryptionKey = await getEncryptionKey();
+            const dehydratedError = await dehydrateRunError(
+              err,
+              runId,
+              encryptionKey
+            );
             await world.events.create(
               runId,
               {
                 eventType: 'run_failed',
                 specVersion: SPEC_VERSION_CURRENT,
                 eventData: {
-                  error: await dehydrateRunError(
-                    err,
-                    runId,
-                    await getEncryptionKey()
-                  ),
+                  error: dehydratedError,
                   errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
                 },
               },
               { requestId }
+            );
+            dispatchRunFailedHooks(
+              runId,
+              workflowName,
+              dehydratedError,
+              encryptionKey,
+              RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
             );
           } catch (err) {
             if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
@@ -1280,6 +1306,7 @@ export function workflowEntrypoint(
                       world,
                       workflowRun,
                       runId,
+                      workflowName,
                       requestId,
                       err,
                       errorCode,
@@ -1611,6 +1638,7 @@ export function workflowEntrypoint(
                       await guardDeploymentAffinity({
                         world,
                         run,
+                        workflowName,
                         requestId,
                         retryCount: deploymentMismatchRetryCount,
                         beforeStop,
@@ -2152,6 +2180,7 @@ export function workflowEntrypoint(
                         world,
                         workflowRun,
                         runId,
+                        workflowName,
                         requestId,
                         err,
                         errorCode,
@@ -3431,6 +3460,7 @@ export function workflowEntrypoint(
                         }
                         throw err;
                       }
+                      dispatchRunCompletedHooks(runId, workflowName);
 
                       span?.setAttributes({
                         ...Attribute.WorkflowRunStatus('completed'),
@@ -3601,23 +3631,27 @@ export function workflowEntrypoint(
                               errorMessage: suspensionError.message,
                             }
                           );
+                          let failureKey: PayloadKey | undefined;
+                          let dehydratedError: Uint8Array;
                           try {
                             // Turbo: order the terminal write after the
                             // backgrounded run_started so the run exists.
                             await awaitRunReady();
+                            failureKey = await encryptionKey.value;
+                            dehydratedError = await dehydrateRunError(
+                              suspensionError,
+                              runId,
+                              failureKey,
+                              globalThis,
+                              (workflowRun?.specVersion ?? 0) >=
+                                SPEC_VERSION_SUPPORTS_COMPRESSION
+                            );
                             await createEvent(
                               {
                                 eventType: 'run_failed',
                                 specVersion: SPEC_VERSION_CURRENT,
                                 eventData: {
-                                  error: await dehydrateRunError(
-                                    suspensionError,
-                                    runId,
-                                    await encryptionKey.value,
-                                    globalThis,
-                                    (workflowRun?.specVersion ?? 0) >=
-                                      SPEC_VERSION_SUPPORTS_COMPRESSION
-                                  ),
+                                  error: dehydratedError,
                                   errorCode,
                                 },
                               },
@@ -3639,6 +3673,13 @@ export function workflowEntrypoint(
                             }
                             throw failErr;
                           }
+                          dispatchRunFailedHooks(
+                            runId,
+                            workflowName,
+                            dehydratedError,
+                            failureKey,
+                            errorCode
+                          );
                           span?.setAttributes({
                             ...Attribute.WorkflowRunStatus('failed'),
                             ...Attribute.WorkflowErrorCode(errorCode),
@@ -5188,23 +5229,27 @@ export function workflowEntrypoint(
                         // recoverable (the run can be re-run from the
                         // dashboard), whereas a spurious *completion* commits a
                         // wrong result.
+                        let failureKey: PayloadKey | undefined;
+                        let dehydratedError: Uint8Array;
                         try {
                           // Turbo: order the terminal write after the
                           // backgrounded run_started so the run exists.
                           await awaitRunReady();
+                          failureKey = await encryptionKey.value;
+                          dehydratedError = await dehydrateRunError(
+                            terminalError,
+                            runId,
+                            failureKey,
+                            globalThis,
+                            (workflowRun?.specVersion ?? 0) >=
+                              SPEC_VERSION_SUPPORTS_COMPRESSION
+                          );
                           await createEvent(
                             {
                               eventType: 'run_failed',
                               specVersion: SPEC_VERSION_CURRENT,
                               eventData: {
-                                error: await dehydrateRunError(
-                                  terminalError,
-                                  runId,
-                                  await encryptionKey.value,
-                                  globalThis,
-                                  (workflowRun?.specVersion ?? 0) >=
-                                    SPEC_VERSION_SUPPORTS_COMPRESSION
-                                ),
+                                error: dehydratedError,
                                 errorCode,
                               },
                             },
@@ -5248,6 +5293,13 @@ export function workflowEntrypoint(
                           }
                           throw failErr;
                         }
+                        dispatchRunFailedHooks(
+                          runId,
+                          workflowName,
+                          dehydratedError,
+                          failureKey,
+                          errorCode
+                        );
 
                         span?.setAttributes({
                           ...Attribute.WorkflowRunStatus('failed'),
