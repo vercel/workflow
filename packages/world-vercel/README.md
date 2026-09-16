@@ -36,9 +36,3 @@ const world = createWorld({
   headers: { 'User-Agent': 'my-framework/1.2.3' },
 });
 ```
-
-## Invocation delivery
-
-Queue callbacks allow generic handler return values. Scheduling control is
-interpreted only for ordinary queue messages, never for invocation-mode result
-data. This adapter does not yet advertise the optional `invoke` capability.
