@@ -12,7 +12,7 @@ import {
   Req,
   Res,
 } from '@nestjs/common';
-import type { ApplicationConfig } from '@nestjs/core';
+import { ApplicationConfig } from '@nestjs/core';
 import { globalSingleton } from '@workflow/utils';
 import { join } from 'pathe';
 import {
@@ -94,7 +94,9 @@ export class WorkflowController {
     @Optional()
     @Inject(WORKFLOW_MODULE_OPTIONS)
     private readonly options: ResolvedWorkflowModuleOptions | undefined,
-    @Optional() private readonly appConfig?: ApplicationConfig
+    @Optional()
+    @Inject(ApplicationConfig)
+    private readonly appConfig?: ApplicationConfig
   ) {}
 
   #outDir(): string {

@@ -1,12 +1,15 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Module } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveModuleOptions, setWorkflowBasePath } from './options.js';
 import {
   resetWorkflowControllerGlobal,
   WorkflowController,
 } from './workflow.controller.js';
+import { WorkflowModule } from './workflow.module.js';
 
 function response() {
   const state = {
@@ -121,6 +124,52 @@ describe('WorkflowController', () => {
     expect(
       messages.some((message) => message.includes('Global prefix mismatch'))
     ).toBe(false);
+  });
+
+  it('receives ApplicationConfig through the real Nest injector', async () => {
+    writeFileSync(
+      join(outDir, 'steps.mjs'),
+      'export const __steps_registered = true;'
+    );
+    writeFileSync(
+      join(outDir, 'workflows.mjs'),
+      'export async function POST() { return new Response(null, { status: 204 }); }'
+    );
+    writeFileSync(
+      join(outDir, 'webhook.mjs'),
+      'export async function POST() { return new Response(null, { status: 204 }); }'
+    );
+
+    class RootModule {}
+    Module({
+      imports: [
+        WorkflowModule.forRoot({
+          outDir,
+          skipBuild: true,
+          preloadBundles: false,
+        }),
+      ],
+    })(RootModule);
+
+    const app = await NestFactory.create(RootModule, { logger: false });
+    try {
+      app.setGlobalPrefix('api');
+      await app.init();
+
+      // Simulate a prefix change after module initialization. The controller's
+      // request-time backstop only works if Nest injected ApplicationConfig.
+      setWorkflowBasePath('/wrong');
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const { res } = response();
+      await app.get(WorkflowController).handleFlowPost(request(), res);
+      expect(
+        error.mock.calls.some((call) =>
+          String(call[0]).includes('Global prefix mismatch')
+        )
+      ).toBe(true);
+    } finally {
+      await app.close();
+    }
   });
 
   it('stays quiet for a basePath that only a reverse proxy applies', async () => {
