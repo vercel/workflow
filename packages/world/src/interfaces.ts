@@ -497,6 +497,17 @@ export interface Storage {
  */
 export interface WorldCapabilities {
   /**
+   * Enables invoke() and request/response processing through createQueueHandler.
+   * Requires at most one active workflow runner per runId across all worker
+   * processes. Different runs may execute concurrently.
+   *
+   * The active runner must process inputs while it awaits step work. A replacement
+   * runner may take over after the previous runner stops, so process identity can
+   * change over the run's lifetime.
+   */
+  invoke?: boolean;
+
+  /**
    * Supports `experimental_minRetention` for Hooks. Missing or inactive means
    * the runtime rejects retained Hooks before registration.
    */
@@ -547,7 +558,8 @@ export interface WorldCapabilities {
    * server-computed, response-only `Hook.resumeCapabilities.hookResumeDedupVersion`
    * (see `HookResumeCapabilitiesSchema`), so a server rollback or kill switch
    * degrades new resumes to plain writes immediately without redeploying
-   * the adapter. `world-postgres` leaves it unset for now.
+   * the adapter. `world-postgres` enforces resume identities transactionally
+   * and declares the capability statically.
    *
    * The resume gate treats EITHER signal as backend support (see
    * `resume-hook.ts`): this static capability OR a current

@@ -91,6 +91,7 @@ import {
   stepDispatchIdempotencyKey,
   withHealthCheck,
 } from './runtime/helpers.js';
+import { withRunInputs } from './runtime/invocations.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
@@ -120,7 +121,7 @@ import {
 } from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
-import { getWorld, type WorldHandlers } from './runtime/world.js';
+import { getWorld } from './runtime/world.js';
 import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
@@ -584,6 +585,7 @@ function getRetentionDecision({
   suspension,
   serializationBlockerCount,
   hookContinuation = false,
+  invocationContinuation = false,
 }: {
   suspension: WorkflowSuspension;
   serializationBlockerCount: number;
@@ -594,6 +596,7 @@ function getRetentionDecision({
    * write of its own. See the policy above.
    */
   hookContinuation?: boolean;
+  invocationContinuation?: boolean;
 }): RetentionDecision {
   if (!isVmRetentionEnabled()) {
     return { retain: false, reason: 'disabled' };
@@ -607,7 +610,11 @@ function getRetentionDecision({
   if (hookContinuation) {
     return { retain: true };
   }
-  if (suspension.stepCount === 0 && suspension.attributeCount === 0) {
+  if (
+    !invocationContinuation &&
+    suspension.stepCount === 0 &&
+    suspension.attributeCount === 0
+  ) {
     return { retain: false, reason: 'no_replay_driver' };
   }
   return { retain: true };
@@ -715,10 +722,10 @@ export function workflowEntrypoint(
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
 
-  const handler = (worldHandlers: WorldHandlers) =>
+  const handler = (worldHandlers: World) =>
     worldHandlers.createQueueHandler(
       workflowPrefix,
-      async (message_, metadata) => {
+      withRunInputs(worldHandlers)(async (message_, metadata, activity) => {
         // T2 of the hook-resume TTR window (see runtime/resume-latency.ts):
         // the instant this consumer began, before message parsing. Only used
         // when the message turns out to carry resume timing; taking it
@@ -1965,6 +1972,24 @@ export function workflowEntrypoint(
                         return { timeoutSeconds: stepResult.timeoutSeconds };
                       }
 
+                      // Invoke-capable worlds serialize orchestrator deliveries,
+                      // not step bodies. Return the replay to that executor lane.
+                      if (
+                        world.capabilities?.invoke &&
+                        stepResult.type !== 'gone'
+                      ) {
+                        await queueMessage(
+                          world,
+                          getWorkflowQueueName(workflowName, namespace),
+                          {
+                            runId,
+                            traceCarrier: await nextTraceCarrier(),
+                            requestedAt: new Date(),
+                          }
+                        );
+                        return;
+                      }
+
                       // If step had pending ops (stream writes), break and let
                       // waitUntil flush them, so can't continue inline.
                       if (
@@ -2897,6 +2922,7 @@ export function workflowEntrypoint(
 
                   // Main replay loop
                   while (true) {
+                    const invocationRevision = activity?.revision ?? 0;
                     loopIteration++;
 
                     // Replay-budget check: bail out (retry or fail) if
@@ -3654,6 +3680,7 @@ export function workflowEntrypoint(
                               hookContinuation:
                                 suspensionResult.hasAwaitedHookCreation ||
                                 suspensionResult.hasHookConflict,
+                              invocationContinuation: activity !== undefined,
                             })
                           : undefined;
                         if (retentionDecision?.retain === false) {
@@ -4333,6 +4360,15 @@ export function workflowEntrypoint(
                             // Hand the run back for a fresh replay over the
                             // committed hook_created.
                             return await reinvoke(0);
+                          }
+                          if (
+                            activity &&
+                            Date.now() - invocationStartTime <
+                              noInlineReplayAfterMs &&
+                            (await activity.waitForActivity(invocationRevision))
+                          ) {
+                            eventLog = nextEventLogLoad(eventLog);
+                            continue;
                           }
                           return;
                         }
@@ -5229,7 +5265,7 @@ export function workflowEntrypoint(
             }
           );
         });
-      }
+      })
     );
 
   let cachedHandler: ((req: Request) => Promise<Response>) | undefined;

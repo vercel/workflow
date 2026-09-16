@@ -54,6 +54,7 @@ export function createWorld(
       50,
     applicationManagedShutdown:
       process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN === '1',
+    enableInvoke: process.env.WORKFLOW_POSTGRES_INVOKE === '1',
   }
 ): World & { start(): Promise<void> } {
   const maxPoolSize = config.maxPoolSize ?? getDefaultMaxPoolSize();
@@ -76,6 +77,8 @@ export function createWorld(
     specVersion: mintedSpecVersion(),
     capabilities: {
       hookRetention: { active: true },
+      hookResumeDedup: true,
+      ...(config.enableInvoke ? { invoke: true } : {}),
     },
     ...storage,
     ...streamer,
