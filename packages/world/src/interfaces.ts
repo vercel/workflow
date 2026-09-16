@@ -495,6 +495,11 @@ export interface Storage {
  * one must fail closed (keep their conservative behavior) unless the World
  * explicitly declares it.
  */
+export interface BackendCapabilities {
+  /** Version of durable dynamic-workflow storage supported by the backend. */
+  dynamicWorkflowStorageVersion?: number;
+}
+
 export interface WorldCapabilities {
   /**
    * Supports `experimental_minRetention` for Hooks. Missing or inactive means
@@ -606,6 +611,18 @@ export interface World extends Queue, Streamer, Storage {
   capabilities?: WorldCapabilities;
 
   /**
+   * Fetches live backend capabilities. Dynamic starts require exact version
+   * support and fail closed when this method or its attestation is absent.
+   */
+  getBackendCapabilities?(): Promise<BackendCapabilities>;
+
+  /**
+   * Validates the complete execution context against World-specific limits.
+   * Implementations must throw before any durable start side effect.
+   */
+  validateRunExecutionContext?(value: Record<string, unknown>): void;
+
+  /**
    * Absolute wall-clock time when the current function invocation will be
    * terminated by the hosting platform, if known. Used to optimize runtime behavior.
    */
@@ -690,6 +707,41 @@ export interface World extends Queue, Streamer, Storage {
    *   tolerate `undefined` for direct callers.
    */
   createRunId?(options?: Readonly<Record<string, unknown>>): string;
+
+  /**
+   * Upload a dynamic run's serialized workflow VM code to the World's blob
+   * storage ahead of `run_created`, returning the ref key to attach to the
+   * run.
+   *
+   * The inline path — sending the bytes on `run_created` itself — is the
+   * common case and needs nothing from this method: a generated orchestration
+   * function is usually a couple of KB, and keeping it on the creating write
+   * costs no extra round-trip. This exists for the tail: a definition too
+   * large to ride the event wire, which has to be streamed separately and
+   * referenced.
+   *
+   * Worlds that store run records whole (local, Postgres) have no size
+   * pressure and leave this unset; `start()` then always sends inline, and a
+   * definition over its own source limit is rejected client-side rather than
+   * silently truncated.
+   *
+   * The upload necessarily precedes the run it belongs to, so implementations
+   * must accept a `runId` that does not exist yet, and must scope the stored
+   * object to the caller's tenant and that run so it is reclaimed with the
+   * run's other storage.
+   *
+   * @param runId - The client-minted ID of the run being started.
+   * @param params.workflowName - The run's generated dynamic workflow name.
+   *   Worlds that embed it in the storage key need it passed in, because the
+   *   run record does not exist yet to read it from.
+   * @param params.code - Serialized (compressed + encrypted) workflow code.
+   * @returns The ref key to send as `run_created`'s
+   *   `eventData.dynamicWorkflowCodeRef`.
+   */
+  uploadDynamicWorkflowCode?(
+    runId: string,
+    params: { workflowName: string; code: Uint8Array }
+  ): Promise<string>;
 
   /**
    * The environment this World's writes are attributed to by the backend

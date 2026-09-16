@@ -20,7 +20,15 @@ type EventsStorage = ReturnType<typeof createEventsStorage>;
 
 /** Every payload-bearing column, CBOR half and legacy JSON twin alike. */
 const PAYLOAD_COLUMNS = {
-  runs: ['input_cbor', 'input', 'output_cbor', 'output', 'error_cbor', 'error'],
+  runs: [
+    'input_cbor',
+    'input',
+    'output_cbor',
+    'output',
+    'error_cbor',
+    'error',
+    'dynamic_workflow_code_cbor',
+  ],
   steps: [
     'input_cbor',
     'input',
@@ -96,6 +104,9 @@ describe('Retention ($retention: 0)', () => {
         workflowName: 'retention-workflow',
         input: new Uint8Array([1, 2, 3]),
         executionContext: { userId: 'user-1' },
+        // A dynamic run's stored code is a run payload too, and the only one
+        // that lives in a column of its own.
+        dynamicWorkflowCode: new Uint8Array([14, 15, 16]),
         ...(attributes ? { attributes, allowReservedAttributes: true } : {}),
       },
     });

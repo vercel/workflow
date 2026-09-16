@@ -74,6 +74,9 @@ export function createWorld(
 
   return {
     specVersion: mintedSpecVersion(),
+    getBackendCapabilities: async () => ({
+      dynamicWorkflowStorageVersion: 1,
+    }),
     capabilities: {
       hookRetention: { active: true },
     },

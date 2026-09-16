@@ -351,6 +351,14 @@ async function maybeDecryptFields<
     result.input = await maybeDecrypt(result.input, k);
     result.output = await maybeDecrypt(result.output, k);
     (result as any).error = await maybeDecrypt((result as any).error, k);
+    // A dynamic run's own workflow code (WorkflowRun), stored through the
+    // same pipeline as its input.
+    if ((result as any).dynamicWorkflowCode !== undefined) {
+      (result as any).dynamicWorkflowCode = await maybeDecrypt(
+        (result as any).dynamicWorkflowCode,
+        k
+      );
+    }
 
     // Decrypt metadata field (Hook)
     result.metadata = await maybeDecrypt(result.metadata, k);
@@ -404,6 +412,11 @@ function replaceEncryptedAndExpiredWithRef<T>(resource: T): T {
 
   for (const key of ['input', 'output', 'metadata', 'error']) {
     result[key] = toDisplayRef(result[key]);
+  }
+  // Run-only, so touched only when present: static runs never carry it and
+  // should not grow an `undefined` field in the inspect output.
+  if ('dynamicWorkflowCode' in result) {
+    result.dynamicWorkflowCode = toDisplayRef(result.dynamicWorkflowCode);
   }
 
   if (result.eventData && typeof result.eventData === 'object') {
