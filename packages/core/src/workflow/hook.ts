@@ -339,6 +339,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const hasWaitingConsumer = promises.length > 0;
         const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook', {
           armed: hasWaitingConsumer,
+          deliveredAt: +event.createdAt,
         });
 
         if (hasWaitingConsumer) {
