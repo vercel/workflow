@@ -85,7 +85,7 @@ Extends [`NestBuilderOptions`](/docs/api-reference/workflow-nest/nest-local-buil
 | `skipBuild` | `boolean` | `true` when `VERCEL` is set, else `false` | Skip building workflow bundles on startup. The bundles must already exist; startup fails with an explicit error if they do not. |
 | `basePath` | `string` | adopted from `app.setGlobalPrefix()` | Route prefix the workflow endpoints are served under, applied to generated callback and webhook URLs. Set it when a reverse proxy mounts the app on a sub-path NestJS cannot see. |
 | `manageWorldLifecycle` | `boolean` | `false` | Start the target World's background workers with the app and close them on shutdown. Required for self-hosted Worlds, which otherwise never pick up runs. |
-| `preloadBundles` | `boolean` | `true` | Load the generated bundles during startup instead of on the first request. |
+| `preloadBundles` | `boolean` | `false` when `VERCEL` is set, else `true` | Load the generated bundles during startup instead of on the first request. On Vercel, dedicated functions serve the bundles, so there is nothing to preload. |
 | `workingDir` | `string` | `process.cwd()` | Working directory for the NestJS application. |
 | `dirs` | `string[]` | `['src']` | Directories to scan for workflow files. |
 | `outDir` | `string` | `'.nestjs/workflow'` (relative to `workingDir`) | Output directory for generated workflow bundles. |

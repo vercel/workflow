@@ -436,7 +436,9 @@ WorkflowModule.forRoot({
   // Output directory for generated bundles (default: '.nestjs/workflow')
   outDir: '.nestjs/workflow',
 
-  // Skip building in production when bundles are pre-built
+  // Skip building when bundles are pre-built with `workflow-nest build`
+  // (default: true when VERCEL is set, false otherwise). Startup fails if the
+  // bundles are missing.
   skipBuild: false,
 
   // SWC module type: 'es6' (default) or 'commonjs'
@@ -468,7 +470,8 @@ WorkflowModule.forRoot({
   manageWorldLifecycle: false,
 
   // Load the generated bundles during startup instead of on the first request
-  // (default: true).
+  // (default: true, or false when VERCEL is set because dedicated functions
+  // serve the bundles there).
   preloadBundles: true,
 });
 ```
