@@ -1,6 +1,7 @@
 import type { World } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../logger.js';
+import { registerLifecycleHooks } from './lifecycle-hooks.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
@@ -12,13 +13,38 @@ vi.mock('./world.js', () => ({
   getWorld: vi.fn(),
 }));
 
-vi.mock('../serialization.js', () => ({
+// Partial mock: the lifecycle-hook registry pulls in `run.ts` (for the Run
+// instance handed to handlers), whose import chain needs the real module's
+// other exports (e.g. SerializationFormat).
+vi.mock(import('../serialization.js'), async (importOriginal) => ({
+  ...(await importOriginal()),
   dehydrateRunError: vi.fn(async () => new Uint8Array([1, 2, 3])),
 }));
 
 vi.mock('./helpers.js', () => ({
   memoizeEncryptionKey: () => async () => undefined,
 }));
+
+// Capture lifecycle-hook dispatch work (scheduled via waitUntil) so tests
+// can await it deterministically.
+const waitUntilPromises: Promise<unknown>[] = [];
+vi.mock('@vercel/functions', () => ({
+  waitUntil: (promise: Promise<unknown>) => {
+    waitUntilPromises.push(promise);
+  },
+}));
+
+/**
+ * Await everything the lifecycle dispatcher scheduled through waitUntil.
+ * The dispatcher resolves a dynamic import before handing the promise to
+ * waitUntil, so yield to the macrotask queue until the capture lands.
+ */
+async function flushLifecycleDispatches(): Promise<void> {
+  for (let i = 0; i < 10 && waitUntilPromises.length === 0; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  await Promise.all(waitUntilPromises);
+}
 
 describe('ReplayBudget', () => {
   beforeEach(() => {
@@ -237,5 +263,50 @@ describe('handleReplayBudgetExhausted', () => {
     ).rejects.toBe(writeError);
 
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('fires onRunFailed lifecycle hooks after the terminal write lands, and not on write failure', async () => {
+    const onRunFailed = vi.fn();
+    const unregister = registerLifecycleHooks({ onRunFailed });
+    try {
+      // Write failure: no dispatch.
+      mockEventsCreate.mockRejectedValueOnce(new Error('storage unavailable'));
+      vi.mocked(getWorld).mockResolvedValue(makeMockWorld());
+      await expect(
+        handleReplayBudgetExhausted({
+          runId: 'wrun_test',
+          workflowName: 'wf',
+          requestId: 'req_test',
+          attempt: 4,
+          limitMs: 240_000,
+        })
+      ).rejects.toThrow('storage unavailable');
+      // Give a (buggy) schedule a chance to land before asserting none did.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(waitUntilPromises).toHaveLength(0);
+      expect(onRunFailed).not.toHaveBeenCalled();
+
+      // Successful write: dispatch with the Run and classified error.
+      await handleReplayBudgetExhausted({
+        runId: 'wrun_test',
+        workflowName: 'wf',
+        requestId: 'req_test',
+        attempt: 4,
+        limitMs: 240_000,
+      });
+      await flushLifecycleDispatches();
+
+      expect(onRunFailed).toHaveBeenCalledTimes(1);
+      const { run, error } = onRunFailed.mock.calls[0][0];
+      expect(run.runId).toBe('wrun_test');
+      expect(error.errorCode).toBe('REPLAY_TIMEOUT');
+      expect(error.cause).toBeInstanceOf(Error);
+      expect((error.cause as Error).message).toContain(
+        'exceeded maximum duration'
+      );
+    } finally {
+      unregister();
+      waitUntilPromises.length = 0;
+    }
   });
 });
