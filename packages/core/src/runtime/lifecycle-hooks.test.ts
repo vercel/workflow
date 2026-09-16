@@ -22,7 +22,8 @@ vi.mock('@vercel/functions', () => ({
 /** Await everything the dispatcher scheduled through waitUntil. */
 async function flushDispatches(): Promise<void> {
   // The dispatcher resolves a dynamic import before handing the promise to
-  // waitUntil, so yield to the microtask queue until the capture settles.
+  // waitUntil, so yield macrotask (check-phase) turns via setImmediate —
+  // which drains the intervening microtasks too — until the capture lands.
   for (let i = 0; i < 10 && waitUntilPromises.length === 0; i++) {
     await new Promise((resolve) => setImmediate(resolve));
   }
