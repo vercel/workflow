@@ -249,6 +249,15 @@ interface Queue {
 
 ### Invocation delivery
 
+Invocation support is **optional**. A World that implements `invoke` and enables
+`capabilities.invoke` **must guarantee at most one active workflow runner per
+`runId` across all worker processes**. Different runs may execute in parallel;
+the concurrency limit is per run, not global.
+
+A run need not stay in the same process forever. A replacement runner may take
+over once the previous runner is no longer active. The active runner can handle
+hook inputs while a step awaits them, without starting another workflow runner.
+
 An optional `invoke` implementation advertises `capabilities.invoke`. It delivers
 `{ runId, invoke: true, requestId, input }` to the existing handler and returns the
 handler's result to the original caller. `requestId` is the stable logical input

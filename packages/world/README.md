@@ -8,6 +8,16 @@ Used internally by `@workflow/core` and world implementations. Should not be use
 
 ## Optional invocation delivery
 
+Invocation support is **optional**. A World that implements `invoke` and enables
+`WorldCapabilities.invoke` **must guarantee at most one active workflow runner
+per `runId`, across all worker processes**. This is per-run concurrency of one;
+different runs may execute in parallel.
+
+The runner's process identity need not remain fixed for the lifetime of the run.
+A replacement may take over once the previous runner is no longer active. The
+active runner may handle an incoming hook input while a step awaits it; handling
+that input must not start a second workflow runner for the same run.
+
 `WorldCapabilities.invoke` enables `world.invoke(runId, payload, options?)`, a
 request/response operation. `InvokeOptions` supports an `idempotencyKey` and
 `timeoutMs`. Every call schedules a run wake, including retries; resolving means
