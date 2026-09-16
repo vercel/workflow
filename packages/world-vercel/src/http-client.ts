@@ -736,8 +736,8 @@ const RETIRED_CLOSE_DELAY_MS = 5_000;
 const RETIRED_DESTROY_DELAY_MS = 60_000;
 
 /**
- * undici error codes that mean "no response arrived over a connection that was
- * already established". These are the failures a rebuild can fix; DNS, connect
+ * Errors from an established connection or a session that can no longer accept
+ * requests. These are the failures a rebuild can fix; DNS, connect
  * and TLS errors are excluded because a new agent would hit the same wall, and an
  * abort is excluded because it is the caller's own doing.
  */
@@ -746,6 +746,14 @@ const RECYCLABLE_ERROR_CODES = new Set([
   'UND_ERR_INFO',
   'UND_ERR_HEADERS_TIMEOUT',
   'UND_ERR_BODY_TIMEOUT',
+  // Node can surface these directly instead of undici's UND_ERR_INFO. Once
+  // repeated, retire the pool even when classification used its fallback.
+  // Keep this scoped to session/stream failures: ERR_HTTP2_* also contains
+  // request-validation and caller-cancellation errors a new pool cannot fix.
+  'ERR_HTTP2_GOAWAY_SESSION',
+  'ERR_HTTP2_INVALID_SESSION',
+  'ERR_HTTP2_SESSION_ERROR',
+  'ERR_HTTP2_STREAM_ERROR',
 ]);
 
 /** Guard against a self-referential `cause` chain. */
