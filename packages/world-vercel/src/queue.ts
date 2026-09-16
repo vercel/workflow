@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Transport } from '@vercel/queue';
 import { ConsumerDiscoveryError, QueueClient } from '@vercel/queue';
-import { WorkflowWorldError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import {
   MessageId,
@@ -18,15 +17,6 @@ import { decode as cborDecode, encode as cborEncode } from 'cbor-x';
 import { z } from 'zod/v4';
 import { missingDeploymentIdMessage } from './deployment-id.js';
 import { getQueueDispatcher } from './http-client.js';
-import {
-  AFFINITY_HEADER,
-  createDirectInvocationHandler,
-  createInvoker,
-  DEPLOYMENT_HEADER,
-  INVOCATION_HEADER,
-  invocationAffinity,
-  invocationConfig,
-} from './invocation.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { getTraceContextHeaders } from './telemetry.js';
@@ -165,18 +155,7 @@ class DualTransport implements Transport<unknown> {
 // per-copy-ok: both ends of this store live in the same `createQueueHandler`
 // closure: the `run()` wrapper and the `getStore()` read always come from the
 // same module copy, so the context never has to cross a copy boundary.
-const requestIdStorage = new AsyncLocalStorage<{
-  requestId?: string;
-  affinity: string | null;
-}>();
-
-function orchestrationRunId(payload: QueuePayload): string | undefined {
-  return 'runId' in payload &&
-    !('stepId' in payload && payload.stepId) &&
-    !('__healthCheck' in payload)
-    ? payload.runId
-    : undefined;
-}
+const requestIdStorage = new AsyncLocalStorage<string | undefined>();
 
 const MessageWrapper = z.compile(
   z.object({
@@ -542,14 +521,6 @@ export function createQueue(config?: APIConfig): Queue {
       /[^A-Za-z0-9-_]/g,
       '-'
     );
-    let sendHeaders = { ...getHeadersFromPayload(payload), ...opts?.headers };
-    const executorRunId = orchestrationRunId(payload);
-    if (invocationConfig(config) && executorRunId) {
-      const routingHeaders = new Headers(sendHeaders);
-      routingHeaders.set(AFFINITY_HEADER, invocationAffinity(executorRunId));
-      routingHeaders.set(DEPLOYMENT_HEADER, deploymentId);
-      sendHeaders = Object.fromEntries(routingHeaders);
-    }
 
     return {
       deploymentId,
@@ -569,7 +540,10 @@ export function createQueue(config?: APIConfig): Queue {
       sendOptions: {
         idempotencyKey: opts?.idempotencyKey,
         delaySeconds: opts?.delaySeconds,
-        headers: sendHeaders,
+        headers: {
+          ...getHeadersFromPayload(payload),
+          ...opts?.headers,
+        },
       },
     };
   };
@@ -715,97 +689,66 @@ export function createQueue(config?: APIConfig): Queue {
     return results;
   };
 
-  const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
+  const createQueueHandler: Queue['createQueueHandler'] = (
+    _prefix,
+    handler
+  ) => {
     const client = new QueueClient(clientOptions);
-    const runHandler = async (
-      payload: QueuePayload,
-      metadata: Parameters<typeof handler>[1],
-      deploymentId?: string
-    ) => {
-      // Earliest point in an invocation where the run id is known, so the WS
-      // handshake happens here instead of on the runtime's first event write
-      // (which would record a `step_started` later than the work it
-      // timestamps). This path also absorbs `ws`'s module init.
-      const wsEvents = wsEventsChannelForInvocation(
-        getRunIdFromPayload(payload),
-        config
-      );
-      wsEvents.open();
-
-      try {
-        const result = await handler(payload, {
-          ...metadata,
-        });
-
-        if (
-          !('invoke' in payload && payload.invoke === true) &&
-          typeof result === 'object' &&
-          result !== null &&
-          'timeoutSeconds' in result &&
-          typeof result.timeoutSeconds === 'number'
-        ) {
-          // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
-          // Otherwise, clamp to one continuation hop (23h by default). Longer
-          // sleeps chain delayed messages until the full duration has elapsed.
-          const delaySeconds =
-            result.timeoutSeconds > 0
-              ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
-              : undefined;
-
-          // Send new message BEFORE acknowledging current message.
-          // This ensures crash safety: if process dies after send but before ack,
-          // we may get a duplicate invocation but won't lose the scheduled wakeup.
-          await queue(metadata.queueName, payload, {
-            deploymentId,
-            delaySeconds,
-          });
-        }
-        return result;
-      } finally {
-        // The only point in the SDK that knows an invocation has no writes
-        // left. In a `finally` so a failed handler closes too, since the
-        // retry arrives as a new invocation and opens its own channel.
-        await wsEvents.close();
-      }
-    };
-    const direct = invocationConfig(config)
-      ? createDirectInvocationHandler(
-          prefix,
-          handler,
-          config,
-          (runId, metadata) =>
-            runHandler({ runId }, metadata, process.env.VERCEL_DEPLOYMENT_ID)
-        )
-      : undefined;
     const vqsHandler = client.handleCallback(
       async (message: unknown, metadata) => {
-        if (!message || !metadata) return;
-        const context = requestIdStorage.getStore();
+        if (!message || !metadata) {
+          return;
+        }
+
+        const requestId = requestIdStorage.getStore();
+        // The CborTransport handles CBOR decoding inside deserialize(),
+        // so message is already a plain object with Uint8Array values intact.
         const { payload, queueName, deploymentId } =
           MessageWrapper.parse(message);
 
-        const executorRunId = orchestrationRunId(payload);
-        const invokeHandler = () =>
-          runHandler(
-            payload,
-            {
-              queueName,
-              messageId: MessageId.parse(metadata.messageId),
-              attempt: metadata.deliveryCount,
-              requestId: context?.requestId,
-            },
-            deploymentId
-          );
-        if (direct && executorRunId) {
-          if (context?.affinity !== invocationAffinity(executorRunId)) {
-            throw new WorkflowWorldError(
-              'Workflow execution affinity mismatch',
-              { status: 409 }
-            );
+        // Earliest point in an invocation where the run id is known, so the WS
+        // handshake happens here instead of on the runtime's first event write
+        // (which would record a `step_started` later than the work it
+        // timestamps). This path also absorbs `ws`'s module init.
+        const wsEvents = wsEventsChannelForInvocation(
+          getRunIdFromPayload(payload),
+          config
+        );
+        wsEvents.open();
+
+        try {
+          const result = await handler(payload, {
+            queueName,
+            messageId: MessageId.parse(metadata.messageId),
+            attempt: metadata.deliveryCount,
+            requestId,
+          });
+
+          if (
+            !('invoke' in payload && payload.invoke === true) &&
+            typeof result === 'object' &&
+            result !== null &&
+            'timeoutSeconds' in result &&
+            typeof result.timeoutSeconds === 'number'
+          ) {
+            // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
+            // Otherwise, clamp to one continuation hop (23h by default). Longer
+            // sleeps chain delayed messages until the full duration has elapsed.
+            const delaySeconds =
+              result.timeoutSeconds > 0
+                ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
+                : undefined;
+
+            // Send new message BEFORE acknowledging current message.
+            // This ensures crash safety: if process dies after send but before ack,
+            // we may get a duplicate invocation but won't lose the scheduled wakeup.
+            await queue(queueName, payload, { deploymentId, delaySeconds });
           }
-          await direct.execute(executorRunId, invokeHandler);
-        } else {
-          await invokeHandler();
+        } finally {
+          // The only point in the SDK that knows an invocation has no writes
+          // left. In a `finally` so a failed handler closes too, since the
+          // retry arrives as a new invocation and opens its own channel.
+          await wsEvents.close();
         }
       },
       {
@@ -827,20 +770,9 @@ export function createQueue(config?: APIConfig): Queue {
     );
 
     return async (req: Request) => {
-      if (req.headers.has(INVOCATION_HEADER)) {
-        return direct
-          ? direct.handle(req)
-          : Response.json(
-              { error: 'Direct invocation is not enabled' },
-              { status: 409 }
-            );
-      }
       const rawId = req.headers.get('x-vercel-id');
       const requestId = rawId?.trim() || undefined;
-      return requestIdStorage.run(
-        { requestId, affinity: req.headers.get(AFFINITY_HEADER) },
-        () => vqsHandler(req)
-      );
+      return requestIdStorage.run(requestId, () => vqsHandler(req));
     };
   };
 
@@ -859,9 +791,7 @@ export function createQueue(config?: APIConfig): Queue {
     error
   ) => error instanceof ConsumerDiscoveryError;
 
-  const invoke = createInvoker(config);
   return {
-    ...(invoke ? { invoke } : {}),
     queue,
     queueBatch,
     createQueueHandler,
