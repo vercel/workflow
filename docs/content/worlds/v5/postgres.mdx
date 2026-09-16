@@ -82,58 +82,55 @@ The migration is idempotent and can safely be run as a post-deployment lifecycle
 
 ### Experimental invocation delivery
 
-Set `WORKFLOW_POSTGRES_INVOKE=1` (default: off), or pass `enableInvoke: true`
-to the Postgres World's factory, to enable synchronous hook-input delivery.
-Apply the database migrations and upgrade the participating workers first.
+Set `WORKFLOW_POSTGRES_INVOKE=1`, or pass `enableInvoke: true` to the Postgres
+World's factory, to send hook inputs to the run's executor and wait for its
+response. Invocation is off by default. Apply the migrations and upgrade
+producers and workers together before enabling it.
 
-The World advertises `capabilities.invoke`. Hook callers send inputs to the
-run's executor, which inspects them, writes accepted hook events, and then
-responds. Graphile's `workflow_flows_executor` task uses a per-run named queue
-(`workflow_flows:<runId>:executor`); only one executor job for a run is active at
-a time, while other runs and the separate step jobs remain concurrent. A custom
-job prefix replaces `workflow_` in these names. Each invoke schedules a wake,
-even if a live executor already handled its input.
+The executor validates the hook input and writes its event before responding.
+Workflow user code can consume the event later. The World stores inputs and
+responses in `workflow.workflow_invocations`. Inserting an input and enqueueing
+a workflow execution job share one transaction. Retries also enqueue an execution
+job, including when a retained response already exists, so committed events can
+be replayed after a runner failure.
 
-Only deliveries verified against an active Graphile executor job on the run's
-named queue start mailbox service. Updated workers/HTTP handlers redirect
-legacy, unmarked orchestration deliveries into that queue before acknowledging
-them. Step jobs and health checks never consume the mailbox. The entry check
-does not fence a handler that continues after its job is reclaimed.
+With the default job prefix, Graphile uses `workflow_flows_executor` for workflow
+execution and `workflow_flows` for step jobs and health checks. Execution jobs
+use a named queue per run, `workflow_flows:<runId>:executor`. Graphile permits
+one active job on each named queue across workers. Other runs, steps, and health
+checks can run concurrently. `queueConcurrency` limits total active jobs per
+worker process and defaults to 50. A custom job prefix replaces `workflow_` in
+these names.
 
-The World invokes the SDK handler with `invoke: true`, a stable `requestId`, and
-the input. The SDK inspects and persists the hook event, then returns a result;
-the World stores that result for the caller. No World mailbox or response callback
-is exposed to the runtime.
+The HTTP receiver checks each execution request against its active Graphile job
+before processing pending inputs. Updated workers and receivers move legacy
+orchestration requests to the run's named queue. Before acknowledging an execution
+job, the World finishes any input already being processed and replays newly
+committed events. These entry checks do not stop an old handler from writing
+after its job is reclaimed.
 
-Handler results and terminal handler errors are stored as versioned invocation
-outcomes. The caller receives the value or a restored Workflow error (including
-fields such as status, code, run ID, and expiry time). Transient and unknown
-infrastructure errors remain pending for Graphile redelivery. A stored handler error is
-distinct from failure to persist/deliver an outcome, which remains unknown.
-Migration 0022 preserves the interpretation of legacy stored return values;
-upgrade invocation producers and workers together.
+The caller receives a stored return value or a restored Workflow error. Terminal
+errors are retained as outcomes; transient or unrecognized failures leave inputs
+pending for Graphile to retry. Migration 0022 preserves the meaning of responses
+stored by earlier previews. Failure to store or read a response leaves the
+processing outcome unknown. Durable resume identities deduplicate the hook event
+when response storage must be retried.
 
-Before acknowledging an idle executor or ending its input-intake budget, the
-World joins in-flight input delivery and replays any newly committed input. A
-slow hook write cannot consume its only wake without a subsequent replay.
+A shared `LISTEN/NOTIFY` connection signals changes to pending inputs and
+responses. Notifications contain identifiers, and readers fetch data from the
+table. Use a session-capable connection for `LISTEN`. Readers fall back to polling
+at 1s intervals if notifications fail, and connection retries use a 1s backoff.
+Notification failure and recovery are logged once per transition without
+payloads or connection details.
 
-Inputs/results are stored in a Postgres table. A shared, lazily opened
-`LISTEN/NOTIFY` connection wakes the active input feed and waiting callers when
-their rows change. Notifications carry identifiers only; waiters reread the
-table. A 1-second fallback handles missed signals, and listener failures permit
-reconnection with a 1-second backoff. The listener requires a session-capable
-database connection; polling preserves progress if LISTEN is unavailable.
-Every invoke still schedules a Graphile wake.
-Listener degradation/restoration is logged once per state transition without
-printing payloads or connection details.
+The response-wait timeout defaults to 30s and can be set with `timeoutMs`. Encoded
+inputs and outcomes are limited to 1 MiB each. A timeout does not cancel
+processing. `$retention: 0` purges invocation data and prevents late writes from
+restoring it. Callers whose result has expired receive a 410 error with code
+`INVOCATION_DATA_EXPIRED`, even if the hook event committed earlier.
 
-The default invoke response timeout is 30 seconds, and the encoded input/result limit is
-1 MiB each. A timeout does not undo processing. Event persistence precedes
-response persistence; durable resume identities deduplicate the event if response
-storage fails. `$retention: 0` also purges invocation data and prevents late writes
-from restoring it; callers whose result has expired receive a 410 error with code
-`INVOCATION_DATA_EXPIRED`. General result cleanup, stale-executor fencing and
-routing across incompatible code versions remain limitations.
+Automatic cleanup of other results, stopping writes from reclaimed handlers, and
+routing requests across incompatible worker versions remain unimplemented.
 
 ### Server startup
 

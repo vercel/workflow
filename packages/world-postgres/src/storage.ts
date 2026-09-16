@@ -344,7 +344,7 @@ function getHookRetentionLimitMs(): number {
   return days * DAY_MS;
 }
 
-/** Idempotent hook write using the existing resumeId contract, not mailbox state. */
+/** Persist a hook event and deduplicate retries using its resumeId. */
 async function createHookResume(
   drizzle: Drizzle,
   runId: string,

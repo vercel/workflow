@@ -187,7 +187,7 @@ function executorInput(message: unknown) {
 }
 
 /**
- * Ordinary flow work plus optional run-scoped Graphile executor deliveries.
+ * Process workflow and step jobs, with optional run-scoped execution queues for invoke().
  */
 export type PostgresQueue = Queue & {
   start(): Promise<void>;

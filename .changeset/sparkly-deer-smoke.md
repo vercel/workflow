@@ -7,4 +7,4 @@
 "@workflow/world-vercel": patch
 ---
 
-Add optional handler-return invocation delivery for hooks, with notification-driven Postgres inputs, idempotent hook writes, retention-aware typed outcomes, and run-scoped Graphile executor queues. Replay in-flight inputs before acknowledging their wake, retry transient failures, and restore known terminal Workflow errors to callers.
+Add an optional `invoke` method and capability to the World interface. It routes a payload to the runner handling the specified `runId` and returns a promise for its response. In world-postgres, this uses a regular queue roundtrip with a run-scoped queue. The runtime uses `invoke` when available, initially to resume hooks.

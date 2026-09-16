@@ -497,13 +497,13 @@ export interface Storage {
  */
 export interface WorldCapabilities {
   /**
-   * Optional invoke and request/response handler support. Enabling this capability
-   * requires at most one active workflow runner per runId across all worker
-   * processes (per-run concurrency = 1). Different runs may execute in parallel.
+   * Enables invoke() and request/response processing through createQueueHandler.
+   * Requires at most one active workflow runner per runId across all worker
+   * processes. Different runs may execute concurrently.
    *
-   * Process identity need not remain fixed: a replacement may take over once the
-   * previous runner is no longer active. The active runner can service inputs
-   * while a step awaits them, without starting a second runner for that run.
+   * The active runner must process inputs while it awaits step work. A replacement
+   * runner may take over after the previous runner stops, so process identity can
+   * change over the run's lifetime.
    */
   invoke?: boolean;
 

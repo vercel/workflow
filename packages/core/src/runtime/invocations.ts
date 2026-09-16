@@ -36,7 +36,7 @@ export const HookInvocationResultSchema = z.discriminatedUnion('status', [
 ]);
 type HookInvocationResult = z.infer<typeof HookInvocationResultSchema>;
 
-/** Inspection/event persistence belongs to core. Response delivery belongs to World. */
+/** Validate a hook input and persist its event. World delivers the returned result. */
 export async function handleInvocation(
   world: World,
   runId: string,
@@ -134,7 +134,7 @@ async function hasResume(
   return false;
 }
 
-/** In-memory runner coordination only; no transport, iteration or response storage. */
+/** Track processed inputs and notify workflow execution when a run has new activity. */
 export class RunInputActivity {
   revision = 0;
   private listeners = new Set<() => void>();
@@ -162,7 +162,7 @@ type RunHandler = (
   ...args: [...Parameters<Handler>, RunInputActivity?]
 ) => ReturnType<Handler>;
 
-/** Both handler modes share one run's admission lane and live execution. */
+/** Serialize a run's input processing and share its active execution within this handler. */
 export function withRunInputs(world: World) {
   return (handler: RunHandler): Handler => {
     const sessions = new Map<

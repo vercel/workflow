@@ -4,7 +4,7 @@ import type {
 } from '@workflow/world';
 import * as errors from './index.js';
 
-/** Copy diagnostics without getters, prototype mutation, or cyclic wire values. */
+/** Copy diagnostic values for transport, omitting object accessors and bounding cycles and nesting. */
 function diagnostic(
   value: unknown,
   seen = new Set<object>(),
@@ -86,7 +86,7 @@ export function serializeWorkflowError(
   };
 }
 
-/** Restore local class identity without re-running constructors/formatting messages. */
+/** Restore a known Workflow error's prototype and fields without calling its constructor. */
 export function deserializeWorkflowError(
   value: SerializedWorkflowError
 ): Error {
@@ -126,25 +126,17 @@ export function deserializeWorkflowError(
   return error;
 }
 
-/** Protocol statuses that signal a transient, retry-worthy failure. */
+/** HTTP statuses below 500 that indicate the request can be retried. */
 const RETRYABLE_STATUS = new Set([408, 425, 429]);
 
 /**
- * A terminal invocation error is a recognized Workflow error describing a
- * deterministic condition (bad input, hook/run gone, data expired, identity
- * conflict). Such errors recur on every redelivery, so the executor should
- * store them as the invocation's permanent outcome instead of retrying.
+ * Return whether a recognized Workflow error should be stored as the request's
+ * terminal outcome. Missing hooks, expired runs, and input-identity conflicts
+ * are examples of terminal failures.
  *
- * Everything else is NOT terminal and must be re-thrown so the delivery layer
- * retries (matching the pre-outcome throw-to-retry contract):
- *   - unknown/infra failures — DB blips, connection resets, thrown non-Errors,
- *     or any error class the errors package does not own; and
- *   - transient Workflow errors — a 5xx / 408 / 425 / 429 status, or any error
- *     carrying a `retryAfter` (throttle / too-early / retryable).
- *
- * Capturing a transient failure as a permanent outcome would ack the delivery
- * and leave a hook resume (whose `hook_received` write never committed)
- * unretried, suspending the workflow forever.
+ * Return false for unrecognized errors, retryAfter-bearing errors, status codes
+ * of 500 or higher, and statuses 408, 425, and 429. The delivery layer must retry
+ * these failures. Storing them as terminal outcomes would prevent those retries.
  */
 export function isTerminalInvocationError(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
@@ -169,10 +161,9 @@ export function isTerminalInvocationError(error: unknown): boolean {
 }
 
 /**
- * Run `handler` and capture its result as an {@link InvocationOutcome}. Thrown
- * errors are captured only when `shouldCapture` returns `true`; otherwise they
- * are re-thrown so the caller's delivery layer can retry. The default captures
- * every error, so generic request/response transports keep prior behavior.
+ * Run handler and encode its return value or error as an InvocationOutcome.
+ * By default, capture every thrown error. When shouldCapture returns false,
+ * rethrow the error so the delivery layer can retry it.
  */
 export async function captureInvocationOutcome(
   handler: () => Promise<unknown>,

@@ -8,38 +8,34 @@ Used internally by `@workflow/core` and world implementations. Should not be use
 
 ## Optional invocation delivery
 
-Invocation support is **optional**. A World that implements `invoke` and enables
-`WorldCapabilities.invoke` **must guarantee at most one active workflow runner
-per `runId`, across all worker processes**. This is per-run concurrency of one;
-different runs may execute in parallel.
+`world.invoke(runId, payload, options?)` sends an input to a workflow runner and
+returns its response. Invoke returns after the runner has processed the payload
+and may fail if the runner rejects it. The World must route the payload to the
+active runner, or start or resume the runner if none is active.
 
-The runner's process identity need not remain fixed for the lifetime of the run.
-A replacement may take over once the previous runner is no longer active. The
-active runner may handle an incoming hook input while a step awaits it; handling
-that input must not start a second workflow runner for the same run.
+Invocation support is optional. A World that implements `invoke` and enables
+`WorldCapabilities.invoke` must guarantee **at most one active workflow runner
+per `runId`, across all worker processes**. Different runs may execute
+concurrently. A replacement runner may take over after the previous runner stops,
+so a run can use different processes over its lifetime.
 
-`WorldCapabilities.invoke` enables `world.invoke(runId, payload, options?)`, a
-request/response operation. `InvokeOptions` supports an `idempotencyKey` and
-`timeoutMs`. Every call schedules a run wake, including retries; resolving means
-the executor has responded, not merely that a transport accepted the input.
+A World that implements `invoke` calls the existing `createQueueHandler` callback
+with `{ runId, invoke: true, requestId, input }`. The runner validates the input,
+waits for required event writes, and returns a value. The World delivers that
+value to the caller. The callback must be able to process inputs while the run
+awaits step work, without starting a second runner for that run. Worlds without
+invocation support must leave the capability unset.
 
-An implementing World calls the existing `createQueueHandler` callback with
-`{ runId, invoke: true, requestId, input }`. The callback returns `unknown`:
-invocation-mode returns are data, while ordinary wake returns still use
-`{ timeoutSeconds }` for queue control. A result containing `timeoutSeconds`
-must not reschedule an invocation. The runner interprets inputs and awaits event
-writes before returning. World owns delivery, response correlation and storage.
+`InvokeOptions` accepts an `idempotencyKey` for retries and a `timeoutMs`
+response-wait limit. In invocation mode, the callback's return value is response
+data, including any `timeoutSeconds` property. Ordinary workflow wake results
+use `timeoutSeconds` to schedule another execution.
 
-The callback can receive input calls while the run's normal execution is awaiting
-step work; the runtime must direct them to that run's admission path. This adds
-no public mailbox, response callback, acquisition or atomic-commit API. Worlds
-without invocation support leave the capability unset.
-
-Invocation transports can use `InvocationOutcome` to distinguish returned values
-from serialized handler errors. Adapters unwrap the outcome for callers, restoring
-known Workflow error classes via `@workflow/errors/invocation`. Delivery or
-response-storage failure is distinct from a handler error; neither proves that
-earlier handler writes were rolled back.
+World transports can use `InvocationOutcome` to carry returned values or
+serialized handler errors. The `@workflow/errors/invocation` helpers restore
+known Workflow error classes for the caller. A transport failure leaves the
+processing outcome unknown. A handler error can occur after event writes have
+committed.
 
 ## Step dispatch context
 

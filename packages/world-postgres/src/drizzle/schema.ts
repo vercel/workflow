@@ -296,7 +296,7 @@ const bytea = customType<{ data: Buffer; notNull: false; default: false }>({
   },
 });
 
-/** Transport inputs/results; event writes and responses are deliberately separate. */
+/** Store invocation inputs and outcomes separately from workflow events. */
 export const invocations = schema.table(
   'workflow_invocations',
   {

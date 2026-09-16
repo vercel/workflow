@@ -309,9 +309,9 @@ export type HookResumeTiming = z.infer<typeof HookResumeTimingSchema>;
 export const WorkflowInvokePayloadSchema = z.compile(
   z.object({
     runId: z.string(),
-    /** Request/response input delivery. Return data rather than queue control. */
+    /** Process this input and return the handler's result as response data. */
     invoke: z.literal(true).optional(),
-    /** Stable logical input identity, distinct from the queue delivery ID. */
+    /** Identifies one input across retries, separately from the queue delivery ID. */
     requestId: z.string().optional(),
     input: z.unknown().optional(),
     traceCarrier: TraceCarrierSchema.optional(),
@@ -521,13 +521,12 @@ export interface Queue {
   getDeploymentId(): Promise<string>;
 
   /**
-   * Request a decision from a run's executor. Enable through capabilities.invoke.
-   * Resolves with the executor's response, never merely with transport acceptance.
-   * Handler failures are delivered as InvocationOutcome errors and rethrown by
-   * the adapter with their known Workflow error class and diagnostic fields.
-   * Failure to deliver/store a response remains an unknown transport outcome.
-   * Every call, including retries, schedules a wake; redundant wakes may no-op.
-   * A transport error is an unknown outcome. Do not fall back to a direct write.
+   * Send an invocation to a run's executor. Must be enabled via capabilities.invoke.
+   * An invocation carries an out-of-band request that must be processed by the
+   * executor. The executor's response is propagated back and errors are rethrown
+   * by invoke(). A transport error is an unknown outcome: the request may have
+   * been successfully processed by the executor, for example, and the success
+   * result may be lost.
    */
   invoke?(
     runId: string,
