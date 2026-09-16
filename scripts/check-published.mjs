@@ -90,16 +90,7 @@ function distTagForBranch() {
   const explicit = argValue('--tag');
   if (explicit) return explicit;
   const pre = readJsonAtRef('.changeset/pre.json');
-  // `pre.json` existing at all means the versions on this commit are still
-  // pre-release versions carrying its tag -- in `exit` mode just as much as in
-  // `pre` mode. Exiting pre mode does not bump anything: the manifests stay at
-  // 5.0.0-beta.N, published under `beta`, until the "Version Packages" PR runs
-  // `changeset version`, which writes the GA versions and deletes `pre.json` in
-  // the same commit. Reading `latest` in exit mode therefore asserts that
-  // `latest` points at a beta, which it does not, and fails every push to the
-  // branch for the whole window between the `pre exit` merge and the GA
-  // publish -- burning the full retry budget each time.
-  if (pre?.tag) return pre.tag;
+  if (pre?.mode === 'pre' && pre.tag) return pre.tag;
   return 'latest';
 }
 
