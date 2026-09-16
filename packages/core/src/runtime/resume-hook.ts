@@ -634,8 +634,7 @@ async function resumeHookImpl<T = any>(
         }
 
         if (
-          (typeof world.invoke === 'function' ||
-            world.capabilities?.invoke === true) &&
+          world.capabilities?.invoke === true &&
           !v1Compat &&
           dehydratedPayload instanceof Uint8Array
         ) {

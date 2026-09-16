@@ -12,7 +12,7 @@ export type PostgresWorldConfig = PgConnectionConfig & {
    */
   namespace?: string;
   queueConcurrency?: number;
-  /** Experimental request/response input delivery with per-run executor queues. */
+  /** Enable experimental invoke() delivery with one Graphile execution queue per run. */
   enableInvoke?: boolean;
   /**
    * Whether the application coordinates shutdown instead of Graphile Worker

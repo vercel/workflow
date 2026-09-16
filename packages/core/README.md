@@ -2,32 +2,25 @@
 
 Core runtime package for [Workflow SDK](https://workflow-sdk.dev).
 
+Failed-run logs include underlying error causes and codes to help diagnose failures such as socket, DNS, and TLS errors. Unreadable causes are marked without preventing the run from being recorded as failed.
+
 Queued step messages carry immutable run identity in `runContext`, so step
 execution skips the initial `runs.get` and fetches the run row only when
 continuing into workflow replay. Messages from older producers without
 `runContext` retain the initial fetch.
 
-When a World exposes `invoke` (or advertises the legacy `capabilities.invoke`), `resumeHook()` sends supported
-serialized inputs through `world.invoke()` and awaits the executor's decision.
-World delivers an ordinary handler call with `invoke: true`, `requestId` and
-`input`. Core validates the hook, awaits its event write, and returns a decision;
-World owns iteration and response storage. Core shares a run's admission/activity
-state between ordinary execution and these input calls. It does not expose or
-consume a World mailbox/feed API.
+When a World advertises `capabilities.invoke`, `resumeHook()` sends serialized
+hook inputs through `world.invoke()` and waits for the executor's decision. The
+World calls the existing handler with `invoke: true`, `requestId`, and the hook
+input. Core validates the input, waits for its event write, and returns a
+decision. Core shares a run's activity state between workflow execution and these
+input calls.
 
-Event and response writes remain sequential. On Worlds with `hookResumeDedup`,
-the stable request identity makes the event write idempotent, including retries
-after hook disposal/run completion. Other Worlds and legacy payloads retain the
-producer-write/wake path. Input admission remains active during inline steps;
-workflow code advances at existing replay boundaries, reusing a retained Node VM
-when available.
+The event write completes before the response is stored. On Worlds with
+`hookResumeDedup`, a stable request identity makes retries reuse the same hook
+event, including after hook disposal or run completion. Core can process inputs
+while inline steps wait. Workflow code observes committed inputs at replay
+boundaries, reusing a retained Node virtual machine when available.
 
-Invocation handlers propagate typed lifecycle and World errors to the adapter's
-outcome transport. Hook callers receive those errors rather than an eventual
-response timeout or a generic hook-not-found mapping of other lifecycle failures.
-
-For remotely versioned backends, invocation handling reads fresh by-token
-`resumeCapabilities.hookResumeDedupVersion` attestation before new writes. Missing
-support rejects the input. A disappeared hook's prior acceptance can be recovered
-by validating the already-persisted request identity, token and payload, without
-issuing another write. Zero-retention expiry prevents that recovery read.
+Errors returned by the executor propagate through `world.invoke()` to the caller
+of `resumeHook()`.

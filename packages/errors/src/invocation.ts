@@ -4,7 +4,7 @@ import type {
 } from '@workflow/world';
 import * as errors from './index.js';
 
-/** Copy diagnostics without getters, prototype mutation, or cyclic wire values. */
+/** Copy diagnostic values for transport, omitting object accessors and bounding cycles and nesting. */
 function diagnostic(
   value: unknown,
   seen = new Set<object>(),
@@ -86,7 +86,7 @@ export function serializeWorkflowError(
   };
 }
 
-/** Restore local class identity without re-running constructors/formatting messages. */
+/** Restore a known Workflow error's prototype and fields without calling its constructor. */
 export function deserializeWorkflowError(
   value: SerializedWorkflowError
 ): Error {
@@ -126,12 +126,53 @@ export function deserializeWorkflowError(
   return error;
 }
 
+/** HTTP statuses below 500 that indicate the request can be retried. */
+const RETRYABLE_STATUS = new Set([408, 425, 429]);
+
+/**
+ * Return whether a recognized Workflow error should be stored as the request's
+ * terminal outcome. Missing hooks, expired runs, and input-identity conflicts
+ * are examples of terminal failures.
+ *
+ * Return false for unrecognized errors, retryAfter-bearing errors, status codes
+ * of 500 or higher, and statuses 408, 425, and 429. The delivery layer must retry
+ * these failures. Storing them as terminal outcomes would prevent those retries.
+ */
+export function isTerminalInvocationError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const name = (error as { name?: unknown }).name;
+  // Only classes the errors package owns describe known, deterministic
+  // conditions; anything else is an unexpected/infra failure that must retry.
+  if (typeof name !== 'string' || !Object.hasOwn(errors, name)) return false;
+  const ctor = errors[name as keyof typeof errors];
+  if (typeof ctor !== 'function' || !(ctor.prototype instanceof Error))
+    return false;
+  const { status, retryAfter } = error as {
+    status?: unknown;
+    retryAfter?: unknown;
+  };
+  if (retryAfter !== undefined) return false;
+  if (
+    typeof status === 'number' &&
+    (status >= 500 || RETRYABLE_STATUS.has(status))
+  )
+    return false;
+  return true;
+}
+
+/**
+ * Run handler and encode its return value or error as an InvocationOutcome.
+ * By default, capture every thrown error. When shouldCapture returns false,
+ * rethrow the error so the delivery layer can retry it.
+ */
 export async function captureInvocationOutcome(
-  handler: () => Promise<unknown>
+  handler: () => Promise<unknown>,
+  shouldCapture: (error: unknown) => boolean = () => true
 ): Promise<InvocationOutcome> {
   try {
     return { ok: true, value: await handler() };
   } catch (error) {
+    if (!shouldCapture(error)) throw error;
     return { ok: false, error: serializeWorkflowError(error) };
   }
 }

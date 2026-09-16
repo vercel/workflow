@@ -1,6 +1,8 @@
 /**
- * Backend-private input service for one executor HTTP request. Core only sees
- * ordinary handler calls and returns values; it never receives this iterator.
+ * Execute a workflow while delivering inputs through a separate callback.
+ * Before returning, stop input intake, finish any input already being processed,
+ * and execute again if inputs completed since the last execution began.
+ * The input iterator is private to the Postgres World.
  */
 export async function executeWithInputs<T>(
   source: AsyncIterable<T>,

@@ -1,5 +1,11 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.44
+
+### Patch Changes
+
+- [#3712](https://github.com/vercel/workflow/pull/3712) [`5f723b3`](https://github.com/vercel/workflow/commit/5f723b3d0cd1b69cf0972bbf7ca2487c39d62e71) Thanks [@himself65](https://github.com/himself65)! - Fix `readFromStream` erroring when rows were written after the stream's first EOF marker. Rows past the first EOF are now ignored consistently across `streams.get()`, `getChunks()`, and `getInfo()`.
+
 ## 5.0.0-beta.43
 
 ### Patch Changes

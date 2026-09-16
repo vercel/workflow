@@ -37,7 +37,7 @@ export const HookInvocationResultSchema = z.discriminatedUnion('status', [
 ]);
 type HookInvocationResult = z.infer<typeof HookInvocationResultSchema>;
 
-/** Inspection/event persistence belongs to core. Response delivery belongs to World. */
+/** Validate a hook input and persist its event. World delivers the returned result. */
 export async function handleInvocation(
   world: World,
   runId: string,
@@ -62,7 +62,10 @@ export async function handleInvocation(
   ) {
     throw new WorkflowWorldError(
       'Invocation data has expired under the run retention policy',
-      { status: 410, code: 'INVOCATION_DATA_EXPIRED' }
+      {
+        status: 410,
+        code: 'INVOCATION_DATA_EXPIRED',
+      }
     );
   }
   const staticDedup = world.capabilities?.hookResumeDedup === true;
@@ -83,7 +86,10 @@ export async function handleInvocation(
     if (!dedup)
       throw new WorkflowWorldError(
         'Invocation requires backend hook deduplication support',
-        { status: 409, code: 'INVOCATION_DEDUP_UNAVAILABLE' }
+        {
+          status: 409,
+          code: 'INVOCATION_DEDUP_UNAVAILABLE',
+        }
       );
   } catch (error) {
     if (
@@ -106,8 +112,7 @@ export async function handleInvocation(
     );
     if (!prior) throw error;
     if (!staticDedup) {
-      // A disappeared hook cannot freshly attest backend support. Recover only
-      // an already committed identical input; no new write needs authorization.
+      // After hook disposal, recover only a matching committed input; do not authorize a new write.
       if (
         prior.eventType !== 'hook_received' ||
         prior.eventData.token !== input.token ||
@@ -171,7 +176,7 @@ async function findResume(
   return undefined;
 }
 
-/** In-memory runner coordination only; no transport, iteration or response storage. */
+/** Track processed inputs and notify workflow execution when a run has new activity. */
 export class RunInputActivity {
   revision = 0;
   private listeners = new Set<() => void>();
@@ -199,7 +204,7 @@ type RunHandler = (
   ...args: [...Parameters<Handler>, RunInputActivity?]
 ) => ReturnType<Handler>;
 
-/** Both handler modes share one run's admission lane and live execution. */
+/** Serialize a run's input processing and share its active execution within this handler. */
 export function withRunInputs(world: World) {
   return (handler: RunHandler): Handler => {
     const sessions = new Map<
@@ -215,11 +220,7 @@ export function withRunInputs(world: World) {
       if (HealthCheckPayloadSchema.safeParse(message).success)
         return handler(message, metadata);
       const parsed = WorkflowInvokePayloadSchema.safeParse(message);
-      if (
-        (typeof world.invoke !== 'function' && !world.capabilities?.invoke) ||
-        !parsed.success ||
-        parsed.data.stepId
-      )
+      if (!world.capabilities?.invoke || !parsed.success || parsed.data.stepId)
         return handler(message, metadata);
       const input = parsed.data;
       let session = sessions.get(input.runId);

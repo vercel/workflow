@@ -496,7 +496,15 @@ export interface Storage {
  * explicitly declares it.
  */
 export interface WorldCapabilities {
-  /** Legacy declaration; an available invoke method also enables input delivery. */
+  /**
+   * Enables invoke() and request/response processing through createQueueHandler.
+   * Requires at most one active workflow runner per runId across all worker
+   * processes. Different runs may execute concurrently.
+   *
+   * The active runner must process inputs while it awaits step work. A replacement
+   * runner may take over after the previous runner stops, so process identity can
+   * change over the run's lifetime.
+   */
   invoke?: boolean;
 
   /**

@@ -136,7 +136,12 @@ import {
   withTraceContext,
   withWorkflowBaggage,
 } from './telemetry.js';
-import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
+import {
+  formatErrorCauseChain,
+  getErrorName,
+  getErrorStack,
+  normalizeUnknownError,
+} from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
 import {
   compileWorkflowBundle,
@@ -5146,6 +5151,16 @@ export function workflowEntrypoint(
                           // throw produced no stack to carry it.
                           errorMessage,
                           errorStack,
+                          // Neither of those reaches a wrapped error's
+                          // reason: `TypeError: fetch failed` carries an
+                          // empty message by design and a stack of pure
+                          // `node:internal/` frames, and the world layer's
+                          // own wrappers name the request that failed
+                          // rather than what failed about it. Undefined
+                          // when there is no cause, so the row disappears
+                          // for an ordinary user throw.
+                          errorCause:
+                            formatErrorCauseChain(terminalError) || undefined,
                         });
 
                         // Apply the source-map-remapped stack to the thrown

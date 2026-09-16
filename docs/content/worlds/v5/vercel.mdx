@@ -32,6 +32,38 @@ Vercel automatically:
 
 <FluidComputeCallout />
 
+## System environment variables
+
+Workflow recognizes a Vercel deployment by `VERCEL_DEPLOYMENT_ID`. Vercel exposes that variable, along with the rest of its [system environment variables](https://vercel.com/docs/environment-variables/system-environment-variables), only when the project opts in. Check this before your first deployment:
+
+1. Open your project in the [Vercel dashboard](https://vercel.com/dashboard).
+2. Go to **Settings**, then **Environment Variables**.
+3. Select the **Enable access to System Environment Variables** checkbox.
+4. Redeploy. The setting applies to new deployments; it does not change deployments that already exist.
+
+`VERCEL_DEPLOYMENT_ID` is available at both build time and runtime, and Workflow reads it in both. The build uses it to decide whether to emit Vercel Function output, including the queue-triggered flow handler, or local development output. The runtime uses it to [select the World](/docs/configuration/worlds#workflow_target_world).
+
+<Callout type="warn">
+  With the checkbox cleared, a Vercel deployment is indistinguishable from a
+  non-Vercel environment as far as Workflow is concerned: the build emits local
+  output and, unless `WORKFLOW_TARGET_WORLD` is set, the runtime selects the
+  [Local World](/worlds/local), which stores workflow state on the filesystem.
+  A deployment's filesystem is read-only, so with this default selection,
+  every run fails before its first step.
+</Callout>
+
+### Diagnosing a missing deployment ID
+
+With no `WORKFLOW_TARGET_WORLD` override, nothing in the deployment announces the wrong World, so the failure is easy to mistake for a bug in the SDK:
+
+- Runs fail with the Local World reporting that it cannot create its data directory, naming a filesystem code such as `EROFS`.
+- No runs appear in the Vercel dashboard, because none were ever created in the Vercel World.
+- The SDK's "the local (filesystem) world is running inside a Vercel deployment" warning does **not** appear. That check keys off `VERCEL_DEPLOYMENT_ID` as well, so the same missing variable hides it.
+
+To confirm, log `process.env.VERCEL_DEPLOYMENT_ID` from a deployed function. If it is undefined (as is `VERCEL`), the setting is off.
+
+Setting `WORKFLOW_TARGET_WORLD=vercel` is not a workaround. The Vercel World needs the deployment ID itself, to address queue messages to the deployment that created each run and to derive that deployment's encryption keys, so it fails with an error naming the missing `VERCEL_DEPLOYMENT_ID`. Enable the checkbox and redeploy.
+
 ## Vercel platform documentation
 
 For complete details on pricing, usage limits, and included allotments on Vercel, see the official Vercel documentation:
@@ -190,7 +222,7 @@ Learn more in the [Observability](/docs/observability) documentation.
 
 In a Vercel deployment, you do not configure the Vercel World yourself. The platform injects everything the runtime needs, including `VERCEL_DEPLOYMENT_ID`, `VERCEL_PROJECT_ID`, per-request OIDC tokens, and `VERCEL_DEPLOYMENT_KEY` for encryption.
 
-Do not set those platform-provided values yourself.
+Do not set those platform-provided values yourself. You do have to leave [system environment variables](#system-environment-variables) enabled for the project, though: that setting is what makes `VERCEL_DEPLOYMENT_ID` available in the first place.
 
 Most users never need to set the `WORKFLOW_VERCEL_*` variables below. They are only overrides for tools running outside Vercel, such as your laptop or CI, when those tools need to inspect or test a remote Vercel Workflow project and cannot infer the project, team, token, or target environment automatically.
 

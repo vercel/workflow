@@ -8,7 +8,7 @@ const RECONNECT_BACKOFF_MS = 1_000;
 
 type Topic = typeof INVOCATION_INPUT_TOPIC | typeof INVOCATION_RESULT_TOPIC;
 
-/** Fixed-size notification identifiers; payloads/results stay in the table. */
+/** Hash identifiers for notifications. Payloads and results remain in the table. */
 export function invocationNotificationKey(...ids: string[]): string {
   return createHash('sha256').update(JSON.stringify(ids)).digest('hex');
 }
@@ -20,9 +20,9 @@ export interface InvocationWatch {
 }
 
 /**
- * One lazy LISTEN connection for this World's input and result waiters.
- * Notifications are hints. Subscription/reconnection also invalidates every
- * watch so a read made before LISTEN became active cannot strand a waiter.
+ * Share one on-demand LISTEN connection among input readers and response waiters.
+ * Notify readers when rows may have changed; readers must query the table.
+ * After subscribing or reconnecting, notify all readers to cover earlier writes.
  */
 export function createInvocationNotifications(pool: Pool) {
   const watches = new Map<string, Set<() => void>>();

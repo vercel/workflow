@@ -198,18 +198,18 @@ describe('resumeHook durable resume', () => {
     expect(queue).not.toHaveBeenCalled();
   });
 
-  it('uses invoke availability even when the legacy capability flag is false', async () => {
+  it('keeps the old path when invoke exists but the capability is false', async () => {
     const hook = { ...baseHook, resumeContext: currentContext };
-    const invoke = vi.fn().mockResolvedValue({ status: 'accepted' });
+    const invoke = vi.fn();
     const { createEvent, queue } = makeWorld(
       hook,
       { invoke },
       { invoke: false }
     );
     await resumeHook(hook.token, {});
-    expect(invoke).toHaveBeenCalledOnce();
-    expect(createEvent).not.toHaveBeenCalled();
-    expect(queue).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(createEvent).toHaveBeenCalledOnce();
+    expect(queue).toHaveBeenCalledOnce();
   });
 
   it('does not bypass executor rejection or an ambiguous invoke failure', async () => {

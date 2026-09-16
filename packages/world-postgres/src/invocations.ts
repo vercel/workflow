@@ -40,7 +40,7 @@ function serialize(value: unknown): Buffer {
   return bytes;
 }
 
-/** All mailbox writers take this lock before their row write, matching purge. */
+/** Read and lock the run so invocation writes can check retention before changing rows. */
 async function runState(
   client: PoolClient,
   runId: string
@@ -54,7 +54,7 @@ async function runState(
   return rows[0];
 }
 
-/** Backend-private mailbox. Runtime handlers only return values to this adapter. */
+/** Store invocation inputs and outcomes, deliver pending inputs, and wait for responses. */
 export function createInvocations(pool: Pool) {
   const shutdown = new AbortController();
   const feeds = new Set<AbortController>();
@@ -182,7 +182,7 @@ export function createInvocations(pool: Pool) {
       }
     },
 
-    /** Sequentially follows the core handler's event writes; never writes events. */
+    /** Store a successful handler result after the handler has completed its event writes. */
     async respond(
       runId: string,
       requestId: string,
@@ -194,7 +194,7 @@ export function createInvocations(pool: Pool) {
       });
     },
 
-    /** Persist handler errors too; response storage errors still fail the delivery. */
+    /** Store a handler value or error. Rethrow storage failures so delivery can be retried. */
     async respondOutcome(
       runId: string,
       requestId: string,

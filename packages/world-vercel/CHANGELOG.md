@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.48
+
+### Patch Changes
+
+- [#4179](https://github.com/vercel/workflow/pull/4179) [`5dbbcf9`](https://github.com/vercel/workflow/commit/5dbbcf91d92a4cf8fd8f96b170d037749ab0b1ef) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Route unrecognized backend connection and stream failures through existing retry policies, preserving event-write retries and rebuilding shared event connections after repeated HTTP/2 failures. Keep invalid request headers and caller cancellations out of event-write retries. Include error cause chains in run-failure logs to expose underlying socket, DNS, and TLS failures.
+
 ## 5.0.0-beta.47
 
 ### Patch Changes

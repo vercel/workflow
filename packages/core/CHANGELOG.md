@@ -1,5 +1,15 @@
 # @workflow/core
 
+## 5.0.0-beta.53
+
+### Patch Changes
+
+- [#4175](https://github.com/vercel/workflow/pull/4175) [`56322af`](https://github.com/vercel/workflow/commit/56322af66fd1f78a77529353be383bfa93ec3af8) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix an unhandled rejection that could exit the process when the encryption-key lookup for a forwarded writable stream failed (for example a run metadata read that timed out) before anything was written to that stream. The lookup now starts on the first write, and a failure rejects that stream instead.
+
+- [#4179](https://github.com/vercel/workflow/pull/4179) [`5dbbcf9`](https://github.com/vercel/workflow/commit/5dbbcf91d92a4cf8fd8f96b170d037749ab0b1ef) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Route unrecognized backend connection and stream failures through existing retry policies, preserving event-write retries and rebuilding shared event connections after repeated HTTP/2 failures. Keep invalid request headers and caller cancellations out of event-write retries. Include error cause chains in run-failure logs to expose underlying socket, DNS, and TLS failures.
+- Updated dependencies [[`5dbbcf9`](https://github.com/vercel/workflow/commit/5dbbcf91d92a4cf8fd8f96b170d037749ab0b1ef)]:
+  - @workflow/world-vercel@5.0.0-beta.48
+
 ## 5.0.0-beta.52
 
 ### Patch Changes

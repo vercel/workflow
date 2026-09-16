@@ -783,23 +783,29 @@ export function createQueue(config?: APIConfig): Queue {
         const context = requestIdStorage.getStore();
         const { payload, queueName, deploymentId } =
           MessageWrapper.parse(message);
-        const handlerMetadata = {
-          queueName,
-          messageId: MessageId.parse(metadata.messageId),
-          attempt: metadata.deliveryCount,
-          requestId: context?.requestId,
-        };
-        const runId = orchestrationRunId(payload);
-        if (direct && runId) {
-          if (context?.affinity !== invocationAffinity(runId))
-            throw new WorkflowWorldError('Executor affinity mismatch', {
-              status: 409,
-            });
-          await direct.execute(runId, () =>
-            runHandler(payload, handlerMetadata, deploymentId)
+
+        const executorRunId = orchestrationRunId(payload);
+        const invokeHandler = () =>
+          runHandler(
+            payload,
+            {
+              queueName,
+              messageId: MessageId.parse(metadata.messageId),
+              attempt: metadata.deliveryCount,
+              requestId: context?.requestId,
+            },
+            deploymentId
           );
+        if (direct && executorRunId) {
+          if (context?.affinity !== invocationAffinity(executorRunId)) {
+            throw new WorkflowWorldError(
+              'Workflow execution affinity mismatch',
+              { status: 409 }
+            );
+          }
+          await direct.execute(executorRunId, invokeHandler);
         } else {
-          await runHandler(payload, handlerMetadata, deploymentId);
+          await invokeHandler();
         }
       },
       {

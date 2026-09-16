@@ -287,7 +287,6 @@ describe.skipIf(process.platform === 'win32')(
         status: 422,
         code: 'INVALID_ARGUMENT',
         field: 'payload',
-        retryAfter: 5,
       }),
       new EntityConflictError('already changed'),
       new HookNotFoundError('gone-token'),
@@ -334,6 +333,61 @@ describe.skipIf(process.platform === 'win32')(
           result_version: 1,
           responded_at: expect.any(Date),
         });
+        await until(
+          async () =>
+            (
+              await pool.query(
+                'SELECT id FROM graphile_worker.jobs WHERE queue_name = $1',
+                [`workflow_flows:${runId}:executor`]
+              )
+            ).rowCount,
+          (count) => count === 0
+        );
+      } finally {
+        overrides.delete(runId);
+      }
+    });
+
+    it.each([
+      new WorkflowWorldError('temporarily unavailable', {
+        status: 503,
+        retryAfter: 1,
+      }),
+      Object.assign(new Error('serialization failure'), { code: '40001' }),
+    ])('retries transient $name without persisting a permanent error outcome', async (failure) => {
+      const runId = `wrun_${ulid()}`;
+      await seedTransportRun(runId);
+      let deliveries = 0;
+      overrides.set(
+        runId,
+        world.createQueueHandler('__wkf_workflow_', async (message) => {
+          if ((message as { invoke?: boolean }).invoke) {
+            if (++deliveries === 1) throw failure;
+            return { status: 'accepted' };
+          }
+        })
+      );
+      try {
+        if (!world.invoke) throw new Error('Invocation unavailable');
+        const result = world.invoke(
+          runId,
+          {},
+          { idempotencyKey: randomUUID(), timeoutMs: 15_000 }
+        );
+        const accepted = expect(result).resolves.toEqual({
+          status: 'accepted',
+        });
+        await until(
+          async () => deliveries,
+          (count) => count > 0
+        );
+        const pending = await pool.query(
+          'SELECT responded_at, result FROM workflow.workflow_invocations WHERE run_id = $1',
+          [runId]
+        );
+        expect(pending.rows[0]).toEqual({ responded_at: null, result: null });
+        await accepted;
+        expect(deliveries).toBe(2);
         await until(
           async () =>
             (

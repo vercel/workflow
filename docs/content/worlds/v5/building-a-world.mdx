@@ -151,6 +151,8 @@ interface Storage {
 
 **Run creation:** For `run_created` events, the `runId` parameter may be a client-provided string or `null`. When `null`, your World generates and returns a new `runId`.
 
+**Run listing:** `runs.list({ status })` accepts a single status or an array. With an array, return runs whose status matches any listed value, and return no runs for an empty array (the same semantics as SQL `IN ()`). Treat an omitted `status` as no filter.
+
 **Hook tokens:** Hook tokens must be unique. If a `hook_created` event conflicts with an active hook or a token still reserved after its run ended, return a `hook_conflict` event and include the owner's run ID as `eventData.conflictingRunId`.
 
 Keep the owning run available for at least as long as its token remains unavailable because conflicts return that run.
@@ -249,34 +251,39 @@ interface Queue {
 
 ### Invocation delivery
 
-An available `invoke` method enables executor-directed input delivery; the legacy
-`capabilities.invoke` declaration remains recognized. Disabled implementations
-should omit the method. It delivers
-`{ runId, invoke: true, requestId, input }` to the existing handler and returns the
-handler's result to the original caller. `requestId` is the stable logical input
-identity; it is separate from the physical queue delivery ID. `InvokeOptions`
-accepts an `idempotencyKey` and response-wait `timeoutMs`.
+Implement the optional `invoke` method to send an input to a workflow runner and
+return the runner's response. Enable `capabilities.invoke` only when your World
+supports this operation.
 
-Delivery may be direct or queue-backed. Resolve only after the executor processes
-the input, not merely after mailbox admission. A queue wake is not required by the
-shared interface; Postgres supplies one as part of its durable delivery strategy.
+Your World must guarantee at most one active workflow runner per `runId` across
+all worker processes. Different runs may execute concurrently. A replacement
+runner can take over after the previous runner stops.
 
-The runtime interprets the input, awaits required event writes, and returns a
-value. World owns delivery, response correlation and storage. It must service
-inputs while the run's normal execution is awaiting step work. There is no public
-mailbox/feed or response callback in this contract.
+Route inputs to the active runner, or start or resume the runner when none is
+active. Call the existing `createQueueHandler` callback with
+`{ runId, invoke: true, requestId, input }`. The callback validates the input,
+waits for required event writes, and returns a result. Deliver that result to the
+original caller. Support input processing while the runner awaits step work,
+without starting a second runner for the same run.
 
-Only ordinary wake results interpret `{ timeoutSeconds }` as queue control.
-In invocation mode that property is ordinary response data. Transport handler
-results as `InvocationOutcome`: `{ ok: true, value }` or
-`{ ok: false, error: SerializedWorkflowError }`. The adapter returns `value` or
-rehydrates and throws the handler's error. The `@workflow/errors/invocation`
-helpers capture/unwrap these outcomes and preserve known Workflow error classes
-and diagnostic fields. Failure to store or deliver an outcome remains a distinct
-unknown transport failure. A handler error does not imply rollback of its writes.
-Event and response persistence
-need not share a transaction; the backend must implement any deduplication
-guarantees it advertises through `hookResumeDedup`.
+`requestId` identifies the logical input across retries and is separate from a
+queue delivery ID. `InvokeOptions` accepts an `idempotencyKey` and a `timeoutMs`
+response-wait limit.
+
+Treat invocation return values as response data, including any `timeoutSeconds`
+property. Ordinary workflow wake results use `timeoutSeconds` to schedule another
+execution.
+
+You can transport results with `InvocationOutcome`, using `{ ok: true, value }`
+for success or `{ ok: false, error: SerializedWorkflowError }` for an error. The
+helpers in `@workflow/errors/invocation` capture handler results and restore
+errors with their known Workflow classes and diagnostic fields. Return the value
+or throw the restored error from `invoke()`.
+
+Keep failures to store or deliver a response distinct from handler errors. A
+transport failure leaves processing unknown, and a handler error may follow
+committed event writes. If your World advertises `hookResumeDedup`, enforce that
+capability when retrying a hook event whose response was lost.
 
 ### Batched publishing
 

@@ -6,71 +6,61 @@ Integrates with Vercel's infrastructure for storage, queuing, and authentication
 
 Used by default for deployments on Vercel. Authentication and API endpoints are configured automatically in Vercel deployments.
 
-Queue callbacks allow generic handler return values. Scheduling control is
-interpreted only for ordinary queue messages, never for invocation-mode result
-data.
+## Connection failures
+
+Backend connection failures and interrupted event streams follow existing retry policies, including failures with unrecognized error codes. Repeated HTTP/2 session failures rebuild the shared events connection pool. Invalid backend URL protocols, embedded credentials, Fetch-blocked ports, and unsupported request headers fail immediately. Interrupted event writes retain their existing in-process retries; caller cancellations are excluded.
+
+See [Backend connection failures](https://workflow-sdk.dev/docs/foundations/errors-and-retries#backend-connection-failures) for retry behavior and diagnostics.
 
 ## Experimental direct invocation
 
-Set `WORKFLOW_VERCEL_INVOKE_URL` to the **full workflow execution endpoint URL** on
-both producers and receivers, or pass `invoke: { endpoint }` to `createWorld()`.
-The default is disabled; disabled Worlds do not expose `invoke`.
+Set `WORKFLOW_VERCEL_INVOKE_URL` to the full workflow execution endpoint URL on
+producers and receivers, or pass `invoke: { endpoint }` to `createWorld()`.
+Invocation is disabled by default. Enabling it implements `invoke` and declares
+`capabilities.invoke`, following the shared World contract.
 
 ```ts
 import { createWorld } from '@workflow/world-vercel';
 
 const world = createWorld({
-  invoke: {
-    endpoint: 'https://example.vercel.app/.well-known/workflow/v1/flow',
-  },
+  invoke: { endpoint: 'https://example.vercel.app/.well-known/workflow/v1/flow' },
 });
 ```
 
-The configured endpoint must already support platform affinity and deployment
-selection. This setting does not provision affinity-enabled compute. Requests set
-`x-vercel-affinity-id` to the first 16 bytes of SHA-256(runId), hex encoded, and
-`x-deployment-id` to the run's pinned deployment. The latter uses Vercel Skew
-Protection routing and is subject to its enablement/retention limits. The receiver
-rejects wrong-deployment delivery before processing. For custom routing,
-`endpoint` may be an async function of `{ runId, deploymentId, region }`.
-`region` describes the run's data/queue region, not necessarily the function's
-compute region. Select an endpoint whose placement is consistent with ordinary
-workflow execution.
+The endpoint must support platform affinity and deployment selection. Requests
+set `x-vercel-affinity-id` to the first 16 bytes of SHA-256(runId), hex encoded,
+and `x-deployment-id` to the run's pinned deployment. Deployment selection uses
+Vercel Skew Protection routing, subject to its enablement and retention limits.
+The receiver rejects delivery to the wrong deployment. An async endpoint
+resolver receives `{ runId, deploymentId, region }`; region identifies the run's
+data/queue region, which may differ from compute placement.
 
-Invocation is a single direct CBOR POST, not a VQS send or result-polling loop.
-The receiver authenticates same-project/environment workload OIDC, places input
-in a private per-run RAM mailbox, and waits for its SDK handler result. The
-sender obtains OIDC through `@vercel/oidc`, or `invoke.getToken()`. An ordinary
-Vercel API token in `config.token` does not authorize this ingress. No new public
-mailbox/respond interface is exposed. Typed errors use the shared invocation
-outcome codec. Existing queue callbacks still use their VQS transport; eligible
-orchestration sends also get the same affinity key, and enabled receivers check
-it. Steps and health checks retain their normal parallel path.
+Invoke sends one direct CBOR POST and waits for the SDK handler's result. The
+receiver authenticates same-project/environment workload OIDC and processes the
+input through a private per-run in-memory queue. The sender uses
+`@vercel/oidc`, or `invoke.getToken()`, for its credential. Ordinary workflow
+execution still uses VQS, with matching affinity headers on orchestration sends.
+Steps and health checks retain their parallel delivery path.
 
-The mailbox has separate input and execution lanes, allowing a hook while an
-inline step awaits it. Cold input starts a local continuation; a revision check
-covers inputs arriving while execution exits. Continuations are registered with
-Vercel `waitUntil`, within the function's lifetime, and retain normal step/timer
-scheduling. Caller context is preserved for each queued input. Limits per handler:
-64 live run states, 32 pending inputs per run, 128 pending inputs total. Full
-mailboxes reject with 429. Completed idle states are released.
+The receiver processes inputs while an inline step waits. A cold input starts
+a continuation registered with `waitUntil`. The existing WebSocket event-channel
+lifecycle, delayed-wake scheduling, and queue error backoff also apply to these
+continuations. Fresh backend hook deduplication attestation is required before a
+new hook write; disposed-hook retries must match a retained event.
 
-`invoke` waits up to 30 seconds by default (`timeoutMs`: 1–120,000 ms). Request and
-response bodies are limited to 1 MiB each. Timeout/disconnect does not roll back
-processing; retry the same logical input with its original idempotency key and
-payload. The adapter does not retry POST automatically. A custom `dispatcher`
-must preserve that policy. Instance loss discards unprocessed RAM, and a lost
-response after commit is an unknown outcome. Fresh backend hook dedup attestation
-is required for new hook writes; matching disposed-hook retries use durable data.
+The default response timeout is 30 seconds, configurable up to 120 seconds.
+Request and response bodies are limited to 1 MiB each. Each handler permits 64
+live run states, 32 pending inputs per run, and 128 pending inputs in total.
+Full queues return 429. The sender does not retry POST automatically; a custom
+dispatcher must preserve that policy. Retry an uncertain input with its original
+idempotency key and payload.
 
-Deploy matching protocol versions and enable this only on verified affinity
-endpoints. This is the hook/mailbox increment toward single-writer execution;
-other mutation paths and existing consistency checks remain. It adds neither
-durable input storage nor stale-writer fencing. Local tests do not prove live
-platform placement or deployment migration behavior.
-An accepted input does not guarantee that a later continuation succeeds. A
-continuation failure is logged; after process loss or failure beyond the response,
-progress depends on existing runtime recovery or another execution request.
+Instance loss discards unprocessed inputs. A lost response leaves processing
+unknown, and an accepted input does not guarantee a later continuation succeeds.
+Continuation failures are logged; recovery depends on existing runtime recovery
+or another execution request. The implementation adds no durable input storage
+or stale-writer fencing. Test placement and deployment routing on the actual
+endpoint before relying on affinity for single-runner exclusion.
 
 ## Custom dispatcher
 
