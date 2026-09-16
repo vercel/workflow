@@ -193,9 +193,10 @@ export async function guardDeploymentAffinity({
       { recoveryAttempts, cause }
     );
 
+    let dehydratedError: Uint8Array;
     try {
       // Unencrypted: the pinned deployment's key may no longer be available.
-      const dehydratedError = await dehydrateRunError(
+      dehydratedError = await dehydrateRunError(
         error,
         run.runId,
         undefined,
@@ -214,13 +215,6 @@ export async function guardDeploymentAffinity({
         },
         { requestId }
       );
-      dispatchRunFailedHooks(
-        run.runId,
-        workflowName,
-        dehydratedError,
-        undefined,
-        RUN_ERROR_CODES.DEPLOYMENT_MISMATCH
-      );
     } catch (failError) {
       // Run already reached a terminal state (a concurrent writer failed it, or
       // it was canceled/expired), so still stop. Anything else is a transient
@@ -231,7 +225,15 @@ export async function guardDeploymentAffinity({
       ) {
         throw failError;
       }
+      return result('failed', run.deploymentId, recoveryAttempts);
     }
+    dispatchRunFailedHooks(
+      run.runId,
+      workflowName,
+      dehydratedError,
+      undefined,
+      RUN_ERROR_CODES.DEPLOYMENT_MISMATCH
+    );
     return result('failed', run.deploymentId, recoveryAttempts);
   };
 

@@ -2013,7 +2013,6 @@ export async function runWorkflowWithQuickJS(params: {
         },
       });
       wfdiag('exit_completed', { result: 'run_completed_written' });
-      dispatchRunCompletedHooks(runId, workflowName);
     } catch (err) {
       if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
         runtimeLogger.warn(
@@ -2029,6 +2028,7 @@ export async function runWorkflowWithQuickJS(params: {
       });
       throw err;
     }
+    dispatchRunCompletedHooks(runId, workflowName);
   } else if (result.suspended) {
     // Workflow still suspended after the inline loop. All durable side
     // effects for the final suspension state were already dispatched by

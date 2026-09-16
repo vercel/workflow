@@ -2996,7 +2996,11 @@ function getLazyReadableStream<T>(
 
 /** Options for external hydration. Defaults preserve live, eager hydration. @internal */
 type ExternalReviverOptions = {
-  /** Defer readable stream I/O until consumption, including nested streams. */
+  /**
+   * Defer readable stream I/O until consumption, including nested streams.
+   * Writable streams still construct their forwarding pipe and lock poller
+   * during hydration; callers must drain `ops` even for unused writables.
+   */
   lazyStreams?: boolean;
   /** Set false for terminal reporting: revive only the persisted abort snapshot. */
   liveAbortSignals?: boolean;
@@ -4232,6 +4236,7 @@ export async function dehydrateRunError(
  * @param ops - Promise array for stream operations
  * @param global - Global object for deserialization context
  * @param extraRevivers - Additional revivers for custom types
+ * @param options - External hydration policy, including lazy readable streams
  * @returns The hydrated thrown value, ready to be consumed by the client
  */
 export async function hydrateRunError(
@@ -4240,7 +4245,8 @@ export async function hydrateRunError(
   key: PayloadKey | undefined,
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
-  extraRevivers: Record<string, (value: any) => any> = {}
+  extraRevivers: Record<string, (value: any) => any> = {},
+  options?: ExternalReviverOptions
 ): Promise<unknown> {
   const compressionStats: CompressionStats = {};
   const decrypted = await decompress(
@@ -4256,7 +4262,7 @@ export async function hydrateRunError(
     // throws via `unflatten` so the surrounding try/catch in o11y helpers
     // surfaces the issue rather than masking it.
     return unflatten(decrypted as any[], {
-      ...getExternalRevivers(global, ops, runId, key),
+      ...getExternalRevivers(global, ops, runId, key, options),
       ...extraRevivers,
     });
   }
@@ -4266,7 +4272,7 @@ export async function hydrateRunError(
   if (format === SerializationFormat.DEVALUE_V1) {
     const str = new TextDecoder().decode(payload);
     return parse(str, {
-      ...getExternalRevivers(global, ops, runId, key),
+      ...getExternalRevivers(global, ops, runId, key, options),
       ...extraRevivers,
     });
   }

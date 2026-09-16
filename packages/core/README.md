@@ -30,3 +30,6 @@ from `workflow/api` for best-effort reporting of terminal transitions written by
 your app. Handlers receive the workflow name without a backend read, a lazy `Run`
 instance, and, for failures, an error hydrated from the persisted payload.
 Callbacks are not retried; the event log remains the system of record.
+Hook-property getters and reporting failures are isolated from terminal writes.
+The callback's `waitUntil` scope also drains background operations for streams
+hydrated from the persisted failure, including when a handler throws.
