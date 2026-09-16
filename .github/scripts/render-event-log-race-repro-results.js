@@ -284,6 +284,7 @@ function renderConfigScale(config) {
       ? `blocked-branch ${config.blockedBranchAttempts}`
       : '',
     config.wakeLoopAttempts ? `wake-loop ${config.wakeLoopAttempts}` : '',
+    config.inlineHangAttempts ? `inline-hang ${config.inlineHangAttempts}` : '',
     config.hookSleepAttempts ? `hook-sleep ${config.hookSleepAttempts}` : '',
     // Historical entries from the pre-storm harness, kept so an old sticky
     // comment still renders its own configuration rather than a blank line.

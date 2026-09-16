@@ -72,6 +72,7 @@ type Scenario =
   | 'hook-storm'
   | 'blocked-branch'
   | 'wake-loop'
+  | 'inline-hang'
   | 'hook-sleep';
 
 type Outcome =
@@ -93,6 +94,26 @@ interface ReproConfig {
   hookStormAttempts: number;
   blockedBranchAttempts: number;
   wakeLoopAttempts: number;
+  inlineHangAttempts: number;
+  /** `inline-hang`: parallel tasks kept in flight. Defaults to the runtime's
+   *  `MAX_INLINE_STEPS`, so the whole batch competes for inline slots and one
+   *  killed invocation takes all of it down at once. */
+  inlineHangWidth: number;
+  inlineHangTasks: number;
+  inlineHangSiblingMs: number;
+  /** `inline-hang`: how long the victim runs before killing its invocation.
+   *  Must exceed `inlineHangSiblingMs` by enough that the siblings'
+   *  `step_completed` and the pool's replacement dispatches are committed
+   *  first, since those are the events the next replay has to re-derive. */
+  inlineHangVictimDelayMs: number;
+  inlineHangVictimTask: number;
+  /** `inline-hang`: how long the victim keeps killing invocations, measured
+   *  from the moment the attempt starts. Each kill costs a full inline
+   *  ownership lease before another replay will re-claim the step, so a window
+   *  that spans fewer than two leases only ever produces one re-claim. */
+  inlineHangKillWindowMs: number;
+  inlineHangPokeIntervalMs: number;
+  inlineHangPayloadBytes: number;
   hookSleepAttempts: number;
   concurrency: number;
   /** Wall-clock budget for *launching* attempts. Once it is spent no new
@@ -234,6 +255,14 @@ interface ReproRunResult {
       heartbeats?: number;
       staleConsumed?: number;
     };
+    /** `inline-hang`: how many invocations the victim actually killed. A run
+     *  reported `completed` with `kills: 0` never entered the shape and is a
+     *  calibration failure, not a passing attempt. */
+    inlineHang?: {
+      kills: number;
+      pokes: number;
+      killWindowMs: number;
+    };
   };
   /** How far a `stuck` run actually got, read off its event log when the
    *  harness gave up on it. This is the difference between "the run is
@@ -276,6 +305,37 @@ const config: ReproConfig = {
     6
   ),
   wakeLoopAttempts: envNumber('EVENT_LOG_RACE_REPRO_WAKE_LOOP_ATTEMPTS', 6),
+  // Opt-in, not part of the per-PR check. One attempt needs at least two
+  // inline-ownership leases (~860s each) of wall clock before the shape is
+  // even complete, which does not fit this job's `timeout-minutes`. Dispatch
+  // it with `inline_hang_attempts` and a raised `budget_ms` instead.
+  inlineHangAttempts: envNumber('EVENT_LOG_RACE_REPRO_INLINE_HANG_ATTEMPTS', 0),
+  inlineHangWidth: envNumber('EVENT_LOG_RACE_REPRO_INLINE_HANG_WIDTH', 3),
+  inlineHangTasks: envNumber('EVENT_LOG_RACE_REPRO_INLINE_HANG_TASKS', 9),
+  inlineHangSiblingMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_INLINE_HANG_SIBLING_MS',
+    300
+  ),
+  inlineHangVictimDelayMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_INLINE_HANG_VICTIM_DELAY_MS',
+    2500
+  ),
+  inlineHangVictimTask: envNumber(
+    'EVENT_LOG_RACE_REPRO_INLINE_HANG_VICTIM_TASK',
+    2
+  ),
+  inlineHangKillWindowMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_INLINE_HANG_KILL_WINDOW_MS',
+    30 * 60_000
+  ),
+  inlineHangPokeIntervalMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_INLINE_HANG_POKE_INTERVAL_MS',
+    5000
+  ),
+  inlineHangPayloadBytes: envNumber(
+    'EVENT_LOG_RACE_REPRO_INLINE_HANG_PAYLOAD_BYTES',
+    4096
+  ),
   hookSleepAttempts: envNumber('EVENT_LOG_RACE_REPRO_ATTEMPTS', 2),
   // Cross-run concurrency is throughput only — the race being reproduced is
   // between concurrent replays *within* one run, driven by `rounds`/`width` and
@@ -1262,6 +1322,112 @@ async function runWakeLoopAttempt(attempt: number): Promise<ReproRunResult> {
 }
 
 /**
+ * How many invocations the victim killed, read off the log as the number of
+ * `step_started` events beyond the first for any one step. Every re-claim of a
+ * killed step writes exactly one extra start, and nothing else in this
+ * workflow retries, so the surplus is the kill count.
+ *
+ * This is the calibration signal for the scenario: an attempt that reports
+ * `completed` with zero kills never entered the shape at all.
+ */
+async function countInlineHangKills(runId: string): Promise<number> {
+  try {
+    const events = await world.events.list({ runId, resolveData: 'none' });
+    const startsByStep = new Map<string, number>();
+    for (const event of events.data) {
+      if (event.eventType !== 'step_started' || !event.correlationId) continue;
+      startsByStep.set(
+        event.correlationId,
+        (startsByStep.get(event.correlationId) ?? 0) + 1
+      );
+    }
+    let surplus = 0;
+    for (const count of startsByStep.values()) {
+      surplus += Math.max(0, count - 1);
+    }
+    return surplus;
+  } catch {
+    // Diagnostics only; never fail an attempt on the calibration read.
+    return -1;
+  }
+}
+
+/**
+ * `inline-hang`: a bounded-concurrency pool whose victim task kills its own
+ * invocation while it is an in-flight inline step.
+ *
+ * The driver's only job is to poke a hook the workflow never reads, which is
+ * what produces a replay without waiting on the killed invocation's queue
+ * message. Note that a poke arriving while the victim is still inline-owned
+ * does NOT re-claim it: dispatch arms a delayed backstop for the remaining
+ * lease instead. So the pokes are cheap pressure, and the wall clock between
+ * one kill and the next re-claim is a full lease. That is why this scenario is
+ * opt-in and needs a long budget.
+ */
+async function runInlineHangAttempt(attempt: number): Promise<ReproRunResult> {
+  const scenario: Scenario = 'inline-hang';
+  const startedAt = Date.now();
+  const token = makeToken(scenario, attempt);
+
+  try {
+    const workflow = await getWorkflowMetadata(
+      deploymentUrl,
+      STORM_WORKFLOW_FILE,
+      'inlineHangReproWorkflow'
+    );
+    const run = await start(
+      scenario,
+      STORM_WORKFLOW_FILE,
+      'inlineHangReproWorkflow',
+      workflow,
+      [
+        {
+          killUntilMs: startedAt + config.inlineHangKillWindowMs,
+          payloadBytes: config.inlineHangPayloadBytes,
+          siblingMs: config.inlineHangSiblingMs,
+          tasks: config.inlineHangTasks,
+          token,
+          victimDelayMs: config.inlineHangVictimDelayMs,
+          victimTask: config.inlineHangVictimTask,
+          width: config.inlineHangWidth,
+        },
+      ]
+    );
+
+    let pokes = 0;
+    const { runResult, state } = await drive(
+      run,
+      startedAt,
+      scenario,
+      async (driverState) => {
+        const hook = await waitForHook(token, run.runId, driverState);
+        while (!driverState.done) {
+          pokes += 1;
+          await tryResume(driverState, hook, { pokedAt: Date.now() });
+          if (driverState.done) return;
+          await sleep(config.inlineHangPokeIntervalMs);
+        }
+      }
+    );
+
+    const kills = await countInlineHangKills(run.runId);
+    const pressure = {
+      inlineHang: {
+        killWindowMs: config.inlineHangKillWindowMs,
+        kills,
+        pokes,
+      },
+      resumesFailed: state.resumesFailed,
+      resumesSent: state.resumesSent,
+    };
+
+    return { ...runResult, attempt, pressure, scenario, token };
+  } catch (err) {
+    return harnessFailure(scenario, attempt, token, startedAt, err);
+  }
+}
+
+/**
  * The calibration control, unchanged in shape from the original harness: a
  * single hook read raced against a single sleep, resumed once after a jittered
  * delay. Kept at low attempt counts purely so each run reports a rate for the
@@ -1433,6 +1599,7 @@ const plannedAttempts =
   config.hookStormAttempts +
   config.blockedBranchAttempts +
   config.wakeLoopAttempts +
+  config.inlineHangAttempts +
   config.hookSleepAttempts;
 let overallDeadline = Number.POSITIVE_INFINITY;
 let launchDeadline = Number.POSITIVE_INFINITY;
@@ -1629,6 +1796,11 @@ describe('event log race repro', { retry: 0 }, () => {
         config.wakeLoopAttempts,
         config.concurrency,
         runWakeLoopAttempt
+      );
+      await runScenario(
+        config.inlineHangAttempts,
+        config.concurrency,
+        runInlineHangAttempt
       );
       await runScenario(
         config.hookSleepAttempts,

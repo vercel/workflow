@@ -79,6 +79,18 @@ on:
       poke_decay_factor:
         description: 'step-storm: multiplier applied to poke_interval_ms once poke_max is spent (1 disables the decay)'
         required: false
+      # `inline-hang` is opt-in: its default attempt count is 0 because one
+      # attempt needs at least two inline-ownership leases (~860s each) of wall
+      # clock. Dispatch it with attempts > 0, a `budget_ms` above
+      # 2 * 860_000, and a `run_timeout_ms` that lets a run live that long. The
+      # remaining knobs stay env-only (see `EVENT_LOG_RACE_REPRO_INLINE_HANG_*`
+      # in the harness) to stay under GitHub's 25-input cap.
+      inline_hang_attempts:
+        description: 'Number of inline-hang runs (a pool whose victim step kills its own invocation mid-flight). 0 disables; needs a raised budget_ms'
+        required: false
+      inline_hang_kill_window_ms:
+        description: 'inline-hang: how long the victim keeps killing invocations. Span at least two ~860s ownership leases to get a second re-claim'
+        required: false
       run_timeout_ms:
         description: 'Per-run timeout before classifying as stuck'
         required: false
@@ -99,7 +111,10 @@ jobs:
     # checkout, build, the deployment wait, and rendering the summary. A soak
     # dispatch that raises `budget_ms` has to raise this too, or the runner kills
     # the job before the summary is written.
-    timeout-minutes: 25
+    # A `pull_request` run is the default-scale regression check. A dispatch can
+    # be a soak (raised `budget_ms`, or `inline_hang_attempts`, whose shape needs
+    # two ~860s ownership leases per attempt), so it gets a much longer ceiling.
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && 120 || 25 }}
     if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'event-log-race-repro') }}
     # No comment-writing scopes: the PR comment for every lane is written by
     # `event-log-race-repro-comment` below.
@@ -174,6 +189,8 @@ jobs:
           EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS: ${{ inputs.poke_interval_ms }}
           EVENT_LOG_RACE_REPRO_POKE_MAX: ${{ inputs.poke_max }}
           EVENT_LOG_RACE_REPRO_POKE_DECAY_FACTOR: ${{ inputs.poke_decay_factor }}
+          EVENT_LOG_RACE_REPRO_INLINE_HANG_ATTEMPTS: ${{ inputs.inline_hang_attempts }}
+          EVENT_LOG_RACE_REPRO_INLINE_HANG_KILL_WINDOW_MS: ${{ inputs.inline_hang_kill_window_ms }}
           EVENT_LOG_RACE_REPRO_RUN_TIMEOUT_MS: ${{ inputs.run_timeout_ms }}
           EVENT_LOG_RACE_REPRO_BUDGET_MS: ${{ inputs.budget_ms }}
 
