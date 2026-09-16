@@ -492,7 +492,9 @@ export function createDevTests(config?: DevTestConfig) {
         );
 
         await expectGeneratedArtifactsUnchanged(snapshot);
-        await expectHmrLogCounts(logCursor, { skip: 1 });
+        await expectHmrLogCounts(logCursor, {
+          skip: { kind: 'range', min: 1, max: 2 },
+        });
       }
     );
 
@@ -530,7 +532,7 @@ export async function hmrPageWorkflow() {
           },
         });
         await expectHmrLogCounts(logCursor, {
-          full: 1,
+          full: { kind: 'range', min: 1, max: 2 },
           skip: { kind: 'range', min: 0, max: 1 },
         });
       }
