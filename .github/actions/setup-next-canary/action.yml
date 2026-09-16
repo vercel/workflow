@@ -1,0 +1,25 @@
+name: 'Setup Next.js Canary'
+description: 'Install a Next.js canary and rebuild the workspace packages.'
+
+inputs:
+  app-name:
+    description: 'Workbench app name'
+    required: true
+  next-version:
+    description: 'Next.js canary version'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - shell: bash
+      env:
+        APP_NAME: ${{ inputs.app-name }}
+        NEXT_VERSION: ${{ inputs.next-version }}
+      run: |
+        jq --arg version "$NEXT_VERSION" '.devDependencies.next=$version' packages/next/package.json > packages/next/package.json.new
+        mv packages/next/package.json.new packages/next/package.json
+        jq --arg version "$NEXT_VERSION" '.dependencies.next=$version' "workbench/$APP_NAME/package.json" > "workbench/$APP_NAME/package.json.new"
+        mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+        pnpm install --no-frozen-lockfile
+        pnpm turbo run build --filter='!./workbench/*'
