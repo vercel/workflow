@@ -1,5 +1,33 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeBasePath, resolveModuleOptions } from './options.js';
+import {
+  basePathReachesRoutes,
+  normalizeBasePath,
+  resolveModuleOptions,
+} from './options.js';
+
+describe('basePathReachesRoutes', () => {
+  it.each([
+    // [generating, globalPrefix, reachable]
+    ['', '', true],
+    ['/api', '/api', true],
+    // No global prefix: any generated prefix is a sub-path applied outside
+    // NestJS (a reverse proxy that strips it), which is a valid deployment.
+    ['/proxied', '', true],
+    // Proxy sub-path composed in front of the NestJS prefix.
+    ['/proxied/api', '/api', true],
+    // NestJS serves under /api but the generated URL never reaches it.
+    ['', '/api', false],
+    ['/other', '/api', false],
+    ['/api/v2', '/api', false],
+    // The suffix test lands on a segment boundary for free, because a
+    // normalized prefix always starts with "/": "/myapi" does not end with
+    // "/api", so a prefix that is only a substring is still rejected.
+    ['/myapi', '/api', false],
+    ['/my/api', '/api', true],
+  ])('%o against prefix %o is reachable: %o', (generating, prefix, expected) => {
+    expect(basePathReachesRoutes(generating, prefix)).toBe(expected);
+  });
+});
 
 describe('normalizeBasePath', () => {
   it.each([

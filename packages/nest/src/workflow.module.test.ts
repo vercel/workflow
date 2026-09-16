@@ -1,4 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -176,6 +182,29 @@ describe('WorkflowModule base path reconciliation', () => {
     expect(getWorkflowBasePath()).toBe('/api');
     expect(error).not.toHaveBeenCalled();
   });
+
+  it('stays quiet for a basePath applied entirely outside NestJS', async () => {
+    // A reverse proxy mounts the app on /proxied and strips it, so there is no
+    // NestJS global prefix for it to agree with. This is the setup the docs
+    // recommend basePath for; reporting it told the user to unset the one
+    // option that makes their deployment work.
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    writeBundles(outDir, ['steps.mjs', 'workflows.mjs', 'webhook.mjs']);
+    await moduleWith(options({ basePath: '/proxied' })).onModuleInit();
+    expect(getWorkflowBasePath()).toBe('/proxied');
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet when basePath composes a proxy sub-path with the prefix', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    writeBundles(outDir, ['steps.mjs', 'workflows.mjs', 'webhook.mjs']);
+    await moduleWith(
+      options({ basePath: '/proxied/api' }),
+      '/api'
+    ).onModuleInit();
+    expect(getWorkflowBasePath()).toBe('/proxied/api');
+    expect(error).not.toHaveBeenCalled();
+  });
 });
 
 describe('WorkflowModule bundle validation', () => {
@@ -224,6 +253,95 @@ describe('WorkflowModule bundle validation', () => {
 });
 
 describe('WorkflowModule world lifecycle', () => {
+  let appDir: string;
+
+  /**
+   * Lay out an application that has `workflow` installed, the way a real app
+   * does. The module has to resolve `workflow/runtime` from *here*, not from
+   * its own directory: `workflow` depends on `@workflow/nest`, so under a
+   * strict node_modules layout a bare import from the package fails outright.
+   */
+  function writeHostApp(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'wf-nest-app-'));
+    const pkgDir = join(dir, 'node_modules', 'workflow');
+    mkdirSync(pkgDir, { recursive: true });
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({ name: 'host-app', version: '0.0.0' })
+    );
+    writeFileSync(
+      join(pkgDir, 'package.json'),
+      JSON.stringify({
+        name: 'workflow',
+        version: '0.0.0',
+        type: 'module',
+        exports: { './runtime': './runtime.js' },
+      })
+    );
+    writeFileSync(
+      join(pkgDir, 'runtime.js'),
+      `import { appendFileSync } from 'node:fs';
+       const log = ${JSON.stringify(join(dir, 'calls.log'))};
+       const world = {
+         async start() { appendFileSync(log, 'start\\n'); },
+         async close() { appendFileSync(log, 'close\\n'); },
+       };
+       export async function getWorld() { return world; }`
+    );
+    return dir;
+  }
+
+  function calls(dir: string): string[] {
+    try {
+      return readFileSync(join(dir, 'calls.log'), 'utf8').trim().split('\n');
+    } catch {
+      return [];
+    }
+  }
+
+  beforeEach(() => {
+    appDir = writeHostApp();
+    setWorkflowBasePath('');
+  });
+
+  afterEach(() => {
+    rmSync(appDir, { recursive: true, force: true });
+  });
+
+  function managed(): ResolvedWorkflowModuleOptions {
+    return {
+      ...resolveModuleOptions(
+        { workingDir: appDir, outDir: appDir, skipBuild: true },
+        {}
+      ),
+      preloadBundles: false,
+      manageWorldLifecycle: true,
+    };
+  }
+
+  it("starts the World from the application's own workflow install", async () => {
+    // Resolving the specifier from this package instead threw
+    // ERR_MODULE_NOT_FOUND and took down startup, because `workflow` is not a
+    // dependency of `@workflow/nest` and cannot be under pnpm.
+    writeBundles(appDir, ['steps.mjs', 'workflows.mjs', 'webhook.mjs']);
+    await moduleWith(managed()).onModuleInit();
+    expect(calls(appDir)).toEqual(['start']);
+  });
+
+  it('closes the same World on shutdown', async () => {
+    writeBundles(appDir, ['steps.mjs', 'workflows.mjs', 'webhook.mjs']);
+    const module = moduleWith(managed());
+    await module.onModuleInit();
+    await module.onApplicationShutdown();
+    expect(calls(appDir)).toEqual(['start', 'close']);
+  });
+
+  // The "workflow is not installed" branch is deliberately not covered here:
+  // Vitest's resolver falls back to the workspace when a fixture has no
+  // `node_modules/workflow`, so the failure cannot be staged under the test
+  // runner. That fallback is also what makes the two tests above meaningful —
+  // they only pass because the fixture's own copy took precedence.
+
   it('does nothing on shutdown unless manageWorldLifecycle is set', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const module = moduleWith({

@@ -118,6 +118,27 @@ export function normalizeBasePath(basePath: string | undefined): string {
   return withLeading.replace(/\/+$/, '');
 }
 
+/**
+ * Whether the prefix the SDK generates URLs under can actually reach the routes
+ * NestJS serves under `globalPrefix`.
+ *
+ * Equality is too strict. The generated prefix is the *external* path, which is
+ * the NestJS global prefix with any sub-path applied outside NestJS in front of
+ * it: a reverse proxy that mounts the app on `/proxied` and strips that segment
+ * makes `/proxied` (no global prefix) or `/proxied/api` (global prefix `/api`)
+ * both correct. What is never correct is a generated prefix that does not end
+ * at the global prefix, because then a delivery lands on a path NestJS does not
+ * route.
+ */
+export function basePathReachesRoutes(
+  generating: string,
+  globalPrefix: string
+): boolean {
+  if (!globalPrefix) return true;
+  if (generating === globalPrefix) return true;
+  return generating.endsWith(globalPrefix);
+}
+
 export interface ResolvedWorkflowModuleOptions extends WorkflowModuleOptions {
   workingDir: string;
   outDir: string;

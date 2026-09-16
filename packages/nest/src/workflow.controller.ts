@@ -16,6 +16,7 @@ import type { ApplicationConfig } from '@nestjs/core';
 import { globalSingleton } from '@workflow/utils';
 import { join } from 'pathe';
 import {
+  basePathReachesRoutes,
   getWorkflowBasePath,
   normalizeBasePath,
   type ResolvedWorkflowModuleOptions,
@@ -124,7 +125,7 @@ export class WorkflowController {
       this.appConfig?.getGlobalPrefix?.() ?? ''
     );
     const generating = normalizeBasePath(getWorkflowBasePath());
-    if (globalPrefix === generating) return;
+    if (basePathReachesRoutes(generating, globalPrefix)) return;
     console.error(
       `[@workflow/nest] Global prefix mismatch: NestJS serves the workflow ` +
         `routes under "${globalPrefix || '/'}" but the Workflow SDK generates ` +

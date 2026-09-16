@@ -123,6 +123,52 @@ describe('WorkflowController', () => {
     ).toBe(false);
   });
 
+  it('stays quiet for a basePath that only a reverse proxy applies', async () => {
+    // The documented sub-path setup: a proxy mounts the app on /proxied and
+    // strips that segment, so NestJS has no global prefix while the SDK must
+    // still generate /proxied URLs. Comparing the two for equality reported
+    // this as a mismatch and told the user to unset the basePath that makes
+    // it work.
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { res } = response();
+    await controller({ outDir, generating: '/proxied' }).handleFlowPost(
+      request(),
+      res
+    );
+    const messages = error.mock.calls.map((call) => String(call[0]));
+    expect(
+      messages.some((message) => message.includes('Global prefix mismatch'))
+    ).toBe(false);
+  });
+
+  it('stays quiet when a proxy sub-path is composed with the global prefix', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { res } = response();
+    await controller({
+      outDir,
+      generating: '/proxied/api',
+      globalPrefix: '/api',
+    }).handleFlowPost(request(), res);
+    const messages = error.mock.calls.map((call) => String(call[0]));
+    expect(
+      messages.some((message) => message.includes('Global prefix mismatch'))
+    ).toBe(false);
+  });
+
+  it('still reports a generated prefix that cannot reach the routes', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { res } = response();
+    await controller({
+      outDir,
+      generating: '/other',
+      globalPrefix: '/api',
+    }).handleFlowPost(request(), res);
+    const messages = error.mock.calls.map((call) => String(call[0]));
+    expect(
+      messages.some((message) => message.includes('Global prefix mismatch'))
+    ).toBe(true);
+  });
+
   it('exposes flow handlers for every method the bundle exports', () => {
     // HEAD is what getWorkflowPort() probes to identify a workflow server; a
     // 404 there makes local port detection fall back to an arbitrary port.

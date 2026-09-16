@@ -1,4 +1,6 @@
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import {
   type DynamicModule,
   Inject,
@@ -11,6 +13,7 @@ import {
 import type { ApplicationConfig } from '@nestjs/core';
 import { join } from 'pathe';
 import {
+  basePathReachesRoutes,
   normalizeBasePath,
   type ResolvedWorkflowModuleOptions,
   resolveModuleOptions,
@@ -44,13 +47,32 @@ type WorldLifecycle = {
 /**
  * Load the target World from the host application's `workflow` install.
  *
- * The specifier is held in a variable on purpose: `workflow` depends on
- * `@workflow/nest`, so a static import here would close a workspace dependency
- * cycle. The package is always present in an app that uses this module.
+ * `workflow` depends on `@workflow/nest`, not the other way round, so a static
+ * import would close a workspace dependency cycle *and* a bare `import()` is
+ * not resolvable from this package at all: under a strict `node_modules` layout
+ * (pnpm) nothing links `workflow` into `@workflow/nest`'s resolution paths, so
+ * the specifier fails with `ERR_MODULE_NOT_FOUND` even though the application
+ * one directory up has it installed.
+ *
+ * Resolving from the application's root is therefore required, not an
+ * optimisation. This mirrors `getRuntimeRequire()` in `@workflow/core`.
  */
-async function loadWorld(): Promise<WorldLifecycle> {
+async function loadWorld(workingDir: string): Promise<WorldLifecycle> {
   const specifier = 'workflow/runtime';
-  const { getWorld } = (await import(specifier)) as {
+  let resolved: string;
+  try {
+    resolved = pathToFileURL(
+      createRequire(join(workingDir, 'package.json')).resolve(specifier)
+    ).href;
+  } catch (error) {
+    throw new Error(
+      `[@workflow/nest] manageWorldLifecycle is enabled but "${specifier}" ` +
+        `could not be resolved from ${workingDir}. Install the \`workflow\` ` +
+        `package in your application, or set \`workingDir\` to the directory ` +
+        `that has it. (${error instanceof Error ? error.message : error})`
+    );
+  }
+  const { getWorld } = (await import(resolved)) as {
     getWorld: () => Promise<WorldLifecycle>;
   };
   return await getWorld();
@@ -183,7 +205,9 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
   async onApplicationShutdown(): Promise<void> {
     if (!this.options.manageWorldLifecycle) return;
     try {
-      const world = await loadWorld();
+      // `getWorld()` caches the instance on `globalThis`, so this is the same
+      // World `#startWorld` started rather than a second one.
+      const world = await loadWorld(this.options.workingDir);
       await world.close?.();
     } catch (error) {
       console.error('[@workflow/nest] Failed to close the World:', error);
@@ -201,8 +225,10 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
    *
    * With no explicit `basePath` the global prefix is adopted. An explicit
    * `basePath` wins, because it also covers a sub-path that a reverse proxy
-   * mounts the app on and NestJS knows nothing about; a disagreement between the
-   * two is reported rather than silently resolved.
+   * mounts the app on and NestJS knows nothing about. Such a `basePath` ends
+   * *with* the global prefix (`/proxied/api` for a proxy on `/proxied` and a
+   * prefix of `/api`), so only a `basePath` that cannot reach the prefixed
+   * routes at all is reported; see {@link basePathReachesRoutes}.
    */
   #resolveEffectiveBasePath(): string {
     const globalPrefix = normalizeBasePath(
@@ -220,7 +246,7 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
       return globalPrefix;
     }
 
-    if (globalPrefix && globalPrefix !== configured) {
+    if (!basePathReachesRoutes(configured, globalPrefix)) {
       console.error(
         `[@workflow/nest] Global prefix mismatch: NestJS serves the workflow ` +
           `routes under "${globalPrefix}" but basePath is "${configured}". ` +
@@ -277,7 +303,7 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
   }
 
   async #startWorld(): Promise<void> {
-    const world = await loadWorld();
+    const world = await loadWorld(this.options.workingDir);
     await world.start?.();
   }
 
