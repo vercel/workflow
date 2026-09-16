@@ -90,4 +90,10 @@ describe('resolveModuleOptions', () => {
     expect(resolved.preloadBundles).toBe(true);
     expect(resolved.manageWorldLifecycle).toBe(false);
   });
+
+  it('defaults preloadBundles off on Vercel', () => {
+    expect(resolveModuleOptions({}, { VERCEL: '1' }).preloadBundles).toBe(
+      false
+    );
+  });
 });

@@ -34,7 +34,6 @@ type NodeRequestLike = {
 type NodeStreamLike = {
   readable?: boolean;
   readableEnded?: boolean;
-  complete?: boolean;
   on?: (event: string, listener: (...args: unknown[]) => void) => unknown;
   [Symbol.asyncIterator]?: () => AsyncIterator<unknown>;
 };
@@ -127,15 +126,14 @@ async function readStream(stream: NodeStreamLike): Promise<Uint8Array> {
 /**
  * Whether the underlying socket still has an unread body for us.
  *
- * `complete` is the reliable signal on a Node `IncomingMessage`: it flips to
- * true once the message has been fully received *and read*. A body parser that
- * already drained the stream leaves `complete === true`, so we must not try to
- * read it again and hang.
+ * `readableEnded` is the reliable signal that a body parser already consumed
+ * the stream. `IncomingMessage.complete` only says the complete HTTP message
+ * was received and parsed; unread body bytes may still be buffered after it
+ * becomes true.
  */
 function hasUnreadStream(stream: NodeStreamLike | undefined): boolean {
   if (!stream) return false;
   if (typeof stream[Symbol.asyncIterator] !== 'function') return false;
-  if (stream.complete === true) return false;
   if (stream.readableEnded === true) return false;
   return stream.readable !== false;
 }

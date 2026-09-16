@@ -10,7 +10,7 @@ import {
   Optional,
   type Provider,
 } from '@nestjs/common';
-import type { ApplicationConfig } from '@nestjs/core';
+import { ApplicationConfig } from '@nestjs/core';
 import { join } from 'pathe';
 import {
   basePathReachesRoutes,
@@ -115,7 +115,9 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
   constructor(
     @Inject(WORKFLOW_MODULE_OPTIONS)
     private readonly options: ResolvedWorkflowModuleOptions,
-    @Optional() private readonly appConfig?: ApplicationConfig
+    @Optional()
+    @Inject(ApplicationConfig)
+    private readonly appConfig?: ApplicationConfig
   ) {}
 
   /**
@@ -188,7 +190,9 @@ export class WorkflowModule implements OnModuleInit, OnApplicationShutdown {
       await this.#startWorld();
     }
 
-    if (this.options.preloadBundles) {
+    // Build Output deployments keep the workflow bundles in dedicated
+    // functions, never in the Nest catch-all that initializes this module.
+    if (this.options.preloadBundles && !process.env.VERCEL) {
       // Deliberately not awaited: preloading is a latency optimisation, and the
       // controller reports a load failure per request with a better message
       // than a startup crash would give.

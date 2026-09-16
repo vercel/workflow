@@ -64,7 +64,8 @@ export interface WorkflowModuleOptions extends NestBuilderOptions {
    * request. Turning this off moves roughly a megabyte of module evaluation
    * onto the first queue delivery.
    *
-   * @default true
+   * @default true outside Vercel; false on Vercel, where dedicated functions
+   * contain the bundles instead of the Nest catch-all
    */
   preloadBundles?: boolean;
 }
@@ -169,7 +170,7 @@ export function resolveModuleOptions(
     // On Vercel the bundles ship inside the Build Output and the filesystem is
     // read-only, so an in-process build can only fail.
     skipBuild: options.skipBuild ?? Boolean(env.VERCEL),
-    preloadBundles: options.preloadBundles ?? true,
+    preloadBundles: options.preloadBundles ?? !env.VERCEL,
     manageWorldLifecycle: options.manageWorldLifecycle ?? false,
   };
 }

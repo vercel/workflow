@@ -7,6 +7,8 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Module } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   getWorkflowBasePath,
@@ -150,6 +152,29 @@ describe('WorkflowModule base path reconciliation', () => {
     );
   });
 
+  it('receives ApplicationConfig through the real Nest injector', async () => {
+    writeBundles(outDir, ['steps.mjs', 'workflows.mjs', 'webhook.mjs']);
+    class RootModule {}
+    Module({
+      imports: [
+        WorkflowModule.forRoot({
+          outDir,
+          skipBuild: true,
+          preloadBundles: false,
+        }),
+      ],
+    })(RootModule);
+
+    const app = await NestFactory.create(RootModule, { logger: false });
+    try {
+      app.setGlobalPrefix('api');
+      await app.init();
+      expect(getWorkflowBasePath()).toBe('/api');
+    } finally {
+      await app.close();
+    }
+  });
+
   it('normalizes an adopted prefix that has no leading slash', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     writeBundles(outDir, ['steps.mjs', 'workflows.mjs', 'webhook.mjs']);
@@ -249,6 +274,29 @@ describe('WorkflowModule bundle validation', () => {
       preloadBundles: false,
     });
     await expect(module.onModuleInit()).resolves.toBeUndefined();
+  });
+});
+
+describe('WorkflowModule bundle preloading', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('does not look for local bundles in the Vercel catch-all', async () => {
+    vi.stubEnv('VERCEL', '1');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const module = moduleWith({
+      ...resolveModuleOptions(
+        { outDir: '/bundles-not-in-the-catch-all', preloadBundles: true },
+        { VERCEL: '1' }
+      ),
+      preloadBundles: true,
+    });
+
+    await module.onModuleInit();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 

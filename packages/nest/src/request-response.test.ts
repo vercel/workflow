@@ -19,6 +19,7 @@ function expressRequest(options: {
   body?: unknown;
   rawBody?: unknown;
   bodyStream?: string | Uint8Array;
+  complete?: boolean;
 }) {
   const stream =
     options.bodyStream === undefined
@@ -29,7 +30,6 @@ function expressRequest(options: {
             : Buffer.from(options.bodyStream),
         ]);
   const req = stream ?? (Readable.from([]) as Readable);
-  // A drained request has `complete === true`; an unread one does not.
   Object.assign(req, {
     method: options.method ?? 'POST',
     url: options.url ?? '/.well-known/workflow/v1/webhook/tok',
@@ -38,8 +38,16 @@ function expressRequest(options: {
     headers: { host: 'example.test', ...options.headers },
     body: options.body,
     rawBody: options.rawBody,
-    complete: options.bodyStream === undefined,
+    complete: options.complete ?? options.bodyStream === undefined,
   });
+  // `Readable.from([])` has not emitted `end` yet, but this branch represents
+  // a stream a body parser already drained before the controller ran.
+  if (options.bodyStream === undefined) {
+    Object.defineProperty(req, 'readableEnded', {
+      configurable: true,
+      value: true,
+    });
+  }
   return req as unknown;
 }
 
@@ -121,6 +129,20 @@ describe('toWebRequest body fidelity', () => {
       })
     );
     expect(await request.text()).toBe(xml);
+  });
+
+  it('reads buffered bytes even when IncomingMessage.complete is true', async () => {
+    // `complete` means the HTTP parser received the full message, not that a
+    // consumer read the body. This is common when the full request arrived in
+    // one packet before Nest dispatched the controller.
+    const request = await toWebRequest(
+      expressRequest({
+        headers: { 'content-type': 'application/octet-stream' },
+        bodyStream: 'unparsed-bytes',
+        complete: true,
+      })
+    );
+    expect(await request.text()).toBe('unparsed-bytes');
   });
 
   it('passes a Buffer body through without JSON-encoding it', async () => {
