@@ -82,22 +82,12 @@ jobs:
           TITLE=$(echo "$RELEASE_JSON" | jq -r '.title')
           BODY=$(echo "$RELEASE_JSON" | jq -r '.body')
 
-          # Prerelease is derived from the published version rather than the
-          # branch: a version carrying a prerelease identifier (4.7.0-beta.1)
-          # is a prerelease wherever it was cut.
-          VERSION="${TAG##*@}"
-          if [ "$VERSION" != "${VERSION#*-}" ]; then
-            PRERELEASE="true"
-          else
+          # Determine release flags based on branch
+          if [ "$GITHUB_REF_NAME" = "stable" ]; then
             PRERELEASE="false"
-          fi
-
-          # GitHub's "Latest" marker belongs to the current GA line, which
-          # lives on `main` (5.x). This branch ships 4.x maintenance GA
-          # versions, so it never claims the marker.
-          if [ "$PRERELEASE" = "false" ] && [ "$GITHUB_REF_NAME" = "main" ]; then
             LATEST_FLAG="--latest"
           else
+            PRERELEASE="true"
             LATEST_FLAG="--latest=false"
           fi
 
