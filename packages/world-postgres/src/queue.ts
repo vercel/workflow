@@ -3,7 +3,10 @@ import * as Stream from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
 import { WorkflowWorldError } from '@workflow/errors';
-import { captureInvocationOutcome } from '@workflow/errors/invocation';
+import {
+  captureInvocationOutcome,
+  isTerminalInvocationError,
+} from '@workflow/errors/invocation';
 import {
   createWorkflowBaseUrl,
   createWorkflowHealthEndpoint,
@@ -319,8 +322,9 @@ export function createQueue(
               throw new WorkflowWorldError('Invocation requestId is required', {
                 status: 400,
               });
-            const outcome = await captureInvocationOutcome(() =>
-              handler(message, metadata)
+            const outcome = await captureInvocationOutcome(
+              () => handler(message, metadata),
+              isTerminalInvocationError
             );
             await invocations.respondOutcome(
               input.runId,
@@ -337,16 +341,18 @@ export function createQueue(
             feed,
             () => handler(message, metadata),
             async (pending) => {
-              const outcome = await captureInvocationOutcome(() =>
-                handler(
-                  {
-                    runId: input.runId,
-                    invoke: true,
-                    requestId: pending.id,
-                    input: pending.payload,
-                  },
-                  metadata
-                )
+              const outcome = await captureInvocationOutcome(
+                () =>
+                  handler(
+                    {
+                      runId: input.runId,
+                      invoke: true,
+                      requestId: pending.id,
+                      input: pending.payload,
+                    },
+                    metadata
+                  ),
+                isTerminalInvocationError
               );
               await invocations.respondOutcome(
                 input.runId,

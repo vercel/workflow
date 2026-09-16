@@ -12,6 +12,7 @@ import {
 import {
   captureInvocationOutcome,
   deserializeWorkflowError,
+  isTerminalInvocationError,
   serializeWorkflowError,
   unwrapInvocationOutcome,
 } from './invocation.js';
@@ -61,6 +62,47 @@ describe('invocation outcomes', () => {
       expect(
         (restored as Error & { cause: HookNotFoundError }).cause.token
       ).toBe('cause-token');
+    }
+  });
+
+  it('captures terminal Workflow errors but re-throws transient/unknown ones', async () => {
+    const terminal = [
+      new HookNotFoundError('token'),
+      new WorkflowRunNotFoundError('run'),
+      new EntityConflictError('conflict'),
+      new RunExpiredError('expired', 'run', 'completed', new Date('2026-01-01')),
+      new WorkflowWorldError('bad input', {
+        status: 400,
+        code: 'INVALID_INPUT',
+      }),
+      new WorkflowWorldError('expired', {
+        status: 410,
+        code: 'INVOCATION_DATA_EXPIRED',
+      }),
+    ];
+    for (const error of terminal) {
+      expect(isTerminalInvocationError(error)).toBe(true);
+      const outcome = await captureInvocationOutcome(async () => {
+        throw error;
+      }, isTerminalInvocationError);
+      expect(outcome.ok).toBe(false);
+    }
+
+    const transient: unknown[] = [
+      new Error('connection reset'),
+      'db blip',
+      Object.assign(new Error('custom'), { name: 'CustomError' }),
+      new ThrottleError('busy', { retryAfter: 3 }),
+      new WorkflowWorldError('unavailable', { status: 503 }),
+      new WorkflowWorldError('timeout', { status: 408 }),
+    ];
+    for (const error of transient) {
+      expect(isTerminalInvocationError(error)).toBe(false);
+      await expect(
+        captureInvocationOutcome(async () => {
+          throw error;
+        }, isTerminalInvocationError)
+      ).rejects.toBe(error);
     }
   });
 

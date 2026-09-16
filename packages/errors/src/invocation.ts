@@ -126,12 +126,62 @@ export function deserializeWorkflowError(
   return error;
 }
 
+/** Protocol statuses that signal a transient, retry-worthy failure. */
+const RETRYABLE_STATUS = new Set([408, 425, 429]);
+
+/**
+ * A terminal invocation error is a recognized Workflow error describing a
+ * deterministic condition (bad input, hook/run gone, data expired, identity
+ * conflict). Such errors recur on every redelivery, so the executor should
+ * store them as the invocation's permanent outcome instead of retrying.
+ *
+ * Everything else is NOT terminal and must be re-thrown so the delivery layer
+ * retries (matching the pre-outcome throw-to-retry contract):
+ *   - unknown/infra failures — DB blips, connection resets, thrown non-Errors,
+ *     or any error class the errors package does not own; and
+ *   - transient Workflow errors — a 5xx / 408 / 425 / 429 status, or any error
+ *     carrying a `retryAfter` (throttle / too-early / retryable).
+ *
+ * Capturing a transient failure as a permanent outcome would ack the delivery
+ * and leave a hook resume (whose `hook_received` write never committed)
+ * unretried, suspending the workflow forever.
+ */
+export function isTerminalInvocationError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const name = (error as { name?: unknown }).name;
+  // Only classes the errors package owns describe known, deterministic
+  // conditions; anything else is an unexpected/infra failure that must retry.
+  if (typeof name !== 'string' || !Object.hasOwn(errors, name)) return false;
+  const ctor = errors[name as keyof typeof errors];
+  if (typeof ctor !== 'function' || !(ctor.prototype instanceof Error))
+    return false;
+  const { status, retryAfter } = error as {
+    status?: unknown;
+    retryAfter?: unknown;
+  };
+  if (retryAfter !== undefined) return false;
+  if (
+    typeof status === 'number' &&
+    (status >= 500 || RETRYABLE_STATUS.has(status))
+  )
+    return false;
+  return true;
+}
+
+/**
+ * Run `handler` and capture its result as an {@link InvocationOutcome}. Thrown
+ * errors are captured only when `shouldCapture` returns `true`; otherwise they
+ * are re-thrown so the caller's delivery layer can retry. The default captures
+ * every error, so generic request/response transports keep prior behavior.
+ */
 export async function captureInvocationOutcome(
-  handler: () => Promise<unknown>
+  handler: () => Promise<unknown>,
+  shouldCapture: (error: unknown) => boolean = () => true
 ): Promise<InvocationOutcome> {
   try {
     return { ok: true, value: await handler() };
   } catch (error) {
+    if (!shouldCapture(error)) throw error;
     return { ok: false, error: serializeWorkflowError(error) };
   }
 }
