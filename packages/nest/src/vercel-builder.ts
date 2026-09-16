@@ -1,5 +1,7 @@
-import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   createBaseBuilderConfig,
   VercelBuildOutputAPIBuilder,
@@ -11,6 +13,11 @@ import { normalizeBasePath } from './options.js';
 const FLOW_FUNCTION_NAME = '__workflow_nest_flow';
 const FLOW_DESTINATION = `/${FLOW_FUNCTION_NAME}`;
 const WEBHOOK_DESTINATION = '/.well-known/workflow/v1/webhook/[token]';
+
+export interface HealthMetadata {
+  specVersion: number;
+  workflowCoreVersion: string;
+}
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -63,25 +70,105 @@ export function createNestVercelRoutes(
 }
 
 /**
- * Copy the generated queue consumer into an HTTP-addressable function.
+ * Create an HTTP-addressable health function for the workflow endpoint.
  *
- * Vercel does not expose a function carrying `experimentalTriggers` over HTTP,
- * so the copy keeps the same handler while dropping only its queue trigger.
+ * Vercel does not expose a function carrying `experimentalTriggers` over HTTP.
+ * Keep the queue consumer isolated in the trigger-protected function and expose
+ * only a minimal handler that rejects queue delivery requests.
  *
  * @internal Exported for regression tests.
  */
 export async function createHttpFlowFunction(
-  functionsDir: string
+  functionsDir: string,
+  healthMetadata: HealthMetadata
 ): Promise<void> {
   const source = join(functionsDir, '.well-known/workflow/v1/flow.func');
   const destination = join(functionsDir, `${FLOW_FUNCTION_NAME}.func`);
   await rm(destination, { recursive: true, force: true });
-  await cp(source, destination, { recursive: true });
+  await mkdir(destination, { recursive: true });
 
-  const configPath = join(destination, '.vc-config.json');
-  const config = JSON.parse(await readFile(configPath, 'utf-8'));
+  const config = JSON.parse(
+    await readFile(join(source, '.vc-config.json'), 'utf-8')
+  );
   delete config.experimentalTriggers;
-  await writeFile(configPath, JSON.stringify(config, null, 2));
+  await writeFile(
+    join(destination, '.vc-config.json'),
+    JSON.stringify(config, null, 2)
+  );
+  await writeFile(join(destination, 'package.json'), '{"type":"module"}\n');
+  await writeFile(
+    join(destination, 'index.mjs'),
+    `const healthCheckCorsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS, GET, HEAD',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+function healthOnly(request) {
+  const url = new URL(request.url);
+  const isQueueDelivery =
+    request.headers.has('ce-type') ||
+    request.headers.has('ce-vqsreceipthandle') ||
+    request.headers.has('ce-vqsdeliverycount') ||
+    request.headers.has('ce-vqsmessageid');
+  if (isQueueDelivery || !url.searchParams.has('__health')) {
+    return new Response(null, {
+      status: 405,
+      headers: { allow: 'POST, OPTIONS, GET, HEAD' },
+    });
+  }
+
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: healthCheckCorsHeaders,
+    });
+  }
+
+  return new Response(
+    JSON.stringify({
+      healthy: true,
+      endpoint: url.pathname,
+      specVersion: ${JSON.stringify(healthMetadata.specVersion)},
+      workflowCoreVersion: ${JSON.stringify(healthMetadata.workflowCoreVersion)},
+    }),
+    {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        ...healthCheckCorsHeaders,
+      },
+    }
+  );
+}
+
+export const POST = healthOnly;
+export const OPTIONS = healthOnly;
+export const GET = healthOnly;
+export const HEAD = healthOnly;
+`
+  );
+}
+
+/** @internal Exported for regression tests. */
+export async function resolveHealthMetadata(
+  workingDir: string
+): Promise<HealthMetadata> {
+  const requireFromApp = createRequire(join(workingDir, 'package.json'));
+  const workflowRuntimePath = requireFromApp.resolve('workflow/runtime');
+  const requireFromWorkflow = createRequire(workflowRuntimePath);
+  const coreRuntimePath = requireFromWorkflow.resolve('@workflow/core/runtime');
+  const corePackage = JSON.parse(
+    await readFile(resolve(coreRuntimePath, '../../package.json'), 'utf-8')
+  );
+  const requireFromCore = createRequire(coreRuntimePath);
+  const worldPath = requireFromCore.resolve('@workflow/world');
+  const world = await import(pathToFileURL(worldPath).href);
+
+  return {
+    specVersion: world.SPEC_VERSION_CURRENT,
+    workflowCoreVersion: corePackage.version,
+  };
 }
 
 export interface NestVercelBuilderOptions {
@@ -179,10 +266,11 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
     await super.build();
 
     // Vercel queue-triggered functions are not HTTP-addressable. Keep the
-    // original flow.func as the VQS consumer and create a trigger-free HTTP
-    // copy at a private internal URL for GET/HEAD/OPTIONS health requests.
+    // original flow.func as the VQS consumer and create a separate HTTP health
+    // function at a private internal URL for GET/HEAD/OPTIONS requests.
     await createHttpFlowFunction(
-      resolve(this.#workingDir, '.vercel/output/functions')
+      resolve(this.#workingDir, '.vercel/output/functions'),
+      await resolveHealthMetadata(this.#workingDir)
     );
 
     // 2. Bundle the NestJS app as the catch-all function.
