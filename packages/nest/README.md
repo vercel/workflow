@@ -224,16 +224,11 @@ export default async function handler(req: any, res: any) {
 }
 ```
 
-### 2. Skip the in-process build on Vercel
+### 2. The in-process build is skipped for you
 
-The Vercel Build Output already contains the compiled workflow bundles, so tell
-`WorkflowModule` not to rebuild them at runtime:
-
-{/*@skip-typecheck: Shows WorkflowModule.forRoot on Vercel*/}
-
-```ts
-WorkflowModule.forRoot({ skipBuild: Boolean(process.env.VERCEL) })
-```
+No module change is needed: `skipBuild` defaults to `true` when the `VERCEL`
+environment variable is set, because the Build Output already contains the
+compiled workflow bundles and the deployed filesystem is read-only.
 
 ### 3. Wire up the build command
 
@@ -305,7 +300,9 @@ WorkflowModule.forRoot()
 WorkflowModule.forRoot({
   dirs: ['src/workflows'],
   outDir: '.nestjs/workflow',
-  skipBuild: process.env.NODE_ENV === 'production',
+  // Only with `workflow-nest build` in your build step: startup fails fast if
+  // the bundles are missing. Defaults to true on Vercel, where they always are.
+  skipBuild: true,
   moduleType: 'commonjs',  // if using SWC CommonJS compilation
   distDir: 'dist',          // where compiled .js files live
 })
