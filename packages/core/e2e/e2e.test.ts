@@ -4553,27 +4553,41 @@ describe.concurrent('e2e', () => {
           [controller.signal]
         );
 
-        // Abort 1.5s after start() so both parallel steps are mid-flight on
-        // their compute instances. The listener attached at serialization time
-        // is what bridges the abort into the workflow's backing stream.
-        const abortTimer = setTimeout(() => {
-          controller.abort('external in-flight abort');
-        }, 1500);
+        // Each step resumes a workflow-local readiness hook after arming its
+        // consumption path. Wait for both durable acknowledgements instead of
+        // guessing from start() wall time; under deployment load, a fixed
+        // delay can expire before either step begins.
+        const readyHookIds = new Set<string>();
+        await waitForRunEvents(
+          run.runId,
+          (event) => {
+            if (
+              event.eventType !== 'hook_received' ||
+              readyHookIds.has(event.correlationId)
+            ) {
+              return false;
+            }
+            readyHookIds.add(event.correlationId);
+            return true;
+          },
+          {
+            minCount: 2,
+            timeoutMs: 30_000,
+            description: 'two distinct abort consumers to report ready',
+          }
+        );
+        controller.abort('external in-flight abort');
 
-        try {
-          const returnValue = await run.returnValue;
+        const returnValue = await run.returnValue;
 
-          // Polling step must have seen signal.aborted flip and exited via
-          // its abort branch (NOT its 30s natural-completion path).
-          expect(returnValue.pollResult).toBe('aborted');
+        // Polling step must have seen signal.aborted flip and exited via
+        // its abort branch (NOT its 30s natural-completion path).
+        expect(returnValue.pollResult).toBe('aborted');
 
-          // Listener step must have resolved via its addEventListener callback
-          // (NOT its 30s safety timeout).
-          expect(returnValue.listenerResult.saw).toBe(true);
-          expect(returnValue.listenerResult.via).toBe('listener');
-        } finally {
-          clearTimeout(abortTimer);
-        }
+        // Listener step must have resolved via its addEventListener callback
+        // (NOT its 30s safety timeout).
+        expect(returnValue.listenerResult.saw).toBe(true);
+        expect(returnValue.listenerResult.via).toBe('listener');
       }
     );
 

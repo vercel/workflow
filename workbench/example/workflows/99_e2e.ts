@@ -2319,8 +2319,14 @@ export async function stepFunctionAsStartArgWorkflow(
  * Step that performs a long-running operation respecting an AbortSignal.
  * Loops with 500ms delays, checking signal.aborted each iteration.
  */
-async function longStep(signal: AbortSignal): Promise<string> {
+async function longStep(
+  signal: AbortSignal,
+  readyHookToken?: string
+): Promise<string> {
   'use step';
+  if (readyHookToken) {
+    await resumeHook(readyHookToken, { ready: true });
+  }
   for (let i = 0; i < 60; i++) {
     if (signal.aborted) {
       return 'aborted';
@@ -2632,12 +2638,12 @@ export async function abortExternalSignalWorkflow(signal: AbortSignal) {
  *
  * This is the harder external-signal path that abortExternalSignalWorkflow
  * doesn't cover. The caller (test process) creates a fresh AbortController,
- * passes its signal as workflow input, and aborts it ~1.5s later via the
- * source controller's `abort()`. The serialization-time listener attached
- * in `getExternalReducers` writes the cancellation packet to the backing
- * stream when fired; the in-flight steps' deserialized signals — both a
- * polling step and a listener-based step running in parallel — must see
- * the abort propagate mid-flight.
+ * passes its signal as workflow input, and aborts it after both step-side
+ * consumers report that they are ready. The serialization-time listener
+ * attached in `getExternalReducers` writes the cancellation packet to the
+ * backing stream when fired; the in-flight steps' deserialized signals — both
+ * a polling step and a listener-based step running in parallel — must see the
+ * abort propagate mid-flight.
  *
  * Failure mode if propagation breaks:
  *   - pollResult: 'completed' (longStep ran the full 30s without seeing aborted=true)
@@ -2646,15 +2652,21 @@ export async function abortExternalSignalWorkflow(signal: AbortSignal) {
 export async function abortExternalSignalInFlightWorkflow(signal: AbortSignal) {
   'use workflow';
 
-  // Run two consumption patterns in parallel against the same external signal:
-  // a polling step (reads signal.aborted) and a listener step (addEventListener).
-  // Both must see the abort propagate from the external controller into their
-  // respective deserialized signals while the steps are mid-flight.
-  const [pollResult, listenerResult] = await Promise.all([
-    longStep(signal),
-    stepWaitingOnAbortListener(signal),
-  ]);
+  using pollReady = createHook<{ ready: true }>();
+  using listenerReady = createHook<{ ready: true }>();
+  await Promise.all([pollReady.getConflict(), listenerReady.getConflict()]);
 
+  // Start both consumers only after their readiness hooks are registered. The
+  // polling step resumes its hook before its loop; the listener step resumes
+  // only after addEventListener is armed. Waiting on both hook payloads keeps
+  // the workflow alive while exposing a durable barrier to the E2E driver.
+  const consumers = Promise.all([
+    longStep(signal, pollReady.token),
+    stepWaitingOnAbortListener(signal, listenerReady.token),
+  ]);
+  await Promise.all([pollReady, listenerReady]);
+
+  const [pollResult, listenerResult] = await consumers;
   return { pollResult, listenerResult };
 }
 
@@ -2788,16 +2800,16 @@ async function stepThatThrowsIfAborted(signal: AbortSignal) {
  * 30s safety timeout won.
  *
  * No `signal.aborted` short-circuit: we rely solely on the listener firing.
- * Per the AbortSignal spec, calling addEventListener on an already-aborted
- * signal fires the callback (on a microtask), so any code path that breaks
- * that contract — present or future — surfaces as a 'timeout' result here
- * instead of being masked by a synchronous fast-path.
+ * The E2E workflow uses `readyHookToken` to ensure the listener is installed
+ * before its external controller aborts. If propagation then breaks, the
+ * safety timeout surfaces it instead of masking it with a synchronous path.
  */
 async function stepWaitingOnAbortListener(
-  signal: AbortSignal
+  signal: AbortSignal,
+  readyHookToken?: string
 ): Promise<{ saw: boolean; via: 'listener' | 'timeout' }> {
   'use step';
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let settled = false;
     const onAbort = () => {
       if (settled) return;
@@ -2805,6 +2817,9 @@ async function stepWaitingOnAbortListener(
       resolve({ saw: true, via: 'listener' });
     };
     signal.addEventListener('abort', onAbort);
+    if (readyHookToken) {
+      resumeHook(readyHookToken, { ready: true }).catch(reject);
+    }
     setTimeout(() => {
       if (settled) return;
       settled = true;
