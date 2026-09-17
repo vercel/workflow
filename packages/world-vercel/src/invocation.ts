@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { waitUntil } from '@vercel/functions';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowWorldError } from '@workflow/errors';
 import {
@@ -334,11 +333,19 @@ export function createDirectInvocationHandler(
   config: APIConfig | undefined,
   runNormal: (runId: string, metadata: Metadata) => Promise<unknown>
 ) {
-  const mailbox = createInvocationMailbox(waitUntil, (error) =>
-    console.error('[workflow] Invocation continuation failed', error)
-  );
+  let mailboxPromise:
+    | Promise<ReturnType<typeof createInvocationMailbox>>
+    | undefined;
+  const getMailbox = () =>
+    (mailboxPromise ??= import('@vercel/functions').then(({ waitUntil }) =>
+      createInvocationMailbox(waitUntil, (error) =>
+        console.error('[workflow] Invocation continuation failed', error)
+      )
+    ));
   return {
-    execute: mailbox.execute,
+    async execute(runId: string, run: () => Promise<unknown>) {
+      return (await getMailbox()).execute(runId, run);
+    },
     async handle(request: Request): Promise<Response> {
       const invocationId = randomUUID();
       const started = performance.now();
@@ -416,6 +423,8 @@ export function createDirectInvocationHandler(
           attempt: 1,
           requestId: request.headers.get('x-vercel-id') ?? undefined,
         };
+        const mailbox = await awaitSignal(getMailbox(), signal);
+        signal.throwIfAborted();
         let pending: Promise<InvocationOutcome>;
         try {
           pending = mailbox.submit(
