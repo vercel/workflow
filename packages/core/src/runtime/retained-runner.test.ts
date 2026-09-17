@@ -271,7 +271,9 @@ it('starts snapshot reads beside writer setup and retains one writer through det
   await fixture.send('b', 'two');
   await fixture.send('c', 'three');
   finishStep();
-  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+  // Draining three real filesystem-backed steps can exceed waitFor's 1s
+  // polling budget on Windows CI. Await the lifecycle event itself.
+  await fixture.finished;
   expect(values).toEqual(['one', 'two', 'three']);
   expect(open).toHaveBeenCalledTimes(1);
   expect(dispose).toHaveBeenCalledTimes(1);
@@ -387,7 +389,11 @@ async function setup(workflowCode = code) {
     messageId: MessageId.parse('initial-wake'),
     attempt: 1,
   };
-  const retired = vi.fn();
+  let finish!: () => void;
+  const finished = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const retired = vi.fn(() => finish());
   const owner = new RetainedRunner(
     world,
     runId,
@@ -426,7 +432,7 @@ async function setup(workflowCode = code) {
       metadata
     );
   };
-  return { owner, world, runId, metadata, send, retired };
+  return { owner, world, runId, metadata, send, retired, finished };
 }
 
 it('replays once, retains across hook inputs, and validates retries without backend reads', async () => {
