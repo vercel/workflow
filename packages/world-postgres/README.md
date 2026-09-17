@@ -231,7 +231,9 @@ Without a key, each call creates a new input.
 With invocation disabled (the default), deliveries for the same run may execute
 concurrently. A workflow request can execute a step inline and wait for a hook
 wake to abort that step, so the queue cannot hold a per-run lock for the entire
-request. Duplicate deliveries with the same idempotency key remain coalesced.
+request. Each queue instance coalesces in-flight and recently completed deliveries
+with the same idempotency key. Handlers must still tolerate at-least-once delivery
+across worker processes, restarts, or completed-message cache eviction.
 
 With invocation enabled, each Graphile worker pool registers two task
 identifiers. A task identifier selects a handler. A named queue controls which
