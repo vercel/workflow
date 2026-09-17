@@ -3666,16 +3666,15 @@ describe.concurrent('e2e', () => {
     'plainModuleDoneHook resumed via plain API route (o2flow shape)',
     { timeout: 90_000 },
     async () => {
-      const token = `plain-module-hook-${Math.random().toString(36).slice(2)}`;
-
       const run = await start(
         await getWorkflowMetadata(
           deploymentUrl,
           'workflows/102_plain_module_hook.ts',
           'waitForPlainModuleHook'
         ),
-        [token]
+        []
       );
+      const token = `plain-module-hook-${run.runId}`;
 
       await waitForHook(token, { runId: run.runId });
 
