@@ -49,6 +49,8 @@ import {
   isTerminalWorkflowRunStatus,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   StepSchema,
   slotToEventId,
   stripEventDataRefs,
@@ -2028,6 +2030,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         const [existingHook] = await getHookByToken.execute({
           token: eventData.token,
         });
+        // Set when the create ends in a `hook_conflict`: `null` for the plain
+        // conflict of an unforced create, a reason when a forced create was
+        // declined on purpose. Left `undefined` when the hook was created.
+        let forceRefusedReason: 'victim-spec-version' | null | undefined;
         if (existingHook) {
           // Idempotency: if the existing hook is the *same* (runId, hookId)
           // we are trying to create, this is either a duplicate / replayed
@@ -2077,7 +2083,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               recoveredHookValue.metadata ||= recoveredHookValue.metadataJson;
               hook = HookSchema.parse(compact(recoveredHookValue));
             }
-          } else if (eventData.force === true) {
+          } else if (eventData.force !== true) {
+            forceRefusedReason = null;
+          } else {
             // `createHook({ experimental_force: true })`: take the token over.
             // One transaction, the same order as workflow-server
             // (docs/hook-force-claim.md, specs/HookForceClaim.tla): the
@@ -2120,7 +2128,25 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   }),
                 }),
               };
-              if (victimRun && !isTerminalWorkflowRunStatus(victimRun.status)) {
+              const victimRunning =
+                victimRun !== undefined &&
+                !isTerminalWorkflowRunStatus(victimRun.status);
+              // A running victim must be able to READ the disposal about to
+              // land in its log. A runtime below
+              // SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM takes
+              // `hook_disposed{forceClaimedBy}` for its own `dispose()` and
+              // leaves `await hook` pending forever, so it is not taken from:
+              // the claimer gets the ordinary conflict, marked so its runtime
+              // knows the World declined on purpose. Decided from the victim's
+              // persisted version, never this request's. Nothing written.
+              if (
+                victimRunning &&
+                (victimRun.specVersion ?? SPEC_VERSION_LEGACY) <
+                  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
+              ) {
+                return { refused: 'victim-spec-version' as const };
+              }
+              if (victimRunning) {
                 const disposed = await insertEventRow(tx, {
                   runId: victim.runId,
                   eventId: await allocateEventId(tx, victim.runId),
@@ -2171,25 +2197,32 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                 `Hook token "${eventData.token}" changed owner during force-claim; retry`
               );
             }
-            if (takeover.inserted) {
-              takeover.inserted.metadata ||= takeover.inserted.metadataJson;
-              hook = HookSchema.parse(compact(takeover.inserted));
+            if ('refused' in takeover) {
+              forceRefusedReason = takeover.refused;
+            } else {
+              if (takeover.inserted) {
+                takeover.inserted.metadata ||= takeover.inserted.metadataJson;
+                hook = HookSchema.parse(compact(takeover.inserted));
+              }
+              storedEventData = {
+                ...(storedEventData as Record<string, unknown>),
+                // Wake-targeting fields included: a replay of this run
+                // republishes the victim's wake from this row alone when the
+                // invocation that created the hook died before waking it.
+                forceClaimedFrom: takeover.claimedFrom,
+              };
             }
-            storedEventData = {
-              ...(storedEventData as Record<string, unknown>),
-              forceClaimedFrom: {
-                runId: takeover.claimedFrom.runId,
-                hookId: takeover.claimedFrom.hookId,
-              },
-            };
-          } else {
+          }
+          if (forceRefusedReason !== undefined) {
             // Cross-hook / cross-run conflict: a different
-            // (runId, hookId) holds this token. Create a hook_conflict
-            // event instead of throwing 409. This lets the workflow
-            // continue and fail gracefully when the hook is awaited.
+            // (runId, hookId) holds this token — or a forced creation the
+            // takeover above declined. Create a hook_conflict event instead
+            // of throwing 409. This lets the workflow continue and fail
+            // gracefully when the hook is awaited.
             const conflictEventData = {
               token: eventData.token,
               conflictingRunId: existingHook.runId,
+              ...(forceRefusedReason !== null && { forceRefusedReason }),
             };
             const conflictValue = await insertEventRow(drizzle, {
               runId: effectiveRunId,

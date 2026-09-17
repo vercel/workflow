@@ -11,7 +11,11 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { createWorkflowUrl } from '@workflow/utils';
-import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+  type World,
+} from '@workflow/world';
 import {
   afterAll,
   assert,
@@ -2581,10 +2585,64 @@ describe.concurrent('e2e', () => {
           (hookId === undefined || e.correlationId === hookId)
       );
 
+    /**
+     * Whether the World behind this deployment implements the takeover. The
+     * runtime turns a `hook_conflict` answered to a forced creation into a
+     * fatal "does not support" failure, so one victim + one forced claimer on
+     * a fresh token tells the two apart. Memoized: one probe per lane.
+     *
+     * Needed because the Vercel lanes run against whichever workflow-server
+     * is deployed, and the server half of this feature ships separately (and
+     * first). Until it is deployed there, these tests are skipped rather than
+     * failed; the World-local and World-postgres lanes always run them.
+     */
+    let forceClaimSupport: Promise<boolean> | undefined;
+    const serverSupportsForceClaim = () =>
+      (forceClaimSupport ??= (async () => {
+        const token = `force-probe-${Math.random().toString(36).slice(2)}`;
+        const victim = await start(await e2e('hookForceClaimVictimWorkflow'), [
+          token,
+        ]);
+        await waitForHook(token, { runId: victim.runId });
+        const claimer = await start(
+          await e2e('hookForceClaimClaimerWorkflow'),
+          [token]
+        );
+        try {
+          await waitForHook(token, { runId: claimer.runId, timeoutMs: 60_000 });
+          return true;
+        } catch (error) {
+          const claimerRun = await getRun(claimer.runId);
+          const status = await claimerRun.status;
+          if (status !== 'failed') throw error;
+          const failure = await claimerRun.returnValue.catch((e) => e);
+          if (
+            failure instanceof Error &&
+            failure.message.includes('does not support force-claiming')
+          ) {
+            return false;
+          }
+          throw error;
+        } finally {
+          // Leave nothing waiting behind: the probe's runs are not the tests'.
+          await Promise.allSettled([
+            resumeHook(token, { message: 'probe-done' }).catch(() => {}),
+            victim.cancel().catch(() => {}),
+            claimer.cancel().catch(() => {}),
+          ]);
+        }
+      })());
+    const skipUnlessForceClaimSupported = async (ctx: TestContext) => {
+      if (!(await serverSupportsForceClaim())) {
+        ctx.skip();
+      }
+    };
+
     test(
       'takes the token over: the victim is woken and rejects with HookForceClaimedError, resumes reach the claimer',
       { timeout: 90_000 },
-      async () => {
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
         const token = `force-${Math.random().toString(36).slice(2)}`;
 
         const victim = await start(await e2e('hookForceClaimVictimWorkflow'), [
@@ -2662,7 +2720,8 @@ describe.concurrent('e2e', () => {
     test(
       'payloads delivered before the takeover stay with the victim; the iterator then throws',
       { timeout: 90_000 },
-      async () => {
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
         const token = `force-iter-${Math.random().toString(36).slice(2)}`;
         const victim = await start(
           await e2e('hookForceClaimIteratingVictimWorkflow'),
@@ -2710,7 +2769,8 @@ describe.concurrent('e2e', () => {
     test(
       'resumes in flight during the takeover are never lost: each lands in exactly one log',
       { timeout: 120_000 },
-      async () => {
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
         const token = `force-race-${Math.random().toString(36).slice(2)}`;
         const TOTAL = 24;
         const victim = await start(
@@ -2797,7 +2857,8 @@ describe.concurrent('e2e', () => {
     test(
       'a chain of takeovers: each victim ends with HookForceClaimedError, deliveries follow the current owner',
       { timeout: 120_000 },
-      async () => {
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
         const token = `force-chain-${Math.random().toString(36).slice(2)}`;
         const a = await start(await e2e('hookForceClaimVictimWorkflow'), [
           token,
@@ -2830,7 +2891,8 @@ describe.concurrent('e2e', () => {
     test(
       'takes a retained token from a finished run without touching its log',
       { timeout: 90_000 },
-      async () => {
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
         const token = `force-retained-${Math.random().toString(36).slice(2)}`;
         const victim = await start(
           await e2e('hookForceClaimRetainedVictimWorkflow'),
@@ -2873,7 +2935,8 @@ describe.concurrent('e2e', () => {
     test(
       'a run can take over its own earlier hook',
       { timeout: 90_000 },
-      async () => {
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
         const token = `force-self-${Math.random().toString(36).slice(2)}`;
         const run = await start(await e2e('hookForceClaimOwnHookWorkflow'), [
           token,
@@ -2897,6 +2960,52 @@ describe.concurrent('e2e', () => {
         );
         expect(events.filter((t) => t === 'hook_conflict')).toEqual([]);
         expect(events.filter((t) => t === 'hook_created')).toHaveLength(2);
+      }
+    );
+
+    test(
+      'declines to take a token from a run whose runtime predates involuntary disposal: the claimer gets an ordinary HookConflictError',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
+        const token = `force-legacy-${Math.random().toString(36).slice(2)}`;
+        // A run stamped one spec version below the one that understands
+        // `hook_disposed{forceClaimedBy}`. Its runtime here is the current
+        // one, but the World decides from the persisted version alone.
+        const victim = await start(
+          await e2e('hookForceClaimVictimWorkflow'),
+          [token],
+          { specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM - 1 }
+        );
+        const victimHook = await waitForHook(token, { runId: victim.runId });
+
+        const claimer = await start(
+          await e2e('hookForceClaimTolerantClaimerWorkflow'),
+          [token]
+        );
+        expect(await claimer.returnValue).toEqual({
+          role: 'refused',
+          conflictingRunId: victim.runId,
+        });
+        const claimerEvents = await allRunEvents(claimer.runId);
+        const conflict = claimerEvents.find(
+          (e) => e.eventType === 'hook_conflict'
+        );
+        expect(conflict?.eventData).toMatchObject({
+          token,
+          conflictingRunId: victim.runId,
+          forceRefusedReason: 'victim-spec-version',
+        });
+
+        // The victim was left exactly as it was, and still owns the token.
+        expect(hookEventsOf(await allRunEvents(victim.runId))).toHaveLength(1);
+        const stillOwner = await getHookByToken(token);
+        expect(stillOwner.hookId).toBe(victimHook.hookId);
+        await resumeHook(token, { message: 'still mine' });
+        expect(await victim.returnValue).toMatchObject({
+          role: 'owner',
+          received: 'still mine',
+        });
       }
     );
 

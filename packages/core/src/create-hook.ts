@@ -182,10 +182,16 @@ export interface HookOptions {
    * one that was already in flight when the takeover happened. Payloads the
    * previous owner received before the takeover stay with it.
    *
-   * Two runs forcing the same token converge on one owner; the later one
-   * wins. A finished run holding the token under `experimental_minRetention`
-   * is taken over silently. A run can also take over a token held by its own
+   * Any number of runs forcing the same token converge on one owner; each
+   * run that loses it gets `HookForceClaimedError`, and none can get stuck.
+   * A finished run holding the token under `experimental_minRetention` is
+   * taken over silently. A run can also take over a token held by its own
    * earlier hook.
+   *
+   * A token is only taken from a run whose runtime understands being taken
+   * from (started at spec version 8 or later). For an older run the World
+   * declines and the hook rejects with the ordinary `HookConflictError`,
+   * as if this option had not been set.
    *
    * Requires an explicit `token` (a generated token can never conflict) and
    * is not available on `createWebhook()`. `createHook()` throws if the

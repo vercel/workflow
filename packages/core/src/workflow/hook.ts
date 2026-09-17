@@ -287,10 +287,15 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // Store the conflict event so we can reject any awaited promises.
         const conflictEvent = event as HookConflictEvent;
         // A forced hook asked for a guarantee — this run owns the token — that
-        // a `hook_conflict` says the World could not give: an older server, or
-        // its kill switch. Surface that as the misconfiguration it is rather
-        // than the ordinary conflict the caller opted out of.
-        const forced = options.experimental_force === true;
+        // a `hook_conflict` says the World could not give. Two very different
+        // reasons: the World declined on purpose because the run holding the
+        // token predates involuntary disposal (`forceRefusedReason`), which is
+        // the ordinary conflict the caller can handle like any other; or the
+        // World does not implement forcing at all (an older server, or its
+        // kill switch), which is a misconfiguration worth failing loudly on.
+        const forced =
+          options.experimental_force === true &&
+          conflictEvent.eventData.forceRefusedReason === undefined;
         const conflictError: Error = forced
           ? new FatalError(
               `createHook({ experimental_force: true }) for token "${conflictEvent.eventData.token}" was answered with a hook_conflict: the configured World does not support force-claiming hook tokens${conflictEvent.eventData.conflictingRunId ? ` (run "${conflictEvent.eventData.conflictingRunId}" holds it)` : ''}.`

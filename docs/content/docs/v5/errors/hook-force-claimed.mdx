@@ -66,7 +66,15 @@ export async function channelWorkflow(channelId: string) {
 }
 ```
 
-Anything the replaced run still needs to publish should happen in this branch. Do not create another hook with the same token here unless this run really should take the token back: two runs forcing the same token converge on whichever registered last, and the other one receives this error again.
+Anything the replaced run still needs to publish should happen in this branch. Do not create another hook with the same token here unless this run really should take the token back: runs forcing the same token converge on whichever registered last, and every other one receives this error again.
+
+## Several runs forcing the same token
+
+Any number of runs can force the same token at once without leaving the token or the runs in a bad state. The takeovers chain: each run that loses the token receives `HookForceClaimedError` naming the run that took it, exactly one run ends up owning the token, and a run that crashes halfway through its own takeover is completed by the next request for the token. Which of several simultaneous claimers wins is not defined, so start them in order if the order matters. If a run should fall back rather than keep fighting for the token, catch `HookForceClaimedError` and exit instead of forcing again.
+
+## Runs that cannot be taken from
+
+A run that was started at a Workflow spec version below 8 (an older SDK release, a Python SDK run, or a deployment with `WORKFLOW_SEALED_LOG=0`) would never learn that its hook was disposed. The World declines to take its token: the forced hook rejects with the ordinary [`HookConflictError`](/docs/errors/hook-conflict), whose `conflictingRunId` names that run, and the run keeps receiving its payloads. Handle it like any other conflict, for example by [delegating to the active run](/docs/errors/hook-conflict#delegate-to-the-active-run). A finished run holding a retained token is taken over at any version.
 
 ## Deciding who takes over
 

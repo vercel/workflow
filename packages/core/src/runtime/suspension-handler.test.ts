@@ -370,6 +370,109 @@ describe('handleSuspension', () => {
     expect(result.timeoutSeconds).toBeUndefined();
   });
 
+  describe('force-claim victim wake', () => {
+    const claimedFrom = {
+      runId: 'wrun_victim',
+      hookId: 'hook_victim',
+      workflowName: 'victim-workflow',
+      deploymentId: 'dpl_victim',
+      runSpecVersion: SPEC_VERSION_CURRENT,
+    };
+    const forcedCreation = (slot: number): Event =>
+      ({
+        eventType: 'hook_created',
+        eventId: slotToEventId(slot),
+        runId: run.runId,
+        correlationId: 'hook_claimer',
+        createdAt: new Date(),
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          token: 'channel:1',
+          force: true,
+          forceClaimedFrom: claimedFrom,
+        },
+      }) as Event;
+    const stepCreated = (slot: number): Event =>
+      ({
+        eventType: 'step_created',
+        eventId: slotToEventId(slot),
+        runId: run.runId,
+        correlationId: 'step_after',
+        createdAt: new Date(),
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { stepName: 'after', input: [] },
+      }) as Event;
+    const worldWithQueue = (queue: ReturnType<typeof vi.fn>): World =>
+      ({
+        events: { create: vi.fn() },
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+        queue,
+      }) as unknown as World;
+
+    it('republishes the victim wake while the forced creation is the last event in the log', async () => {
+      // The invocation that created the hook died before waking the victim:
+      // its replay finds the creation as the log's tail and republishes,
+      // under the hook's idempotency key, so a wake that did go out is not
+      // duplicated.
+      const queue = vi.fn().mockResolvedValue({ messageId: 'msg_wake' });
+      await handleSuspension({
+        suspension: new WorkflowSuspension(new Map(), globalThis),
+        world: worldWithQueue(queue),
+        run,
+        eventLog: { events: [forcedCreation(3)], cursor: null },
+      });
+      expect(queue).toHaveBeenCalledTimes(1);
+      const [queueName, message, options] = queue.mock.calls[0];
+      expect(queueName).toContain('victim-workflow');
+      expect(message).toEqual({ runId: 'wrun_victim' });
+      expect(options).toMatchObject({
+        deploymentId: 'dpl_victim',
+        idempotencyKey: 'hook-force-claim-hook_claimer',
+      });
+    });
+
+    it("republishes past rows other actors appended: a delivery's hook_received is not this run's progress", async () => {
+      // The trace TLC found: the claimer dies after journaling, a delivery
+      // lands `hook_received` in its log before it comes back. The bare tail
+      // is no longer the creation, but the run itself has written nothing
+      // since, so the wake is still owed.
+      const queue = vi.fn().mockResolvedValue({ messageId: 'msg_wake' });
+      const received: Event = {
+        eventType: 'hook_received',
+        eventId: slotToEventId(4),
+        runId: run.runId,
+        correlationId: 'hook_claimer',
+        createdAt: new Date(),
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { token: 'channel:1', payload: { n: 1 } as never },
+      } as Event;
+      await handleSuspension({
+        suspension: new WorkflowSuspension(new Map(), globalThis),
+        world: worldWithQueue(queue),
+        run,
+        eventLog: { events: [forcedCreation(3), received], cursor: null },
+      });
+      expect(queue).toHaveBeenCalledTimes(1);
+    });
+
+    it('stops republishing once the run has appended anything after the creation', async () => {
+      // Progress after the creation means the invocation that made it
+      // finished, wake included. Republishing on every later replay would be
+      // a wasted wake of the victim for the rest of this run's life.
+      const queue = vi.fn().mockResolvedValue({ messageId: 'msg_wake' });
+      await handleSuspension({
+        suspension: new WorkflowSuspension(new Map(), globalThis),
+        world: worldWithQueue(queue),
+        run,
+        eventLog: {
+          events: [forcedCreation(3), stepCreated(4)],
+          cursor: null,
+        },
+      });
+      expect(queue).not.toHaveBeenCalled();
+    });
+  });
+
   // Regression test for #2777: a dispose() of an earlier hook must be
   // flushed before a later same-token hook's creation is validated, or the
   // new hook records a spurious hook_conflict against the run's own

@@ -394,10 +394,20 @@ export const HookCreatedEventSchema = z.compile(
       force: z.boolean().optional(),
       /**
        * World-written on a forced creation that did take a token over: the
-       * run and hook it was taken from. Absent when the token was free.
+       * run and hook it was taken from, plus what a queue message to that run
+       * needs (`workflowName`, `deploymentId`, `runSpecVersion`). Absent when
+       * the token was free. The wake-targeting fields are in the LOG, not only
+       * on the hook entity, so a replay can republish the victim's wake from
+       * the row alone; see `publishForceClaimVictimWake` in @workflow/core.
        */
       forceClaimedFrom: z
-        .object({ runId: z.string(), hookId: z.string() })
+        .object({
+          runId: z.string(),
+          hookId: z.string(),
+          workflowName: z.string().optional(),
+          deploymentId: z.string().optional(),
+          runSpecVersion: z.number().optional(),
+        })
         .optional(),
     }),
   })
@@ -452,6 +462,17 @@ const HookConflictEventSchema = z.compile(
       // TODO: Make this required once all persisted hook_conflict events and
       // remote World implementations always include the active hook owner's run ID.
       conflictingRunId: z.string().optional(),
+      /**
+       * Set when the creation asked for `force` and the World declined to take
+       * the token over. `victim-spec-version`: the run holding the token was
+       * started at a spec version below
+       * `SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM`, so its runtime would not
+       * understand the involuntary disposal — the forced hook gets the
+       * ordinary `HookConflictError` it opted out of instead of stranding
+       * that run. Absent on a conflict answered by a World that does not
+       * implement forcing at all.
+       */
+      forceRefusedReason: z.literal('victim-spec-version').optional(),
     }),
   })
 );
