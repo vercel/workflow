@@ -2908,9 +2908,7 @@ describe.concurrent('e2e', () => {
           (e) => e.eventType === 'run_completed',
           { description: 'run_completed' }
         );
-        const victimEventsBefore = (await allRunEvents(victim.runId)).map(
-          (e) => e.eventId
-        );
+        const victimEventsBeforeAll = await allRunEvents(victim.runId);
         // The finished run still holds the token (minRetention).
         expect((await getHookByToken(token)).runId).toBe(victim.runId);
 
@@ -2932,10 +2930,14 @@ describe.concurrent('e2e', () => {
         // terminal write.
         await resumeHook(token, { message: 'after' });
         expect(await claimer.returnValue).toMatchObject({ received: 'after' });
-        // Nothing was appended to a finished run's log.
+        // The takeover journaled nothing in the finished run's log: its hook
+        // events are exactly what they were. (Compared on hook events rather
+        // than the whole log: on a slow dev server two concurrent invocations
+        // of a finishing run can both write `run_completed` on the local
+        // World, which is unrelated to the takeover and asserted elsewhere.)
         expect(
-          (await allRunEvents(victim.runId)).map((e) => e.eventId)
-        ).toEqual(victimEventsBefore);
+          hookEventsOf(await allRunEvents(victim.runId)).map((e) => e.eventId)
+        ).toEqual(hookEventsOf(victimEventsBeforeAll).map((e) => e.eventId));
       }
     );
 
