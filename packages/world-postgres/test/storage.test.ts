@@ -3992,13 +3992,21 @@ describe('Storage (Postgres integration)', () => {
             correlationId: hook.hookId,
             eventData: { payload: new Uint8Array([1]) },
           });
+          // The rejection lands the instant the holder's commit releases the
+          // row lock, which can be before `await holder` below returns; a
+          // handler has to be attached before then or Node reports it as an
+          // unhandled rejection and the whole run fails.
+          const resumeOutcome = resume.then(
+            () => undefined,
+            (error: unknown) => error
+          );
           // Long enough for the resume to clear the unlocked check and reach the
           // locked one, where it blocks until the holder commits.
           await new Promise((resolve) => setTimeout(resolve, 250));
           releaseHolder();
           await holder;
 
-          await expect(resume).rejects.toMatchObject({
+          expect(await resumeOutcome).toMatchObject({
             name: 'HookNotFoundError',
           });
         } finally {
