@@ -68,6 +68,7 @@ import {
   guardDeploymentAffinity,
   type ReenqueueArgs,
 } from './runtime/deployment-guard.js';
+import { observeWorkflowPass } from './runtime/execution-observation.js';
 import {
   absorbSkippedSlotReport,
   appendEventLog,
@@ -148,6 +149,7 @@ import {
   replayWorkflow,
   resumeWorkflow,
   type WorkflowResumeResult,
+  type WorkflowResult,
   type WorkflowSession,
 } from './workflow.js';
 
@@ -3346,41 +3348,62 @@ export function workflowEntrypoint(
                         workflowRun,
                         eventLog.events
                       );
-                      let workflowResult: WorkflowResumeResult = retainedSession
-                        ? await resumeWorkflow(retainedSession, eventLog.events)
-                        : { type: 'replay' };
-                      // A retained resume can still report back `{ type:
-                      // 'replay' }` (internal cache miss), in which case this
-                      // pass falls through to a full replay below and is not
-                      // a retained pass. The `workflow.run` span cannot say
-                      // this: it is tagged `retained` when it opens, before
-                      // the resume result is known.
-                      servedByRetainedSession =
-                        retainedSession !== null &&
-                        workflowResult.type !== 'replay';
+                      const workflowResult: WorkflowResult =
+                        await observeWorkflowPass<WorkflowResult>(
+                          {
+                            runId,
+                            loopIteration,
+                            mode: retainedSession ? 'retained' : 'replay',
+                          },
+                          async (setMode) => {
+                            assert(
+                              eventLog.type !== 'loadAll',
+                              'Replay event log must be loaded'
+                            );
+                            let workflowResult: WorkflowResumeResult =
+                              retainedSession
+                                ? await resumeWorkflow(
+                                    retainedSession,
+                                    eventLog.events
+                                  )
+                                : { type: 'replay' };
+                            // A retained resume can still report back `{ type:
+                            // 'replay' }` (internal cache miss), in which case this
+                            // pass falls through to a full replay below and is not
+                            // a retained pass. The `workflow.run` span cannot say
+                            // this: it is tagged `retained` when it opens, before
+                            // the resume result is known.
+                            servedByRetainedSession =
+                              retainedSession !== null &&
+                              workflowResult.type !== 'replay';
 
-                      if (workflowResult.type === 'replay') {
-                        retainedSession = null;
-                        const compiled = startWorkflowCompile(workflowRun);
-                        assert(
-                          compiled,
-                          'Node workflow replay requires compiled scripts'
+                            if (workflowResult.type === 'replay') {
+                              setMode('replay');
+                              retainedSession = null;
+                              const compiled =
+                                startWorkflowCompile(workflowRun);
+                              assert(
+                                compiled,
+                                'Node workflow replay requires compiled scripts'
+                              );
+                              workflowResult = await replayWorkflow({
+                                workflowCode,
+                                workflowRun,
+                                events: eventLog.events,
+                                encryptionKey: await encryptionKey.value,
+                                replayPayloadCache,
+                                compiledWorkflowScripts: await compiled,
+                                // Turbo: the end-of-run drain inside workflow
+                                // execution commits fire-and-forget `*_created`
+                                // events before the terminal `awaitRunReady()` below.
+                                runReadyBarrier,
+                                worldCapabilities: world.capabilities,
+                              });
+                            }
+                            await payloadPrewarm;
+                            return workflowResult;
+                          }
                         );
-                        workflowResult = await replayWorkflow({
-                          workflowCode,
-                          workflowRun,
-                          events: eventLog.events,
-                          encryptionKey: await encryptionKey.value,
-                          replayPayloadCache,
-                          compiledWorkflowScripts: await compiled,
-                          // Turbo: the end-of-run drain inside workflow
-                          // execution commits fire-and-forget `*_created`
-                          // events before the terminal `awaitRunReady()` below.
-                          runReadyBarrier,
-                          worldCapabilities: world.capabilities,
-                        });
-                      }
-                      await payloadPrewarm;
 
                       if (workflowResult.type === 'suspended') {
                         // Park the live session; the suspension catch below
