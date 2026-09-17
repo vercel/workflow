@@ -262,8 +262,8 @@ async def promiseAnyWorkflow() -> str:
 #
 # A race between the two suspension kinds. `sleep` resumes from a timer the
 # world owns and a step resumes from an event the step handler writes, so these
-# assert that the orchestrator resolves whichever lands first without waiting
-# for the other — the driver bounds `durationMs` at 5s against a 10s loser.
+# assert that the orchestrator resolves whichever lands first. The driver
+# checks the winner directly and retains its overall timeout to catch hangs.
 
 
 @app.step
