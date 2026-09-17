@@ -122,6 +122,8 @@ export interface APIConfig {
    * (the built-in stream dispatcher retries only on transient errors and 429).
    */
   dispatcher?: unknown;
+  /** @internal An owner-scoped writer must not silently lose its event channel. */
+  requireWsEvents?: boolean;
   projectConfig?: {
     /** The real Vercel project ID (e.g., prj_xxx) */
     projectId?: string;

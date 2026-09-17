@@ -212,6 +212,112 @@ it('loads the startup snapshot within the backend pagination limit', async () =>
   await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
 });
 
+it('starts snapshot reads beside writer setup and retains one writer through detached steps', async () => {
+  let finishStep!: () => void;
+  const stepWait = new Promise<void>((resolve) => {
+    finishStep = resolve;
+  });
+  const values: unknown[] = [];
+  registerStepFunction('retainedWrite', async (value) => {
+    values.push(value);
+    if (value === 'one') await stepWait;
+  });
+  const fixture = await setup();
+  const reads: string[] = [];
+  let finishRunRead!: () => void;
+  const runWait = new Promise<void>((resolve) => {
+    finishRunRead = resolve;
+  });
+  const get = fixture.world.runs.get.bind(fixture.world.runs);
+  vi.spyOn(fixture.world.runs, 'get').mockImplementation((async (
+    ...args: Parameters<typeof get>
+  ) => {
+    reads.push('run');
+    await runWait;
+    return get(...args);
+  }) as typeof get);
+  const list = fixture.world.events.list.bind(fixture.world.events);
+  vi.spyOn(fixture.world.events, 'list').mockImplementation(async (params) => {
+    reads.push('events');
+    return list(params);
+  });
+  const steps = fixture.world.steps.list.bind(fixture.world.steps);
+  vi.spyOn(fixture.world.steps, 'list').mockImplementation((async (params) => {
+    reads.push('steps');
+    return steps(params);
+  }) as typeof steps);
+  const dispose = vi.fn();
+  const write = vi.fn((event, params) =>
+    fixture.world.events.create(fixture.runId, event, params)
+  );
+  const open = vi.fn(() => {
+    reads.push('writer');
+    return { create: write, dispose };
+  });
+  fixture.world.events.createWriteSession = open;
+  const startup = fixture.owner.submit(
+    { runId: fixture.runId },
+    fixture.metadata
+  );
+  await vi.waitFor(() =>
+    expect(reads).toEqual(['writer', 'run', 'events', 'steps'])
+  );
+  finishRunRead();
+  await startup;
+  await fixture.send('a', 'one');
+  await vi.waitFor(() => expect(values).toEqual(['one']));
+  await new Promise((resolve) => setTimeout(resolve, 60)); // Beyond the idle window, while a step is active.
+  expect(dispose).not.toHaveBeenCalled();
+  await fixture.send('b', 'two');
+  await fixture.send('c', 'three');
+  finishStep();
+  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+  expect(values).toEqual(['one', 'two', 'three']);
+  expect(open).toHaveBeenCalledTimes(1);
+  expect(dispose).toHaveBeenCalledTimes(1);
+  expect(write.mock.calls.map(([event]) => event.eventType)).toEqual(
+    expect.arrayContaining([
+      'run_started',
+      'hook_received',
+      'step_created',
+      'step_started',
+      'step_completed',
+      'run_completed',
+    ])
+  );
+});
+
+it.each([
+  'snapshot',
+  'write',
+] as const)('releases the owner writer after a fatal %s failure', async (failure) => {
+  registerStepFunction('retainedWrite', async () => undefined);
+  const fixture = await setup();
+  const dispose = vi.fn();
+  fixture.world.events.createWriteSession = () => ({
+    create: (event, params) => {
+      if (event.eventType === 'hook_received') throw new Error('write failed');
+      return fixture.world.events.create(fixture.runId, event, params);
+    },
+    dispose,
+  });
+  if (failure === 'snapshot')
+    vi.spyOn(fixture.world.events, 'list').mockRejectedValue(
+      new Error('snapshot failed')
+    );
+  const startup = fixture.owner.submit(
+    { runId: fixture.runId },
+    fixture.metadata
+  );
+  if (failure === 'snapshot') await expect(startup).rejects.toThrow();
+  else {
+    await startup;
+    await expect(fixture.send('a', 'one')).rejects.toThrow();
+  }
+  await vi.waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('failed');
+});
+
 it('opens hook inputs sealed to the run while retaining its VM', async () => {
   const values: unknown[] = [];
   registerStepFunction('retainedWrite', async (value) => {
@@ -551,6 +657,15 @@ it('reconstructs idempotency and VM state after an idle owner retires', async ()
     values.push(value);
   });
   const fixture = await setup();
+  const dispose = vi.fn();
+  const open = vi.fn<NonNullable<World['events']['createWriteSession']>>(
+    () => ({
+      create: (event, params) =>
+        fixture.world.events.create(fixture.runId, event, params),
+      dispose,
+    })
+  );
+  fixture.world.events.createWriteSession = open;
   await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
   await fixture.send('a', 'one');
   await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
@@ -570,6 +685,8 @@ it('reconstructs idempotency and VM state after an idle owner retires', async ()
   await fixture.send('c', 'three', recovered);
   await vi.waitFor(() => expect(retiredAgain).toHaveBeenCalled());
   expect(values).toEqual(['one', 'two', 'three']);
+  expect(open).toHaveBeenCalledTimes(2);
+  expect(dispose).toHaveBeenCalledTimes(2);
   expect(
     recovered.events.filter((event) => event.eventType === 'hook_received')
   ).toHaveLength(3);

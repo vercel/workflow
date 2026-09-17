@@ -97,6 +97,20 @@ acknowledged. The idle wait is 60 seconds, bounded by the host deadline; the
 caller does not wait for that idle interval. After retirement, the next owner
 reconstructs its state from committed history.
 
+The **owner loop** is the single serialized mailbox processor. It opens an
+optional `events.createWriteSession(runId)` before loading the initial run,
+history and step snapshot in parallel. In this World the writer opens the run's
+events WebSocket early, joins its readiness before writes, and retains the
+channel across inputs, asynchronous steps and bounded idle waits. Initial
+history reads still use GET/LIST. The channel is released with owner retirement,
+not with the input HTTP response. A warm owner automatically reuses it for hook
+and step event writes; unexpected channel loss cannot silently demote that
+writer to HTTP. An explicit HTTP transport configuration or a World using an
+HTTP-only gateway keeps its supported HTTP path.
+
+The optional event writer is a transport-resource lifetime, not an ownership
+acquisition mechanism. Worlds without it continue using `events.create`.
+
 Write acknowledgements may contain lazy payload references instead of echoed
 bytes. After validating the committed identity and position, the owner uses its
 already-known submitted bytes to construct the local event and payload-bearing

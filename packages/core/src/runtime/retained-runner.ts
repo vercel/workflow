@@ -14,6 +14,7 @@ import {
   type CreateEventRequest,
   type Event,
   type EventResult,
+  type EventWriteSession,
   getEventDataPayloadField,
   HealthCheckPayloadSchema,
   isTerminalWorkflowRunStatus,
@@ -166,6 +167,7 @@ export class RetainedRunner {
   private key?: PayloadKey;
   private payloadCache?: ReplayPayloadCache;
   private initialized = false;
+  private eventWriter?: EventWriteSession;
   private loopIteration = 0;
   private pending: MailboxItem[] = [];
   private signal?: () => void;
@@ -258,6 +260,7 @@ export class RetainedRunner {
         // Let suspension handling use its ordinary single-event path. It must
         // not classify a partially accepted batch as a concurrency recovery.
         createBatch: undefined,
+        createWriteSession: undefined,
         list: async (params) =>
           params.runId === runId
             ? { data: [...this.events], hasMore: false, cursor: null }
@@ -314,7 +317,7 @@ export class RetainedRunner {
       reject: completion.reject,
     });
     this.signal?.();
-    this.lifetime ??= this.pump();
+    this.lifetime ??= this.runOwnerLoop();
     return completion.promise;
   }
 
@@ -407,67 +410,94 @@ export class RetainedRunner {
 
   private async initialize() {
     if (this.initialized) return;
-    this.runState = await this.backend.runs.get(this.runId);
-    if (this.runState.executionContext?.retainedRunnerVersion !== 1)
-      throw new InputRejected('Run was not created for retained execution', {
-        status: 409,
-      });
-    if (useQuickJSVm(this.runState))
-      throw new RunnerFault(
-        'execution',
-        new Error('Retained runner requires the Node VM')
-      );
-    if (this.runState.expiredAt)
-      throw new InputRejected('Workflow has expired', { status: 410 });
-    if (
-      `${this.prefix}${this.runState.workflowName}` !== this.metadata.queueName
-    )
-      throw new InputRejected('Invocation target mismatch', { status: 409 });
-    if (
-      this.backend.capabilities?.deploymentAffinity &&
-      process.env.VERCEL_DEPLOYMENT_ID &&
-      this.runState.deploymentId !== process.env.VERCEL_DEPLOYMENT_ID
-    )
-      throw new InputRejected('Pinned deployment mismatch', { status: 409 });
-    this.deadline =
-      (await this.backend.getRuntimeDeadline?.())?.getTime() ?? Infinity;
-    this.key = await resolveRunEncryptionKey(this.backend, this.runState);
-    this.payloadCache = new ReplayPayloadCache(this.key);
-    let cursor: string | null = null;
-    do {
-      const page = await this.backend.events.list({
-        runId: this.runId,
-        resolveData: 'all',
-        pagination: {
-          limit: 100,
-          sortOrder: 'asc',
-          ...(cursor ? { cursor } : {}),
-        },
-      });
-      for (const event of page.data) {
-        if (requireEventSlot(event.eventId) !== this.events.length + 1)
-          throw new RunnerFault(
-            'conflict',
-            new Error('Initial event history is not contiguous')
+    this.eventWriter ??= this.backend.events.createWriteSession?.(this.runId);
+    const history: Event[] = [];
+    const steps: Step[] = [];
+    // Start history reads and channel setup at the first owner-loop turn.
+    // Each task owns its partial results until all snapshot reads have succeeded.
+    const snapshot = await Promise.allSettled([
+      (async () => {
+        this.runState = await this.backend.runs.get(this.runId);
+        if (this.runState.executionContext?.retainedRunnerVersion !== 1)
+          throw new InputRejected(
+            'Run was not created for retained execution',
+            {
+              status: 409,
+            }
           );
-        this.apply(event);
-      }
-      cursor = page.hasMore ? page.cursor : null;
-    } while (cursor);
-    do {
-      const page = await this.backend.steps.list({
-        runId: this.runId,
-        resolveData: 'all',
-        pagination: { limit: 100, ...(cursor ? { cursor } : {}) },
-      });
-      for (const step of page.data) this.steps.set(step.stepId, step);
-      cursor = page.hasMore ? page.cursor : null;
-    } while (cursor);
+        if (useQuickJSVm(this.runState))
+          throw new RunnerFault(
+            'execution',
+            new Error('Retained runner requires the Node VM')
+          );
+        if (this.runState.expiredAt)
+          throw new InputRejected('Workflow has expired', { status: 410 });
+        if (
+          `${this.prefix}${this.runState.workflowName}` !==
+          this.metadata.queueName
+        )
+          throw new InputRejected('Invocation target mismatch', {
+            status: 409,
+          });
+        if (
+          this.backend.capabilities?.deploymentAffinity &&
+          process.env.VERCEL_DEPLOYMENT_ID &&
+          this.runState.deploymentId !== process.env.VERCEL_DEPLOYMENT_ID
+        )
+          throw new InputRejected('Pinned deployment mismatch', {
+            status: 409,
+          });
+        this.deadline =
+          (await this.backend.getRuntimeDeadline?.())?.getTime() ?? Infinity;
+        this.key = await resolveRunEncryptionKey(this.backend, this.runState);
+        this.payloadCache = new ReplayPayloadCache(this.key);
+      })(),
+      (async () => {
+        let cursor: string | null = null;
+        do {
+          const page = await this.backend.events.list({
+            runId: this.runId,
+            resolveData: 'all',
+            pagination: {
+              limit: 100,
+              sortOrder: 'asc',
+              ...(cursor ? { cursor } : {}),
+            },
+          });
+          history.push(...page.data);
+          cursor = page.hasMore ? page.cursor : null;
+        } while (cursor);
+      })(),
+      (async () => {
+        let cursor: string | null = null;
+        do {
+          const page: {
+            data: Step[];
+            hasMore: boolean;
+            cursor: string | null;
+          } = await this.backend.steps.list({
+            runId: this.runId,
+            resolveData: 'all',
+            pagination: { limit: 100, ...(cursor ? { cursor } : {}) },
+          });
+          steps.push(...page.data);
+          cursor = page.hasMore ? page.cursor : null;
+        } while (cursor);
+      })(),
+    ]);
+    const failed = snapshot.find((result) => result.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
+    for (const event of history) {
+      if (requireEventSlot(event.eventId) !== this.events.length + 1)
+        throw new RunnerFault(
+          'conflict',
+          new Error('Initial event history is not contiguous')
+        );
+      this.apply(event);
+    }
+    for (const step of steps) this.steps.set(step.stepId, step);
     this.initialized = true;
-    if (
-      !isTerminalWorkflowRunStatus(this.runState.status) &&
-      !this.runState.startedAt
-    )
+    if (!isTerminalWorkflowRunStatus(this.run.status) && !this.run.startedAt)
       await this.commit({
         eventType: 'run_started',
         specVersion: SPEC_VERSION_CURRENT,
@@ -555,11 +585,15 @@ export class RetainedRunner {
       const spanId = randomUUID();
       this.observe('persist', 'begin', spanId, { eventType: event.eventType });
       try {
-        const result = await this.backend.events.create(this.runId, wire, {
+        const params: CreateEventParams = {
           ...options,
           resolveData: 'none',
           eventCount: this.events.length,
-        });
+          skipPreload: true,
+        };
+        const result = await (this.eventWriter
+          ? this.eventWriter.create(wire, params)
+          : this.backend.events.create(this.runId, wire, params));
         const conflict = (reason: string): never => {
           throw new RunnerFault(
             'conflict',
@@ -850,7 +884,7 @@ export class RetainedRunner {
     this.workers.set(step.stepId, work);
   }
 
-  private async pump() {
+  private async runOwnerLoop() {
     while (!this.closing && !this.fault) {
       const item = this.pending.shift();
       if (!item) {
@@ -888,6 +922,15 @@ export class RetainedRunner {
       new WorkflowWorldError('Runner lifetime ended', { status: 503 });
     for (const item of this.pending.splice(0)) item.reject(error);
     this.session = undefined;
+    try {
+      await this.eventWriter?.dispose();
+    } catch {
+      console.error('[workflow] Could not release owner event writer', {
+        runId: this.runId,
+        ownerId: this.id,
+      });
+    }
+    this.eventWriter = undefined;
     if (!this.fault || this.runState?.status === 'failed') this.retire();
   }
 
