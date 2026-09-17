@@ -452,6 +452,7 @@ export async function withEventPostRetry<T>(
   eventType: WorkflowEventType,
   options?: EventPostRetryOptions
 ): Promise<T> {
+  if (process.env.WORKFLOW_RETAINED_RUNNER === '1') return fn();
   const retryable = isEligibleForTransientRetry(eventType, options);
   // Throttle waits draw on a shared per-POST budget instead of the transient
   // attempt counter, so a throttled write keeps its full transient-blip

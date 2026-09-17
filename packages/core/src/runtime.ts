@@ -92,7 +92,6 @@ import {
   stepDispatchIdempotencyKey,
   withHealthCheck,
 } from './runtime/helpers.js';
-import { withRunInputs } from './runtime/invocations.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
@@ -102,6 +101,7 @@ import {
   resumeTimingForMessage,
   resumeTrackingFromMessage,
 } from './runtime/resume-latency.js';
+import { withRetainedRunner } from './runtime/retained-runner.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
 import {
   DEFAULT_STEP_MAX_RETRIES,
@@ -148,8 +148,8 @@ import {
   compileWorkflowBundle,
   replayWorkflow,
   resumeWorkflow,
-  type WorkflowResumeResult,
   type WorkflowResult,
+  type WorkflowResumeResult,
   type WorkflowSession,
 } from './workflow.js';
 
@@ -727,7 +727,11 @@ export function workflowEntrypoint(
   const handler = (worldHandlers: World) =>
     worldHandlers.createQueueHandler(
       workflowPrefix,
-      withRunInputs(worldHandlers)(async (message_, metadata, activity) => {
+      withRetainedRunner(
+        worldHandlers,
+        workflowPrefix,
+        workflowCode
+      )(async (message_, metadata, activity) => {
         // T2 of the hook-resume TTR window (see runtime/resume-latency.ts):
         // the instant this consumer began, before message parsing. Only used
         // when the message turns out to carry resume timing; taking it

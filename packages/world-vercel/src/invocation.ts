@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowWorldError } from '@workflow/errors';
 import {
+  captureInvocationOutcome,
   serializeWorkflowError,
   unwrapInvocationOutcome,
 } from '@workflow/errors/invocation';
@@ -63,6 +64,7 @@ export function invocationAffinity(runId: string): string {
 }
 
 const Envelope = z.object({
+  kind: z.enum(['input', 'wake']).default('input'),
   version: z.literal(1),
   runId: z.string().min(1).max(256),
   requestId: z.string().min(1).max(256),
@@ -173,7 +175,8 @@ async function authenticate(
 }
 
 export function createInvoker(
-  config: APIConfig | undefined
+  config: APIConfig | undefined,
+  kind: 'input' | 'wake' = 'input'
 ): NonNullable<Queue['invoke']> | undefined {
   const settings = invocationConfig(config);
   if (!settings) return undefined;
@@ -215,6 +218,7 @@ export function createInvoker(
       }
       const token = await (settings.getToken ?? getVercelOidcToken)();
       const payload = Envelope.parse({
+        kind,
         version: 1,
         runId,
         requestId,
@@ -405,13 +409,17 @@ export function createDirectInvocationHandler(
           request.signal,
           AbortSignal.timeout(input.timeoutMs),
         ]);
-        const run = await awaitSignal(
-          getWorkflowRun(input.runId, { resolveData: 'none' }, config),
-          signal
-        );
+        const retained = process.env.WORKFLOW_RETAINED_RUNNER === '1';
+        const run = retained
+          ? undefined
+          : await awaitSignal(
+              getWorkflowRun(input.runId, { resolveData: 'none' }, config),
+              signal
+            );
         if (
-          run.deploymentId !== input.deploymentId ||
-          input.queueName !== `${prefix}${run.workflowName}`
+          run &&
+          (run.deploymentId !== input.deploymentId ||
+            input.queueName !== `${prefix}${run.workflowName}`)
         )
           throw new WorkflowWorldError('Invocation target mismatch', {
             status: 409,
@@ -423,6 +431,44 @@ export function createDirectInvocationHandler(
           attempt: 1,
           requestId: request.headers.get('x-vercel-id') ?? undefined,
         };
+        if (retained) {
+          const message =
+            input.kind === 'wake'
+              ? input.input
+              : {
+                  runId: input.runId,
+                  invoke: true,
+                  requestId: input.requestId,
+                  input: input.input,
+                };
+          if (
+            !message ||
+            typeof message !== 'object' ||
+            !('runId' in message) ||
+            message.runId !== input.runId ||
+            !input.queueName.startsWith(prefix)
+          ) {
+            throw new WorkflowWorldError('Invocation target mismatch', {
+              status: 409,
+            });
+          }
+          const outcome = await awaitSignal(
+            captureInvocationOutcome(() => handler(message, metadata)),
+            signal
+          );
+          logInvocationRouting('direct.completed', {
+            ...routing,
+            ...target,
+            elapsedMs: performance.now() - started,
+            ok: outcome.ok,
+          });
+          return new Response(encodeBody(outcome), {
+            headers: {
+              'content-type': 'application/cbor',
+              [INVOCATION_HEADER]: '1',
+            },
+          });
+        }
         const mailbox = await awaitSignal(getMailbox(), signal);
         signal.throwIfAborted();
         let pending: Promise<InvocationOutcome>;

@@ -148,6 +148,68 @@ afterEach(() => {
 });
 
 describe('direct Vercel invocation', () => {
+  it('lets the retained owner validate input without a per-request run lookup or extra continuation', async () => {
+    vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
+    const handler = vi.fn(async () => ({ status: 'accepted' }));
+    const receive = createQueue(config).createQueueHandler(
+      '__wkf_workflow_',
+      handler
+    );
+    const response = await receive(request());
+    expect(response.status).toBe(200);
+    expect(decode(Buffer.from(await response.arrayBuffer()))).toEqual({
+      ok: true,
+      value: { status: 'accepted' },
+    });
+    expect(mocks.run).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(mocks.vqsRequest).not.toHaveBeenCalled();
+  });
+
+  it('forwards retained-runner queue wakes to the affinitized HTTP endpoint', async () => {
+    vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
+    const fetch = vi.fn(async (_url: unknown, init: RequestInit) => {
+      expect(new Headers(init.headers).get(AFFINITY_HEADER)).toBe(
+        invocationAffinity(runId)
+      );
+      expect(decode(Buffer.from(init.body as Uint8Array))).toMatchObject({
+        kind: 'wake',
+        runId,
+        input: { runId },
+      });
+      return new Response(encode({ ok: true, value: undefined }), {
+        headers: { [INVOCATION_HEADER]: '1' },
+      });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const handler = vi.fn();
+    const receive = createQueue(config).createQueueHandler(
+      '__wkf_workflow_',
+      handler
+    );
+    await receive(
+      new Request(endpoint.replace('/invoke', '/flow'), {
+        method: 'POST',
+        body: encode({
+          payload: { runId },
+          queueName: '__wkf_workflow_example',
+          deploymentId: 'dpl_pinned',
+        }),
+      })
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('does not retry retained-runner persistence operations', async () => {
+    vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
+    const { withEventPostRetry } = await import('./event-retry.js');
+    const operation = vi.fn().mockRejectedValue(new Error('ECONNRESET'));
+    await expect(
+      withEventPostRetry(operation, 'step_completed')
+    ).rejects.toThrow('ECONNRESET');
+    expect(operation).toHaveBeenCalledTimes(1);
+  });
   it('preserves diagnostic response headers for an unavailable invocation response', async () => {
     vi.stubGlobal(
       'fetch',

@@ -77,6 +77,37 @@ or another execution request. The implementation adds no durable input storage
 or stale-writer fencing. Test placement and deployment routing on the actual
 endpoint before relying on affinity for single-runner exclusion.
 
+## Retained runner (opt-in)
+
+Set `WORKFLOW_RETAINED_RUNNER=1` alongside the direct invocation configuration
+for new, same-deployment runs using the Node VM. This mode requires the World
+to provide exclusive per-run delivery. The header is a routing mechanism;
+the runtime does not add a distributed ownership protocol.
+
+The owner loads committed history once and retains the VM across hook inputs.
+It keeps hook and idempotency state locally. One mailbox loop serializes input
+processing and event commits, including writes from asynchronous step workers.
+Step bodies currently run in the owning process; the mailbox remains available
+while they await I/O. Queue wakes enter through the direct endpoint instead of
+starting a second execution path.
+
+An input's `hook_received` event is committed before it is fed to the retained
+VM. Follow-up events emitted by the VM must also commit before the input is
+acknowledged. The idle wait is 60 seconds, bounded by the host deadline; the
+caller does not wait for that idle interval. After retirement, the next owner
+reconstructs its state from committed history.
+
+Unexpected returned events or persistence failures stop the owner. It attempts
+to persist `run_failed` and rejects unfinished inputs. No event-write retries or
+conflict reconciliation are performed in this mode. If the terminal failure
+cannot be persisted, the failure observation explicitly reports that fact.
+
+The optional `workflow.runner` Node diagnostics channel reports mailbox turns,
+persistence, step execution, and terminal-failure recording. Messages include
+owner/span identities and timing, not workflow payloads. `workflow.execution`
+reports replay versus retained VM passes. Older pinned runs retain their prior
+execution model; new runs carry `executionContext.retainedRunnerVersion: 1`.
+
 ## Custom dispatcher
 
 Storage and queue HTTP requests default to a shared undici `RetryAgent` that handles connection pooling and retries. Direct invocation does not use this retrying default. Pass a custom `dispatcher` to override the HTTP dispatcher, for example, to tune undici on newer Node.js runtimes:

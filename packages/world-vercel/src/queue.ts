@@ -772,6 +772,10 @@ export function createQueue(config?: APIConfig): Queue {
             runHandler({ runId }, metadata, process.env.VERCEL_DEPLOYMENT_ID)
         )
       : undefined;
+    const forwardWake =
+      process.env.WORKFLOW_RETAINED_RUNNER === '1'
+        ? createInvoker(config, 'wake')
+        : undefined;
     const vqsHandler = client.handleCallback(
       async (message: unknown, metadata) => {
         if (!message || !metadata) return;
@@ -808,7 +812,12 @@ export function createQueue(config?: APIConfig): Queue {
         const started = performance.now();
         if (direct) logInvocationRouting('execution.received', observation);
         try {
-          if (direct && executorRunId)
+          const wakeRunId = getRunIdFromPayload(payload);
+          if (forwardWake && wakeRunId && !('__healthCheck' in payload)) {
+            await forwardWake(wakeRunId, payload, {
+              idempotencyKey: metadata.messageId,
+            });
+          } else if (direct && executorRunId)
             await direct.execute(executorRunId, invokeHandler);
           else await invokeHandler();
           if (direct)
@@ -824,6 +833,11 @@ export function createQueue(config?: APIConfig): Queue {
               elapsedMs: performance.now() - started,
               ok: false,
             });
+          if (
+            forwardWake &&
+            (error as { code?: string })?.code === 'RETAINED_RUNNER_FAILED'
+          )
+            return;
           throw error;
         }
       },

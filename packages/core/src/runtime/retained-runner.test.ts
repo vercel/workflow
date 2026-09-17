@@ -1,0 +1,357 @@
+import { channel } from 'node:diagnostics_channel';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  MessageId,
+  SPEC_VERSION_CURRENT,
+  ValidQueueName,
+  type World,
+} from '@workflow/world';
+import { createWorld } from '@workflow/world-local';
+import { ulid } from 'ulid';
+import { afterEach, expect, it, vi } from 'vitest';
+import { registerStepFunction } from '../private.js';
+import {
+  dehydrateStepReturnValue,
+  dehydrateWorkflowArguments,
+} from '../serialization.js';
+import { RetainedRunner } from './retained-runner.js';
+
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup();
+  vi.restoreAllMocks();
+});
+const code = `
+  const createHook = globalThis[Symbol.for('WORKFLOW_CREATE_HOOK')];
+  const write = globalThis[Symbol.for('WORKFLOW_USE_STEP')]('retainedWrite');
+  async function workflow() {
+    const hook = createHook({ token: 'retained-token' });
+    let count = 0;
+    for await (const input of hook) {
+      await write(input);
+      if (++count === 3) break;
+    }
+    hook[Symbol.dispose]();
+    return count;
+  }
+  globalThis.__private_workflows = new Map([['workflow', workflow]]);
+`;
+
+async function setup(workflowCode = code) {
+  const directory = await mkdtemp(join(tmpdir(), 'retained-runner-'));
+  const world = createWorld({ dataDir: directory }) as World;
+  cleanups.push(async () => {
+    await world.close?.();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const runId = `wrun_${ulid()}`;
+  await world.events.create(runId, {
+    eventType: 'run_created',
+    specVersion: SPEC_VERSION_CURRENT,
+    eventData: {
+      deploymentId: 'test',
+      workflowName: 'workflow',
+      executionContext: { retainedRunnerVersion: 1 },
+      input: await dehydrateWorkflowArguments([], runId, undefined, []),
+    },
+  });
+  const metadata = {
+    queueName: ValidQueueName.parse('__wkf_workflow_workflow'),
+    messageId: MessageId.parse('initial-wake'),
+    attempt: 1,
+  };
+  const retired = vi.fn();
+  const owner = new RetainedRunner(
+    world,
+    runId,
+    '__wkf_workflow_',
+    workflowCode,
+    metadata,
+    retired,
+    40
+  );
+  const send = async (requestId: string, value: string, target = owner) => {
+    const hook = target.events.find(
+      (event) => event.eventType === 'hook_created'
+    );
+    if (!hook || hook.eventType !== 'hook_created')
+      throw new Error('hook not registered');
+    return target.submit(
+      {
+        runId,
+        invoke: true,
+        requestId,
+        input: {
+          type: 'hook_resume',
+          version: 1,
+          hookId: hook.correlationId,
+          token: hook.eventData.token,
+          payload: await dehydrateStepReturnValue(
+            value,
+            runId,
+            undefined,
+            [],
+            globalThis,
+            false
+          ),
+        },
+      },
+      metadata
+    );
+  };
+  return { owner, world, runId, metadata, send, retired };
+}
+
+it('replays once, retains across hook inputs, and validates retries without backend reads', async () => {
+  const values: unknown[] = [];
+  registerStepFunction('retainedWrite', async (value) => {
+    values.push(value);
+  });
+  const fixture = await setup();
+  const modes: string[] = [];
+  const receive = (value: unknown) => {
+    const event = value as { runId: string; event: string; mode: string };
+    if (event.runId === fixture.runId && event.event === 'begin')
+      modes.push(event.mode);
+  };
+  channel('workflow.execution').subscribe(receive);
+  cleanups.push(async () => {
+    channel('workflow.execution').unsubscribe(receive);
+  });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  const runs = vi.spyOn(fixture.world.runs, 'get');
+  const hooks = vi.spyOn(fixture.world.hooks, 'getByToken');
+  const events = vi.spyOn(fixture.world.events, 'list');
+  await expect(fixture.send('a', 'one')).resolves.toEqual({
+    status: 'accepted',
+  });
+  await expect(fixture.send('a', 'one')).resolves.toEqual({
+    status: 'accepted',
+  });
+  await expect(fixture.send('a', 'changed')).rejects.toMatchObject({
+    status: 409,
+  });
+  await expect(fixture.send('b', 'two')).resolves.toEqual({
+    status: 'accepted',
+  });
+  await expect(fixture.send('c', 'three')).resolves.toEqual({
+    status: 'accepted',
+  });
+  await vi.waitFor(() => expect(values).toEqual(['one', 'two', 'three']));
+  await vi.waitFor(() =>
+    expect(
+      fixture.owner.events.some((event) => event.eventType === 'run_completed')
+    ).toBe(true)
+  );
+  expect(runs).not.toHaveBeenCalled();
+  expect(hooks).not.toHaveBeenCalled();
+  expect(events).not.toHaveBeenCalled();
+  expect(modes[0]).toBe('replay');
+  expect(modes.filter((mode) => mode === 'replay')).toHaveLength(1);
+  expect(modes.slice(1).every((mode) => mode === 'retained')).toBe(true);
+  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+});
+
+it('fails every unfinished input and durably fails the run after a persistence failure', async () => {
+  registerStepFunction('retainedWrite', async () => undefined);
+  const fixture = await setup();
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  vi.spyOn(fixture.world.events, 'create').mockImplementation((async (
+    id,
+    event,
+    params
+  ) => {
+    if (event.eventType === 'hook_received')
+      throw new Error('write unavailable');
+    return create(id, event, params);
+  }) as typeof fixture.world.events.create);
+  const results = await Promise.allSettled([
+    fixture.send('a', 'one'),
+    fixture.send('b', 'two'),
+  ]);
+  expect(results.every((result) => result.status === 'rejected')).toBe(true);
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('failed');
+  expect(
+    fixture.owner.events.some((event) => event.eventType === 'hook_received')
+  ).toBe(false);
+});
+
+it('treats an unexpected returned event as fatal and records a durable terminal failure', async () => {
+  registerStepFunction('retainedWrite', async () => undefined);
+  const fixture = await setup();
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  vi.spyOn(fixture.world.events, 'create').mockImplementation((async (
+    id,
+    event,
+    params
+  ) => {
+    const result = await create(id, event, params);
+    if (event.eventType === 'hook_received' && result.event)
+      return {
+        ...result,
+        event: { ...result.event, correlationId: 'unexpected-hook' },
+      };
+    return result;
+  }) as typeof fixture.world.events.create);
+  await expect(fixture.send('a', 'one')).rejects.toMatchObject({
+    code: 'RETAINED_RUNNER_FAILED',
+    kind: 'conflict',
+    terminalPersisted: true,
+  });
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('failed');
+});
+
+it('exposes failure to persist run_failed while rejecting unfinished inputs', async () => {
+  registerStepFunction('retainedWrite', async () => undefined);
+  const fixture = await setup();
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  const events: Record<string, unknown>[] = [];
+  const receiver = (event: unknown) =>
+    events.push(event as Record<string, unknown>);
+  channel('workflow.runner').subscribe(receiver);
+  cleanups.push(async () => {
+    channel('workflow.runner').unsubscribe(receiver);
+  });
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(fixture.world.events, 'create').mockRejectedValue(
+    new Error('storage unavailable')
+  );
+  const results = await Promise.allSettled([
+    fixture.send('a', 'one'),
+    fixture.send('b', 'two'),
+  ]);
+  expect(results.every((result) => result.status === 'rejected')).toBe(true);
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      runId: fixture.runId,
+      phase: 'failure',
+      event: 'end',
+      terminalPersisted: false,
+      status: 'error',
+    })
+  );
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('running');
+});
+
+it('holds acknowledgements behind persistence and serializes competing mailbox inputs', async () => {
+  registerStepFunction('retainedWrite', async () => undefined);
+  const fixture = await setup();
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let active = 0;
+  let maximum = 0;
+  let first = true;
+  vi.spyOn(fixture.world.events, 'create').mockImplementation((async (
+    id,
+    event,
+    params
+  ) => {
+    maximum = Math.max(maximum, ++active);
+    try {
+      if (event.eventType === 'hook_received' && first) {
+        first = false;
+        entered.resolve();
+        await release.promise;
+      }
+      return await create(id, event, params);
+    } finally {
+      active--;
+    }
+  }) as typeof fixture.world.events.create);
+  let acknowledged = false;
+  const a = fixture.send('a', 'one').then(() => {
+    acknowledged = true;
+  });
+  await entered.promise;
+  const b = fixture.send('b', 'two');
+  expect(acknowledged).toBe(false);
+  expect(
+    fixture.owner.events.filter((event) => event.eventType === 'hook_received')
+  ).toHaveLength(0);
+  release.resolve();
+  await Promise.all([a, b]);
+  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+  expect(maximum).toBe(1);
+});
+
+it('processes a self-hook while a step waits for its invocation result', async () => {
+  let send: (id: string, value: string) => Promise<unknown>;
+  registerStepFunction('sendRetainedHook', async () => {
+    await send('self', 'value');
+    return 'step done';
+  });
+  const fixture = await setup(`
+    const createHook = globalThis[Symbol.for('WORKFLOW_CREATE_HOOK')];
+    const send = globalThis[Symbol.for('WORKFLOW_USE_STEP')]('sendRetainedHook');
+    async function workflow() {
+      const hook = createHook({ token: 'retained-token' });
+      await Promise.all([send(), hook]);
+      hook[Symbol.dispose]();
+      return 'done';
+    }
+    globalThis.__private_workflows = new Map([['workflow', workflow]]);
+  `);
+  send = fixture.send;
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await vi.waitFor(() =>
+    expect(
+      fixture.owner.events.some((event) => event.eventType === 'run_completed')
+    ).toBe(true)
+  );
+  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+});
+
+it('commits cancellation through the mailbox and rejects later hook inputs', async () => {
+  registerStepFunction('retainedWrite', async () => undefined);
+  const fixture = await setup();
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.owner.submit(
+    {
+      runId: fixture.runId,
+      invoke: true,
+      requestId: 'cancel',
+      input: { type: 'run_cancel', version: 1 },
+    },
+    fixture.metadata
+  );
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'cancelled'
+  );
+  await expect(fixture.send('late', 'value')).rejects.toBeInstanceOf(Error);
+});
+
+it('reconstructs idempotency and VM state after an idle owner retires', async () => {
+  const values: unknown[] = [];
+  registerStepFunction('retainedWrite', async (value) => {
+    values.push(value);
+  });
+  const fixture = await setup();
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.send('a', 'one');
+  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+  const retiredAgain = vi.fn();
+  const recovered = new RetainedRunner(
+    fixture.world,
+    fixture.runId,
+    '__wkf_workflow_',
+    code,
+    fixture.metadata,
+    retiredAgain,
+    40
+  );
+  await recovered.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.send('a', 'one', recovered);
+  await fixture.send('b', 'two', recovered);
+  await fixture.send('c', 'three', recovered);
+  await vi.waitFor(() => expect(retiredAgain).toHaveBeenCalled());
+  expect(values).toEqual(['one', 'two', 'three']);
+  expect(
+    recovered.events.filter((event) => event.eventType === 'hook_received')
+  ).toHaveLength(3);
+});

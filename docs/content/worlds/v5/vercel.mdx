@@ -182,6 +182,26 @@ Acceptance confirms input processing, not eventual continuation success. A later
 continuation failure is logged and requires existing runtime recovery or another
 execution request; this transport adds no durable recovery wake.
 
+### Retained runner
+
+For new same-deployment Node VM runs, `WORKFLOW_RETAINED_RUNNER=1` enables a
+resident owner behind the direct invocation endpoint. The World must provide
+exclusive per-run delivery. The owner replays once, validates hook inputs using
+in-memory state, and serializes event persistence and state updates before
+acknowledging each input. Its VM stays resident while suspended for up to
+60 seconds, subject to the host deadline.
+
+Step bodies run as asynchronous workers in the owning process; their state
+changes return to the same mailbox loop. Queue wakes use the direct endpoint.
+Conflicting events and persistence failures stop the owner, attempt a durable
+run failure, and reject unfinished inputs. An inability to record that terminal
+failure is reported explicitly. This mode does not retry failed event writes
+or reconcile conflicting history.
+
+Node diagnostics channels `workflow.runner` and `workflow.execution` expose
+owner turns, persistence, step execution, failure recording and VM mode without
+including workflow payloads. Existing pinned runs keep their previous behavior.
+
 ## Limitations
 
 - **No run migration**: A run's region is fixed at creation. Existing runs cannot be moved to a different region.

@@ -6,7 +6,13 @@ const observations = channel('workflow.execution');
 
 /** Observe VM passes without exposing workflow inputs, results, or errors. */
 export async function observeWorkflowPass<T>(
-  context: { runId: string; loopIteration: number; mode: ExecutionMode },
+  context: {
+    runId: string;
+    loopIteration: number;
+    mode: ExecutionMode;
+    parentSpanId?: string;
+    ownerId?: string;
+  },
   execute: (setMode: (mode: ExecutionMode) => void) => Promise<T>
 ): Promise<T> {
   if (!observations.hasSubscribers) return execute(() => {});
@@ -21,6 +27,8 @@ export async function observeWorkflowPass<T>(
       runId: context.runId,
       passId,
       loopIteration: context.loopIteration,
+      parentSpanId: context.parentSpanId,
+      ownerId: context.ownerId,
       engine: 'node',
       mode,
       at: Date.now(),

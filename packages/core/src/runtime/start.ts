@@ -639,6 +639,11 @@ export async function start<TArgs extends unknown[], TResult>(
       const workflowVm = getWorkflowVmFromEnv();
 
       const executionContext = {
+        ...(process.env.WORKFLOW_RETAINED_RUNNER === '1' &&
+        world.capabilities?.invoke &&
+        deploymentId === currentDeploymentId
+          ? { retainedRunnerVersion: 1 }
+          : {}),
         traceCarrier,
         workflowCoreVersion,
         features: { encryption: !!encryptionKey },
@@ -660,26 +665,27 @@ export async function start<TArgs extends unknown[], TResult>(
           : {}),
       };
 
-      // Call events.create (run_created) and queue in parallel.
+      // Retained execution requires run creation to commit before delivery.
+      // The legacy path calls events.create and queue in parallel.
       // If events.create fails with 429/5xx, the run was still accepted
       // via the queue and creation will be re-tried async by the runtime.
-      const [runCreatedResult, queueResult] = await Promise.allSettled([
-        world.events.create(
-          runId,
-          {
-            eventType: 'run_created',
-            specVersion,
-            eventData: {
-              deploymentId: deploymentId,
-              workflowName: workflowName,
-              input: workflowArguments,
-              executionContext,
-              ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
-              ...attributeSeed,
-            },
+      const creation = world.events.create(
+        runId,
+        {
+          eventType: 'run_created',
+          specVersion,
+          eventData: {
+            deploymentId: deploymentId,
+            workflowName: workflowName,
+            input: workflowArguments,
+            executionContext,
+            ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
+            ...attributeSeed,
           },
-          { v1Compat }
-        ),
+        },
+        { v1Compat }
+      );
+      const enqueue = () =>
         world.queue(
           getWorkflowQueueName(workflowName, opts.namespace),
           {
@@ -711,7 +717,12 @@ export async function start<TArgs extends unknown[], TResult>(
             // this field.
             ...(opts.region !== undefined ? { region: opts.region } : {}),
           }
-        ),
+        );
+      const [runCreatedResult, queueResult] = await Promise.allSettled([
+        creation,
+        executionContext.retainedRunnerVersion === 1
+          ? creation.then(enqueue)
+          : enqueue(),
       ]);
 
       // Queue failure is always fatal: the run was not enqueued
