@@ -134,6 +134,21 @@ export async function runWorkflow(
     const workflowDiscontinuation = withResolvers<void>();
 
     const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
+    // Correlation IDs are ordinals of this one seeded sequence. The draw
+    // counter is the progress metric for `quiesceEarlierCascades`
+    // (WORKFLOW_LOG_ORDER_DRAWS): a quiet turn is one that drew nothing. It
+    // counts EVERY draw from the sequence — this same function is installed as
+    // the `STABLE_ULID` global below, which serialization draws stream ids
+    // from during dehydration — deliberately: quiescence must also wait out
+    // serialization-driven draws, and counting extra draws only extends the
+    // wait (see the termination note on `quiesceEarlierCascades`). Seeding
+    // every draw with `startedAt` also keeps a stream id minted during
+    // dehydration from latching the host wall clock into the sequence.
+    let mintCount = 0;
+    const generateUlid = () => {
+      mintCount += 1;
+      return ulid(+startedAt);
+    };
     const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
     );
@@ -170,7 +185,10 @@ export async function runWorkflow(
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
       eventsConsumer,
-      generateUlid: () => ulid(+startedAt),
+      generateUlid,
+      get mintCount() {
+        return mintCount;
+      },
       generateNanoid,
       invocationsQueue: new Map(),
       // Use getter/setter so the EventsConsumer's getPromiseQueue() always
@@ -234,7 +252,7 @@ export async function runWorkflow(
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_CONTEXT_SYMBOL] = ctx;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
-    vmGlobalThis[STABLE_ULID] = ulid;
+    vmGlobalThis[STABLE_ULID] = generateUlid;
 
     // NOTE: Will have a config override to use the custom fetch step.
     //       For now `fetch` must be explicitly imported from `workflow`.
