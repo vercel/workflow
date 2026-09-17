@@ -818,3 +818,159 @@ export async function wakeLoopReproWorkflow(
 
   return { runId, cycles, freshWakes, staleWakes, heartbeats, ledger };
 }
+
+interface InlineHangInput {
+  token: string;
+  /** Parallel tasks kept in flight. Defaults to 3, which is
+   *  `MAX_INLINE_STEPS`, so the whole batch competes for inline slots and one
+   *  killed invocation takes the entire batch with it. */
+  width?: number;
+  /** Total tasks the pool works through. */
+  tasks?: number;
+  /** Duration of a task that is not the victim. Must be well under
+   *  `victimDelayMs` so the siblings' `step_completed` commit first. */
+  siblingMs?: number;
+  /** How long the victim runs before killing its invocation. Sized so the
+   *  siblings have committed and the pool has already dispatched their
+   *  replacements, which is the log shape the next replay has to re-derive. */
+  victimDelayMs?: number;
+  /** Pool index of the task that kills its invocation. */
+  victimTask?: number;
+  /** Absolute epoch ms. The victim stops killing after this, so the run can
+   *  finish and a non-corrupt attempt is reported as `completed` rather than
+   *  sitting `stuck` until the harness times it out. */
+  killUntilMs: number;
+  payloadBytes?: number;
+}
+
+interface InlineHangResult {
+  runId: string;
+  tasks: number;
+  width: number;
+  completedOrder: number[];
+}
+
+/**
+ * The victim task. It does not throw and it does not return: it takes the
+ * whole invocation down while it is still an in-flight inline step, which is
+ * the one thing a `"use step"` body cannot express any other way.
+ *
+ * That is deliberately the same *log* outcome as the production trigger, which
+ * was a step that hung until the platform killed the function at its
+ * `maxDuration`: no `step_completed`, no `step_failed`, no `step_retrying`, and
+ * no ack, so the run is redelivered with the step still recorded as started.
+ * `process.exit` just gets there in seconds instead of in 800 of them.
+ */
+async function inlineHangTaskStep(input: {
+  runId: string;
+  index: number;
+  delayMs: number;
+  victim: boolean;
+  killUntilMs: number;
+  payloadBytes: number;
+}) {
+  'use step';
+  if (input.delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, input.delayMs));
+  }
+  if (input.victim && Date.now() < input.killUntilMs) {
+    process.exit(1);
+  }
+  return {
+    runId: input.runId,
+    index: input.index,
+    finishedAt: Date.now(),
+    payload: payloadOf(input.payloadBytes, `inline-hang:${input.index}`),
+  };
+}
+
+function normalizeInlineHang(input: InlineHangInput) {
+  return {
+    width: input.width ?? 3,
+    tasks: input.tasks ?? 9,
+    siblingMs: input.siblingMs ?? 300,
+    victimDelayMs: input.victimDelayMs ?? 2500,
+    victimTask: input.victimTask ?? 2,
+    killUntilMs: input.killUntilMs,
+    payloadBytes: input.payloadBytes ?? 4096,
+  };
+}
+
+/**
+ * The inline-hang shape: a bounded-concurrency pool that keeps `width` steps in
+ * flight and starts one replacement per completion, where one task never
+ * returns and instead kills its invocation.
+ *
+ * This is the shape behind a production customer whose runs died
+ * `CORRUPTED_EVENT_LOG` at a steady ~1% while every one of them showed the same
+ * marker: a step with more than one `step_started`, no `step_retrying`, and no
+ * terminal event. Their fan-out was exactly `MAX_INLINE_STEPS` wide, so all of
+ * it ran inline in the orchestrator invocation, and one task hanging pinned
+ * that invocation until the platform killed it at `maxDuration`.
+ *
+ * What makes the resulting log hard to replay is not the unfinished step on its
+ * own. It is that the invocation which died had already committed the
+ * *consequences* of the completions it did observe: the pool refilled, so the
+ * log records `step_created` + `step_started` for replacement tasks whose own
+ * outcomes are missing, and a later invocation's re-claim of the victim lands
+ * after them. A replay has to re-derive those replacement tasks, at the same
+ * correlation ids, from the same completions, with an extra bare `step_started`
+ * interleaved. If it does not, their `step_created` is an event no consumer
+ * claims, which is not parkable and therefore a divergence.
+ */
+export async function inlineHangReproWorkflow(
+  input: InlineHangInput
+): Promise<InlineHangResult> {
+  'use workflow';
+
+  const metadata = getWorkflowMetadata();
+  const runId = metadata.workflowRunId;
+  const config = normalizeInlineHang(input);
+
+  // Never read. The driver resumes it to force extra invocations, which is the
+  // only way to get a replay promptly: the killed invocation's own message is
+  // not redelivered until its visibility timeout, and a wake that finds the
+  // victim still inline-owned arms a backstop for the lease remainder instead.
+  createHook<unknown>({ token: input.token });
+
+  const inFlight = new Map<number, Promise<number>>();
+  const completedOrder: number[] = [];
+  let next = 0;
+
+  const spawn = () => {
+    const index = next;
+    next += 1;
+    const victim = index === config.victimTask;
+    inFlight.set(
+      index,
+      inlineHangTaskStep({
+        runId,
+        index,
+        delayMs: victim ? config.victimDelayMs : config.siblingMs,
+        victim,
+        killUntilMs: config.killUntilMs,
+        payloadBytes: config.payloadBytes,
+      }).then(() => index)
+    );
+  };
+
+  for (let i = 0; i < config.width && next < config.tasks; i++) {
+    spawn();
+  }
+
+  while (inFlight.size > 0) {
+    const settled = await Promise.race(inFlight.values());
+    inFlight.delete(settled);
+    completedOrder.push(settled);
+    if (next < config.tasks) {
+      spawn();
+    }
+  }
+
+  return {
+    runId,
+    tasks: config.tasks,
+    width: config.width,
+    completedOrder,
+  };
+}
