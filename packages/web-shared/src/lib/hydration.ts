@@ -136,6 +136,7 @@ export function getWebRevivers(): Revivers {
     // `packages/core/src/serialization/reducers/common.ts`) emits a tagged
     // entry for each built-in Error subclass plus the workflow-specific
     // `FatalError` / `RetryableError` / `HookConflictError` /
+    // `HookForceClaimedError` /
     // `RuntimeDecryptionError` and `AggregateError`. Without
     // matching revivers here, `devalue.unflatten` throws "Unknown type X",
     // which surfaces in the web o11y UI as "Failed to load resource
@@ -194,6 +195,22 @@ export function getWebRevivers(): Revivers {
       error.token = value.token;
       if (value.conflictingRunId !== undefined) {
         error.conflictingRunId = value.conflictingRunId;
+      }
+      if (value.stack !== undefined) error.stack = value.stack;
+      return error;
+    },
+    HookForceClaimedError: (value) => {
+      const opts = 'cause' in value ? { cause: value.cause } : undefined;
+      const error = new Error(value.message, opts) as Error & {
+        token?: string;
+        claimedByRunId?: string;
+        claimedByHookId?: string;
+      };
+      error.name = 'HookForceClaimedError';
+      error.token = value.token;
+      error.claimedByRunId = value.claimedByRunId;
+      if (value.claimedByHookId !== undefined) {
+        error.claimedByHookId = value.claimedByHookId;
       }
       if (value.stack !== undefined) error.stack = value.stack;
       return error;
