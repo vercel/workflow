@@ -1617,6 +1617,10 @@ export function createEventsStorage(
         // createdAt persisted in the durable token claim so
         // concurrent / cross-process workers converge on a single
         // event in the log.
+        // A hook takeover journals this hook's `hook_created` inside the
+        // token claim lock (see the hook_created branch); the generic publish
+        // below then has nothing left to write.
+        let prePublishedEvent: Event | undefined;
         let event: Event = {
           ...data,
           runId: effectiveRunId,
@@ -2422,12 +2426,34 @@ export function createEventsStorage(
                 }
                 // The token must resolve to SOME live hook at every instant of
                 // the takeover (a resume that resolves nothing is a lost
-                // payload, not a redirect). Once the victim's disposal lock is
-                // written its entity stops resolving, so the claimer's entity
-                // is written FIRST: `findHookByToken` falls through a
-                // force-disposed owner to the entity that holds the token
-                // now. Written with the claimedFrom the transfer records; the
-                // post-publish write below rewrites it byte-identically.
+                // payload, not a redirect), and a hook it resolves to must
+                // already have its `hook_created` in its log (a delivery
+                // landing before the creation is a row the QuickJS engine
+                // cannot park). So, before the victim is told: journal this
+                // hook's creation, then write its entity — `findHookByToken`
+                // falls through a force-disposed owner to the entity holding
+                // the token now — and only then lock the victim and re-point
+                // the claim. A crash anywhere in between is repaired by the
+                // retry: the creation is found rather than written twice, and
+                // the token has not moved until the last step.
+                const journaledEventId = await findExistingHookCreatedEventId(
+                  basedir,
+                  effectiveRunId,
+                  data.correlationId
+                );
+                if (journaledEventId) {
+                  eventId = journaledEventId;
+                  prePublishedEvent = { ...event, eventId } as Event;
+                } else {
+                  prePublishedEvent = await storeEvent({
+                    ...event,
+                    eventData: {
+                      ...(event.eventData as Record<string, unknown>),
+                      forceClaimedFrom: claimedFrom,
+                    },
+                  } as Event);
+                  eventId = prePublishedEvent.eventId;
+                }
                 await writeHookByRunMarker(
                   basedir,
                   effectiveRunId,
@@ -3017,7 +3043,20 @@ export function createEventsStorage(
         // committed, so step 3 rejects it. Rejections before step 4 unlink
         // a file no reader can see.
         let eventPublished = false;
-        for (let attempt = 0; ; attempt++) {
+        if (prePublishedEvent) {
+          // Journaled inside the takeover's claim lock, at the id the claim
+          // now records. Nothing to write; carry on as after a publish.
+          event = prePublishedEvent;
+          eventPath = taggedPath(
+            basedir,
+            'events',
+            `${effectiveRunId}-${eventId}`,
+            tag
+          );
+          serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+          eventPublished = true;
+        }
+        for (let attempt = 0; !eventPublished; attempt++) {
           if (data.eventType === 'hook_received') {
             // Step 1: fast path. The marker is the authoritative durable
             // signal; the run-state read additionally rejects runs whose
