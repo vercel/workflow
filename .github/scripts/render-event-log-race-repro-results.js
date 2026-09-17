@@ -284,6 +284,7 @@ function renderConfigScale(config) {
       ? `blocked-branch ${config.blockedBranchAttempts}`
       : '',
     config.wakeLoopAttempts ? `wake-loop ${config.wakeLoopAttempts}` : '',
+    config.dagRunnerAttempts ? `dag-runner ${config.dagRunnerAttempts}` : '',
     config.hookSleepAttempts ? `hook-sleep ${config.hookSleepAttempts}` : '',
     // Historical entries from the pre-storm harness, kept so an old sticky
     // comment still renders its own configuration rather than a blank line.
@@ -316,6 +317,9 @@ function renderConfigTiming(config) {
     config.wakeLoopAttempts && config.wakeLoopHeartbeatMs
       ? `heartbeat ${config.wakeLoopHeartbeatMs}ms`
       : '',
+    config.dagRunnerAttempts && config.dagRunnerWidth
+      ? `dag ${config.dagRunnerNodes ?? '?'}x${config.dagRunnerWidth}`
+      : '',
     config.resumeBurstOffsetMs && config.blockedBranchAttempts
       ? `burst ${config.resumeBurstOffsetMs}+${config.resumeBurstJitterMs ?? 0}ms`
       : '',
@@ -347,6 +351,7 @@ function compactConfig(config = {}) {
     hookStormAttempts: config.hookStormAttempts,
     blockedBranchAttempts: config.blockedBranchAttempts,
     wakeLoopAttempts: config.wakeLoopAttempts,
+    dagRunnerAttempts: config.dagRunnerAttempts,
     hookSleepAttempts: config.hookSleepAttempts,
     concurrency: config.concurrency,
     rounds: config.rounds,
@@ -363,6 +368,8 @@ function compactConfig(config = {}) {
     launchStaggerMs: config.launchStaggerMs,
     resumeBurstOffsetMs: config.resumeBurstOffsetMs,
     wakeLoopHeartbeatMs: config.wakeLoopHeartbeatMs,
+    dagRunnerNodes: config.dagRunnerNodes,
+    dagRunnerWidth: config.dagRunnerWidth,
     resumeBurstJitterMs: config.resumeBurstJitterMs,
     blockedBranchWatchdogMs: config.blockedBranchWatchdogMs,
     runTimeoutMs: config.runTimeoutMs,
