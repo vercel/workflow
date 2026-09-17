@@ -64,6 +64,7 @@ import {
   runDispatchContext,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
+import { publishForceClaimVictimWake } from './hook-wake.js';
 import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
@@ -413,12 +414,31 @@ async function dispatchPendingOps(params: {
               // System hooks (AbortController) are exempt from user
               // token namespace conflict checks.
               ...(hook.isSystem ? { isSystem: true } : {}),
+              ...(hook.force ? { force: true } : {}),
             } as any,
           },
           hookDeltaCursor !== undefined
             ? { sinceCursor: hookDeltaCursor }
             : undefined
         );
+
+        // A forced creation that took the token over: wake the run it was
+        // taken from so its replay reads the hook_disposed the World
+        // journaled there. Same contract as the node:vm suspension handler;
+        // see `publishForceClaimVictimWake`.
+        if (result.hook?.claimedFrom) {
+          const outcome = await publishForceClaimVictimWake(
+            world,
+            runId,
+            result.hook
+          );
+          runtimeLogger.info('Hook token force-claimed from another run', {
+            workflowRunId: runId,
+            hookId: hook.correlationId,
+            victimRunId: result.hook.claimedFrom.runId,
+            victimWake: outcome,
+          });
+        }
 
         // If storage detected a real token conflict with another
         // workflow's hook, re-queue so the workflow handler can

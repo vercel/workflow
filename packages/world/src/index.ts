@@ -81,6 +81,7 @@ export type * from './hooks.js';
 export {
   HOOK_RESUME_DEDUP_VERSION,
   HOOK_RESUME_INPUT_VERSION,
+  HookClaimedFromSchema,
   HookResumeCapabilitiesSchema,
   HookSchema,
 } from './hooks.js';

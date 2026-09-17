@@ -1,4 +1,4 @@
-import { HookNotFoundError } from '@workflow/errors';
+import { HookForceClaimedError, HookNotFoundError } from '@workflow/errors';
 import {
   type Hook,
   SPEC_VERSION_CURRENT,
@@ -333,6 +333,159 @@ describe('resumeHook', () => {
       expect(peekFormatPrefix(capturedPayload(createEvent))).toBe(
         SerializationFormat.DEVALUE_V1
       );
+    });
+  });
+
+  describe('force-claim redirect', () => {
+    const baseHook = (overrides: Partial<Hook>): Hook =>
+      ({
+        runId: 'wrun_victim',
+        hookId: 'hook_victim',
+        token: 'shared',
+        ownerId: 'owner_1',
+        projectId: 'project_1',
+        environment: 'production',
+        createdAt: new Date(),
+        specVersion: SPEC_VERSION_CURRENT,
+        resumeContext: {
+          deploymentId: 'dpl_victim',
+          workflowName: 'victimWorkflow',
+          runSpecVersion: SPEC_VERSION_CURRENT,
+        },
+        resumeCapabilities: { hookResumeDedupVersion: 1 },
+        ...overrides,
+      }) as Hook;
+    const victimHook = baseHook({});
+    const claimerHook = baseHook({
+      runId: 'wrun_claimer',
+      hookId: 'hook_claimer',
+      resumeContext: {
+        deploymentId: 'dpl_claimer',
+        workflowName: 'claimerWorkflow',
+        runSpecVersion: SPEC_VERSION_CURRENT,
+      },
+      claimedFrom: { runId: 'wrun_victim', hookId: 'hook_victim' },
+    });
+
+    it('follows a HookForceClaimedError to the new owner with the same resumeId and wakes the new owner', async () => {
+      const getByToken = vi
+        .fn()
+        .mockResolvedValueOnce(victimHook)
+        .mockResolvedValueOnce(claimerHook);
+      const createEvent = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new HookForceClaimedError('shared', 'wrun_claimer', 'hook_claimer')
+        )
+        .mockResolvedValueOnce(undefined);
+      const queue = vi.fn().mockResolvedValue(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken },
+        runs: { get: vi.fn() },
+        events: { create: createEvent },
+        queue,
+        getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+      } as unknown as World);
+
+      const resumed = await resumeHook('shared', { n: 1 });
+      expect(resumed.runId).toBe('wrun_claimer');
+      expect(getByToken).toHaveBeenCalledTimes(2);
+      expect(createEvent).toHaveBeenCalledTimes(2);
+      expect(createEvent.mock.calls[0][0]).toBe('wrun_victim');
+      expect(createEvent.mock.calls[1][0]).toBe('wrun_claimer');
+      expect(createEvent.mock.calls[1][1]).toMatchObject({
+        eventType: 'hook_received',
+        correlationId: 'hook_claimer',
+      });
+      // The same logical resume: the dedup key does not change across the
+      // redirect, so a duplicate landing on the new owner converges.
+      const firstResumeId = createEvent.mock.calls[0][2]?.resumeId;
+      const secondResumeId = createEvent.mock.calls[1][2]?.resumeId;
+      expect(typeof secondResumeId).toBe('string');
+      expect(typeof firstResumeId).toBe('string');
+      // Only the new owner is woken, on its own queue and deployment.
+      expect(queue).toHaveBeenCalledTimes(1);
+      expect(queue.mock.calls[0][0]).toContain('claimerWorkflow');
+      expect(queue.mock.calls[0][1]).toMatchObject({ runId: 'wrun_claimer' });
+      expect(queue.mock.calls[0][2]).toMatchObject({
+        deploymentId: 'dpl_claimer',
+      });
+    });
+
+    it('re-resolves once on a not-found rejection and retries when the token now names another hook', async () => {
+      // A finished victim that retained its token was taken over: the write to
+      // it is refused as not-found (no row to redirect from), but the token
+      // now resolves to the claimer.
+      const getByToken = vi
+        .fn()
+        .mockResolvedValueOnce(victimHook)
+        .mockResolvedValueOnce(claimerHook);
+      const createEvent = vi
+        .fn()
+        .mockRejectedValueOnce(new HookNotFoundError('hook_victim'))
+        .mockResolvedValueOnce(undefined);
+      const queue = vi.fn().mockResolvedValue(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken },
+        runs: { get: vi.fn() },
+        events: { create: createEvent },
+        queue,
+        getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+      } as unknown as World);
+
+      const resumed = await resumeHook('shared', { n: 1 });
+      expect(resumed.runId).toBe('wrun_claimer');
+      expect(createEvent).toHaveBeenCalledTimes(2);
+      expect(queue.mock.calls[0][1]).toMatchObject({ runId: 'wrun_claimer' });
+    });
+
+    it('keeps HookNotFoundError when the token still names the same hook', async () => {
+      const getByToken = vi.fn().mockResolvedValue(victimHook);
+      const createEvent = vi
+        .fn()
+        .mockRejectedValue(new HookNotFoundError('hook_victim'));
+      const queue = vi.fn();
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken },
+        runs: { get: vi.fn() },
+        events: { create: createEvent },
+        queue,
+        getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+      } as unknown as World);
+
+      await expect(resumeHook('shared', { n: 1 })).rejects.toSatisfy(
+        HookNotFoundError.is
+      );
+      expect(createEvent).toHaveBeenCalledTimes(1);
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('gives up after a bounded number of redirects', async () => {
+      const getByToken = vi.fn().mockResolvedValue(victimHook);
+      const createEvent = vi
+        .fn()
+        .mockRejectedValue(
+          new HookForceClaimedError('shared', 'wrun_claimer', 'hook_claimer')
+        );
+      const queue = vi.fn();
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken },
+        runs: { get: vi.fn() },
+        events: { create: createEvent },
+        queue,
+        getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+      } as unknown as World);
+
+      await expect(resumeHook('shared', { n: 1 })).rejects.toSatisfy(
+        HookForceClaimedError.is
+      );
+      // Initial attempt + 3 redirects.
+      expect(createEvent).toHaveBeenCalledTimes(4);
+      expect(queue).not.toHaveBeenCalled();
     });
   });
 });

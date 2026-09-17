@@ -65,6 +65,7 @@ import {
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
+import { publishForceClaimVictimWake } from './hook-wake.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import type { PreclaimedInlineStart } from './step-executor.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
@@ -340,11 +341,17 @@ async function createHookEvent({
   requestId,
   sinceCursor,
   createEvent,
+  world,
 }: {
   runId: string;
   hookEvent: CreateEventRequest;
   queueItem: HookInvocationQueueItem;
   requestId?: string;
+  /**
+   * Needed only to wake the run a forced creation took its token from; see
+   * `publishForceClaimVictimWake`.
+   */
+  world: World;
   /**
    * Cursor to ask the World for the event-log delta against, or undefined to
    * not ask. See `hookDeltaCursor` in {@link handleSuspension} for when it is
@@ -376,6 +383,28 @@ async function createHookEvent({
         hasHookConflict: true,
         hasAwaitedHookCreation: false,
       };
+    }
+
+    // A forced creation that took the token over: the World journaled the
+    // victim's `hook_disposed{forceClaimedBy}` and recorded the victim on the
+    // hook. The victim only reads that row when something invokes it, and the
+    // World has no queue, so the wake is ours to publish — before the hook
+    // phase is considered done, so a claimer that dies here re-posts and
+    // republishes (the World answers a completed takeover with the same
+    // `claimedFrom`, on the adoption path). See `publishForceClaimVictimWake`
+    // for why a wake that still fails does not fail the claimer.
+    if (result.hook?.claimedFrom) {
+      const outcome = await publishForceClaimVictimWake(
+        world,
+        runId,
+        result.hook
+      );
+      runtimeLogger.info('Hook token force-claimed from another run', {
+        workflowRunId: runId,
+        hookId: queueItem.correlationId,
+        victimRunId: result.hook.claimedFrom.runId,
+        victimWake: outcome,
+      });
     }
 
     return {
@@ -746,6 +775,7 @@ export async function handleSuspension({
                 metadata: hookMetadata,
                 isWebhook: queueItem.isWebhook ?? false,
                 ...(queueItem.isSystem && { isSystem: true }),
+                ...(queueItem.force && { force: true }),
               },
             };
             const result = await createHookEvent({
@@ -755,6 +785,7 @@ export async function handleSuspension({
               requestId,
               sinceCursor: hookDeltaCursor,
               createEvent: createGuarded,
+              world,
             });
             if (result.hasHookConflict) {
               hookConflictCorrelationIds.push(queueItem.correlationId);

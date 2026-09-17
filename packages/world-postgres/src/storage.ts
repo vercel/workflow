@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   EntityConflictError,
+  HookForceClaimedError,
   HookNotFoundError,
   RunExpiredError,
   RunNotSupportedError,
@@ -2076,6 +2077,111 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               recoveredHookValue.metadata ||= recoveredHookValue.metadataJson;
               hook = HookSchema.parse(compact(recoveredHookValue));
             }
+          } else if (eventData.force === true) {
+            // `createHook({ experimental_force: true })`: take the token over.
+            // One transaction, the same order as workflow-server
+            // (docs/hook-force-claim.md, specs/HookForceClaim.tla): the
+            // victim's `hook_disposed{forceClaimedBy}` row first, then its
+            // hook row deleted, then ours inserted with `claimedFrom`. The
+            // victim's row lock (`FOR UPDATE`) is what the concurrent
+            // `hook_received` below blocks on, so a delivery that resolved the
+            // victim either commits before this transaction — ordered before
+            // the disposal — or finds the row gone and is redirected. A
+            // finished victim holding a retained token gets no row.
+            const takeover = await drizzle.transaction(async (tx) => {
+              const [victim] = await tx
+                .select()
+                .from(Schema.hooks)
+                .where(eq(Schema.hooks.hookId, existingHook.hookId))
+                .for('update')
+                .limit(1);
+              if (!victim || victim.token !== eventData.token) {
+                return undefined;
+              }
+              const [victimRun] = await tx
+                .select({
+                  status: Schema.runs.status,
+                  workflowName: Schema.runs.workflowName,
+                  deploymentId: Schema.runs.deploymentId,
+                  specVersion: Schema.runs.specVersion,
+                })
+                .from(Schema.runs)
+                .where(eq(Schema.runs.runId, victim.runId))
+                .for('update')
+                .limit(1);
+              const claimedFrom: NonNullable<Hook['claimedFrom']> = {
+                runId: victim.runId,
+                hookId: victim.hookId,
+                ...(victimRun && {
+                  workflowName: victimRun.workflowName,
+                  deploymentId: victimRun.deploymentId,
+                  ...(victimRun.specVersion !== null && {
+                    runSpecVersion: victimRun.specVersion,
+                  }),
+                }),
+              };
+              if (victimRun && !isTerminalWorkflowRunStatus(victimRun.status)) {
+                const disposed = await insertEventRow(tx, {
+                  runId: victim.runId,
+                  eventId: await allocateEventId(tx, victim.runId),
+                  correlationId: victim.hookId,
+                  eventType: 'hook_disposed',
+                  eventData: {
+                    token: eventData.token,
+                    forceClaimedBy: {
+                      runId: effectiveRunId,
+                      hookId: data.correlationId,
+                    },
+                  },
+                  specVersion: victimRun.specVersion ?? effectiveSpecVersion,
+                });
+                if (!disposed) {
+                  throw new EntityConflictError(
+                    `hook_disposed for run "${victim.runId}" could not be created`
+                  );
+                }
+              }
+              await tx
+                .delete(Schema.hooks)
+                .where(eq(Schema.hooks.hookId, victim.hookId));
+              const [inserted] = await tx
+                .insert(Schema.hooks)
+                .values({
+                  runId: effectiveRunId,
+                  hookId: data.correlationId!,
+                  token: eventData.token,
+                  metadata: eventData.metadata as SerializedContent,
+                  ownerId: '',
+                  projectId: '',
+                  environment: '',
+                  tokenRetentionUntil: eventData.tokenRetentionUntil,
+                  specVersion: effectiveSpecVersion,
+                  isWebhook: eventData.isWebhook,
+                  isSystem: eventData.isSystem ?? false,
+                  claimedFrom,
+                })
+                .returning();
+              return { inserted, claimedFrom };
+            }, SLOT_INSERT_TRANSACTION);
+            if (!takeover) {
+              // The victim's row changed under us (its own disposal, or a
+              // competing claimer). Nothing was written; let the runtime's
+              // create retry re-classify the token.
+              throw new EntityConflictError(
+                `Hook token "${eventData.token}" changed owner during force-claim; retry`
+              );
+            }
+            if (takeover.inserted) {
+              takeover.inserted.metadata ||= takeover.inserted.metadataJson;
+              hook = HookSchema.parse(compact(takeover.inserted));
+            }
+            storedEventData = {
+              ...(storedEventData as Record<string, unknown>),
+              forceClaimedFrom: {
+                runId: takeover.claimedFrom.runId,
+                hookId: takeover.claimedFrom.hookId,
+              },
+            };
           } else {
             // Cross-hook / cross-run conflict: a different
             // (runId, hookId) holds this token. Create a hook_conflict
@@ -2258,6 +2364,33 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               .for('update')
               .limit(1);
             if (!liveHook) {
+              // Gone. If the token now names another live hook, this hook was
+              // taken over (`experimental_force`) and the delivery is a
+              // redirect, not a drop: `resumeHook()` follows the token.
+              const token = (data.eventData as { token?: unknown } | undefined)
+                ?.token;
+              if (typeof token === 'string') {
+                const [successor] = await tx
+                  .select({
+                    runId: Schema.hooks.runId,
+                    hookId: Schema.hooks.hookId,
+                    claimedFrom: Schema.hooks.claimedFrom,
+                  })
+                  .from(Schema.hooks)
+                  .where(eq(Schema.hooks.token, token))
+                  .limit(1);
+                if (
+                  successor &&
+                  successor.hookId !== data.correlationId &&
+                  successor.claimedFrom
+                ) {
+                  throw new HookForceClaimedError(
+                    token,
+                    successor.runId,
+                    successor.hookId
+                  );
+                }
+              }
               throw new HookNotFoundError(data.correlationId);
             }
           }

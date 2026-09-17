@@ -85,6 +85,7 @@ export const ERROR_SLUGS = {
   FETCH_IN_WORKFLOW_FUNCTION: 'fetch-in-workflow',
   TIMEOUT_FUNCTIONS_IN_WORKFLOW: 'timeout-in-workflow',
   HOOK_CONFLICT: 'hook-conflict',
+  HOOK_FORCE_CLAIMED: 'hook-force-claimed',
   CORRUPTED_EVENT_LOG: 'corrupted-event-log',
   REPLAY_DIVERGENCE: 'replay-divergence',
   STEP_NOT_REGISTERED: 'step-not-registered',
@@ -719,6 +720,44 @@ export class HookConflictError extends WorkflowError {
 }
 
 /**
+ * Thrown from `await hook` (or the hook's async iterator) when another run
+ * took this hook's token with `createHook({ token, experimental_force: true })`.
+ *
+ * The hook is disposed: payloads it received before the takeover were still
+ * delivered, everything after goes to the new owner, and this run's log holds
+ * a `hook_disposed` naming the run that took it. Whether that ends the run is
+ * the workflow's call — catch it to hand over gracefully, or let it fail.
+ *
+ * Use the static `HookForceClaimedError.is()` method for type-safe checking
+ * in catch blocks; the class identity differs between the workflow VM and the
+ * host, so `instanceof` is not reliable across that boundary.
+ */
+export class HookForceClaimedError extends WorkflowError {
+  token: string;
+  /** The run that took the token. */
+  claimedByRunId: string;
+  /** The hook (in `claimedByRunId`) the token now belongs to. */
+  claimedByHookId?: string;
+
+  constructor(token: string, claimedByRunId: string, claimedByHookId?: string) {
+    super(
+      `Hook token "${token}" was force-claimed by another workflow (run "${claimedByRunId}")`,
+      { slug: ERROR_SLUGS.HOOK_FORCE_CLAIMED }
+    );
+    this.name = 'HookForceClaimedError';
+    this.token = token;
+    this.claimedByRunId = claimedByRunId;
+    if (claimedByHookId !== undefined) {
+      this.claimedByHookId = claimedByHookId;
+    }
+  }
+
+  static is(value: unknown): value is HookForceClaimedError {
+    return isError(value) && value.name === 'HookForceClaimedError';
+  }
+}
+
+/**
  * Thrown when calling `resumeHook()` or `resumeWebhook()` with a token that
  * does not match any active hook.
  *
@@ -1122,6 +1161,9 @@ const RETRYABLE_ERROR_KEY = Symbol.for('@workflow/errors//RetryableError');
 const HOOK_CONFLICT_ERROR_KEY = Symbol.for(
   '@workflow/errors//HookConflictError'
 );
+const HOOK_FORCE_CLAIMED_ERROR_KEY = Symbol.for(
+  '@workflow/errors//HookForceClaimedError'
+);
 const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
   '@workflow/errors//RuntimeDecryptionError'
 );
@@ -1147,6 +1189,14 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, HOOK_CONFLICT_ERROR_KEY)) {
     Object.defineProperty(globalThis, HOOK_CONFLICT_ERROR_KEY, {
       value: HookConflictError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, HOOK_FORCE_CLAIMED_ERROR_KEY)) {
+    Object.defineProperty(globalThis, HOOK_FORCE_CLAIMED_ERROR_KEY, {
+      value: HookForceClaimedError,
       writable: false,
       enumerable: false,
       configurable: false,

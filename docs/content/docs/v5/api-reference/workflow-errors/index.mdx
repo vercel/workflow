@@ -68,6 +68,9 @@ All errors extend [`WorkflowError`](/docs/api-reference/workflow-errors/workflow
     <Card href="/docs/api-reference/workflow-errors/hook-conflict-error" title="HookConflictError">
         Thrown when creating a hook with a token that is already in use by another workflow run.
     </Card>
+    <Card href="/docs/api-reference/workflow-errors/hook-force-claimed-error" title="HookForceClaimedError">
+        Thrown to a hook's awaiters when another run takes its token over with `experimental_force`.
+    </Card>
 </Cards>
 
 ## Backend errors

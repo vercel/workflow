@@ -384,6 +384,21 @@ export const HookCreatedEventSchema = z.compile(
       metadata: SerializedDataSchema.optional(),
       isWebhook: z.boolean().optional(),
       isSystem: z.boolean().optional(),
+      /**
+       * `createHook({ experimental_force: true })`: when the token belongs to
+       * another live run, the World takes it over — journaling
+       * `hook_disposed{forceClaimedBy}` in that run's log and re-pointing the
+       * token — instead of answering `hook_conflict`. Requires the
+       * `hookForceClaim` capability.
+       */
+      force: z.boolean().optional(),
+      /**
+       * World-written on a forced creation that did take a token over: the
+       * run and hook it was taken from. Absent when the token was free.
+       */
+      forceClaimedFrom: z
+        .object({ runId: z.string(), hookId: z.string() })
+        .optional(),
     }),
   })
 );
@@ -406,6 +421,15 @@ const HookDisposedEventSchema = z.compile(
     eventData: z
       .object({
         token: z.string().optional(),
+        /**
+         * World-written: this disposal was not the run's own. Another run
+         * took the hook's token with `experimental_force`, and this names
+         * it. The hook consumer rejects the hook's awaiters with
+         * `HookForceClaimedError` when it reads this row.
+         */
+        forceClaimedBy: z
+          .object({ runId: z.string(), hookId: z.string() })
+          .optional(),
       })
       .optional(),
   })
