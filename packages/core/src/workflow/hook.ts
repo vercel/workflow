@@ -87,6 +87,34 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // repeated awaits observe the same instance deterministically.
     let conflictRunRef: ConflictingRun | null = null;
 
+    // Consuming a registration event is synchronous, but delivering its
+    // outcome must wait for earlier branch-deciding deliveries. Keep the
+    // gate for calls made after hasCreated/hasConflict becomes true as well.
+    let registrationDelivered = Promise.resolve();
+
+    function deliverRegistration(settle: () => void): void {
+      const eventIndex = ctx.eventsConsumer.eventIndex;
+      // Always deliver, even without an awaiter yet: unlike a buffered
+      // payload, registration does not need a future claim to make progress.
+      const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook');
+      const earlierDelivered = awaitEarlierDeliveries(ctx, eventIndex, 'hook');
+      // Never await the gate inside promiseQueue: earlier deliveries and
+      // their quiescence checks need that queue to drain in order to finish.
+      registrationDelivered = ctx.promiseQueue
+        .then(() => earlierDelivered)
+        .then(() => {
+          barrier.markDelivered();
+          settle();
+        });
+    }
+
+    function afterRegistration(settle: () => void): void {
+      const delivered = registrationDelivered;
+      ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        void delivered.then(settle);
+      });
+    }
+
     webhookLogger.debug('Hook consumer setup', { correlationId, token });
     ctx.eventsConsumer.subscribe((event) => {
       // If there are no events and there are promises waiting,
@@ -140,7 +168,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
         const pendingGetConflictPromises = getConflictPromises.slice();
         getConflictPromises.length = 0;
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        deliverRegistration(() => {
           for (const resolver of pendingGetConflictPromises) {
             resolver.resolve(null);
           }
@@ -155,7 +183,6 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         ctx.invocationsQueue.delete(correlationId);
 
         // Store the conflict event so we can reject any awaited promises.
-        // Chain through promiseQueue to ensure deterministic ordering.
         const conflictEvent = event as HookConflictEvent;
         const conflictError = new HookConflictError(
           conflictEvent.eventData.token,
@@ -171,8 +198,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
         // Capture and drain pending promises synchronously so the null event
         // handler won't see them and trigger a spurious WorkflowSuspension.
-        // The actual settlements are deferred through promiseQueue for
-        // ordering. Payload awaiters reject with HookConflictError, while
+        // The actual settlements use the registration delivery barrier.
+        // Payload awaiters reject with HookConflictError, while
         // `getConflict` awaiters resolve with the conflicting `{ runId }`
         // so the workflow can branch on the conflict without throwing.
         // When the conflicting run cannot be identified (see
@@ -183,7 +210,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const pendingGetConflictPromises = getConflictPromises.slice();
         getConflictPromises.length = 0;
 
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        deliverRegistration(() => {
           for (const resolver of pendingPromises) {
             resolver.reject(conflictError);
           }
@@ -366,10 +393,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     function createHookPromise(): Promise<T> {
       const resolvers = withResolvers<T>();
 
-      // If we have a conflict, reject through the promiseQueue to maintain
-      // deterministic ordering with any prior queued resolutions.
+      // A consumed conflict may still be waiting on earlier deliveries.
       if (hasConflict && conflictErrorRef) {
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        afterRegistration(() => {
           resolvers.reject(conflictErrorRef);
         });
         return resolvers.promise;
@@ -404,20 +430,21 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // Helper function to create a promise that resolves with the hook's
     // registration outcome: the conflicting `{ runId }` when the token is
     // owned by another active hook, `null` once this hook's registration
-    // is committed. Both fast-paths settle through `ctx.promiseQueue` so
-    // resolution order always matches event-log order.
+    // is committed. Fast paths share the event's delivery gate so they
+    // cannot overtake earlier deliveries while registration is still
+    // pending.
     function createGetConflictPromise(): Promise<ConflictingRun | null> {
       const resolvers = withResolvers<ConflictingRun | null>();
 
       if (hasCreated) {
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        afterRegistration(() => {
           resolvers.resolve(null);
         });
         return resolvers.promise;
       }
 
       if (hasConflict) {
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        afterRegistration(() => {
           if (conflictRunRef) {
             resolvers.resolve(conflictRunRef);
           } else {
