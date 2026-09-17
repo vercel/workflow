@@ -43,15 +43,67 @@ const SIBLINGS_CODE = `
     return 'ok';
   }${transform('workflow')}`;
 
+/** A buffered payload claimed later than its log position: the one path where
+ *  a delivery can carry a time OLDER than the clock, which the monotonic guard
+ *  absorbs; and where a sibling's later result must not leak in either. */
+const CLAIM_CODE = `
+  const doWork = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork");
+  const probe = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("probe");
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow() {
+    const t0 = Date.now();
+    const hook = createHook({ token: 'wake' });
+    const a = doWork('a');
+    const b = doWork('b');
+    await a;
+    await hook;
+    await probe({ afterClaimMs: Date.now() - t0 });
+    await b;
+    return 'ok';
+  }${transform('workflow')}`;
+
+/** The registration outcome of a hook is a delivery: the code after
+ *  `getConflict()` (or after the payload awaiter rejects on a conflict) reads
+ *  the outcome's time. */
+const REGISTRATION_CODE = `
+  const probe = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("probe");
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow(mode) {
+    const t0 = Date.now();
+    const hook = createHook({ token: 'bind' });
+    if (mode === 'created') {
+      await hook.getConflict();
+    } else {
+      try { await hook; } catch {}
+    }
+    await probe({ afterRegistrationMs: Date.now() - t0 });
+    return 'ok';
+  }${transform('workflow')}`;
+
+/** An abort is a delivery too: a listener reads the abort's time. */
+const ABORT_CODE = `
+  const probe = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("probe");
+  const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  async function workflow() {
+    const t0 = Date.now();
+    const controller = new AbortController();
+    const aborted = new Promise((resolve) =>
+      controller.signal.addEventListener('abort', () => resolve(Date.now() - t0))
+    );
+    await sleep('1s');
+    await probe({ afterAbortMs: await aborted });
+    return 'ok';
+  }${transform('workflow')}`;
+
 const RUN_ID = 'wrun_123';
 const T0 = Date.UTC(2024, 0, 1, 0, 0, 0);
 
-async function makeRun(): Promise<WorkflowRun> {
+async function makeRun(args: unknown[] = []): Promise<WorkflowRun> {
   return {
     runId: RUN_ID,
     workflowName: 'workflow',
     status: 'running',
-    input: await dehydrateWorkflowArguments([], RUN_ID, noEncryptionKey, []),
+    input: await dehydrateWorkflowArguments(args, RUN_ID, noEncryptionKey, []),
     createdAt: new Date(T0),
     updatedAt: new Date(T0),
     startedAt: new Date(T0),
@@ -194,5 +246,136 @@ describe('replay clock is anchored to deliveries', () => {
       ...(await done(b, 9_000)),
     ]);
     expect(probeArg(later).afterAMs).toBe(2_000);
+  });
+
+  it('a buffered payload claimed out of log order neither rewinds the clock nor lets a later result leak in', async () => {
+    const run = await makeRun();
+    const ev = eventFactory();
+    const first = await suspend(CLAIM_CODE, run, []);
+    const hook = first.items.find((i) => i.type === 'hook');
+    const [a, b] = first.items.filter((i) => i.type === 'step');
+    assert(hook?.type === 'hook' && a?.type === 'step' && b?.type === 'step');
+    const payload = await dehydrateStepReturnValue(
+      { n: 1 },
+      RUN_ID,
+      noEncryptionKey,
+      []
+    );
+    const done = async (step: typeof a, at: number) => [
+      ev(at, {
+        eventType: 'step_started',
+        correlationId: step.correlationId,
+        eventData: { stepName: step.stepName },
+      }),
+      ev(at, {
+        eventType: 'step_completed',
+        correlationId: step.correlationId,
+        eventData: {
+          stepName: step.stepName,
+          result: await dehydrateStepReturnValue(
+            'r',
+            RUN_ID,
+            noEncryptionKey,
+            []
+          ),
+        },
+      }),
+    ];
+    const log: Event[] = [
+      ev(0, {
+        eventType: 'hook_created',
+        correlationId: hook.correlationId,
+        eventData: { token: hook.token },
+      }),
+      ev(0, {
+        eventType: 'step_created',
+        correlationId: a.correlationId,
+        eventData: { stepName: a.stepName },
+      }),
+      ev(0, {
+        eventType: 'step_created',
+        correlationId: b.correlationId,
+        eventData: { stepName: b.stepName },
+      }),
+      ...(await done(a, 2_000)),
+      // The payload lands at 5s, before anyone reads the hook; the claim
+      // happens after `a` resolved.
+      ev(5_000, {
+        eventType: 'hook_received',
+        correlationId: hook.correlationId,
+        eventData: { token: hook.token, payload },
+      }),
+    ];
+    const writer = await suspend(CLAIM_CODE, run, log);
+    expect(probeArg(writer).afterClaimMs).toBe(5_000);
+    const later = await suspend(CLAIM_CODE, run, [
+      ...log,
+      ...(await done(b, 9_000)),
+    ]);
+    expect(probeArg(later).afterClaimMs).toBe(5_000);
+  });
+
+  it.each([
+    { mode: 'created', eventType: 'hook_created' as const },
+    { mode: 'conflict', eventType: 'hook_conflict' as const },
+  ])('a hook’s registration outcome advances the clock to its own time ($eventType)', async ({
+    mode,
+    eventType,
+  }) => {
+    const run = await makeRun([mode]);
+    const ev = eventFactory();
+    const first = await suspend(REGISTRATION_CODE, run, []);
+    const hook = first.items.find((i) => i.type === 'hook');
+    assert(hook?.type === 'hook');
+    const log: Event[] = [
+      ev(7_000, {
+        eventType,
+        correlationId: hook.correlationId,
+        eventData: { token: hook.token, conflictingRunId: 'wrun_other' },
+      }),
+    ];
+    const next = await suspend(REGISTRATION_CODE, run, log);
+    expect(probeArg(next).afterRegistrationMs).toBe(7_000);
+  });
+
+  it('an abort advances the clock to its own time', async () => {
+    const run = await makeRun();
+    const ev = eventFactory();
+    const first = await suspend(ABORT_CODE, run, []);
+    const hook = first.items.find((i) => i.type === 'hook');
+    const wait = first.items.find((i) => i.type === 'wait');
+    assert(hook?.type === 'hook' && wait?.type === 'wait');
+    const log: Event[] = [
+      ev(0, {
+        eventType: 'hook_created',
+        correlationId: hook.correlationId,
+        eventData: { token: hook.token, isWebhook: false },
+      }),
+      ev(0, {
+        eventType: 'wait_created',
+        correlationId: wait.correlationId,
+        eventData: { resumeAt: wait.resumeAt },
+      }),
+      ev(1_000, {
+        eventType: 'wait_completed',
+        correlationId: wait.correlationId,
+        eventData: { resumeAt: wait.resumeAt },
+      }),
+      ev(7_000, {
+        eventType: 'hook_received',
+        correlationId: hook.correlationId,
+        eventData: {
+          token: hook.token,
+          payload: await dehydrateStepReturnValue(
+            { reason: 'cancelled' },
+            RUN_ID,
+            noEncryptionKey,
+            []
+          ),
+        },
+      }),
+    ];
+    const next = await suspend(ABORT_CODE, run, log);
+    expect(probeArg(next).afterAbortMs).toBe(7_000);
   });
 });

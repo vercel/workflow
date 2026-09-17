@@ -383,8 +383,8 @@ async function createWorkflowSessionInner(
   }
 
   // Seed and initial clock must be available before I/O and remain stable on
-  // replay. After the first event, EventsConsumer advances the VM clock from
-  // each event's `createdAt`.
+  // replay. The clock then advances as deliveries reach the workflow (see
+  // `advanceClock` below).
   const fixedTimestamp =
     runIdCreatedAt(workflowRun.runId) ?? +workflowRun.createdAt;
 
@@ -478,9 +478,9 @@ async function createWorkflowSessionInner(
   const deliveryIdleHolder = { current: (): boolean => true };
 
   // The VM clock only ever moves forward, and it moves when a branch-deciding
-  // delivery (a step result, a hook payload, a wait completion, a hook's
-  // registration outcome) is handed to the workflow, not when the consumer
-  // walk reads an event. See `WorkflowOrchestratorContext.advanceClock` for
+  // delivery (a step result, a hook payload, a wait completion, an abort, a
+  // hook's registration outcome) is handed to the workflow, not when the
+  // consumer walk reads an event. See `WorkflowOrchestratorContext.advanceClock` for
   // why consumption is the wrong anchor: the walk runs ahead of delivery, so
   // a later event's time would leak into an earlier delivery's cascade and
   // `Date.now()` would depend on how much log this replay loaded. Deliveries

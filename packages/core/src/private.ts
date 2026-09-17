@@ -683,18 +683,30 @@ export function registerDeliveryBarrier(
      * The delivered event's `createdAt`. On `markDelivered` the workflow
      * clock advances to it (see {@link WorkflowOrchestratorContext.advanceClock}),
      * so `Date.now()` in the cascade this delivery wakes reads the delivery's
-     * own time, whatever the consumer walk has read ahead of it.
+     * own time, whatever the consumer walk has read ahead of it. Required so
+     * that a new delivery site cannot forget the clock: a delivery that does
+     * not move it leaves the cascade it wakes reading a stale time.
      */
-    deliveredAt?: number;
-  } = {}
+    deliveredAt: number;
+  }
 ): DeliveryBarrier {
+  // Idempotent like the handle it backs; `advanceClock` never moves backwards,
+  // so a repeat is a no-op either way.
+  let deliveredToWorkflow = false;
+  const deliver = () => {
+    if (deliveredToWorkflow) {
+      return false;
+    }
+    deliveredToWorkflow = true;
+    ctx.advanceClock?.(options.deliveredAt);
+    return true;
+  };
+
   const barriers = ctx.pendingDeliveryBarriers;
   if (!barriers || eventIndex === undefined) {
     return {
       markDelivered: () => {
-        if (options.deliveredAt !== undefined) {
-          ctx.advanceClock?.(options.deliveredAt);
-        }
+        deliver();
       },
       arm: () => {},
     };
@@ -738,16 +750,11 @@ export function registerDeliveryBarrier(
   };
 
   let entry = install(options.armed ?? true);
-  let deliveredToWorkflow = false;
 
   return {
     markDelivered: () => {
-      if (deliveredToWorkflow) {
+      if (!deliver()) {
         return;
-      }
-      deliveredToWorkflow = true;
-      if (options.deliveredAt !== undefined) {
-        ctx.advanceClock?.(options.deliveredAt);
       }
       entry.retire();
     },
