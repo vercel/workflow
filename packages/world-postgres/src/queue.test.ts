@@ -336,130 +336,54 @@ describe('postgres queue http execution', () => {
     }
   });
 
-  it('serializes workflow queue execution for the same runId', async () => {
-    let resolveFirstRequestStarted!: () => void;
-    const firstRequestStarted = new Promise<void>((resolve) => {
-      resolveFirstRequestStarted = resolve;
-    });
-    let resolveReleaseFirstRequest!: () => void;
-    const releaseFirstRequest = new Promise<void>((resolve) => {
-      resolveReleaseFirstRequest = resolve;
-    });
+  it.each([
+    undefined,
+    'custom',
+  ])('delivers a wake while the same run is awaiting an inline step (namespace: %s)', async (namespace) => {
+    const firstRequestStarted = Promise.withResolvers<void>();
+    const releaseFirstRequest = Promise.withResolvers<void>();
     let requestCount = 0;
-    let activeRequests = 0;
-    let maxActiveRequests = 0;
     const server = await startWorkflowHttpServer([], 0, undefined, async () => {
       requestCount += 1;
-      activeRequests += 1;
-      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
-
       if (requestCount === 1) {
-        resolveFirstRequestStarted();
-        await releaseFirstRequest;
+        firstRequestStarted.resolve();
+        await releaseFirstRequest.promise;
       }
-
-      activeRequests -= 1;
-    });
-    process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
-
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-    try {
-      await queue.start();
-
-      const task = getTaskHandler('workflow_flows');
-      const payload = {
-        runId: 'wrun_01ABC',
-      };
-      const firstExecution = task(
-        buildMessageData('__wkf_workflow_test-workflow', payload, {
-          messageId: MessageId.parse('msg_01ABC'),
-        }),
-        {} as any
-      );
-      const secondExecution = task(
-        buildMessageData('__wkf_workflow_test-workflow', payload, {
-          messageId: MessageId.parse('msg_01ABD'),
-        }),
-        {} as any
-      );
-
-      await firstRequestStarted;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(requestCount).toBe(1);
-      expect(maxActiveRequests).toBe(1);
-
-      resolveReleaseFirstRequest();
-      await Promise.all([firstExecution, secondExecution]);
-
-      expect(requestCount).toBe(2);
-      expect(maxActiveRequests).toBe(1);
-    } finally {
-      resolveReleaseFirstRequest();
-    }
-  });
-
-  it('serializes namespaced workflow queue execution for the same runId', async () => {
-    let resolveFirstRequestStarted!: () => void;
-    const firstRequestStarted = new Promise<void>((resolve) => {
-      resolveFirstRequestStarted = resolve;
-    });
-    let resolveReleaseFirstRequest!: () => void;
-    const releaseFirstRequest = new Promise<void>((resolve) => {
-      resolveReleaseFirstRequest = resolve;
-    });
-    let requestCount = 0;
-    let activeRequests = 0;
-    let maxActiveRequests = 0;
-    const server = await startWorkflowHttpServer([], 0, undefined, async () => {
-      requestCount += 1;
-      activeRequests += 1;
-      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
-
-      if (requestCount === 1) {
-        resolveFirstRequestStarted();
-        await releaseFirstRequest;
-      }
-
-      activeRequests -= 1;
     });
     process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
 
     const queue = buildQueue(
-      { connectionString: 'postgres://test', namespace: 'custom' },
+      { connectionString: 'postgres://test', namespace },
       pool
     );
+    await queue.start();
+    const task = getTaskHandler('workflow_flows');
+    const queueName = namespace
+      ? `__${namespace}_wkf_workflow_test-workflow`
+      : '__wkf_workflow_test-workflow';
+    const payload = { runId: 'wrun_01ABC' };
+    const firstExecution = task(
+      buildMessageData(queueName, payload, {
+        messageId: MessageId.parse('msg_01ABC'),
+      }),
+      {}
+    );
+    let wakeExecution: Promise<void> | undefined;
     try {
-      await queue.start();
-
-      const task = getTaskHandler('workflow_flows');
-      const payload = {
-        runId: 'wrun_01ABC',
-      };
-      const firstExecution = task(
-        buildMessageData('__custom_wkf_workflow_test-workflow', payload, {
-          messageId: MessageId.parse('msg_01ABC'),
-        }),
-        {} as any
-      );
-      const secondExecution = task(
-        buildMessageData('__custom_wkf_workflow_test-workflow', payload, {
+      await firstRequestStarted.promise;
+      // A wake must reach the runtime before the inline step completes:
+      // it may be the hook resumption that aborts that very step.
+      wakeExecution = task(
+        buildMessageData(queueName, payload, {
           messageId: MessageId.parse('msg_01ABD'),
         }),
-        {} as any
+        {}
       );
-
-      await firstRequestStarted;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(requestCount).toBe(1);
-      expect(maxActiveRequests).toBe(1);
-
-      resolveReleaseFirstRequest();
-      await Promise.all([firstExecution, secondExecution]);
-
-      expect(requestCount).toBe(2);
-      expect(maxActiveRequests).toBe(1);
+      await expect.poll(() => requestCount, { timeout: 1_000 }).toBe(2);
+      await wakeExecution;
     } finally {
-      resolveReleaseFirstRequest();
+      releaseFirstRequest.resolve();
+      await Promise.all([firstExecution, wakeExecution]);
     }
   });
 
