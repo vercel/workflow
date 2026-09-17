@@ -39,8 +39,16 @@ Invoke sends one direct CBOR POST and waits for the SDK handler's result. The
 receiver authenticates same-project/environment workload OIDC and processes the
 input through a private per-run in-memory queue. The sender uses
 `@vercel/oidc`, or `invoke.getToken()`, for its credential. Ordinary workflow
-execution still uses VQS, with matching affinity headers on orchestration sends.
-Steps and health checks retain their parallel delivery path.
+execution still uses VQS. Ordinary startup and wake callbacks may have no affinity
+header; they are logged and continue executing. Steps and health checks retain
+their parallel delivery path.
+
+Affinity selectors are diagnostic observations on both paths. Missing or different
+selectors do not reject a workflow. Direct hook requests still send the run's
+affinity key, and authentication and actual pinned-deployment checks remain.
+Structured `workflow-invocation` records include invocation/request/message IDs,
+process identity, region, observed selectors, outcome, and elapsed time. They omit
+credentials and input/result payloads. Header equality is not a placement guarantee.
 
 The receiver processes inputs while an inline step waits. A cold input starts
 a continuation registered with `waitUntil`. The existing WebSocket event-channel

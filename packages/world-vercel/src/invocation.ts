@@ -20,6 +20,7 @@ import { decode, encode } from 'cbor-x';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { z } from 'zod/v4';
 import { regionForRunId } from './create-run-id.js';
+import { logInvocationRouting } from './invocation-diagnostics.js';
 import { createInvocationMailbox } from './invocation-mailbox.js';
 import { getWorkflowRun } from './runs.js';
 import {
@@ -306,6 +307,20 @@ export function createDirectInvocationHandler(
   return {
     execute: mailbox.execute,
     async handle(request: Request): Promise<Response> {
+      const invocationId = randomUUID();
+      const started = performance.now();
+      const routing = {
+        transport: 'direct' as const,
+        invocationId,
+        receivedAffinityId: request.headers.get(AFFINITY_HEADER),
+        receivedDeploymentId: request.headers.get(DEPLOYMENT_HEADER),
+      };
+      let target: {
+        runId?: string;
+        requestId?: string;
+        expectedAffinityId?: string;
+        requestedDeploymentId?: string;
+      } = {};
       try {
         if (!invocationConfig(config))
           throw new WorkflowWorldError('Direct invocation is not enabled', {
@@ -330,12 +345,19 @@ export function createDirectInvocationHandler(
           bodySignal
         );
         const input = Envelope.parse(decode(bytes));
-        if (
-          request.headers.get(AFFINITY_HEADER) !==
-            invocationAffinity(input.runId) ||
-          request.headers.get(DEPLOYMENT_HEADER) !== input.deploymentId ||
-          process.env.VERCEL_DEPLOYMENT_ID !== input.deploymentId
-        )
+        target = {
+          runId: input.runId,
+          requestId: input.requestId,
+          expectedAffinityId: invocationAffinity(input.runId),
+          requestedDeploymentId: input.deploymentId,
+        };
+        logInvocationRouting('direct.received', {
+          ...routing,
+          ...target,
+        });
+        // Selectors can be absent/consumed in transit. Check the actual deployment,
+        // not whether the proxy echoed its routing headers to the application.
+        if (process.env.VERCEL_DEPLOYMENT_ID !== input.deploymentId)
           throw new WorkflowWorldError('Invocation routing mismatch', {
             status: 409,
           });
@@ -392,6 +414,12 @@ export function createDirectInvocationHandler(
           );
         }
         const outcome = await awaitSignal(pending, signal);
+        logInvocationRouting('direct.completed', {
+          ...routing,
+          ...target,
+          elapsedMs: performance.now() - started,
+          ok: outcome.ok,
+        });
         return new Response(encodeBody(outcome), {
           headers: {
             'content-type': 'application/cbor',
@@ -402,6 +430,13 @@ export function createDirectInvocationHandler(
         const status = WorkflowWorldError.is(error)
           ? (error.status ?? 500)
           : 400;
+        logInvocationRouting('direct.failed', {
+          ...routing,
+          ...target,
+          elapsedMs: performance.now() - started,
+          status,
+          ok: false,
+        });
         return Response.json(
           { error: 'Invocation could not return an outcome' },
           { status }

@@ -123,6 +123,7 @@ beforeAll(async () => {
   mocks.token = await sign();
 });
 beforeEach(() => {
+  vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.stubEnv('VERCEL_PROJECT_ID', 'prj_test');
   vi.stubEnv('VERCEL_ENV', 'production');
   vi.stubEnv('VERCEL_TARGET_ENV', 'production');
@@ -141,6 +142,7 @@ beforeEach(() => {
   mocks.vqsRequest.mockClear();
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
@@ -190,20 +192,18 @@ describe('direct Vercel invocation', () => {
     );
   });
 
-  it('uses the same affinity for ordinary orchestration and leaves steps parallel', async () => {
+  it('does not require or add affinity on ordinary orchestration and logs every delivery', async () => {
     const queue = createQueue(config);
     await queue.queue(
       '__wkf_workflow_example',
       { runId },
       {
         deploymentId: 'dpl_pinned',
-        headers: { [AFFINITY_HEADER]: 'caller-override' },
       }
     );
-    expect(mocks.send.mock.calls[0][2].headers).toMatchObject({
-      [AFFINITY_HEADER]: invocationAffinity(runId),
-      [DEPLOYMENT_HEADER]: 'dpl_pinned',
-    });
+    expect(mocks.send.mock.calls[0][2].headers).not.toHaveProperty(
+      AFFINITY_HEADER
+    );
     await queue.queue('__wkf_workflow_example', {
       runId,
       stepId: 'step',
@@ -214,21 +214,36 @@ describe('direct Vercel invocation', () => {
     );
     const handler = vi.fn(async () => ({ timeoutSeconds: 1 }));
     const receive = queue.createQueueHandler('__wkf_workflow_', handler);
-    const normal = (affinity: string) =>
+    const normal = (affinity?: string) =>
       new Request(endpoint, {
         method: 'POST',
-        headers: { [AFFINITY_HEADER]: affinity },
+        headers: affinity ? { [AFFINITY_HEADER]: affinity } : {},
         body: encode({
           payload: { runId },
           queueName: '__wkf_workflow_example',
           deploymentId: 'dpl_pinned',
         }),
       });
-    await expect(receive(normal('wrong'))).rejects.toThrow('affinity mismatch');
-    expect(handler).not.toHaveBeenCalled();
+    await receive(normal());
+    await receive(normal('wrong'));
     await receive(normal(invocationAffinity(runId)));
-    expect(handler).toHaveBeenCalledOnce();
-    expect(mocks.send).toHaveBeenCalledTimes(3);
+    expect(handler).toHaveBeenCalledTimes(3);
+    expect(mocks.send).toHaveBeenCalledTimes(5);
+    const observations = vi
+      .mocked(console.info)
+      .mock.calls.map(([line]) => JSON.parse(line))
+      .filter((entry) => entry.event === 'execution.received');
+    expect(observations.map((entry) => entry.affinityStatus)).toEqual([
+      'absent',
+      'different',
+      'match',
+    ]);
+    expect(
+      observations.every(
+        (entry) =>
+          entry.runId === runId && entry.invocationId && entry.processInstanceId
+      )
+    ).toBe(true);
   });
 
   it('rejects direct requests when the feature is disabled', async () => {
@@ -364,7 +379,7 @@ describe('direct Vercel invocation', () => {
     expect(drive).toHaveBeenCalledOnce();
   });
 
-  it('validates workload scope, affinity and deployment before invoking user code', async () => {
+  it('validates workload scope and actual deployment before invoking user code', async () => {
     const handler = vi.fn();
     const receiver = createDirectInvocationHandler(
       '__wkf_workflow_',
@@ -396,18 +411,8 @@ describe('direct Vercel invocation', () => {
       ).status
     ).toBe(401);
     expect(
-      (
-        await receiver.handle(
-          request(payload, {}, { [AFFINITY_HEADER]: 'wrong' })
-        )
-      ).status
-    ).toBe(409);
-    expect(
-      (
-        await receiver.handle(
-          request(payload, {}, { [DEPLOYMENT_HEADER]: 'dpl_wrong' })
-        )
-      ).status
+      (await receiver.handle(request(payload, { deploymentId: 'dpl_wrong' })))
+        .status
     ).toBe(409);
     mocks.run.mockResolvedValue({
       deploymentId: 'dpl_other',
@@ -415,6 +420,48 @@ describe('direct Vercel invocation', () => {
     });
     expect((await receiver.handle(request())).status).toBe(409);
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('logs missing or different routing selectors without rejecting direct hook inputs', async () => {
+    const handler = vi.fn(async () => 'accepted');
+    const receiver = createDirectInvocationHandler(
+      '__wkf_workflow_',
+      handler,
+      config,
+      async () => {}
+    );
+    for (const [index, affinity] of [
+      undefined,
+      'different',
+      invocationAffinity(runId),
+    ].entries()) {
+      const req = request(payload, { requestId: `request-${index}` });
+      if (affinity) req.headers.set(AFFINITY_HEADER, affinity);
+      else req.headers.delete(AFFINITY_HEADER);
+      req.headers.delete(DEPLOYMENT_HEADER);
+      const response = await receiver.handle(req);
+      expect(response.status).toBe(200);
+      expect(decode(Buffer.from(await response.arrayBuffer()))).toEqual({
+        ok: true,
+        value: 'accepted',
+      });
+    }
+    expect(handler).toHaveBeenCalledTimes(3);
+    const logs = vi
+      .mocked(console.info)
+      .mock.calls.map(([line]) => JSON.parse(line));
+    expect(
+      logs
+        .filter((entry) => entry.event === 'direct.received')
+        .map((entry) => entry.affinityStatus)
+    ).toEqual(['absent', 'different', 'match']);
+    expect(
+      logs
+        .filter((entry) => entry.event === 'direct.completed')
+        .every((entry) => typeof entry.elapsedMs === 'number')
+    ).toBe(true);
+    expect(JSON.stringify(logs)).not.toContain(mocks.token);
+    await Promise.all(mocks.retain.mock.calls.map(([work]) => work));
   });
 
   it('supports a real local HTTP round trip with signed workload identity and a cold mailbox', async () => {

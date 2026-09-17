@@ -149,7 +149,12 @@ enqueue in a private per-run in-memory mailbox, await actual SDK handler
 processing, and return its value or typed error. A separate local execution lane
 supports cold arrival and hooks sent while inline steps wait. Continuations use
 the Vercel request lifetime (`waitUntil`); normal step/timer scheduling remains.
-Ordinary orchestration deliveries use the same affinity key, with incoming checks.
+Ordinary orchestration deliveries do not require affinity headers. Missing or
+different affinity headers are logged and execution continues. Direct hook calls
+send the run's affinity key; received selectors are recorded for comparison rather
+than used to reject execution. Workload authentication and actual pinned-deployment
+checks still apply. Routing records include invocation and request IDs, process
+identity, region, observed headers, and elapsed time without tokens or payloads.
 
 Ingress requires a verified workload OIDC token for the same project/environment.
 The client obtains one automatically in a Vercel request, or through

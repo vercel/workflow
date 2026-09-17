@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
 import type { Transport } from '@vercel/queue';
 import { ConsumerDiscoveryError, QueueClient } from '@vercel/queue';
-import { WorkflowWorldError } from '@workflow/errors';
 import { globalSingleton } from '@workflow/utils';
 import {
   MessageId,
@@ -27,6 +27,7 @@ import {
   invocationAffinity,
   invocationConfig,
 } from './invocation.js';
+import { logInvocationRouting } from './invocation-diagnostics.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
 import { getTraceContextHeaders } from './telemetry.js';
@@ -168,6 +169,7 @@ class DualTransport implements Transport<unknown> {
 const requestIdStorage = new AsyncLocalStorage<{
   requestId?: string;
   affinity: string | null;
+  deployment: string | null;
 }>();
 
 function orchestrationRunId(payload: QueuePayload): string | undefined {
@@ -542,14 +544,7 @@ export function createQueue(config?: APIConfig): Queue {
       /[^A-Za-z0-9-_]/g,
       '-'
     );
-    let sendHeaders = { ...getHeadersFromPayload(payload), ...opts?.headers };
-    const executorRunId = orchestrationRunId(payload);
-    if (invocationConfig(config) && executorRunId) {
-      const routingHeaders = new Headers(sendHeaders);
-      routingHeaders.set(AFFINITY_HEADER, invocationAffinity(executorRunId));
-      routingHeaders.set(DEPLOYMENT_HEADER, deploymentId);
-      sendHeaders = Object.fromEntries(routingHeaders);
-    }
+    const sendHeaders = { ...getHeadersFromPayload(payload), ...opts?.headers };
 
     return {
       deploymentId,
@@ -796,16 +791,40 @@ export function createQueue(config?: APIConfig): Queue {
             },
             deploymentId
           );
-        if (direct && executorRunId) {
-          if (context?.affinity !== invocationAffinity(executorRunId)) {
-            throw new WorkflowWorldError(
-              'Workflow execution affinity mismatch',
-              { status: 409 }
-            );
-          }
-          await direct.execute(executorRunId, invokeHandler);
-        } else {
-          await invokeHandler();
+        const observation = {
+          transport: 'vqs' as const,
+          invocationId: randomUUID(),
+          runId: getRunIdFromPayload(payload),
+          messageId: metadata.messageId,
+          requestId: context?.requestId,
+          attempt: metadata.deliveryCount,
+          expectedAffinityId: executorRunId
+            ? invocationAffinity(executorRunId)
+            : undefined,
+          receivedAffinityId: context?.affinity ?? null,
+          requestedDeploymentId: deploymentId,
+          receivedDeploymentId: context?.deployment ?? null,
+        };
+        const started = performance.now();
+        if (direct) logInvocationRouting('execution.received', observation);
+        try {
+          if (direct && executorRunId)
+            await direct.execute(executorRunId, invokeHandler);
+          else await invokeHandler();
+          if (direct)
+            logInvocationRouting('execution.completed', {
+              ...observation,
+              elapsedMs: performance.now() - started,
+              ok: true,
+            });
+        } catch (error) {
+          if (direct)
+            logInvocationRouting('execution.failed', {
+              ...observation,
+              elapsedMs: performance.now() - started,
+              ok: false,
+            });
+          throw error;
         }
       },
       {
@@ -838,7 +857,11 @@ export function createQueue(config?: APIConfig): Queue {
       const rawId = req.headers.get('x-vercel-id');
       const requestId = rawId?.trim() || undefined;
       return requestIdStorage.run(
-        { requestId, affinity: req.headers.get(AFFINITY_HEADER) },
+        {
+          requestId,
+          affinity: req.headers.get(AFFINITY_HEADER),
+          deployment: req.headers.get(DEPLOYMENT_HEADER),
+        },
         () => vqsHandler(req)
       );
     };
