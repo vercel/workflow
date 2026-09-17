@@ -933,6 +933,35 @@ export function createEventsStorage(
     throw new HookNotFoundError(hookId);
   }
 
+  /**
+   * Wait (briefly) until the hook a token claim names has its `hook_created`
+   * on disk. The claim records the canonical eventId, so the check is one
+   * `stat`; a claim without one is a legacy claim, which is not waited on.
+   * Bounded: a creator that died between claim and publish never lands it.
+   */
+  async function awaitVictimCreationJournaled(
+    claim: HookTokenClaim
+  ): Promise<void> {
+    if (!claim.eventId) return;
+    const eventPath = taggedPath(
+      basedir,
+      'events',
+      `${claim.runId}-${claim.eventId}`,
+      tag
+    );
+    const deadline = Date.now() + 1_000;
+    for (;;) {
+      try {
+        await fs.access(eventPath);
+        return;
+      } catch {
+        // not yet published
+      }
+      if (Date.now() >= deadline) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
   const queryRunEvents = (runId: string, pagination: PaginationOptions) =>
     paginatedFileSystemQuery({
       directory: path.join(basedir, 'events'),
@@ -2373,6 +2402,14 @@ export function createEventsStorage(
                 // serializes this against other creators; the dispose lock
                 // serializes it against the victim's own disposal.
                 signal.throwIfAborted();
+                // The victim's claim is written before its `hook_created` is
+                // published (see the entity-write ordering below). Taking the
+                // token from a creation still in flight would let that
+                // publish land behind the disposal this writes, so give it a
+                // moment to land; a creator that died leaves the claim alone
+                // and the takeover proceeds, its retry refused by the journal
+                // guard above.
+                await awaitVictimCreationJournaled(existingClaim);
                 const victimRun = await readJSONWithFallback(
                   basedir,
                   'runs',
@@ -2844,6 +2881,29 @@ export function createEventsStorage(
             data.correlationId,
             (data.eventData as { token?: unknown } | undefined)?.token
           );
+        }
+
+        // The journal guard for a creation (workflow-server's ConditionCheck
+        // on the run's own marker, `ForceUnguardedJournal.cfg`): between this
+        // hook's claim above and its `hook_created` publish here, another run
+        // may have force-claimed the token and written THIS hook's
+        // `hook_disposed`. Appending the creation now would put a
+        // non-parkable row behind a retired consumer, so nothing is written
+        // and the request is refused with the 409 the runtime swallows; its
+        // replay reads the disposal and rejects the hook's awaiters. (The
+        // takeover also waits for an in-flight creation to land first, see
+        // `awaitVictimCreationJournaled`, so this is the backstop.)
+        if (data.eventType === 'hook_created' && data.correlationId) {
+          const own = await readHookDisposeLock(
+            basedir,
+            data.correlationId,
+            tag
+          );
+          if (own.committed && own.forceClaimedBy) {
+            throw new EntityConflictError(
+              `Hook "${data.correlationId}" was force-claimed by another run before its creation was journaled`
+            );
+          }
         }
 
         let eventPath = taggedPath(

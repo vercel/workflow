@@ -2164,6 +2164,113 @@ describe('Storage (Postgres integration)', () => {
       expect(stepCreated).toHaveLength(1);
     });
 
+    it('rejects the concurrent duplicate of a hook_created with EntityConflictError, one event journaled', async () => {
+      // Two invocations of the same replay mint the same hook correlationId
+      // (the QuickJS lane does this routinely). The creation journals inside
+      // its own transaction now, ahead of the generic publish's catch, so it
+      // has to translate the unique violation itself — the runtime's dedup
+      // path expects EntityConflictError, not a raw pg error failing the run.
+      const results = await Promise.allSettled([
+        createHook(events, testRunId, { hookId: 'hook_dup', token: 'dup-1' }),
+        createHook(events, testRunId, { hookId: 'hook_dup', token: 'dup-1' }),
+      ]);
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
+      const evts = await events.list({ runId: testRunId, pagination: {} });
+      expect(
+        evts.data.filter(
+          (e) =>
+            e.eventType === 'hook_created' && e.correlationId === 'hook_dup'
+        )
+      ).toHaveLength(1);
+    });
+
+    it('two claimers forcing the same token at once both end registered, with one owner and a chain', async () => {
+      // Both claimers read the victim as the owner before either transaction
+      // runs. The takeover must re-resolve the owner BY TOKEN under the row
+      // lock, so whichever commits second takes the token from the first —
+      // never "the row I read is gone, throw EntityConflictError", which the
+      // runtime swallows as an idempotent duplicate and leaves that run
+      // suspended forever on a hook that was never registered.
+      const token = `force-race-${ulid()}`;
+      const victim = await createRun(events, {
+        deploymentId: 'dpl_victim',
+        workflowName: 'victim',
+        input: new Uint8Array(),
+      });
+      await updateRun(events, victim.runId, 'run_started');
+      await createHook(events, victim.runId, { hookId: 'hook_victim', token });
+      const claimers = await Promise.all(
+        [1, 2].map(async (n) => {
+          const run = await createRun(events, {
+            deploymentId: `dpl_claimer_${n}`,
+            workflowName: `claimer-${n}`,
+            input: new Uint8Array(),
+          });
+          await updateRun(events, run.runId, 'run_started');
+          return run.runId;
+        })
+      );
+
+      const results = await Promise.all(
+        claimers.map((runId, i) =>
+          events.create(runId, {
+            eventType: 'hook_created',
+            correlationId: `hook_claimer_${i + 1}`,
+            eventData: { token, force: true },
+          })
+        )
+      );
+      // Neither request is answered with a swallowed conflict: each claimer's
+      // log gets a row its replay can consume.
+      for (const result of results) {
+        expect(result.event.eventType).toBe('hook_created');
+      }
+
+      // Exactly one owner, and it is one of the claimers.
+      const [owner] = await drizzle
+        .select()
+        .from(DrizzleSchema.hooks)
+        .where(eq(DrizzleSchema.hooks.token, token));
+      expect(owner).toBeDefined();
+      expect(claimers).toContain(owner.runId);
+      const loser = claimers.find((runId) => runId !== owner.runId)!;
+
+      // The victim lost the token to whichever claimer got there first …
+      const victimLog = (
+        await events.list({ runId: victim.runId, pagination: {} })
+      ).data;
+      const victimDisposal = victimLog.find(
+        (e) => e.eventType === 'hook_disposed'
+      );
+      expect(victimDisposal?.eventData).toMatchObject({
+        token,
+        forceClaimedBy: { runId: expect.stringMatching(/^wrun_/) },
+      });
+      expect(claimers).toContain(
+        (victimDisposal?.eventData as { forceClaimedBy: { runId: string } })
+          .forceClaimedBy.runId
+      );
+      // … and the loser lost it to the final owner: the chain v → c1 → c2.
+      const loserLog = (await events.list({ runId: loser, pagination: {} }))
+        .data;
+      expect(loserLog.map((e) => e.eventType)).toEqual([
+        'run_created',
+        'run_started',
+        'hook_created',
+        'hook_disposed',
+      ]);
+      expect(
+        loserLog.find((e) => e.eventType === 'hook_disposed')?.eventData
+      ).toMatchObject({ forceClaimedBy: { runId: owner.runId } });
+      expect(owner.claimedFrom).toMatchObject({ runId: loser });
+    });
+
     it('should reject sequential duplicate step_created with EntityConflictError', async () => {
       await createStep(events, testRunId, {
         stepId: 'step_seq_dup',

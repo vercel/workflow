@@ -1,5 +1,6 @@
 import { HookNotFoundError, WorkflowRuntimeError } from '@workflow/errors';
 import {
+  type Event,
   type Hook,
   type HookClaimedFrom,
   SPEC_VERSION_LEGACY,
@@ -149,5 +150,69 @@ export async function publishForceClaimVictimWake(
       }
     );
     return 'failed';
+  }
+}
+
+/**
+ * The forced hook creation whose victim wake this run still owes, if any: the
+ * forced `hook_created` is the last event the run's own replay appended.
+ *
+ * A forced creation is followed by a wake of the run it took the token from.
+ * If the invocation died between the two, the creation is in the log and the
+ * victim was never told; the row itself is the durable record of that debt.
+ * As long as it is the last event THIS RUN wrote, the run has made no progress
+ * since, so the invocation that should have woken the victim did not finish,
+ * and the replay republishes (under the hook's idempotency key, so a wake that
+ * did go out is not duplicated). The first event the run appends after it
+ * ends the republishing.
+ *
+ * "This run wrote" matters: a delivery appends `hook_received` to this log
+ * from another request, and a sealed-log World appends `noop`. Neither is
+ * progress of this run — the model (`ForceWakeOnce.cfg`'s sibling trace) has
+ * a delivery land between the crash and the retry, and a rule that looked at
+ * the bare tail would then never wake the victim. Both engines call this on
+ * the log they loaded for the invocation, before writing anything.
+ */
+export function forcedCreationOwingWake(
+  events: readonly Event[] | undefined
+): (Event & { eventType: 'hook_created' }) | undefined {
+  if (!events) return undefined;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.eventType === 'hook_received' || event.eventType === 'noop') {
+      continue;
+    }
+    return event.eventType === 'hook_created' &&
+      event.eventData.forceClaimedFrom !== undefined
+      ? event
+      : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Republish the wake {@link forcedCreationOwingWake} says is owed. Shared by
+ * the node:vm suspension handler and the QuickJS entrypoint so the two engines
+ * cannot drift on the durability contract.
+ */
+export async function republishOwedForceClaimVictimWake(
+  world: World,
+  runId: string,
+  events: readonly Event[] | undefined
+): Promise<void> {
+  const owed = forcedCreationOwingWake(events);
+  if (!owed) return;
+  const claimedFrom = owed.eventData.forceClaimedFrom as HookClaimedFrom;
+  const outcome = await publishForceClaimVictimWake(world, runId, {
+    hookId: owed.correlationId,
+    claimedFrom,
+  });
+  if (outcome !== 'skipped') {
+    runtimeLogger.info('Republished the wake of a force-claimed hook victim', {
+      workflowRunId: runId,
+      hookId: owed.correlationId,
+      victimRunId: claimedFrom.runId,
+      victimWake: outcome,
+    });
   }
 }

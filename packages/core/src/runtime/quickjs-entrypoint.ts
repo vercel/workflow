@@ -64,7 +64,10 @@ import {
   runDispatchContext,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
-import { publishForceClaimVictimWake } from './hook-wake.js';
+import {
+  publishForceClaimVictimWake,
+  republishOwedForceClaimVictimWake,
+} from './hook-wake.js';
 import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
@@ -1117,6 +1120,13 @@ export async function runWorkflowWithQuickJS(params: {
   // handed back on a write that the VM has not been given yet. Every write
   // made from this view goes through `createEvent` below so it names the
   // position it was decided against and its response is queued here.
+  // Same durability contract as the node:vm suspension handler: a forced
+  // hook creation that is still the last event this run wrote owes its
+  // victim a wake, because the invocation that created it died before
+  // publishing one. Repaid here, on the log as loaded, before this
+  // invocation writes anything.
+  await republishOwedForceClaimVictimWake(world, runId, events);
+
   const logView = new QuickJSLogView(events, loadedCursor);
   const createEvent: EventCreator = async (data, eventParams) => {
     const result = await world.events.create(runId, data, {

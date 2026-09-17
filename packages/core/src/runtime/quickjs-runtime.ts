@@ -2435,19 +2435,28 @@ async function processEvents(
         const conflictingRunId = eventData?.conflictingRunId as
           | string
           | undefined;
+        // A World that declined a forced creation ON PURPOSE (the run holding
+        // the token predates involuntary disposal) marks the conflict; that
+        // is the ordinary, catchable conflict. Unmarked, a conflict on a
+        // forced hook means the World does not implement forcing at all.
+        // Mirrors hook.ts.
+        const forceRefusedReason = eventData?.forceRefusedReason as
+          | string
+          | undefined;
         const didSettle = vm.dump(
           vm.evalCode(
             `(function(){
               var cid = ${JSON.stringify(cid)};
               var token = ${JSON.stringify(conflictToken)};
               var conflictingRunId = ${JSON.stringify(conflictingRunId ?? null)};
+              var forceRefused = ${JSON.stringify(forceRefusedReason !== undefined)};
               var ErrCls = globalThis[Symbol.for('@workflow/errors//HookConflictError')];
               var err;
               var hookState = globalThis.__hooks && globalThis.__hooks[cid];
               // A forced hook asked for a guarantee the World could not give
               // (older server, kill switch): a misconfiguration, not the
               // ordinary conflict the caller opted out of. Mirrors hook.ts.
-              var forced = !!(hookState && hookState.force);
+              var forced = !!(hookState && hookState.force) && !forceRefused;
               if (forced) {
                 var FatalCls = globalThis[Symbol.for('@workflow/errors//FatalError')];
                 var forcedMessage = 'createHook({ experimental_force: true }) for token "' + token + '" was answered with a hook_conflict: the configured World does not support force-claiming hook tokens' + (conflictingRunId ? ' (run "' + conflictingRunId + '" holds it)' : '') + '.';

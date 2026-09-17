@@ -12,7 +12,6 @@ import {
   AttributeValidationError,
   type CreateEventParams,
   type CreateEventRequest,
-  type Event,
   type EventResult,
   type SerializedData,
   SPEC_VERSION_CURRENT,
@@ -66,7 +65,10 @@ import {
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
-import { publishForceClaimVictimWake } from './hook-wake.js';
+import {
+  publishForceClaimVictimWake,
+  republishOwedForceClaimVictimWake,
+} from './hook-wake.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import type { PreclaimedInlineStart } from './step-executor.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
@@ -458,24 +460,6 @@ async function createHookEvent({
  * 1. Hooks are processed first to prevent race conditions with webhook receivers
  * 2. Step events and wait events are created in parallel
  */
-/**
- * The last event in `events` that the run's own replay appended: everything
- * except the rows other actors write into a run's log after the fact — a
- * deliverer's `hook_received`, a sealed-log World's `noop`.
- */
-function lastSelfWrittenEvent(
-  events: readonly Event[] | undefined
-): Event | undefined {
-  if (!events) return undefined;
-  for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i];
-    if (event.eventType !== 'hook_received' && event.eventType !== 'noop') {
-      return event;
-    }
-  }
-  return undefined;
-}
-
 export async function handleSuspension({
   suspension,
   world,
@@ -491,41 +475,11 @@ export async function handleSuspension({
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
-  // A forced hook creation is followed by a wake of the run it took the token
-  // from (see the hook phase below). If this run died between the two, the
-  // creation is in its log and the victim was never told. The row itself is
-  // the durable record of that debt: as long as it is the last event THIS RUN
-  // wrote, this run has made no progress since, so the invocation that should
-  // have woken the victim did not finish, and this replay republishes — under
-  // the same idempotency key, so a wake that did go out is not duplicated.
-  // The first event this run appends after it ends the republishing.
-  //
-  // "This run wrote" matters: a delivery appends `hook_received` to this log
-  // from another request, and a sealed-log World appends `noop`. Neither is
-  // progress of this run — the model (`ForceWakeOnce.cfg`'s sibling trace)
-  // has a delivery land between the crash and the retry, and a rule that
-  // looked at the bare tail would then never wake the victim.
-  const tail = lastSelfWrittenEvent(eventLog?.events);
-  if (
-    tail?.eventType === 'hook_created' &&
-    tail.eventData.forceClaimedFrom !== undefined
-  ) {
-    const outcome = await publishForceClaimVictimWake(world, runId, {
-      hookId: tail.correlationId,
-      claimedFrom: tail.eventData.forceClaimedFrom,
-    });
-    if (outcome !== 'skipped') {
-      runtimeLogger.info(
-        'Republished the wake of a force-claimed hook victim',
-        {
-          workflowRunId: runId,
-          hookId: tail.correlationId,
-          victimRunId: tail.eventData.forceClaimedFrom.runId,
-          victimWake: outcome,
-        }
-      );
-    }
-  }
+  // A forced creation whose victim wake this run still owes (the invocation
+  // that created it died before publishing) is repaid before anything else;
+  // see `forcedCreationOwingWake` for the rule and why it reads the log as
+  // loaded, before this suspension's writes.
+  await republishOwedForceClaimVictimWake(world, runId, eventLog?.events);
 
   // Turbo mode: hold every world write below until the backgrounded
   // `run_started` has *settled*, so we never write a step/hook/wait event for a

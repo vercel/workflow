@@ -445,9 +445,19 @@ async function resumeHookImpl<T = any>(
       // delivering an empty stream to the new owner.
       let target: string | ResumableHook = tokenOrHook;
       let fresh = hookFreshlyLookedUp;
+      // `resumeWebhook` resolved this key for the run it first looked up. A
+      // redirect targets a different run with different payload keys, so the
+      // override is dropped on the way and the attempt resolves the new
+      // owner's key itself; a Request payload re-encrypted with the victim's
+      // key would be unreadable to the new owner.
+      let keyOverride = encryptionKeyOverride;
       let redirects = 0;
       let attemptPayload: T = payload;
       let spare: T | undefined;
+      // One logical resume, one resumeId, whichever run it ends up in. The
+      // per-run (runId, resumeId) claim then dedups a retry of the redirected
+      // write exactly as it dedups a retry of a plain one.
+      const resumeId = generateResumeId();
       for (;;) {
         spare =
           attemptPayload instanceof Request
@@ -459,12 +469,27 @@ async function resumeHookImpl<T = any>(
             span,
             target,
             attemptPayload,
-            encryptionKeyOverride,
+            keyOverride,
             fresh,
-            resumeRequestedAtMs
+            resumeRequestedAtMs,
+            resumeId
           );
         } catch (err) {
-          if (redirects >= MAX_FORCE_CLAIM_REDIRECTS) throw err;
+          if (redirects >= MAX_FORCE_CLAIM_REDIRECTS) {
+            if (HookForceClaimedError.is(err)) {
+              // Every hop found the token already moved on again. Nothing was
+              // written anywhere, so the caller can simply retry; make that
+              // legible instead of surfacing the victim-side error type.
+              span?.setAttributes({
+                'workflow.hook.resume_redirects_exhausted': true,
+              });
+              throw new WorkflowRuntimeError(
+                `Hook token "${token}" changed owner ${redirects} times while this resume was in flight; nothing was delivered — retry the resume`,
+                { cause: err }
+              );
+            }
+            throw err;
+          }
           if (HookForceClaimedError.is(err)) {
             // The old owner's World completed the transfer before answering,
             // so a fresh lookup names the claimer.
@@ -475,20 +500,41 @@ async function resumeHookImpl<T = any>(
             });
             target = token;
             fresh = true;
+            keyOverride = undefined;
             if (spare !== undefined) attemptPayload = spare;
             continue;
           }
           if (HookNotFoundError.is(err) && redirects === 0) {
+            // A finished run that retained its token can be taken over
+            // without any row being written for it to refuse with, so its
+            // not-found is re-resolved once. The re-resolved hook must carry
+            // `claimedFrom` — evidence of a takeover — whatever the target
+            // was: a token that a run disposed and another run then
+            // registered normally is the ordinary handoff, and a resume aimed
+            // at the old hook stays the HookNotFoundError it always was
+            // rather than landing in a run that never asked for it.
             const attemptedHookId =
               typeof target === 'string' ? undefined : target.hookId;
-            const relocated = await world.hooks
-              .getByToken(token)
-              .catch(() => undefined);
+            let relocated: ResumableHook | undefined;
+            try {
+              relocated = await world.hooks.getByToken(token);
+            } catch (lookupError) {
+              if (!HookNotFoundError.is(lookupError)) {
+                runtimeLogger.warn(
+                  'Hook resume: re-resolving the token after a not-found failed; surfacing the original error',
+                  {
+                    token,
+                    error:
+                      lookupError instanceof Error
+                        ? lookupError.message
+                        : String(lookupError),
+                  }
+                );
+              }
+            }
             if (
-              relocated &&
-              (attemptedHookId === undefined
-                ? relocated.claimedFrom !== undefined
-                : relocated.hookId !== attemptedHookId)
+              relocated?.claimedFrom !== undefined &&
+              relocated.hookId !== attemptedHookId
             ) {
               redirects++;
               span?.setAttributes({
@@ -497,6 +543,7 @@ async function resumeHookImpl<T = any>(
               });
               target = relocated;
               fresh = true;
+              keyOverride = undefined;
               if (spare !== undefined) attemptPayload = spare;
               continue;
             }
@@ -532,7 +579,8 @@ async function resumeHookAttempt<T = any>(
   payload: T,
   encryptionKeyOverride: PayloadKey | undefined,
   hookFreshlyLookedUp: boolean,
-  resumeRequestedAtMs: number
+  resumeRequestedAtMs: number,
+  logicalResumeId: string
 ): Promise<ResumedHook> {
   try {
     const suppliedToken = typeof tokenOrHook === 'string';
@@ -686,7 +734,7 @@ async function resumeHookAttempt<T = any>(
             token: hook.token,
             payload: dehydratedPayload,
           },
-          { idempotencyKey: generateResumeId() }
+          { idempotencyKey: logicalResumeId }
         )
       );
       if (result.status === 'rejected') {
@@ -749,7 +797,7 @@ async function resumeHookAttempt<T = any>(
       'workflow.hook.resume_strategy': 'sequential',
     });
 
-    const resumeId = canClaimResume ? generateResumeId() : undefined;
+    const resumeId = canClaimResume ? logicalResumeId : undefined;
     const payloadDigest = canClaimResume
       ? await computeResumePayloadDigest(dehydratedPayload)
       : undefined;
