@@ -14,6 +14,7 @@ import {
   type CreateEventRequest,
   type Event,
   type EventResult,
+  getEventDataPayloadField,
   HealthCheckPayloadSchema,
   isTerminalWorkflowRunStatus,
   type Queue,
@@ -56,9 +57,13 @@ class RunnerFault extends WorkflowRuntimeError {
   terminalPersisted?: boolean;
   constructor(
     readonly kind: 'persistence' | 'conflict' | 'execution',
-    cause: unknown
+    cause: unknown,
+    readonly conflictReason?: string
   ) {
-    super(`Retained runner ${kind} failure`, { cause });
+    super(
+      `Retained runner ${kind} failure${conflictReason ? ` (${conflictReason})` : ''}`,
+      { cause }
+    );
   }
 }
 class InputRejected extends WorkflowWorldError {}
@@ -93,6 +98,56 @@ function equivalent(actual: unknown, expected: unknown): boolean {
     );
   }
   return false;
+}
+
+function isLazyPayload(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (value !== null &&
+      typeof value === 'object' &&
+      '_type' in value &&
+      value._type === 'RemoteRef' &&
+      '_ref' in value &&
+      typeof value._ref === 'string' &&
+      value._ref.length > 0)
+  );
+}
+
+/** A write acknowledgement may carry a reference rather than echoing payload bytes. */
+function materializeEventPayload(
+  actual: Event,
+  known: { eventType: string; eventData?: unknown }
+): Event {
+  const field = getEventDataPayloadField(known.eventType);
+  if (!field || !known.eventData || typeof known.eventData !== 'object')
+    return actual;
+  const payload = (known.eventData as Record<string, unknown>)[field];
+  if (
+    !(payload instanceof Uint8Array) ||
+    !isLazyPayload(
+      (actual.eventData as Record<string, unknown> | undefined)?.[field]
+    )
+  )
+    return actual;
+  return {
+    ...actual,
+    eventData: { ...actual.eventData, [field]: payload.slice() },
+  } as Event;
+}
+
+function materializeEntityPayloads<T extends object>(
+  entity: T,
+  known: Record<string, unknown>
+): T {
+  const materialized = { ...entity } as Record<string, unknown>;
+  for (const field of ['input', 'output', 'error', 'metadata']) {
+    const payload = known[field];
+    if (payload instanceof Uint8Array && isLazyPayload(materialized[field])) {
+      materialized[field] = payload.slice();
+      delete materialized[`${field}Ref`];
+    }
+  }
+  return materialized as T;
 }
 
 /** One owner, one mailbox and one committed projection. Transport supplies exclusion. */
@@ -478,45 +533,126 @@ export class RetainedRunner {
   ): Promise<EventResult> {
     const work = this.commitTail.then(async () => {
       if (this.fault) throw this.fault;
+      const field = getEventDataPayloadField(event.eventType);
+      const payload = field
+        ? (event.eventData as Record<string, unknown> | undefined)?.[field]
+        : undefined;
+      // Keep the bytes submitted by this turn stable across the asynchronous write.
+      const submitted =
+        field && payload instanceof Uint8Array
+          ? ({
+              ...event,
+              eventData: { ...event.eventData, [field]: payload.slice() },
+            } as CreateEventRequest)
+          : event;
+      const wire =
+        field && payload instanceof Uint8Array
+          ? ({
+              ...submitted,
+              eventData: { ...submitted.eventData, [field]: payload.slice() },
+            } as CreateEventRequest)
+          : submitted;
       const spanId = randomUUID();
       this.observe('persist', 'begin', spanId, { eventType: event.eventType });
       try {
-        const result = await this.backend.events.create(this.runId, event, {
+        const result = await this.backend.events.create(this.runId, wire, {
           ...options,
-          resolveData: 'all',
+          resolveData: 'none',
           eventCount: this.events.length,
         });
+        const conflict = (reason: string): never => {
+          throw new RunnerFault(
+            'conflict',
+            new Error('Persistence returned an unexpected event transition'),
+            reason
+          );
+        };
+        const acknowledged = result.event;
+        if (!acknowledged) return conflict('missing_event');
+        if (acknowledged.runId !== this.runId) conflict('run_id');
+        if (acknowledged.eventType !== event.eventType) conflict('event_type');
         if (
-          !result.event ||
-          !equivalent(result.event.eventType, event.eventType) ||
-          (options?.resumeId !== undefined &&
-            result.event.resumeId !== options.resumeId) ||
-          !equivalent(result.event.correlationId, event.correlationId) ||
-          !equivalent(result.event.eventData, event.eventData) ||
-          requireEventSlot(result.event.eventId) !== this.events.length + 1 ||
+          options?.resumeId !== undefined &&
+          acknowledged.resumeId !== options.resumeId
+        )
+          conflict('resume_id');
+        if (!equivalent(acknowledged.correlationId, event.correlationId))
+          conflict('correlation_id');
+        let slot: number;
+        try {
+          slot = requireEventSlot(acknowledged.eventId);
+        } catch {
+          return conflict('invalid_slot');
+        }
+        if (slot !== this.events.length + 1) conflict('event_slot');
+        if (
           result.events?.some(
             (reported) =>
-              reported.eventId !== result.event?.eventId &&
+              reported.eventId !== acknowledged.eventId &&
               !this.events.some(
                 (known) =>
                   known.eventId === reported.eventId &&
-                  equivalent(reported, known)
+                  equivalent(materializeEventPayload(reported, known), known)
               )
           )
-        ) {
+        )
+          conflict('reported_events');
+        const committed = materializeEventPayload(acknowledged, submitted);
+        if (!equivalent(committed.eventData, submitted.eventData)) {
           throw new RunnerFault(
             'conflict',
-            new Error('Persistence returned an unexpected event transition')
+            new Error('Persistence returned conflicting event data'),
+            'event_data'
           );
         }
-        this.apply(result.event);
-        if (result.run) this.runState = result.run;
-        if (result.step) this.steps.set(result.step.stepId, result.step);
+        const eventData = (committed.eventData ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const materialized: EventResult = { ...result, event: committed };
+        if (result.run) {
+          const known = { ...this.runState } as Record<string, unknown>;
+          if (committed.eventType === 'run_completed')
+            known.output = eventData.output;
+          if (committed.eventType === 'run_failed')
+            known.error = eventData.error;
+          materialized.run = materializeEntityPayloads(result.run, known);
+        }
+        if (result.step) {
+          const known = { ...this.steps.get(result.step.stepId) } as Record<
+            string,
+            unknown
+          >;
+          if (
+            committed.eventType === 'step_created' ||
+            committed.eventType === 'step_started'
+          ) {
+            if (eventData.input instanceof Uint8Array)
+              known.input = eventData.input;
+          }
+          if (committed.eventType === 'step_completed')
+            known.output = eventData.result;
+          if (
+            committed.eventType === 'step_failed' ||
+            committed.eventType === 'step_retrying'
+          )
+            known.error = eventData.error;
+          materialized.step = materializeEntityPayloads(result.step, known);
+        }
+        if (result.hook && committed.eventType === 'hook_created')
+          materialized.hook = materializeEntityPayloads(result.hook, {
+            metadata: eventData.metadata,
+          });
+        this.apply(committed);
+        if (materialized.run) this.runState = materialized.run;
+        if (materialized.step)
+          this.steps.set(materialized.step.stepId, materialized.step);
         this.observe('persist', 'end', spanId, {
           eventType: event.eventType,
           status: 'completed',
+          payloadSource: committed === result.event ? 'response' : 'submitted',
         });
-        return result;
+        return materialized;
       } catch (cause) {
         this.fault =
           cause instanceof RunnerFault
@@ -532,6 +668,7 @@ export class RetainedRunner {
           eventType: event.eventType,
           status: 'error',
           errorCode: this.fault.kind,
+          conflictReason: this.fault.conflictReason,
         });
         throw this.fault;
       }
@@ -795,6 +932,7 @@ export class RetainedRunner {
         this.observe('failure', 'end', spanId, {
           status: 'error',
           errorCode: fault.kind,
+          conflictReason: fault.conflictReason,
           terminalPersisted: durable,
         });
         fault.terminalPersisted = durable;

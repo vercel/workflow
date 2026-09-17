@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
 import {
+  type Event,
+  type EventResult,
+  getEventDataPayloadField,
   MessageId,
   SPEC_VERSION_CURRENT,
   ValidQueueName,
@@ -41,6 +44,134 @@ const code = `
   }
   globalThis.__private_workflows = new Map([['workflow', workflow]]);
 `;
+
+function lazyEvent(
+  event: Event,
+  representation: 'reference' | 'omitted'
+): Event {
+  const field = getEventDataPayloadField(event.eventType);
+  if (!field || !event.eventData) return event;
+  const eventData = { ...event.eventData } as Record<string, unknown>;
+  if (eventData[field] instanceof Uint8Array) {
+    if (representation === 'omitted') delete eventData[field];
+    else
+      eventData[field] = { _type: 'RemoteRef', _ref: 'opaque-test-reference' };
+  }
+  return { ...event, eventData } as Event;
+}
+
+it.each([
+  'reference',
+  'omitted',
+] as const)('continues from lazy %s write acknowledgements without payload readback', async (representation) => {
+  const values: unknown[] = [];
+  registerStepFunction('retainedWrite', async (value) => {
+    values.push(value);
+  });
+  const fixture = await setup();
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  let previousHook: Event | undefined;
+  vi.spyOn(fixture.world.events, 'create').mockImplementation((async (
+    id,
+    request,
+    params
+  ) => {
+    const result = await create(id, request, { ...params, resolveData: 'all' });
+    const wire: EventResult = {
+      ...result,
+      event: result.event ? lazyEvent(result.event, representation) : undefined,
+    };
+    for (const name of ['run', 'step', 'hook'] as const) {
+      const entity = result[name];
+      if (!entity) continue;
+      const copy = { ...entity } as Record<string, unknown>;
+      for (const field of ['input', 'output', 'error', 'metadata']) {
+        if (!(copy[field] instanceof Uint8Array)) continue;
+        if (representation === 'omitted') delete copy[field];
+        else
+          copy[field] = { _type: 'RemoteRef', _ref: 'opaque-entity-reference' };
+      }
+      Object.assign(wire, { [name]: copy });
+    }
+    if (request.eventType === 'hook_received') {
+      if (previousHook)
+        Object.assign(wire, {
+          events: [lazyEvent(previousHook, representation)],
+          cursor: null,
+          hasMore: false,
+        });
+      previousHook = result.event;
+    }
+    return wire;
+  }) as typeof fixture.world.events.create);
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  const list = vi.spyOn(fixture.world.events, 'list');
+  const get = vi.spyOn(fixture.world.events, 'get');
+  await fixture.send('a', 'one');
+  await fixture.send('a', 'one');
+  await fixture.send('b', 'two');
+  await fixture.send('c', 'three');
+  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+  expect(values).toEqual(['one', 'two', 'three']);
+  expect(list).not.toHaveBeenCalled();
+  expect(get).not.toHaveBeenCalled();
+  expect(
+    fixture.owner.events.filter((event) => event.eventType === 'hook_received')
+  ).toHaveLength(3);
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
+  );
+});
+
+it.each([
+  'payload',
+  'malformed-reference',
+  'run',
+  'resume',
+  'slot',
+  'token',
+] as const)('still fails the run for a conflicting %s acknowledgement', async (corruption) => {
+  registerStepFunction('retainedWrite', async () => undefined);
+  const fixture = await setup();
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  vi.spyOn(fixture.world.events, 'create').mockImplementation((async (
+    id,
+    request,
+    params
+  ) => {
+    const result = await create(id, request, { ...params, resolveData: 'all' });
+    if (request.eventType !== 'hook_received' || !result.event) return result;
+    const event = {
+      ...result.event,
+      eventData: { ...result.event.eventData },
+    } as Event;
+    if (corruption === 'run') event.runId = 'wrun_other';
+    if (corruption === 'resume') event.resumeId = 'different-resume';
+    if (corruption === 'slot')
+      event.eventId = 'evnt_00000000000000000000000099';
+    const data = event.eventData as Record<string, unknown>;
+    if (corruption === 'payload') data.payload = new Uint8Array([255]);
+    if (corruption === 'malformed-reference')
+      data.payload = { unexpected: true };
+    if (corruption === 'token') data.token = 'different-token';
+    return { ...result, event };
+  }) as typeof fixture.world.events.create);
+  await expect(fixture.send('a', 'one')).rejects.toMatchObject({
+    code: 'RETAINED_RUNNER_FAILED',
+    kind: 'conflict',
+    terminalPersisted: true,
+    conflictReason: {
+      payload: 'event_data',
+      'malformed-reference': 'event_data',
+      run: 'run_id',
+      resume: 'resume_id',
+      slot: 'event_slot',
+      token: 'event_data',
+    }[corruption],
+  });
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('failed');
+});
 
 it('loads the startup snapshot within the backend pagination limit', async () => {
   const fixture = await setup();

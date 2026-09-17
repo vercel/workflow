@@ -97,6 +97,13 @@ acknowledged. The idle wait is 60 seconds, bounded by the host deadline; the
 caller does not wait for that idle interval. After retirement, the next owner
 reconstructs its state from committed history.
 
+Write acknowledgements may contain lazy payload references instead of echoed
+bytes. After validating the committed identity and position, the owner uses its
+already-known submitted bytes to construct the local event and payload-bearing
+entity state. It does not read its own payload back. Resolved payload mismatches
+and conflicting acknowledgement metadata remain fatal; diagnostics identify the
+failed check.
+
 Unexpected returned events or persistence failures stop the owner. It attempts
 to persist `run_failed` and rejects unfinished inputs. No event-write retries or
 conflict reconciliation are performed in this mode. If the terminal failure
