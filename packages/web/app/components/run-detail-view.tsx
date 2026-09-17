@@ -267,6 +267,10 @@ export function RunDetailView({
     [updateSearchParams]
   );
 
+  const handleViewInTrace = useCallback(() => {
+    setActiveTab('trace');
+  }, [setActiveTab]);
+
   const handleRunRefClick = useCallback(
     (targetRunId: string) => {
       // Navigate to the target run with a clean URL (no search params)
@@ -759,7 +763,7 @@ export function RunDetailView({
 
             <TabsContent value="events" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load events list">
-                <div className="h-full">
+                <div className="relative -mx-6 h-full min-h-0 overflow-hidden border-t border-gray-alpha-400 bg-background-100">
                   <EventListView
                     events={eventsListData}
                     run={run}
@@ -775,6 +779,7 @@ export function RunDetailView({
                     isDecrypting={isDecrypting}
                     hasEncryptedData={hasEncryptedData}
                     onExactIdSearch={searchByExactId}
+                    onViewInTrace={handleViewInTrace}
                   />
                 </div>
               </ErrorBoundary>

@@ -87,24 +87,21 @@ describe('event occurredAt display', () => {
     const markup = renderToStaticMarkup(
       createElement(EventRow, {
         event,
-        index: 0,
-        isFirst: true,
-        isLast: true,
-        isExpanded: false,
-        onToggleExpand: () => {},
-        selectedGroupRange: null,
+        isSelected: false,
+        onSelectEvent: () => {},
         correlationNameMap: new Map(),
         workflowName: 'occurred-at-workflow',
-        durationMap: new Map(),
-        onSelectGroup: () => {},
         onHoverGroup: () => {},
-        cachedEventData: null,
-        onCacheEventData: () => {},
+        previousDeltaMs: 914,
       })
     );
 
-    expect(markup).toContain('12:34:56.789');
-    expect(markup).not.toContain('12:34:57.123');
+    expect(markup).toContain('MAR 16');
+    expect(markup).toContain('12:34:56');
+    expect(markup).toContain('.78');
+    expect(markup).toContain('+914ms');
+    expect(markup).not.toContain('12:34:57');
+    expect(markup).not.toContain('.12');
   });
 
   it('shows separate occurrence and created times in each Events tab row when enabled', () => {
@@ -120,25 +117,20 @@ describe('event occurredAt display', () => {
     const markup = renderToStaticMarkup(
       createElement(EventRow, {
         event,
-        index: 0,
-        isFirst: true,
-        isLast: true,
-        isExpanded: false,
-        onToggleExpand: () => {},
-        selectedGroupRange: null,
+        isSelected: false,
+        onSelectEvent: () => {},
         correlationNameMap: new Map(),
         workflowName: 'occurred-at-workflow',
-        durationMap: new Map(),
-        onSelectGroup: () => {},
         onHoverGroup: () => {},
-        cachedEventData: null,
-        onCacheEventData: () => {},
         showSeparateEventOccurrenceTimestamps: true,
       })
     );
 
-    expect(markup).toContain('12:34:56.789');
-    expect(markup).toContain('12:34:57.123');
+    expect(markup.match(/MAR 16/g)).toHaveLength(2);
+    expect(markup).toContain('12:34:56');
+    expect(markup).toContain('.78');
+    expect(markup).toContain('12:34:57');
+    expect(markup).toContain('.12');
   });
 
   it('omits the detail panel occurrence row for events without occurredAt', () => {

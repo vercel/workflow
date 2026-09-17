@@ -6,7 +6,7 @@ import type {
 } from '@workflow/web-shared';
 import { hydrateResourceIOAsync } from '@workflow/web-shared';
 import type { Event } from '@workflow/world';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { unwrapServerActionResult } from '~/lib/client/workflow-errors';
 import {
   fetchEvent,
@@ -17,6 +17,7 @@ import type { EnvMap } from '~/lib/types';
 
 const INITIAL_PAGE_SIZE = 100;
 const LOAD_MORE_PAGE_SIZE = 100;
+const MAX_WARM_REFRESH_PAGES = 5;
 /**
  * Max pages when fetching correlation ID search results (100 events/page).
  *
@@ -50,59 +51,179 @@ export function useEventsListData(
   const [cursor, setCursor] = useState<string | undefined>();
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const isFetchingRef = useRef(false);
+  const fetchingQueryRef = useRef<string | null>(null);
+  const dataQueryRef = useRef<string | null>(null);
+  const requestIdRef = useRef(0);
+  const activePaginationRequestRef = useRef<number | null>(null);
+  const paginationRequestIdRef = useRef(0);
+  const loadedPageCountRef = useRef(1);
+
+  const queryKey = useMemo(
+    () =>
+      JSON.stringify([
+        Object.entries(env).sort(([a], [b]) => a.localeCompare(b)),
+        runId,
+        sortOrder,
+      ]),
+    [env, runId, sortOrder]
+  );
+  const committedQueryRef = useRef(queryKey);
+  const queryGenerationRef = useRef({ key: queryKey, value: 0 });
+  const previousEnabledRef = useRef(false);
 
   const encryptionKeyRef = useRef(encryptionKey);
   encryptionKeyRef.current = encryptionKey;
 
   const hydrateEvents = useCallback(async (rawEvents: Event[]) => {
-    const key = encryptionKeyRef.current;
-    return Promise.all(rawEvents.map((ev) => hydrateResourceIOAsync(ev, key)));
+    let key: Uint8Array | undefined;
+    let hydrated: Event[];
+    do {
+      key = encryptionKeyRef.current;
+      hydrated = await Promise.all(
+        rawEvents.map((event) => hydrateResourceIOAsync(event, key))
+      );
+    } while (encryptionKeyRef.current !== key);
+    return hydrated;
   }, []);
 
   const fetchInitial = useCallback(async () => {
-    if (isFetchingRef.current) return;
-    isFetchingRef.current = true;
-    setLoading(true);
+    if (fetchingQueryRef.current === queryKey) return;
+    fetchingQueryRef.current = queryKey;
+    const requestId = ++requestIdRef.current;
+    const isColdQuery = dataQueryRef.current !== queryKey;
+
+    if (isColdQuery) {
+      dataQueryRef.current = null;
+      loadedPageCountRef.current = 1;
+      setLoading(true);
+      setEvents([]);
+      setCursor(undefined);
+      setHasMore(false);
+    }
+    setLoadingMore(false);
     setError(null);
-    setEvents([]);
-    setCursor(undefined);
-    setHasMore(false);
 
     try {
-      const { error: fetchError, result } = await unwrapServerActionResult(
-        fetchEvents(env, runId, {
-          sortOrder,
-          limit: INITIAL_PAGE_SIZE,
-          withData: false,
-        })
-      );
-      if (fetchError) {
-        setError(fetchError);
-      } else {
-        setEvents(await hydrateEvents(result.data));
-        setCursor(result.hasMore ? result.cursor : undefined);
-        setHasMore(Boolean(result.hasMore));
+      const targetPageCount = isColdQuery
+        ? 1
+        : Math.min(loadedPageCountRef.current, MAX_WARM_REFRESH_PAGES);
+      const rawEvents: Event[] = [];
+      let nextCursor: string | undefined;
+      let nextHasMore = false;
+      let pagesFetched = 0;
+
+      while (pagesFetched < targetPageCount) {
+        const { error: fetchError, result } = await unwrapServerActionResult(
+          fetchEvents(env, runId, {
+            cursor: nextCursor,
+            sortOrder,
+            limit: INITIAL_PAGE_SIZE,
+            withData: false,
+          })
+        );
+        if (requestIdRef.current !== requestId) return;
+        if (fetchError) {
+          setError(fetchError);
+          return;
+        }
+
+        rawEvents.push(...result.data);
+        pagesFetched += 1;
+        nextHasMore = Boolean(result.hasMore);
+        nextCursor = nextHasMore ? result.cursor : undefined;
+        if (!nextHasMore || !nextCursor) break;
       }
+
+      const refreshedEvents = await hydrateEvents(rawEvents);
+      if (requestIdRef.current !== requestId) return;
+      setEvents(refreshedEvents);
+      setCursor(nextCursor);
+      setHasMore(nextHasMore);
+      loadedPageCountRef.current = Math.max(1, pagesFetched);
+      dataQueryRef.current = queryKey;
     } catch (err) {
-      setError(err as Error);
+      if (requestIdRef.current === requestId) setError(err as Error);
     } finally {
-      setLoading(false);
-      isFetchingRef.current = false;
+      if (
+        fetchingQueryRef.current === queryKey &&
+        requestIdRef.current === requestId
+      ) {
+        fetchingQueryRef.current = null;
+      }
+      if (requestIdRef.current === requestId) setLoading(false);
     }
-  }, [env, runId, sortOrder, hydrateEvents]);
+  }, [env, runId, sortOrder, hydrateEvents, queryKey]);
 
   useEffect(() => {
-    if (enabled) fetchInitial();
-  }, [fetchInitial, enabled]);
+    const queryChanged = committedQueryRef.current !== queryKey;
+    const wasEnabled = previousEnabledRef.current;
+    const becameEnabled = enabled && !wasEnabled;
+    previousEnabledRef.current = enabled;
+
+    if (queryChanged) {
+      committedQueryRef.current = queryKey;
+      queryGenerationRef.current = {
+        key: queryKey,
+        value: queryGenerationRef.current.value + 1,
+      };
+      activePaginationRequestRef.current = null;
+      fetchingQueryRef.current = null;
+      requestIdRef.current += 1;
+    }
+
+    if (!enabled) {
+      if (wasEnabled) {
+        activePaginationRequestRef.current = null;
+        fetchingQueryRef.current = null;
+        requestIdRef.current += 1;
+      }
+      return;
+    }
+
+    if (
+      (!queryChanged && fetchingQueryRef.current === queryKey) ||
+      (!queryChanged && !becameEnabled && dataQueryRef.current === queryKey)
+    ) {
+      return;
+    }
+
+    if (!queryChanged) {
+      queryGenerationRef.current = {
+        key: queryKey,
+        value: queryGenerationRef.current.value + 1,
+      };
+      activePaginationRequestRef.current = null;
+    }
+    fetchInitial();
+  }, [fetchInitial, enabled, queryKey]);
+
+  useEffect(
+    () => () => {
+      activePaginationRequestRef.current = null;
+      fetchingQueryRef.current = null;
+      requestIdRef.current += 1;
+    },
+    []
+  );
 
   // Re-hydrate loaded events with decryption when encryption key becomes available
   useEffect(() => {
     if (!encryptionKey || events.length === 0) return;
     let cancelled = false;
+    const queryGeneration = queryGenerationRef.current.value;
     Promise.all(events.map((ev) => hydrateResourceIOAsync(ev, encryptionKey)))
       .then((decrypted) => {
-        if (!cancelled) setEvents(decrypted);
+        if (
+          !cancelled &&
+          queryGenerationRef.current.value === queryGeneration
+        ) {
+          const decryptedById = new Map(
+            decrypted.map((event) => [event.eventId, event])
+          );
+          setEvents((current) =>
+            current.map((event) => decryptedById.get(event.eventId) ?? event)
+          );
+        }
       })
       .catch(() => {});
     return () => {
@@ -112,7 +233,18 @@ export function useEventsListData(
   }, [encryptionKey]);
 
   const loadMore = useCallback(async () => {
-    if (loadingMore || !cursor) return;
+    if (
+      activePaginationRequestRef.current !== null ||
+      fetchingQueryRef.current !== null ||
+      !cursor ||
+      dataQueryRef.current !== queryKey
+    ) {
+      return;
+    }
+    const requestQuery = queryKey;
+    const queryGeneration = queryGenerationRef.current.value;
+    const paginationRequestId = ++paginationRequestIdRef.current;
+    activePaginationRequestRef.current = paginationRequestId;
     setLoadingMore(true);
     try {
       const { error: fetchError, result } = await unwrapServerActionResult(
@@ -123,22 +255,43 @@ export function useEventsListData(
           withData: false,
         })
       );
+      if (
+        committedQueryRef.current !== requestQuery ||
+        queryGenerationRef.current.value !== queryGeneration
+      ) {
+        return;
+      }
       if (fetchError) {
         setError(fetchError);
       } else {
+        loadedPageCountRef.current += 1;
         if (result.data.length > 0) {
           const hydrated = await hydrateEvents(result.data);
+          if (
+            committedQueryRef.current !== requestQuery ||
+            queryGenerationRef.current.value !== queryGeneration
+          ) {
+            return;
+          }
           setEvents((prev) => [...prev, ...hydrated]);
         }
         setCursor(result.hasMore ? result.cursor : undefined);
         setHasMore(Boolean(result.hasMore));
       }
     } catch (err) {
-      setError(err as Error);
+      if (
+        committedQueryRef.current === requestQuery &&
+        queryGenerationRef.current.value === queryGeneration
+      ) {
+        setError(err as Error);
+      }
     } finally {
-      setLoadingMore(false);
+      if (activePaginationRequestRef.current === paginationRequestId) {
+        activePaginationRequestRef.current = null;
+        setLoadingMore(false);
+      }
     }
-  }, [env, runId, sortOrder, cursor, loadingMore, hydrateEvents]);
+  }, [env, runId, sortOrder, cursor, hydrateEvents, queryKey]);
 
   const searchByExactId = useCallback(
     async (

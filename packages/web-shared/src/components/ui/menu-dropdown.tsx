@@ -1,6 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import { cn } from '../../lib/cn';
 
 const STYLES = `.wf-menu-btn{appearance:none;-webkit-appearance:none;border:none;display:inline-flex;align-items:center;justify-content:center;height:40px;padding:0 12px;border-radius:6px;font-size:14px;font-weight:500;line-height:20px;color:var(--ds-gray-1000);background:var(--ds-background-100);box-shadow:0 0 0 1px var(--ds-gray-400);cursor:pointer;white-space:nowrap;transition:background 150ms}.wf-menu-btn:hover{background:var(--ds-gray-alpha-200)}.wf-menu-item{appearance:none;-webkit-appearance:none;border:none;display:flex;align-items:center;width:100%;height:40px;padding:0 8px;border-radius:6px;font-size:14px;color:var(--ds-gray-1000);background:transparent;cursor:pointer;transition:background 150ms}.wf-menu-item:hover{background:var(--ds-gray-alpha-100)}`;
@@ -27,8 +32,14 @@ export function MenuDropdown<T extends string = string>({
 }: MenuDropdownProps<T>) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const label =
     options.find((o) => o.value === value)?.label ?? options[0]?.label ?? '';
+  const selectedIndex = Math.max(
+    0,
+    options.findIndex((option) => option.value === value)
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -41,13 +52,62 @@ export function MenuDropdown<T extends string = string>({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [open]);
 
+  useEffect(() => {
+    if (!open) return;
+    const frame = requestAnimationFrame(() => {
+      itemRefs.current[selectedIndex]?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open, selectedIndex]);
+
+  const handleKeyDown = (event: ReactKeyboardEvent): void => {
+    if (!open) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      buttonRef.current?.focus();
+      return;
+    }
+    if (event.key === 'Tab') {
+      setOpen(false);
+      return;
+    }
+    if (
+      event.key !== 'ArrowDown' &&
+      event.key !== 'ArrowUp' &&
+      event.key !== 'Home' &&
+      event.key !== 'End'
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    const focusedIndex = itemRefs.current.indexOf(
+      document.activeElement as HTMLButtonElement
+    );
+    const nextIndex =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? options.length - 1
+          : event.key === 'ArrowUp'
+            ? (focusedIndex - 1 + options.length) % options.length
+            : (focusedIndex + 1) % options.length;
+    itemRefs.current[nextIndex]?.focus();
+  };
+
   return (
     <div ref={ref} className="relative shrink-0">
       <style dangerouslySetInnerHTML={{ __html: STYLES }} />
 
       <button
+        ref={buttonRef}
         type="button"
         className="wf-menu-btn"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onKeyDown={handleKeyDown}
         onClick={() => setOpen(!open)}
       >
         <span>{label}</span>
@@ -57,6 +117,7 @@ export function MenuDropdown<T extends string = string>({
           viewBox="0 0 16 16"
           fill="none"
           className="-mr-1 ml-4 text-gray-900"
+          aria-hidden="true"
         >
           <path
             d="M4.5 6L8 9.5L11.5 6"
@@ -76,15 +137,20 @@ export function MenuDropdown<T extends string = string>({
           {options.map((option) => (
             <button
               key={option.value}
+              ref={(element) => {
+                itemRefs.current[options.indexOf(option)] = element;
+              }}
               type="button"
               role="menuitem"
               className={cn(
                 'wf-menu-item',
                 option.value === value ? 'font-medium' : 'font-normal'
               )}
+              onKeyDown={handleKeyDown}
               onClick={() => {
                 onChange(option.value);
                 setOpen(false);
+                buttonRef.current?.focus();
               }}
             >
               {option.label}
