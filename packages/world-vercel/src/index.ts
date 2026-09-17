@@ -20,7 +20,7 @@ export {
   fetchRunKey,
 } from './encryption.js';
 export type { InvocationTarget, VercelInvokeConfig } from './invocation.js';
-export { invocationAffinity, invocationAffinityForRun } from './invocation.js';
+export { invocationAffinity } from './invocation.js';
 export { createQueue } from './queue.js';
 export { createStorage } from './storage.js';
 export { createStreamer } from './streamer.js';

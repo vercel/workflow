@@ -35,16 +35,12 @@ Reusing handler code does not guarantee that the HTTP and queue routes share a
 running process.
 
 The endpoint must support platform affinity and deployment selection. Requests
-set `x-vercel-affinity-id` to the run ID itself for newly created runs,
+set `x-vercel-affinity-id` to the run ID itself,
 and `x-deployment-id` to the run's pinned deployment. Deployment selection uses
 Vercel Skew Protection routing, subject to its enablement and retention limits.
 The receiver rejects delivery to the wrong deployment. An async endpoint
 resolver receives `{ runId, deploymentId, region }`; region identifies the run's
 data/queue region, which may differ from compute placement.
-
-New run creation records `executionContext.vercelInvokeAffinity: 'run-id'`.
-Runs without this marker keep their legacy hashed selector, preserving routing
-for existing pinned runs when the producer SDK is upgraded.
 
 Invoke sends one direct CBOR POST and waits for the SDK handler's result. The
 receiver authenticates same-project/environment workload OIDC and processes the

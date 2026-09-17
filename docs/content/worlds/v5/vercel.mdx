@@ -142,7 +142,7 @@ not guarantee that the HTTP and queue routes share a running process.
 
 The default is disabled. The endpoint must already support function affinity and
 deployment selection; setting this URL does not provision those platform features.
-New runs use `x-vercel-affinity-id: runId` and `x-deployment-id` for the run's
+Requests use `x-vercel-affinity-id: runId` and `x-deployment-id` for the run's
 pinned deployment. The deployment header follows [Skew Protection](https://vercel.com/docs/skew-protection)
 and its retention/enablement constraints. An async endpoint resolver receives
 `{ runId, deploymentId, region }` for custom routing. The region identifies storage

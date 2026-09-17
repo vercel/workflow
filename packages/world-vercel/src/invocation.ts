@@ -63,17 +63,6 @@ export function invocationAffinity(runId: string): string {
   return runId;
 }
 
-/** Preserve routing for runs created before raw run IDs became the selector. */
-export function invocationAffinityForRun(run: {
-  runId: string;
-  executionContext?: Record<string, unknown>;
-}): string {
-  if (run.executionContext?.vercelInvokeAffinity === 'run-id')
-    return invocationAffinity(run.runId);
-  const runId = run.runId;
-  return createHash('sha256').update(runId).digest('hex').slice(0, 32);
-}
-
 const Envelope = z.object({
   kind: z.enum(['input', 'wake']).default('input'),
   version: z.literal(1),
@@ -206,7 +195,7 @@ export function createInvoker(
     const signal = AbortSignal.timeout(timeoutMs);
     const work = (async () => {
       const run = await getWorkflowRun(runId, { resolveData: 'none' }, config);
-      const affinityId = invocationAffinityForRun(run);
+      const affinityId = invocationAffinity(runId);
       const target = {
         runId,
         deploymentId: run.deploymentId,

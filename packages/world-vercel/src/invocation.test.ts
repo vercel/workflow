@@ -19,7 +19,6 @@ import {
   DEPLOYMENT_HEADER,
   INVOCATION_HEADER,
   invocationAffinity,
-  invocationAffinityForRun,
 } from './invocation.js';
 import { createQueue } from './queue.js';
 
@@ -136,7 +135,6 @@ beforeEach(() => {
     deploymentId: 'dpl_pinned',
     workflowName: 'example',
     status: 'running',
-    executionContext: { vercelInvokeAffinity: 'run-id' },
   });
   mocks.retain.mockClear();
   mocks.inject.mockClear();
@@ -150,16 +148,8 @@ afterEach(() => {
 });
 
 describe('direct Vercel invocation', () => {
-  it('uses raw run IDs for new runs and preserves the selector of unmarked pinned runs', async () => {
+  it('uses the raw run ID as the affinity selector without a metadata opt-in', async () => {
     expect(invocationAffinity(runId)).toBe(runId);
-    expect(
-      invocationAffinityForRun({
-        runId,
-        executionContext: { vercelInvokeAffinity: 'run-id' },
-      })
-    ).toBe(runId);
-    const legacy = invocationAffinityForRun({ runId });
-    expect(legacy).toMatch(/^[0-9a-f]{32}$/);
     mocks.run.mockResolvedValue({
       runId,
       deploymentId: 'dpl_old',
@@ -167,7 +157,7 @@ describe('direct Vercel invocation', () => {
       status: 'running',
     });
     const fetch = vi.fn(async (_url: unknown, init: RequestInit) => {
-      expect(new Headers(init.headers).get(AFFINITY_HEADER)).toBe(legacy);
+      expect(new Headers(init.headers).get(AFFINITY_HEADER)).toBe(runId);
       expect(new Headers(init.headers).get(DEPLOYMENT_HEADER)).toBe('dpl_old');
       return new Response(encode({ ok: true, value: 'ok' }), {
         headers: { [INVOCATION_HEADER]: '1' },
