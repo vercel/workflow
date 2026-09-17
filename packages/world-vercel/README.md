@@ -23,9 +23,16 @@ Invocation is disabled by default. Enabling it implements `invoke` and declares
 import { createWorld } from '@workflow/world-vercel';
 
 const world = createWorld({
-  invoke: { endpoint: 'https://example.vercel.app/.well-known/workflow/v1/flow' },
+  invoke: { endpoint: 'https://example.vercel.app/.well-known/workflow/v1/invoke' },
 });
 ```
+
+The Next.js integration generates `/.well-known/workflow/v1/invoke` as an HTTP
+entry point without a queue trigger. Other integrations must provide an HTTP
+entry point using their workflow execution handler. The receiver authenticates
+direct requests before processing inputs.
+Reusing handler code does not guarantee that the HTTP and queue routes share a
+running process.
 
 The endpoint must support platform affinity and deployment selection. Requests
 set `x-vercel-affinity-id` to the first 16 bytes of SHA-256(runId), hex encoded,

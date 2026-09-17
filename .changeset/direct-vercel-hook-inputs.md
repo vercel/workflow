@@ -1,4 +1,5 @@
 ---
+"@workflow/next": patch
 "@workflow/world-vercel": minor
 "@workflow/core": minor
 ---

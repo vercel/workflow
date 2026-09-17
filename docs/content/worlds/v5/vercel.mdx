@@ -130,10 +130,15 @@ import { createWorld } from "@workflow/world-vercel";
 
 const world = createWorld({
   invoke: {
-    endpoint: "https://example.vercel.app/.well-known/workflow/v1/flow",
+    endpoint: "https://example.vercel.app/.well-known/workflow/v1/invoke",
   },
 });
 ```
+
+The Next.js integration generates `/.well-known/workflow/v1/invoke` as an HTTP
+entry point without a queue trigger. Other integrations must provide an HTTP
+entry point using their workflow execution handler. Reusing handler code does
+not guarantee that the HTTP and queue routes share a running process.
 
 The default is disabled. The endpoint must already support function affinity and
 deployment selection; setting this URL does not provision those platform features.

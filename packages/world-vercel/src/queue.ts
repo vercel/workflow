@@ -846,7 +846,12 @@ export function createQueue(config?: APIConfig): Queue {
     );
 
     return async (req: Request) => {
-      if (req.headers.has(INVOCATION_HEADER)) {
+      if (
+        req.headers.has(INVOCATION_HEADER) ||
+        new URL(req.url).pathname
+          .replace(/\/$/, '')
+          .endsWith('/.well-known/workflow/v1/invoke')
+      ) {
         return direct
           ? direct.handle(req)
           : Response.json(

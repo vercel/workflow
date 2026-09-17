@@ -73,7 +73,7 @@ vi.mock('@vercel/queue', () => ({
 }));
 
 const runId = 'wrun_01K4JQM0NR0000000000000000';
-const endpoint = 'https://workflow.example.test/.well-known/workflow/v1/flow';
+const endpoint = 'https://workflow.example.test/.well-known/workflow/v1/invoke';
 const config = { invoke: { endpoint } };
 const payload = { type: 'hook_resume', payload: new Uint8Array([1, 2, 3]) };
 let sign: (claims?: Record<string, unknown>) => Promise<string>;
@@ -155,7 +155,7 @@ describe('direct Vercel invocation', () => {
         new Response('Not found', {
           status: 404,
           headers: {
-            'x-vercel-id': 'staging-iad1::request',
+            'x-vercel-id': 'iad1::request',
             'x-vercel-error': 'NOT_FOUND',
             'content-type': 'text/plain',
           },
@@ -170,7 +170,7 @@ describe('direct Vercel invocation', () => {
       status: 404,
       code: 'INVOCATION_OUTCOME_UNKNOWN',
       responseStatus: 404,
-      responseRequestId: 'staging-iad1::request',
+      responseRequestId: 'iad1::request',
       responseErrorCode: 'NOT_FOUND',
       responseContentType: 'text/plain',
       responseProtocolVersion: null,
@@ -199,6 +199,23 @@ describe('direct Vercel invocation', () => {
     commit.resolve();
     expect((await first).status).toBe(200);
     await Promise.all(mocks.retain.mock.calls.map(([work]) => work));
+  });
+  it.each([
+    '',
+    '/base',
+  ])('keeps malformed requests on the HTTP invocation path out of VQS (%s)', async (basePath) => {
+    const queue = createQueue(config);
+    const handler = vi.fn();
+    const receive = queue.createQueueHandler('__wkf_workflow_', handler);
+    const response = await receive(
+      new Request(
+        `https://workflow.example.test${basePath}/.well-known/workflow/v1/invoke`,
+        { method: 'POST' }
+      )
+    );
+    expect(response.status).toBe(400);
+    expect(mocks.vqsRequest).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
   });
   it('dispatches direct calls through createQueueHandler without VQS or response rescheduling', async () => {
     const queue = createQueue(config);
@@ -243,7 +260,7 @@ describe('direct Vercel invocation', () => {
     const handler = vi.fn(async () => ({ timeoutSeconds: 1 }));
     const receive = queue.createQueueHandler('__wkf_workflow_', handler);
     const normal = (affinity?: string) =>
-      new Request(endpoint, {
+      new Request(endpoint.replace('/invoke', '/flow'), {
         method: 'POST',
         headers: affinity ? { [AFFINITY_HEADER]: affinity } : {},
         body: encode({
