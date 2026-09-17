@@ -153,6 +153,13 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - Workflow and step execution is sent through `/.well-known/workflow/v1/flow` and `/.well-known/workflow/v1/step`
 
+Deliveries for the same run may execute concurrently. A workflow request can
+execute a step inline and wait for a hook wake to abort that step, so the queue
+cannot hold a per-run lock for the entire request. Each queue instance coalesces
+in-flight and recently completed deliveries with the same idempotency key.
+Handlers must still tolerate at-least-once delivery across worker processes,
+restarts, or completed-message cache eviction.
+
 ## Development
 
 For local development, you can use the included Docker Compose configuration:

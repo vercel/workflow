@@ -18,7 +18,6 @@ import {
   type QueuePrefix,
   resolveQueueNamespace,
   type ValidQueueName,
-  WorkflowInvokePayloadSchema,
 } from '@workflow/world';
 import {
   createNodeHttpAgents,
@@ -232,10 +231,6 @@ export function createQueue(
 
   const completedMessages = new Set<string>();
   const inflightMessages = new Map<string, Promise<void>>();
-  const inflightWorkflowRuns = new Map<
-    string,
-    Promise<'completed' | 'rescheduled'>
-  >();
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
   let runnerStart: RunnerStart | null = null;
@@ -610,8 +605,6 @@ export function createQueue(
   };
 
   function createTaskHandler(queue: QueuePrefix) {
-    const queueKind = getQueuePrefixKind(queue);
-
     return async (payload: unknown, helpers: unknown) => {
       const messageData = MessageData.parse(payload);
       const graphileAttempt = GraphileHelpers.safeParse(helpers);
@@ -626,17 +619,6 @@ export function createQueue(
         bodyStream as ReadableStream<Uint8Array>
       );
       QueuePayloadSchema.parse(body);
-      const workflowRunSerializationKey =
-        queueKind === 'workflow'
-          ? (() => {
-              const workflowInvoke =
-                WorkflowInvokePayloadSchema.safeParse(body);
-              if (!workflowInvoke.success) {
-                return undefined;
-              }
-              return `workflow:${workflowInvoke.data.runId}`;
-            })()
-          : undefined;
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
         const result = await executeMessageOverHttp({
           queueName,
@@ -674,28 +656,8 @@ export function createQueue(
 
       const idempotencyKey = messageData.idempotencyKey;
       if (!idempotencyKey) {
-        if (workflowRunSerializationKey) {
-          // Preserve step fan-out while preventing two workflow replays from
-          // mutating the same run's event log at the same time.
-          const previous = inflightWorkflowRuns.get(
-            workflowRunSerializationKey
-          );
-          const execution = (previous ?? Promise.resolve())
-            .catch(() => {})
-            .then(() => executeTask())
-            .finally(() => {
-              if (
-                inflightWorkflowRuns.get(workflowRunSerializationKey) ===
-                execution
-              ) {
-                inflightWorkflowRuns.delete(workflowRunSerializationKey);
-              }
-            });
-          inflightWorkflowRuns.set(workflowRunSerializationKey, execution);
-          await execution;
-          return;
-        }
-
+        // A delivery can hold an inline step until another wake aborts it.
+        // Run-level exclusion here would also exclude that required wake.
         await executeTask();
         return;
       }
