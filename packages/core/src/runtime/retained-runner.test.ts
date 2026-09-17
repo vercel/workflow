@@ -12,6 +12,8 @@ import { createWorld } from '@workflow/world-local';
 import { ulid } from 'ulid';
 import { afterEach, expect, it, vi } from 'vitest';
 import { registerStepFunction } from '../private.js';
+import { deriveRunKeyPair } from '../sealed-box.js';
+import { sealTo } from '../serialization/encryption.js';
 import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
@@ -38,6 +40,52 @@ const code = `
   }
   globalThis.__private_workflows = new Map([['workflow', workflow]]);
 `;
+
+it('opens hook inputs sealed to the run while retaining its VM', async () => {
+  const values: unknown[] = [];
+  registerStepFunction('retainedWrite', async (value) => {
+    values.push(value);
+  });
+  const fixture = await setup();
+  const material = new Uint8Array(32).fill(7);
+  fixture.world.getEncryptionKeyForRun = async () => material;
+  const { publicKey } = await deriveRunKeyPair(material);
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  const hook = fixture.owner.events.find(
+    (event) => event.eventType === 'hook_created'
+  );
+  if (!hook || hook.eventType !== 'hook_created')
+    throw new Error('hook missing');
+  for (const value of ['one', 'two', 'three']) {
+    await fixture.owner.submit(
+      {
+        runId: fixture.runId,
+        invoke: true,
+        requestId: value,
+        input: {
+          type: 'hook_resume',
+          version: 1,
+          hookId: hook.correlationId,
+          token: hook.eventData.token,
+          payload: await dehydrateStepReturnValue(
+            value,
+            fixture.runId,
+            sealTo(publicKey),
+            [],
+            globalThis,
+            false
+          ),
+        },
+      },
+      fixture.metadata
+    );
+  }
+  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+  expect(values).toEqual(['one', 'two', 'three']);
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
+  );
+});
 
 async function setup(workflowCode = code) {
   const directory = await mkdtemp(join(tmpdir(), 'retained-runner-'));

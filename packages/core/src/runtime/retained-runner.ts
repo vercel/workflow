@@ -26,7 +26,6 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import { importKey } from '../encryption.js';
 import { ReplayPayloadCache } from '../replay-payload-cache.js';
 import type { PayloadKey } from '../serialization/encryption.js';
 import { dehydrateRunError } from '../serialization.js';
@@ -36,6 +35,7 @@ import {
   type WorkflowSession,
 } from '../workflow.js';
 import { observeWorkflowPass } from './execution-observation.js';
+import { resolveRunEncryptionKey } from './helpers.js';
 import { HookInvocationSchema, withRunInputs } from './invocations.js';
 import { executeStep } from './step-executor.js';
 import { handleSuspension } from './suspension-handler.js';
@@ -376,8 +376,7 @@ export class RetainedRunner {
       throw new InputRejected('Pinned deployment mismatch', { status: 409 });
     this.deadline =
       (await this.backend.getRuntimeDeadline?.())?.getTime() ?? Infinity;
-    const rawKey = await this.backend.getEncryptionKeyForRun?.(this.runState);
-    this.key = rawKey ? await importKey(rawKey) : undefined;
+    this.key = await resolveRunEncryptionKey(this.backend, this.runState);
     this.payloadCache = new ReplayPayloadCache(this.key);
     let cursor: string | null = null;
     do {
