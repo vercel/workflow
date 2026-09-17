@@ -60,6 +60,17 @@ export function invocationConfig(
 }
 
 export function invocationAffinity(runId: string): string {
+  return runId;
+}
+
+/** Preserve routing for runs created before raw run IDs became the selector. */
+export function invocationAffinityForRun(run: {
+  runId: string;
+  executionContext?: Record<string, unknown>;
+}): string {
+  if (run.executionContext?.vercelInvokeAffinity === 'run-id')
+    return invocationAffinity(run.runId);
+  const runId = run.runId;
   return createHash('sha256').update(runId).digest('hex').slice(0, 32);
 }
 
@@ -195,6 +206,7 @@ export function createInvoker(
     const signal = AbortSignal.timeout(timeoutMs);
     const work = (async () => {
       const run = await getWorkflowRun(runId, { resolveData: 'none' }, config);
+      const affinityId = invocationAffinityForRun(run);
       const target = {
         runId,
         deploymentId: run.deploymentId,
@@ -243,7 +255,7 @@ export function createInvoker(
             'content-type': 'application/cbor',
             accept: 'application/cbor',
             [INVOCATION_HEADER]: '1',
-            [AFFINITY_HEADER]: invocationAffinity(runId),
+            [AFFINITY_HEADER]: affinityId,
             [DEPLOYMENT_HEADER]: run.deploymentId,
             authorization: `Bearer ${token}`,
             'x-vercel-trusted-oidc-idp-token': token,
@@ -267,8 +279,8 @@ export function createInvoker(
             runId,
             requestId,
             targetHost: url.hostname,
-            expectedAffinityId: invocationAffinity(runId),
-            sentAffinityId: invocationAffinity(runId),
+            expectedAffinityId: affinityId,
+            sentAffinityId: affinityId,
             requestedDeploymentId: run.deploymentId,
           };
           logInvocationRouting('direct.send', requestObservation);

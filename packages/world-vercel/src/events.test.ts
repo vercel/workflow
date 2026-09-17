@@ -988,6 +988,12 @@ describe('createWorkflowRunEvent response coercion', () => {
       .intercept({
         path: `/api/v4/runs/${taggedRunId}/events/run_created`,
         method: 'POST',
+        body: (raw) => {
+          expect(decodePostedMeta(raw).executionContext).toEqual({
+            vercelInvokeAffinity: 'run-id',
+          });
+          return true;
+        },
       })
       .reply(
         200,

@@ -718,6 +718,16 @@ async function createWorkflowRunEventInner(
   // Defensive check for client-generated run_created IDs that ride too
   // far ahead of wall-clock time, same threshold the v3 path enforced.
   if (data.eventType === 'run_created') {
+    data = {
+      ...data,
+      eventData: {
+        ...data.eventData,
+        executionContext: {
+          ...data.eventData.executionContext,
+          vercelInvokeAffinity: 'run-id',
+        },
+      },
+    };
     const validationError = validateWorkflowRunIdTimestamp(id);
     if (validationError) {
       throw new WorkflowWorldError(validationError, { status: 400 });
