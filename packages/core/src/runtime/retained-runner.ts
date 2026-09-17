@@ -384,7 +384,7 @@ export class RetainedRunner {
         runId: this.runId,
         resolveData: 'all',
         pagination: {
-          limit: 1000,
+          limit: 100,
           sortOrder: 'asc',
           ...(cursor ? { cursor } : {}),
         },
@@ -403,7 +403,7 @@ export class RetainedRunner {
       const page = await this.backend.steps.list({
         runId: this.runId,
         resolveData: 'all',
-        pagination: { limit: 1000, ...(cursor ? { cursor } : {}) },
+        pagination: { limit: 100, ...(cursor ? { cursor } : {}) },
       });
       for (const step of page.data) this.steps.set(step.stepId, step);
       cursor = page.hasMore ? page.cursor : null;

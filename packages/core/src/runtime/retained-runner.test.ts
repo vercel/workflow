@@ -2,6 +2,7 @@ import { channel } from 'node:diagnostics_channel';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { WorkflowWorldError } from '@workflow/errors';
 import {
   MessageId,
   SPEC_VERSION_CURRENT,
@@ -40,6 +41,45 @@ const code = `
   }
   globalThis.__private_workflows = new Map([['workflow', workflow]]);
 `;
+
+it('loads the startup snapshot within the backend pagination limit', async () => {
+  const fixture = await setup();
+  const list = fixture.world.steps.list.bind(fixture.world.steps);
+  const requests = vi
+    .spyOn(fixture.world.steps, 'list')
+    .mockImplementation((async (params) => {
+      if ((params.pagination?.limit ?? 100) > 100) {
+        throw new WorkflowWorldError('Page size exceeds maximum of 100', {
+          status: 400,
+        });
+      }
+      if (!params.pagination?.cursor)
+        return { data: [], hasMore: true, cursor: 'next-step-page' };
+      return list({
+        ...params,
+        pagination: { ...params.pagination, cursor: undefined },
+      });
+    }) as typeof fixture.world.steps.list);
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  expect(requests).toHaveBeenCalledWith(
+    expect.objectContaining({
+      pagination: expect.objectContaining({ limit: 100 }),
+    })
+  );
+  expect(requests).toHaveBeenCalledTimes(2);
+  expect(requests).toHaveBeenLastCalledWith(
+    expect.objectContaining({
+      pagination: expect.objectContaining({
+        limit: 100,
+        cursor: 'next-step-page',
+      }),
+    })
+  );
+  expect(
+    fixture.owner.events.some((event) => event.eventType === 'hook_created')
+  ).toBe(true);
+  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+});
 
 it('opens hook inputs sealed to the run while retaining its VM', async () => {
   const values: unknown[] = [];
