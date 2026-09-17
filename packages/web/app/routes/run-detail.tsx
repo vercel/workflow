@@ -15,7 +15,7 @@ export default function RunDetailPage() {
 
   return (
     <ErrorBoundaryComponent title="Failed to load run details">
-      <RunDetailView runId={runId} selectedId={selectedId} />
+      <RunDetailView key={runId} runId={runId} selectedId={selectedId} />
     </ErrorBoundaryComponent>
   );
 }

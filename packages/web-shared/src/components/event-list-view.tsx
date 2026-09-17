@@ -6,14 +6,13 @@ import {
   getEventDataRefFields,
   type WorkflowRun,
 } from '@workflow/world';
-import { Check, ChevronRight, Copy } from 'lucide-react';
-import type {
-  KeyboardEvent as ReactKeyboardEvent,
-  MouseEvent as ReactMouseEvent,
-  ReactNode,
-} from 'react';
+import { format } from 'date-fns';
+import { ArrowUpRight, ChevronDown, ChevronUp, Search, X } from 'lucide-react';
+import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { useReducedMotion } from '../hooks/use-reduced-motion';
+import { cn } from '../lib/cn';
 import {
   DUPLICATE_EVENT_MESSAGE,
   findDuplicateEventIds,
@@ -27,8 +26,27 @@ import {
 import { isEncryptedMarker } from '../lib/hydration';
 import { isSealedNoopEvent, SEALED_EVENT_MESSAGE } from '../lib/sealed-events';
 import { useToast } from '../lib/toast';
-import { formatDuration } from '../lib/utils';
-import { AttrSetEventBlock } from './sidebar/attributes-block';
+import { formatDurationPrecise } from '../lib/utils';
+import {
+  AttrSetEventBlock,
+  DetailMonoKeyValueRow,
+} from './sidebar/attributes-block';
+import { CopyButton } from './trace-viewer/components/copy-button';
+import {
+  clampPanelWidth,
+  computeMaxPanelWidth,
+  PANEL_DEFAULT_WIDTH,
+  PANEL_MIN_WIDTH,
+  readStoredPanelWidth,
+  writeStoredPanelWidth,
+} from './trace-viewer/components/detail-panel-width';
+import { DraggableBorder } from './trace-viewer/components/draggable-border';
+import { useElementWidth } from './trace-viewer/components/use-element-width';
+import {
+  CollapsibleContent,
+  CollapsibleRoot,
+  CollapsibleTrigger,
+} from './ui/collapsible';
 import { ContextCardProvider } from './ui/context-card';
 import { DataInspector, DecryptClickContext } from './ui/data-inspector';
 import { DecryptButton } from './ui/decrypt-button';
@@ -38,10 +56,18 @@ import {
   isStructuredError,
   type StructuredErrorRecord,
 } from './ui/error-stack-block';
+import { IconButton } from './ui/icon-button';
+import { Kbd } from './ui/kbd';
 import { LoadMoreButton } from './ui/load-more-button';
 import { MenuDropdown } from './ui/menu-dropdown';
 import { Skeleton } from './ui/skeleton';
 import { TimestampTooltip } from './ui/timestamp-tooltip';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from './ui/tooltip';
 
 /**
  * Event types whose eventData contains an error field with a StructuredError.
@@ -53,29 +79,48 @@ const ERROR_EVENT_TYPES = new Set([
   'workflow_failed',
 ]);
 
-const BUTTON_RESET_STYLE: React.CSSProperties = {
-  appearance: 'none',
-  WebkitAppearance: 'none',
-  border: 'none',
-  background: 'transparent',
-};
-const DOT_PULSE_ANIMATION =
-  'workflow-dot-pulse 1.25s cubic-bezier(0, 0, 0.2, 1) infinite';
-
 // ──────────────────────────────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────
 
-function formatEventTime(date: Date): string {
+function formatEventDelta(deltaMs: number): string {
+  return deltaMs === 0 ? '0ms' : formatDurationPrecise(deltaMs);
+}
+
+function EventTime({
+  date,
+  previousDeltaMs,
+}: {
+  date: Date;
+  previousDeltaMs?: number;
+}): ReactNode {
   return (
-    date.toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false,
-    }) +
-    '.' +
-    date.getMilliseconds().toString().padStart(3, '0')
+    <TimestampTooltip date={date}>
+      <span className="inline-flex whitespace-nowrap text-label-13-mono tabular-nums">
+        <span className="text-gray-900">
+          {format(date, 'MMM dd').toUpperCase()}
+        </span>
+        <span className="ml-2">
+          <span className="text-gray-1000">{format(date, 'HH:mm:ss')}</span>
+          <span className="text-gray-900">{format(date, '.SS')}</span>
+        </span>
+        {previousDeltaMs !== undefined ? (
+          <span className="ml-2 text-gray-900">
+            +{formatEventDelta(previousDeltaMs)}
+          </span>
+        ) : null}
+      </span>
+    </TimestampTooltip>
+  );
+}
+
+function EventMetadataTime({ date }: { date: Date }): ReactNode {
+  return (
+    <TimestampTooltip date={date}>
+      <span className="whitespace-nowrap text-gray-1000">
+        {format(date, 'HH:mm:ss.SSS')}
+      </span>
+    </TimestampTooltip>
   );
 }
 
@@ -109,27 +154,27 @@ function formatEventType(eventType: Event['eventType']): string {
 // Event type → status color (small dot only)
 // ──────────────────────────────────────────────────────────────────────────
 
-/** Returns a CSS color using Geist design tokens for the status dot. */
-function getStatusDotColor(eventType: string): string {
+/** Returns a Geist design-token class for the status dot. */
+function getStatusDotClass(eventType: string): string {
   // Failed → red
   if (
     eventType === 'step_failed' ||
     eventType === 'run_failed' ||
     eventType === 'workflow_failed'
   ) {
-    return 'var(--ds-red-700)';
+    return 'bg-red-700';
   }
   // Cancelled → amber
   if (eventType === 'run_cancelled') {
-    return 'var(--ds-amber-700)';
+    return 'bg-amber-700';
   }
   // Retrying → amber
   if (eventType === 'step_retrying') {
-    return 'var(--ds-amber-700)';
+    return 'bg-amber-700';
   }
   // Attribute changes → teal
   if (eventType === 'attr_set') {
-    return 'var(--ds-teal-900)';
+    return 'bg-teal-900';
   }
   // Completed/succeeded → green
   if (
@@ -139,7 +184,7 @@ function getStatusDotColor(eventType: string): string {
     eventType === 'hook_disposed' ||
     eventType === 'wait_completed'
   ) {
-    return 'var(--ds-green-700)';
+    return 'bg-green-700';
   }
   // Started/running → blue
   if (
@@ -148,15 +193,15 @@ function getStatusDotColor(eventType: string): string {
     eventType === 'workflow_started' ||
     eventType === 'hook_received'
   ) {
-    return 'var(--ds-blue-700)';
+    return 'bg-blue-700';
   }
   // Sealed positions → dim gray, one step quieter than pending: the row is
   // log filler the run never observed.
   if (eventType === 'noop') {
-    return 'var(--ds-gray-500)';
+    return 'bg-gray-500';
   }
   // Created/pending → gray
-  return 'var(--ds-gray-600)';
+  return 'bg-gray-600';
 }
 
 /**
@@ -291,6 +336,69 @@ export function buildDurationMap(
   return durations;
 }
 
+interface EventMetadataInfo {
+  previousDeltaMs?: number;
+  attempt?: number;
+}
+
+function buildEventMetadataMap(
+  events: Event[],
+  canInferAttempts: boolean
+): Map<string, EventMetadataInfo> {
+  const chronological = [...events].sort(
+    (a, b) => getEffectiveEventTime(a) - getEffectiveEventTime(b)
+  );
+  const attemptsByCorrelation = new Map<string, number>();
+  const metadata = new Map<string, EventMetadataInfo>();
+  let previousEventTime: number | undefined;
+
+  for (const event of chronological) {
+    const eventTime = getEffectiveEventTime(event);
+    const eventData =
+      event.eventData && typeof event.eventData === 'object'
+        ? (event.eventData as Record<string, unknown>)
+        : null;
+    const explicitAttempt =
+      typeof eventData?.attempt === 'number' ? eventData.attempt : undefined;
+    let attempt = explicitAttempt;
+
+    if (event.correlationId && event.eventType === 'step_started') {
+      if (explicitAttempt !== undefined) {
+        attemptsByCorrelation.set(event.correlationId, explicitAttempt);
+      } else if (canInferAttempts) {
+        attempt = (attemptsByCorrelation.get(event.correlationId) ?? 0) + 1;
+        attemptsByCorrelation.set(event.correlationId, attempt);
+      }
+    } else if (event.correlationId && event.eventType === 'step_retrying') {
+      attempt =
+        explicitAttempt ??
+        (canInferAttempts
+          ? attemptsByCorrelation.get(event.correlationId)
+          : undefined);
+    }
+
+    metadata.set(event.eventId, {
+      previousDeltaMs:
+        previousEventTime === undefined
+          ? undefined
+          : Math.max(0, eventTime - previousEventTime),
+      attempt,
+    });
+    previousEventTime = eventTime;
+  }
+
+  return metadata;
+}
+
+function getEventRetryAfter(event: Event): Date | null {
+  const eventRecord = event as Event & { retryAfter?: unknown };
+  const eventData =
+    event.eventData && typeof event.eventData === 'object'
+      ? (event.eventData as Record<string, unknown>)
+      : null;
+  return parseEventDate(eventRecord.retryAfter ?? eventData?.retryAfter);
+}
+
 /** Check if a loaded eventData object contains any encrypted marker values. */
 function hasEncryptedValues(data: unknown): boolean {
   if (!data || typeof data !== 'object') return false;
@@ -298,6 +406,13 @@ function hasEncryptedValues(data: unknown): boolean {
     if (isEncryptedMarker(val)) return true;
   }
   return false;
+}
+
+function getEventDataCacheKey(
+  event: Pick<Event, 'eventId' | 'runId'>,
+  encryptionKey?: Uint8Array
+): string {
+  return `${event.runId}:${event.eventId}:${encryptionKey ? 'decrypted' : 'encrypted'}`;
 }
 
 function isRunLevel(eventType: string): boolean {
@@ -318,222 +433,32 @@ function isRunLevel(eventType: string): boolean {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Tree gutter: fixed-width, shows branch lines only for the selected group
-// ──────────────────────────────────────────────────────────────────────────
-
-/** Fixed gutter width: 20px root area + 16px for one branch lane */
-const GUTTER_WIDTH = 36;
-/** X position of the single branch lane line */
-const LANE_X = 20;
-const ROOT_LINE_COLOR = 'var(--ds-gray-500)';
-
-function TreeGutter({
-  isFirst,
-  isLast,
-  isRunLevel: isRun,
-  statusDotColor,
-  pulse = false,
-  hasSelection,
-  showBranch,
-  showLaneLine,
-  isLaneStart,
-  isLaneEnd,
-  continuationOnly = false,
-}: {
-  isFirst: boolean;
-  isLast: boolean;
-  isRunLevel: boolean;
-  statusDotColor?: string;
-  pulse?: boolean;
-  /** Whether any group is currently active (selected or hovered) */
-  hasSelection: boolean;
-  /** Whether to show a horizontal branch line for this row (event belongs to active group) */
-  showBranch: boolean;
-  /** Whether the vertical lane line passes through this row */
-  showLaneLine: boolean;
-  /** Whether the vertical lane line starts at this row (top clipped to 50%) */
-  isLaneStart: boolean;
-  /** Whether the vertical lane line ends at this row (bottom clipped to 50%) */
-  isLaneEnd: boolean;
-  continuationOnly?: boolean;
-}) {
-  const dotSize = isRun ? 8 : 6;
-  const dotLeft = isRun ? 5 : 6;
-  const dotOpacity = hasSelection && !showBranch && !isRun ? 0.3 : 1;
-
-  return (
-    <div
-      className="relative flex-shrink-0 self-stretch"
-      style={{
-        width: GUTTER_WIDTH,
-        minHeight: continuationOnly ? 0 : undefined,
-      }}
-    >
-      {/* Root vertical line (leftmost, always visible) */}
-      <div
-        style={{
-          position: 'absolute',
-          left: 8,
-          top: continuationOnly ? 0 : isFirst ? '50%' : 0,
-          bottom: continuationOnly ? 0 : isLast ? '50%' : 0,
-          width: 2,
-          backgroundColor: ROOT_LINE_COLOR,
-          zIndex: 0,
-        }}
-      />
-
-      {!continuationOnly && (
-        <>
-          {/* Status dot on the root line for every event */}
-          <div
-            style={{
-              position: 'absolute',
-              left: dotLeft,
-              top: '50%',
-              transform: 'translateY(-50%)',
-              width: dotSize,
-              height: dotSize,
-              zIndex: 2,
-            }}
-          >
-            {/* Opaque backdrop ensures gutter lines never visually cut through dots */}
-            <div
-              style={{
-                position: 'absolute',
-                inset: 0,
-                borderRadius: '50%',
-                backgroundColor: 'var(--ds-background-100)',
-                zIndex: 0,
-              }}
-            />
-            {pulse && (
-              <div
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  borderRadius: '50%',
-                  backgroundColor: statusDotColor,
-                  opacity: 0.75 * dotOpacity,
-                  animation: DOT_PULSE_ANIMATION,
-                  zIndex: 1,
-                }}
-              />
-            )}
-            <div
-              style={{
-                position: 'relative',
-                width: '100%',
-                height: '100%',
-                borderRadius: '50%',
-                backgroundColor: statusDotColor,
-                opacity: dotOpacity,
-                transition: 'opacity 150ms',
-                zIndex: 2,
-              }}
-            />
-          </div>
-
-          {/* Horizontal branch from root to gutter edge (selected group events only) */}
-          {showBranch && (
-            <div
-              style={{
-                position: 'absolute',
-                left: 9,
-                top: '50%',
-                width: GUTTER_WIDTH - 9,
-                height: 2,
-                backgroundColor: ROOT_LINE_COLOR,
-                zIndex: 0,
-              }}
-            />
-          )}
-        </>
-      )}
-
-      {/* Vertical lane line connecting the selected group's events */}
-      {showLaneLine && (
-        <div
-          style={{
-            position: 'absolute',
-            left: LANE_X,
-            top: continuationOnly ? 0 : isLaneStart ? '50%' : 0,
-            bottom: continuationOnly ? 0 : isLaneEnd ? '50%' : 0,
-            width: 2,
-            backgroundColor: ROOT_LINE_COLOR,
-            zIndex: 0,
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
-// ──────────────────────────────────────────────────────────────────────────
 // Copyable cell: shows a copy button on hover
 // ──────────────────────────────────────────────────────────────────────────
 
 function CopyableCell({
   value,
   className,
-  style: styleProp,
 }: {
   value: string;
   className?: string;
-  style?: React.CSSProperties;
 }): ReactNode {
-  const [copied, setCopied] = useState(false);
-  const resetCopiedTimeoutRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (resetCopiedTimeoutRef.current !== null) {
-        window.clearTimeout(resetCopiedTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  const handleCopy = useCallback(
-    (e: ReactMouseEvent) => {
-      e.stopPropagation();
-      navigator.clipboard.writeText(value).then(() => {
-        setCopied(true);
-        if (resetCopiedTimeoutRef.current !== null) {
-          window.clearTimeout(resetCopiedTimeoutRef.current);
-        }
-        resetCopiedTimeoutRef.current = window.setTimeout(() => {
-          setCopied(false);
-          resetCopiedTimeoutRef.current = null;
-        }, 1500);
-      });
-    },
-    [value]
-  );
-
   return (
     <div
-      className={`group/copy flex items-center gap-1 min-w-0 px-4 ${className ?? ''}`}
-      style={styleProp}
+      className={cn(
+        'group/copy flex min-w-0 items-center gap-1 px-4',
+        className
+      )}
     >
       <span className="overflow-hidden text-ellipsis whitespace-nowrap">
         {value || '-'}
       </span>
       {value ? (
-        <button
-          type="button"
-          onClick={handleCopy}
-          className="flex-shrink-0 opacity-0 group-hover/copy:opacity-100 transition-opacity p-0.5 rounded hover:bg-[var(--ds-gray-alpha-200)]"
-          style={BUTTON_RESET_STYLE}
-          aria-label={`Copy ${value}`}
-        >
-          {copied ? (
-            <Check
-              className="h-3 w-3"
-              style={{ color: 'var(--ds-green-700)' }}
-            />
-          ) : (
-            <Copy className="h-3 w-3" style={{ color: 'var(--ds-gray-700)' }} />
-          )}
-        </button>
+        <CopyButton
+          copyText={value}
+          ariaLabel={`Copy ${value}`}
+          className="-mr-1 shrink-0 opacity-0 group-hover/row:opacity-100 group-focus-within/copy:opacity-100 focus-visible:opacity-100"
+        />
       ) : null}
     </div>
   );
@@ -604,17 +529,7 @@ function PayloadBlock({
     [data, eventType]
   );
 
-  const [copied, setCopied] = useState(false);
-  const resetCopiedTimeoutRef = useRef<number | null>(null);
   const cleaned = useMemo(() => deepParseJson(data), [data]);
-
-  useEffect(() => {
-    return () => {
-      if (resetCopiedTimeoutRef.current !== null) {
-        window.clearTimeout(resetCopiedTimeoutRef.current);
-      }
-    };
-  }, []);
 
   const formatted = useMemo(() => {
     try {
@@ -623,23 +538,6 @@ function PayloadBlock({
       return String(cleaned);
     }
   }, [cleaned]);
-
-  const handleCopy = useCallback(
-    (e: ReactMouseEvent) => {
-      e.stopPropagation();
-      navigator.clipboard.writeText(formatted).then(() => {
-        setCopied(true);
-        if (resetCopiedTimeoutRef.current !== null) {
-          window.clearTimeout(resetCopiedTimeoutRef.current);
-        }
-        resetCopiedTimeoutRef.current = window.setTimeout(() => {
-          setCopied(false);
-          resetCopiedTimeoutRef.current = null;
-        }, 1500);
-      });
-    },
-    [formatted]
-  );
 
   if (structuredError) {
     return (
@@ -666,11 +564,8 @@ function PayloadBlock({
         : null;
     if (cancelReason) {
       return (
-        <div
-          className="p-2 text-label-12"
-          style={{ color: 'var(--ds-gray-1000)' }}
-        >
-          <span style={{ color: 'var(--ds-gray-900)' }}>Reason: </span>
+        <div className="p-2 text-label-12 text-gray-1000">
+          <span className="text-gray-900">Reason: </span>
           <span className="whitespace-pre-wrap break-words">
             {cancelReason}
           </span>
@@ -680,35 +575,15 @@ function PayloadBlock({
   }
 
   return (
-    <div className="relative group/payload">
-      <div
-        className="overflow-x-auto p-2 text-[11px]"
-        style={{ color: 'var(--ds-gray-1000)' }}
-      >
+    <div className="relative overflow-x-auto p-3 text-gray-1000">
+      <CopyButton
+        copyText={formatted}
+        ariaLabel="Copy payload"
+        className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded-md border border-gray-alpha-400 !bg-background-100 p-0 text-gray-900 transition-transform transition-colors duration-100 hover:bg-gray-200 active:scale-95 active:bg-gray-300"
+      />
+      <div className="text-[11px]">
         <DataInspector data={cleaned} expandLevel={2} />
       </div>
-      <button
-        type="button"
-        onClick={handleCopy}
-        className="absolute bottom-2 right-2 opacity-0 group-hover/payload:opacity-100 transition-opacity flex items-center gap-1 px-2 py-1 rounded-md text-button-12 hover:bg-[var(--ds-gray-alpha-200)]"
-        style={{ ...BUTTON_RESET_STYLE, color: 'var(--ds-gray-700)' }}
-        aria-label="Copy payload"
-      >
-        {copied ? (
-          <>
-            <Check
-              className="h-3 w-3"
-              style={{ color: 'var(--ds-green-700)' }}
-            />
-            <span style={{ color: 'var(--ds-green-700)' }}>Copied</span>
-          </>
-        ) : (
-          <>
-            <Copy className="h-3 w-3" />
-            <span>Copy</span>
-          </>
-        )}
-      </button>
     </div>
   );
 }
@@ -722,6 +597,8 @@ const SORT_OPTIONS = [
   { value: 'asc' as const, label: 'Oldest' },
 ];
 
+const EVENT_DETAIL_PANEL_ID = 'event-detail-panel';
+
 function RowsSkeleton({
   showSeparateEventOccurrenceTimestamps = false,
 }: {
@@ -730,74 +607,414 @@ function RowsSkeleton({
   return (
     <div className="flex-1 overflow-hidden">
       {Array.from({ length: 16 }, (_, i) => (
-        <div key={i} className="flex items-center gap-0" style={{ height: 40 }}>
-          {/* Gutter area */}
-          <div
-            className="relative flex-shrink-0 self-stretch flex items-center"
-            style={{ width: GUTTER_WIDTH }}
-          >
-            {/* Vertical line skeleton */}
-            <div
-              style={{
-                position: 'absolute',
-                left: 8,
-                top: i === 0 ? '50%' : 0,
-                bottom: 0,
-                width: 2,
-              }}
-            >
-              <Skeleton className="w-full h-full" style={{ borderRadius: 1 }} />
-            </div>
-            {/* Dot skeleton */}
-            <Skeleton
-              className="flex-shrink-0"
-              style={{
-                width: i % 4 === 0 ? 8 : 6,
-                height: i % 4 === 0 ? 8 : 6,
-                borderRadius: '50%',
-                marginLeft: i % 4 === 0 ? 5 : 6,
-              }}
-            />
-          </div>
-          {/* Chevron placeholder */}
-          <div className="w-5 flex-shrink-0 flex items-center justify-center">
-            <Skeleton className="w-5 h-5" style={{ borderRadius: 4 }} />
-          </div>
+        <div
+          key={i}
+          className="flex h-[30px] items-center gap-0 pl-4 shadow-[inset_0_-1px_var(--ds-gray-alpha-400)]"
+        >
           {showSeparateEventOccurrenceTimestamps && (
-            <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-              <Skeleton className="h-3" style={{ width: '70%' }} />
+            <div className="min-w-0 flex-[2_1_0%] px-4">
+              <Skeleton className="h-3 w-[70%]" />
             </div>
           )}
           {/* Created */}
-          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            <Skeleton className="h-3" style={{ width: '70%' }} />
+          <div className="min-w-0 flex-[2_1_0%] px-4">
+            <Skeleton className="h-3 w-[70%]" />
           </div>
           {/* Event Type */}
-          <div
-            className="min-w-0 px-4 flex items-center gap-1.5"
-            style={{ flex: '2 1 0%' }}
-          >
-            <Skeleton
-              className="flex-shrink-0"
-              style={{ width: 6, height: 6, borderRadius: '50%' }}
-            />
-            <Skeleton className="h-3" style={{ width: '60%' }} />
+          <div className="flex min-w-0 flex-[2_1_0%] items-center gap-1.5 px-4">
+            <Skeleton className="size-1.5 shrink-0 rounded-full" />
+            <Skeleton className="h-3 w-[60%]" />
           </div>
           {/* Name */}
-          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            <Skeleton className="h-3" style={{ width: '50%' }} />
+          <div className="min-w-0 flex-[2_1_0%] px-4">
+            <Skeleton className="h-3 w-1/2" />
           </div>
           {/* Correlation ID */}
-          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
-            <Skeleton className="h-3" style={{ width: '75%' }} />
+          <div className="min-w-0 flex-[3_1_0%] px-4">
+            <Skeleton className="h-3 w-3/4" />
           </div>
           {/* Event ID */}
-          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
-            <Skeleton className="h-3" style={{ width: '75%' }} />
+          <div className="min-w-0 flex-[3_1_0%] px-4">
+            <Skeleton className="h-3 w-3/4" />
           </div>
         </div>
       ))}
     </div>
+  );
+}
+
+function EventDetailPanel({
+  containerWidth,
+  isNarrowPanel,
+  event,
+  metadataInfo,
+  durationInfo,
+  onLoadEventData,
+  cachedEventData,
+  onCacheEventData,
+  encryptionKey,
+  onEncryptedDataDetected,
+  onNavigatePrevious,
+  onNavigateNext,
+  hasPrevious,
+  hasNext,
+  onClose,
+  onViewInTrace,
+}: {
+  containerWidth: number;
+  isNarrowPanel: boolean;
+  event: Event;
+  metadataInfo?: EventMetadataInfo;
+  durationInfo?: DurationInfo;
+  onLoadEventData?: (event: Event) => Promise<unknown | null>;
+  cachedEventData: unknown | null;
+  onCacheEventData: (event: Event, data: unknown) => void;
+  encryptionKey?: Uint8Array;
+  onEncryptedDataDetected?: () => void;
+  onNavigatePrevious: () => void;
+  onNavigateNext: () => void;
+  hasPrevious: boolean;
+  hasNext: boolean;
+  onClose: () => void;
+  onViewInTrace?: () => void;
+}): ReactNode {
+  const [storedWidth, setStoredWidth] = useState<number>(() =>
+    readStoredPanelWidth()
+  );
+  const asideRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadedEventData, setLoadedEventData] = useState<unknown | null>(
+    cachedEventData
+  );
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [hasAttemptedLoad, setHasAttemptedLoad] = useState(
+    cachedEventData !== null
+  );
+  const detailRequestIdRef = useRef(0);
+  const eventRef = useRef(event);
+  eventRef.current = event;
+  const previousEncryptionKeyRef = useRef(encryptionKey);
+  // List endpoints resolve events with `resolveData: 'none'`, which strips the
+  // ref/payload fields (input, result, error, …) and leaves a partial stub
+  // (stepName, timings, …). Rendering that stub while the full payload loads
+  // flashes an incomplete JSON document whose missing fields pop in after a
+  // skeleton, so only trust inline eventData when it can't be a stub: either
+  // there is no loader to fetch the full payload, or the event type carries
+  // no ref fields (its eventData is never stripped).
+  const hasExistingEventData =
+    'eventData' in event &&
+    event.eventData != null &&
+    (!onLoadEventData || getEventDataRefFields(event.eventType).length === 0);
+
+  useEffect(() => {
+    if (!isNarrowPanel) return;
+    const frame = requestAnimationFrame(() => closeButtonRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [isNarrowPanel]);
+
+  const loadEventDetails = useCallback(async () => {
+    if (hasAttemptedLoad || loadedEventData !== null) return;
+    if (cachedEventData !== null) {
+      setLoadedEventData(cachedEventData);
+      setHasAttemptedLoad(true);
+      return;
+    }
+    // Inline eventData of a ref-less event type is already complete (ref
+    // fields are the only ones ever stripped), so there is nothing to fetch.
+    if (hasExistingEventData) {
+      setHasAttemptedLoad(true);
+      return;
+    }
+    if (isLoading) return;
+
+    setIsLoading(true);
+    setLoadError(null);
+    const requestId = ++detailRequestIdRef.current;
+    try {
+      if (!onLoadEventData) {
+        setLoadError('Event details unavailable');
+        return;
+      }
+      const data = await onLoadEventData(event);
+      if (data !== null && data !== undefined) {
+        onCacheEventData(event, data);
+        if (detailRequestIdRef.current !== requestId) return;
+        setLoadedEventData(data);
+        if (!encryptionKey && hasEncryptedValues(data)) {
+          onEncryptedDataDetected?.();
+        }
+      }
+    } catch (error) {
+      if (detailRequestIdRef.current !== requestId) return;
+      setLoadError(
+        error instanceof Error ? error.message : 'Failed to load event details'
+      );
+    } finally {
+      if (detailRequestIdRef.current === requestId) {
+        setIsLoading(false);
+        setHasAttemptedLoad(true);
+      }
+    }
+  }, [
+    cachedEventData,
+    encryptionKey,
+    event,
+    hasAttemptedLoad,
+    hasExistingEventData,
+    isLoading,
+    loadedEventData,
+    onCacheEventData,
+    onEncryptedDataDetected,
+    onLoadEventData,
+  ]);
+
+  useEffect(() => {
+    if (
+      cachedEventData !== null &&
+      !encryptionKey &&
+      hasEncryptedValues(cachedEventData)
+    ) {
+      onEncryptedDataDetected?.();
+    }
+    const timer = window.setTimeout(() => void loadEventDetails(), 120);
+    return () => window.clearTimeout(timer);
+  }, [
+    cachedEventData,
+    encryptionKey,
+    loadEventDetails,
+    onEncryptedDataDetected,
+  ]);
+
+  useEffect(() => {
+    const encryptionKeyChanged =
+      previousEncryptionKeyRef.current !== encryptionKey;
+    previousEncryptionKeyRef.current = encryptionKey;
+    if (!encryptionKeyChanged || !encryptionKey || !onLoadEventData) return;
+
+    let active = true;
+    const eventAtRequest = eventRef.current;
+    const requestId = ++detailRequestIdRef.current;
+    setIsLoading(false);
+    setHasAttemptedLoad(false);
+    onLoadEventData(eventAtRequest)
+      .then((data) => {
+        if (data !== null && data !== undefined) {
+          onCacheEventData(eventAtRequest, data);
+          if (active && detailRequestIdRef.current === requestId) {
+            setLoadedEventData(data);
+          }
+        }
+        if (active && detailRequestIdRef.current === requestId) {
+          setHasAttemptedLoad(true);
+        }
+      })
+      .catch(() => {
+        if (active && detailRequestIdRef.current === requestId) {
+          setHasAttemptedLoad(true);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [encryptionKey, onCacheEventData, onLoadEventData]);
+
+  const mergedEventData =
+    loadedEventData ??
+    (hasExistingEventData
+      ? (event as Event & { eventData: unknown }).eventData
+      : null);
+  const displayPayload = isLoading ? loadedEventData : mergedEventData;
+  const occurredAt = parseEventDate(event.occurredAt);
+  const metadataDate = occurredAt ?? new Date(event.createdAt);
+  const retryAfter = getEventRetryAfter(event);
+  const retryDelayMs = retryAfter
+    ? Math.max(0, retryAfter.getTime() - getEffectiveEventTime(event))
+    : undefined;
+  const retryValue =
+    event.eventType === 'step_retrying'
+      ? [
+          metadataInfo?.attempt
+            ? `attempt ${metadataInfo.attempt} failed`
+            : 'attempt failed',
+          retryDelayMs !== undefined
+            ? `next attempt in ${formatDurationPrecise(retryDelayMs)} (backoff)`
+            : null,
+        ]
+          .filter(Boolean)
+          .join(' · ')
+      : null;
+  const durationsValue = [
+    durationInfo?.queued !== undefined
+      ? `queued ${formatDurationPrecise(durationInfo.queued)}`
+      : null,
+    durationInfo?.ran !== undefined
+      ? `ran ${formatDurationPrecise(durationInfo.ran)}`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const handleResize = useCallback(
+    (nextWidth: number) => {
+      const clampedWidth = clampPanelWidth(nextWidth, containerWidth);
+      setStoredWidth(clampedWidth);
+      writeStoredPanelWidth(clampedWidth);
+    },
+    [containerWidth]
+  );
+  const panelWidth = isNarrowPanel
+    ? containerWidth
+    : clampPanelWidth(storedWidth, containerWidth);
+  const panelMaxWidth = isNarrowPanel
+    ? containerWidth
+    : Math.max(PANEL_MIN_WIDTH, computeMaxPanelWidth(containerWidth));
+
+  return (
+    <TooltipProvider delayDuration={100}>
+      <aside
+        ref={asideRef}
+        id={EVENT_DETAIL_PANEL_ID}
+        role={isNarrowPanel ? 'dialog' : undefined}
+        aria-label="Event details"
+        className="relative flex h-full max-h-full shrink-0 flex-col border-l border-gray-alpha-400 bg-background-100 max-[679px]:absolute max-[679px]:inset-0 max-[679px]:z-10 max-[679px]:border-l-0"
+        style={{ width: panelWidth }}
+      >
+        <div className="max-[679px]:hidden">
+          <DraggableBorder
+            element={asideRef}
+            position="left"
+            onWidthChange={handleResize}
+            onReset={() => handleResize(PANEL_DEFAULT_WIDTH)}
+            aria-label="Resize event details panel"
+            aria-controls={EVENT_DETAIL_PANEL_ID}
+            aria-valuemin={PANEL_MIN_WIDTH}
+            aria-valuemax={panelMaxWidth}
+            aria-valuenow={Math.min(
+              Math.max(Math.round(panelWidth), PANEL_MIN_WIDTH),
+              panelMaxWidth
+            )}
+          />
+        </div>
+        <div className="flex shrink-0 items-center justify-between gap-2 px-4 py-[7.5px]">
+          <span className="block truncate text-label-14 text-gray-1000">
+            {formatEventType(event.eventType)}
+          </span>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <IconButton
+                  aria-label="Navigate up"
+                  aria-keyshortcuts="K"
+                  onClick={onNavigatePrevious}
+                  disabled={!hasPrevious}
+                >
+                  <ChevronUp className="size-4" />
+                </IconButton>
+              </TooltipTrigger>
+              {hasPrevious ? (
+                <TooltipContent>
+                  Navigate up
+                  <Kbd>K</Kbd>
+                </TooltipContent>
+              ) : null}
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <IconButton
+                  aria-label="Navigate down"
+                  aria-keyshortcuts="J"
+                  onClick={onNavigateNext}
+                  disabled={!hasNext}
+                >
+                  <ChevronDown className="size-4" />
+                </IconButton>
+              </TooltipTrigger>
+              {hasNext ? (
+                <TooltipContent>
+                  Navigate down
+                  <Kbd>J</Kbd>
+                </TooltipContent>
+              ) : null}
+            </Tooltip>
+            <div aria-hidden className="mx-1 h-4 w-px bg-gray-alpha-400" />
+            <IconButton
+              ref={closeButtonRef}
+              aria-label="Close event details"
+              aria-keyshortcuts="Escape"
+              onClick={onClose}
+            >
+              <X className="size-4" />
+            </IconButton>
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto border-t border-gray-alpha-400">
+          <div className="px-4">
+            <CollapsibleRoot defaultOpen>
+              <CollapsibleTrigger>Metadata</CollapsibleTrigger>
+              <CollapsibleContent className="mb-2 mt-0">
+                <div className="flex flex-col">
+                  <DetailMonoKeyValueRow
+                    label="Event ID"
+                    value={event.eventId}
+                    copyText={event.eventId}
+                  />
+                  {event.correlationId ? (
+                    <DetailMonoKeyValueRow
+                      label="Correlation ID"
+                      value={event.correlationId}
+                      copyText={event.correlationId}
+                    />
+                  ) : null}
+                  <DetailMonoKeyValueRow
+                    label={occurredAt ? 'Occurred' : 'Created'}
+                    value={<EventMetadataTime date={metadataDate} />}
+                  />
+                  {retryValue ? (
+                    <DetailMonoKeyValueRow label="Retry" value={retryValue} />
+                  ) : null}
+                  {durationsValue ? (
+                    <DetailMonoKeyValueRow
+                      label="Durations"
+                      value={durationsValue}
+                    />
+                  ) : null}
+                </div>
+              </CollapsibleContent>
+            </CollapsibleRoot>
+            {onViewInTrace ? (
+              <button
+                type="button"
+                onClick={onViewInTrace}
+                className="mb-3 inline-flex h-10 items-center gap-1.5 rounded-md border border-gray-alpha-400 bg-background-100 px-3 text-button-14 text-gray-1000 transition-colors hover:bg-gray-100"
+              >
+                View in trace
+                <ArrowUpRight className="size-4" aria-hidden="true" />
+              </button>
+            ) : null}
+          </div>
+
+          <div className="border-t border-gray-alpha-400">
+            {displayPayload != null ? (
+              <PayloadBlock data={displayPayload} eventType={event.eventType} />
+            ) : loadError ? (
+              <div className="m-3 rounded-md border border-red-400 bg-red-100 p-3 text-label-12 text-red-900">
+                {loadError}
+              </div>
+            ) : isLoading || !hasAttemptedLoad ? (
+              <div className="flex flex-col gap-2 p-4">
+                <Skeleton className="h-3 w-3/4" />
+                <Skeleton className="h-3 w-1/2" />
+                <Skeleton className="h-3 w-3/5" />
+              </div>
+            ) : (
+              <div className="p-4 text-label-12 text-gray-1000">No data</div>
+            )}
+          </div>
+        </div>
+      </aside>
+    </TooltipProvider>
   );
 }
 
@@ -812,7 +1029,7 @@ interface EventsListProps {
   hasMoreEvents?: boolean;
   isLoadingMoreEvents?: boolean;
   onLoadMoreEvents?: () => Promise<void> | void;
-  /** When provided, signals that decryption is active (triggers re-load of expanded events) */
+  /** When provided, signals that decryption is active for selected event details. */
   encryptionKey?: Uint8Array;
   /** When true, shows a loading state instead of "No events found" for empty lists */
   isLoading?: boolean;
@@ -839,51 +1056,33 @@ interface EventsListProps {
   ) => Promise<ExactIdSearchResult>;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
   showSeparateEventOccurrenceTimestamps?: boolean;
+  /** Opens the trace viewer. */
+  onViewInTrace?: () => void;
 }
 
 export function EventRow({
   event,
-  index,
-  isFirst,
-  isLast,
-  isExpanded,
-  onToggleExpand,
+  isSelected,
   activeGroupKey,
-  selectedGroupKey,
-  selectedGroupRange,
   correlationNameMap,
   workflowName,
-  durationMap,
-  onSelectGroup,
+  onSelectEvent,
   onHoverGroup,
-  onLoadEventData,
-  cachedEventData,
-  onCacheEventData,
-  encryptionKey,
-  onEncryptedDataDetected,
+  onFocusEvent,
+  previousDeltaMs,
   suppressGroupDimming = false,
   showSeparateEventOccurrenceTimestamps = false,
   isDuplicate = false,
 }: {
   event: Event;
-  index: number;
-  isFirst: boolean;
-  isLast: boolean;
-  isExpanded: boolean;
-  onToggleExpand: (eventId: string) => void;
+  isSelected: boolean;
   activeGroupKey?: string;
-  selectedGroupKey?: string;
-  selectedGroupRange: { first: number; last: number } | null;
   correlationNameMap: Map<string, string>;
   workflowName: string | null;
-  durationMap: Map<string, DurationInfo>;
-  onSelectGroup: (groupKey: string | undefined) => void;
+  onSelectEvent: (eventId: string) => void;
   onHoverGroup: (groupKey: string | undefined) => void;
-  onLoadEventData?: (event: Event) => Promise<unknown | null>;
-  cachedEventData: unknown | null;
-  onCacheEventData: (eventId: string, data: unknown) => void;
-  encryptionKey?: Uint8Array;
-  onEncryptedDataDetected?: () => void;
+  onFocusEvent?: (eventId: string) => void;
+  previousDeltaMs?: number;
   /** Exact-ID search results should not dim unrelated rows. */
   suppressGroupDimming?: boolean;
   /** Show occurredAt separately instead of folding it into the Created timestamp. */
@@ -891,27 +1090,6 @@ export function EventRow({
   /** The event repeats a class already in the log, so the runtime ignored it. */
   isDuplicate?: boolean;
 }) {
-  const [isLoading, setIsLoading] = useState(false);
-  const [loadedEventData, setLoadedEventData] = useState<unknown | null>(
-    cachedEventData
-  );
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [hasAttemptedLoad, setHasAttemptedLoad] = useState(
-    cachedEventData !== null
-  );
-
-  // Notify parent if cached data has encrypted markers on mount
-  useEffect(() => {
-    if (
-      cachedEventData !== null &&
-      !encryptionKey &&
-      hasEncryptedValues(cachedEventData)
-    ) {
-      onEncryptedDataDetected?.();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const rowGroupKey = isRunLevel(event.eventType)
     ? '__run__'
     : (event.correlationId ?? undefined);
@@ -922,23 +1100,11 @@ export function EventRow({
     : isSealed
       ? SEALED_EVENT_MESSAGE
       : undefined;
-  const statusDotColor = getStatusDotColor(event.eventType);
   const createdAt = new Date(event.createdAt);
   const occurredAt = parseEventDate(event.occurredAt);
   const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
     ? createdAt
     : getEffectiveEventDate(event);
-  // List endpoints resolve events with `resolveData: 'none'`, which strips the
-  // ref/payload fields (input, result, error, …) and leaves a partial stub
-  // (stepName, timings, …). Rendering that stub while the full payload loads
-  // flashes an incomplete JSON document whose missing fields pop in after a
-  // skeleton, so only trust inline eventData when it can't be a stub: either
-  // there is no loader to fetch the full payload, or the event type carries
-  // no ref fields (its eventData is never stripped).
-  const hasExistingEventData =
-    'eventData' in event &&
-    event.eventData != null &&
-    (!onLoadEventData || getEventDataRefFields(event.eventType).length === 0);
   const isRun = isRunLevel(event.eventType);
   const eventName = isRun
     ? (workflowName ?? '-')
@@ -946,194 +1112,63 @@ export function EventRow({
       ? (correlationNameMap.get(event.correlationId) ?? '-')
       : '-';
 
-  const durationKey = event.correlationId ?? (isRun ? '__run__' : '');
-  const durationInfo = durationKey ? durationMap.get(durationKey) : undefined;
-
   const hasActive = activeGroupKey !== undefined;
   const isRelated = rowGroupKey !== undefined && rowGroupKey === activeGroupKey;
   const isDimmed = hasActive && !isRelated && !suppressGroupDimming;
-  const isPulsing = hasActive && isRelated;
-
-  // Gutter state derived from selectedGroupRange
-  const showBranch = hasActive && isRelated && !isRun;
-  const showLaneLine =
-    selectedGroupRange !== null &&
-    index >= selectedGroupRange.first &&
-    index <= selectedGroupRange.last;
-  const isLaneStart =
-    selectedGroupRange !== null && index === selectedGroupRange.first;
-  const isLaneEnd =
-    selectedGroupRange !== null && index === selectedGroupRange.last;
-
-  const loadEventDetails = useCallback(async () => {
-    if (loadedEventData !== null) {
-      return;
-    }
-    if (cachedEventData !== null) {
-      setLoadedEventData(cachedEventData);
-      setHasAttemptedLoad(true);
-      return;
-    }
-    // Inline eventData of a ref-less event type is already complete (ref
-    // fields are the only ones ever stripped), so there is nothing to fetch.
-    if (hasExistingEventData) {
-      setHasAttemptedLoad(true);
-      return;
-    }
-    if (isLoading) {
-      return;
-    }
-    setIsLoading(true);
-    setLoadError(null);
-    try {
-      if (!onLoadEventData) {
-        setLoadError('Event details unavailable');
-        return;
-      }
-      const data = await onLoadEventData(event);
-      if (data !== null && data !== undefined) {
-        setLoadedEventData(data);
-        onCacheEventData(event.eventId, data);
-        if (!encryptionKey && hasEncryptedValues(data)) {
-          onEncryptedDataDetected?.();
-        }
-      }
-    } catch (err) {
-      setLoadError(
-        err instanceof Error ? err.message : 'Failed to load event details'
-      );
-    } finally {
-      setIsLoading(false);
-      setHasAttemptedLoad(true);
-    }
-  }, [
-    event,
-    loadedEventData,
-    isLoading,
-    onLoadEventData,
-    onCacheEventData,
-    encryptionKey,
-    onEncryptedDataDetected,
-    cachedEventData,
-    hasExistingEventData,
-  ]);
-
-  // Auto-load event data when remounting in expanded state without cached data
-  useEffect(() => {
-    if (!isExpanded || isLoading) {
-      return;
-    }
-    void loadEventDetails();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // When encryption key changes and this event was previously loaded,
-  // re-load to get decrypted data. Keep the encrypted value visible until the
-  // refreshed data arrives so the payload does not flash empty while decrypting.
-  useEffect(() => {
-    if (encryptionKey && hasAttemptedLoad && onLoadEventData) {
-      setHasAttemptedLoad(false);
-      onLoadEventData(event)
-        .then((data) => {
-          if (data !== null && data !== undefined) {
-            setLoadedEventData(data);
-            onCacheEventData(event.eventId, data);
-          }
-          setHasAttemptedLoad(true);
-        })
-        .catch(() => {
-          setHasAttemptedLoad(true);
-        });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [encryptionKey]);
+  const statusDotClass = isDimmed
+    ? 'bg-gray-900'
+    : getStatusDotClass(event.eventType);
 
   const handleRowClick = useCallback(() => {
-    onSelectGroup(rowGroupKey === selectedGroupKey ? undefined : rowGroupKey);
-    onToggleExpand(event.eventId);
-    if (!isExpanded) {
-      void loadEventDetails();
-    }
-  }, [
-    selectedGroupKey,
-    rowGroupKey,
-    onSelectGroup,
-    onToggleExpand,
-    event.eventId,
-    isExpanded,
-    loadEventDetails,
-  ]);
-
-  const mergedEventData =
-    loadedEventData ??
-    (hasExistingEventData
-      ? (event as Event & { eventData: unknown }).eventData
-      : null);
-
-  const displayPayload = isLoading ? loadedEventData : mergedEventData;
-
-  const contentOpacity = isDimmed ? 0.3 : 1;
+    onSelectEvent(event.eventId);
+  }, [event.eventId, onSelectEvent]);
 
   return (
     <div
       data-event-id={event.eventId}
       onMouseEnter={() => onHoverGroup(rowGroupKey)}
       onMouseLeave={() => onHoverGroup(undefined)}
+      className="shadow-[inset_0_-1px_var(--ds-gray-alpha-400)]"
     >
       {/* Row */}
       <div
+        data-event-row-id={event.eventId}
         role="button"
         tabIndex={0}
+        aria-expanded={isSelected}
+        aria-controls={isSelected ? EVENT_DETAIL_PANEL_ID : undefined}
+        aria-keyshortcuts="J K ArrowUp ArrowDown"
         onClick={handleRowClick}
+        onFocus={() => onFocusEvent?.(event.eventId)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') handleRowClick();
+          if (
+            e.target === e.currentTarget &&
+            (e.key === 'Enter' || e.key === ' ')
+          ) {
+            e.preventDefault();
+            handleRowClick();
+          }
         }}
-        className="w-full text-left flex items-center gap-0 text-label-13 hover:bg-[var(--ds-gray-alpha-100)] transition-colors cursor-pointer"
-        style={{ minHeight: 40 }}
+        className={cn(
+          'group/row flex h-[30px] w-full cursor-pointer items-center gap-0 pl-4 text-left text-label-14',
+          isSelected
+            ? 'bg-gray-100 hover:bg-gray-200 focus-visible:bg-gray-200'
+            : 'hover:bg-gray-100 focus-visible:bg-gray-100'
+        )}
       >
-        <TreeGutter
-          isFirst={isFirst}
-          isLast={isLast && !isExpanded}
-          isRunLevel={isRun}
-          statusDotColor={statusDotColor}
-          pulse={isPulsing}
-          hasSelection={hasActive}
-          showBranch={showBranch}
-          showLaneLine={showLaneLine}
-          isLaneStart={isLaneStart}
-          isLaneEnd={isLaneEnd}
-        />
-
-        {/* Content area: dims when unrelated */}
+        {/* Content area: mutes when unrelated */}
         <div
-          className="flex items-center flex-1 min-w-0"
-          style={{ opacity: contentOpacity, transition: 'opacity 150ms' }}
+          className={`flex min-w-0 flex-1 items-center transition-colors ${
+            isDimmed ? 'text-gray-900' : 'text-gray-1000'
+          }`}
         >
-          {/* Expand chevron indicator */}
-          <div
-            className="flex items-center justify-center w-5 h-5 flex-shrink-0 rounded"
-            style={{
-              border: '1px solid var(--ds-gray-400)',
-            }}
-          >
-            <ChevronRight
-              className="h-3 w-3 transition-transform"
-              style={{
-                color: 'var(--ds-gray-900)',
-                transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
-              }}
-            />
-          </div>
-
           {showSeparateEventOccurrenceTimestamps && (
-            <div
-              className="tabular-nums min-w-0 px-4"
-              style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
-            >
+            <div className="min-w-0 flex-[2_1_0%] overflow-hidden px-4">
               {occurredAt ? (
-                <TimestampTooltip date={occurredAt}>
-                  <span>{formatEventTime(occurredAt)}</span>
-                </TimestampTooltip>
+                <EventTime
+                  date={occurredAt}
+                  previousDeltaMs={previousDeltaMs}
+                />
               ) : (
                 '-'
               )}
@@ -1141,55 +1176,32 @@ export function EventRow({
           )}
 
           {/* Created */}
-          <div
-            className="tabular-nums min-w-0 px-4"
-            style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
-          >
-            <TimestampTooltip date={displayedCreatedAt}>
-              <span>{formatEventTime(displayedCreatedAt)}</span>
-            </TimestampTooltip>
+          <div className="min-w-0 flex-[2_1_0%] overflow-hidden px-4">
+            <EventTime
+              date={displayedCreatedAt}
+              previousDeltaMs={
+                showSeparateEventOccurrenceTimestamps
+                  ? undefined
+                  : previousDeltaMs
+              }
+            />
           </div>
 
           {/* Event Type */}
-          <div className="font-medium min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+          <div className="min-w-0 flex-[2_1_0%] overflow-hidden px-4">
             <EventNoticeTooltip notice={rowNotice}>
               <span
-                className="inline-flex items-center gap-1.5"
-                style={{
-                  color: rowNotice
-                    ? 'var(--ds-gray-700)'
-                    : 'var(--ds-gray-900)',
-                }}
+                className={cn(
+                  'inline-flex items-center gap-1.5',
+                  rowNotice ? 'text-gray-700' : 'text-gray-1000'
+                )}
               >
-                <span
-                  style={{
-                    position: 'relative',
-                    display: 'inline-flex',
-                    width: 6,
-                    height: 6,
-                    flexShrink: 0,
-                  }}
-                >
-                  {isPulsing && (
-                    <span
-                      style={{
-                        position: 'absolute',
-                        inset: 0,
-                        borderRadius: '50%',
-                        backgroundColor: statusDotColor,
-                        opacity: 0.75,
-                        animation: DOT_PULSE_ANIMATION,
-                      }}
-                    />
-                  )}
+                <span className="relative inline-flex size-1.5 shrink-0">
                   <span
-                    style={{
-                      position: 'relative',
-                      width: 6,
-                      height: 6,
-                      borderRadius: '50%',
-                      backgroundColor: statusDotColor,
-                    }}
+                    className={cn(
+                      'relative size-1.5 rounded-full',
+                      statusDotClass
+                    )}
                   />
                 </span>
                 {formatEventType(event.eventType)}
@@ -1198,116 +1210,23 @@ export function EventRow({
           </div>
 
           {/* Name */}
-          <div
-            className="min-w-0 px-4 overflow-hidden text-ellipsis whitespace-nowrap"
-            style={{ flex: '2 1 0%' }}
-            title={eventName !== '-' ? eventName : undefined}
-          >
+          <div className="min-w-0 flex-[2_1_0%] overflow-hidden text-ellipsis whitespace-nowrap px-4">
             {eventName}
           </div>
 
           {/* Correlation ID */}
           <CopyableCell
             value={event.correlationId || ''}
-            className="font-mono"
-            style={{ flex: '3 1 0%' }}
+            className="flex-[3_1_0%] text-label-13-mono"
           />
 
           {/* Event ID */}
           <CopyableCell
             value={event.eventId}
-            className="font-mono"
-            style={{ flex: '3 1 0%' }}
+            className="flex-[3_1_0%] text-label-13-mono"
           />
         </div>
       </div>
-
-      {/* Expanded details: tree lines continue through this area */}
-      {isExpanded && (
-        <div className="flex">
-          {/* Continuation gutter: lane line continues if not at lane end */}
-          <TreeGutter
-            isFirst={false}
-            isLast={isLast}
-            isRunLevel={isRun}
-            hasSelection={hasActive}
-            showBranch={false}
-            showLaneLine={showLaneLine && !isLaneEnd}
-            isLaneStart={false}
-            isLaneEnd={false}
-            continuationOnly
-          />
-          {/* Spacer for chevron column */}
-          <div className="w-5 flex-shrink-0" />
-          <div
-            className="flex-1 my-1.5 mr-3 ml-2 py-2 rounded-md border overflow-hidden"
-            style={{
-              borderColor: 'var(--ds-gray-alpha-200)',
-              opacity: contentOpacity,
-              transition: 'opacity 150ms',
-            }}
-          >
-            {/* Duration info */}
-            {(durationInfo?.queued !== undefined ||
-              durationInfo?.ran !== undefined) && (
-              <div
-                className="px-2 pb-1.5 text-label-12 flex gap-3"
-                style={{ color: 'var(--ds-gray-900)' }}
-              >
-                {durationInfo.queued !== undefined &&
-                  durationInfo.queued > 0 && (
-                    <span>
-                      Queued for{' '}
-                      <span className="font-mono tabular-nums">
-                        {formatDuration(durationInfo.queued)}
-                      </span>
-                    </span>
-                  )}
-                {durationInfo.ran !== undefined && (
-                  <span>
-                    Ran for{' '}
-                    <span className="font-mono tabular-nums">
-                      {formatDuration(durationInfo.ran)}
-                    </span>
-                  </span>
-                )}
-              </div>
-            )}
-
-            {/* Payload */}
-            {displayPayload != null ? (
-              <PayloadBlock data={displayPayload} eventType={event.eventType} />
-            ) : loadError ? (
-              <div
-                className="rounded-md border p-3 text-label-12"
-                style={{
-                  borderColor: 'var(--ds-red-400)',
-                  backgroundColor: 'var(--ds-red-100)',
-                  color: 'var(--ds-red-900)',
-                }}
-              >
-                {loadError}
-              </div>
-            ) : isLoading ||
-              (loadedEventData === null &&
-                !hasAttemptedLoad &&
-                event.correlationId) ? (
-              <div className="flex flex-col gap-2 p-3">
-                <Skeleton className="h-3" style={{ width: '75%' }} />
-                <Skeleton className="h-3" style={{ width: '50%' }} />
-                <Skeleton className="h-3" style={{ width: '60%' }} />
-              </div>
-            ) : (
-              <div
-                className="p-2 text-label-12"
-                style={{ color: 'var(--ds-gray-900)' }}
-              >
-                No data
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -1334,8 +1253,10 @@ function EventListViewInner({
   hasEncryptedData: hasEncryptedDataProp = false,
   onExactIdSearch,
   showSeparateEventOccurrenceTimestamps = false,
+  onViewInTrace,
 }: EventsListProps) {
   const toast = useToast();
+  const reducedMotion = useReducedMotion();
   const [internalSortOrder, setInternalSortOrder] = useState<'asc' | 'desc'>(
     'asc'
   );
@@ -1359,6 +1280,10 @@ function EventListViewInner({
   const [searchNotFound, setSearchNotFound] = useState(false);
   const searchRequestRef = useRef(0);
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const eventListRootRef = useRef<HTMLDivElement>(null);
+  const eventListWidth = useElementWidth(eventListRootRef);
+  const isNarrowPanel = eventListWidth > 0 && eventListWidth < 680;
+  const navigationRequestRef = useRef(0);
 
   const parsedSearchId = useMemo(
     () => parseExactWorkflowSearchId(searchQuery),
@@ -1374,6 +1299,63 @@ function EventListViewInner({
       (a, b) => dir * (getEffectiveEventTime(a) - getEffectiveEventTime(b))
     );
   }, [events, effectiveSortOrder, isExactSearchActive, searchResults]);
+
+  const eventIds = useMemo(
+    () => sortedEvents.map((event) => event.eventId),
+    [sortedEvents]
+  );
+  const [activeEventId, setActiveEventId] = useState<string | null>(null);
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const selectedEventIdRef = useRef(selectedEventId);
+  selectedEventIdRef.current = selectedEventId;
+
+  useEffect(() => {
+    if (activeEventId && !eventIds.includes(activeEventId)) {
+      navigationRequestRef.current += 1;
+      setActiveEventId(null);
+    }
+  }, [activeEventId, eventIds]);
+
+  const focusEventRow = useCallback((eventId: string) => {
+    const rows =
+      eventListRootRef.current?.querySelectorAll<HTMLElement>(
+        '[data-event-row-id]'
+      ) ?? [];
+    for (const row of rows) {
+      if (row.dataset.eventRowId === eventId) {
+        row.focus({ preventScroll: true });
+        return;
+      }
+    }
+  }, []);
+
+  const navigateToEvent = useCallback(
+    (eventId: string) => {
+      const index = eventIds.indexOf(eventId);
+      if (index === -1) return;
+
+      setActiveEventId(eventId);
+      const requestId = ++navigationRequestRef.current;
+      const focusTarget = () => {
+        if (navigationRequestRef.current === requestId) {
+          focusEventRow(eventId);
+        }
+      };
+
+      const virtuoso = virtuosoRef.current;
+      if (!virtuoso) {
+        focusTarget();
+        return;
+      }
+
+      virtuoso.scrollIntoView({
+        index,
+        behavior: reducedMotion ? 'auto' : 'smooth',
+        done: focusTarget,
+      });
+    },
+    [eventIds, focusEventRow, reducedMotion]
+  );
 
   // Events every replay reads past as repeats. Computed from the source list
   // rather than `sortedEvents` because which occurrence counted is a property
@@ -1403,8 +1385,7 @@ function EventListViewInner({
     return false;
   }, [events, isExactSearchActive, searchResults]);
 
-  // Tracks whether any expanded row's lazy-loaded data contained encrypted markers.
-  // Set to true by EventRow via onEncryptedDataDetected; never reset (sticky).
+  // Tracks whether loaded event details contained encrypted markers.
   const [foundEncryptedInLazyData, setFoundEncryptedInLazyData] =
     useState(false);
   const handleEncryptedDataDetected = useCallback(() => {
@@ -1427,6 +1408,14 @@ function EventListViewInner({
     () => buildDurationMap(sortedEvents, duplicateEventIds),
     [sortedEvents, duplicateEventIds]
   );
+  const eventMetadataMap = useMemo(
+    () =>
+      buildEventMetadataMap(
+        sortedEvents,
+        !hasMoreEvents && !isExactSearchActive
+      ),
+    [hasMoreEvents, isExactSearchActive, sortedEvents]
+  );
 
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | undefined>(
     undefined
@@ -1434,38 +1423,51 @@ function EventListViewInner({
   const [hoveredGroupKey, setHoveredGroupKey] = useState<string | undefined>(
     undefined
   );
-  const onSelectGroup = useCallback((groupKey: string | undefined) => {
-    setSelectedGroupKey(groupKey);
-  }, []);
   const onHoverGroup = useCallback((groupKey: string | undefined) => {
     setHoveredGroupKey(groupKey);
   }, []);
 
   const activeGroupKey = selectedGroupKey ?? hoveredGroupKey;
 
-  // Expanded state lifted out of EventRow so it survives virtualization
-  const [expandedEventIds, setExpandedEventIds] = useState<Set<string>>(
-    () => new Set()
-  );
-  const toggleEventExpanded = useCallback((eventId: string) => {
-    setExpandedEventIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(eventId)) {
-        next.delete(eventId);
-      } else {
-        next.add(eventId);
-      }
-      return next;
-    });
-  }, []);
-
   // Event data cache: ref avoids re-renders when cache updates
   const eventDataCacheRef = useRef<Map<string, unknown>>(new Map());
-  const cacheEventData = useCallback((eventId: string, data: unknown) => {
-    eventDataCacheRef.current.set(eventId, data);
-  }, []);
+  const eventDataRequestCacheRef = useRef<Map<string, Promise<unknown | null>>>(
+    new Map()
+  );
+  const cacheEventData = useCallback(
+    (event: Event, data: unknown) => {
+      eventDataCacheRef.current.set(
+        getEventDataCacheKey(event, encryptionKey),
+        data
+      );
+    },
+    [encryptionKey]
+  );
+  const loadEventData = useCallback(
+    (event: Event): Promise<unknown | null> => {
+      if (!onLoadEventData) return Promise.resolve(null);
 
-  // Lookup from eventId → groupKey for efficient collapse filtering
+      const cacheKey = getEventDataCacheKey(event, encryptionKey);
+      if (eventDataCacheRef.current.has(cacheKey)) {
+        return Promise.resolve(eventDataCacheRef.current.get(cacheKey) ?? null);
+      }
+      const pendingRequest = eventDataRequestCacheRef.current.get(cacheKey);
+      if (pendingRequest) return pendingRequest;
+
+      const request = onLoadEventData(event);
+      eventDataRequestCacheRef.current.set(cacheKey, request);
+      const clearRequest = () => {
+        if (eventDataRequestCacheRef.current.get(cacheKey) === request) {
+          eventDataRequestCacheRef.current.delete(cacheKey);
+        }
+      };
+      void request.then(clearRequest, clearRequest);
+      return request;
+    },
+    [encryptionKey, onLoadEventData]
+  );
+
+  // Lookup from eventId → groupKey for selected-row correlation highlighting.
   const eventGroupKeyMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const ev of sortedEvents) {
@@ -1477,38 +1479,136 @@ function EventListViewInner({
     return map;
   }, [sortedEvents]);
 
-  // Collapse expanded events that don't belong to the newly selected group
-  useEffect(() => {
-    if (selectedGroupKey === undefined) return;
-    setExpandedEventIds((prev) => {
-      if (prev.size === 0) return prev;
-      let changed = false;
-      const next = new Set<string>();
-      for (const eventId of prev) {
-        if (eventGroupKeyMap.get(eventId) === selectedGroupKey) {
-          next.add(eventId);
-        } else {
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [selectedGroupKey, eventGroupKeyMap]);
+  const selectedEventIndex = selectedEventId
+    ? eventIds.indexOf(selectedEventId)
+    : -1;
+  const selectedEvent =
+    selectedEventIndex === -1 ? null : sortedEvents[selectedEventIndex];
+  const selectedDurationKey = selectedEvent
+    ? (selectedEvent.correlationId ??
+      (isRunLevel(selectedEvent.eventType) ? '__run__' : ''))
+    : '';
+  const selectedDurationInfo = selectedDurationKey
+    ? durationMap.get(selectedDurationKey)
+    : undefined;
+  const previousEventId =
+    selectedEventIndex > 0 ? eventIds[selectedEventIndex - 1] : null;
+  const nextEventId =
+    selectedEventIndex >= 0 ? (eventIds[selectedEventIndex + 1] ?? null) : null;
 
-  // Compute the row-index range for the active group's connecting lane line.
-  // Only applies to non-run groups (step/hook/wait correlations).
-  const selectedGroupRange = useMemo(() => {
-    if (!activeGroupKey || activeGroupKey === '__run__') return null;
-    let first = -1;
-    let last = -1;
-    for (let i = 0; i < sortedEvents.length; i++) {
-      if (sortedEvents[i].correlationId === activeGroupKey) {
-        if (first === -1) first = i;
-        last = i;
-      }
+  const showEventDetails = useCallback(
+    (eventId: string) => {
+      if (!eventIds.includes(eventId)) return;
+      setSelectedEventId(eventId);
+      setSelectedGroupKey(eventGroupKeyMap.get(eventId));
+    },
+    [eventGroupKeyMap, eventIds]
+  );
+
+  const closeEventDetails = useCallback(() => {
+    const eventId = selectedEventId;
+    setSelectedEventId(null);
+    setSelectedGroupKey(undefined);
+    if (eventId) {
+      requestAnimationFrame(() => navigateToEvent(eventId));
     }
-    return first >= 0 ? { first, last } : null;
-  }, [activeGroupKey, sortedEvents]);
+  }, [navigateToEvent, selectedEventId]);
+
+  useEffect(() => {
+    if (selectedEventId && !eventIds.includes(selectedEventId)) {
+      closeEventDetails();
+    }
+  }, [closeEventDetails, eventIds, selectedEventId]);
+
+  const handleSelectEvent = useCallback(
+    (eventId: string) => {
+      setActiveEventId(eventId);
+      if (selectedEventId === eventId) {
+        closeEventDetails();
+      } else {
+        showEventDetails(eventId);
+      }
+    },
+    [closeEventDetails, selectedEventId, showEventDetails]
+  );
+
+  const navigateToEventDetails = useCallback(
+    (eventId: string) => {
+      showEventDetails(eventId);
+      navigateToEvent(eventId);
+    },
+    [navigateToEvent, showEventDetails]
+  );
+
+  useEffect(() => {
+    if (!activeEventId) return;
+
+    const activeIndex = eventIds.indexOf(activeEventId);
+    if (activeIndex === -1) return;
+
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (
+        (event.key !== 'j' &&
+          event.key !== 'k' &&
+          event.key !== 'ArrowDown' &&
+          event.key !== 'ArrowUp') ||
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey
+      ) {
+        return;
+      }
+
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const isEventRow = target.hasAttribute('data-event-row-id');
+      const isEventPanel = Boolean(target.closest(`#${EVENT_DETAIL_PANEL_ID}`));
+      if (!isEventRow && !isEventPanel) return;
+
+      const offset = event.key === 'k' || event.key === 'ArrowUp' ? -1 : 1;
+      const currentIndex = isEventPanel ? selectedEventIndex : activeIndex;
+      const targetId = eventIds[currentIndex + offset];
+      if (!targetId) return;
+
+      event.preventDefault();
+      if (isEventPanel || selectedEventId) {
+        navigateToEventDetails(targetId);
+      } else {
+        navigateToEvent(targetId);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    activeEventId,
+    eventIds,
+    navigateToEvent,
+    navigateToEventDetails,
+    selectedEventIndex,
+    selectedEventId,
+  ]);
+
+  useEffect(() => {
+    if (!selectedEventId) return;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const target = event.target;
+      if (
+        event.key !== 'Escape' ||
+        event.defaultPrevented ||
+        !(target instanceof Node) ||
+        !eventListRootRef.current?.contains(target)
+      ) {
+        return;
+      }
+      closeEventDetails();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [closeEventDetails, selectedEventId]);
 
   useEffect(() => {
     const trimmed = searchQuery.trim();
@@ -1519,7 +1619,7 @@ function EventListViewInner({
       setSearchError(null);
       setSearchLoading(false);
       setSearchNotFound(false);
-      setSelectedGroupKey(undefined);
+      if (!selectedEventIdRef.current) setSelectedGroupKey(undefined);
       return;
     }
 
@@ -1625,6 +1725,13 @@ function EventListViewInner({
 
   const handleSearchKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (event.key === 'Escape' && searchQuery) {
+        event.preventDefault();
+        event.stopPropagation();
+        setSearchQuery('');
+        return;
+      }
+
       if (event.key !== 'Enter') {
         return;
       }
@@ -1655,32 +1762,32 @@ function EventListViewInner({
 
   if (isInitialLoad) {
     return (
-      <div className="h-full flex flex-col overflow-hidden">
+      <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-background-100">
         {/* Skeleton search bar */}
-        <div style={{ padding: 6 }}>
-          <Skeleton style={{ height: 40, borderRadius: 6 }} />
+        <div className="flex h-10 min-h-10 shrink-0 items-center gap-1.5 border-b border-gray-alpha-400 bg-background-100">
+          <div className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-4 pr-2">
+            <Skeleton className="h-3.5 w-3.5 shrink-0 rounded-sm" />
+            <Skeleton className="h-3.5 w-64 max-w-[60%]" />
+          </div>
+          <Skeleton className="h-10 w-24 shrink-0 rounded-md" />
         </div>
         {/* Skeleton header */}
-        <div
-          className="flex items-center gap-0 h-10 border-b flex-shrink-0"
-          style={{ borderColor: 'var(--ds-gray-alpha-200)' }}
-        >
-          <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
-          <div className="w-5 flex-shrink-0" />
-          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            <Skeleton className="h-3" style={{ width: 40 }} />
+        <div className="flex h-10 flex-shrink-0 items-center gap-0 border-b border-gray-alpha-400">
+          <div className="w-4 shrink-0" />
+          <div className="min-w-0 flex-[2_1_0%] px-4">
+            <Skeleton className="h-3 w-10" />
           </div>
-          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            <Skeleton className="h-3" style={{ width: 72 }} />
+          <div className="min-w-0 flex-[2_1_0%] px-4">
+            <Skeleton className="h-3 w-18" />
           </div>
-          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            <Skeleton className="h-3" style={{ width: 44 }} />
+          <div className="min-w-0 flex-[2_1_0%] px-4">
+            <Skeleton className="h-3 w-11" />
           </div>
-          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
-            <Skeleton className="h-3" style={{ width: 92 }} />
+          <div className="min-w-0 flex-[3_1_0%] px-4">
+            <Skeleton className="h-3 w-23" />
           </div>
-          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
-            <Skeleton className="h-3" style={{ width: 60 }} />
+          <div className="min-w-0 flex-[3_1_0%] px-4">
+            <Skeleton className="h-3 w-15" />
           </div>
         </div>
         <RowsSkeleton />
@@ -1701,251 +1808,199 @@ function EventListViewInner({
           : undefined
       }
     >
-      <div className="h-full flex flex-col overflow-hidden">
-        <style>{`@keyframes workflow-dot-pulse{0%{transform:scale(1);opacity:.7}70%,100%{transform:scale(2.2);opacity:0}}`}</style>
-        {/* Search bar + sort */}
+      <div
+        ref={eventListRootRef}
+        onBlurCapture={() => {
+          navigationRequestRef.current += 1;
+        }}
+        className="relative flex h-full min-h-0 w-full overflow-hidden bg-background-100"
+      >
         <div
-          style={{
-            padding: 6,
-            backgroundColor: 'var(--ds-background-100)',
-            display: 'flex',
-            gap: 6,
-          }}
+          className="flex min-w-0 flex-1 flex-col overflow-hidden"
+          inert={selectedEvent && isNarrowPanel ? true : undefined}
         >
-          <label
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              borderRadius: 6,
-              boxShadow: '0 0 0 1px var(--ds-gray-alpha-400)',
-              background: 'var(--ds-background-100)',
-              height: 40,
-              flex: 1,
-              minWidth: 0,
-            }}
-          >
-            <div
-              style={{
-                width: 40,
-                height: 40,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--ds-gray-800)',
-                flexShrink: 0,
-              }}
-            >
-              <svg
-                width={16}
-                height={16}
-                viewBox="0 0 16 16"
-                fill="none"
-                aria-hidden="true"
-                focusable="false"
-              >
-                <circle
-                  cx="7"
-                  cy="7"
-                  r="4.5"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                />
-                <path
-                  d="M11.5 11.5L14 14"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                />
-              </svg>
+          {/* Search bar + sort */}
+          <div className="flex h-10 min-h-10 shrink-0 items-center gap-1.5 border-b border-gray-alpha-400 bg-background-100">
+            <div className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-4 pr-2">
+              <Search className="h-3.5 w-3.5 shrink-0 text-gray-800" />
+              <input
+                id="event-list-search"
+                name="event-list-search"
+                type="text"
+                placeholder="Search events..."
+                aria-label="Search events"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={handleSearchKeyDown}
+                disabled={!onExactIdSearch}
+                className="min-w-0 flex-1 bg-transparent text-label-14 text-gray-1000 outline-none placeholder:text-gray-800 disabled:cursor-not-allowed disabled:text-gray-900 disabled:placeholder:text-gray-900"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  aria-label="Clear search"
+                  onClick={() => setSearchQuery('')}
+                  className="-mr-2 hidden h-full max-w-full shrink-0 cursor-pointer items-center rounded-r-md border-0 bg-transparent px-2.5 font-[inherit] text-label-16 text-gray-900 no-underline transition-colors duration-150 ease-in hover:text-gray-1000 focus-visible:-outline-offset-1 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--ds-focus-color)] min-[961px]:flex"
+                >
+                  <Kbd variant="outline" size="search">
+                    Esc
+                  </Kbd>
+                </button>
+              )}
             </div>
-            <input
-              type="search"
-              placeholder="Search by step ID, wait ID, hook ID, or event ID…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={handleSearchKeyDown}
-              disabled={!onExactIdSearch}
-              title={
-                onExactIdSearch
-                  ? undefined
-                  : 'Exact ID search is unavailable in this view.'
-              }
-              style={{
-                marginLeft: -16,
-                paddingInline: 12,
-                fontFamily: 'inherit',
-                fontSize: 14,
-                background: 'transparent',
-                border: 'none',
-                outline: 'none',
-                height: 40,
-                width: '100%',
-                opacity: onExactIdSearch ? 1 : 0.5,
-                cursor: onExactIdSearch ? 'text' : 'not-allowed',
-              }}
+            <MenuDropdown
+              options={SORT_OPTIONS}
+              value={effectiveSortOrder}
+              onChange={handleSortOrderChange}
             />
-          </label>
-          <MenuDropdown
-            options={SORT_OPTIONS}
-            value={effectiveSortOrder}
-            onChange={handleSortOrderChange}
-          />
-          {(hasEncryptedData || encryptionKey) && onDecrypt && (
-            <DecryptButton
-              decrypted={!!encryptionKey}
-              loading={isDecrypting}
-              disabled={isDecryptDisabled}
-              disabledReason={decryptDisabledReason}
-              onClick={onDecrypt}
+            {(hasEncryptedData || encryptionKey) && onDecrypt && (
+              <DecryptButton
+                decrypted={!!encryptionKey}
+                loading={isDecrypting}
+                disabled={isDecryptDisabled}
+                disabledReason={decryptDisabledReason}
+                onClick={onDecrypt}
+              />
+            )}
+          </div>
+
+          {/* Header */}
+          <div className="flex h-10 flex-shrink-0 items-center gap-0 border-b border-gray-alpha-400 bg-background-100 text-label-13 text-gray-900">
+            <div className="w-4 shrink-0" />
+            {showSeparateEventOccurrenceTimestamps && (
+              <div className="min-w-0 flex-[2_1_0%] px-4">Occurred</div>
+            )}
+            <div className="min-w-0 flex-[2_1_0%] px-4">Created</div>
+            <div className="min-w-0 flex-[2_1_0%] px-4">Event Type</div>
+            <div className="min-w-0 flex-[2_1_0%] px-4">Name</div>
+            <div className="min-w-0 flex-[3_1_0%] px-4">Correlation ID</div>
+            <div className="min-w-0 flex-[3_1_0%] px-4">Event ID</div>
+          </div>
+
+          {/* Virtualized event rows or refetching skeleton */}
+          {isRefetching || searchLoading ? (
+            <RowsSkeleton
+              showSeparateEventOccurrenceTimestamps={
+                showSeparateEventOccurrenceTimestamps
+              }
+            />
+          ) : sortedEvents.length === 0 ? (
+            <div className="flex flex-1 items-center justify-center px-6 text-center text-copy-14 text-gray-700">
+              {searchNotFound && searchQuery.trim()
+                ? `No events found for ${searchQuery.trim()}`
+                : searchError
+                  ? searchError
+                  : parsedSearchId && searchQuery.trim() && !onExactIdSearch
+                    ? 'Exact ID search is unavailable in this view.'
+                    : 'No events found'}
+            </div>
+          ) : (
+            <Virtuoso
+              ref={virtuosoRef}
+              totalCount={sortedEvents.length}
+              computeItemKey={(index) => sortedEvents[index].eventId}
+              overscan={20}
+              defaultItemHeight={30}
+              endReached={() => {
+                if (
+                  isExactSearchActive ||
+                  !hasMoreEvents ||
+                  isLoadingMoreEvents
+                ) {
+                  return;
+                }
+                void onLoadMoreEvents?.();
+              }}
+              itemContent={(index: number) => {
+                const ev = sortedEvents[index];
+                return (
+                  <EventRow
+                    event={ev}
+                    isSelected={selectedEventId === ev.eventId}
+                    activeGroupKey={activeGroupKey}
+                    correlationNameMap={correlationNameMap}
+                    workflowName={workflowName}
+                    onSelectEvent={handleSelectEvent}
+                    onHoverGroup={onHoverGroup}
+                    onFocusEvent={setActiveEventId}
+                    previousDeltaMs={
+                      eventMetadataMap.get(ev.eventId)?.previousDeltaMs
+                    }
+                    suppressGroupDimming={isExactSearchActive}
+                    isDuplicate={duplicateEventIds.has(ev.eventId)}
+                    showSeparateEventOccurrenceTimestamps={
+                      showSeparateEventOccurrenceTimestamps
+                    }
+                  />
+                );
+              }}
+              className="min-h-0 flex-1"
             />
           )}
-        </div>
 
-        {/* Header */}
-        <div
-          className="flex items-center gap-0 text-label-13 font-medium h-10 border-b flex-shrink-0"
-          style={{
-            borderColor: 'var(--ds-gray-alpha-200)',
-            color: 'var(--ds-gray-900)',
-            backgroundColor: 'var(--ds-background-100)',
-          }}
-        >
-          <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
-          <div className="w-5 flex-shrink-0" />
-          {showSeparateEventOccurrenceTimestamps && (
-            <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-              Occurred
-            </div>
-          )}
-          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            Created
-          </div>
-          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            Event Type
-          </div>
-          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            Name
-          </div>
-          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
-            Correlation ID
-          </div>
-          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
-            Event ID
-          </div>
-        </div>
-
-        {/* Virtualized event rows or refetching skeleton */}
-        {isRefetching || searchLoading ? (
-          <RowsSkeleton
-            showSeparateEventOccurrenceTimestamps={
-              showSeparateEventOccurrenceTimestamps
-            }
-          />
-        ) : sortedEvents.length === 0 ? (
-          <div
-            className="flex flex-1 items-center justify-center px-6 text-center text-copy-14"
-            style={{ color: 'var(--ds-gray-700)' }}
-          >
-            {searchNotFound && searchQuery.trim()
-              ? `No events found for ${searchQuery.trim()}`
-              : searchError
+          {/* Fixed footer: count + load more */}
+          <div className="relative flex h-10 flex-shrink-0 items-center border-t border-gray-alpha-400 bg-background-100 px-4 text-label-12 text-gray-900">
+            <span>
+              {isExactSearchActive
                 ? searchError
-                : parsedSearchId && searchQuery.trim() && !onExactIdSearch
-                  ? 'Exact ID search is unavailable in this view.'
-                  : 'No events found'}
-          </div>
-        ) : (
-          <Virtuoso
-            ref={virtuosoRef}
-            totalCount={sortedEvents.length}
-            overscan={20}
-            defaultItemHeight={40}
-            endReached={() => {
-              if (
-                isExactSearchActive ||
-                !hasMoreEvents ||
-                isLoadingMoreEvents
-              ) {
-                return;
-              }
-              void onLoadMoreEvents?.();
-            }}
-            itemContent={(index: number) => {
-              const ev = sortedEvents[index];
-              return (
-                <EventRow
-                  event={ev}
-                  index={index}
-                  isFirst={index === 0}
-                  isLast={index === sortedEvents.length - 1}
-                  isExpanded={expandedEventIds.has(ev.eventId)}
-                  onToggleExpand={toggleEventExpanded}
-                  activeGroupKey={activeGroupKey}
-                  selectedGroupKey={selectedGroupKey}
-                  selectedGroupRange={selectedGroupRange}
-                  correlationNameMap={correlationNameMap}
-                  workflowName={workflowName}
-                  durationMap={durationMap}
-                  onSelectGroup={onSelectGroup}
-                  onHoverGroup={onHoverGroup}
-                  onLoadEventData={onLoadEventData}
-                  cachedEventData={
-                    eventDataCacheRef.current.get(ev.eventId) ?? null
-                  }
-                  onCacheEventData={cacheEventData}
-                  encryptionKey={encryptionKey}
-                  onEncryptedDataDetected={handleEncryptedDataDetected}
-                  suppressGroupDimming={isExactSearchActive}
-                  isDuplicate={duplicateEventIds.has(ev.eventId)}
-                  showSeparateEventOccurrenceTimestamps={
-                    showSeparateEventOccurrenceTimestamps
-                  }
-                />
-              );
-            }}
-            style={{ flex: 1, minHeight: 0 }}
-          />
-        )}
-
-        {/* Fixed footer: count + load more */}
-        <div
-          className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-label-12"
-          style={{
-            borderColor: 'var(--ds-gray-alpha-200)',
-            color: 'var(--ds-gray-900)',
-            backgroundColor: 'var(--ds-background-100)',
-          }}
-        >
-          <span>
-            {isExactSearchActive
-              ? searchError
-                ? searchError
-                : searchNotFound
-                  ? `No events found for ${searchQuery.trim()}`
-                  : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} for ${searchQuery.trim()}${searchResultsTruncated ? ' (results may be truncated)' : ''}`
-              : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} loaded`}
-          </span>
-          {!isExactSearchActive && hasMoreEvents && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="pointer-events-auto">
-                <LoadMoreButton
-                  loading={isLoadingMoreEvents}
-                  onClick={() => void onLoadMoreEvents?.()}
-                />
+                  ? searchError
+                  : searchNotFound
+                    ? `No events found for ${searchQuery.trim()}`
+                    : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} for ${searchQuery.trim()}${searchResultsTruncated ? ' (results may be truncated)' : ''}`
+                : `${sortedEvents.length} event${sortedEvents.length !== 1 ? 's' : ''} loaded`}
+            </span>
+            {!isExactSearchActive && hasMoreEvents && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                <div className="pointer-events-auto">
+                  <LoadMoreButton
+                    loading={isLoadingMoreEvents}
+                    onClick={() => void onLoadMoreEvents?.()}
+                  />
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
+
+        {selectedEvent ? (
+          <EventDetailPanel
+            key={selectedEvent.eventId}
+            containerWidth={eventListWidth}
+            isNarrowPanel={isNarrowPanel}
+            event={selectedEvent}
+            metadataInfo={eventMetadataMap.get(selectedEvent.eventId)}
+            durationInfo={selectedDurationInfo}
+            onLoadEventData={onLoadEventData ? loadEventData : undefined}
+            cachedEventData={
+              eventDataCacheRef.current.get(
+                getEventDataCacheKey(selectedEvent, encryptionKey)
+              ) ?? null
+            }
+            onCacheEventData={cacheEventData}
+            encryptionKey={encryptionKey}
+            onEncryptedDataDetected={handleEncryptedDataDetected}
+            onNavigatePrevious={() => {
+              if (previousEventId) navigateToEventDetails(previousEventId);
+            }}
+            onNavigateNext={() => {
+              if (nextEventId) navigateToEventDetails(nextEventId);
+            }}
+            hasPrevious={previousEventId !== null}
+            hasNext={nextEventId !== null}
+            onClose={closeEventDetails}
+            onViewInTrace={onViewInTrace}
+          />
+        ) : null}
       </div>
     </DecryptClickContext.Provider>
   );
 }
 
 export function EventListView(props: EventsListProps) {
+  const runId = props.run?.runId ?? props.events?.[0]?.runId ?? 'events';
   return (
     <ContextCardProvider>
-      <EventListViewInner {...props} />
+      <EventListViewInner key={runId} {...props} />
     </ContextCardProvider>
   );
 }
