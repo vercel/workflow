@@ -7,6 +7,7 @@ import type {
   World,
 } from '@workflow/world';
 import {
+  HOOK_FORCE_CLAIM_READER_VERSION,
   HOOK_RESUME_INPUT_VERSION,
   isLegacySpecVersion,
   PARENT_RUN_ID_ATTRIBUTE,
@@ -397,6 +398,12 @@ export async function start<TArgs extends unknown[], TResult>(
       // consume the queue message. `undefined` means "could not attest" and
       // fails that gate closed.
       let targetHookResumeInputVersion: number | undefined;
+      // The consumer's involuntary-hook-disposal reader version: whether the
+      // runtime that will execute this run understands a hook of its being
+      // force-claimed by another run. Stamped onto the run so a World can
+      // refuse to take a token from a run that would not. `undefined` means
+      // "could not attest" and fails that gate closed (not force-claimable).
+      let targetHookForceClaimReaderVersion: number | undefined;
       // Public key of the target run, when the capability probe was able to
       // supply one (cross-deployment only).
       let probedRunPublicKey: string | undefined;
@@ -406,6 +413,7 @@ export async function start<TArgs extends unknown[], TResult>(
         // Same deployment: this process is the consumer, so its own constant
         // is authoritative.
         targetHookResumeInputVersion = HOOK_RESUME_INPUT_VERSION;
+        targetHookForceClaimReaderVersion = HOOK_FORCE_CLAIM_READER_VERSION;
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
         targetSupportsCompression = false;
@@ -413,6 +421,7 @@ export async function start<TArgs extends unknown[], TResult>(
         // honors `hookInput`; leave the marker off (older producers fail
         // closed to their sequential path).
         targetHookResumeInputVersion = undefined;
+        targetHookForceClaimReaderVersion = undefined;
       } else {
         // Ask for this run's public key while we're here. The probe already
         // blocks `start()` on every cross-deployment call, and the responder
@@ -437,6 +446,7 @@ export async function start<TArgs extends unknown[], TResult>(
         // `hookResumeInputVersion` reflects the consumer. Undefined on an
         // older target or a probe timeout, leaving the marker off.
         targetHookResumeInputVersion = probe?.hookResumeInputVersion;
+        targetHookForceClaimReaderVersion = probe?.hookForceClaimReaderVersion;
       }
 
       const ops: Promise<void>[] = [];
@@ -653,6 +663,12 @@ export async function start<TArgs extends unknown[], TResult>(
         // which fails the resume gate closed to the sequential path.
         ...(targetHookResumeInputVersion !== undefined
           ? { hookResumeInputVersion: targetHookResumeInputVersion }
+          : {}),
+        // Same shape and reasoning: the EXECUTOR's reader contract for a
+        // force-claimed hook, so a World never takes a token from a run whose
+        // runtime would not notice. See HOOK_FORCE_CLAIM_READER_VERSION.
+        ...(targetHookForceClaimReaderVersion !== undefined
+          ? { hookForceClaimReaderVersion: targetHookForceClaimReaderVersion }
           : {}),
         ...(workflowVm ? { workflowVm } : {}),
         ...(opts.replayedFromRunId

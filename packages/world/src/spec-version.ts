@@ -74,29 +74,8 @@ export const SPEC_VERSION_SUPPORTS_SLOT_IDENTITY = 6 as SpecVersion;
 export const SPEC_VERSION_SUPPORTS_SEALED_LOG = 7 as SpecVersion;
 
 /**
- * Runs at this spec version or later understand an INVOLUNTARY hook disposal:
- * a `hook_disposed` carrying `forceClaimedBy`, written into the run's log by
- * another run's `createHook({ experimental_force: true })`. A reader at this
- * version rejects the hook's awaiters with `HookForceClaimedError` and settles
- * `getConflict()`; a reader below it treats the row as its own `dispose()`
- * and leaves every `await hook` pending forever — the run is not corrupted,
- * but it is silently stranded. Like the sealed log, this is a READER contract,
- * and the version is what lets a World tell the two readers apart: a World
- * only takes a token from a running victim stamped at or above this version,
- * and answers the forced creation with an ordinary `hook_conflict`
- * (`forceRefusedReason: 'victim-spec-version'`) otherwise. A finished victim
- * has no reader to strand, so a retained token is taken over at any version.
- *
- * The Python SDK stamps its own spec versions below this one, so a Python
- * run's token can never be taken over — its runtime knows nothing of
- * `forceClaimedBy` either.
- */
-export const SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM = 8 as SpecVersion;
-
-/**
  * Current spec version: event-sourced architecture with native attributes,
- * compressed payloads, slot-numbered event ids, sealed-log sequencing, and
- * involuntary hook disposal.
+ * compressed payloads, slot-numbered event ids, and sealed-log sequencing.
  *
  * This is both the version a World stamps on the runs it creates and the
  * *lowest* one this runtime accepts from a World (see
@@ -120,7 +99,7 @@ export const SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM = 8 as SpecVersion;
  * run's identity scheme from what is stored rather than from this constant.
  */
 export const SPEC_VERSION_CURRENT =
-  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM as SpecVersion;
+  SPEC_VERSION_SUPPORTS_SEALED_LOG as SpecVersion;
 
 /**
  * Environment variable that opts new runs OUT of the sealed log.
@@ -131,12 +110,9 @@ export const SPEC_VERSION_CURRENT =
 export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
 
 /**
- * The spec version a World should stamp on the runs it creates: the current
- * version (sealed log plus involuntary hook disposal) unless
- * {@link SEALED_LOG_ENV_VAR} switches the sealed log off, in which case the
- * slot-identity version it supersedes. Versions are linear, so switching the
- * sealed log off also drops below {@link SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM}:
- * runs minted that way can force-claim, but cannot be force-claimed from.
+ * The spec version a World should stamp on the runs it creates: the sealed log
+ * unless {@link SEALED_LOG_ENV_VAR} switches it off, in which case the
+ * slot-identity version it supersedes.
  *
  * Same shape, and the same reasoning, as the flag slot identity itself shipped
  * behind before going unconditional: default on, with one env var to put a
@@ -178,15 +154,17 @@ export function mintedSpecVersion(
 /**
  * The highest spec version this SDK can read.
  *
- * Kept distinct from `SPEC_VERSION_CURRENT` even when they coincide. They
- * answer different questions, "what do we write?" versus "what can we still
- * read?", and they come apart in exactly the release order a spec bump
- * follows: a reader that can already handle the next version raises this
+ * Kept distinct from `SPEC_VERSION_CURRENT`, and right now they genuinely
+ * differ. They answer different questions, "what do we write?" versus "what
+ * can we still read?", and they come apart in exactly the release order a spec
+ * bump follows: a reader that can already handle the next version raises this
  * ceiling first, and stamping follows only once the version is safe to mint
- * everywhere.
+ * everywhere. Sealed-log support is at that first stage. Every build reads
+ * spec 7 and skips `noop`, while {@link mintedSpecVersion} still has to be
+ * turned on before anything creates a spec-7 run.
  */
 export const SPEC_VERSION_MAX_SUPPORTED =
-  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM as SpecVersion;
+  SPEC_VERSION_SUPPORTS_SEALED_LOG as SpecVersion;
 
 /**
  * Check if a spec version is legacy (<= SPEC_VERSION_LEGACY or undefined).

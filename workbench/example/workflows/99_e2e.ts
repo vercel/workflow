@@ -15,7 +15,7 @@ import {
   sleep,
 } from 'workflow';
 import { getHookByToken, getRun, Run, resumeHook, start } from 'workflow/api';
-import { HookConflictError, HookForceClaimedError } from 'workflow/errors';
+import { HookForceClaimedError } from 'workflow/errors';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -1091,33 +1091,6 @@ export async function hookForceClaimOwnHookWorkflow(token: string) {
   const firstResult = await firstOutcome;
   first.dispose();
   return { first: firstResult, second: payload.message };
-}
-
-/**
- * Forces `token` but treats a refusal as the ordinary conflict it is: the
- * World declines to take a token from a run whose runtime could not read the
- * disposal (started below `SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM`), and the
- * forced hook then rejects with `HookConflictError` naming that run.
- */
-export async function hookForceClaimTolerantClaimerWorkflow(token: string) {
-  'use workflow';
-
-  using hook = createHook<{ message: string }>({
-    token,
-    experimental_force: true,
-  });
-  try {
-    const payload = await hook;
-    return { role: 'claimer' as const, received: payload.message };
-  } catch (err) {
-    if (HookConflictError.is(err)) {
-      return {
-        role: 'refused' as const,
-        conflictingRunId: err.conflictingRunId ?? null,
-      };
-    }
-    throw err;
-  }
 }
 
 //////////////////////////////////////////////////////////

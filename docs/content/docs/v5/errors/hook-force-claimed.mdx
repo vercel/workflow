@@ -74,7 +74,7 @@ Any number of runs can force the same token at once without leaving the token or
 
 ## Runs that cannot be taken from
 
-A run that was started at a Workflow spec version below 8 (an older SDK release, a Python SDK run, or a deployment with `WORKFLOW_SEALED_LOG=0`) would never learn that its hook was disposed. The World declines to take its token: the forced hook rejects with the ordinary [`HookConflictError`](/docs/errors/hook-conflict), whose `conflictingRunId` names that run, and the run keeps receiving its payloads. Handle it like any other conflict, for example by [delegating to the active run](/docs/errors/hook-conflict#delegate-to-the-active-run). A finished run holding a retained token is taken over at any version.
+A run whose runtime would never learn that its hook was disposed cannot be taken from. Whether it would is recorded on the run when it starts, by the deployment that executes it; a run started by an older SDK release or by the Python SDK carries no such record. The World declines to take its token: the forced hook rejects with the ordinary [`HookConflictError`](/docs/errors/hook-conflict), whose `conflictingRunId` names that run, and the run keeps receiving its payloads. Handle it like any other conflict, for example by [delegating to the active run](/docs/errors/hook-conflict#delegate-to-the-active-run). A finished run holding a retained token is always taken over.
 
 ## Deciding who takes over
 

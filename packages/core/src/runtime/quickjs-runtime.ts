@@ -2436,7 +2436,8 @@ async function processEvents(
           | string
           | undefined;
         // A World that declined a forced creation ON PURPOSE (the run holding
-        // the token predates involuntary disposal) marks the conflict; that
+        // the token never attested that it reads an involuntary disposal)
+        // marks the conflict; that
         // is the ordinary, catchable conflict. Unmarked, a conflict on a
         // forced hook means the World does not implement forcing at all.
         // Mirrors hook.ts.

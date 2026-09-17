@@ -18,6 +18,7 @@ import {
   FIRST_EVENT_SLOT,
   getQueueTopicPrefix,
   HealthCheckPayloadSchema,
+  HOOK_FORCE_CLAIM_READER_VERSION,
   HOOK_RESUME_INPUT_VERSION,
   ROOT_RUN_ID_ATTRIBUTE,
   requireEventSlot,
@@ -119,6 +120,16 @@ export interface HealthCheckResult {
    * which fails that gate closed.
    */
   hookResumeInputVersion?: number;
+  /**
+   * The responding deployment's `HOOK_FORCE_CLAIM_READER_VERSION`: whether the
+   * runtime that will execute runs on that deployment understands an
+   * involuntary hook disposal. A cross-deployment `start()` stamps the
+   * *target's* value into the new run's
+   * `executionContext.hookForceClaimReaderVersion`; a World takes a hook token
+   * from a running victim only when its run carries it. Omitted on an older
+   * target, which fails that gate closed: the run cannot be taken from.
+   */
+  hookForceClaimReaderVersion?: number;
 }
 
 /**
@@ -197,6 +208,8 @@ export async function handleHealthCheckMessage(
     // the *consumer's* hook-resume protocol version, exactly what a
     // cross-deployment caller needs to gate its parallel resume path on.
     hookResumeInputVersion: HOOK_RESUME_INPUT_VERSION,
+    // Likewise the executor's reader contract for a force-claimed hook.
+    hookForceClaimReaderVersion: HOOK_FORCE_CLAIM_READER_VERSION,
     ...(encryptionPublicKey ? { encryptionPublicKey } : {}),
     timestamp: Date.now(),
   });
@@ -350,6 +363,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
     workflowCoreVersion?: string;
     encryptionPublicKey?: string;
     hookResumeInputVersion?: number;
+    hookForceClaimReaderVersion?: number;
   } = {
     healthy: r.healthy as boolean,
   };
@@ -364,6 +378,9 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   }
   if (typeof r.hookResumeInputVersion === 'number') {
     parsed.hookResumeInputVersion = r.hookResumeInputVersion;
+  }
+  if (typeof r.hookForceClaimReaderVersion === 'number') {
+    parsed.hookForceClaimReaderVersion = r.hookForceClaimReaderVersion;
   }
   return parsed;
 }

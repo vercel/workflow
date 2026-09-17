@@ -464,15 +464,16 @@ const HookConflictEventSchema = z.compile(
       conflictingRunId: z.string().optional(),
       /**
        * Set when the creation asked for `force` and the World declined to take
-       * the token over. `victim-spec-version`: the run holding the token was
-       * started at a spec version below
-       * `SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM`, so its runtime would not
-       * understand the involuntary disposal — the forced hook gets the
+       * the token over. `victim-runtime`: the run holding the token did not
+       * attest `executionContext.hookForceClaimReaderVersion` at start (an
+       * older SDK, a Python runtime, an unanswered cross-deployment probe), so
+       * its runtime would not understand the involuntary disposal — the forced
+       * hook gets the
        * ordinary `HookConflictError` it opted out of instead of stranding
        * that run. Absent on a conflict answered by a World that does not
        * implement forcing at all.
        */
-      forceRefusedReason: z.literal('victim-spec-version').optional(),
+      forceRefusedReason: z.literal('victim-runtime').optional(),
     }),
   })
 );

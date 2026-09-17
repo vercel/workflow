@@ -189,7 +189,8 @@ export interface HookOptions {
    * earlier hook.
    *
    * A token is only taken from a run whose runtime understands being taken
-   * from (started at spec version 8 or later). For an older run the World
+   * from, which the deployment executing it attests when the run starts.
+   * For any other run (an older SDK release, a Python SDK run) the World
    * declines and the hook rejects with the ordinary `HookConflictError`,
    * as if this option had not been set.
    *
