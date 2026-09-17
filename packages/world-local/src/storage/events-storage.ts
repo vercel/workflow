@@ -2393,18 +2393,22 @@ export function createEventsStorage(
                   WorkflowRunSchema,
                   tag
                 );
+                const victimRunning =
+                  victimRun !== null &&
+                  !isTerminalWorkflowRunStatus(victimRun.status);
+                // Wake-targeting fields only for a victim that is still
+                // running: a finished one has no row to read and nothing to
+                // wake, and an invoke of a completed run can race its own
+                // terminal write. Without them the runtime skips the wake.
                 claimedFrom = {
                   runId: existingClaim.runId,
                   hookId: existingClaim.hookId,
-                  ...(victimRun && {
+                  ...(victimRunning && {
                     workflowName: victimRun.workflowName,
                     deploymentId: victimRun.deploymentId,
                     runSpecVersion: victimRun.specVersion,
                   }),
                 };
-                const victimRunning =
-                  victimRun !== null &&
-                  !isTerminalWorkflowRunStatus(victimRun.status);
                 // A running victim must be able to READ the disposal about to
                 // land in its log. A runtime below
                 // SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM takes

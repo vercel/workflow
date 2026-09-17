@@ -2226,10 +2226,17 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   .where(eq(Schema.runs.runId, victim.runId))
                   .for('update')
                   .limit(1);
+                const victimRunning =
+                  victimRun !== undefined &&
+                  !isTerminalWorkflowRunStatus(victimRun.status);
+                // Wake-targeting fields only for a victim that is still
+                // running: a finished one has no row to read and nothing to
+                // wake, and an invoke of a completed run can race its own
+                // terminal write. Without them the runtime skips the wake.
                 const claimedFrom: NonNullable<Hook['claimedFrom']> = {
                   runId: victim.runId,
                   hookId: victim.hookId,
-                  ...(victimRun && {
+                  ...(victimRunning && {
                     workflowName: victimRun.workflowName,
                     deploymentId: victimRun.deploymentId,
                     ...(victimRun.specVersion !== null && {
@@ -2237,9 +2244,6 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                     }),
                   }),
                 };
-                const victimRunning =
-                  victimRun !== undefined &&
-                  !isTerminalWorkflowRunStatus(victimRun.status);
                 // A running victim must be able to READ the disposal about to
                 // land in its log. A runtime below
                 // SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM takes

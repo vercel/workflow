@@ -2923,6 +2923,9 @@ describe.concurrent('e2e', () => {
           timeoutMs: 60_000,
         });
         expect(claimerHook.claimedFrom?.runId).toBe(victim.runId);
+        // A finished victim gets no wake target: nothing for it to read, and
+        // an invoke of a completed run would only race its own terminal write.
+        expect(claimerHook.claimedFrom?.workflowName).toBeUndefined();
         await resumeHook(token, { message: 'after' });
         expect(await claimer.returnValue).toMatchObject({ received: 'after' });
         // Nothing was appended to a finished run's log.
