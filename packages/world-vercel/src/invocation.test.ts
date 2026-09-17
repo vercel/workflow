@@ -148,6 +148,34 @@ afterEach(() => {
 });
 
 describe('direct Vercel invocation', () => {
+  it('preserves diagnostic response headers for an unavailable invocation response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('Not found', {
+          status: 404,
+          headers: {
+            'x-vercel-id': 'staging-iad1::request',
+            'x-vercel-error': 'NOT_FOUND',
+            'content-type': 'text/plain',
+          },
+        })
+      )
+    );
+    await expect(
+      createInvoker(config)!(runId, payload, {
+        idempotencyKey: 'diagnostic-request',
+      })
+    ).rejects.toMatchObject({
+      status: 404,
+      code: 'INVOCATION_OUTCOME_UNKNOWN',
+      responseStatus: 404,
+      responseRequestId: 'staging-iad1::request',
+      responseErrorCode: 'NOT_FOUND',
+      responseContentType: 'text/plain',
+      responseProtocolVersion: null,
+    });
+  });
   it('returns a typed admission conflict while the original input is still processing', async () => {
     const commit = Promise.withResolvers<void>();
     const entered = Promise.withResolvers<void>();

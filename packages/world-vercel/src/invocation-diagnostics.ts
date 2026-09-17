@@ -11,6 +11,13 @@ interface RoutingObservation {
   attempt?: number;
   expectedAffinityId?: string;
   receivedAffinityId?: string | null;
+  sentAffinityId?: string;
+  targetHost?: string;
+  responseStatus?: number;
+  responseRequestId?: string | null;
+  responseErrorCode?: string | null;
+  responseContentType?: string | null;
+  responseProtocolVersion?: string | null;
   requestedDeploymentId?: string;
   receivedDeploymentId?: string | null;
   elapsedMs?: number;
@@ -44,13 +51,15 @@ export function logInvocationRouting(
       deploymentId: process.env.VERCEL_DEPLOYMENT_ID,
       region: process.env.VERCEL_REGION,
       ...observation,
-      affinityStatus: !received
-        ? 'absent'
-        : !observation.expectedAffinityId
-          ? 'unverified'
-          : received === observation.expectedAffinityId
-            ? 'match'
-            : 'different',
+      affinityStatus: !Object.hasOwn(observation, 'receivedAffinityId')
+        ? 'not_observed'
+        : !received
+          ? 'absent'
+          : !observation.expectedAffinityId
+            ? 'unverified'
+            : received === observation.expectedAffinityId
+              ? 'match'
+              : 'different',
     })
   );
 }
