@@ -452,6 +452,14 @@ async function resumeHookImpl<T = any>(
       // key would be unreadable to the new owner.
       let keyOverride = encryptionKeyOverride;
       let redirects = 0;
+      // After a `hook-force-claimed` the World has completed the transfer, so
+      // the token names the new owner — but a World whose lookup index lags
+      // its writes by a few milliseconds (world-local's files) can still
+      // answer not-found on the very next lookup. Bounded re-lookups, so a
+      // redirect is never lost to that lag; the budget is spent only right
+      // after a redirect.
+      let lookupsAfterRedirect = 0;
+      const MAX_LOOKUPS_AFTER_REDIRECT = 5;
       let attemptPayload: T = payload;
       let spare: T | undefined;
       // One logical resume, one resumeId, whichever run it ends up in. The
@@ -501,6 +509,18 @@ async function resumeHookImpl<T = any>(
             target = token;
             fresh = true;
             keyOverride = undefined;
+            lookupsAfterRedirect = 0;
+            if (spare !== undefined) attemptPayload = spare;
+            continue;
+          }
+          if (
+            HookNotFoundError.is(err) &&
+            redirects > 0 &&
+            typeof target === 'string' &&
+            lookupsAfterRedirect < MAX_LOOKUPS_AFTER_REDIRECT
+          ) {
+            lookupsAfterRedirect++;
+            await new Promise((resolve) => setTimeout(resolve, 50));
             if (spare !== undefined) attemptPayload = spare;
             continue;
           }

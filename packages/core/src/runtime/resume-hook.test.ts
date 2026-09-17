@@ -550,6 +550,37 @@ describe('resumeHook', () => {
       expect(queue).not.toHaveBeenCalled();
     });
 
+    it('re-looks the token up a few times when the World lags behind a completed takeover', async () => {
+      // The World answered hook-force-claimed, so the transfer is done; a
+      // lookup index that trails its writes by a few ms (world-local's files)
+      // may still miss on the next lookup. Bounded re-lookups, then success.
+      const getByToken = vi
+        .fn()
+        .mockResolvedValueOnce(victimHook)
+        .mockRejectedValueOnce(new HookNotFoundError('shared'))
+        .mockRejectedValueOnce(new HookNotFoundError('shared'))
+        .mockResolvedValueOnce(claimerHook);
+      const createEvent = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new HookForceClaimedError('shared', 'wrun_claimer', 'hook_claimer')
+        )
+        .mockResolvedValueOnce(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken },
+        runs: { get: vi.fn() },
+        events: { create: createEvent },
+        queue: vi.fn().mockResolvedValue(undefined),
+        getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+      } as unknown as World);
+
+      const resumed = await resumeHook('shared', { n: 1 });
+      expect(resumed.runId).toBe('wrun_claimer');
+      expect(getByToken).toHaveBeenCalledTimes(4);
+      expect(createEvent).toHaveBeenCalledTimes(2);
+    });
+
     it('gives up after a bounded number of redirects', async () => {
       const getByToken = vi.fn().mockResolvedValue(victimHook);
       const createEvent = vi

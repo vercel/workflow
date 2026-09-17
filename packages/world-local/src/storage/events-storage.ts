@@ -933,35 +933,6 @@ export function createEventsStorage(
     throw new HookNotFoundError(hookId);
   }
 
-  /**
-   * Wait (briefly) until the hook a token claim names has its `hook_created`
-   * on disk. The claim records the canonical eventId, so the check is one
-   * `stat`; a claim without one is a legacy claim, which is not waited on.
-   * Bounded: a creator that died between claim and publish never lands it.
-   */
-  async function awaitVictimCreationJournaled(
-    claim: HookTokenClaim
-  ): Promise<void> {
-    if (!claim.eventId) return;
-    const eventPath = taggedPath(
-      basedir,
-      'events',
-      `${claim.runId}-${claim.eventId}`,
-      tag
-    );
-    const deadline = Date.now() + 1_000;
-    for (;;) {
-      try {
-        await fs.access(eventPath);
-        return;
-      } catch {
-        // not yet published
-      }
-      if (Date.now() >= deadline) return;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  }
-
   const queryRunEvents = (runId: string, pagination: PaginationOptions) =>
     paginatedFileSystemQuery({
       directory: path.join(basedir, 'events'),
@@ -2403,13 +2374,14 @@ export function createEventsStorage(
                 // serializes it against the victim's own disposal.
                 signal.throwIfAborted();
                 // The victim's claim is written before its `hook_created` is
-                // published (see the entity-write ordering below). Taking the
-                // token from a creation still in flight would let that
-                // publish land behind the disposal this writes, so give it a
-                // moment to land; a creator that died leaves the claim alone
-                // and the takeover proceeds, its retry refused by the journal
-                // guard above.
-                await awaitVictimCreationJournaled(existingClaim);
+                // published (see the entity-write ordering below), so a
+                // takeover can meet a creation still in flight. That is fine:
+                // the creator's publish is refused by the journal guard (its
+                // own disposal is committed by then) and its replay reads the
+                // disposal with no creation — the runtime handles exactly
+                // that. Nothing waits here: while this lock is held the token
+                // resolves to nothing, and every millisecond of that is a
+                // `getHookByToken` that misses.
                 const victimRun = await readJSONWithFallback(
                   basedir,
                   'runs',
@@ -2448,6 +2420,39 @@ export function createEventsStorage(
                     forceRefusedReason: 'victim-spec-version' as const,
                   };
                 }
+                // The token must resolve to SOME live hook at every instant of
+                // the takeover (a resume that resolves nothing is a lost
+                // payload, not a redirect). Once the victim's disposal lock is
+                // written its entity stops resolving, so the claimer's entity
+                // is written FIRST: `findHookByToken` falls through a
+                // force-disposed owner to the entity that holds the token
+                // now. Written with the claimedFrom the transfer records; the
+                // post-publish write below rewrites it byte-identically.
+                await writeHookByRunMarker(
+                  basedir,
+                  effectiveRunId,
+                  data.correlationId,
+                  tag
+                );
+                await writeJSON(
+                  taggedPath(basedir, 'hooks', data.correlationId, tag),
+                  {
+                    runId: effectiveRunId,
+                    hookId: data.correlationId,
+                    token: hookData.token,
+                    metadata: hookData.metadata,
+                    ownerId: 'local-owner',
+                    projectId: 'local-project',
+                    environment: 'local',
+                    createdAt: now,
+                    specVersion: effectiveSpecVersion,
+                    isWebhook: hookData.isWebhook ?? false,
+                    isSystem: hookData.isSystem ?? false,
+                    tokenRetentionUntil: hookData.tokenRetentionUntil,
+                    claimedFrom,
+                  } satisfies Hook,
+                  { overwrite: true }
+                );
                 if (victimRunning) {
                   const lockWritten = await writeExclusive(
                     hookDisposeLockPath(basedir, existingClaim.hookId, tag),
@@ -2486,8 +2491,17 @@ export function createEventsStorage(
 
               // The previous owner committed its release but did not finish
               // cleanup. Remove that lifetime before admitting a successor.
+              // A takeover re-points the claim in place (one atomic rename)
+              // rather than deleting and re-creating it, so the token never
+              // resolves to nothing in between.
               signal.throwIfAborted();
-              await deleteJSON(constraintPath);
+              if (claimedFrom) {
+                await write(constraintPath, claimContent(), {
+                  overwrite: true,
+                });
+              } else {
+                await deleteJSON(constraintPath);
+              }
               if (existingClaim.hookId) {
                 await deleteJSON(
                   taggedPath(basedir, 'hooks', existingClaim.hookId, tag)
@@ -2508,7 +2522,9 @@ export function createEventsStorage(
                 );
               }
               signal.throwIfAborted();
-              assert(await writeExclusive(constraintPath, claimContent()));
+              if (!claimedFrom) {
+                assert(await writeExclusive(constraintPath, claimContent()));
+              }
               return { status: 'claimed' as const };
             }
           );
@@ -2680,7 +2696,9 @@ export function createEventsStorage(
             ...(claimedFrom && { claimedFrom }),
           };
           hookEntityWriteOptions =
-            claimResult.status === 'owned' ? { overwrite: true } : undefined;
+            claimResult.status === 'owned' || claimedFrom
+              ? { overwrite: true }
+              : undefined;
 
           // Index entries before the event publish (see hook-index.ts
           // crash-ordering invariant). `eventId` is final here: the
@@ -2890,9 +2908,7 @@ export function createEventsStorage(
         // `hook_disposed`. Appending the creation now would put a
         // non-parkable row behind a retired consumer, so nothing is written
         // and the request is refused with the 409 the runtime swallows; its
-        // replay reads the disposal and rejects the hook's awaiters. (The
-        // takeover also waits for an in-flight creation to land first, see
-        // `awaitVictimCreationJournaled`, so this is the backstop.)
+        // replay reads the disposal and rejects the hook's awaiters.
         if (data.eventType === 'hook_created' && data.correlationId) {
           const own = await readHookDisposeLock(
             basedir,
