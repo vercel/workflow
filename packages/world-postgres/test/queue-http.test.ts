@@ -29,7 +29,8 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
   let pool: Pool;
   let connectionString: string;
   let server: Server;
-  let phase: 'headers' | 'body' | 'abort';
+  let phase: 'headers' | 'body' | 'abort' | 'hook';
+  let releaseInlineStep = Promise.withResolvers<void>();
   let accepted = Promise.withResolvers<void>();
   let disconnected = Promise.withResolvers<void>();
   let attempts: string[] = [];
@@ -44,6 +45,12 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
       response.on('close', () => disconnected.resolve());
       accepted.resolve();
       if (phase === 'abort') return;
+      if (phase === 'hook') {
+        if (attempts.length === 1) await releaseInlineStep.promise;
+        else releaseInlineStep.resolve();
+        response.end('{}');
+        return;
+      }
       if (phase === 'body') {
         response.writeHead(200, { 'content-type': 'application/json' });
         response.flushHeaders();
@@ -114,6 +121,46 @@ describe('Postgres queue HTTP deadlines (integration)', () => {
         .toBe(0);
       expect(attempts).toEqual(['1']);
     } finally {
+      await queue.close();
+      await pool.query('TRUNCATE graphile_worker._private_jobs');
+    }
+  });
+
+  test('a same-run wake can release an inline step before its delivery finishes', async () => {
+    phase = 'hook';
+    attempts = [];
+    accepted = Promise.withResolvers<void>();
+    releaseInlineStep = Promise.withResolvers<void>();
+    const queue = createQueue(
+      {
+        connectionString,
+        queueConcurrency: 2,
+        applicationManagedShutdown: true,
+      },
+      pool
+    );
+    const payload = { runId: `run_${randomUUID()}` };
+    try {
+      await queue.queue(`${getQueueTopicPrefix('workflow')}test`, payload);
+      await accepted.promise;
+      // Legacy hook producers send a wake without an idempotency key.
+      // The handler holding the first delivery needs this wake to finish.
+      await queue.queue(`${getQueueTopicPrefix('workflow')}test`, payload);
+      await expect.poll(() => attempts.length, { timeout: 2_500 }).toBe(2);
+      await expect
+        .poll(
+          async () => {
+            const jobs = await pool.query(
+              'SELECT count(*)::int AS count FROM graphile_worker._private_jobs'
+            );
+            return jobs.rows[0].count;
+          },
+          { timeout: 2_500 }
+        )
+        .toBe(0);
+      expect(attempts).toEqual(['1', '1']);
+    } finally {
+      releaseInlineStep.resolve();
       await queue.close();
       await pool.query('TRUNCATE graphile_worker._private_jobs');
     }
