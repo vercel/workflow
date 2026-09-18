@@ -7,6 +7,10 @@ import type { StandaloneConfig } from './types.js';
 class TestBuilder extends BaseBuilder {
   async build(): Promise<void> {}
 
+  discoverWorkflowEntries(inputFile: string, outputDir: string) {
+    return this.discoverEntries([inputFile], outputDir);
+  }
+
   createWorkflowBundle(
     inputFile: string,
     outfile: string,
@@ -57,8 +61,8 @@ describe('workflow bundle boundary', () => {
       sourcemap: false,
     };
     const builder = new TestBuilder(config);
-    const discoveredEntries = await builder.discoverEntries(
-      [inputFile],
+    const discoveredEntries = await builder.discoverWorkflowEntries(
+      inputFile,
       outputDir
     );
     const { interimBundleMetafile } = await builder.createWorkflowBundle(
