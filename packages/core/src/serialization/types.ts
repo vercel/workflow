@@ -68,7 +68,7 @@ export type ByteStreamFraming = 'raw' | 'framed-v1';
  * type in `schemas.ts`.
  */
 export interface SerializableSpecial {
-  History: { runId: string; stepId: string; slot: string; length: number };
+  Sequence: { runId: string; stepId: string; slot: string; length: number };
   ArrayBuffer: string; // base64 string
   BigInt: string; // string representation of bigint
   BigInt64Array: string; // base64 string

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { importKey } from './encryption.js';
-import { History } from './history.js';
+import { Sequence } from './sequence.js';
 import { registerStepFunction } from './private.js';
 import { executeStep } from './runtime/step-executor.js';
 import { setWorld } from './runtime/world.js';
@@ -11,7 +11,7 @@ import {
 } from './serialization.js';
 
 /** Queued-step regression: no workflow replay/cache prerequisite exists. */
-describe('History queued retry before workflow replay', () => {
+describe('Sequence queued retry before workflow replay', () => {
   it('resolves encrypted authoritative ancestors before body and continues from exact prefix', async () => {
     const material = crypto.getRandomValues(new Uint8Array(32));
     const key = await importKey(material);
@@ -35,11 +35,11 @@ describe('History queued retry before workflow replay', () => {
       return await hydrateStepReturnValue(bytes, runId, key);
     };
     const one = (await make('step_one', {
-      history: History.from([{ n: 0 }, { n: 1 }]),
-    })) as { history: History<{ n: number }> };
+      history: Sequence.from([{ n: 0 }, { n: 1 }]),
+    })) as { history: Sequence<{ n: number }> };
     const two = (await make('step_two', {
       history: one.history.take(1).append({ n: 2 }),
-    })) as { history: History<{ n: number }> };
+    })) as { history: Sequence<{ n: number }> };
     const get = vi.fn(async (_run: string, stepId: string) => ({
       status: 'completed',
       output: outputs.get(stepId),
@@ -84,7 +84,7 @@ describe('History queued retry before workflow replay', () => {
     let bodyCalls = 0;
     const workflowCalls = 0;
     const stepName = 'step//queued-history';
-    registerStepFunction(stepName, async (history: History<{ n: number }>) => {
+    registerStepFunction(stepName, async (history: Sequence<{ n: number }>) => {
       bodyCalls++;
       const values = await history.toArray();
       expect(values).toEqual([{ n: 0 }, { n: 2 }]);

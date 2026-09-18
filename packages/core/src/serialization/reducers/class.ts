@@ -33,8 +33,8 @@ export function getClassReducers(): Partial<Reducers> {
       if (typeof serialize !== 'function') return false;
 
       const classId = readProperty(cls, 'classId');
-      // History uses a boundary-specific result-recipe reducer.
-      if (classId === 'class//workflow//History') return false;
+      // Sequence uses a boundary-specific result-recipe reducer.
+      if (classId === 'class//workflow//Sequence') return false;
       if (typeof classId !== 'string') {
         throw new Error(
           `Class "${String(readProperty(cls, 'name'))}" with ${String(WORKFLOW_SERIALIZE)} must have a static "classId" property.`

@@ -4,22 +4,22 @@ import { registerSerializationClass } from './class-serialization.js';
 import { getWorldLazy } from './runtime/get-world-lazy.js';
 import { contextStorage } from './step/context-storage.js';
 
-export const HISTORY_CLASS_ID = 'class//workflow//History';
+export const SEQUENCE_CLASS_ID = 'class//workflow//Sequence';
 const WORKFLOW_CONTEXT = Symbol.for('WORKFLOW_CONTEXT');
-export type HistoryRef = {
+export type SequenceRef = {
   runId: string;
   stepId: string;
   slot: string;
   length: number;
 };
-export type HistoryRecipe = {
+export type SequenceRecipe = {
   slot: string;
   length: number;
-  base?: HistoryRef;
+  base?: SequenceRef;
   take: number;
   additions: unknown[];
 };
-type Draft = Omit<HistoryRecipe, 'slot' | 'length'>;
+type Draft = Omit<SequenceRecipe, 'slot' | 'length'>;
 
 function workflowRunId(): string | undefined {
   return (
@@ -33,39 +33,41 @@ function capture(value: unknown, seen = new Set<object>()): unknown {
     return value;
   if (typeof value === 'number') {
     if (!Number.isFinite(value))
-      throw new TypeError('History supports finite numbers');
+      throw new TypeError('Sequence supports finite numbers');
     return value;
   }
   if (!value || typeof value !== 'object' || seen.has(value))
-    throw new TypeError('History supports acyclic JSON plain data');
+    throw new TypeError('Sequence supports acyclic JSON plain data');
   if (types.isProxy(value))
-    throw new TypeError('History does not support proxies');
+    throw new TypeError('Sequence does not support proxies');
   seen.add(value);
   try {
     const descriptors = Object.getOwnPropertyDescriptors(value);
     if (Array.isArray(value)) {
       const length = descriptors.length?.value;
       if (!Number.isSafeInteger(length))
-        throw new TypeError('History array length is invalid');
+        throw new TypeError('Sequence array length is invalid');
       const result: unknown[] = [];
       for (let index = 0; index < length; index++) {
         const descriptor = descriptors[index];
         if (!descriptor || !descriptor.enumerable || !('value' in descriptor))
-          throw new TypeError('History does not support sparse arrays');
+          throw new TypeError('Sequence does not support sparse arrays');
         result.push(capture(descriptor.value, seen));
       }
       return result;
     }
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null)
-      throw new TypeError('History supports plain objects and arrays');
+      throw new TypeError('Sequence supports plain objects and arrays');
     const result = Object.create(null) as Record<string, unknown>;
     for (const key of Reflect.ownKeys(descriptors)) {
       if (typeof key !== 'string')
-        throw new TypeError('History does not support symbol keys');
+        throw new TypeError('Sequence does not support symbol keys');
       const descriptor = descriptors[key];
       if (!descriptor.enumerable || !('value' in descriptor))
-        throw new TypeError('History supports enumerable data properties only');
+        throw new TypeError(
+          'Sequence supports enumerable data properties only'
+        );
       Object.defineProperty(result, key, {
         value: capture(descriptor.value, seen),
         enumerable: true,
@@ -78,8 +80,8 @@ function capture(value: unknown, seen = new Set<object>()): unknown {
     seen.delete(value);
   }
 }
-function validRef(v: unknown): v is HistoryRef {
-  const r = v as HistoryRef;
+function validRef(v: unknown): v is SequenceRef {
+  const r = v as SequenceRef;
   return (
     !!r &&
     typeof r.runId === 'string' &&
@@ -91,17 +93,17 @@ function validRef(v: unknown): v is HistoryRef {
 }
 
 /** Additions live only in the versioned recipe envelope of a committed step output. */
-export class History<T> {
-  readonly #ref?: HistoryRef;
+export class Sequence<T> {
+  readonly #ref?: SequenceRef;
   readonly #draft?: Draft;
-  private constructor(ref?: HistoryRef, draft?: Draft) {
+  private constructor(ref?: SequenceRef, draft?: Draft) {
     this.#ref = ref;
     this.#draft = draft;
   }
-  static from<T>(values: Iterable<T>): History<T> {
+  static from<T>(values: Iterable<T>): Sequence<T> {
     if (workflowRunId())
-      throw new Error('History.from() is only supported in a step');
-    return new History(undefined, {
+      throw new Error('Sequence.from() is only supported in a step');
+    return new Sequence(undefined, {
       take: 0,
       additions: Array.from(values, (v) => capture(v)),
     });
@@ -112,13 +114,13 @@ export class History<T> {
       (this.#draft ? this.#draft.take + this.#draft.additions.length : 0)
     );
   }
-  append(...values: T[]): History<T> {
+  append(...values: T[]): Sequence<T> {
     if (workflowRunId())
-      throw new Error('History.append() is only supported in a step');
+      throw new Error('Sequence.append() is only supported in a step');
     if (values.length === 0) return this;
     const captured = values.map((v) => capture(v));
     if (this.#draft) {
-      return new History(undefined, {
+      return new Sequence(undefined, {
         base: this.#draft.base,
         take: this.#draft.take,
         // Previously captured additions are reused as inert private values;
@@ -126,44 +128,44 @@ export class History<T> {
         additions: [...this.#draft.additions, ...captured],
       });
     }
-    if (!this.#ref) throw new Error('History has no base or draft');
-    return new History(undefined, {
+    if (!this.#ref) throw new Error('Sequence has no base or draft');
+    return new Sequence(undefined, {
       base: this.#ref,
       take: this.length,
       additions: captured,
     });
   }
-  take(length: number): History<T> {
+  take(length: number): Sequence<T> {
     if (!Number.isSafeInteger(length) || length < 0 || length > this.length)
-      throw new RangeError('History take is out of range');
+      throw new RangeError('Sequence take is out of range');
     if (length === this.length) return this;
     if (this.#draft) {
       if (length <= this.#draft.take) {
         if (!this.#draft.base) {
-          return new History(undefined, { take: 0, additions: [] });
+          return new Sequence(undefined, { take: 0, additions: [] });
         }
-        return new History(undefined, {
+        return new Sequence(undefined, {
           base: { ...this.#draft.base, length },
           take: length,
           additions: [],
         });
       }
-      return new History(undefined, {
+      return new Sequence(undefined, {
         base: this.#draft.base,
         take: this.#draft.take,
         additions: this.#draft.additions.slice(0, length - this.#draft.take),
       });
     }
-    if (!this.#ref) throw new Error('History has no ref or draft');
-    return new History({ ...this.#ref, length });
+    if (!this.#ref) throw new Error('Sequence has no ref or draft');
+    return new Sequence({ ...this.#ref, length });
   }
   async toArray(): Promise<T[]> {
     if (workflowRunId())
-      throw new Error('History content can only be read in a step');
-    if (this.#ref) return structuredClone(await resolveHistory<T>(this.#ref));
-    if (!this.#draft) throw new Error('History has no ref or draft');
+      throw new Error('Sequence content can only be read in a step');
+    if (this.#ref) return structuredClone(await resolveSequence<T>(this.#ref));
+    if (!this.#draft) throw new Error('Sequence has no ref or draft');
     const base = this.#draft.base
-      ? await resolveHistory<T>(this.#draft.base)
+      ? await resolveSequence<T>(this.#draft.base)
       : [];
     return structuredClone([
       ...base.slice(0, this.#draft.take),
@@ -177,42 +179,42 @@ export class History<T> {
   _serializeOutput(
     runId: string,
     stepId: string,
-    recipes: HistoryRecipe[]
-  ): HistoryRef {
+    recipes: SequenceRecipe[]
+  ): SequenceRef {
     if (this.#ref) {
       if (this.#ref.runId !== runId)
-        throw new Error('Cross-run History refs are unsupported');
+        throw new Error('Cross-run Sequence refs are unsupported');
       return this.#ref;
     }
-    if (!this.#draft) throw new Error('History has no recipe');
+    if (!this.#draft) throw new Error('Sequence has no recipe');
     if (
       this.#draft.base?.runId !== undefined &&
       this.#draft.base.runId !== runId
     )
-      throw new Error('Cross-run History refs are unsupported');
+      throw new Error('Cross-run Sequence refs are unsupported');
     const slot = `hslot_${recipes.length}`;
     const length = this.#draft.take + this.#draft.additions.length;
     recipes.push({ slot, length, ...this.#draft });
     return { runId, stepId, slot, length };
   }
-  static [WORKFLOW_SERIALIZE](h: History<unknown>): HistoryRef {
+  static [WORKFLOW_SERIALIZE](h: Sequence<unknown>): SequenceRef {
     if (!h.#ref)
-      throw new Error('History additions must be returned by a step');
+      throw new Error('Sequence additions must be returned by a step');
     const run = workflowRunId();
     if (run && run !== h.#ref.runId)
-      throw new Error('Cross-run History refs are unsupported');
+      throw new Error('Cross-run Sequence refs are unsupported');
     return h.#ref;
   }
-  static [WORKFLOW_DESERIALIZE](ref: HistoryRef): History<unknown> {
-    if (!validRef(ref)) throw new Error('Malformed History ref');
+  static [WORKFLOW_DESERIALIZE](ref: SequenceRef): Sequence<unknown> {
+    if (!validRef(ref)) throw new Error('Malformed Sequence ref');
     const run = workflowRunId();
     if (run && run !== ref.runId)
-      throw new Error('Cross-run History refs are unsupported');
-    return new History({ ...ref });
+      throw new Error('Cross-run Sequence refs are unsupported');
+    return new Sequence({ ...ref });
   }
 }
 
-function validateRecipe(r: HistoryRecipe, ref: HistoryRef): void {
+function validateRecipe(r: SequenceRecipe, ref: SequenceRef): void {
   if (
     !r ||
     r.slot !== ref.slot ||
@@ -224,9 +226,9 @@ function validateRecipe(r: HistoryRecipe, ref: HistoryRef): void {
     r.length !== r.take + r.additions.length ||
     (r.base !== undefined && (!validRef(r.base) || r.take > r.base.length))
   )
-    throw new Error(`Malformed History recipe ${ref.stepId}/${ref.slot}`);
+    throw new Error(`Malformed Sequence recipe ${ref.stepId}/${ref.slot}`);
 }
-async function loadRecipe(ref: HistoryRef): Promise<HistoryRecipe> {
+async function loadRecipe(ref: SequenceRef): Promise<SequenceRecipe> {
   const cache = contextStorage.getStore()?.replayPayloadCache;
   let prepared = await cache?.prepareCommittedStepOutput(ref.runId, ref.stepId);
   if (!prepared) {
@@ -234,55 +236,55 @@ async function loadRecipe(ref: HistoryRef): Promise<HistoryRecipe> {
       resolveData: 'all',
     });
     if (step.status !== 'completed' || !(step.output instanceof Uint8Array))
-      throw new Error(`History producing step missing: ${ref.stepId}`);
+      throw new Error(`Sequence producing step missing: ${ref.stepId}`);
     const { prepareReplayPayload } = await import('./serialization.js');
     prepared = await prepareReplayPayload(
       step.output,
       contextStorage.getStore()?.encryptionKey
     );
   }
-  const recipes = prepared.parseHistoryRecipes?.();
+  const recipes = prepared.parseSequenceRecipes?.();
   if (!recipes)
-    throw new Error(`History slot missing: ${ref.stepId}/${ref.slot}`);
+    throw new Error(`Sequence slot missing: ${ref.stepId}/${ref.slot}`);
   const matches = recipes.filter((recipe) => recipe.slot === ref.slot);
   if (matches.length !== 1)
     throw new Error(
-      `History duplicate or missing slot: ${ref.stepId}/${ref.slot}`
+      `Sequence duplicate or missing slot: ${ref.stepId}/${ref.slot}`
     );
   validateRecipe(matches[0], ref);
   return matches[0];
 }
 
-async function resolveHistory<T>(root: HistoryRef): Promise<T[]> {
+async function resolveSequence<T>(root: SequenceRef): Promise<T[]> {
   const activeRunId = contextStorage.getStore()?.workflowMetadata.workflowRunId;
   if (activeRunId && activeRunId !== root.runId)
-    throw new Error('Cross-run History refs are unsupported');
+    throw new Error('Cross-run Sequence refs are unsupported');
   const stack = new Set<string>();
   const chunks: Array<{ values: T[]; take: number }> = [];
-  let current: HistoryRef | undefined = root;
+  let current: SequenceRef | undefined = root;
   let required = root.length;
   while (current && required > 0) {
     if (required > current.length)
       throw new Error(
-        `History requested prefix exceeds reference: ${current.stepId}/${current.slot}`
+        `Sequence requested prefix exceeds reference: ${current.stepId}/${current.slot}`
       );
     if (current.runId !== root.runId)
-      throw new Error('Cross-run History ancestry is unsupported');
+      throw new Error('Cross-run Sequence ancestry is unsupported');
     const key = `${current.stepId}/${current.slot}`;
-    if (stack.has(key)) throw new Error(`History cycle at ${key}`);
-    if (stack.size >= 10_000) throw new Error('History ancestry is too deep');
+    if (stack.has(key)) throw new Error(`Sequence cycle at ${key}`);
+    if (stack.size >= 10_000) throw new Error('Sequence ancestry is too deep');
     stack.add(key);
     const recipe = await loadRecipe(current);
     if (required > recipe.length)
-      throw new Error(`History ref length exceeds recipe: ${key}`);
+      throw new Error(`Sequence ref length exceeds recipe: ${key}`);
     const baseNeeded = Math.min(required, recipe.take);
     const additionsNeeded = Math.max(0, required - recipe.take);
     if (additionsNeeded > recipe.additions.length)
-      throw new Error(`History additions range is malformed: ${key}`);
+      throw new Error(`Sequence additions range is malformed: ${key}`);
     if (additionsNeeded > 0)
       chunks.push({ values: recipe.additions as T[], take: additionsNeeded });
     if (baseNeeded > 0 && !recipe.base)
-      throw new Error(`History base is missing: ${key}`);
+      throw new Error(`Sequence base is missing: ${key}`);
     current = recipe.base;
     required = baseNeeded;
   }
@@ -294,7 +296,7 @@ async function resolveHistory<T>(root: HistoryRef): Promise<T[]> {
       result[offset++] = chunk.values[item];
   }
   if (offset !== root.length)
-    throw new Error('History resolved length mismatch');
+    throw new Error('Sequence resolved length mismatch');
   return result;
 }
-registerSerializationClass(HISTORY_CLASS_ID, History);
+registerSerializationClass(SEQUENCE_CLASS_ID, Sequence);

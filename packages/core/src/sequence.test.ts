@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { importKey } from './encryption.js';
-import { History } from './history.js';
-import { splitHistoryEnvelope } from './serialization/history-envelope.js';
+import { Sequence } from './sequence.js';
+import { splitSequenceEnvelope } from './serialization/sequence-envelope.js';
 import { getWorldLazy } from './runtime/get-world-lazy.js';
 import { contextStorage } from './step/context-storage.js';
 import {
@@ -41,47 +41,47 @@ async function commit(stepId: string, value: unknown) {
   return await hydrateStepReturnValue(bytes, 'wrun_test', undefined);
 }
 
-describe('History', () => {
+describe('Sequence', () => {
   beforeEach(() => {
     outputs.clear();
     vi.mocked(getWorldLazy).mockResolvedValue(world() as never);
   });
   it('stores additions in committed outputs and chains without serializing old payloads', async () => {
     const first = (await commit('step_1', {
-      history: History.from([{ n: 1 }]),
+      history: Sequence.from([{ n: 1 }]),
       control: 1,
-    })) as { history: History<{ n: number }> };
+    })) as { history: Sequence<{ n: number }> };
     const second = (await commit('step_2', {
       history: first.history.append({ n: 2 }),
       unchanged: first.history,
     })) as {
-      history: History<{ n: number }>;
-      unchanged: History<{ n: number }>;
+      history: Sequence<{ n: number }>;
+      unchanged: Sequence<{ n: number }>;
     };
     expect(await second.history.toArray()).toEqual([{ n: 1 }, { n: 2 }]);
     expect(await second.unchanged.toArray()).toEqual([{ n: 1 }]);
     expect(
-      splitHistoryEnvelope(outputs.get('step_2')!).parseRecipes()
+      splitSequenceEnvelope(outputs.get('step_2')!).parseRecipes()
     ).toHaveLength(1);
   });
   it('supports fixed-prefix branches and detached extraction/reinsertion', async () => {
     const base = (await commit('step_a', {
-      history: History.from([{ n: 1 }, { n: 2 }]),
-    })) as { history: History<{ n: number }> };
+      history: Sequence.from([{ n: 1 }, { n: 2 }]),
+    })) as { history: Sequence<{ n: number }> };
     const prefix = base.history.take(1);
     const extracted = await prefix.get(0);
     extracted!.n = 9;
     const left = (await commit('step_b', {
       history: prefix.append(extracted!),
-    })) as { history: History<{ n: number }> };
+    })) as { history: Sequence<{ n: number }> };
     const right = (await commit('step_c', {
       history: prefix.append({ n: 3 }),
-    })) as { history: History<{ n: number }> };
+    })) as { history: Sequence<{ n: number }> };
     expect(await left.history.toArray()).toEqual([{ n: 1 }, { n: 9 }]);
     expect(await right.history.toArray()).toEqual([{ n: 1 }, { n: 3 }]);
   });
   it('keeps candidate data unpublished before accepted step output', async () => {
-    const draft = History.from([1]).append(2);
+    const draft = Sequence.from([1]).append(2);
     expect(await draft.toArray()).toEqual([1, 2]);
     expect(outputs.size).toBe(0);
     await commit('accepted', { history: draft });
@@ -97,23 +97,23 @@ describe('History', () => {
       }
     }
     const first = (await commit('step_1', {
-      history: History.from([1]),
+      history: Sequence.from([1]),
       sibling: { large: 'x'.repeat(10000) },
-    })) as { history: History<number> };
+    })) as { history: Sequence<number> };
     await expect(first.history.toArray()).resolves.toEqual([1]);
     expect(called).toBe(0);
   });
   it('rejects missing, malformed, and cyclic recipe refs', async () => {
     const first = (await commit('step_1', {
-      history: History.from([1]),
-    })) as { history: History<number> };
+      history: Sequence.from([1]),
+    })) as { history: Sequence<number> };
     outputs.delete('step_1');
     await expect(first.history.toArray()).rejects.toThrow();
   });
   it('reports draft length as base prefix plus additions', async () => {
     const first = (await commit('step_1', {
-      history: History.from([1, 2]),
-    })) as { history: History<number> };
+      history: Sequence.from([1, 2]),
+    })) as { history: Sequence<number> };
     const draft = first.history.append(3, 4);
     expect(draft.length).toBe(4);
   });
@@ -127,28 +127,28 @@ describe('History', () => {
         return 1;
       },
     });
-    expect(() => History.from([withGetter])).toThrow('data properties');
+    expect(() => Sequence.from([withGetter])).toThrow('data properties');
     expect(getterCalls).toBe(0);
-    expect(() => History.from([new Proxy({}, {})])).toThrow('proxies');
+    expect(() => Sequence.from([new Proxy({}, {})])).toThrow('proxies');
     const sparse = new Array(2);
     sparse[1] = 1;
-    expect(() => History.from([sparse])).toThrow('sparse');
-    expect(() => History.from([{ [Symbol('x')]: 1 }])).toThrow('symbol');
+    expect(() => Sequence.from([sparse])).toThrow('sparse');
+    expect(() => Sequence.from([{ [Symbol('x')]: 1 }])).toThrow('symbol');
     const special = JSON.parse('{"__proto__":{"safe":true}}');
-    expect(() => History.from([special])).not.toThrow();
+    expect(() => Sequence.from([special])).not.toThrow();
   });
 
   it('materializes a long chain with one final assembly', async () => {
     let history = (
       (await commit('step_0', {
-        history: History.from([0]),
-      })) as { history: History<number> }
+        history: Sequence.from([0]),
+      })) as { history: Sequence<number> }
     ).history;
     for (let index = 1; index < 128; index++) {
       history = (
         (await commit(`step_${index}`, {
           history: history.append(index),
-        })) as { history: History<number> }
+        })) as { history: Sequence<number> }
       ).history;
     }
     expect(await history.toArray()).toEqual(
@@ -157,7 +157,7 @@ describe('History', () => {
   });
 
   it('supports local from/append/take/read and immutable branches', async () => {
-    const seed = History.from([0, 1]);
+    const seed = Sequence.from([0, 1]);
     const intermediate = seed.append(2);
     const final = intermediate.append(3, 4);
     expect(seed.length).toBe(2);
@@ -177,8 +177,8 @@ describe('History', () => {
 
   it('supports local drafts based on a committed prefix', async () => {
     const committed = (await commit('step_1', {
-      history: History.from([0, 1, 2]),
-    })) as { history: History<number> };
+      history: Sequence.from([0, 1, 2]),
+    })) as { history: Sequence<number> };
     const draft = committed.history.append(3, 4);
     expect(await draft.toArray()).toEqual([0, 1, 2, 3, 4]);
     expect(await draft.take(2).append(9).toArray()).toEqual([0, 1, 9]);
@@ -186,7 +186,7 @@ describe('History', () => {
   });
 
   it('duplicates only local additions when intermediate and final are returned', async () => {
-    const seed = History.from([{ n: 1 }]);
+    const seed = Sequence.from([{ n: 1 }]);
     const intermediate = seed.append({ n: 2 });
     const final = intermediate.append({ n: 3 });
     const onlyFinal = (await dehydrateStepReturnValue(
@@ -215,8 +215,8 @@ describe('History', () => {
       [],
       'step_both'
     )) as Uint8Array;
-    const onlyRecipes = splitHistoryEnvelope(onlyFinal).parseRecipes()!;
-    const bothRecipes = splitHistoryEnvelope(both).parseRecipes()!;
+    const onlyRecipes = splitSequenceEnvelope(onlyFinal).parseRecipes()!;
+    const bothRecipes = splitSequenceEnvelope(both).parseRecipes()!;
     expect(onlyRecipes).toHaveLength(1);
     // devalue preserves the duplicate `final` alias, so it is one slot; the
     // independently returned intermediate duplicates its local additions.
@@ -228,20 +228,20 @@ describe('History', () => {
 
   it('compacts by returning a fresh step-owned root', async () => {
     const original = (await commit('step_original', {
-      history: History.from([
+      history: Sequence.from([
         { role: 'user', text: 'old' },
         { role: 'assistant', text: 'answer' },
         { role: 'user', text: 'retained' },
       ]),
-    })) as { history: History<{ role: string; text: string }> };
+    })) as { history: Sequence<{ role: string; text: string }> };
     const materialized = await original.history.toArray();
     const compacted = (await commit('step_compact', {
-      history: History.from([
+      history: Sequence.from([
         { role: 'system', text: 'summary' },
         materialized.at(-1)!,
       ]),
-    })) as { history: History<{ role: string; text: string }> };
-    const compactRecipe = splitHistoryEnvelope(
+    })) as { history: Sequence<{ role: string; text: string }> };
+    const compactRecipe = splitSequenceEnvelope(
       outputs.get('step_compact')!
     ).parseRecipes()![0];
     expect(compactRecipe.base).toBeUndefined();
@@ -251,7 +251,7 @@ describe('History', () => {
     ]);
     const extended = (await commit('step_after_compact', {
       history: compacted.history.append({ role: 'assistant', text: 'new' }),
-    })) as { history: History<{ role: string; text: string }> };
+    })) as { history: Sequence<{ role: string; text: string }> };
     expect(await extended.history.toArray()).toHaveLength(3);
     expect(await original.history.toArray()).toHaveLength(3);
   });
@@ -269,7 +269,7 @@ describe('History', () => {
       ? await importKey(crypto.getRandomValues(new Uint8Array(32)))
       : undefined;
     const bytes = (await dehydrateStepReturnValue(
-      { history: History.from([{ text: 'x'.repeat(2000) }]) },
+      { history: Sequence.from([{ text: 'x'.repeat(2000) }]) },
       'wrun_test',
       key,
       [],
@@ -285,7 +285,7 @@ describe('History', () => {
       bytes,
       'wrun_test',
       key
-    )) as { history: History<{ text: string }> };
+    )) as { history: Sequence<{ text: string }> };
     expect(hydrated.history.length).toBe(1);
     if (encrypted) {
       const tampered = bytes.slice();
@@ -331,21 +331,23 @@ describe('History', () => {
     const envelope = new Uint8Array(
       8 + malformed.length + (nested as Uint8Array).length
     );
-    envelope.set(new TextEncoder().encode('ohs1'));
+    envelope.set(new TextEncoder().encode('seq1'));
     new DataView(envelope.buffer).setUint32(4, malformed.length);
     envelope.set(malformed, 8);
     envelope.set(nested as Uint8Array, 8 + malformed.length);
     get.mockResolvedValue({ status: 'completed', output: envelope });
-    const history = (History as any)[Symbol.for('workflow-deserialize')](
+    const history = (Sequence as any)[Symbol.for('workflow-deserialize')](
       ref
-    ) as History<number>;
-    await expect(history.toArray()).rejects.toThrow('Malformed History recipe');
+    ) as Sequence<number>;
+    await expect(history.toArray()).rejects.toThrow(
+      'Malformed Sequence recipe'
+    );
     expect(get).toHaveBeenCalledTimes(1);
 
-    const foreign = (History as any)[Symbol.for('workflow-deserialize')]({
+    const foreign = (Sequence as any)[Symbol.for('workflow-deserialize')]({
       ...ref,
       runId: 'wrun_foreign',
-    }) as History<number>;
+    }) as Sequence<number>;
     await contextStorage.run(
       {
         workflowMetadata: { workflowRunId: 'wrun_test' },
@@ -381,8 +383,8 @@ describe('History', () => {
 
   it('ordinary extracted values serialize normally', async () => {
     const first = (await commit('step_1', {
-      history: History.from([{ n: 1 }]),
-    })) as { history: History<{ n: number }> };
+      history: Sequence.from([{ n: 1 }]),
+    })) as { history: Sequence<{ n: number }> };
     const ordinary = await first.history.get(0);
     const bytes = await dehydrateStepReturnValue(
       { ordinary },

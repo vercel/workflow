@@ -7,7 +7,8 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { History } from './history.js';
+import { Sequence } from './sequence.js';
+import { splitSequenceEnvelope } from './serialization/sequence-envelope.js';
 import { registerStepFunction } from './private.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
@@ -17,7 +18,7 @@ vi.mock('@vercel/functions', () => ({
   waitUntil: (p: Promise<unknown>) => p.catch(() => {}),
 }));
 
-describe('History workflowEntrypoint integration', () => {
+describe('Sequence workflowEntrypoint integration', () => {
   afterEach(() => setWorld(undefined));
   it('seeds, appends, takes, and branches through authoritative inline results', async () => {
     const runId = 'wrun_history_runtime',
@@ -126,12 +127,12 @@ describe('History workflowEntrypoint integration', () => {
       getEncryptionKeyForRun: async () => undefined,
     } as any);
     registerStepFunction('seed', async () => ({
-      history: History.from([{ n: 1 }, { n: 2 }]),
+      history: Sequence.from([{ n: 1 }, { n: 2 }]),
       ordinary: 'seed',
     }));
     registerStepFunction(
       'extend',
-      async (input: { history: History<{ n: number }>; ordinary: string }) => {
+      async (input: { history: Sequence<{ n: number }>; ordinary: string }) => {
         expect(await input.history.toArray()).toEqual([{ n: 1 }, { n: 2 }]);
         return {
           history: input.history.append({ n: 3 }),
@@ -150,6 +151,19 @@ describe('History workflowEntrypoint integration', () => {
     expect(
       events.find((e) => e.eventType === 'run_completed')?.eventData.output
     ).toBeDefined();
+    const recipes = [...steps.values()]
+      .filter((step) => step.output)
+      .flatMap((step) =>
+        splitSequenceEnvelope(step.output as Uint8Array).parseRecipes()
+      );
+    const appended = recipes.find((recipe) => recipe.base);
+    expect(appended?.base).toMatchObject({
+      runId,
+      stepId: expect.stringMatching(/^step_/),
+      slot: 'hslot_0',
+      length: 2,
+    });
+    expect(appended?.additions).toEqual([{ n: 3 }]);
     expect(stepsGet).not.toHaveBeenCalled();
   });
 });

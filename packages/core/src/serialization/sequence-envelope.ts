@@ -1,18 +1,18 @@
-import type { HistoryRecipe } from '../history.js';
+import type { SequenceRecipe } from '../sequence.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const PREFIX = encoder.encode('ohs1');
+const PREFIX = encoder.encode('seq1');
 const HEADER_BYTES = 8;
 
-export type HistoryEnvelope = {
+export type SequenceEnvelope = {
   payload: Uint8Array;
-  parseRecipes(): HistoryRecipe[];
+  parseRecipes(): SequenceRecipe[];
 };
 
-export function wrapHistoryEnvelope(
+export function wrapSequenceEnvelope(
   payload: Uint8Array,
-  recipes: HistoryRecipe[]
+  recipes: SequenceRecipe[]
 ): Uint8Array {
   if (recipes.length === 0) return payload;
   const recipeBytes = encoder.encode(JSON.stringify({ version: 1, recipes }));
@@ -29,12 +29,12 @@ export function wrapHistoryEnvelope(
   return output;
 }
 
-export function splitHistoryEnvelope(payload: Uint8Array): HistoryEnvelope {
+export function splitSequenceEnvelope(payload: Uint8Array): SequenceEnvelope {
   if (payload.length < 4 || !PREFIX.every((byte, i) => payload[i] === byte)) {
     return { payload, parseRecipes: () => [] };
   }
   if (payload.length < HEADER_BYTES)
-    throw new Error('Truncated History envelope');
+    throw new Error('Truncated Sequence envelope');
   const recipeLength = new DataView(
     payload.buffer,
     payload.byteOffset,
@@ -42,9 +42,9 @@ export function splitHistoryEnvelope(payload: Uint8Array): HistoryEnvelope {
   ).getUint32(4);
   const nestedOffset = HEADER_BYTES + recipeLength;
   if (nestedOffset > payload.length)
-    throw new Error('Truncated History recipe table');
+    throw new Error('Truncated Sequence recipe table');
   const recipeBytes = payload.subarray(HEADER_BYTES, nestedOffset);
-  let parsed: HistoryRecipe[] | undefined;
+  let parsed: SequenceRecipe[] | undefined;
   return {
     payload: payload.subarray(nestedOffset),
     parseRecipes() {
@@ -53,7 +53,7 @@ export function splitHistoryEnvelope(payload: Uint8Array): HistoryEnvelope {
       try {
         envelope = JSON.parse(decoder.decode(recipeBytes));
       } catch {
-        throw new Error('Malformed History recipe table');
+        throw new Error('Malformed Sequence recipe table');
       }
       if (
         !envelope ||
@@ -61,9 +61,9 @@ export function splitHistoryEnvelope(payload: Uint8Array): HistoryEnvelope {
         (envelope as { version?: unknown }).version !== 1 ||
         !Array.isArray((envelope as { recipes?: unknown }).recipes)
       ) {
-        throw new Error('Unsupported History recipe envelope');
+        throw new Error('Unsupported Sequence recipe envelope');
       }
-      parsed = (envelope as { recipes: HistoryRecipe[] }).recipes;
+      parsed = (envelope as { recipes: SequenceRecipe[] }).recipes;
       return parsed;
     },
   };
