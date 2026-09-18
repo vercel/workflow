@@ -455,6 +455,54 @@ describe('handleSuspension', () => {
       expect(queue).toHaveBeenCalledTimes(1);
     });
 
+    it("republishes past a later claimer's hook_disposed{forceClaimedBy}: being taken from is not this run's progress", async () => {
+      // The chain: this run took the token from the victim, died before
+      // waking it, and a third run then took the token from THIS run —
+      // appending `hook_disposed{forceClaimedBy}` to this log and waking it.
+      // That wake is the invocation that must repay the victim's; the foreign
+      // row must not read as "moved on" or the victim is never invoked.
+      const queue = vi.fn().mockResolvedValue({ messageId: 'msg_wake' });
+      const takenFrom: Event = {
+        eventType: 'hook_disposed',
+        eventId: slotToEventId(4),
+        runId: run.runId,
+        correlationId: 'hook_claimer',
+        createdAt: new Date(),
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          forceClaimedBy: { runId: 'wrun_third', hookId: 'hook_third' },
+        },
+      } as Event;
+      await handleSuspension({
+        suspension: new WorkflowSuspension(new Map(), globalThis),
+        world: worldWithQueue(queue),
+        run,
+        eventLog: { events: [forcedCreation(3), takenFrom], cursor: null },
+      });
+      expect(queue).toHaveBeenCalledTimes(1);
+      expect(queue.mock.calls[0][1]).toEqual({ runId: 'wrun_victim' });
+    });
+
+    it("stops republishing after the run's OWN hook_disposed: a dispose() in its code is its progress", async () => {
+      const queue = vi.fn().mockResolvedValue({ messageId: 'msg_wake' });
+      const ownDisposal: Event = {
+        eventType: 'hook_disposed',
+        eventId: slotToEventId(4),
+        runId: run.runId,
+        correlationId: 'hook_claimer',
+        createdAt: new Date(),
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {},
+      } as Event;
+      await handleSuspension({
+        suspension: new WorkflowSuspension(new Map(), globalThis),
+        world: worldWithQueue(queue),
+        run,
+        eventLog: { events: [forcedCreation(3), ownDisposal], cursor: null },
+      });
+      expect(queue).not.toHaveBeenCalled();
+    });
+
     it('stops republishing once the run has appended anything after the creation', async () => {
       // Progress after the creation means the invocation that made it
       // finished, wake included. Republishing on every later replay would be

@@ -167,11 +167,17 @@ export async function publishForceClaimVictimWake(
  * ends the republishing.
  *
  * "This run wrote" matters: a delivery appends `hook_received` to this log
- * from another request, and a sealed-log World appends `noop`. Neither is
- * progress of this run — the model (`ForceWakeOnce.cfg`'s sibling trace) has
- * a delivery land between the crash and the retry, and a rule that looked at
- * the bare tail would then never wake the victim. Both engines call this on
- * the log they loaded for the invocation, before writing anything.
+ * from another request, a sealed-log World appends `noop`, and a LATER
+ * claimer taking the token from this run appends
+ * `hook_disposed{forceClaimedBy}`. None is progress of this run — the model
+ * (`ForceWakeOnce.cfg`'s sibling trace) has a delivery land between the crash
+ * and the retry, and a rule that looked at the bare tail would then never
+ * wake the victim. The foreign disposal is the chain case: this run took the
+ * token from A, died before waking A, and was itself taken from by C. Its own
+ * wake (from C) is the very invocation that must repay A's — the run's own
+ * `hook_disposed` (a `dispose()` in its code) IS its progress and still ends
+ * the debt, but a row another run put here does not. Both engines call this
+ * on the log they loaded for the invocation, before writing anything.
  */
 export function forcedCreationOwingWake(
   events: readonly Event[] | undefined
@@ -179,7 +185,12 @@ export function forcedCreationOwingWake(
   if (!events) return undefined;
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
-    if (event.eventType === 'hook_received' || event.eventType === 'noop') {
+    if (
+      event.eventType === 'hook_received' ||
+      event.eventType === 'noop' ||
+      (event.eventType === 'hook_disposed' &&
+        event.eventData?.forceClaimedBy !== undefined)
+    ) {
       continue;
     }
     return event.eventType === 'hook_created' &&
