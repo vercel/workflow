@@ -303,7 +303,7 @@ for (const engine of ['node', 'quickjs'])
       const calls = vi.fn(async (state: { count: number }) => {
         expect(state.count).toBe(3);
         if (calls.mock.calls.length === 1)
-          throw new RetryableError('try again', { retryAfter: 60 });
+          throw new RetryableError('try again', { retryAfter: '1 hour' });
         return state.count;
       });
       registerStepFunction('replay_turn', calls);
