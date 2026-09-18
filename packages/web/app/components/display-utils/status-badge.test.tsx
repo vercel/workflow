@@ -1,0 +1,31 @@
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
+import { TooltipProvider } from '~/components/ui/tooltip';
+import { StatusBadge } from './status-badge';
+
+afterEach(cleanup);
+
+describe('StatusBadge', () => {
+  it('shows the cancellation reason from the canceled status', async () => {
+    render(
+      <TooltipProvider delayDuration={0}>
+        <StatusBadge
+          status="cancelled"
+          context={{ cancelReason: 'stopped by operator' }}
+        />
+      </TooltipProvider>
+    );
+
+    fireEvent.focus(screen.getByRole('button'));
+
+    expect(await screen.findAllByText('stopped by operator')).not.toHaveLength(
+      0
+    );
+  });
+
+  it('does not make a canceled status interactive without a reason', () => {
+    render(<StatusBadge status="cancelled" />);
+
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+});
