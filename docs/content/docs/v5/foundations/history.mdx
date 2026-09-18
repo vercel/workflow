@@ -1,0 +1,31 @@
+---
+title: History (experimental)
+description: Share immutable append-only history across Workflow steps.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+<Callout type="warn">
+`History` is experimental. Its API, wire format, limits, and engine support may change.
+</Callout>
+
+`History<T>` is an immutable append-only value whose new entries and reconstruction recipes are committed atomically with step results.
+
+```ts
+import { History } from 'workflow';
+
+async function turn(history?: History<Message>) {
+  'use step';
+  const messages = history ? await history.toArray() : [];
+  const next = await generate(messages);
+  return (history ?? History.from([])).append(next);
+}
+```
+
+Use `take(n)` for a fixed prefix. Appending twice from one value creates independent descendants. `get()` and `toArray()` return detached ordinary values; reinserting one captures new data.
+
+History creation, append, and reads are step-only. Workflow code can carry committed references and select prefixes. References are same-run; handoff to another run or deployment must materialize and reseed with `History.from()`.
+
+Inserted values support acyclic JSON plain data with finite numbers, dense arrays, and enumerable string-keyed data properties. Accessors, proxies, sparse arrays, symbols, non-plain objects, and non-finite numbers fail explicitly.
+
+Node workflow execution is supported initially. QuickJS is not supported. Cold standalone reads may fetch complete producing step outputs serially. Full observability UI materialization is not yet implemented.

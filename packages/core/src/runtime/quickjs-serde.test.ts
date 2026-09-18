@@ -71,6 +71,19 @@ function checkInGuest(bytes: Uint8Array, checkFnSource: string): unknown {
 
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 
+describe('History QuickJS guard', () => {
+  it('fails explicitly instead of reviving a partial type', () => {
+    expect(() =>
+      checkInGuest(
+        new TextEncoder().encode(
+          'devl[["Instance",1],{"classId":2,"data":3},"class//workflow//History",{"runId":4,"stepId":5,"slot":6,"length":7},"wrun_test","step_1","slot_0",1]'
+        ),
+        '(value) => value'
+      )
+    ).toThrow('History is not supported by the QuickJS workflow engine');
+  });
+});
+
 describe('wire parity: guest serialize matches the reference codec', () => {
   const cases: [name: string, guestExpr: string, hostValue: () => unknown][] = [
     ['undefined', 'undefined', () => undefined],

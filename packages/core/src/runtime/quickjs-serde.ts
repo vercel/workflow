@@ -1605,6 +1605,11 @@ export function createQuickJSSerde(
     },
     Instance: (value: JSValueHandle) => {
       const classId = ownString(value, 'classId');
+      if (classId === 'class//workflow//History') {
+        throw new Error(
+          'History is not supported by the QuickJS workflow engine; use WORKFLOW_VM=node.'
+        );
+      }
       const cls = lookupRegisteredClass(classId);
       if (!cls) {
         throw new Error(
