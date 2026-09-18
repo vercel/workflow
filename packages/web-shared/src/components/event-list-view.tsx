@@ -119,9 +119,9 @@ function getStatusDotColor(eventType: string): string {
   ) {
     return 'var(--ds-red-700)';
   }
-  // Cancelled → amber
+  // Cancelled → gray
   if (eventType === 'run_cancelled') {
-    return 'var(--ds-amber-700)';
+    return 'var(--ds-gray-700)';
   }
   // Retrying → amber
   if (eventType === 'step_retrying') {

@@ -417,6 +417,13 @@ export function runToSpan(
   const completedAt =
     getEventTimestamp(terminalEvent) ?? run.completedAt ?? undefined;
   const endTime = completedAt ?? now;
+  const wasCancelled =
+    run.status === 'cancelled' || terminalEvent?.eventType === 'run_cancelled';
+  const cancelReason =
+    terminalEvent?.eventType === 'run_cancelled' &&
+    typeof terminalEvent.eventData?.cancelReason === 'string'
+      ? terminalEvent.eventData.cancelReason
+      : null;
 
   // Only embed identification fields, not the full object with
   // input/output/error which may contain non-cloneable types. Lifecycle
@@ -429,6 +436,7 @@ export function runToSpan(
       createdAt: spanStartTime,
       startedAt: activeStartTime,
       completedAt,
+      ...(wasCancelled ? { cancelReason } : {}),
     },
   };
 
