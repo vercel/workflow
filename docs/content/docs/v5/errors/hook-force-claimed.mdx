@@ -1,0 +1,96 @@
+---
+title: hook-force-claimed
+description: Another workflow run took this hook's token over with experimental_force.
+type: troubleshooting
+summary: Handle HookForceClaimedError by letting the replaced run wrap up while the new owner receives the token's payloads.
+prerequisites:
+  - /docs/foundations/hooks
+related:
+  - /docs/api-reference/workflow/create-hook
+  - /docs/api-reference/workflow-errors/hook-force-claimed-error
+---
+
+<CopyPrompt
+  text="Handle hook-force-claimed. Find every `createHook({ token })` whose token can be taken over by another run created with `experimental_force: true`. Wrap the `await hook` / `for await...of` in a try/catch, check `HookForceClaimedError.is(error)` from `workflow/errors`, and make the replaced run finish cleanly: persist or return anything it still owes (using `error.claimedByRunId` if the new owner should be told), then exit instead of retrying the await. If the run itself should be the one taking over, add `experimental_force: true` to its `createHook()` call and make sure the token is explicit. Verify that starting a second run with the same token wakes the first, that its await rejects with HookForceClaimedError, and that resumeHook() payloads sent after the takeover reach the second run."
+/>
+
+This error is thrown to a workflow run that was waiting on a hook when another run created a hook with the same token and [`experimental_force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). The token moved to that run; this run's hook is disposed and will not receive anything further.
+
+## Error message
+
+```text
+Hook token "<token>" was force-claimed by another workflow (run "<runId>")
+```
+
+## Why this happens
+
+A hook token is owned by one active run at a time. Normally a second run asking for a held token gets [`HookConflictError`](/docs/errors/hook-conflict). With `experimental_force`, the second run takes the token instead:
+
+1. The holder's hook is disposed, and a `hook_disposed` event naming the new owner is written to the holder's event log.
+2. The holder is woken. If it was awaiting the hook, that promise rejects with `HookForceClaimedError`. Payloads that arrived before the takeover are still delivered first; a `for await...of` loop drains them and then throws.
+3. Every `resumeHook()` for the token from then on reaches the new owner, including a delivery that was already in flight. Senders are never told the token moved.
+
+This is expected behavior, not a failure of the replaced run. It usually means a newer run for the same subject (a channel, a conversation, a device) has started and is meant to take over.
+
+## Handling the takeover
+
+Catch the error where the hook is awaited and let the run finish. The error tells you which run replaced this one:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+import { HookForceClaimedError } from "workflow/errors";
+
+declare function processMessage(message: { text: string }): Promise<void>; // @setup
+declare function flushDraft(channelId: string): Promise<void>; // @setup
+
+export async function channelWorkflow(channelId: string) {
+  "use workflow";
+
+  const hook = createHook<{ text: string }>({
+    token: `channel:${channelId}`,
+    experimental_force: true,
+  });
+
+  try {
+    for await (const message of hook) {
+      await processMessage(message);
+    }
+  } catch (error) {
+    if (HookForceClaimedError.is(error)) { // [!code highlight]
+      // A newer run owns the channel now. Hand off and stop.
+      await flushDraft(channelId);
+      return { replacedBy: error.claimedByRunId };
+    }
+    throw error;
+  }
+}
+```
+
+Anything the replaced run still needs to publish should happen in this branch. Do not create another hook with the same token here unless this run really should take the token back: runs forcing the same token converge on whichever registered last, and every other one receives this error again.
+
+## Several runs forcing the same token
+
+Any number of runs can force the same token at once without leaving the token or the runs in a bad state. The takeovers chain: each run that loses the token receives `HookForceClaimedError` naming the run that took it, exactly one run ends up owning the token, and a run that crashes halfway through its own takeover is completed by the next request for the token. Which of several simultaneous claimers wins is not defined, so start them in order if the order matters. If a run should fall back rather than keep fighting for the token, catch `HookForceClaimedError` and exit instead of forcing again.
+
+## Runs that cannot be taken from
+
+A run that was started at a Workflow spec version below 8 (an older SDK release, a Python SDK run, or a deployment with `WORKFLOW_SEALED_LOG=0`) would never learn that its hook was disposed. The World declines to take its token: the forced hook rejects with the ordinary [`HookConflictError`](/docs/errors/hook-conflict), whose `conflictingRunId` names that run, and the run keeps receiving its payloads. Handle it like any other conflict, for example by [delegating to the active run](/docs/errors/hook-conflict#delegate-to-the-active-run). A finished run holding a retained token is taken over at any version.
+
+## Deciding who takes over
+
+- **The newest run should win.** Create the hook with `experimental_force: true` in the workflow that starts on each new deployment, restart, or session. Older runs get `HookForceClaimedError` and exit.
+- **The first run should win.** Do not use `experimental_force`. Later runs get `HookConflictError` and can [delegate to the active run](/docs/errors/hook-conflict#delegate-to-the-active-run).
+- **Both runs should keep working.** Give them different tokens.
+
+## When it is thrown
+
+- To `await hook` and to `for await...of` once buffered payloads are drained.
+- On every later `await` of the same hook. `hook.getConflict()` resolves with `null`: the hook was registered, it just no longer holds the token.
+- Never to a run that has already finished. A token retained after the run ended with `experimental_minRetention` is taken over silently.
+
+## Related
+
+- [Hooks](/docs/foundations/hooks) - Taking over a token from another run
+- [createHook](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) - The `experimental_force` option
+- [HookForceClaimedError](/docs/api-reference/workflow-errors/hook-force-claimed-error) - Error reference
+- [hook-conflict](/docs/errors/hook-conflict) - The default behavior without `experimental_force`

@@ -33,6 +33,7 @@ import {
   hookRecoveryMarkerPath,
   hookTokenClaimPath,
   isHookDisposalCommitted,
+  readHookDisposeLock,
   readHookTokenClaim,
   releaseHookTokenClaimIfOwnedBy,
 } from './helpers.js';
@@ -217,6 +218,18 @@ export function createHooksStorage(
     return !(await isTerminalRunCache(basedir, hook.runId, tag));
   }
 
+  /**
+   * A hook whose token another run took over (`experimental_force`): its
+   * disposal lock names the claimer. The token then belongs to that claimer's
+   * hook, which the takeover wrote before locking this one, so a lookup that
+   * lands on this hook falls through to the entity that holds the token now
+   * instead of answering not-found for a token that has an owner.
+   */
+  async function isForceDisposed(hook: Hook): Promise<boolean> {
+    const lock = await readHookDisposeLock(basedir, hook.hookId, tag);
+    return lock.committed && lock.forceClaimedBy !== undefined;
+  }
+
   async function findHookByToken(token: string): Promise<Hook | null> {
     // Fast path: the token claim file points at the owning hookId.
     const claim = await readHookTokenClaim(hookTokenClaimPath(basedir, token));
@@ -230,33 +243,48 @@ export function createHooksStorage(
           tag
         );
         if (hook?.token === token) {
-          if (!(await isHookAvailable(hook))) {
+          if (await isHookAvailable(hook)) {
+            return { ...hook, isWebhook: hook.isWebhook ?? true };
+          }
+          if (!(await isForceDisposed(hook))) {
             throw new HookNotFoundError(token);
           }
-          return { ...hook, isWebhook: hook.isWebhook ?? true };
+          // Taken over mid-flight: the claim still names the old owner for
+          // an instant. Resolve to whoever holds the token now (below).
+        } else if (hook) {
+          return null;
         }
       } catch (error) {
         if (!UnsafeEntityIdError.is(error)) {
           throw error;
         }
+        return null;
       }
-      return null;
     }
 
     // Slow path for legacy states (e.g. a lost claim file while the
-    // entity is still on disk).
+    // entity is still on disk) and for a token mid-takeover: skip the
+    // force-disposed owner, return the live successor.
     const hooksDir = path.join(basedir, 'hooks');
     const files = await listJSONFiles(hooksDir);
 
+    let disposedMatch = false;
     for (const file of files) {
       const hookPath = path.join(hooksDir, `${file}.json`);
       const hook = await readJSON(hookPath, HookSchema);
       if (hook?.token === token) {
-        if (!(await isHookAvailable(hook))) {
-          throw new HookNotFoundError(token);
+        if (await isHookAvailable(hook)) {
+          return { ...hook, isWebhook: hook.isWebhook ?? true };
         }
-        return { ...hook, isWebhook: hook.isWebhook ?? true };
+        if (await isForceDisposed(hook)) {
+          disposedMatch = true;
+          continue;
+        }
+        throw new HookNotFoundError(token);
       }
+    }
+    if (disposedMatch) {
+      throw new HookNotFoundError(token);
     }
 
     return null;

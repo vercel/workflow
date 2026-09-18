@@ -49,6 +49,14 @@ export function createWorld(config?: APIConfig): World {
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
+      // The server implements the takeover protocol behind
+      // `createHook({ experimental_force: true })` (workflow-server
+      // docs/hook-force-claim.md). Static rather than attested per lookup,
+      // because the decision is made at `createHook()` time, before any
+      // lookup; against a server that has it switched off (or predates it)
+      // a forced creation is answered with `hook_conflict`, which the
+      // runtime reports as an unsupported-World failure rather than a win.
+      hookForceClaim: true,
       // NOTE: the backend half of resumeHook()'s lazy path (that
       // the server enforces the `(runId, resumeId)` dedup constraint) is
       // NO LONGER a static world capability here. It is attested per-lookup by

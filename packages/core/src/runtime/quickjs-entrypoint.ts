@@ -65,6 +65,10 @@ import {
   stepDispatchIdempotencyKey,
 } from './helpers.js';
 import {
+  publishForceClaimVictimWake,
+  republishOwedForceClaimVictimWake,
+} from './hook-wake.js';
+import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './lifecycle-hooks.js';
@@ -413,12 +417,31 @@ async function dispatchPendingOps(params: {
               // System hooks (AbortController) are exempt from user
               // token namespace conflict checks.
               ...(hook.isSystem ? { isSystem: true } : {}),
+              ...(hook.force ? { force: true } : {}),
             } as any,
           },
           hookDeltaCursor !== undefined
             ? { sinceCursor: hookDeltaCursor }
             : undefined
         );
+
+        // A forced creation that took the token over: wake the run it was
+        // taken from so its replay reads the hook_disposed the World
+        // journaled there. Same contract as the node:vm suspension handler;
+        // see `publishForceClaimVictimWake`.
+        if (result.hook?.claimedFrom) {
+          const outcome = await publishForceClaimVictimWake(
+            world,
+            runId,
+            result.hook
+          );
+          runtimeLogger.info('Hook token force-claimed from another run', {
+            workflowRunId: runId,
+            hookId: hook.correlationId,
+            victimRunId: result.hook.claimedFrom.runId,
+            victimWake: outcome,
+          });
+        }
 
         // If storage detected a real token conflict with another
         // workflow's hook, re-queue so the workflow handler can
@@ -1097,6 +1120,13 @@ export async function runWorkflowWithQuickJS(params: {
   // handed back on a write that the VM has not been given yet. Every write
   // made from this view goes through `createEvent` below so it names the
   // position it was decided against and its response is queued here.
+  // Same durability contract as the node:vm suspension handler: a forced
+  // hook creation that is still the last event this run wrote owes its
+  // victim a wake, because the invocation that created it died before
+  // publishing one. Repaid here, on the log as loaded, before this
+  // invocation writes anything.
+  await republishOwedForceClaimVictimWake(world, runId, events);
+
   const logView = new QuickJSLogView(events, loadedCursor);
   const createEvent: EventCreator = async (data, eventParams) => {
     const result = await world.events.create(runId, data, {

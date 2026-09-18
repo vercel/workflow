@@ -264,6 +264,7 @@ const attributeOrder: AttributeKey[] = [
   'attempt',
   'token',
   'tokenRetentionUntil',
+  'claimedFrom',
   'isWebhook',
   'isSystem',
   'receivedCount',
@@ -324,6 +325,7 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   runId: 'Run ID',
   token: 'Token',
   tokenRetentionUntil: 'Minimum Retention Until',
+  claimedFrom: 'Token Taken From Run',
   eventType: 'Event Type',
   errorCode: 'Error Code',
   correlationId: 'Correlation ID',
@@ -444,6 +446,11 @@ const attributeToDisplayFn: Record<
   // Hook details
   token: (value: unknown) => String(value),
   tokenRetentionUntil: timestampWithTooltipOrNull,
+  // A force-claimed hook (`experimental_force`): the run whose token it took.
+  claimedFrom: (value: unknown) => {
+    const from = value as { runId?: unknown } | undefined;
+    return typeof from?.runId === 'string' ? from.runId : null;
+  },
   isWebhook: (value: unknown) => String(value),
   isSystem: (value: unknown) => String(value),
   receivedCount: (value: unknown) => String(value),

@@ -13,6 +13,7 @@ import { types } from 'node:util';
 import {
   FatalError,
   HookConflictError,
+  HookForceClaimedError,
   RetryableError,
   RuntimeDecryptionError,
   StreamError,
@@ -289,6 +290,25 @@ export function getCommonReducers(
       }
       return reduced;
     },
+    HookForceClaimedError: (value) => {
+      const base = reduceNamedErrorSubclassBase('HookForceClaimedError', value);
+      if (!base) return false;
+      const reduced: SerializableSpecial['HookForceClaimedError'] = {
+        ...base,
+        token: readProperty(value, 'token') as HookForceClaimedError['token'],
+        claimedByRunId: readProperty(
+          value,
+          'claimedByRunId'
+        ) as HookForceClaimedError['claimedByRunId'],
+      };
+      const claimedByHookId = readProperty(value, 'claimedByHookId') as
+        | HookForceClaimedError['claimedByHookId']
+        | undefined;
+      if (claimedByHookId !== undefined) {
+        reduced.claimedByHookId = claimedByHookId;
+      }
+      return reduced;
+    },
     RangeError: makeErrorSubclassReducer('RangeError'),
     ReferenceError: makeErrorSubclassReducer('ReferenceError'),
     // RetryableError carries an extra `retryAfter` Date that we serialize as
@@ -488,6 +508,22 @@ export function getCommonRevivers(
           Symbol.for('@workflow/errors//HookConflictError')
         ] as typeof HookConflictError | undefined) ?? HookConflictError;
       const error = new Ctor(value.token, value.conflictingRunId);
+      if (value.stack !== undefined) error.stack = value.stack;
+      if ('cause' in value) {
+        (error as Error & { cause?: unknown }).cause = value.cause;
+      }
+      return error;
+    },
+    HookForceClaimedError: (value) => {
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//HookForceClaimedError')
+        ] as typeof HookForceClaimedError | undefined) ?? HookForceClaimedError;
+      const error = new Ctor(
+        value.token,
+        value.claimedByRunId,
+        value.claimedByHookId
+      );
       if (value.stack !== undefined) error.stack = value.stack;
       if ('cause' in value) {
         (error as Error & { cause?: unknown }).cause = value.cause;

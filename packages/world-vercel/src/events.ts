@@ -31,7 +31,11 @@
  * the v3 path.
  */
 
-import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
+import {
+  HookForceClaimedError,
+  HookNotFoundError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   type AnyEventRequest,
   applyAttributeChanges,
@@ -130,6 +134,8 @@ interface SplitEventData {
     hookTokenRetentionUntil?: Date;
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
+    /** `createHook({ experimental_force })`: take the token over if held. */
+    hookForce?: boolean;
     errorCode?: string;
     cancelReason?: string;
     /** Inline-ownership stamp on step_started (owning queue message ID). */
@@ -189,6 +195,13 @@ type MetaSourceField =
   | 'tokenRetentionUntil'
   | 'isWebhook'
   | 'isSystem'
+  | 'force'
+  // World-written on persisted rows (never sent by the SDK): the claimer's
+  // hook_created carries `forceClaimedFrom`, the victim's hook_disposed
+  // `forceClaimedBy`. Listed so the exhaustiveness guard knows they are
+  // accounted for; `splitEventDataForV4` never puts either on the wire.
+  | 'forceClaimedFrom'
+  | 'forceClaimedBy'
   | 'errorCode'
   | 'cancelReason'
   | 'ownerMessageId'
@@ -307,6 +320,11 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.isSystem === 'boolean') {
     meta.hookIsSystem = eventData.isSystem;
+  }
+  // hook_created only. `forceClaimedFrom` is the server's own annotation on
+  // the persisted row and is never part of a request.
+  if (eventData.force === true) {
+    meta.hookForce = true;
   }
   if (typeof eventData.errorCode === 'string') {
     meta.errorCode = eventData.errorCode;
@@ -650,6 +668,17 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     return result as EventResult<T['eventType']>;
   } catch (err) {
     if (err instanceof ReplayEventObserverError) throw err.error;
+    // 409 hook-force-claimed on hook_received: the hook's token was taken
+    // over by another run and the server has already re-pointed it. Re-key
+    // with the token this write carried so `resumeHook()` can follow it.
+    if (HookForceClaimedError.is(err) && data.eventType === 'hook_received') {
+      const token = (data.eventData as { token?: unknown } | undefined)?.token;
+      throw new HookForceClaimedError(
+        typeof token === 'string' ? token : err.token,
+        err.claimedByRunId,
+        err.claimedByHookId
+      );
+    }
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
       isHookEventRequiringExistence(data.eventType) &&

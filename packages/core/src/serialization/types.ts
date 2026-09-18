@@ -93,6 +93,14 @@ export interface SerializableSpecial {
     // TODO: Make this required when HookConflictError.conflictingRunId is required.
     conflictingRunId?: string;
   };
+  HookForceClaimedError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    token: string;
+    claimedByRunId: string;
+    claimedByHookId?: string;
+  };
   Int8Array: string; // base64 string
   Int16Array: string; // base64 string
   Int32Array: string; // base64 string
