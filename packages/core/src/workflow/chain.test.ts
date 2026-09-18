@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { Sequence } from './sequence.js';
+import { Chain } from './chain.js';
 
-describe('workflow Sequence handle', () => {
+describe('workflow Chain handle', () => {
   const revive = (length = 3) =>
-    (Sequence as any)[Symbol.for('workflow-deserialize')]({
+    (Chain as any)[Symbol.for('workflow-deserialize')]({
       runId: 'wrun_test',
       stepId: 'step_test',
       slot: 'slot_0',
       length,
-    }) as Sequence<number>;
+    }) as Chain<number>;
 
   it('carries refs and selects prefixes without Node dependencies', () => {
     const sequence = revive();
@@ -19,7 +19,7 @@ describe('workflow Sequence handle', () => {
 
   it('rejects step-only operations', () => {
     const sequence = revive();
-    expect(() => Sequence.from()).toThrow('inside a step');
+    expect(() => Chain.from()).toThrow('inside a step');
     expect(() => sequence.append()).toThrow('inside a step');
     expect(() => sequence.get()).toThrow('inside a step');
     expect(() => sequence.toArray()).toThrow('inside a step');

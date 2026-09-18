@@ -14,7 +14,7 @@ export { sleep } from '../sleep.js';
 export { createHook, createWebhook } from './create-hook.js';
 export { defineHook } from './define-hook.js';
 export { getWorkflowMetadata } from './get-workflow-metadata.js';
-export { Sequence } from './sequence.js';
+export { Chain } from './chain.js';
 export {
   type SetAttributesOptions,
   setAttributes,

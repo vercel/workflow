@@ -10,8 +10,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerStepFunction } from './private.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
-import { Sequence } from './sequence.js';
-import { splitSequenceEnvelope } from './serialization/sequence-envelope.js';
+import { Chain } from './chain.js';
+import { splitChainEnvelope } from './serialization/chain-envelope.js';
 import {
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
@@ -21,7 +21,7 @@ vi.mock('@vercel/functions', () => ({
   waitUntil: (p: Promise<unknown>) => p.catch(() => {}),
 }));
 
-describe('Sequence workflowEntrypoint integration', () => {
+describe('Chain workflowEntrypoint integration', () => {
   afterEach(() => setWorld(undefined));
   it('seeds, appends, takes, and branches through authoritative inline results', async () => {
     const runId = 'wrun_history_runtime',
@@ -133,41 +133,38 @@ describe('Sequence workflowEntrypoint integration', () => {
     registerStepFunction('seed', async () => {
       bodyCounts.seed++;
       return {
-        sequence: Sequence.from([{ n: 1 }, { n: 2 }]),
+        chain: Chain.from([{ n: 1 }, { n: 2 }]),
         ordinary: 'seed',
       };
     });
     registerStepFunction(
       'extend',
-      async (sequence: Sequence<{ n: number }>, n: number, label: string) => {
+      async (chain: Chain<{ n: number }>, n: number, label: string) => {
         bodyCounts.extend++;
-        return { sequence: sequence.append({ n }), ordinary: label };
+        return { chain: chain.append({ n }), ordinary: label };
       }
     );
     registerStepFunction(
       'verify',
       async (input: {
-        base: Sequence<{ n: number }>;
-        main: { sequence: Sequence<{ n: number }>; ordinary: string };
-        aside: { sequence: Sequence<{ n: number }>; ordinary: string };
+        base: Chain<{ n: number }>;
+        main: { chain: Chain<{ n: number }>; ordinary: string };
+        aside: { chain: Chain<{ n: number }>; ordinary: string };
       }) => {
         bodyCounts.verify++;
         expect(await input.base.toArray()).toEqual([{ n: 1 }, { n: 2 }]);
-        expect(await input.main.sequence.toArray()).toEqual([
+        expect(await input.main.chain.toArray()).toEqual([
           { n: 1 },
           { n: 2 },
           { n: 3 },
         ]);
-        expect(await input.aside.sequence.toArray()).toEqual([
-          { n: 1 },
-          { n: 4 },
-        ]);
+        expect(await input.aside.chain.toArray()).toEqual([{ n: 1 }, { n: 4 }]);
         expect(input.main.ordinary).toBe('main');
         expect(input.aside.ordinary).toBe('aside');
         return { base: 2, main: 3, aside: 2, checked: true };
       }
     );
-    const code = `const seed=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('seed');const extend=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('extend');const verify=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('verify');async function workflow(){const first=await seed();const main=await extend(first.sequence,3,'main');const aside=await extend(first.sequence.take(1),4,'aside');return await verify({base:first.sequence,main,aside});}globalThis.__private_workflows=new Map([['workflow',workflow]]);`;
+    const code = `const seed=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('seed');const extend=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('extend');const verify=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('verify');async function workflow(){const first=await seed();const main=await extend(first.chain,3,'main');const aside=await extend(first.chain.take(1),4,'aside');return await verify({base:first.chain,main,aside});}globalThis.__private_workflows=new Map([['workflow',workflow]]);`;
     await workflowEntrypoint(code)(
       new Request('https://test', {
         method: 'POST',
@@ -187,7 +184,7 @@ describe('Sequence workflowEntrypoint integration', () => {
     const recipes = [...steps.values()]
       .filter((step) => step.output)
       .flatMap((step) =>
-        splitSequenceEnvelope(step.output as Uint8Array).parseRecipes()
+        splitChainEnvelope(step.output as Uint8Array).parseRecipes()
       );
     const seedStep = [...steps.values()].find(
       (step) => step.stepName === 'seed'

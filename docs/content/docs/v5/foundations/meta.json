@@ -8,7 +8,7 @@
     "streaming",
     "cancellation",
     "serialization",
-    "sequence",
+    "chain",
     "idempotency",
     "versioning"
   ],

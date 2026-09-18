@@ -1,18 +1,18 @@
-import type { SequenceRecipe } from '../sequence.js';
+import type { ChainRecipe } from '../chain.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const PREFIX = encoder.encode('seq1');
+const PREFIX = encoder.encode('chn1');
 const HEADER_BYTES = 8;
 
-export type SequenceEnvelope = {
+export type ChainEnvelope = {
   payload: Uint8Array;
-  parseRecipes(): SequenceRecipe[];
+  parseRecipes(): ChainRecipe[];
 };
 
-export function wrapSequenceEnvelope(
+export function wrapChainEnvelope(
   payload: Uint8Array,
-  recipes: SequenceRecipe[]
+  recipes: ChainRecipe[]
 ): Uint8Array {
   if (recipes.length === 0) return payload;
   const recipeBytes = encoder.encode(JSON.stringify({ version: 1, recipes }));
@@ -29,12 +29,12 @@ export function wrapSequenceEnvelope(
   return output;
 }
 
-export function splitSequenceEnvelope(payload: Uint8Array): SequenceEnvelope {
+export function splitChainEnvelope(payload: Uint8Array): ChainEnvelope {
   if (payload.length < 4 || !PREFIX.every((byte, i) => payload[i] === byte)) {
     return { payload, parseRecipes: () => [] };
   }
   if (payload.length < HEADER_BYTES)
-    throw new Error('Truncated Sequence envelope');
+    throw new Error('Truncated Chain envelope');
   const recipeLength = new DataView(
     payload.buffer,
     payload.byteOffset,
@@ -42,9 +42,9 @@ export function splitSequenceEnvelope(payload: Uint8Array): SequenceEnvelope {
   ).getUint32(4);
   const nestedOffset = HEADER_BYTES + recipeLength;
   if (nestedOffset > payload.length)
-    throw new Error('Truncated Sequence recipe table');
+    throw new Error('Truncated Chain recipe table');
   const recipeBytes = payload.subarray(HEADER_BYTES, nestedOffset);
-  let parsed: SequenceRecipe[] | undefined;
+  let parsed: ChainRecipe[] | undefined;
   return {
     payload: payload.subarray(nestedOffset),
     parseRecipes() {
@@ -53,7 +53,7 @@ export function splitSequenceEnvelope(payload: Uint8Array): SequenceEnvelope {
       try {
         envelope = JSON.parse(decoder.decode(recipeBytes));
       } catch {
-        throw new Error('Malformed Sequence recipe table');
+        throw new Error('Malformed Chain recipe table');
       }
       if (
         !envelope ||
@@ -61,9 +61,9 @@ export function splitSequenceEnvelope(payload: Uint8Array): SequenceEnvelope {
         (envelope as { version?: unknown }).version !== 1 ||
         !Array.isArray((envelope as { recipes?: unknown }).recipes)
       ) {
-        throw new Error('Unsupported Sequence recipe envelope');
+        throw new Error('Unsupported Chain recipe envelope');
       }
-      parsed = (envelope as { recipes: SequenceRecipe[] }).recipes;
+      parsed = (envelope as { recipes: ChainRecipe[] }).recipes;
       return parsed;
     },
   };

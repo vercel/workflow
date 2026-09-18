@@ -1,0 +1,41 @@
+---
+title: Chain (experimental)
+description: Share immutable append-only history across Workflow steps.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+<Callout type="warn">
+`Chain` is experimental. Its API, wire format, limits, and engine support may change.
+</Callout>
+
+Chains efficiently link values across steps, preserving shared prefixes as they grow or branch.
+
+Streams carry incrementally produced data and live handles across workflow boundaries. `Chain<T>` represents an immutable ordered value that efficiently shares committed prefixes across steps. New entries and reconstruction recipes are committed atomically with step results.
+
+```ts
+import { Chain } from 'workflow';
+
+async function turn(history?: Chain<Message>) {
+  'use step';
+  const messages = history ? await history.toArray() : [];
+  const next = await generate(messages);
+  return (history ?? Chain.from([])).append(next);
+}
+```
+
+Use `take(n)` for a fixed prefix. Branching follows ordinary control flow:
+
+```ts
+const base = await seed();
+const main = await turn(base);
+const aside = await turn(base.take(2));
+```
+
+`main`, `aside`, and `base` remain independent complete values while their committed prefix is structurally shared. Chains are not chains of tasks or mutable append logs; branching follows ordinary control flow. `get()` and `toArray()` materialize detached ordinary values inside steps; reinserting one captures new data.
+
+Chain creation, append, and materialized reads are step-only. Workflow code can carry committed references and select prefixes. References are same-run; handoff to another run or deployment must materialize and reseed with `Chain.from()`.
+
+Inserted values support acyclic JSON plain data with finite numbers, dense arrays, and enumerable string-keyed data properties. Accessors, proxies, sparse arrays, symbols, non-plain objects, and non-finite numbers fail explicitly.
+
+Node workflow execution is supported initially. QuickJS is not supported. Cold standalone reads may fetch complete producing step outputs serially. Full observability UI materialization is not yet implemented.

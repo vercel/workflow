@@ -16,7 +16,7 @@ import {
 } from './encryption.js';
 import { formatSerializationError, rethrowIfRuntimeError } from './errors.js';
 import { decodeFormatPrefix, encodeWithFormatPrefix } from './format.js';
-import { splitSequenceEnvelope } from './sequence-envelope.js';
+import { splitChainEnvelope } from './chain-envelope.js';
 import { SerializationFormat } from './types.js';
 
 /**
@@ -63,7 +63,7 @@ export async function deserialize(
 
   const nested =
     decrypted instanceof Uint8Array
-      ? splitSequenceEnvelope(decrypted).payload
+      ? splitChainEnvelope(decrypted).payload
       : decrypted;
 
   if (!(nested instanceof Uint8Array)) {

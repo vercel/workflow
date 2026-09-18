@@ -3,4 +3,4 @@
 'workflow': minor
 ---
 
-Add an experimental immutable Sequence value backed by declarative recipes in committed step outputs.
+Add an experimental immutable Chain value backed by declarative recipes in committed step outputs.

@@ -25,7 +25,7 @@ export {
   type WebhookOptions,
 } from './create-hook.js';
 export { defineHook, type TypedHook } from './define-hook.js';
-export { Sequence } from './sequence.js';
+export { Chain } from './chain.js';
 export {
   type SetAttributesOptions,
   setAttributes,

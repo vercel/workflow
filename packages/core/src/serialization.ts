@@ -37,7 +37,7 @@ import {
   createSealSession,
   decodeRunPublicKey,
 } from './sealed-box.js';
-import { Sequence, type SequenceRecipe } from './sequence.js';
+import { Chain, type ChainRecipe } from './chain.js';
 import * as clientModule from './serialization/client.js';
 import {
   type CompressionStats,
@@ -88,9 +88,9 @@ import {
   getStepFunctionReviver,
 } from './serialization/reducers/step-function.js';
 import {
-  splitSequenceEnvelope,
-  wrapSequenceEnvelope,
-} from './serialization/sequence-envelope.js';
+  splitChainEnvelope,
+  wrapChainEnvelope,
+} from './serialization/chain-envelope.js';
 import * as stepModule from './serialization/step.js';
 import {
   type FormatPrefix,
@@ -1761,9 +1761,9 @@ function getAllBaseReducers(
   // Class/Instance MUST come before Error so that custom Error subclasses
   // with WORKFLOW_SERIALIZE take precedence (devalue uses first-match-wins).
   return {
-    Sequence: (value) =>
-      value instanceof Sequence
-        ? (Sequence as any)[Symbol.for('workflow-serialize')](value)
+    Chain: (value) =>
+      value instanceof Chain
+        ? (Chain as any)[Symbol.for('workflow-serialize')](value)
         : false,
     ...getClassReducers(),
     ...getStepFunctionReducer(),
@@ -2339,22 +2339,20 @@ function getStepReducers(
   // orders after the run exists. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
   readbackOps: Promise<void>[] = ops,
-  outputSequence?: { stepId: string; recipes: SequenceRecipe[] }
+  outputChain?: { stepId: string; recipes: ChainRecipe[] }
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
-    Sequence: (value) =>
-      value instanceof Sequence
-        ? outputSequence
+    Chain: (value) =>
+      value instanceof Chain
+        ? outputChain
           ? value._serializeOutput(
               runId,
-              outputSequence.stepId,
-              outputSequence.recipes
+              outputChain.stepId,
+              outputChain.recipes
             )
           : (() => {
-              throw new Error(
-                'Sequence is only supported in step return values'
-              );
+              throw new Error('Chain is only supported in step return values');
             })()
         : false,
 
@@ -2807,8 +2805,8 @@ function reviveAbortSignal(
  */
 export function getCommonRevivers(global: Record<string, any> = globalThis) {
   return {
-    Sequence: (value: unknown) =>
-      (Sequence as any)[Symbol.for('workflow-deserialize')](value),
+    Chain: (value: unknown) =>
+      (Chain as any)[Symbol.for('workflow-deserialize')](value),
     ...getClassRevivers(global),
     ...getCommonReviversFromModule(global),
   } as const satisfies Partial<Revivers>;
@@ -3383,10 +3381,10 @@ function getStepRevivers(
 ): Partial<Revivers> {
   return {
     ...getCommonRevivers(global),
-    Sequence: (value) => {
+    Chain: (value) => {
       if (value.runId !== runId)
-        throw new Error('Cross-run Sequence refs are unsupported');
-      return (Sequence as any)[Symbol.for('workflow-deserialize')](value);
+        throw new Error('Cross-run Chain refs are unsupported');
+      return (Chain as any)[Symbol.for('workflow-deserialize')](value);
     },
 
     // StepFunction reviver for step context - returns raw step function
@@ -3735,7 +3733,7 @@ export interface PreparedReplayPayload {
   /** Whole authenticated/decompressed plaintext, including recipe envelope. */
   readonly authenticatedPlaintext?: unknown;
   /** Lazy inert recipe parser; ordinary hydration never invokes it. */
-  readonly parseSequenceRecipes?: () => SequenceRecipe[];
+  readonly parseChainRecipes?: () => ChainRecipe[];
 }
 
 /**
@@ -3764,12 +3762,12 @@ export const prepareReplayPayload: ReplayPayloadPreparer = async (
   await recordCompression(compressionStats, 'deserialize');
   const split =
     authenticatedPlaintext instanceof Uint8Array
-      ? splitSequenceEnvelope(authenticatedPlaintext)
+      ? splitChainEnvelope(authenticatedPlaintext)
       : { payload: authenticatedPlaintext, parseRecipes: () => [] };
   return {
     data: split.payload,
     authenticatedPlaintext,
-    parseSequenceRecipes: split.parseRecipes,
+    parseChainRecipes: split.parseRecipes,
   };
 };
 
@@ -4115,7 +4113,7 @@ export async function dehydrateStepReturnValue(
   }
   try {
     const compressionStats: CompressionStats = {};
-    const recipes: SequenceRecipe[] = [];
+    const recipes: ChainRecipe[] = [];
     const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(
@@ -4133,7 +4131,7 @@ export async function dehydrateStepReturnValue(
       compression,
       compressionStats,
       wrapPlaintext: (payload) =>
-        recipes.length > 0 ? wrapSequenceEnvelope(payload, recipes) : payload,
+        recipes.length > 0 ? wrapChainEnvelope(payload, recipes) : payload,
     });
     await recordCompression(compressionStats, 'serialize');
     return result;
@@ -4359,7 +4357,7 @@ export async function hydrateStepReturnValue(
 // pass through the mode-specific entries as extraReducers/extraRevivers.
 
 const STREAM_AND_REQUEST_KEYS = [
-  'Sequence',
+  'Chain',
   'ReadableStream',
   'WritableStream',
   'Request',

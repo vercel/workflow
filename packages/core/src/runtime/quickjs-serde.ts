@@ -1605,9 +1605,9 @@ export function createQuickJSSerde(
     },
     Instance: (value: JSValueHandle) => {
       const classId = ownString(value, 'classId');
-      if (classId === 'class//workflow//Sequence') {
+      if (classId === 'class//workflow//Chain') {
         throw new Error(
-          'Sequence is not supported by the QuickJS workflow engine; use WORKFLOW_VM=node.'
+          'Chain is not supported by the QuickJS workflow engine; use WORKFLOW_VM=node.'
         );
       }
       const cls = lookupRegisteredClass(classId);

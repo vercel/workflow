@@ -1,14 +1,14 @@
-export const SEQUENCE_CLASS_ID = 'class//workflow//Sequence';
+export const CHAIN_CLASS_ID = 'class//workflow//Chain';
 
-export type SequenceRef = {
+export type ChainRef = {
   runId: string;
   stepId: string;
   slot: string;
   length: number;
 };
 
-export function isSequenceRef(value: unknown): value is SequenceRef {
-  const ref = value as SequenceRef;
+export function isChainRef(value: unknown): value is ChainRef {
+  const ref = value as ChainRef;
   return (
     !!ref &&
     typeof ref.runId === 'string' &&
