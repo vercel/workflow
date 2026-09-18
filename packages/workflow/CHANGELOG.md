@@ -1,5 +1,26 @@
 # workflow
 
+## 5.0.0-beta.54
+
+### Minor Changes
+
+- [#3678](https://github.com/vercel/workflow/pull/3678) [`20ad2b3`](https://github.com/vercel/workflow/commit/20ad2b358240819c6e590fd4752b97da1c64b390) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `registerLifecycleHooks` from `workflow/api` for best-effort completion and failure reporting with a read-free workflow name, lazy `Run` instance, and failure cause hydrated from the persisted payload. Run metadata getters avoid resolving input/output payloads.
+
+### Patch Changes
+
+- Updated dependencies [[`f75b184`](https://github.com/vercel/workflow/commit/f75b184a853b50a030659bc6d78ef461c2a82a4d), [`5a05f40`](https://github.com/vercel/workflow/commit/5a05f409aa23f528f214640295f389cabdcb5a9d), [`426bdb6`](https://github.com/vercel/workflow/commit/426bdb6ab98e08902c4cab4cf9a7e1983add55f6), [`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050), [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6), [`f1f5b7d`](https://github.com/vercel/workflow/commit/f1f5b7d0c2e7a445766702e7dacfbb53d28358b5), [`20ad2b3`](https://github.com/vercel/workflow/commit/20ad2b358240819c6e590fd4752b97da1c64b390)]:
+  - @workflow/core@5.0.0-beta.54
+  - @workflow/nest@5.0.0-beta.54
+  - @workflow/errors@5.0.0-beta.22
+  - @workflow/cli@5.0.0-beta.54
+  - @workflow/nitro@5.0.0-beta.54
+  - @workflow/next@5.0.0-beta.54
+  - @workflow/typescript-plugin@5.0.0-beta.5
+  - @workflow/astro@5.0.0-beta.54
+  - @workflow/rollup@5.0.0-beta.54
+  - @workflow/sveltekit@5.0.0-beta.54
+  - @workflow/nuxt@5.0.0-beta.54
+
 ## 5.0.0-beta.53
 
 ### Patch Changes

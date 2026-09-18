@@ -1,5 +1,24 @@
 # @workflow/core
 
+## 5.0.0-beta.54
+
+### Minor Changes
+
+- [#4168](https://github.com/vercel/workflow/pull/4168) [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6) Thanks [@shalabhc](https://github.com/shalabhc)! - Add an optional `invoke` method and capability to the World interface. It routes a payload to the runner handling the specified `runId` and returns a promise for its response. In world-postgres, this uses a regular queue roundtrip with a run-scoped queue. The runtime uses `invoke` when available, initially to resume hooks.
+
+- [#3678](https://github.com/vercel/workflow/pull/3678) [`20ad2b3`](https://github.com/vercel/workflow/commit/20ad2b358240819c6e590fd4752b97da1c64b390) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `registerLifecycleHooks` from `workflow/api` for best-effort completion and failure reporting with a read-free workflow name, lazy `Run` instance, and failure cause hydrated from the persisted payload. Run metadata getters avoid resolving input/output payloads.
+
+### Patch Changes
+
+- [#4215](https://github.com/vercel/workflow/pull/4215) [`f75b184`](https://github.com/vercel/workflow/commit/f75b184a853b50a030659bc6d78ef461c2a82a4d) Thanks [@gaojude](https://github.com/gaojude)! - Order hook registration and conflict settlements with earlier workflow deliveries so replay preserves concurrent step correlation IDs.
+
+- [#4082](https://github.com/vercel/workflow/pull/4082) [`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050) Thanks [@shalabhc](https://github.com/shalabhc)! - Validate complete attribute event data against the World's 8KiB UTF-8 JSON limit before new writes, with catchable SDK errors and unchanged replay of persisted events.
+- Updated dependencies [[`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050), [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6)]:
+  - @workflow/world@5.0.0-beta.37
+  - @workflow/world-vercel@5.0.0-beta.49
+  - @workflow/errors@5.0.0-beta.22
+  - @workflow/world-local@5.0.0-beta.46
+
 ## 5.0.0-beta.53
 
 ### Patch Changes
