@@ -244,7 +244,6 @@ type AttributeKey =
   | 'disposedAt'
   | 'isSystem'
   | 'errorCode'
-  | 'cancelReason'
   // Analytics-only provenance (AnalyticsEvent / AnalyticsStep), not on Event.
   | 'computeInstanceId'
   // Analytics-only, and event-grained: only AnalyticsEvent carries it. The key
@@ -289,7 +288,6 @@ const attributeOrder: AttributeKey[] = [
   'expiredAt',
   'retryAfter',
   'errorCode',
-  'cancelReason',
   'error',
   'metadata',
   'eventData',
@@ -658,19 +656,6 @@ const attributeToDisplayFn: Record<
       </Collapsible>
     );
   },
-  cancelReason: (value: unknown) => {
-    const reason =
-      typeof value === 'string' && value.trim().length > 0
-        ? value
-        : 'No reason was provided.';
-    return (
-      <Collapsible label="Cancellation" defaultOpen>
-        <p className="whitespace-pre-wrap break-words px-1.5 text-copy-13 text-gray-1000">
-          {reason}
-        </p>
-      </Collapsible>
-    );
-  },
   eventData: (value: unknown) => {
     if (isEncryptedMarker(value)) {
       return (
@@ -701,7 +686,6 @@ const resolvableAttributes = [
   'input',
   'output',
   'error',
-  'cancelReason',
   'metadata',
   'attributes',
   'eventData',
@@ -713,7 +697,6 @@ const selfHeaderedAttributes = new Set([
   'input',
   'output',
   'error',
-  'cancelReason',
   'metadata',
   'attributes',
   'eventData',
