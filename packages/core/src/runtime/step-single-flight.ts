@@ -41,6 +41,8 @@ const singleFlight = globalSingleton(
   () => ({ inFlight: new Map<string, Promise<StepExecutionResult>>() })
 );
 
+type StepExecutionContention = 'fresh-inline-step' | 'recovery';
+
 /**
  * Run `execute` unless an execution for the same run + step correlation ID is
  * already in flight in this process. The winner's result is returned to the
@@ -49,25 +51,30 @@ const singleFlight = globalSingleton(
  * body. A winner failure is not propagated to the loser: the winner's own
  * queue message redelivers and drives the retry, so exactly one message
  * keeps owning the outcome.
+ *
+ * Fresh inline steps contend normally when an invocation wakes itself before
+ * its previous invocation has settled. Recovery contention instead indicates
+ * a delayed backstop or retry overlapping the owner, and remains actionable.
  */
 export async function runStepSingleFlight(
   runId: string,
   correlationId: string,
-  execute: () => Promise<StepExecutionResult>
+  execute: () => Promise<StepExecutionResult>,
+  contention: StepExecutionContention = 'recovery'
 ): Promise<StepExecutionResult> {
   const key = `${runId}:${correlationId}`;
   const existing = singleFlight.inFlight.get(key);
   if (existing) {
-    // warn (always printed, unlike debug/info): the single-flight is
-    // absorbing what would have been a duplicate execution, typically a
-    // delayed backstop or retry message landing in the same process while
-    // the owner is still mid-body. Rare by design; a burst of these means
-    // leases are expiring under live executions (raise
-    // WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS).
-    runtimeLogger.warn(
-      'Step execution already in flight in this process; awaiting its settlement instead of executing again',
-      { workflowRunId: runId, stepId: correlationId }
-    );
+    const metadata = { workflowRunId: runId, stepId: correlationId };
+    const message =
+      'Step execution already in flight in this process; awaiting its settlement instead of executing again';
+    if (contention === 'fresh-inline-step') {
+      runtimeLogger.debug(message, metadata);
+    } else {
+      // A burst of recovery contention means leases are expiring under live
+      // executions (raise WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS).
+      runtimeLogger.warn(message, metadata);
+    }
     try {
       await existing;
     } catch {

@@ -1,5 +1,6 @@
 import { withResolvers } from '@workflow/utils';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { runtimeLogger } from '../logger.js';
 import type { StepExecutionResult } from './step-executor.js';
 import { runStepSingleFlight } from './step-single-flight.js';
 
@@ -7,6 +8,46 @@ const RUN = 'wrun_00000000000000000000000000';
 const STEP = 'step_00000000000000000000000000';
 
 describe('runStepSingleFlight', () => {
+  it('logs fresh-step contention at debug without suppressing the guard', async () => {
+    const debug = vi.spyOn(runtimeLogger, 'debug').mockImplementation(() => {});
+    const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    const { promise, resolve } = withResolvers<StepExecutionResult>();
+
+    const winner = runStepSingleFlight(RUN, STEP, () => promise);
+    const loser = runStepSingleFlight(
+      RUN,
+      STEP,
+      async () => ({ type: 'completed' }),
+      'fresh-inline-step'
+    );
+
+    expect(debug).toHaveBeenCalledWith(
+      expect.stringContaining('Step execution already in flight'),
+      { workflowRunId: RUN, stepId: STEP }
+    );
+    expect(warn).not.toHaveBeenCalled();
+    resolve({ type: 'completed' });
+    await expect(winner).resolves.toEqual({ type: 'completed' });
+    await expect(loser).resolves.toEqual({ type: 'skipped' });
+  });
+
+  it('keeps recovery contention at warn', async () => {
+    const debug = vi.spyOn(runtimeLogger, 'debug').mockImplementation(() => {});
+    const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    const { promise, resolve } = withResolvers<StepExecutionResult>();
+
+    const winner = runStepSingleFlight(RUN, STEP, () => promise);
+    const loser = runStepSingleFlight(RUN, STEP, async () => ({
+      type: 'completed',
+    }));
+
+    expect(warn).toHaveBeenCalledOnce();
+    expect(debug).not.toHaveBeenCalled();
+    resolve({ type: 'completed' });
+    await winner;
+    await loser;
+  });
+
   it('executes when nothing is in flight and returns the result', async () => {
     let calls = 0;
     const result = await runStepSingleFlight(RUN, STEP, async () => {
