@@ -1,5 +1,5 @@
 import { withResolvers } from '@workflow/utils';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runtimeLogger } from '../logger.js';
 import type { StepExecutionResult } from './step-executor.js';
 import { runStepSingleFlight } from './step-single-flight.js';
@@ -8,6 +8,10 @@ const RUN = 'wrun_00000000000000000000000000';
 const STEP = 'step_00000000000000000000000000';
 
 describe('runStepSingleFlight', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('logs fresh-step contention at debug without suppressing the guard', async () => {
     const debug = vi.spyOn(runtimeLogger, 'debug').mockImplementation(() => {});
     const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
@@ -58,15 +62,20 @@ describe('runStepSingleFlight', () => {
     expect(calls).toBe(1);
   });
 
-  it('a concurrent second caller does not execute and skips only after the winner settles', async () => {
+  it('a fresh-step contender does not execute and skips only after the winner settles', async () => {
     const { promise, resolve } = withResolvers<StepExecutionResult>();
     let loserCalls = 0;
 
     const winner = runStepSingleFlight(RUN, STEP, () => promise);
-    const loser = runStepSingleFlight(RUN, STEP, async () => {
-      loserCalls++;
-      return { type: 'completed' };
-    });
+    const loser = runStepSingleFlight(
+      RUN,
+      STEP,
+      async () => {
+        loserCalls++;
+        return { type: 'completed' };
+      },
+      'fresh-inline-step'
+    );
 
     // The loser must not resolve (ack) before the winner settles — an early
     // ack could orphan the step if the process crashed mid-winner.
