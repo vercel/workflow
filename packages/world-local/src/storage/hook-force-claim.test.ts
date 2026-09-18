@@ -10,7 +10,11 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { SPEC_VERSION_CURRENT, type Storage } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+  type Storage,
+} from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHook, createRun, updateRun } from '../test-helpers.js';
 import { createStorage } from './index.js';
@@ -28,14 +32,25 @@ describe('local World hook force-claim', () => {
     await fs.rm(testDir, { recursive: true, force: true });
   });
 
-  async function runningRun(workflowName: string): Promise<string> {
-    const run = await createRun(storage, {
-      deploymentId: `dpl_${workflowName}`,
-      workflowName,
-      input: new Uint8Array(),
+  async function runningRun(
+    workflowName: string,
+    specVersion: number = SPEC_VERSION_CURRENT
+  ): Promise<string> {
+    const { run } = await storage.events.create(null, {
+      eventType: 'run_created',
+      specVersion,
+      eventData: {
+        deploymentId: `dpl_${workflowName}`,
+        workflowName,
+        input: new Uint8Array(),
+      },
     });
-    await updateRun(storage, run.runId, 'run_started');
-    return run.runId;
+    const runId = run!.runId;
+    await storage.events.create(runId, {
+      eventType: 'run_started',
+      specVersion,
+    });
+    return runId;
   }
 
   const eventTypes = async (runId: string) =>
@@ -99,5 +114,63 @@ describe('local World hook force-claim', () => {
       'run_started',
       'hook_created',
     ]);
+  });
+
+  it('declines to take a token from a running victim below the force-claim spec version', async () => {
+    // A run stamped one version below SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM:
+    // its runtime would take `hook_disposed{forceClaimedBy}` for its own
+    // `dispose()` and hang on `await hook`, so the World writes nothing and
+    // answers the ordinary conflict, marked as declined on purpose.
+    const token = 'channel:legacy';
+    const victim = await runningRun(
+      'legacy-victim',
+      SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM - 1
+    );
+    // Retained, so the token stays with the finished victim below.
+    const victimHook = await createHook(storage, victim, {
+      hookId: 'hook_legacy_victim',
+      token,
+      tokenRetentionUntil: new Date(Date.now() + 60 * 60 * 1000),
+    });
+    const claimer = await runningRun('claimer');
+
+    const result = await storage.events.create(claimer, {
+      eventType: 'hook_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: 'hook_claimer',
+      eventData: { token, force: true },
+    });
+    expect(result.event.eventType).toBe('hook_conflict');
+    expect(result.event.eventData).toMatchObject({
+      token,
+      conflictingRunId: victim,
+      forceRefusedReason: 'victim-spec-version',
+    });
+    expect(result.hook).toBeUndefined();
+    expect(await eventTypes(victim)).toEqual([
+      'run_created',
+      'run_started',
+      'hook_created',
+    ]);
+    expect((await storage.hooks.getByToken(token)).hookId).toBe(
+      victimHook.hookId
+    );
+
+    // A finished victim has no reader to strand: the same create takes its
+    // retained token at any version.
+    await updateRun(storage, victim, 'run_completed', {
+      result: new Uint8Array(),
+    });
+    const retaken = await storage.events.create(claimer, {
+      eventType: 'hook_created',
+      specVersion: SPEC_VERSION_CURRENT,
+      correlationId: 'hook_claimer_again',
+      eventData: { token, force: true },
+    });
+    expect(retaken.event.eventType).toBe('hook_created');
+    expect(retaken.hook?.claimedFrom).toEqual({
+      runId: victim,
+      hookId: victimHook.hookId,
+    });
   });
 });

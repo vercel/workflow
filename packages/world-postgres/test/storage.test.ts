@@ -6,7 +6,11 @@ import type {
   Step,
   WorkflowRun,
 } from '@workflow/world';
-import { eventIdToSlot, SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  eventIdToSlot,
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+} from '@workflow/world';
 import { encode } from 'cbor-x';
 import { eq } from 'drizzle-orm';
 import { Pool } from 'pg';
@@ -2269,6 +2273,84 @@ describe('Storage (Postgres integration)', () => {
         loserLog.find((e) => e.eventType === 'hook_disposed')?.eventData
       ).toMatchObject({ forceClaimedBy: { runId: owner.runId } });
       expect(owner.claimedFrom).toMatchObject({ runId: loser });
+    });
+
+    it('declines to take a token from a running victim below the force-claim spec version', async () => {
+      // The victim was stamped one version below
+      // SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM. Its runtime would read the
+      // disposal as its own `dispose()` and hang on `await hook`, so the World
+      // must not write it. The claimer gets the ordinary conflict, marked as
+      // declined on purpose.
+      const token = `force-legacy-${ulid()}`;
+      const legacy = SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM - 1;
+      const victim = (
+        await events.create(null, {
+          eventType: 'run_created',
+          specVersion: legacy,
+          eventData: {
+            deploymentId: 'dpl_legacy_victim',
+            workflowName: 'legacy-victim',
+            input: new Uint8Array(),
+          },
+        })
+      ).run!;
+      await events.create(victim.runId, {
+        eventType: 'run_started',
+        specVersion: legacy,
+      });
+      // Retained, so the token stays with the finished victim below.
+      const victimHook = await createHook(events, victim.runId, {
+        hookId: 'hook_legacy_victim',
+        token,
+        tokenRetentionUntil: new Date(Date.now() + 60 * 60 * 1000),
+      });
+      const claimer = await createRun(events, {
+        deploymentId: 'dpl_claimer',
+        workflowName: 'claimer',
+        input: new Uint8Array(),
+      });
+      await updateRun(events, claimer.runId, 'run_started');
+
+      const result = await events.create(claimer.runId, {
+        eventType: 'hook_created',
+        correlationId: 'hook_claimer',
+        eventData: { token, force: true },
+      });
+      expect(result.event.eventType).toBe('hook_conflict');
+      expect(result.event.eventData).toMatchObject({
+        token,
+        conflictingRunId: victim.runId,
+        forceRefusedReason: 'victim-spec-version',
+      });
+      expect(result.hook).toBeUndefined();
+
+      // Nothing was written to the victim, and it still owns the token.
+      const victimTypes = (
+        await events.list({ runId: victim.runId, pagination: {} })
+      ).data.map((e) => e.eventType);
+      expect(victimTypes).toEqual([
+        'run_created',
+        'run_started',
+        'hook_created',
+      ]);
+      expect((await hooks.getByToken(token)).hookId).toBe(victimHook.hookId);
+
+      // Once the victim has finished, the same forced create takes its
+      // retained token: a finished run has no reader to strand, whatever its
+      // version.
+      await updateRun(events, victim.runId, 'run_completed', {
+        result: new Uint8Array(),
+      });
+      const retaken = await events.create(claimer.runId, {
+        eventType: 'hook_created',
+        correlationId: 'hook_claimer_again',
+        eventData: { token, force: true },
+      });
+      expect(retaken.event.eventType).toBe('hook_created');
+      expect(retaken.hook?.claimedFrom).toEqual({
+        runId: victim.runId,
+        hookId: victimHook.hookId,
+      });
     });
 
     it('should reject sequential duplicate step_created with EntityConflictError', async () => {
