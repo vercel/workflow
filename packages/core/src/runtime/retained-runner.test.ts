@@ -45,6 +45,74 @@ const code = `
   globalThis.__private_workflows = new Map([['workflow', workflow]]);
 `;
 
+it('groups buffered input/create/start and awaits durability before user code or acknowledgement', async () => {
+  const fixture = await setup();
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  const staged: string[] = [];
+  const batches: string[][] = [];
+  let block = false;
+  let release!: () => void;
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let body = false;
+  registerStepFunction('retainedWrite', async () => {
+    body = true;
+  });
+  fixture.world.events.createWriteSession = () => ({
+    create: (event, params) => create(fixture.runId, event, params),
+    stage: async (event, params) => {
+      staged.push(event.eventType);
+      return create(fixture.runId, event, params);
+    },
+    flush: async () => {
+      if (!staged.length) return;
+      if (block) await barrier;
+      batches.push(staged.splice(0));
+    },
+    dispose() {},
+  });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  block = true;
+  let acknowledged = false;
+  const input = fixture.send('buffered', 'one').then(() => {
+    acknowledged = true;
+  });
+  await vi.waitFor(() => expect(staged).toContain('step_started'));
+  expect(body).toBe(false);
+  expect(acknowledged).toBe(false);
+  release();
+  await input;
+  await vi.waitFor(() => expect(body).toBe(true));
+  expect(batches).toContainEqual([
+    'hook_received',
+    'step_created',
+    'step_started',
+  ]);
+  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+});
+
+it('fails a buffered durability barrier without running the user step', async () => {
+  const fixture = await setup();
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  const body = vi.fn();
+  registerStepFunction('retainedWrite', body);
+  let fail = false;
+  fixture.world.events.createWriteSession = () => ({
+    create: (event, params) => create(fixture.runId, event, params),
+    stage: (event, params) => create(fixture.runId, event, params),
+    flush: async () => {
+      if (fail) throw new Error('durability failed');
+    },
+    dispose() {},
+  });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  fail = true;
+  await expect(fixture.send('buffered-failure', 'one')).rejects.toThrow();
+  expect(body).not.toHaveBeenCalled();
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('failed');
+});
+
 function lazyEvent(
   event: Event,
   representation: 'reference' | 'omitted'

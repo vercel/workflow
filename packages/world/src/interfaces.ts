@@ -41,8 +41,16 @@ import type {
 } from './steps.js';
 
 /** Run-scoped transport resources for a single in-memory event writer.
- * This does not acquire ownership or change event persistence semantics. */
+ * This does not acquire ownership. Buffered writers explicitly expose a durability barrier. */
 export interface EventWriteSession {
+  /** Optional tentative transition, paired with flush(). The owning loop must
+   * flush before input acknowledgement or externally visible step execution. */
+  stage?(
+    event: CreateEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult>;
+  /** Make all previously staged transitions durable, or reject permanently. */
+  flush?(): Promise<void>;
   create(
     event: CreateEventRequest,
     params?: CreateEventParams

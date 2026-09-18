@@ -168,6 +168,7 @@ export class RetainedRunner {
   private payloadCache?: ReplayPayloadCache;
   private initialized = false;
   private eventWriter?: EventWriteSession;
+  private failureCommitted = false;
   private loopIteration = 0;
   private pending: MailboxItem[] = [];
   private signal?: () => void;
@@ -411,6 +412,11 @@ export class RetainedRunner {
   private async initialize() {
     if (this.initialized) return;
     this.eventWriter ??= this.backend.events.createWriteSession?.(this.runId);
+    if (Boolean(this.eventWriter?.stage) !== Boolean(this.eventWriter?.flush))
+      throw new RunnerFault(
+        'persistence',
+        new Error('Buffered writer requires both stage and flush')
+      );
     const history: Event[] = [];
     const steps: Step[] = [];
     // Start history reads and channel setup at the first owner-loop turn.
@@ -583,7 +589,8 @@ export class RetainedRunner {
             } as CreateEventRequest)
           : submitted;
       const spanId = randomUUID();
-      this.observe('persist', 'begin', spanId, { eventType: event.eventType });
+      const phase = this.eventWriter?.stage ? 'stage' : 'persist';
+      this.observe(phase, 'begin', spanId, { eventType: event.eventType });
       try {
         const params: CreateEventParams = {
           ...options,
@@ -592,7 +599,11 @@ export class RetainedRunner {
           skipPreload: true,
         };
         const result = await (this.eventWriter
-          ? this.eventWriter.create(wire, params)
+          ? (this.eventWriter.stage ?? this.eventWriter.create).call(
+              this.eventWriter,
+              wire,
+              params
+            )
           : this.backend.events.create(this.runId, wire, params));
         const conflict = (reason: string): never => {
           throw new RunnerFault(
@@ -681,7 +692,7 @@ export class RetainedRunner {
         if (materialized.run) this.runState = materialized.run;
         if (materialized.step)
           this.steps.set(materialized.step.stepId, materialized.step);
-        this.observe('persist', 'end', spanId, {
+        this.observe(phase, 'end', spanId, {
           eventType: event.eventType,
           status: 'completed',
           payloadSource: committed === result.event ? 'response' : 'submitted',
@@ -698,7 +709,7 @@ export class RetainedRunner {
                   : 'persistence',
                 cause
               );
-        this.observe('persist', 'end', spanId, {
+        this.observe(phase, 'end', spanId, {
           eventType: event.eventType,
           status: 'error',
           errorCode: this.fault.kind,
@@ -784,6 +795,10 @@ export class RetainedRunner {
           );
         }
       }
+      const starts: Array<{
+        step: Step;
+        claimed?: Step & { startedAt: Date };
+      }> = [];
       for (const step of this.steps.values()) {
         if (
           'retryAfter' in step &&
@@ -794,10 +809,51 @@ export class RetainedRunner {
         if (
           (step.status === 'pending' || step.status === 'running') &&
           !this.workers.has(step.stepId)
-        )
-          this.startStep(step);
+        ) {
+          if (this.eventWriter?.stage) {
+            const result = await this.commit({
+              eventType: 'step_started',
+              correlationId: step.stepId,
+              specVersion: SPEC_VERSION_CURRENT,
+              eventData: { stepName: step.stepName },
+            });
+            if (!result.step?.startedAt)
+              throw new RunnerFault(
+                'persistence',
+                new Error('Step start did not return its started state')
+              );
+            starts.push({
+              step,
+              claimed: { ...result.step, startedAt: result.step.startedAt },
+            });
+          } else starts.push({ step });
+        }
       }
+      // Tentative VM progress is private; user code needs a durable start prefix.
+      if (starts.length) await this.flushWriter();
+      for (const { step, claimed } of starts) this.startStep(step, claimed);
       if (this.events.length === before) return;
+    }
+  }
+
+  private async flushWriter() {
+    if (!this.eventWriter?.flush) return;
+    const spanId = randomUUID();
+    this.observe('flush', 'begin', spanId, { eventCount: this.events.length });
+    try {
+      await this.eventWriter.flush();
+      this.failureCommitted = this.runState?.status === 'failed';
+      this.observe('flush', 'end', spanId, {
+        status: 'completed',
+        eventCount: this.events.length,
+      });
+    } catch (cause) {
+      this.fault ??= new RunnerFault('persistence', cause);
+      this.observe('flush', 'end', spanId, {
+        status: 'error',
+        errorCode: 'persistence',
+      });
+      throw this.fault;
     }
   }
 
@@ -818,7 +874,7 @@ export class RetainedRunner {
         });
   }
 
-  private startStep(step: Step) {
+  private startStep(step: Step, claimed?: Step & { startedAt: Date }) {
     const stepSpanId = randomUUID();
     const parentSpanId = this.currentTurnId;
     const work = Promise.resolve().then(() =>
@@ -842,6 +898,9 @@ export class RetainedRunner {
               runSpecVersion: this.run.specVersion,
               suppressOptimisticStart: true,
               authoritativeAttempt: (step.attempt ?? 0) + 1,
+              ...(claimed
+                ? { preclaimedStart: { owned: true as const, step: claimed } }
+                : {}),
             });
             this.observe('step', 'end', stepSpanId, {
               parentSpanId,
@@ -944,7 +1003,9 @@ export class RetainedRunner {
       this.failurePromise = (async () => {
         const spanId = randomUUID();
         this.observe('failure', 'begin', spanId, { errorCode: fault.kind });
-        let durable = this.runState?.status === 'failed';
+        let durable =
+          this.runState?.status === 'failed' &&
+          (!this.eventWriter?.stage || this.failureCommitted);
         if (!durable) {
           try {
             const result = await this.backend.events.create(this.runId, {
@@ -998,6 +1059,7 @@ export class RetainedRunner {
         this.observe('turn', 'begin', spanId, { inputId });
         try {
           const result = await operation();
+          await this.flushWriter();
           this.observe('turn', 'end', spanId, { inputId, status: 'completed' });
           return result;
         } catch (cause) {
