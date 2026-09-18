@@ -32,6 +32,7 @@ import { envNumber } from '@workflow/world/env-config';
 import type { FlushableStreamState } from '../flushable-stream.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
+import type { ReplayPayloadCache } from '../replay-payload-cache.js';
 import type { PayloadKey } from '../serialization/encryption.js';
 import { formatSerializationError } from '../serialization/errors.js';
 import {
@@ -275,6 +276,8 @@ export interface StepExecutorParams {
   authoritativeAttempt?: number;
   /** One-shot recovery telemetry activated by the orchestrator replay. */
   replayRecoveryReporter?: ReplayRecoveryReporter;
+  /** Invocation-local authoritative committed output cache. */
+  replayPayloadCache?: ReplayPayloadCache;
 }
 
 /**
@@ -1133,6 +1136,7 @@ export async function executeStep(
               rootRunId: params.rootRunId,
               ops,
               preCompletionOps,
+              replayPayloadCache: params.replayPayloadCache,
               streamStates,
               closureVars: hydratedInput.closureVars,
               encryptionKey,
@@ -1197,7 +1201,9 @@ export async function executeStep(
           // Turbo optimistic start: a returned stream is piped to the server
           // after the body but within this same op flush, so gate its first
           // write on the run-ready barrier. Undefined on the await path.
-          optimisticStart ? params.runReadyBarrier : undefined
+          optimisticStart ? params.runReadyBarrier : undefined,
+          ops,
+          stepId
         );
         const durationMs = Date.now() - startTime;
         dehydrateSpan?.setAttributes({

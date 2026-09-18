@@ -33,6 +33,11 @@ export class ReplayPayloadCache {
     Promise<PreparedReplayPayload>
   >();
   private readonly primitiveStepResults = new Map<string, unknown>();
+  /** Authoritative committed step-result bytes, invocation-local only. */
+  private readonly stepOutputs = new Map<
+    string,
+    { eventId: string; value: Uint8Array }
+  >();
   private readonly encryptionKey: Promise<PayloadKey | undefined>;
   private nextUnscannedEventIndex = 0;
 
@@ -41,6 +46,15 @@ export class ReplayPayloadCache {
     private readonly preparer: ReplayPayloadPreparer = prepareReplayPayload
   ) {
     this.encryptionKey = Promise.resolve(encryptionKey);
+  }
+
+  async prepareCommittedStepOutput(
+    runId: string,
+    stepId: string
+  ): Promise<PreparedReplayPayload | undefined> {
+    const output = this.stepOutputs.get(`${runId}/${stepId}`);
+    if (!output) return undefined;
+    return this.prepareEventPayload(output.eventId, 'result', output.value);
   }
 
   /** Start preparing an event payload as soon as its frame is decoded. */
@@ -184,6 +198,12 @@ export class ReplayPayloadCache {
       case 'step_completed':
         field = 'result';
         value = event.eventData?.result;
+        if (value instanceof Uint8Array && event.correlationId) {
+          this.stepOutputs.set(`${event.runId}/${event.correlationId}`, {
+            eventId: event.eventId,
+            value,
+          });
+        }
         break;
       case 'step_failed':
         field = 'error';
