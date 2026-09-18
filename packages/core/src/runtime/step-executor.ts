@@ -32,6 +32,10 @@ import { envNumber } from '@workflow/world/env-config';
 import type { FlushableStreamState } from '../flushable-stream.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
+import {
+  materializeReplayInputs,
+  type ReplayInputCapture,
+} from '../replay-inputs.js';
 import type { PayloadKey } from '../serialization/encryption.js';
 import { formatSerializationError } from '../serialization/errors.js';
 import {
@@ -180,6 +184,8 @@ export interface StepExecutorParams {
    * carries no payload (the legacy contract).
    */
   lazyStepInput?: SerializedData;
+  /** Invocation-time capture held only in memory by the replaying workflow. */
+  replayInputs?: ReplayInputCapture[];
   /**
    * Pre-claimed inline start: the suspension handler committed (or lost) this
    * step's `step_created` + `step_started` pair inside its batched fan-out
@@ -1024,7 +1030,7 @@ export async function executeStep(
         throw new SerializationError(message, { hint });
       }
 
-      const args = hydratedInput.args;
+      const args = materializeReplayInputs(hydratedInput, params.replayInputs);
       const thisVal = hydratedInput.thisVal ?? null;
       const workflowBaseUrl = createWorkflowBaseUrl(
         isVercel

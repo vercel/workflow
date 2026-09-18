@@ -34,6 +34,7 @@ import type {
   WorkflowSuspension,
 } from '../global.js';
 import { runtimeLogger } from '../logger.js';
+import { replayInputEnvelope } from '../replay-inputs.js';
 import {
   GUEST_CODE_EXECUTION_SAMPLE_LIMIT,
   type GuestCodeExecution,
@@ -1148,6 +1149,9 @@ export async function handleSuspension({
           dehydratedInput = await dehydrateInput(
             {
               args: queueItem.args,
+              ...(queueItem.replayInputs
+                ? { replayInputs: replayInputEnvelope(queueItem.replayInputs) }
+                : {}),
               closureVars: queueItem.closureVars,
               thisVal: queueItem.thisVal,
             },
@@ -1249,6 +1253,7 @@ export async function handleSuspension({
         // queue message can safely carry (binary, under the VQS size cap).
         if (
           resilientDispatchEligible &&
+          !queueItem.replayInputs &&
           dehydratedInput instanceof Uint8Array &&
           dehydratedInput.byteLength <= MAX_RESILIENT_STEP_INPUT_BYTES
         ) {

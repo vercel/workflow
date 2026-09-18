@@ -127,6 +127,18 @@ describe('parseQueueName', () => {
 });
 
 describe('QueuePayloadSchema', () => {
+  it('preserves the replay-input routing flag without carrying selected arguments', () => {
+    const message = {
+      runId: 'wrun_replay',
+      stepId: 'step_replay',
+      stepName: 'turn',
+      replayInputs: true,
+    };
+    expect(QueuePayloadSchema.parse(message)).toEqual(message);
+    expect(() =>
+      QueuePayloadSchema.parse({ ...message, replayInputs: ['state'] })
+    ).toThrow();
+  });
   // A probe issued to prepare a cross-deployment `start()` carries the run id
   // it is about to create, which also makes it satisfy
   // `WorkflowInvokePayloadSchema` (whose only required field is `runId`). Zod

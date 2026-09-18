@@ -401,6 +401,8 @@ export const WorkflowInvokePayloadSchema = z.compile(
      * `step_created` event exists (keyed by `stepId`) before executing the step.
      */
     stepInput: StepDispatchInputSchema.optional(),
+    /** Replay the workflow before executing this queued step to reconstruct omitted arguments. */
+    replayInputs: z.literal(true).optional(),
     /**
      * Immutable run identity for step-execution messages (`stepId` present).
      * Lets the consumer skip the blocking `runs.get` before starting the step.

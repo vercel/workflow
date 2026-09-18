@@ -57,6 +57,7 @@ import {
   isResilientStepDispatchEnabled,
   MAX_RESILIENT_STEP_INPUT_BYTES,
 } from './constants.js';
+import { countStepStartedEvents } from './count-step-started-events.js';
 import { getPortLazy } from './get-port-lazy.js';
 import {
   getWorkflowQueueName,
@@ -187,6 +188,7 @@ async function queueStepMessage(params: {
       runId,
       stepId: step.correlationId,
       stepName: step.stepId,
+      ...(step.replayInputs ? { replayInputs: true as const } : {}),
       traceCarrier,
       requestedAt: new Date(),
       ...(stepInput !== undefined ? { stepInput: { input: stepInput } } : {}),
@@ -682,6 +684,7 @@ async function dispatchPendingOps(params: {
           // message can safely carry (binary, under the VQS size cap).
           if (
             resilientDispatchEligible &&
+            !step.replayInputs &&
             queueStepCids?.has(step.correlationId) &&
             encryptedInput instanceof Uint8Array &&
             encryptedInput.byteLength <= MAX_RESILIENT_STEP_INPUT_BYTES
@@ -868,6 +871,8 @@ async function dispatchPendingOps(params: {
  * not carry.
  */
 export async function runWorkflowWithQuickJS(params: {
+  replayStepId?: string;
+  replayStepName?: string;
   workflowCode: string;
   workflowName: string;
   workflowRun: WorkflowRun;
@@ -959,6 +964,8 @@ export async function runWorkflowWithQuickJS(params: {
     workflowCode,
     workflowName,
     workflowRun,
+    replayStepId,
+    replayStepName,
     preloadedEvents,
     preloadedEventsComplete,
     preloadedCursor,
@@ -1327,10 +1334,12 @@ export async function runWorkflowWithQuickJS(params: {
     string,
     { owner?: string; startedAtMs?: number; sawRetrying: boolean }
   >();
+  const observedStarts = new Map<string, Event>();
   const observeEventsForOwnership = (observed: Event[]): void => {
     for (const e of observed) {
       if (e.correlationId === undefined) continue;
       if (e.eventType === 'step_started') {
+        observedStarts.set(e.eventId, e);
         const owner =
           'eventData' in e &&
           e.eventData &&
@@ -1688,6 +1697,14 @@ export async function runWorkflowWithQuickJS(params: {
             purpose: `backstop:${ownership.startedAtMs}`,
             wfdiag,
           });
+        } else if (
+          (step.correlationId === replayStepId &&
+            step.stepId === replayStepName) ||
+          (step.replayInputs &&
+            ownershipActive &&
+            ownership.owner === ownerMessageId)
+        ) {
+          inlineCandidates.push(step);
         } else {
           queuedStepIds.add(step.correlationId);
           await queueStepMessage({
@@ -1841,17 +1858,29 @@ export async function runWorkflowWithQuickJS(params: {
                   // exactly-one-owner. A concurrent claimant gets
                   // EntityConflictError → { type: 'skipped' } and never
                   // runs the body. Mirrors the node engine's inline path.
-                  lazyStepInput: await encryptSerializedData(
-                    step.input,
-                    encryptionKey
-                  ),
+                  lazyStepInput: step.hasCreatedEvent
+                    ? undefined
+                    : await encryptSerializedData(step.input, encryptionKey),
+                  replayInputs: step.replayInputs,
                   // Ownership stamp: wake replays see the body as in
                   // flight in this invocation and arm a delayed backstop
                   // instead of immediately requeueing the step.
-                  ownerMessageId,
+                  ownerMessageId:
+                    step.correlationId === replayStepId
+                      ? undefined
+                      : ownerMessageId,
                   // A lazy step is brand-new by construction: first
                   // attempt.
-                  authoritativeAttempt: 1,
+                  authoritativeAttempt: step.hasCreatedEvent
+                    ? countStepStartedEvents(
+                        [...observedStarts.values()],
+                        step.correlationId,
+                        step.correlationId !== replayStepId &&
+                          ownerMessageId !== undefined
+                          ? { type: 'ownedBy', messageId: ownerMessageId }
+                          : { type: 'totalAttempts' }
+                      ) + 1
+                    : 1,
                   ...(inlineDeltaSinceCursor !== undefined
                     ? { inlineDeltaSinceCursor }
                     : {}),
@@ -1864,6 +1893,7 @@ export async function runWorkflowWithQuickJS(params: {
       }
       inlineStepsExecuted += inlineCandidates.length;
 
+      let replayStepTimeout: number | undefined;
       for (let i = 0; i < inlineCandidates.length; i++) {
         const step = inlineCandidates[i];
         const outcome = outcomes[i];
@@ -1885,7 +1915,12 @@ export async function runWorkflowWithQuickJS(params: {
             cursorAdvanced: advanced,
           });
         }
-        if (outcome.type === 'retry' || outcome.type === 'throttled') {
+        if (
+          (outcome.type === 'retry' || outcome.type === 'throttled') &&
+          step.correlationId === replayStepId
+        ) {
+          replayStepTimeout = outcome.timeoutSeconds;
+        } else if (outcome.type === 'retry' || outcome.type === 'throttled') {
           // Hand the step to the queue with the requested backoff:
           // background delivery drives the retry from here.
           queuedStepIds.add(step.correlationId);
@@ -1897,11 +1932,11 @@ export async function runWorkflowWithQuickJS(params: {
             delaySeconds: outcome.timeoutSeconds,
             namespace,
             nextTraceCarrier,
-            // Suffixed key: this step was inline-claimed, so no dispatch
-            // publish exists under the dispatch key, but suffixing
-            // keeps the retry enqueueable even if a world retired a
-            // historical key for this step (see the purpose docs above).
-            purpose: 'retry:1',
+            // Replay-derived retries share the wake's dispatch key so an
+            // immediate wake cannot bypass their queued backoff. Subsequent
+            // attempts redeliver that message using its visibility timeout.
+            // Ordinary inline retries retain their existing suffixed key.
+            purpose: step.replayInputs ? 'dispatch' : 'retry:1',
             wfdiag,
           });
         } else if (outcome.type === 'gone') {
@@ -1912,6 +1947,8 @@ export async function runWorkflowWithQuickJS(params: {
         // re-claims it; the winner's terminal events arrive via the feed
         // (or drive a separate invocation).
       }
+      if (replayStepTimeout !== undefined)
+        return { timeoutSeconds: replayStepTimeout };
       wfdiag('inline_steps_executed', {
         iteration,
         count: inlineCandidates.length,
