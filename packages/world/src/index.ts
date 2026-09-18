@@ -103,9 +103,11 @@ export {
 export type * from './shared.js';
 export type {
   GetChunksOptions,
+  GetStreamSnapshotOptions,
   StreamChunk,
   StreamChunksResponse,
   StreamInfoResponse,
+  StreamSnapshotResponse,
 } from './shared.js';
 export {
   PaginatedResponseSchema,

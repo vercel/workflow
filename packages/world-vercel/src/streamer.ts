@@ -1,9 +1,12 @@
+import { WorkflowWorldError } from '@workflow/errors';
 import {
   envNumber,
   type GetChunksOptions,
+  type GetStreamSnapshotOptions,
   type StreamChunksResponse,
   type Streamer,
   type StreamInfoResponse,
+  type StreamSnapshotResponse,
 } from '@workflow/world';
 import { z } from 'zod';
 import {
@@ -174,6 +177,20 @@ const StreamChunksResponseSchema = z.object({
   cursor: z.string().nullable(),
   hasMore: z.boolean(),
   done: z.boolean(),
+});
+
+const StreamSnapshotResponseSchema = StreamChunksResponseSchema.extend({
+  resumeCursor: z.string(),
+  frontier: z.object({
+    nextChunkIndex: z.number(),
+    done: z.boolean(),
+  }),
+  oversizedChunk: z
+    .object({
+      index: z.number(),
+      bytes: z.number(),
+    })
+    .nullable(),
 });
 
 /** Creates the HTTP-backed streamer that talks to workflow-server. */
@@ -350,6 +367,42 @@ export function createStreamer(config?: APIConfig): Streamer {
           config,
           schema: StreamChunksResponseSchema,
         });
+      },
+
+      async getSnapshot(
+        runId: string,
+        name: string,
+        options?: GetStreamSnapshotOptions
+      ): Promise<StreamSnapshotResponse | undefined> {
+        const params = new URLSearchParams();
+        if (options?.limit != null) {
+          params.set('limit', String(options.limit));
+        }
+        if (options?.cursor) {
+          params.set('cursor', options.cursor);
+        }
+        const qs = params.toString();
+        const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/snapshot${qs ? `?${qs}` : ''}`;
+        try {
+          return await makeRequest({
+            endpoint,
+            config,
+            schema: StreamSnapshotResponseSchema,
+            options: options?.signal ? { signal: options.signal } : {},
+            timeoutMs: options?.timeoutMs,
+          });
+        } catch (error) {
+          // An old server answers a missing route with an unstructured 404.
+          // A structured 404 belongs to the stream/run and must propagate.
+          if (
+            WorkflowWorldError.is(error) &&
+            error.status === 404 &&
+            error.code === undefined
+          ) {
+            return undefined;
+          }
+          throw error;
+        }
       },
 
       async getInfo(runId: string, name: string): Promise<StreamInfoResponse> {

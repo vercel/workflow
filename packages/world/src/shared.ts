@@ -90,6 +90,20 @@ export interface GetChunksOptions {
 }
 
 /**
+ * Options for a bounded point-in-time stream snapshot.
+ */
+export interface GetStreamSnapshotOptions {
+  /** Maximum number of chunks to return (world-defined maximum). */
+  limit?: number;
+  /** Snapshot or resume cursor returned by a previous snapshot read. */
+  cursor?: string;
+  /** Cancels the underlying request. */
+  signal?: AbortSignal;
+  /** Per-request deadline in milliseconds. */
+  timeoutMs?: number;
+}
+
+/**
  * Metadata about a stream, returned by {@link Streamer.getStreamInfo}.
  */
 export interface StreamInfoResponse {
@@ -119,4 +133,31 @@ export interface StreamChunksResponse {
   hasMore: boolean;
   /** Whether the stream is fully complete (all chunks have been written and the stream is closed) */
   done: boolean;
+}
+
+/**
+ * A bounded point-in-time stream read. The pagination cursor remains inside
+ * the captured frontier, while the resume cursor starts a later activity read.
+ */
+export interface StreamSnapshotResponse {
+  /** Array of stream chunks in index order. */
+  data: StreamChunk[];
+  /** Snapshot pagination cursor, or null when the captured frontier is exhausted. */
+  cursor: string | null;
+  /** Whether the captured frontier has more chunks to page through. */
+  hasMore: boolean;
+  /** Cursor for a future activity read after this captured frontier. */
+  resumeCursor: string;
+  /** The committed stream frontier captured for this snapshot. */
+  frontier: {
+    nextChunkIndex: number;
+    done: boolean;
+  };
+  /** Whether the captured stream frontier was complete. */
+  done: boolean;
+  /**
+   * Present when one chunk exceeds the normal snapshot byte budget and was
+   * returned whole as the only budget-exceeding chunk in its page.
+   */
+  oversizedChunk: { index: number; bytes: number } | null;
 }

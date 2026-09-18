@@ -25,9 +25,11 @@ import type {
 } from './runs.js';
 import type {
   GetChunksOptions,
+  GetStreamSnapshotOptions,
   PaginatedResponse,
   StreamChunksResponse,
   StreamInfoResponse,
+  StreamSnapshotResponse,
 } from './shared.js';
 import type {
   GetStepParams,
@@ -109,6 +111,19 @@ export interface Streamer {
       name: string,
       options?: GetChunksOptions
     ): Promise<StreamChunksResponse>;
+
+    /**
+     * Fetch a bounded, point-in-time snapshot of a stream when supported.
+     *
+     * A missing method means this world does not support snapshots. An
+     * implementation returns `undefined` only when its server lacks the
+     * capability; authorization, expiry, and integrity errors still reject.
+     */
+    getSnapshot?(
+      runId: string,
+      name: string,
+      options?: GetStreamSnapshotOptions
+    ): Promise<StreamSnapshotResponse | undefined>;
 
     /**
      * Retrieve lightweight metadata about a stream.

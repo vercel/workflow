@@ -1,5 +1,10 @@
+import { WorkflowWorldError } from '@workflow/errors';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { encodeMultiChunks, MAX_CHUNKS_PER_REQUEST } from './streamer.js';
+
+const { mockMakeRequest } = vi.hoisted(() => ({
+  mockMakeRequest: vi.fn(),
+}));
 
 describe('encodeMultiChunks', () => {
   /**
@@ -178,6 +183,7 @@ vi.mock('./utils.js', () => ({
     baseUrl: 'https://test.example.com',
     headers: new Headers(),
   }),
+  makeRequest: mockMakeRequest,
 }));
 
 describe('streams.get', () => {
@@ -252,6 +258,93 @@ describe('streams.write error diagnostics', () => {
     ).rejects.toThrow(
       'Stream write failed: HTTP 500 (PUT https://test.example.com/v2/runs/wrun_test/stream/user; x-vercel-id=sfo1::abc; x-vercel-error=FUNCTION_INVOCATION_FAILED): Internal Server Error\nrequest-token'
     );
+  });
+});
+
+describe('streams.getSnapshot', () => {
+  async function getStreamer() {
+    const { createStreamer } = await import('./streamer.js');
+    return createStreamer();
+  }
+
+  afterEach(() => {
+    mockMakeRequest.mockReset();
+  });
+
+  it('requests a bounded snapshot with its cancellation and deadline controls', async () => {
+    const expected = {
+      data: [{ index: 0, data: new Uint8Array([1]) }],
+      cursor: null,
+      hasMore: false,
+      resumeCursor: 'resume-cursor',
+      frontier: { nextChunkIndex: 1, done: false },
+      done: false,
+      oversizedChunk: null,
+    };
+    const controller = new AbortController();
+    mockMakeRequest.mockResolvedValue(expected);
+    const streamer = await getStreamer();
+    const getSnapshot = streamer.streams.getSnapshot;
+    if (!getSnapshot) throw new Error('snapshot reader is unavailable');
+
+    await expect(
+      getSnapshot('run-1', 'output', {
+        cursor: 'snapshot-cursor',
+        limit: 5000,
+        signal: controller.signal,
+        timeoutMs: 10_000,
+      })
+    ).resolves.toBe(expected);
+
+    expect(mockMakeRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        endpoint:
+          '/v2/runs/run-1/streams/output/snapshot?limit=5000&cursor=snapshot-cursor',
+        options: { signal: controller.signal },
+        timeoutMs: 10_000,
+      })
+    );
+  });
+
+  it('returns undefined only when an older server lacks the snapshot route', async () => {
+    mockMakeRequest.mockRejectedValue(
+      new WorkflowWorldError('route not found', { status: 404 })
+    );
+    const streamer = await getStreamer();
+    const getSnapshot = streamer.streams.getSnapshot;
+    if (!getSnapshot) throw new Error('snapshot reader is unavailable');
+
+    await expect(getSnapshot('run-1', 'output')).resolves.toBeUndefined();
+  });
+
+  it('propagates structured 404s instead of treating them as unsupported', async () => {
+    const error = new WorkflowWorldError('stream not found', {
+      status: 404,
+      code: 'not_found',
+    });
+    mockMakeRequest.mockRejectedValue(error);
+    const streamer = await getStreamer();
+    const getSnapshot = streamer.streams.getSnapshot;
+    if (!getSnapshot) throw new Error('snapshot reader is unavailable');
+
+    await expect(getSnapshot('run-1', 'output')).rejects.toBe(error);
+  });
+
+  it('propagates permission and retention failures', async () => {
+    const streamer = await getStreamer();
+    const getSnapshot = streamer.streams.getSnapshot;
+    if (!getSnapshot) throw new Error('snapshot reader is unavailable');
+
+    for (const error of [
+      new WorkflowWorldError('forbidden', { status: 403, code: 'forbidden' }),
+      new WorkflowWorldError('expired', { status: 410, code: 'gone' }),
+      new WorkflowWorldError('invalid snapshot body', {
+        code: 'SCHEMA_VALIDATION',
+      }),
+    ]) {
+      mockMakeRequest.mockRejectedValueOnce(error);
+      await expect(getSnapshot('run-1', 'output')).rejects.toBe(error);
+    }
   });
 });
 

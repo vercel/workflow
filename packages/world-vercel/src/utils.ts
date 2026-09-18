@@ -379,6 +379,7 @@ export async function makeRequest<T>({
   data,
   onResponse,
   retryConnectTimeout = false,
+  timeoutMs,
 }: {
   endpoint: string;
   options?: Omit<RequestInit, 'body'>;
@@ -390,6 +391,8 @@ export async function makeRequest<T>({
   onResponse?: (response: Response) => void;
   /** Retry an idempotent read once when connecting timed out before a request was sent. */
   retryConnectTimeout?: boolean;
+  /** Overrides the default request deadline; `null` disables it. */
+  timeoutMs?: number | null;
 }): Promise<T> {
   const method = options.method || 'GET';
   const { baseUrl, headers } = await getHttpConfig(config);
@@ -442,11 +445,17 @@ export async function makeRequest<T>({
         // See: https://github.com/vercel/workflow/issues/618
         headers.set('X-Request-Time', Date.now().toString());
 
-        // Compose user-passed abort signal (unused at time of writing)
-        // with the max request timeout
-        const timeoutSignal = AbortSignal.timeout(getRequestTimeoutMs());
+        // Compose the caller's cancellation signal with this request's deadline.
+        const resolvedTimeoutMs =
+          timeoutMs === undefined ? getRequestTimeoutMs() : timeoutMs;
+        const timeoutSignal =
+          resolvedTimeoutMs === null
+            ? undefined
+            : AbortSignal.timeout(resolvedTimeoutMs);
         const signal = options.signal
-          ? AbortSignal.any([options.signal, timeoutSignal])
+          ? timeoutSignal
+            ? AbortSignal.any([options.signal, timeoutSignal])
+            : options.signal
           : timeoutSignal;
         const request = new Request(url, {
           ...options,
