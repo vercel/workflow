@@ -41,6 +41,6 @@ const aside = await turn(base.take(2));
 
 Chain creation, append, and materialized reads are step-only. Workflow code can carry committed references and select prefixes. References are same-run; handoff to another run or deployment must materialize and reseed with `Chain.from()`.
 
-Inserted values support acyclic JSON plain data with finite numbers, dense arrays, and enumerable string-keyed data properties. Accessors, proxies, sparse arrays, symbols, non-plain objects, and non-finite numbers fail explicitly.
+Inserted values support acyclic JSON plain data with finite numbers, dense ordinary arrays, and enumerable string-keyed data properties. As in JSON, negative zero is normalized to zero. Accessors, proxies, sparse or extended arrays, symbols, non-plain objects, and non-finite numbers fail explicitly.
 
 Node workflow execution is supported initially. QuickJS is not supported. Cold standalone reads may fetch complete producing step outputs serially. Full observability UI materialization is not yet implemented.

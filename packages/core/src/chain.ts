@@ -25,7 +25,7 @@ function capture(value: unknown, seen = new Set<object>()): unknown {
   if (typeof value === 'number') {
     if (!Number.isFinite(value))
       throw new TypeError('Chain supports finite numbers');
-    return value;
+    return Object.is(value, -0) ? 0 : value;
   }
   if (!value || typeof value !== 'object' || seen.has(value))
     throw new TypeError('Chain supports acyclic JSON plain data');
@@ -38,6 +38,21 @@ function capture(value: unknown, seen = new Set<object>()): unknown {
       const length = descriptors.length?.value;
       if (!Number.isSafeInteger(length))
         throw new TypeError('Chain array length is invalid');
+      if (Object.getPrototypeOf(value) !== Array.prototype) {
+        throw new TypeError('Chain supports ordinary arrays only');
+      }
+      const ownKeys = Reflect.ownKeys(descriptors);
+      if (
+        ownKeys.some((key) => {
+          if (key === 'length') return false;
+          if (typeof key !== 'string' || !/^(0|[1-9]\d*)$/.test(key))
+            return true;
+          const index = Number(key);
+          return !Number.isSafeInteger(index) || index >= length;
+        })
+      ) {
+        throw new TypeError('Chain arrays only support indexed values');
+      }
       const result: unknown[] = [];
       for (let index = 0; index < length; index++) {
         const descriptor = descriptors[index];

@@ -1,9 +1,5 @@
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { CHAIN_CLASS_ID, type ChainRef, isChainRef } from '../chain-ref.js';
-import {
-  aliasSerializationClass,
-  registerSerializationClass,
-} from '../class-serialization.js';
 
 const WORKFLOW_CONTEXT = Symbol.for('WORKFLOW_CONTEXT');
 function currentRunId(): string | undefined {
@@ -67,10 +63,4 @@ export class Chain<T> {
     }
     return new Chain({ ...ref });
   }
-}
-
-try {
-  registerSerializationClass(CHAIN_CLASS_ID, Chain);
-} catch {
-  aliasSerializationClass(CHAIN_CLASS_ID, Chain);
 }

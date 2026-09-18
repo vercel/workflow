@@ -111,6 +111,25 @@ describe('Chain', () => {
     expect(draft.length).toBe(4);
   });
 
+  it('normalizes negative zero and rejects extra array properties', async () => {
+    const extra = [1] as number[] & { extra?: number };
+    extra.extra = 2;
+    expect(() => Chain.from([extra])).toThrow('indexed values');
+    const outOfRange = [1] as number[] & Record<string, number>;
+    outOfRange['4294967295'] = 2;
+    expect(() => Chain.from([outOfRange])).toThrow('indexed values');
+    class ArraySubclass<T> extends Array<T> {}
+    expect(() => Chain.from([new ArraySubclass(1)])).toThrow('ordinary arrays');
+    const symbolArray = [1] as number[] & { [key: symbol]: number };
+    symbolArray[Symbol('x')] = 2;
+    expect(() => Chain.from([symbolArray])).toThrow('indexed values');
+
+    const committed = (await commit('step_numbers', {
+      history: Chain.from([-0]),
+    })) as { history: Chain<number> };
+    expect(Object.is(await committed.history.get(0), -0)).toBe(false);
+  });
+
   it('rejects getters, proxies, sparse arrays, symbols, and preserves __proto__', () => {
     let getterCalls = 0;
     const withGetter = Object.defineProperty({}, 'value', {

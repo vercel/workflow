@@ -164,7 +164,16 @@ describe('Chain workflowEntrypoint integration', () => {
         return { base: 2, main: 3, aside: 2, checked: true };
       }
     );
-    const code = `const seed=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('seed');const extend=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('extend');const verify=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('verify');async function workflow(){const first=await seed();const main=await extend(first.chain,3,'main');const aside=await extend(first.chain.take(1),4,'aside');return await verify({base:first.chain,main,aside});}globalThis.__private_workflows=new Map([['workflow',workflow]]);`;
+    const { build } = await import('esbuild');
+    const bootstrap = await build({
+      entryPoints: [new URL('workflow/bootstrap.ts', import.meta.url).pathname],
+      bundle: true,
+      format: 'cjs',
+      platform: 'neutral',
+      conditions: ['workflow'],
+      write: false,
+    });
+    const code = `${bootstrap.outputFiles[0].text};const seed=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('seed');const extend=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('extend');const verify=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('verify');async function workflow(){const first=await seed();const main=await extend(first.chain,3,'main');const aside=await extend(first.chain.take(1),4,'aside');return await verify({base:first.chain,main,aside});}globalThis.__private_workflows=new Map([['workflow',workflow]]);`;
     await workflowEntrypoint(code)(
       new Request('https://test', {
         method: 'POST',

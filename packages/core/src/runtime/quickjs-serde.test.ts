@@ -22,10 +22,15 @@ import { createRequire } from 'node:module';
 import { StreamError } from '@workflow/errors';
 import { QuickJS } from 'quickjs-wasi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Chain } from '../chain.js';
 import {
   deserialize as referenceDeserialize,
   serialize as referenceSerialize,
 } from '../serialization/workflow-vm.js';
+import {
+  dehydrateStepReturnValue,
+  prepareReplayPayload,
+} from '../serialization.js';
 import { createQuickJSSerde, type QuickJSSerde } from './quickjs-serde.js';
 
 const require = createRequire(import.meta.url);
@@ -72,14 +77,25 @@ function checkInGuest(bytes: Uint8Array, checkFnSource: string): unknown {
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 
 describe('Chain QuickJS guard', () => {
-  it('fails explicitly instead of reviving a partial type', () => {
+  it('rejects the actual dedicated Chain wire type', async () => {
+    const wire = await dehydrateStepReturnValue(
+      { chain: Chain.from([1]) },
+      'wrun_test',
+      undefined,
+      [],
+      globalThis,
+      false,
+      false,
+      false,
+      undefined,
+      [],
+      'step_1'
+    );
+    const prepared = await prepareReplayPayload(wire, undefined);
+    expect(prepared.data).toBeInstanceOf(Uint8Array);
+    expect(text(prepared.data as Uint8Array)).toContain('["Chain"');
     expect(() =>
-      checkInGuest(
-        new TextEncoder().encode(
-          'devl[["Instance",1],{"classId":2,"data":3},"class//workflow//Chain",{"runId":4,"stepId":5,"slot":6,"length":7},"wrun_test","step_1","slot_0",1]'
-        ),
-        '(value) => value'
-      )
+      checkInGuest(prepared.data as Uint8Array, '(value) => value')
     ).toThrow('Chain is not supported by the QuickJS workflow engine');
   });
 });

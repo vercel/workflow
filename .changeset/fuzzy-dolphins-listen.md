@@ -1,4 +1,5 @@
 ---
+'@workflow/builders': patch
 '@workflow/core': minor
 'workflow': minor
 '@workflow/cli': patch

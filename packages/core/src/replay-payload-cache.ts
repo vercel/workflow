@@ -48,14 +48,6 @@ export class ReplayPayloadCache {
     this.encryptionKey = Promise.resolve(encryptionKey);
   }
 
-  /** Return authoritative committed output bytes already carried by this invocation's event log. */
-  getCommittedStepOutput(
-    runId: string,
-    stepId: string
-  ): Uint8Array | undefined {
-    return this.stepOutputs.get(`${runId}/${stepId}`)?.value;
-  }
-
   async prepareCommittedStepOutput(
     runId: string,
     stepId: string
@@ -63,17 +55,6 @@ export class ReplayPayloadCache {
     const output = this.stepOutputs.get(`${runId}/${stepId}`);
     if (!output) return undefined;
     return this.prepareEventPayload(output.eventId, 'result', output.value);
-  }
-
-  get historyCacheEntries(): number {
-    return this.stepOutputs.size;
-  }
-
-  get historyCacheBytes(): number {
-    let bytes = 0;
-    for (const { value } of this.stepOutputs.values())
-      bytes += value.byteLength;
-    return bytes;
   }
 
   /** Start preparing an event payload as soon as its frame is decoded. */
