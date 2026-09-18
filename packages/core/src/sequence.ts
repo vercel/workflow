@@ -3,15 +3,14 @@ import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { registerSerializationClass } from './class-serialization.js';
 import { getWorldLazy } from './runtime/get-world-lazy.js';
 import { contextStorage } from './step/context-storage.js';
+import {
+  isSequenceRef,
+  SEQUENCE_CLASS_ID,
+  type SequenceRef,
+} from './sequence-ref.js';
+export { SEQUENCE_CLASS_ID, type SequenceRef } from './sequence-ref.js';
 
-export const SEQUENCE_CLASS_ID = 'class//workflow//Sequence';
 const WORKFLOW_CONTEXT = Symbol.for('WORKFLOW_CONTEXT');
-export type SequenceRef = {
-  runId: string;
-  stepId: string;
-  slot: string;
-  length: number;
-};
 export type SequenceRecipe = {
   slot: string;
   length: number;
@@ -79,17 +78,6 @@ function capture(value: unknown, seen = new Set<object>()): unknown {
   } finally {
     seen.delete(value);
   }
-}
-function validRef(v: unknown): v is SequenceRef {
-  const r = v as SequenceRef;
-  return (
-    !!r &&
-    typeof r.runId === 'string' &&
-    typeof r.stepId === 'string' &&
-    typeof r.slot === 'string' &&
-    Number.isSafeInteger(r.length) &&
-    r.length >= 0
-  );
 }
 
 /** Additions live only in the versioned recipe envelope of a committed step output. */
@@ -206,7 +194,7 @@ export class Sequence<T> {
     return h.#ref;
   }
   static [WORKFLOW_DESERIALIZE](ref: SequenceRef): Sequence<unknown> {
-    if (!validRef(ref)) throw new Error('Malformed Sequence ref');
+    if (!isSequenceRef(ref)) throw new Error('Malformed Sequence ref');
     const run = workflowRunId();
     if (run && run !== ref.runId)
       throw new Error('Cross-run Sequence refs are unsupported');
@@ -224,7 +212,7 @@ function validateRecipe(r: SequenceRecipe, ref: SequenceRef): void {
     r.take < 0 ||
     !Array.isArray(r.additions) ||
     r.length !== r.take + r.additions.length ||
-    (r.base !== undefined && (!validRef(r.base) || r.take > r.base.length))
+    (r.base !== undefined && (!isSequenceRef(r.base) || r.take > r.base.length))
   )
     throw new Error(`Malformed Sequence recipe ${ref.stepId}/${ref.slot}`);
 }
