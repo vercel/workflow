@@ -182,7 +182,7 @@ export function RunAttributesCard({
   return (
     <CollapsibleRoot defaultOpen>
       <CollapsibleTrigger>Attributes</CollapsibleTrigger>
-      <CollapsibleContent className="mb-4">
+      <CollapsibleContent className="mt-0 mb-2">
         <div className="flex flex-col">
           {keys.map((key) => (
             <AttributeRow
@@ -227,7 +227,7 @@ export function RunMetadataCard({ metadata }: { metadata: unknown }) {
     return (
       <CollapsibleRoot defaultOpen>
         <CollapsibleTrigger>Metadata</CollapsibleTrigger>
-        <CollapsibleContent className="mb-4">
+        <CollapsibleContent className="mt-0 mb-2">
           <CopyableDataBlock data={metadata} />
         </CollapsibleContent>
       </CollapsibleRoot>
@@ -240,7 +240,7 @@ export function RunMetadataCard({ metadata }: { metadata: unknown }) {
   return (
     <CollapsibleRoot defaultOpen>
       <CollapsibleTrigger>Metadata</CollapsibleTrigger>
-      <CollapsibleContent className="mb-4">
+      <CollapsibleContent className="mt-0 mb-2">
         <div className="flex flex-col">
           {keys.map((key) => (
             <AttributeRow
