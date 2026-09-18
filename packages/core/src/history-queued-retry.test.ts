@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { importKey } from './encryption.js';
-import {
-  getHistoryDiagnostics,
-  History,
-  resetHistoryDiagnostics,
-} from './history.js';
+import { History } from './history.js';
 import { registerStepFunction } from './private.js';
 import { executeStep } from './runtime/step-executor.js';
 import { setWorld } from './runtime/world.js';
@@ -85,7 +81,6 @@ describe('History queued retry before workflow replay', () => {
       },
     } as never;
     setWorld(world);
-    resetHistoryDiagnostics();
     let bodyCalls = 0;
     const workflowCalls = 0;
     const stepName = 'step//queued-history';
@@ -119,12 +114,6 @@ describe('History queued retry before workflow replay', () => {
       'step_two',
       'step_one',
     ]);
-    const stats = getHistoryDiagnostics();
-    expect(stats.cacheHits).toBe(0);
-    expect(stats.fallbackGets).toBe(2);
-    expect(stats.fallbackBytes).toBe(
-      outputs.get('step_one')!.byteLength + outputs.get('step_two')!.byteLength
-    );
     expect(
       events.some((event: any) => event.eventType === 'step_completed')
     ).toBe(true);

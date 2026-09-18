@@ -6,7 +6,7 @@
  */
 
 import { SerializationError } from '@workflow/errors';
-import { unwrapHistoryRecipes } from '../history.js';
+import { splitHistoryEnvelope } from './history-envelope.js';
 import type { CodecOptions } from './codec.js';
 import { devalueCodec } from './codec-devalue.js';
 import { compress, decompress } from './compression.js';
@@ -63,7 +63,7 @@ export async function deserialize(
 
   const nested =
     decrypted instanceof Uint8Array
-      ? unwrapHistoryRecipes(decrypted).payload
+      ? splitHistoryEnvelope(decrypted).payload
       : decrypted;
 
   if (!(nested instanceof Uint8Array)) {

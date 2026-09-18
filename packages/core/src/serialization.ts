@@ -23,12 +23,11 @@ import {
   pollWritableLock,
   trackFlushableWritable,
 } from './flushable-stream.js';
+import { History, type HistoryRecipe } from './history.js';
 import {
-  History,
-  type HistoryRecipe,
-  unwrapHistoryRecipes,
-  wrapHistoryRecipes,
-} from './history.js';
+  splitHistoryEnvelope,
+  wrapHistoryEnvelope,
+} from './serialization/history-envelope.js';
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
 // resolve the world bridge from the step bundle without dragging the full
@@ -3735,8 +3734,8 @@ export interface PreparedReplayPayload {
   readonly data: unknown;
   /** Whole authenticated/decompressed plaintext, including recipe envelope. */
   readonly authenticatedPlaintext?: unknown;
-  /** Lazily relevant inert recipe records; ordinary hydration ignores them. */
-  readonly outputHistoryRecipes?: HistoryRecipe[];
+  /** Lazy inert recipe parser; ordinary hydration never invokes it. */
+  readonly parseHistoryRecipes?: () => HistoryRecipe[];
 }
 
 /**
@@ -3765,12 +3764,12 @@ export const prepareReplayPayload: ReplayPayloadPreparer = async (
   await recordCompression(compressionStats, 'deserialize');
   const split =
     authenticatedPlaintext instanceof Uint8Array
-      ? unwrapHistoryRecipes(authenticatedPlaintext)
-      : { payload: authenticatedPlaintext, recipes: undefined };
+      ? splitHistoryEnvelope(authenticatedPlaintext)
+      : { payload: authenticatedPlaintext, parseRecipes: () => [] };
   return {
     data: split.payload,
     authenticatedPlaintext,
-    outputHistoryRecipes: split.recipes,
+    parseHistoryRecipes: split.parseRecipes,
   };
 };
 
@@ -4134,7 +4133,7 @@ export async function dehydrateStepReturnValue(
       compression,
       compressionStats,
       wrapPlaintext: (payload) =>
-        recipes.length > 0 ? wrapHistoryRecipes(payload, recipes) : payload,
+        recipes.length > 0 ? wrapHistoryEnvelope(payload, recipes) : payload,
     });
     await recordCompression(compressionStats, 'serialize');
     return result;
@@ -4345,10 +4344,8 @@ export async function hydrateStepReturnValue(
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
 ): Promise<any> {
-  const unwrapped =
-    value instanceof Uint8Array ? unwrapHistoryRecipes(value).payload : value;
   return deserializePreparedReplayPayload(
-    prepared ?? (await prepareReplayPayload(unwrapped, key)),
+    prepared ?? (await prepareReplayPayload(value, key)),
     global,
     extraRevivers
   );

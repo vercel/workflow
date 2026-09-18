@@ -1,10 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { importKey } from './encryption.js';
-import {
-  getHistoryDiagnostics,
-  History,
-  unwrapHistoryRecipes,
-} from './history.js';
+import { History } from './history.js';
+import { splitHistoryEnvelope } from './serialization/history-envelope.js';
 import { getWorldLazy } from './runtime/get-world-lazy.js';
 import {
   dehydrateStepReturnValue,
@@ -62,9 +59,9 @@ describe('History', () => {
     };
     expect(await second.history.toArray()).toEqual([{ n: 1 }, { n: 2 }]);
     expect(await second.unchanged.toArray()).toEqual([{ n: 1 }]);
-    expect(unwrapHistoryRecipes(outputs.get('step_2')!).recipes).toHaveLength(
-      1
-    );
+    expect(
+      splitHistoryEnvelope(outputs.get('step_2')!).parseRecipes()
+    ).toHaveLength(1);
   });
   it('supports fixed-prefix branches and detached extraction/reinsertion', async () => {
     const base = (await commit('step_a', {
@@ -153,13 +150,9 @@ describe('History', () => {
         })) as { history: History<number> }
       ).history;
     }
-    const before = getHistoryDiagnostics();
     expect(await history.toArray()).toEqual(
       Array.from({ length: 128 }, (_, i) => i)
     );
-    const after = getHistoryDiagnostics();
-    expect(after.recipesVisited - before.recipesVisited).toBe(128);
-    expect(after.entriesEmitted - before.entriesEmitted).toBe(128);
   });
 
   it('supports local from/append/take/read and immutable branches', async () => {
@@ -221,8 +214,8 @@ describe('History', () => {
       [],
       'step_both'
     )) as Uint8Array;
-    const onlyRecipes = unwrapHistoryRecipes(onlyFinal).recipes!;
-    const bothRecipes = unwrapHistoryRecipes(both).recipes!;
+    const onlyRecipes = splitHistoryEnvelope(onlyFinal).parseRecipes()!;
+    const bothRecipes = splitHistoryEnvelope(both).parseRecipes()!;
     expect(onlyRecipes).toHaveLength(1);
     // devalue preserves the duplicate `final` alias, so it is one slot; the
     // independently returned intermediate duplicates its local additions.
@@ -247,8 +240,9 @@ describe('History', () => {
         materialized.at(-1)!,
       ]),
     })) as { history: History<{ role: string; text: string }> };
-    const compactRecipe = unwrapHistoryRecipes(outputs.get('step_compact')!)
-      .recipes![0];
+    const compactRecipe = splitHistoryEnvelope(
+      outputs.get('step_compact')!
+    ).parseRecipes()![0];
     expect(compactRecipe.base).toBeUndefined();
     expect(await compacted.history.toArray()).toEqual([
       { role: 'system', text: 'summary' },

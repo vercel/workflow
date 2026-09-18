@@ -6,42 +6,6 @@ import { contextStorage } from './step/context-storage.js';
 
 export const HISTORY_CLASS_ID = 'class//workflow//History';
 const WORKFLOW_CONTEXT = Symbol.for('WORKFLOW_CONTEXT');
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-const PREFIX = encoder.encode('ohs1');
-const DIAGNOSTICS = Symbol.for('@workflow/core//outputHistoryDiagnostics');
-type Diagnostics = {
-  cacheHits: number;
-  cacheMisses: number;
-  fallbackGets: number;
-  fallbackBytes: number;
-  maxCacheEntries: number;
-  maxCacheBytes: number;
-  recipesVisited: number;
-  entriesEmitted: number;
-};
-function diagnostics(): Diagnostics {
-  const global = globalThis as Record<symbol, unknown>;
-  return (global[DIAGNOSTICS] ??= {
-    cacheHits: 0,
-    cacheMisses: 0,
-    fallbackGets: 0,
-    fallbackBytes: 0,
-    maxCacheEntries: 0,
-    maxCacheBytes: 0,
-    recipesVisited: 0,
-    entriesEmitted: 0,
-  }) as Diagnostics;
-}
-/** @internal Experimental comparison instrumentation. */
-export function resetHistoryDiagnostics(): void {
-  delete (globalThis as Record<symbol, unknown>)[DIAGNOSTICS];
-}
-/** @internal */
-export function getHistoryDiagnostics(): Readonly<Diagnostics> {
-  return { ...diagnostics() };
-}
-
 export type HistoryRef = {
   runId: string;
   stepId: string;
@@ -243,46 +207,6 @@ export class History<T> {
   }
 }
 
-export function wrapHistoryRecipes(
-  payload: Uint8Array,
-  recipes: HistoryRecipe[]
-): Uint8Array {
-  if (!recipes.length) return payload;
-  const recipeBytes = encoder.encode(JSON.stringify({ version: 1, recipes }));
-  const out = new Uint8Array(8 + recipeBytes.length + payload.length);
-  out.set(PREFIX);
-  new DataView(out.buffer).setUint32(4, recipeBytes.length);
-  out.set(recipeBytes, 8);
-  out.set(payload, 8 + recipeBytes.length);
-  return out;
-}
-export function unwrapHistoryRecipes(payload: Uint8Array): {
-  payload: Uint8Array;
-  recipes?: HistoryRecipe[];
-} {
-  if (payload.length < 8 || !PREFIX.every((b, i) => payload[i] === b))
-    return { payload };
-  const length = new DataView(
-    payload.buffer,
-    payload.byteOffset,
-    payload.byteLength
-  ).getUint32(4);
-  if (8 + length > payload.length)
-    throw new Error('Malformed History envelope');
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(decoder.decode(payload.subarray(8, 8 + length)));
-  } catch {
-    throw new Error('Malformed History recipe table');
-  }
-  const e = parsed as { version?: unknown; recipes?: unknown };
-  if (e.version !== 1 || !Array.isArray(e.recipes))
-    throw new Error('Unsupported History envelope');
-  return {
-    payload: payload.subarray(8 + length),
-    recipes: e.recipes as HistoryRecipe[],
-  };
-}
 function validateRecipe(r: HistoryRecipe, ref: HistoryRef): void {
   if (
     !r ||
@@ -299,52 +223,20 @@ function validateRecipe(r: HistoryRecipe, ref: HistoryRef): void {
 }
 async function loadRecipe(ref: HistoryRef): Promise<HistoryRecipe> {
   const cache = contextStorage.getStore()?.replayPayloadCache;
-  const cached = cache?.getCommittedStepOutput(ref.runId, ref.stepId);
-  const stats = diagnostics();
-  if (cache) {
-    stats.maxCacheEntries = Math.max(
-      stats.maxCacheEntries,
-      cache.historyCacheEntries
-    );
-    stats.maxCacheBytes = Math.max(
-      stats.maxCacheBytes,
-      cache.historyCacheBytes
-    );
-  }
-  if (cached) stats.cacheHits++;
-  else stats.cacheMisses++;
-  const output = cached;
-  if (!output) {
-    stats.fallbackGets++;
+  let prepared = await cache?.prepareCommittedStepOutput(ref.runId, ref.stepId);
+  if (!prepared) {
     const step = await (await getWorldLazy()).steps.get(ref.runId, ref.stepId, {
       resolveData: 'all',
     });
-    if (step.output instanceof Uint8Array)
-      stats.fallbackBytes += step.output.byteLength;
     if (step.status !== 'completed' || !(step.output instanceof Uint8Array))
       throw new Error(`History producing step missing: ${ref.stepId}`);
     const { prepareReplayPayload } = await import('./serialization.js');
-    const prepared = await prepareReplayPayload(
+    prepared = await prepareReplayPayload(
       step.output,
       contextStorage.getStore()?.encryptionKey
     );
-    const recipes = prepared.outputHistoryRecipes;
-    if (!recipes)
-      throw new Error(`History slot missing: ${ref.stepId}/${ref.slot}`);
-    const matches = recipes.filter((recipe) => recipe.slot === ref.slot);
-    if (matches.length !== 1)
-      throw new Error(
-        `History duplicate or missing slot: ${ref.stepId}/${ref.slot}`
-      );
-    validateRecipe(matches[0], ref);
-    return matches[0];
   }
-  const prepared = await cache?.prepareCommittedStepOutput(
-    ref.runId,
-    ref.stepId
-  );
-  const recipes =
-    prepared?.outputHistoryRecipes ?? unwrapHistoryRecipes(output).recipes;
+  const recipes = prepared.parseHistoryRecipes?.();
   if (!recipes)
     throw new Error(`History slot missing: ${ref.stepId}/${ref.slot}`);
   const matches = recipes.filter((recipe) => recipe.slot === ref.slot);
@@ -369,7 +261,6 @@ async function resolveHistory<T>(root: HistoryRef): Promise<T[]> {
     if (stack.size >= 10_000) throw new Error('History ancestry is too deep');
     stack.add(key);
     const recipe = await loadRecipe(current);
-    diagnostics().recipesVisited++;
     if (required > recipe.length)
       throw new Error(`History ref length exceeds recipe: ${key}`);
     const baseNeeded = Math.min(required, recipe.take);
@@ -392,7 +283,6 @@ async function resolveHistory<T>(root: HistoryRef): Promise<T[]> {
   }
   if (offset !== root.length)
     throw new Error('History resolved length mismatch');
-  diagnostics().entriesEmitted += offset;
   return result;
 }
 registerSerializationClass(HISTORY_CLASS_ID, History);
