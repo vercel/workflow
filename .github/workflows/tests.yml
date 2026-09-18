@@ -447,6 +447,13 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
       WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS: '5000'
+      # Every CLI assertion spawns a full `node` child that boots oclif,
+      # infers the Vercel project and team, builds a World and talks to the
+      # API before it can answer. Under the concurrent suite on a 4-core
+      # runner the 20s default budget was being spent on that boot, and the
+      # child was killed with SIGTERM mid-request (seen as
+      # `inspect --withData` dying while still "Inferring vercel project").
+      WORKFLOW_E2E_CLI_TIMEOUT_MS: '40000'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -517,6 +524,9 @@ jobs:
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
+          # The CLI children the suite spawns skip `.vercel` folder inference
+          # when the project id, team and project name are all in the env.
+          WORKFLOW_VERCEL_PROJECT_NAME: ${{ matrix.app.project-slug }}
           # The trusted-sources OIDC token (x-vercel-trusted-oidc-idp-token)
           # is minted on demand inside `scripts/trusted-sources-headers.mjs`
           # via the runner's ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN env vars
@@ -595,6 +605,13 @@ jobs:
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
       WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS: '5000'
+      # Every CLI assertion spawns a full `node` child that boots oclif,
+      # infers the Vercel project and team, builds a World and talks to the
+      # API before it can answer. Under the concurrent suite on a 4-core
+      # runner the 20s default budget was being spent on that boot, and the
+      # child was killed with SIGTERM mid-request (seen as
+      # `inspect --withData` dying while still "Inferring vercel project").
+      WORKFLOW_E2E_CLI_TIMEOUT_MS: '40000'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -646,6 +663,7 @@ jobs:
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
           WORKFLOW_VERCEL_PROJECT_SLUG: "example-nextjs-workflow-turbopack"
+          WORKFLOW_VERCEL_PROJECT_NAME: "example-nextjs-workflow-turbopack"
           # See the note on e2e-vercel-prod: PRs point at the protected
           # workflow-server preview; unset on main for production.
           VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && !startsWith(github.head_ref, 'changeset-release/') && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
@@ -832,6 +850,9 @@ jobs:
           WORKFLOW_VERCEL_TEAM: ${{ env.WS_TEAM_ID }}
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
+          # The CLI children the suite spawns skip `.vercel` folder inference
+          # when the project id, team and project name are all in the env.
+          WORKFLOW_VERCEL_PROJECT_NAME: ${{ matrix.app.project-slug }}
           VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
 
       - name: Capture runtime logs on failure
@@ -1008,6 +1029,9 @@ jobs:
           WORKFLOW_VERCEL_TEAM: ${{ env.WS_TEAM_ID }}
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
+          # The CLI children the suite spawns skip `.vercel` folder inference
+          # when the project id, team and project name are all in the env.
+          WORKFLOW_VERCEL_PROJECT_NAME: ${{ matrix.app.project-slug }}
           VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
 
       - name: Capture runtime logs on failure
