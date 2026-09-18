@@ -4709,21 +4709,20 @@ export function workflowEntrypoint(
                             // these bodies until they settle. See
                             // assertNoInFlightOwnedSteps.
                             inFlightOwnedSteps.add(s.correlationId);
-                            // Lazy and pre-claimed steps are brand-new
-                            // (their create-claim is the exactly-once gate),
-                            // but an owned-recovery step already exists and
-                            // its delayed backstop message may fire mid-body
-                            // in this same process, so route those through
-                            // the in-process single-flight.
-                            const executed =
-                              s.lazyStepInput === undefined &&
-                              s.preclaimedStart === undefined
-                                ? runStepSingleFlight(
-                                    runId,
-                                    s.correlationId,
-                                    run
-                                  )
-                                : run();
+                            // All inline steps use single-flight. Fresh
+                            // lazy/pre-claimed steps can contend when a wake
+                            // resumes this process before the prior invocation
+                            // settles; an owned-recovery step can contend when
+                            // its delayed backstop fires mid-body.
+                            const executed = runStepSingleFlight(
+                              runId,
+                              s.correlationId,
+                              run,
+                              s.lazyStepInput !== undefined ||
+                                s.preclaimedStart !== undefined
+                                ? 'fresh-inline-step'
+                                : 'recovery'
+                            );
                             return executed.finally(() =>
                               inFlightOwnedSteps.delete(s.correlationId)
                             );
