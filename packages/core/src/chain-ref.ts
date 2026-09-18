@@ -7,6 +7,14 @@ export type ChainRef = {
   length: number;
 };
 
+export type ChainRecipe = {
+  slot: string;
+  length: number;
+  base?: ChainRef;
+  take: number;
+  additions: unknown[];
+};
+
 export function isChainRef(value: unknown): value is ChainRef {
   const ref = value as ChainRef;
   return (

@@ -1,4 +1,4 @@
-import type { ChainRecipe } from '../chain.js';
+import type { ChainRecipe } from '../chain-ref.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

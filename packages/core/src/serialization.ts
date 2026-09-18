@@ -10,7 +10,8 @@ import type { StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
-import { Chain, type ChainRecipe } from './chain.js';
+import { Chain } from './chain.js';
+import type { ChainRecipe } from './chain-ref.js';
 import { importKey } from './encryption.js';
 import {
   createFlushableState,
