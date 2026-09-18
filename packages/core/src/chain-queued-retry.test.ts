@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import { Chain } from './chain.js';
 import { importKey } from './encryption.js';
 import { registerStepFunction } from './private.js';
 import { executeStep } from './runtime/step-executor.js';
 import { setWorld } from './runtime/world.js';
-import { Chain } from './chain.js';
 import {
   dehydrateStepArguments,
   dehydrateStepReturnValue,

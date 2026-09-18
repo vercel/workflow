@@ -1,9 +1,10 @@
 import { types } from 'node:util';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
+import { CHAIN_CLASS_ID, type ChainRef, isChainRef } from './chain-ref.js';
 import { registerSerializationClass } from './class-serialization.js';
 import { getWorldLazy } from './runtime/get-world-lazy.js';
 import { contextStorage } from './step/context-storage.js';
-import { isChainRef, CHAIN_CLASS_ID, type ChainRef } from './chain-ref.js';
+
 export { CHAIN_CLASS_ID, type ChainRef } from './chain-ref.js';
 
 const WORKFLOW_CONTEXT = Symbol.for('WORKFLOW_CONTEXT');

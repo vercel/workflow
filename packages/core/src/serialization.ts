@@ -10,6 +10,7 @@ import type { StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
+import { Chain, type ChainRecipe } from './chain.js';
 import { importKey } from './encryption.js';
 import {
   createFlushableState,
@@ -37,7 +38,10 @@ import {
   createSealSession,
   decodeRunPublicKey,
 } from './sealed-box.js';
-import { Chain, type ChainRecipe } from './chain.js';
+import {
+  splitChainEnvelope,
+  wrapChainEnvelope,
+} from './serialization/chain-envelope.js';
 import * as clientModule from './serialization/client.js';
 import {
   type CompressionStats,
@@ -87,10 +91,6 @@ import {
   getStepFunctionReducer,
   getStepFunctionReviver,
 } from './serialization/reducers/step-function.js';
-import {
-  splitChainEnvelope,
-  wrapChainEnvelope,
-} from './serialization/chain-envelope.js';
 import * as stepModule from './serialization/step.js';
 import {
   type FormatPrefix,

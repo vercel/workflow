@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { Chain } from './chain.js';
 import { importKey } from './encryption.js';
 import { getWorldLazy } from './runtime/get-world-lazy.js';
-import { Chain } from './chain.js';
 import { splitChainEnvelope } from './serialization/chain-envelope.js';
 import {
   dehydrateStepReturnValue,

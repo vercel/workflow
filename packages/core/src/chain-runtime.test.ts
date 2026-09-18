@@ -7,10 +7,10 @@ import {
   type WorkflowRun,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Chain } from './chain.js';
 import { registerStepFunction } from './private.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
-import { Chain } from './chain.js';
 import { splitChainEnvelope } from './serialization/chain-envelope.js';
 import {
   dehydrateWorkflowArguments,
