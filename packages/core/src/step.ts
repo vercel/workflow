@@ -3,12 +3,14 @@ import { withResolvers } from '@workflow/utils';
 import { EventConsumerResult } from './events-consumer.js';
 import type { StepInvocationQueueItem } from './global.js';
 import { stepLogger } from './logger.js';
+import type { StepFunction } from './private.js';
 import {
   awaitEarlierDeliveries,
   registerDeliveryBarrier,
   scheduleWorkflowSuspension,
   type WorkflowOrchestratorContext,
 } from './private.js';
+import { captureReplayInputs, REPLAY_INPUT_LABEL } from './replay-inputs.js';
 import type { Serializable } from './schemas.js';
 import { markUseStepClosureFn } from './serialization/hardened.js';
 import { hydrateStepError, hydrateStepReturnValue } from './serialization.js';
@@ -25,6 +27,14 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
     ): Promise<Result> {
       const { promise, resolve, reject } = withResolvers<Result>();
 
+      const replayInputs = captureReplayInputs(
+        args,
+        (stepFunction as StepFunction).replayInputs
+      );
+      for (const capture of replayInputs ?? []) {
+        if (capture.index < args.length)
+          args[capture.index] = REPLAY_INPUT_LABEL;
+      }
       const correlationId = `step_${ctx.generateUlid()}`;
 
       const queueItem: StepInvocationQueueItem = {
@@ -32,6 +42,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         correlationId,
         stepName,
         args,
+        ...(replayInputs ? { replayInputs } : {}),
       };
 
       // Capture `this` value for method invocations (e.g., MyClass.method())
@@ -411,6 +422,11 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           thisArg,
           ...partialArgs
         );
+        if ((stepFunction as StepFunction).replayInputs !== undefined) {
+          (bound as StepFunction).replayInputs = (
+            stepFunction as StepFunction
+          ).replayInputs;
+        }
         Object.defineProperty(bound, 'stepId', {
           value: stepName,
           writable: false,

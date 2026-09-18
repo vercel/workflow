@@ -1020,10 +1020,15 @@ export function createQuickJSSerde(
       if (stepId === undefined) return false;
       const payload: {
         stepId: string;
+        replayInputs?: unknown;
         closureVars?: unknown;
         boundThis?: unknown;
         boundArgs?: unknown;
       } = { stepId };
+      const replayInputs = own(value, 'replayInputs');
+      if (replayInputs && !replayInputs.isUndefined)
+        payload.replayInputs = replayInputs;
+      else replayInputs?.dispose();
       const closureVarsFn = own(value, '__closureVarsFn');
       if (closureVarsFn) {
         if (closureVarsFn.typeof === 'function') {
@@ -1652,6 +1657,9 @@ export function createQuickJSSerde(
         }
         closureVars?.dispose();
         if (stepId !== vm.undefined) stepId.dispose();
+        using replayInputs = own(value, 'replayInputs');
+        if (replayInputs && !replayInputs.isUndefined)
+          proxy.setProp('replayInputs', replayInputs);
         if (guestHasOwn(value, 'boundThis')) {
           // Re-bind through the proxy's own (overridden) `.bind`, which is
           // an own data property stamped by WORKFLOW_USE_STEP.

@@ -57,10 +57,14 @@ export function getStepFunctionReducer(): Partial<Reducers> {
 
       const payload: {
         stepId: string;
+        replayInputs?: readonly number[];
         closureVars?: Record<string, any>;
         boundThis?: unknown;
         boundArgs?: unknown[];
       } = { stepId };
+      const replayInputs = (value as any).replayInputs;
+      if (replayInputs !== undefined)
+        payload.replayInputs = replayInputs as readonly number[];
       if (closureVars !== undefined) payload.closureVars = closureVars;
       if (hasBoundThis) payload.boundThis = boundThis;
       if (Array.isArray(boundArgs) && boundArgs.length > 0) {
@@ -111,6 +115,8 @@ export function getStepFunctionReviver(
         ? useStep(stepId, () => closureVars)
         : useStep(stepId);
 
+      if (value.replayInputs !== undefined)
+        (proxy as any).replayInputs = value.replayInputs;
       if ('boundThis' in value) {
         const boundArgs = Array.isArray(value.boundArgs) ? value.boundArgs : [];
         return (proxy as any).bind(value.boundThis, ...boundArgs);

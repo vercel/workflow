@@ -1,6 +1,7 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
 import type { AttributeChange } from '@workflow/world';
+import type { ReplayInputCapture } from './replay-inputs.js';
 import type { Serializable } from './schemas.js';
 
 export interface StepInvocationQueueItem {
@@ -8,6 +9,7 @@ export interface StepInvocationQueueItem {
   correlationId: string;
   stepName: string;
   args: Serializable[];
+  replayInputs?: ReplayInputCapture[];
   closureVars?: Record<string, Serializable>;
   thisVal?: Serializable;
   hasCreatedEvent?: boolean;

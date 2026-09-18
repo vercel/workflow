@@ -773,6 +773,7 @@ export function workflowEntrypoint(
           runInput,
           hookInput,
           stepInput,
+          replayInputs: incomingReplayInputs,
           runContext,
           hookResumeTiming,
           waitContinuation,
@@ -1670,7 +1671,11 @@ export function workflowEntrypoint(
                   // from the batch are done. If so, replay inline (saving a queue
                   // roundtrip). If not, return: the last handler to complete
                   // will pick up the replay.
-                  if (incomingStepId && incomingStepName) {
+                  if (
+                    incomingStepId &&
+                    incomingStepName &&
+                    !incomingReplayInputs
+                  ) {
                     try {
                       // Resilient step dispatch: the producer parallelized the
                       // `step_created` write with this queue publish, so the
@@ -3057,6 +3062,10 @@ export function workflowEntrypoint(
                           workflowCode,
                           workflowName,
                           workflowRun,
+                          replayStepName: incomingStepName,
+                          replayStepId: incomingReplayInputs
+                            ? incomingStepId
+                            : undefined,
                           preloadedEvents:
                             eventLog.type === 'ready'
                               ? eventLog.events
@@ -4044,6 +4053,7 @@ export function workflowEntrypoint(
                         const dispatchNowMs = Date.now();
                         const ownedRecoverySteps: StepInvocationQueueItem[] =
                           [];
+                        const replayInputSteps: StepInvocationQueueItem[] = [];
                         let backstopWakesArmed = 0;
                         // Immediate re-enqueues suppressed because this
                         // invocation already published the step's message
@@ -4086,6 +4096,7 @@ export function workflowEntrypoint(
                         let handOffResumeTiming =
                           resumeTracking !== undefined &&
                           lazyInlineSteps.length === 0 &&
+                          !incomingReplayInputs &&
                           !pendingSteps.some(
                             (step) =>
                               !inlineCorrelationIds.has(step.correlationId) &&
@@ -4123,6 +4134,17 @@ export function workflowEntrypoint(
                             // message; re-execute the step in this
                             // invocation instead of queueing it.
                             ownedRecoverySteps.push(step);
+                            continue;
+                          }
+                          if (
+                            incomingReplayInputs &&
+                            incomingStepId === step.correlationId &&
+                            incomingStepName === step.stepName &&
+                            (!ownershipActive ||
+                              stepLeaseRemainingSeconds(step, dispatchNowMs) ===
+                                0)
+                          ) {
+                            replayInputSteps.push(step);
                             continue;
                           }
                           // Delayed backstop wake while another invocation's
@@ -4199,6 +4221,9 @@ export function workflowEntrypoint(
                                 runId,
                                 stepId: step.correlationId,
                                 stepName: step.stepName,
+                                ...(step.replayInputs
+                                  ? { replayInputs: true as const }
+                                  : {}),
                                 traceCarrier,
                                 requestedAt: new Date(),
                                 // Immutable run identity so the consumer can
@@ -4314,10 +4339,12 @@ export function workflowEntrypoint(
                                   lazyStepInput: s.dehydratedInput,
                                 };
                           }),
-                          ...ownedRecoverySteps.map((s) => ({
-                            correlationId: s.correlationId,
-                            stepName: s.stepName,
-                          })),
+                          ...[...ownedRecoverySteps, ...replayInputSteps].map(
+                            (s) => ({
+                              correlationId: s.correlationId,
+                              stepName: s.stepName,
+                            })
+                          ),
                         ];
                         // Ownership telemetry (design doc Phase 7): span
                         // attributes so production traces show when crash
@@ -4605,6 +4632,12 @@ export function workflowEntrypoint(
                         let stepResults: Awaited<
                           ReturnType<typeof executeStep>
                         >[];
+                        const replayInputsById = new Map(
+                          pendingSteps.map((step) => [
+                            step.correlationId,
+                            step.replayInputs,
+                          ])
+                        );
                         const stepExecutionPromises = inlineExecutions.map(
                           (s, stepIndex) => {
                             const run = () => {
@@ -4622,6 +4655,9 @@ export function workflowEntrypoint(
                                 ),
                                 stepId: s.correlationId,
                                 stepName: s.stepName,
+                                replayInputs: replayInputsById.get(
+                                  s.correlationId
+                                ),
                                 runSpecVersion: workflowRun.specVersion,
                                 // Attempt number = prior step_started count + 1
                                 // (this execution's start), counting only THIS
@@ -4652,10 +4688,13 @@ export function workflowEntrypoint(
                                     : countStepStartedEvents(
                                         eventLog.events,
                                         s.correlationId,
-                                        {
-                                          type: 'ownedBy',
-                                          messageId: metadata.messageId,
-                                        }
+                                        incomingReplayInputs &&
+                                          incomingStepId === s.correlationId
+                                          ? { type: 'totalAttempts' }
+                                          : {
+                                              type: 'ownedBy',
+                                              messageId: metadata.messageId,
+                                            }
                                       ) + 1,
                                 // Lazy inline start: send the deferred step's
                                 // input on step_started so the world creates
@@ -4675,7 +4714,11 @@ export function workflowEntrypoint(
                                 // step_started, so wake replays see the body
                                 // as in flight here and suppress the
                                 // immediate requeue (workflow#2780).
-                                ownerMessageId: metadata.messageId,
+                                ownerMessageId:
+                                  incomingReplayInputs &&
+                                  incomingStepId === s.correlationId
+                                    ? undefined
+                                    : metadata.messageId,
                                 // Turbo: force optimistic start and hold the
                                 // lazy step_started until the backgrounded
                                 // run_started lands (the body still runs
@@ -4900,6 +4943,15 @@ export function workflowEntrypoint(
                           return await reinvoke(throttleTimeout);
                         }
 
+                        const replayInputRetry = incomingReplayInputs
+                          ? toRetry.find(
+                              ({ step }) =>
+                                step.correlationId === incomingStepId
+                            )
+                          : undefined;
+                        if (replayInputRetry) {
+                          toRetry.splice(toRetry.indexOf(replayInputRetry), 1);
+                        }
                         if (toRetry.length > 0) {
                           const retryTraceCarrier = await nextTraceCarrier();
                           await Promise.all(
@@ -4911,6 +4963,9 @@ export function workflowEntrypoint(
                                   runId,
                                   stepId: step.correlationId,
                                   stepName: step.stepName,
+                                  ...(replayInputsById.get(step.correlationId)
+                                    ? { replayInputs: true as const }
+                                    : {}),
                                   traceCarrier: retryTraceCarrier,
                                   requestedAt: new Date(),
                                   runContext: runDispatchContext(workflowRun),
@@ -4952,6 +5007,9 @@ export function workflowEntrypoint(
 
                         // Let pending background operations flush before the next
                         // replay reads their results.
+                        if (replayInputRetry)
+                          return await reinvoke(replayInputRetry.delaySeconds);
+
                         if (anyPendingOps) {
                           runtimeLogger.debug(
                             'Breaking loop: inline step has pending ops',
