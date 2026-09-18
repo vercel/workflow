@@ -2106,21 +2106,30 @@ describe.concurrent('e2e', () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
 
-      // Start first workflow - it will create a hook and wait for a payload
-      const run1 = await start(await e2e('hookCleanupTestWorkflow'), [
-        token,
-        customData,
-      ]);
+      // Both runs deliberately share an externally meaningful token. Bypass
+      // startTracked's pickup replacement: if a status read remains stale as
+      // the original begins executing, its replacement can race the original
+      // for this token and manufacture the conflict the test is meant to
+      // control. rawStart still gets trackRun diagnostics and the test-level
+      // retry remains the backstop for a genuine pickup stall.
+      const run1 = trackRun(
+        await rawStart(await e2e('hookCleanupTestWorkflow'), [
+          token,
+          customData,
+        ])
+      );
 
       // Wait until run1 has registered the hook before starting run2.
       await waitForHook(token, { runId: run1.runId });
 
       // Start second workflow with the SAME token while first is still running
       // This should fail because the hook token is already in use
-      const run2 = await start(await e2e('hookCleanupTestWorkflow'), [
-        token,
-        customData,
-      ]);
+      const run2 = trackRun(
+        await rawStart(await e2e('hookCleanupTestWorkflow'), [
+          token,
+          customData,
+        ])
+      );
 
       // The second workflow should fail with a hook token conflict error
       const run2Error = await run2.returnValue.catch((e: unknown) => e);
