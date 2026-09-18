@@ -16,16 +16,21 @@ Streams carry incrementally produced data and live handles across workflow bound
 ```ts
 import { Chain } from 'workflow';
 
+type Message = { role: string; text: string };
+
+declare function generate(messages: Message[]): Promise<Message>;
+
 async function turn(history?: Chain<Message>) {
   'use step';
   const messages = history ? await history.toArray() : [];
   const next = await generate(messages);
-  return (history ?? Chain.from([])).append(next);
+  return (history ?? Chain.from<Message>([])).append(next);
 }
 ```
 
 Use `take(n)` for a fixed prefix. Branching follows ordinary control flow:
 
+{/* @skip-typecheck: abbreviated workflow control flow using application steps */}
 ```ts
 const base = await seed();
 const main = await turn(base);
