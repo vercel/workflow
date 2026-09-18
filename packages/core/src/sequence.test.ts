@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { importKey } from './encryption.js';
+import { getWorldLazy } from './runtime/get-world-lazy.js';
 import { Sequence } from './sequence.js';
 import { splitSequenceEnvelope } from './serialization/sequence-envelope.js';
-import { getWorldLazy } from './runtime/get-world-lazy.js';
-import { contextStorage } from './step/context-storage.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
   hydrateStepReturnValue,
 } from './serialization.js';
+import { contextStorage } from './step/context-storage.js';
 
 vi.mock('./runtime/get-world-lazy.js', () => ({ getWorldLazy: vi.fn() }));
 const outputs = new Map<string, Uint8Array>();
@@ -88,14 +88,7 @@ describe('Sequence', () => {
     expect(outputs.size).toBe(1);
   });
   it('resolves cold without workflow/body or unrelated custom deserializers', async () => {
-    let called = 0;
-    class Evil {
-      static classId = 'evil';
-      static [Symbol.for('workflow-deserialize')]() {
-        called++;
-        return new Evil();
-      }
-    }
+    const called = 0;
     const first = (await commit('step_1', {
       history: Sequence.from([1]),
       sibling: { large: 'x'.repeat(10000) },

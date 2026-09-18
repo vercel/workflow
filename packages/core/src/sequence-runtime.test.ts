@@ -2,16 +2,16 @@ import { EntityConflictError } from '@workflow/errors';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
-  slotToEventId,
   type Step,
+  slotToEventId,
   type WorkflowRun,
 } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Sequence } from './sequence.js';
-import { splitSequenceEnvelope } from './serialization/sequence-envelope.js';
 import { registerStepFunction } from './private.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
+import { Sequence } from './sequence.js';
+import { splitSequenceEnvelope } from './serialization/sequence-envelope.js';
 import {
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,

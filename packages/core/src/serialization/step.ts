@@ -6,7 +6,6 @@
  */
 
 import { SerializationError } from '@workflow/errors';
-import { splitSequenceEnvelope } from './sequence-envelope.js';
 import type { CodecOptions } from './codec.js';
 import { devalueCodec } from './codec-devalue.js';
 import { compress, decompress } from './compression.js';
@@ -17,6 +16,7 @@ import {
 } from './encryption.js';
 import { formatSerializationError, rethrowIfRuntimeError } from './errors.js';
 import { decodeFormatPrefix, encodeWithFormatPrefix } from './format.js';
+import { splitSequenceEnvelope } from './sequence-envelope.js';
 import { SerializationFormat } from './types.js';
 
 /**

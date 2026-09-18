@@ -23,11 +23,6 @@ import {
   pollWritableLock,
   trackFlushableWritable,
 } from './flushable-stream.js';
-import { Sequence, type SequenceRecipe } from './sequence.js';
-import {
-  splitSequenceEnvelope,
-  wrapSequenceEnvelope,
-} from './serialization/sequence-envelope.js';
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
 // resolve the world bridge from the step bundle without dragging the full
@@ -42,6 +37,7 @@ import {
   createSealSession,
   decodeRunPublicKey,
 } from './sealed-box.js';
+import { Sequence, type SequenceRecipe } from './sequence.js';
 import * as clientModule from './serialization/client.js';
 import {
   type CompressionStats,
@@ -91,6 +87,10 @@ import {
   getStepFunctionReducer,
   getStepFunctionReviver,
 } from './serialization/reducers/step-function.js';
+import {
+  splitSequenceEnvelope,
+  wrapSequenceEnvelope,
+} from './serialization/sequence-envelope.js';
 import * as stepModule from './serialization/step.js';
 import {
   type FormatPrefix,
