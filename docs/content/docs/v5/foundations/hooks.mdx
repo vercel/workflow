@@ -272,7 +272,7 @@ export async function channelWorkflow(channelId: string) {
 }
 ```
 
-The run that held the token is woken and its `await hook` (or `for await...of`) rejects with [`HookForceClaimedError`](/docs/api-reference/workflow-errors/hook-force-claimed-error) once it has drained the payloads it received before the takeover. Every `resumeHook()` for the token from then on reaches the new run, including one that was already in flight, so senders never notice the handoff. Several runs forcing the same token at once chain in the same way and always end with exactly one owner. A run whose runtime would not understand the takeover (one started by an older SDK release, or a Python SDK run) cannot be taken from; the forced hook then gets an ordinary `HookConflictError`. See [`createHook()`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) for the full semantics.
+The run that held the token is woken and its `await hook` (or `for await...of`) rejects with [`HookForceClaimedError`](/docs/api-reference/workflow-errors/hook-force-claimed-error) once it has drained the payloads it received before the takeover. Every `resumeHook()` for the token from then on reaches the new run, including one that was already in flight, so senders never notice the handoff. Several runs forcing the same token at once chain in the same way and always end with exactly one owner. A run started at a spec version below 8 cannot be taken from; the forced hook then gets an ordinary `HookConflictError`. See [`createHook()`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) for the full semantics.
 
 ## Understanding webhooks
 

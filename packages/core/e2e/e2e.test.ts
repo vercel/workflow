@@ -12,8 +12,8 @@ import {
 } from '@workflow/errors';
 import { createWorkflowUrl } from '@workflow/utils';
 import {
-  HOOK_FORCE_CLAIM_READER_VERSION,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   type World,
 } from '@workflow/world';
 import {
@@ -2973,30 +2973,48 @@ describe.concurrent('e2e', () => {
     );
 
     test(
-      'a run is started attesting that its runtime reads an involuntary disposal, which is what lets a token be taken from it',
-      { timeout: 60_000 },
-      async () => {
-        // The World only takes a token from a running victim whose run
-        // carries `executionContext.hookForceClaimReaderVersion`, stamped by
-        // the deployment that executes it (for a cross-deployment start, the
-        // target's health-probe answer). Every takeover test above relies on
-        // this stamp reaching the persisted run; pin it explicitly. A run
-        // without it — an older SDK, a Python runtime — is refused with an
-        // ordinary conflict, covered at the World level in
-        // world-local/hook-force-claim.test.ts and world-postgres/storage.test.ts
-        // and at the runtime level in workflow/hook.test.ts.
-        const token = `force-attest-${Math.random().toString(36).slice(2)}`;
-        const run = await start(await e2e('hookForceClaimVictimWorkflow'), [
-          token,
-        ]);
-        await waitForHook(token, { runId: run.runId });
-        const world = await getWorld();
-        const row = await world.runs.get(run.runId);
-        expect(row.executionContext?.hookForceClaimReaderVersion).toBe(
-          HOOK_FORCE_CLAIM_READER_VERSION
+      'declines to take a token from a run whose runtime predates involuntary disposal: the claimer gets an ordinary HookConflictError',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
+        const token = `force-legacy-${Math.random().toString(36).slice(2)}`;
+        // A run stamped one spec version below the one that understands
+        // `hook_disposed{forceClaimedBy}`. Its runtime here is the current
+        // one, but the World decides from the persisted version alone.
+        const victim = await start(
+          await e2e('hookForceClaimVictimWorkflow'),
+          [token],
+          { specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM - 1 }
         );
-        await resumeHook(token, { message: 'done' });
-        await run.returnValue;
+        const victimHook = await waitForHook(token, { runId: victim.runId });
+
+        const claimer = await start(
+          await e2e('hookForceClaimTolerantClaimerWorkflow'),
+          [token]
+        );
+        expect(await claimer.returnValue).toEqual({
+          role: 'refused',
+          conflictingRunId: victim.runId,
+        });
+        const claimerEvents = await allRunEvents(claimer.runId);
+        const conflict = claimerEvents.find(
+          (e) => e.eventType === 'hook_conflict'
+        );
+        expect(conflict?.eventData).toMatchObject({
+          token,
+          conflictingRunId: victim.runId,
+          forceRefusedReason: 'victim-spec-version',
+        });
+
+        // The victim was left exactly as it was, and still owns the token.
+        expect(hookEventsOf(await allRunEvents(victim.runId))).toHaveLength(1);
+        const stillOwner = await getHookByToken(token);
+        expect(stillOwner.hookId).toBe(victimHook.hookId);
+        await resumeHook(token, { message: 'still mine' });
+        expect(await victim.returnValue).toMatchObject({
+          role: 'owner',
+          received: 'still mine',
+        });
       }
     );
 

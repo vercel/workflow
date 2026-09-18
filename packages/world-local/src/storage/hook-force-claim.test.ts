@@ -10,11 +10,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  HOOK_FORCE_CLAIM_READER_VERSION,
-  SPEC_VERSION_CURRENT,
-  type Storage,
-} from '@workflow/world';
+import { SPEC_VERSION_CURRENT, type Storage } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createHook, createRun, updateRun } from '../test-helpers.js';
 import { createStorage } from './index.js';
@@ -32,19 +28,11 @@ describe('local World hook force-claim', () => {
     await fs.rm(testDir, { recursive: true, force: true });
   });
 
-  async function runningRun(
-    workflowName: string,
-    // Attests the involuntary-disposal reader contract unless told not to,
-    // as `start()` does for a run its own deployment will execute.
-    executionContext: Record<string, unknown> = {
-      hookForceClaimReaderVersion: HOOK_FORCE_CLAIM_READER_VERSION,
-    }
-  ): Promise<string> {
+  async function runningRun(workflowName: string): Promise<string> {
     const run = await createRun(storage, {
       deploymentId: `dpl_${workflowName}`,
       workflowName,
       input: new Uint8Array(),
-      executionContext,
     });
     await updateRun(storage, run.runId, 'run_started');
     return run.runId;
@@ -111,62 +99,5 @@ describe('local World hook force-claim', () => {
       'run_started',
       'hook_created',
     ]);
-  });
-
-  it('declines to take a token from a running victim that never attested the reader contract', async () => {
-    // No `hookForceClaimReaderVersion` on the victim's run: an older SDK, a
-    // Python runtime, or an unanswered cross-deployment probe. Its runtime
-    // would take the disposal for its own `dispose()` and hang, so the World
-    // writes nothing and answers the ordinary conflict, marked as declined.
-    const token = 'channel:legacy';
-    const victim = await runningRun('legacy-victim', {
-      workflowCoreVersion: '4.0.0',
-    });
-    // Retained, so the token stays with the finished victim below.
-    const victimHook = await createHook(storage, victim, {
-      hookId: 'hook_legacy_victim',
-      token,
-      tokenRetentionUntil: new Date(Date.now() + 60 * 60 * 1000),
-    });
-    const claimer = await runningRun('claimer');
-
-    const result = await storage.events.create(claimer, {
-      eventType: 'hook_created',
-      specVersion: SPEC_VERSION_CURRENT,
-      correlationId: 'hook_claimer',
-      eventData: { token, force: true },
-    });
-    expect(result.event.eventType).toBe('hook_conflict');
-    expect(result.event.eventData).toMatchObject({
-      token,
-      conflictingRunId: victim,
-      forceRefusedReason: 'victim-runtime',
-    });
-    expect(result.hook).toBeUndefined();
-    expect(await eventTypes(victim)).toEqual([
-      'run_created',
-      'run_started',
-      'hook_created',
-    ]);
-    expect((await storage.hooks.getByToken(token)).hookId).toBe(
-      victimHook.hookId
-    );
-
-    // A finished victim has no reader to strand: the same create takes its
-    // retained token, attested or not.
-    await updateRun(storage, victim, 'run_completed', {
-      result: new Uint8Array(),
-    });
-    const retaken = await storage.events.create(claimer, {
-      eventType: 'hook_created',
-      specVersion: SPEC_VERSION_CURRENT,
-      correlationId: 'hook_claimer_again',
-      eventData: { token, force: true },
-    });
-    expect(retaken.event.eventType).toBe('hook_created');
-    expect(retaken.hook?.claimedFrom).toEqual({
-      runId: victim,
-      hookId: victimHook.hookId,
-    });
   });
 });

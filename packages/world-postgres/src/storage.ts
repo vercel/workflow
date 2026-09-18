@@ -48,8 +48,9 @@ import {
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
   requiresNewerWorld,
-  runUnderstandsForcedHookDisposal,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   StepSchema,
   slotToEventId,
   stripEventDataRefs,
@@ -2032,7 +2033,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         // Set when the create ends in a `hook_conflict`: `null` for the plain
         // conflict of an unforced create, a reason when a forced create was
         // declined on purpose. Left `undefined` when the hook was created.
-        let forceRefusedReason: 'victim-runtime' | null | undefined;
+        let forceRefusedReason: 'victim-spec-version' | null | undefined;
         // The run named on that `hook_conflict`: the owner the read below
         // found, or the one a forced takeover found holding the token when it
         // declined.
@@ -2220,8 +2221,6 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                     workflowName: Schema.runs.workflowName,
                     deploymentId: Schema.runs.deploymentId,
                     specVersion: Schema.runs.specVersion,
-                    executionContext: Schema.runs.executionContext,
-                    executionContextJson: Schema.runs.executionContextJson,
                   })
                   .from(Schema.runs)
                   .where(eq(Schema.runs.runId, victim.runId))
@@ -2246,25 +2245,20 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   }),
                 };
                 // A running victim must be able to READ the disposal about to
-                // land in its log. A runtime that never attested
-                // `hookForceClaimReaderVersion` takes
+                // land in its log. A runtime below
+                // SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM takes
                 // `hook_disposed{forceClaimedBy}` for its own `dispose()` and
                 // leaves `await hook` pending forever, so it is not taken from:
                 // the claimer gets the ordinary conflict, marked so its runtime
                 // knows the World declined on purpose. Decided from the victim's
-                // persisted context, never this request's. Nothing written.
+                // persisted version, never this request's. Nothing written.
                 if (
                   victimRunning &&
-                  !runUnderstandsForcedHookDisposal(
-                    victimRun.executionContext ??
-                      (victimRun.executionContextJson as Record<
-                        string,
-                        unknown
-                      > | null)
-                  )
+                  (victimRun.specVersion ?? SPEC_VERSION_LEGACY) <
+                    SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
                 ) {
                   return {
-                    refused: 'victim-runtime' as const,
+                    refused: 'victim-spec-version' as const,
                     conflictingRunId: victim.runId,
                   };
                 }

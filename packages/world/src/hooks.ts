@@ -57,44 +57,6 @@ export type HookResumeContext = z.infer<typeof HookResumeContextSchema>;
 export const HOOK_RESUME_INPUT_VERSION = 1;
 
 /**
- * Current version of the involuntary-hook-disposal READER contract: a runtime
- * at this version reads a `hook_disposed` carrying `forceClaimedBy` (written
- * into the run's log by another run's `createHook({ experimental_force })`)
- * as a takeover, rejects the hook's awaiters with `HookForceClaimedError` and
- * settles `getConflict()`. A runtime below it treats the row as its own
- * `dispose()` and leaves every `await hook` pending forever.
- *
- * Attested per run at `start()` by the deployment that will EXECUTE the run
- * — its own constant for a same-deployment start, the target's health-probe
- * answer for a cross-deployment one — and stamped into
- * `executionContext.hookForceClaimReaderVersion`. A World takes a token only
- * from a running victim whose run carries at least this value; an older
- * deployment, a Python runtime, or an unattested target never does, so a
- * takeover can never strand a run that would not understand it. Deliberately
- * NOT tied to the spec version: that is stamped by the starter, not the
- * executor, and bumping it forces every reader in the fleet to move at once.
- */
-export const HOOK_FORCE_CLAIM_READER_VERSION = 1;
-
-/**
- * Whether a run, from its stamped `executionContext`, may have a hook token
- * taken from it while it is running: its executing deployment attested a
- * reader version of at least {@link HOOK_FORCE_CLAIM_READER_VERSION} at
- * `start()`. Fails closed: a run started by an older SDK (no stamp), on a
- * Python runtime, or whose cross-deployment target did not answer the probe
- * is never taken from. Worlds decide from the VICTIM's persisted context,
- * never from the claiming request.
- */
-export function runUnderstandsForcedHookDisposal(
-  executionContext: Record<string, unknown> | null | undefined
-): boolean {
-  const version = executionContext?.hookForceClaimReaderVersion;
-  return (
-    typeof version === 'number' && version >= HOOK_FORCE_CLAIM_READER_VERSION
-  );
-}
-
-/**
  * Current version of the backend lazy-hook-resume dedup contract: the live
  * backend enforces a `(runId, resumeId)` constraint so repeated deliveries of
  * one resume's queue message converge on exactly one `hook_received`.

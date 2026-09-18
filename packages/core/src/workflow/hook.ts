@@ -289,8 +289,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // A forced hook asked for a guarantee — this run owns the token — that
         // a `hook_conflict` says the World could not give. Two very different
         // reasons: the World declined on purpose because the run holding the
-        // token never attested that its runtime reads an involuntary disposal
-        // (`forceRefusedReason`), which is
+        // token predates involuntary disposal (`forceRefusedReason`), which is
         // the ordinary conflict the caller can handle like any other; or the
         // World does not implement forcing at all (an older server, or its
         // kill switch), which is a misconfiguration worth failing loudly on.

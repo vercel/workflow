@@ -44,8 +44,9 @@ import {
   isTerminalStepStatus,
   isTerminalWorkflowRunStatus,
   requiresNewerWorld,
-  runUnderstandsForcedHookDisposal,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   StepSchema,
   slotToEventId,
   ulidToDate,
@@ -2409,21 +2410,22 @@ export function createEventsStorage(
                   }),
                 };
                 // A running victim must be able to READ the disposal about to
-                // land in its log. A runtime that never attested
-                // `hookForceClaimReaderVersion` takes
+                // land in its log. A runtime below
+                // SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM takes
                 // `hook_disposed{forceClaimedBy}` for its own `dispose()` and
                 // leaves `await hook` pending forever, so it is not taken
                 // from: the claimer gets the ordinary conflict, marked so its
                 // runtime knows the World declined on purpose. Decided from
-                // the victim's persisted context, never this request's.
+                // the victim's persisted version, never this request's.
                 if (
                   victimRunning &&
-                  !runUnderstandsForcedHookDisposal(victimRun.executionContext)
+                  (victimRun.specVersion ?? SPEC_VERSION_LEGACY) <
+                    SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
                 ) {
                   return {
                     status: 'conflict' as const,
                     claim: existingClaim,
-                    forceRefusedReason: 'victim-runtime' as const,
+                    forceRefusedReason: 'victim-spec-version' as const,
                   };
                 }
                 // The token must resolve to SOME live hook at every instant of

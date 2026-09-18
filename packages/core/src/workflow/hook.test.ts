@@ -1663,40 +1663,5 @@ describe('createWebhook', () => {
       expect(HookConflictError.is(error)).toBe(false);
       await expect(hook.getConflict()).rejects.toBeInstanceOf(FatalError);
     });
-
-    it('keeps a hook_conflict the World marked as declined on purpose an ordinary HookConflictError', async () => {
-      // `forceRefusedReason` says the World implements forcing but would not
-      // take this token: the run holding it never attested that its runtime
-      // reads an involuntary disposal. That is the everyday conflict the
-      // caller can catch and route, not a misconfiguration.
-      const ctx = setupWorkflowContext([
-        {
-          eventId: 'evnt_0',
-          runId: 'wrun_claimer',
-          eventType: 'hook_conflict',
-          correlationId: HOOK_ID,
-          eventData: {
-            token: 'shared',
-            conflictingRunId: 'wrun_legacy_victim',
-            forceRefusedReason: 'victim-runtime',
-          },
-          createdAt: new Date(),
-        },
-      ]);
-      ctx.worldCapabilities = forceCapable;
-      const createHook = createCreateHook(ctx);
-      const hook = createHook({ token: 'shared', experimental_force: true });
-      const error = await hook.then(
-        () => undefined,
-        (err: unknown) => err
-      );
-      expect(HookConflictError.is(error)).toBe(true);
-      expect(error).not.toBeInstanceOf(FatalError);
-      expect((error as HookConflictError).conflictingRunId).toBe(
-        'wrun_legacy_victim'
-      );
-      const conflict = await hook.getConflict();
-      expect(conflict?.runId).toBe('wrun_legacy_victim');
-    });
   });
 });
