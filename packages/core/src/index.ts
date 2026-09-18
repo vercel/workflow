@@ -15,6 +15,7 @@ export {
   RetryableError,
   type RetryableErrorOptions,
 } from '@workflow/errors';
+export { Chain } from './chain.js';
 export {
   createHook,
   createWebhook,
@@ -25,7 +26,6 @@ export {
   type WebhookOptions,
 } from './create-hook.js';
 export { defineHook, type TypedHook } from './define-hook.js';
-export { Chain } from './chain.js';
 export {
   type SetAttributesOptions,
   setAttributes,

@@ -329,13 +329,11 @@ describe('Chain', () => {
     envelope.set(malformed, 8);
     envelope.set(nested as Uint8Array, 8 + malformed.length);
     get.mockResolvedValue({ status: 'completed', output: envelope });
-    const history = (Chain as any)[Symbol.for('workflow-deserialize')](
-      ref
-    ) as Chain<number>;
+    const history = Chain._deserializeRef(ref) as Chain<number>;
     await expect(history.toArray()).rejects.toThrow('Malformed Chain recipe');
     expect(get).toHaveBeenCalledTimes(1);
 
-    const foreign = (Chain as any)[Symbol.for('workflow-deserialize')]({
+    const foreign = Chain._deserializeRef({
       ...ref,
       runId: 'wrun_foreign',
     }) as Chain<number>;

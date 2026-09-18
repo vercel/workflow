@@ -308,6 +308,14 @@ export function getWebRevivers(): Revivers {
     URL: (value) => new URL(value),
     URLSearchParams: (value) => new URLSearchParams(value === '.' ? '' : value),
 
+    // Chains are opaque refs in observability surfaces. Their recipe data stays
+    // in the producing step output and is not expanded during generic hydration.
+    Chain: (value) => {
+      // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
+      const ctor = { Chain: function () {} }.Chain;
+      return Object.assign(Object.create(ctor.prototype), value);
+    },
+
     // Web-specific overrides for class instances.
     // Create objects with a dynamically-named constructor so that
     // the data inspector shows the class name (it reads constructor.name).

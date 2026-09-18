@@ -11,10 +11,10 @@ export {
 } from '@workflow/errors';
 export type { Hook, HookOptions } from '../create-hook.js';
 export { sleep } from '../sleep.js';
+export { Chain } from './chain.js';
 export { createHook, createWebhook } from './create-hook.js';
 export { defineHook } from './define-hook.js';
 export { getWorkflowMetadata } from './get-workflow-metadata.js';
-export { Chain } from './chain.js';
 export {
   type SetAttributesOptions,
   setAttributes,

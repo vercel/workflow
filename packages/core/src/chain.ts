@@ -1,12 +1,5 @@
 import { types } from 'node:util';
-import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import {
-  CHAIN_CLASS_ID,
-  type ChainRecipe,
-  type ChainRef,
-  isChainRef,
-} from './chain-ref.js';
-import { registerSerializationClass } from './class-serialization.js';
+import { type ChainRecipe, type ChainRef, isChainRef } from './chain-ref.js';
 import { getWorldLazy } from './runtime/get-world-lazy.js';
 import { contextStorage } from './step/context-storage.js';
 
@@ -182,14 +175,17 @@ export class Chain<T> {
     recipes.push({ slot, length, ...this.#draft });
     return { runId, stepId, slot, length };
   }
-  static [WORKFLOW_SERIALIZE](h: Chain<unknown>): ChainRef {
-    if (!h.#ref) throw new Error('Chain additions must be returned by a step');
+  /** @internal */
+  _serializeRef(): ChainRef {
+    if (!this.#ref)
+      throw new Error('Chain additions must be returned by a step');
     const run = workflowRunId();
-    if (run && run !== h.#ref.runId)
+    if (run && run !== this.#ref.runId)
       throw new Error('Cross-run Chain refs are unsupported');
-    return h.#ref;
+    return this.#ref;
   }
-  static [WORKFLOW_DESERIALIZE](ref: ChainRef): Chain<unknown> {
+  /** @internal */
+  static _deserializeRef(ref: ChainRef): Chain<unknown> {
     if (!isChainRef(ref)) throw new Error('Malformed Chain ref');
     const run = workflowRunId();
     if (run && run !== ref.runId)
@@ -282,4 +278,3 @@ async function resolveChain<T>(root: ChainRef): Promise<T[]> {
   if (offset !== root.length) throw new Error('Chain resolved length mismatch');
   return result;
 }
-registerSerializationClass(CHAIN_CLASS_ID, Chain);

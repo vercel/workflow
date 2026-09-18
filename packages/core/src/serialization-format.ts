@@ -68,6 +68,8 @@ export type SerializationFormatType =
 
 /** Length of the format prefix in bytes */
 const FORMAT_PREFIX_LENGTH = 4;
+const CHAIN_FORMAT = 'chn1';
+const CHAIN_HEADER_LENGTH = 8;
 
 const formatEncoder = new TextEncoder();
 const formatDecoder = new TextDecoder();
@@ -358,6 +360,29 @@ export type Revivers = Record<string, (value: any) => any>;
 // Generic hydrate/dehydrate dispatch
 // ---------------------------------------------------------------------------
 
+function stripChainRecipes(data: Uint8Array): Uint8Array {
+  if (
+    data.length < FORMAT_PREFIX_LENGTH ||
+    formatDecoder.decode(data.subarray(0, FORMAT_PREFIX_LENGTH)) !==
+      CHAIN_FORMAT
+  ) {
+    return data;
+  }
+  if (data.length < CHAIN_HEADER_LENGTH) {
+    throw new Error('Truncated Chain envelope');
+  }
+  const recipeLength = new DataView(
+    data.buffer,
+    data.byteOffset,
+    data.byteLength
+  ).getUint32(FORMAT_PREFIX_LENGTH);
+  const payloadOffset = CHAIN_HEADER_LENGTH + recipeLength;
+  if (payloadOffset > data.length) {
+    throw new Error('Truncated Chain recipe table');
+  }
+  return data.subarray(payloadOffset);
+}
+
 /**
  * Hydrate (deserialize) a value that was stored in the database.
  *
@@ -375,6 +400,7 @@ export type Revivers = Record<string, (value: any) => any>;
  */
 export function hydrateData(value: unknown, revivers: Revivers): unknown {
   if (value instanceof Uint8Array) {
+    value = stripChainRecipes(value);
     // Encrypted data passes through untouched: o11y layers detect it with
     // isEncryptedData() and handle display (web: named constructor object,
     // CLI: EncryptedDataRef with util.inspect.custom).

@@ -32,7 +32,10 @@ describe('workflow bundle boundary', () => {
     }
   });
 
-  async function getWorkflowBundleInputs(source: string): Promise<string[]> {
+  async function buildWorkflow(source: string): Promise<{
+    inputs: string[];
+    serdeOnlyFiles: string[];
+  }> {
     // Keep the fixture beneath this package so its workspace dependencies are
     // resolved exactly as they are for a real consumer workflow.
     const outputDir = mkdtempSync(
@@ -53,24 +56,26 @@ describe('workflow bundle boundary', () => {
       webhookBundlePath: join(outputDir, 'webhook.js'),
       sourcemap: false,
     };
-    const discoveredEntries: DiscoveredEntries = {
-      discoveredSteps: new Set(),
-      discoveredWorkflows: new Set([inputFile]),
-      discoveredSerdeFiles: new Set(),
-    };
-
-    const { interimBundleMetafile } = await new TestBuilder(
-      config
-    ).createWorkflowBundle(
+    const builder = new TestBuilder(config);
+    const discoveredEntries = await builder.discoverEntries(
+      [inputFile],
+      outputDir
+    );
+    const { interimBundleMetafile } = await builder.createWorkflowBundle(
       inputFile,
       config.workflowsBundlePath,
       discoveredEntries
     );
 
     expect(interimBundleMetafile).toBeDefined();
-    return Object.keys(interimBundleMetafile?.inputs ?? {}).map((input) =>
-      input.replaceAll('\\', '/')
-    );
+    return {
+      inputs: Object.keys(interimBundleMetafile?.inputs ?? {}).map((input) =>
+        input.replaceAll('\\', '/')
+      ),
+      serdeOnlyFiles: [...discoveredEntries.discoveredSerdeFiles].map((file) =>
+        file.replaceAll('\\', '/')
+      ),
+    };
   }
 
   function expectNoZodInputs(inputs: string[]): void {
@@ -80,7 +85,7 @@ describe('workflow bundle boundary', () => {
   }
 
   it('does not bundle world schemas into a minimal workflow', async () => {
-    const inputs = await getWorkflowBundleInputs(
+    const { inputs } = await buildWorkflow(
       `export async function minimal() { "use workflow"; return 1; }`
     );
 
@@ -88,7 +93,7 @@ describe('workflow bundle boundary', () => {
   });
 
   it('does not bundle world schemas for core workflow APIs', async () => {
-    const inputs = await getWorkflowBundleInputs(`
+    const { inputs } = await buildWorkflow(`
       import { createHook, setAttributes } from '@workflow/core';
 
       async function basicStep(value: number) {
@@ -105,5 +110,32 @@ describe('workflow bundle boundary', () => {
     `);
 
     expectNoZodInputs(inputs);
+  });
+
+  it('uses the workflow-safe Chain export without discovering the host class', async () => {
+    const { inputs, serdeOnlyFiles } = await buildWorkflow(`
+      import { Chain } from '@workflow/core';
+
+      async function extend(chain: Chain<number>) {
+        "use step";
+        return chain.append(2);
+      }
+
+      export async function chainWorkflow(chain: Chain<number>) {
+        "use workflow";
+        if (!(chain instanceof Chain)) throw new Error('not a Chain');
+        return extend(chain.take(1));
+      }
+    `);
+
+    expect(
+      serdeOnlyFiles.filter((file) => file.endsWith('core/dist/chain.js'))
+    ).toEqual([]);
+    expect(inputs.some((input) => input.endsWith('core/dist/chain.js'))).toBe(
+      false
+    );
+    expect(inputs.filter((input) => input.includes('chain.js'))).toEqual([
+      expect.stringContaining('workflow/chain.js'),
+    ]);
   });
 });

@@ -276,6 +276,10 @@ export function getCLIRevivers(): Revivers {
       });
       return obj;
     },
+    // Chains stay opaque in inspect output. The base runtime reviver would
+    // create a live host Chain whose private state must not be inspected here.
+    Chain: (value) =>
+      new CLIClassInstanceRef('Chain', 'class//workflow//Chain', value),
     // CLI-specific overrides for class instances with inspect.custom
     Class: (value) => `<class:${extractClassName(value.classId)}>`,
     Instance: (value) => {

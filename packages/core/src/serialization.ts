@@ -11,7 +11,7 @@ import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import { Chain } from './chain.js';
-import type { ChainRecipe } from './chain-ref.js';
+import type { ChainRecipe, ChainRef } from './chain-ref.js';
 import { importKey } from './encryption.js';
 import {
   createFlushableState,
@@ -1762,10 +1762,7 @@ function getAllBaseReducers(
   // Class/Instance MUST come before Error so that custom Error subclasses
   // with WORKFLOW_SERIALIZE take precedence (devalue uses first-match-wins).
   return {
-    Chain: (value) =>
-      value instanceof Chain
-        ? (Chain as any)[Symbol.for('workflow-serialize')](value)
-        : false,
+    Chain: (value) => (value instanceof Chain ? value._serializeRef() : false),
     ...getClassReducers(),
     ...getStepFunctionReducer(),
     ...getCommonReducers(global),
@@ -2806,8 +2803,7 @@ function reviveAbortSignal(
  */
 export function getCommonRevivers(global: Record<string, any> = globalThis) {
   return {
-    Chain: (value: unknown) =>
-      (Chain as any)[Symbol.for('workflow-deserialize')](value),
+    Chain: (value: unknown) => Chain._deserializeRef(value as ChainRef),
     ...getClassRevivers(global),
     ...getCommonReviversFromModule(global),
   } as const satisfies Partial<Revivers>;
@@ -3385,7 +3381,7 @@ function getStepRevivers(
     Chain: (value) => {
       if (value.runId !== runId)
         throw new Error('Cross-run Chain refs are unsupported');
-      return (Chain as any)[Symbol.for('workflow-deserialize')](value);
+      return Chain._deserializeRef(value);
     },
 
     // StepFunction reviver for step context - returns raw step function
