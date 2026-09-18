@@ -39,6 +39,17 @@ import {
 
 type Listener = (...args: unknown[]) => void;
 
+it('selects canonical eventsync only on explicit opt-in', () => {
+  vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'eventsync');
+  expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
+    'wss://example.test/api/websockets/v1/runs/wrun_test/eventsync?protocol=2'
+  );
+  vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'ws');
+  expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
+    'wss://example.test/api/websockets/v1/runs/wrun_test'
+  );
+});
+
 const { FakeWebSocket, sockets } = vi.hoisted(() => {
   const sockets: FakeSocket[] = [];
 

@@ -149,6 +149,26 @@ afterEach(() => {
 });
 
 describe('direct Vercel invocation', () => {
+  it('reuses native hook routing context without fetching the run again', async () => {
+    const fetch = vi.fn(async (_url: unknown, init: RequestInit) => {
+      expect(new Headers(init.headers).get(DEPLOYMENT_HEADER)).toBe('dpl_hook');
+      expect(decode(Buffer.from(init.body as Uint8Array))).toMatchObject({
+        deploymentId: 'dpl_hook',
+        queueName: '__wkf_workflow_from_hook',
+      });
+      return new Response(encode({ ok: true, value: 'ok' }), {
+        headers: { [INVOCATION_HEADER]: '1' },
+      });
+    });
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      createInvoker(config)!(runId, payload, {
+        target: { deploymentId: 'dpl_hook', workflowName: 'from_hook' },
+      })
+    ).resolves.toBe('ok');
+    expect(mocks.run).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it('separates metadata lookup from the exact POST boundary and excludes observer work before sending', async () => {
     const events: Record<string, unknown>[] = [];
     const order: string[] = [];

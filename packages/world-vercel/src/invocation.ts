@@ -196,9 +196,11 @@ export function createInvoker(
     const signal = AbortSignal.timeout(timeoutMs);
     const work = (async () => {
       const identity = { runId, requestId, invocationId };
-      const run = await observeInvocation('lookup', identity, () =>
-        getWorkflowRun(runId, { resolveData: 'none' }, config)
-      );
+      const run =
+        options?.target ??
+        (await observeInvocation('lookup', identity, () =>
+          getWorkflowRun(runId, { resolveData: 'none' }, config)
+        ));
       const affinityId = invocationAffinity(runId);
       const target = {
         runId,

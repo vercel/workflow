@@ -654,7 +654,13 @@ async function resumeHookImpl<T = any>(
                 token: hook.token,
                 payload: dehydratedPayload,
               },
-              { idempotencyKey: generateResumeId() }
+              {
+                idempotencyKey: generateResumeId(),
+                target: {
+                  deploymentId: resumeContext.deploymentId,
+                  workflowName: resumeContext.workflowName,
+                },
+              }
             )
           );
           if (result.status === 'rejected') {

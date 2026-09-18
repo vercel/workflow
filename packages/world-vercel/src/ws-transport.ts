@@ -760,6 +760,10 @@ export function toEventsWsUrl(baseUrl: string, runId: string): string {
   const url = new URL(baseUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.pathname = `${url.pathname.replace(/\/$/, '')}/websockets/v1/runs/${encodeURIComponent(runId)}`;
+  if (process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync') {
+    url.pathname += '/eventsync';
+    url.searchParams.set('protocol', '2');
+  }
   return url.toString();
 }
 
