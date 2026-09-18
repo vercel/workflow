@@ -185,6 +185,11 @@ export class History<T> {
       return this.#ref;
     }
     if (!this.#draft) throw new Error('History has no recipe');
+    if (
+      this.#draft.base?.runId !== undefined &&
+      this.#draft.base.runId !== runId
+    )
+      throw new Error('Cross-run History refs are unsupported');
     const slot = `hslot_${recipes.length}`;
     const length = this.#draft.take + this.#draft.additions.length;
     recipes.push({ slot, length, ...this.#draft });
@@ -217,7 +222,7 @@ function validateRecipe(r: HistoryRecipe, ref: HistoryRef): void {
     r.take < 0 ||
     !Array.isArray(r.additions) ||
     r.length !== r.take + r.additions.length ||
-    (r.base !== undefined && !validRef(r.base))
+    (r.base !== undefined && (!validRef(r.base) || r.take > r.base.length))
   )
     throw new Error(`Malformed History recipe ${ref.stepId}/${ref.slot}`);
 }
@@ -249,11 +254,18 @@ async function loadRecipe(ref: HistoryRef): Promise<HistoryRecipe> {
 }
 
 async function resolveHistory<T>(root: HistoryRef): Promise<T[]> {
+  const activeRunId = contextStorage.getStore()?.workflowMetadata.workflowRunId;
+  if (activeRunId && activeRunId !== root.runId)
+    throw new Error('Cross-run History refs are unsupported');
   const stack = new Set<string>();
   const chunks: Array<{ values: T[]; take: number }> = [];
   let current: HistoryRef | undefined = root;
   let required = root.length;
   while (current && required > 0) {
+    if (required > current.length)
+      throw new Error(
+        `History requested prefix exceeds reference: ${current.stepId}/${current.slot}`
+      );
     if (current.runId !== root.runId)
       throw new Error('Cross-run History ancestry is unsupported');
     const key = `${current.stepId}/${current.slot}`;

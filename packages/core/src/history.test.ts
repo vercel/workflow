@@ -3,6 +3,7 @@ import { importKey } from './encryption.js';
 import { History } from './history.js';
 import { splitHistoryEnvelope } from './serialization/history-envelope.js';
 import { getWorldLazy } from './runtime/get-world-lazy.js';
+import { contextStorage } from './step/context-storage.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
@@ -296,6 +297,64 @@ describe('History', () => {
         hydrateStepReturnValue(bytes, 'wrun_test', undefined)
       ).rejects.toThrow();
     }
+  });
+
+  it('rejects widened base prefixes and foreign roots before fetching', async () => {
+    const get = vi.fn();
+    vi.mocked(getWorldLazy).mockResolvedValue({ steps: { get } } as never);
+    const ref = {
+      runId: 'wrun_test',
+      stepId: 'step_child',
+      slot: 'hslot_0',
+      length: 2,
+    };
+    const malformed = new TextEncoder().encode(
+      JSON.stringify({
+        version: 1,
+        recipes: [
+          {
+            slot: 'hslot_0',
+            length: 2,
+            base: {
+              runId: 'wrun_test',
+              stepId: 'step_parent',
+              slot: 'hslot_0',
+              length: 1,
+            },
+            take: 2,
+            additions: [],
+          },
+        ],
+      })
+    );
+    const nested = await dehydrateStepReturnValue(ref, 'wrun_test', undefined);
+    const envelope = new Uint8Array(
+      8 + malformed.length + (nested as Uint8Array).length
+    );
+    envelope.set(new TextEncoder().encode('ohs1'));
+    new DataView(envelope.buffer).setUint32(4, malformed.length);
+    envelope.set(malformed, 8);
+    envelope.set(nested as Uint8Array, 8 + malformed.length);
+    get.mockResolvedValue({ status: 'completed', output: envelope });
+    const history = (History as any)[Symbol.for('workflow-deserialize')](
+      ref
+    ) as History<number>;
+    await expect(history.toArray()).rejects.toThrow('Malformed History recipe');
+    expect(get).toHaveBeenCalledTimes(1);
+
+    const foreign = (History as any)[Symbol.for('workflow-deserialize')]({
+      ...ref,
+      runId: 'wrun_foreign',
+    }) as History<number>;
+    await contextStorage.run(
+      {
+        workflowMetadata: { workflowRunId: 'wrun_test' },
+      } as never,
+      async () => {
+        await expect(foreign.toArray()).rejects.toThrow('Cross-run');
+      }
+    );
+    expect(get).toHaveBeenCalledTimes(1);
   });
 
   it('leaves ordinary output bytes unchanged', async () => {
