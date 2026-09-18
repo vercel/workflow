@@ -22,6 +22,7 @@ import { z } from 'zod/v4';
 import { regionForRunId } from './create-run-id.js';
 import { logInvocationRouting } from './invocation-diagnostics.js';
 import { createInvocationMailbox } from './invocation-mailbox.js';
+import { observeInvocation } from './invocation-observer.js';
 import { getWorkflowRun } from './runs.js';
 import {
   getSpanKind,
@@ -194,7 +195,10 @@ export function createInvoker(
       });
     const signal = AbortSignal.timeout(timeoutMs);
     const work = (async () => {
-      const run = await getWorkflowRun(runId, { resolveData: 'none' }, config);
+      const identity = { runId, requestId, invocationId };
+      const run = await observeInvocation('lookup', identity, () =>
+        getWorkflowRun(runId, { resolveData: 'none' }, config)
+      );
       const affinityId = invocationAffinity(runId);
       const target = {
         runId,
@@ -273,54 +277,61 @@ export function createInvoker(
             requestedDeploymentId: run.deploymentId,
           };
           logInvocationRouting('direct.send', requestObservation);
-          const responseStarted = performance.now();
-          const response = await fetch(url, init as RequestInit).catch(
-            (cause) => {
+          return observeInvocation('http', identity, async () => {
+            const responseStarted = performance.now();
+            const response = await fetch(url, init as RequestInit).catch(
+              (cause) => {
+                throw new WorkflowWorldError(
+                  'Invocation transport failed; outcome is unknown',
+                  { status: 502, code: 'INVOCATION_OUTCOME_UNKNOWN', cause }
+                );
+              }
+            );
+            span?.setAttributes({
+              'http.response.status_code': response.status,
+            });
+            const responseObservation = {
+              responseStatus: response.status,
+              responseRequestId:
+                response.headers.get('x-vercel-id')?.slice(0, 256) ?? null,
+              responseErrorCode:
+                response.headers.get('x-vercel-error')?.slice(0, 256) ?? null,
+              responseContentType:
+                response.headers.get('content-type')?.slice(0, 256) ?? null,
+              responseProtocolVersion:
+                response.headers.get(INVOCATION_HEADER)?.slice(0, 256) ?? null,
+            };
+            logInvocationRouting('direct.response', {
+              ...requestObservation,
+              ...responseObservation,
+              elapsedMs: performance.now() - responseStarted,
+            });
+            if (
+              !response.ok ||
+              response.headers.get(INVOCATION_HEADER) !== '1'
+            ) {
+              void response.body?.cancel().catch(() => {});
+              throw Object.assign(
+                new WorkflowWorldError(
+                  'Invocation response unavailable; outcome is unknown',
+                  {
+                    status: response.ok ? 502 : response.status,
+                    code: 'INVOCATION_OUTCOME_UNKNOWN',
+                  }
+                ),
+                responseObservation,
+                { targetHost: url.hostname }
+              );
+            }
+            try {
+              return decode(await readBody(response.body, signal));
+            } catch (cause) {
               throw new WorkflowWorldError(
-                'Invocation transport failed; outcome is unknown',
+                'Invocation result unreadable; outcome is unknown',
                 { status: 502, code: 'INVOCATION_OUTCOME_UNKNOWN', cause }
               );
             }
-          );
-          span?.setAttributes({ 'http.response.status_code': response.status });
-          const responseObservation = {
-            responseStatus: response.status,
-            responseRequestId:
-              response.headers.get('x-vercel-id')?.slice(0, 256) ?? null,
-            responseErrorCode:
-              response.headers.get('x-vercel-error')?.slice(0, 256) ?? null,
-            responseContentType:
-              response.headers.get('content-type')?.slice(0, 256) ?? null,
-            responseProtocolVersion:
-              response.headers.get(INVOCATION_HEADER)?.slice(0, 256) ?? null,
-          };
-          logInvocationRouting('direct.response', {
-            ...requestObservation,
-            ...responseObservation,
-            elapsedMs: performance.now() - responseStarted,
           });
-          if (!response.ok || response.headers.get(INVOCATION_HEADER) !== '1') {
-            void response.body?.cancel().catch(() => {});
-            throw Object.assign(
-              new WorkflowWorldError(
-                'Invocation response unavailable; outcome is unknown',
-                {
-                  status: response.ok ? 502 : response.status,
-                  code: 'INVOCATION_OUTCOME_UNKNOWN',
-                }
-              ),
-              responseObservation,
-              { targetHost: url.hostname }
-            );
-          }
-          try {
-            return decode(await readBody(response.body, signal));
-          } catch (cause) {
-            throw new WorkflowWorldError(
-              'Invocation result unreadable; outcome is unknown',
-              { status: 502, code: 'INVOCATION_OUTCOME_UNKNOWN', cause }
-            );
-          }
         }
       );
     })();
