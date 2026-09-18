@@ -25,6 +25,7 @@ export {
   type WebhookOptions,
 } from './create-hook.js';
 export { defineHook, type TypedHook } from './define-hook.js';
+export { History } from './history.js';
 export {
   type SetAttributesOptions,
   setAttributes,

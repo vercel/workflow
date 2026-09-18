@@ -23,6 +23,12 @@ import {
   pollWritableLock,
   trackFlushableWritable,
 } from './flushable-stream.js';
+import {
+  History,
+  type HistoryRecipe,
+  unwrapHistoryRecipes,
+  wrapHistoryRecipes,
+} from './history.js';
 import { getStepFunction } from './private.js';
 // V2: use getWorldLazy in step-side code paths so Turbopack can statically
 // resolve the world bridge from the step bundle without dragging the full
@@ -1756,6 +1762,10 @@ function getAllBaseReducers(
   // Class/Instance MUST come before Error so that custom Error subclasses
   // with WORKFLOW_SERIALIZE take precedence (devalue uses first-match-wins).
   return {
+    History: (value) =>
+      value instanceof History
+        ? (History as any)[Symbol.for('workflow-serialize')](value)
+        : false,
     ...getClassReducers(),
     ...getStepFunctionReducer(),
     ...getCommonReducers(global),
@@ -2329,10 +2339,25 @@ function getStepReducers(
   // `run_started`. Thread the run-ready barrier into the sink so that write
   // orders after the run exists. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  outputHistory?: { stepId: string; recipes: HistoryRecipe[] }
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
+    History: (value) =>
+      value instanceof History
+        ? outputHistory
+          ? value._serializeOutput(
+              runId,
+              outputHistory.stepId,
+              outputHistory.recipes
+            )
+          : (() => {
+              throw new Error(
+                'History is only supported in step return values'
+              );
+            })()
+        : false,
 
     ReadableStream: (value) => {
       if (!(value instanceof global.ReadableStream)) return false;
@@ -2783,6 +2808,8 @@ function reviveAbortSignal(
  */
 export function getCommonRevivers(global: Record<string, any> = globalThis) {
   return {
+    History: (value: unknown) =>
+      (History as any)[Symbol.for('workflow-deserialize')](value),
     ...getClassRevivers(global),
     ...getCommonReviversFromModule(global),
   } as const satisfies Partial<Revivers>;
@@ -3357,6 +3384,11 @@ function getStepRevivers(
 ): Partial<Revivers> {
   return {
     ...getCommonRevivers(global),
+    History: (value) => {
+      if (value.runId !== runId)
+        throw new Error('Cross-run History refs are unsupported');
+      return (History as any)[Symbol.for('workflow-deserialize')](value);
+    },
 
     // StepFunction reviver for step context - returns raw step function
     // with closure variable support via AsyncLocalStorage.
@@ -3699,7 +3731,12 @@ export async function maybeDecrypt(
  * is still format-prefixed serialized bytes, not a live JavaScript value.
  */
 export interface PreparedReplayPayload {
+  /** Nested ordinary payload consumed by mode deserializers. */
   readonly data: unknown;
+  /** Whole authenticated/decompressed plaintext, including recipe envelope. */
+  readonly authenticatedPlaintext?: unknown;
+  /** Lazily relevant inert recipe records; ordinary hydration ignores them. */
+  readonly outputHistoryRecipes?: HistoryRecipe[];
 }
 
 /**
@@ -3721,12 +3758,20 @@ export const prepareReplayPayload: ReplayPayloadPreparer = async (
   key
 ) => {
   const compressionStats: CompressionStats = {};
-  const prepared = await decompress(
+  const authenticatedPlaintext = await decompress(
     await decrypt(value, key),
     compressionStats
   );
   await recordCompression(compressionStats, 'deserialize');
-  return { data: prepared };
+  const split =
+    authenticatedPlaintext instanceof Uint8Array
+      ? unwrapHistoryRecipes(authenticatedPlaintext)
+      : { payload: authenticatedPlaintext, recipes: undefined };
+  return {
+    data: split.payload,
+    authenticatedPlaintext,
+    outputHistoryRecipes: split.recipes,
+  };
 };
 
 /**
@@ -4051,7 +4096,8 @@ export async function dehydrateStepReturnValue(
   // the backgrounded `run_started`. Threaded into the step reducers' stream
   // sink. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  outputStepId?: string
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -4070,6 +4116,7 @@ export async function dehydrateStepReturnValue(
   }
   try {
     const compressionStats: CompressionStats = {};
+    const recipes: HistoryRecipe[] = [];
     const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(
@@ -4080,11 +4127,14 @@ export async function dehydrateStepReturnValue(
           key,
           framedByteStreams,
           runReadyBarrier,
-          readbackOps
+          readbackOps,
+          outputStepId ? { stepId: outputStepId, recipes } : undefined
         )
       ),
       compression,
       compressionStats,
+      wrapPlaintext: (payload) =>
+        recipes.length > 0 ? wrapHistoryRecipes(payload, recipes) : payload,
     });
     await recordCompression(compressionStats, 'serialize');
     return result;
@@ -4295,8 +4345,10 @@ export async function hydrateStepReturnValue(
   extraRevivers: Record<string, (value: any) => any> = {},
   prepared?: PreparedReplayPayload
 ): Promise<any> {
+  const unwrapped =
+    value instanceof Uint8Array ? unwrapHistoryRecipes(value).payload : value;
   return deserializePreparedReplayPayload(
-    prepared ?? (await prepareReplayPayload(value, key)),
+    prepared ?? (await prepareReplayPayload(unwrapped, key)),
     global,
     extraRevivers
   );
@@ -4310,6 +4362,7 @@ export async function hydrateStepReturnValue(
 // pass through the mode-specific entries as extraReducers/extraRevivers.
 
 const STREAM_AND_REQUEST_KEYS = [
+  'History',
   'ReadableStream',
   'WritableStream',
   'Request',
