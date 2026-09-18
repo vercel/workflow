@@ -12,7 +12,10 @@ import { splitSequenceEnvelope } from './serialization/sequence-envelope.js';
 import { registerStepFunction } from './private.js';
 import { setWorld } from './runtime/world.js';
 import { workflowEntrypoint } from './runtime.js';
-import { dehydrateWorkflowArguments } from './serialization.js';
+import {
+  dehydrateWorkflowArguments,
+  hydrateWorkflowReturnValue,
+} from './serialization.js';
 
 vi.mock('@vercel/functions', () => ({
   waitUntil: (p: Promise<unknown>) => p.catch(() => {}),
@@ -126,44 +129,82 @@ describe('Sequence workflowEntrypoint integration', () => {
       queue: async () => ({ messageId: null }),
       getEncryptionKeyForRun: async () => undefined,
     } as any);
-    registerStepFunction('seed', async () => ({
-      history: Sequence.from([{ n: 1 }, { n: 2 }]),
-      ordinary: 'seed',
-    }));
+    const bodyCounts = { seed: 0, extend: 0, verify: 0 };
+    registerStepFunction('seed', async () => {
+      bodyCounts.seed++;
+      return {
+        sequence: Sequence.from([{ n: 1 }, { n: 2 }]),
+        ordinary: 'seed',
+      };
+    });
     registerStepFunction(
       'extend',
-      async (input: { history: Sequence<{ n: number }>; ordinary: string }) => {
-        expect(await input.history.toArray()).toEqual([{ n: 1 }, { n: 2 }]);
-        return {
-          history: input.history.append({ n: 3 }),
-          prefix: input.history.take(1),
-          ordinary: `${input.ordinary}:extended`,
-        };
+      async (sequence: Sequence<{ n: number }>, n: number, label: string) => {
+        bodyCounts.extend++;
+        return { sequence: sequence.append({ n }), ordinary: label };
       }
     );
-    const code = `const seed=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('seed');const extend=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('extend');async function workflow(){const first=await seed();const second=await extend(first);return {length:second.history.length,prefixLength:second.prefix.length,ordinary:second.ordinary};}globalThis.__private_workflows=new Map([['workflow',workflow]]);`;
+    registerStepFunction(
+      'verify',
+      async (input: {
+        base: Sequence<{ n: number }>;
+        main: { sequence: Sequence<{ n: number }>; ordinary: string };
+        aside: { sequence: Sequence<{ n: number }>; ordinary: string };
+      }) => {
+        bodyCounts.verify++;
+        expect(await input.base.toArray()).toEqual([{ n: 1 }, { n: 2 }]);
+        expect(await input.main.sequence.toArray()).toEqual([
+          { n: 1 },
+          { n: 2 },
+          { n: 3 },
+        ]);
+        expect(await input.aside.sequence.toArray()).toEqual([
+          { n: 1 },
+          { n: 4 },
+        ]);
+        expect(input.main.ordinary).toBe('main');
+        expect(input.aside.ordinary).toBe('aside');
+        return { base: 2, main: 3, aside: 2, checked: true };
+      }
+    );
+    const code = `const seed=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('seed');const extend=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('extend');const verify=globalThis[Symbol.for('WORKFLOW_USE_STEP')]('verify');async function workflow(){const first=await seed();const main=await extend(first.sequence,3,'main');const aside=await extend(first.sequence.take(1),4,'aside');return await verify({base:first.sequence,main,aside});}globalThis.__private_workflows=new Map([['workflow',workflow]]);`;
     await workflowEntrypoint(code)(
       new Request('https://test', {
         method: 'POST',
         body: JSON.stringify({ runId, workflowName: 'workflow' }),
       })
     );
+    const completed = events.find((e) => e.eventType === 'run_completed');
+    expect(completed).toBeDefined();
     expect(
-      events.find((e) => e.eventType === 'run_completed')?.eventData.output
-    ).toBeDefined();
+      await hydrateWorkflowReturnValue(
+        completed!.eventData.output,
+        runId,
+        undefined
+      )
+    ).toEqual({ base: 2, main: 3, aside: 2, checked: true });
+    expect(bodyCounts).toEqual({ seed: 1, extend: 2, verify: 1 });
     const recipes = [...steps.values()]
       .filter((step) => step.output)
       .flatMap((step) =>
         splitSequenceEnvelope(step.output as Uint8Array).parseRecipes()
       );
-    const appended = recipes.find((recipe) => recipe.base);
-    expect(appended?.base).toMatchObject({
-      runId,
-      stepId: expect.stringMatching(/^step_/),
-      slot: 'hslot_0',
-      length: 2,
-    });
-    expect(appended?.additions).toEqual([{ n: 3 }]);
+    const seedStep = [...steps.values()].find(
+      (step) => step.stepName === 'seed'
+    )!;
+    const extensions = recipes.filter((recipe) => recipe.base);
+    expect(extensions).toHaveLength(2);
+    expect(extensions.map((recipe) => recipe.base)).toEqual([
+      { runId, stepId: seedStep.stepId, slot: 'hslot_0', length: 2 },
+      { runId, stepId: seedStep.stepId, slot: 'hslot_0', length: 1 },
+    ]);
+    expect(extensions.map((recipe) => recipe.take)).toEqual([2, 1]);
+    expect(extensions.map((recipe) => recipe.additions)).toEqual([
+      [{ n: 3 }],
+      [{ n: 4 }],
+    ]);
+    const seedRecipe = recipes.find((recipe) => !recipe.base)!;
+    expect(seedRecipe.additions).toEqual([{ n: 1 }, { n: 2 }]);
     expect(stepsGet).not.toHaveBeenCalled();
   });
 });
