@@ -13,7 +13,8 @@
  * backoff is deterministic and a microtask flush is a single `tick()`.
  */
 
-import { decode } from 'cbor-x';
+import type { CreateEventRequest } from '@workflow/world';
+import { decode, encode } from 'cbor-x';
 import {
   afterEach,
   beforeAll,
@@ -25,6 +26,7 @@ import {
 } from 'vitest';
 import { encodeFrame } from './frames.js';
 import { REQUEST_TIMEOUT_MS } from './http-core.js';
+import { createStorage } from './storage.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
 import {
   getWsEventsTransport,
@@ -245,6 +247,117 @@ describe('toEventsWsUrl', () => {
     expect(toEventsWsUrl('http://localhost:3000/api/', 'a/b')).toBe(
       'ws://localhost:3000/api/websockets/v1/runs/a%2Fb'
     );
+  });
+});
+
+describe('owner event writer', () => {
+  it('joins an opening channel, reuses it for hook/step writes, and releases it exactly once', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('Unexpected HTTP fallback'));
+    const writer = createStorage({ token: 'test-token' }).events
+      .createWriteSession!('wrun_test');
+    expect(writer).not.toBeInstanceOf(Promise);
+    const socket = await nextSocket();
+    const events: CreateEventRequest[] = [
+      {
+        eventType: 'hook_received',
+        specVersion: 6,
+        correlationId: 'hook_test',
+        eventData: { token: 'test', payload: new Uint8Array([1]) },
+      },
+      {
+        eventType: 'step_created',
+        specVersion: 6,
+        correlationId: 'step_test',
+        eventData: { stepName: 'test', input: new Uint8Array([1]) },
+      },
+      { eventType: 'step_started', specVersion: 6, correlationId: 'step_test' },
+      {
+        eventType: 'step_completed',
+        specVersion: 6,
+        correlationId: 'step_test',
+        eventData: { result: new Uint8Array([2]) },
+      },
+    ];
+    for (const [index, event] of events.entries()) {
+      const pending = writer.create(event);
+      if (index === 0) {
+        await tick();
+        expect(socket.sent).toHaveLength(0);
+        expect(fetchSpy).not.toHaveBeenCalled();
+        socket.open();
+      }
+      await tick();
+      expect(sockets).toHaveLength(1);
+      expect(socket.sent).toHaveLength(index + 1);
+      const now = new Date();
+      socket.deliver(
+        ackFrame(
+          index + 1,
+          201,
+          encode({
+            event: {
+              ...event,
+              eventId: `evnt_${String(index + 1).padStart(26, '0')}`,
+              runId: 'wrun_test',
+              createdAt: now,
+            },
+            ...(event.eventType === 'step_started'
+              ? {
+                  step: {
+                    runId: 'wrun_test',
+                    stepId: 'step_test',
+                    stepName: 'test',
+                    status: 'running',
+                    attempt: 1,
+                    createdAt: now,
+                    updatedAt: now,
+                    startedAt: now,
+                    specVersion: 6,
+                  },
+                }
+              : {}),
+          })
+        )
+      );
+      await tick();
+      await expect(pending).resolves.toMatchObject({
+        event: { eventType: event.eventType },
+      });
+    }
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await writer.dispose();
+    await writer.dispose();
+    expect(socket.readyState).toBe(FakeWebSocket.CLOSED);
+    await expect(writer.create(events[0])).rejects.toThrow('disposed');
+  });
+
+  it('does not silently send HTTP after a failed owner-channel handshake', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('Unexpected HTTP fallback'));
+    const writer = createStorage({ token: 'test-token' }).events
+      .createWriteSession!('wrun_test');
+    const socket = await nextSocket();
+    const pending = writer.create({
+      eventType: 'run_cancelled',
+      specVersion: 6,
+    });
+    void pending.catch(() => {});
+    socket.failHandshake();
+    await tick();
+    await expect(pending).rejects.toThrow();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await writer.dispose();
+  });
+
+  it('can release a writer before its asynchronous channel setup settles', async () => {
+    const writer = createStorage({ token: 'test-token' }).events
+      .createWriteSession!('wrun_test');
+    await writer.dispose();
+    await tick();
+    expect(resolveWsTransport('wrun_test', { token: 'test-token' })).toBeNull();
   });
 });
 

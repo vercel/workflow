@@ -260,6 +260,12 @@ class WsEventsTransport {
     });
   }
 
+  async ready(): Promise<void> {
+    if (this.closed)
+      throw new WsTransportError('Events writer channel is closed');
+    await this.ensureConnected();
+  }
+
   /**
    * Give up this invocation's claim, dropping the socket once the last holder
    * does. Concurrent invocations for one run share this instance (inline step
@@ -809,10 +815,12 @@ export { isWsEventsTransportEnabled };
  * inside it hits an already-closed instance, returns early, and leaves that
  * invocation on HTTP for its whole duration with nothing to signal it.
  */
+export type WsChannelLease = (() => void) & { ready(): Promise<void> };
+
 export function openWsChannel(
   runId: string,
   config?: APIConfig
-): (() => void) | undefined {
+): WsChannelLease | undefined {
   if (!isWsEventsTransportEnabled()) return undefined;
   const resolved = resolveChannelUrl(runId, config);
   if (!resolved) return undefined;
@@ -837,11 +845,14 @@ export function openWsChannel(
   transport.open();
 
   let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    transport.release('invocation complete');
-  };
+  return Object.assign(
+    () => {
+      if (released) return;
+      released = true;
+      transport.release('invocation complete');
+    },
+    { ready: () => transport.ready() }
+  );
 }
 
 /**

@@ -70,6 +70,8 @@ import type { PreclaimedInlineStart } from './step-executor.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 
 export interface SuspensionHandlerParams {
+  /** Persist step creation before handing work to a serialized owner's workers. */
+  deferInlineSteps?: boolean;
   suspension: WorkflowSuspension;
   world: World;
   run: WorkflowRun;
@@ -440,6 +442,7 @@ export async function handleSuspension({
   stepDispatch,
   ownerMessageId,
   allowDeferredBatchWork,
+  deferInlineSteps = true,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
 
@@ -1008,7 +1011,7 @@ export async function handleSuspension({
   // steps — matching the caller's inline-candidate selection — and dehydrate
   // their input here so executeStep can ship it as the step_started payload.
   const lazyInlineCorrelationIds = new Set<string>(
-    awaitedHookCorrelationIds.length === 0
+    deferInlineSteps && awaitedHookCorrelationIds.length === 0
       ? stepItems
           .filter((item) => stepsNeedingCreation.has(item.correlationId))
           .slice(0, getMaxInlineSteps())

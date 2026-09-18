@@ -3,6 +3,7 @@ import type {
   CreateEventParams,
   Storage,
 } from '@workflow/world';
+import { createEventWriteSession } from './event-write-session.js';
 import {
   createWorkflowRunEvent,
   createWorkflowRunEventBatch,
@@ -72,7 +73,11 @@ export function createStorage(config?: APIConfig): Storage {
   return {
     runs: instrumentObject('world.runs', storage.runs),
     steps: instrumentObject('world.steps', storage.steps),
-    events: instrumentObject('world.events', storage.events),
+    events: {
+      ...instrumentObject('world.events', storage.events),
+      // instrumentObject wraps methods asynchronously; this factory is synchronous.
+      createWriteSession: (runId) => createEventWriteSession(runId, config),
+    },
     hooks: instrumentObject('world.hooks', storage.hooks),
   };
 }
