@@ -321,6 +321,21 @@ for (const engine of ['node', 'quickjs'])
       expect(calls).toHaveBeenCalledTimes(2);
     });
 
+    it('a wake cannot bypass the queued backoff of a plain-error retry', async () => {
+      vi.stubEnv('WORKFLOW_VM', engine);
+      const calls = vi.fn(async () => {
+        throw new Error('retry later');
+      });
+      registerStepFunction('replay_turn', calls);
+      const h = await harness(source('return await turn({ n: 1 });'));
+      await h.deliver();
+      expect(h.messages).toHaveLength(1);
+      expect(h.messages[0].options.delaySeconds).toBeGreaterThan(0);
+      await h.deliver();
+      expect(calls).toHaveBeenCalledTimes(1);
+      expect(h.messages).toHaveLength(1);
+    });
+
     it('rejects a changed reconstruction before retrying user code', async () => {
       vi.stubEnv('WORKFLOW_VM', engine);
       const calls = vi.fn(async () => {

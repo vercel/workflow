@@ -1932,11 +1932,11 @@ export async function runWorkflowWithQuickJS(params: {
             delaySeconds: outcome.timeoutSeconds,
             namespace,
             nextTraceCarrier,
-            // Suffixed key: this step was inline-claimed, so no dispatch
-            // publish exists under the dispatch key, but suffixing
-            // keeps the retry enqueueable even if a world retired a
-            // historical key for this step (see the purpose docs above).
-            purpose: 'retry:1',
+            // Replay-derived retries share the wake's dispatch key so an
+            // immediate wake cannot bypass their queued backoff. Subsequent
+            // attempts redeliver that message using its visibility timeout.
+            // Ordinary inline retries retain their existing suffixed key.
+            purpose: step.replayInputs ? 'dispatch' : 'retry:1',
             wfdiag,
           });
         } else if (outcome.type === 'gone') {
