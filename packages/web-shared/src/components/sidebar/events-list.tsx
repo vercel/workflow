@@ -76,7 +76,9 @@ function EventItem({
     'eventData' in event && event.eventData != null ? event.eventData : null;
   const mergedDisplay = loadedData ?? existingData;
   const canHaveData =
-    existingData !== null || getEventDataRefFields(event.eventType).length > 0;
+    event.eventType !== 'run_cancelled' &&
+    (existingData !== null ||
+      getEventDataRefFields(event.eventType).length > 0);
 
   const loadEventData = useCallback(
     async (force: boolean) => {
@@ -213,7 +215,7 @@ function EventItem({
         )}
 
         {/* Event data */}
-        {displayPayload != null && (
+        {displayPayload != null && event.eventType !== 'run_cancelled' && (
           <div className="[&>div]:border-none [&>div]:rounded-none">
             <EventDataBlock eventType={event.eventType} data={displayPayload} />
           </div>
