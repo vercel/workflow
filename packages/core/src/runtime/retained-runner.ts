@@ -831,7 +831,21 @@ export class RetainedRunner {
       }
       // Tentative VM progress is private; user code needs a durable start prefix.
       if (starts.length) await this.flushWriter();
-      for (const { step, claimed } of starts) this.startStep(step, claimed);
+      for (const { step, claimed } of starts) {
+        // Flush may replace tentative entities with the native materialization.
+        const canonical = claimed ? this.steps.get(step.stepId) : undefined;
+        if (claimed && !canonical?.startedAt)
+          throw new RunnerFault(
+            'persistence',
+            new Error('Missing committed step start')
+          );
+        this.startStep(
+          step,
+          canonical?.startedAt
+            ? { ...canonical, startedAt: canonical.startedAt }
+            : claimed
+        );
+      }
       if (this.events.length === before) return;
     }
   }
@@ -841,19 +855,103 @@ export class RetainedRunner {
     const spanId = randomUUID();
     this.observe('flush', 'begin', spanId, { eventCount: this.events.length });
     try {
-      await this.eventWriter.flush();
+      const acknowledgements = await this.eventWriter.flush();
+      if (acknowledgements) this.confirmStaged(acknowledgements);
       this.failureCommitted = this.runState?.status === 'failed';
       this.observe('flush', 'end', spanId, {
         status: 'completed',
         eventCount: this.events.length,
+        ...(acknowledgements
+          ? {
+              committedEventCount: acknowledgements.length,
+              committedEventTypes: acknowledgements
+                .map((result) => result.event?.eventType)
+                .join(','),
+            }
+          : {}),
       });
     } catch (cause) {
-      this.fault ??= new RunnerFault('persistence', cause);
+      this.fault ??=
+        cause instanceof RunnerFault
+          ? cause
+          : new RunnerFault('persistence', cause);
       this.observe('flush', 'end', spanId, {
         status: 'error',
         errorCode: 'persistence',
       });
       throw this.fault;
+    }
+  }
+
+  /** Confirm private VM progress against native persistence responses before it
+   * can authorize a user step or become an acknowledged input. */
+  private confirmStaged(results: readonly EventResult[]) {
+    const conflict = (reason: string): never => {
+      throw new RunnerFault(
+        'conflict',
+        new Error('Buffered persistence changed a tentative transition'),
+        reason
+      );
+    };
+    for (const result of results) {
+      if (!result.event) conflict('missing_event');
+      const event = result.event!;
+      const slot = requireEventSlot(event.eventId);
+      const tentative = this.events[slot - 1];
+      if (
+        !tentative ||
+        event.runId !== this.runId ||
+        event.eventType !== tentative.eventType ||
+        event.resumeId !== tentative.resumeId ||
+        !equivalent(event.correlationId, tentative.correlationId)
+      )
+        conflict('event_identity');
+      const committed = materializeEventPayload(event, tentative);
+      if (+committed.createdAt !== +tentative.createdAt)
+        conflict('event_clock');
+      if (!equivalent(committed.eventData, tentative.eventData))
+        conflict('event_data');
+      if (
+        result.events?.some(
+          (extra) =>
+            extra.eventId !== event.eventId &&
+            !this.events.some(
+              (known) =>
+                known.eventId === extra.eventId &&
+                equivalent(materializeEventPayload(extra, known), known)
+            )
+        )
+      )
+        conflict('reported_events');
+      this.events[slot - 1] = committed;
+      const later = this.events.slice(slot);
+      if (
+        result.step &&
+        !later.some(
+          (next) =>
+            next.correlationId === result.step!.stepId &&
+            next.eventType.startsWith('step_')
+        )
+      ) {
+        const known = this.steps.get(result.step.stepId);
+        if (
+          !known ||
+          result.step.status !== known.status ||
+          result.step.attempt !== known.attempt
+        )
+          conflict('step_state');
+        this.steps.set(
+          result.step.stepId,
+          materializeEntityPayloads(result.step, { ...known })
+        );
+      }
+      if (
+        result.run &&
+        !later.some((next) => next.eventType.startsWith('run_'))
+      )
+        this.runState = materializeEntityPayloads(result.run, {
+          ...this.runState,
+        });
     }
   }
 

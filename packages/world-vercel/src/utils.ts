@@ -124,6 +124,10 @@ export interface APIConfig {
   dispatcher?: unknown;
   /** @internal An owner-scoped writer must not silently lose its event channel. */
   requireWsEvents?: boolean;
+  /** @internal Signal transmission without waiting for the durable response. */
+  onEventSent?: () => void;
+  /** @internal A single-writer prefix must fail rather than retry ambiguously. */
+  failStopEventWrites?: boolean;
   projectConfig?: {
     /** The real Vercel project ID (e.g., prj_xxx) */
     projectId?: string;

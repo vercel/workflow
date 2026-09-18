@@ -262,6 +262,60 @@ describe('toEventsWsUrl', () => {
 });
 
 describe('owner event writer', () => {
+  it('pipelines the canonical resume prefix over one socket before receiving ACKs', async () => {
+    const previous = process.env.WORKFLOW_EVENTS_TRANSPORT;
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'eventsync';
+    const writer = createStorage({ token: 'test-token' }).events
+      .createWriteSession!('wrun_test');
+    try {
+      const socket = await nextSocket();
+      socket.open();
+      const events: CreateEventRequest[] = [
+        {
+          eventType: 'hook_received',
+          specVersion: 6,
+          correlationId: 'hook_test',
+          eventData: { token: 'test', payload: Uint8Array.of(1) },
+        },
+        {
+          eventType: 'step_created',
+          specVersion: 6,
+          correlationId: 'step_test',
+          eventData: { stepName: 'step', input: Uint8Array.of(2) },
+        },
+        {
+          eventType: 'step_started',
+          specVersion: 6,
+          correlationId: 'step_test',
+          eventData: { stepName: 'step' },
+        },
+      ];
+      const staged = [];
+      for (const [i, event] of events.entries())
+        staged.push(
+          await writer.stage!(event, { eventCount: 3 + i, resolveData: 'none' })
+        );
+      expect(socket.url).toContain('/eventsync?protocol=2');
+      expect(socket.sent).toHaveLength(3);
+      let durable = false;
+      const flushed = writer.flush!().then((results) => {
+        durable = true;
+        return results;
+      });
+      expect(durable).toBe(false);
+      for (const [i, result] of staged.entries())
+        socket.deliver(
+          ackFrame(Number(sentReqIds(socket)[i]), 200, encode(result))
+        );
+      expect(await flushed).toHaveLength(3);
+      expect(durable).toBe(true);
+    } finally {
+      await writer.dispose();
+      if (previous === undefined) delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+      else process.env.WORKFLOW_EVENTS_TRANSPORT = previous;
+    }
+  });
+
   it('joins an opening channel, reuses it for hook/step writes, and releases it exactly once', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')

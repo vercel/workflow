@@ -165,7 +165,8 @@ class WsEventsTransport {
   /** Send one request frame and wait for its matching reply. `buildFrame`
    *  receives the reqId to embed in the meta before framing. */
   async request(
-    buildFrame: (reqId: number) => Uint8Array
+    buildFrame: (reqId: number) => Uint8Array,
+    onSent?: () => void
   ): Promise<WsFrameReply> {
     if (this.closed) {
       // Unreachable through `resolveWsTransport`, which only hands back a
@@ -208,7 +209,10 @@ class WsEventsTransport {
         }, timeoutMs);
         deadline.unref?.();
         conn.ws.send(frame, (err) => {
-          if (!err) return;
+          if (!err) {
+            onSent?.();
+            return;
+          }
           // `ws.send()` does not throw when the socket isn't OPEN; it
           // reports here instead, so without this callback the request would
           // wait for a reply that is never coming. `delete` doubles as the

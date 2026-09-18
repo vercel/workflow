@@ -49,8 +49,11 @@ export interface EventWriteSession {
     event: CreateEventRequest,
     params?: CreateEventParams
   ): Promise<EventResult>;
-  /** Make all previously staged transitions durable, or reject permanently. */
-  flush?(): Promise<void>;
+  /** Make all previously staged transitions durable, or reject permanently.
+   * Return canonical acknowledgements for staged events when the backend
+   * materializes additional entity fields. The owner confirms these before
+   * executing a step or acknowledging the input. */
+  flush?(): Promise<void | readonly EventResult[]>;
   create(
     event: CreateEventRequest,
     params?: CreateEventParams

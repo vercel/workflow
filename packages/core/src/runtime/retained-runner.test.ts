@@ -23,6 +23,7 @@ import {
   dehydrateWorkflowArguments,
 } from '../serialization.js';
 import { RetainedRunner } from './retained-runner.js';
+import * as stepExecutor from './step-executor.js';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -109,6 +110,72 @@ it('fails a buffered durability barrier without running the user step', async ()
   await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
   fail = true;
   await expect(fixture.send('buffered-failure', 'one')).rejects.toThrow();
+  expect(body).not.toHaveBeenCalled();
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('failed');
+});
+
+it('uses canonical materialized step state returned by flush before invoking the body', async () => {
+  const fixture = await setup();
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  const results: EventResult[] = [];
+  let canonicalStart: Date | undefined;
+  const execute = vi.spyOn(stepExecutor, 'executeStep');
+  const body = vi.fn();
+  registerStepFunction('retainedWrite', body);
+  fixture.world.events.createWriteSession = () => ({
+    create: (event, params) => create(fixture.runId, event, params),
+    stage: async (event, params) => {
+      const result = await create(fixture.runId, event, params);
+      results.push(result);
+      if (result.step?.startedAt && event.eventType === 'step_started') {
+        canonicalStart = result.step.startedAt;
+        return {
+          ...result,
+          step: { ...result.step, startedAt: new Date(+canonicalStart - 100) },
+        };
+      }
+      return result;
+    },
+    flush: async () => results.splice(0),
+    dispose() {},
+  });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.send('canonical-flush', 'one');
+  await vi.waitFor(() => expect(body).toHaveBeenCalled());
+  expect(execute.mock.calls[0][0].preclaimedStart?.step.startedAt).toEqual(
+    canonicalStart
+  );
+  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+});
+
+it('rejects a changed event clock from flush before running user code', async () => {
+  const fixture = await setup();
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  const results: EventResult[] = [];
+  const body = vi.fn();
+  registerStepFunction('retainedWrite', body);
+  fixture.world.events.createWriteSession = () => ({
+    create: (event, params) => create(fixture.runId, event, params),
+    stage: async (event, params) => {
+      const result = await create(fixture.runId, event, params);
+      results.push(
+        result.event?.eventType === 'hook_received'
+          ? {
+              ...result,
+              event: {
+                ...result.event,
+                createdAt: new Date(+result.event.createdAt + 1),
+              },
+            }
+          : result
+      );
+      return result;
+    },
+    flush: async () => results.splice(0),
+    dispose() {},
+  });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await expect(fixture.send('wrong-clock', 'one')).rejects.toThrow();
   expect(body).not.toHaveBeenCalled();
   expect((await fixture.world.runs.get(fixture.runId)).status).toBe('failed');
 });

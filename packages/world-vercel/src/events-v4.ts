@@ -1413,7 +1413,7 @@ async function postEventFrameOverWs(
             { reqId, type: 'event', event: buildPostFrameMeta(input) },
             input.payload ?? new Uint8Array(0)
           );
-        });
+        }, config?.onEventSent);
       } catch (err) {
         // Anything `transport.request()` throws means the frame was never acked.
         // `code: 'TRANSPORT'` is the shape `utils.ts` gives a failed `fetch`, so
