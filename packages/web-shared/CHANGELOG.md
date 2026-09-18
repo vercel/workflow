@@ -1,5 +1,14 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.54
+
+### Patch Changes
+
+- [#4250](https://github.com/vercel/workflow/pull/4250) [`7840c15`](https://github.com/vercel/workflow/commit/7840c15617c801e0df8f0a85145f43de25f96cc4) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Align run and event status colors with Workflow Observability and show a cancelled run's reason in a tooltip on its top status.
+- Updated dependencies [[`f75b184`](https://github.com/vercel/workflow/commit/f75b184a853b50a030659bc6d78ef461c2a82a4d), [`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050), [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6), [`20ad2b3`](https://github.com/vercel/workflow/commit/20ad2b358240819c6e590fd4752b97da1c64b390)]:
+  - @workflow/core@5.0.0-beta.54
+  - @workflow/world@5.0.0-beta.37
+
 ## 5.0.0-beta.53
 
 ### Patch Changes

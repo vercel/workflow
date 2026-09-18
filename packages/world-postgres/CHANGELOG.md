@@ -1,5 +1,19 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.45
+
+### Minor Changes
+
+- [#4168](https://github.com/vercel/workflow/pull/4168) [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6) Thanks [@shalabhc](https://github.com/shalabhc)! - Add an optional `invoke` method and capability to the World interface. It routes a payload to the runner handling the specified `runId` and returns a promise for its response. In world-postgres, this uses a regular queue roundtrip with a run-scoped queue. The runtime uses `invoke` when available, initially to resume hooks.
+
+### Patch Changes
+
+- [#4219](https://github.com/vercel/workflow/pull/4219) [`b27395f`](https://github.com/vercel/workflow/commit/b27395f26d76e703d95c3b214908f7052f4547e8) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Allow same-run queue wakes to reach a workflow while an inline step is pending, so hook-driven cancellation and steering do not wait for the step to finish.
+- Updated dependencies [[`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050), [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6)]:
+  - @workflow/world@5.0.0-beta.37
+  - @workflow/errors@5.0.0-beta.22
+  - @workflow/world-local@5.0.0-beta.46
+
 ## 5.0.0-beta.44
 
 ### Patch Changes

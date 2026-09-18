@@ -1,5 +1,16 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.49
+
+### Patch Changes
+
+- [#4082](https://github.com/vercel/workflow/pull/4082) [`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050) Thanks [@shalabhc](https://github.com/shalabhc)! - Validate complete attribute event data against the World's 8KiB UTF-8 JSON limit before new writes, with catchable SDK errors and unchanged replay of persisted events.
+
+- [#4168](https://github.com/vercel/workflow/pull/4168) [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6) Thanks [@shalabhc](https://github.com/shalabhc)! - Add an optional `invoke` method and capability to the World interface. It routes a payload to the runner handling the specified `runId` and returns a promise for its response. In world-postgres, this uses a regular queue roundtrip with a run-scoped queue. The runtime uses `invoke` when available, initially to resume hooks.
+- Updated dependencies [[`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050), [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6)]:
+  - @workflow/world@5.0.0-beta.37
+  - @workflow/errors@5.0.0-beta.22
+
 ## 5.0.0-beta.48
 
 ### Patch Changes
