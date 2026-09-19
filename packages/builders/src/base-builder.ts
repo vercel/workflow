@@ -212,6 +212,18 @@ export abstract class BaseBuilder {
   protected config: WorkflowConfig;
 
   /**
+   * Per-source VM bundles are opt-in while their compatibility matrix is
+   * being validated. Keep the switch here so every integration that uses
+   * createCombinedBundle observes the same production/watch policy.
+   */
+  protected get shardWorkflowBundlesEnabled(): boolean {
+    return (
+      process.env.WORKFLOW_SHARD_VM_BUNDLES === '1' &&
+      this.config.watch !== true
+    );
+  }
+
+  /**
    * Tracks which external packages have already been warned about
    * to avoid duplicate warnings across multiple discoverEntries() calls.
    */
