@@ -1749,6 +1749,15 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
             bundleFinalOutput: false,
             keepInterimBundleContext: false,
             tsconfigPath,
+            // Reuse the already discovered graph, narrowed to this source.
+            // Besides avoiding a second graph walk per shard, this keeps the
+            // shard manifest deterministic for builders that provide their
+            // discovery result explicitly (as watch/build integrations do).
+            discoveredEntries: {
+              discoveredSteps: new Set(),
+              discoveredWorkflows: new Set([workflowFile]),
+              discoveredSerdeFiles: new Set(serdeFiles),
+            },
           });
           await shard.interimBundleCtx?.dispose();
           try {
