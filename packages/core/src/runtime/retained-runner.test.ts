@@ -23,6 +23,7 @@ import {
   dehydrateWorkflowArguments,
 } from '../serialization.js';
 import { RetainedRunner } from './retained-runner.js';
+import * as stepExecutor from './step-executor.js';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -44,6 +45,238 @@ const code = `
   }
   globalThis.__private_workflows = new Map([['workflow', workflow]]);
 `;
+
+it.each([
+  false,
+  true,
+])('observes nested owner snapshot reads and closes initialization on failure=%s', async (failRead) => {
+  const fixture = await setup();
+  const observations: Record<string, unknown>[] = [];
+  const receive = (message: unknown) => {
+    const event = message as Record<string, unknown>;
+    if (event.runId === fixture.runId) observations.push(event);
+  };
+  channel('workflow.runner').subscribe(receive);
+  cleanups.push(async () => channel('workflow.runner').unsubscribe(receive));
+  const gate = Promise.withResolvers<void>();
+  const list = fixture.world.events.list.bind(fixture.world.events);
+  vi.spyOn(fixture.world.events, 'list').mockImplementation(async (params) => {
+    await gate.promise;
+    if (failRead) throw new Error('snapshot unavailable');
+    return list(params);
+  });
+  const startup = fixture.owner.submit(
+    { runId: fixture.runId },
+    fixture.metadata
+  );
+  const outcome = startup.then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  await vi.waitFor(() =>
+    expect(observations.some((e) => e.phase === 'load_events')).toBe(true)
+  );
+  const initial = observations.find(
+    (e) => e.phase === 'initialize' && e.event === 'begin'
+  )!;
+  for (const phase of ['load_run', 'load_events', 'load_steps'])
+    expect(
+      observations.find((e) => e.phase === phase && e.event === 'begin')
+        ?.parentSpanId
+    ).toBe(initial.spanId);
+  expect(
+    observations.some((e) => e.phase === 'initialize' && e.event === 'end')
+  ).toBe(false);
+  gate.resolve();
+  const error = await outcome;
+  expect(Boolean(error)).toBe(failRead);
+  const ended = observations.find(
+    (e) => e.phase === 'initialize' && e.event === 'end'
+  );
+  expect(ended?.status).toBe(failRead ? 'error' : 'completed');
+  expect(ended?.elapsedMs).toBeGreaterThanOrEqual(0);
+  if (!failRead) {
+    expect(
+      observations.find((e) => e.phase === 'load_events' && e.event === 'end')
+    ).toMatchObject({ pageCount: 1, eventCount: 1 });
+    expect(
+      observations.find((e) => e.phase === 'apply_history' && e.event === 'end')
+    ).toMatchObject({ parentSpanId: initial.spanId, eventCount: 1 });
+    expect(
+      observations.some(
+        (e) => e.phase === 'replay_prewarm' && e.event === 'end'
+      )
+    ).toBe(true);
+  }
+  await fixture.finished;
+});
+
+it('groups buffered input/create/start and awaits durability before user code or acknowledgement', async () => {
+  const fixture = await setup();
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  const staged: string[] = [];
+  const batches: string[][] = [];
+  let block = false;
+  let release!: () => void;
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let body = false;
+  registerStepFunction('retainedWrite', async () => {
+    body = true;
+  });
+  fixture.world.events.createWriteSession = () => ({
+    create: (event, params) => create(fixture.runId, event, params),
+    stage: async (event, params) => {
+      staged.push(event.eventType);
+      return create(fixture.runId, event, params);
+    },
+    flush: async () => {
+      if (!staged.length) return;
+      if (block) await barrier;
+      batches.push(staged.splice(0));
+    },
+    dispose() {},
+  });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  block = true;
+  let acknowledged = false;
+  const input = fixture.send('buffered', 'one').then(() => {
+    acknowledged = true;
+  });
+  await vi.waitFor(() => expect(staged).toContain('step_started'));
+  expect(body).toBe(false);
+  expect(acknowledged).toBe(false);
+  release();
+  await input;
+  await vi.waitFor(() => expect(body).toBe(true));
+  expect(batches).toContainEqual([
+    'hook_received',
+    'step_created',
+    'step_started',
+  ]);
+  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+});
+
+it('uses owner-session bootstrap reads instead of the public storage transport', async () => {
+  const fixture = await setup();
+  const run = await fixture.world.runs.get(fixture.runId);
+  const events = await fixture.world.events.list({ runId: fixture.runId });
+  const reads = {
+    getRun: vi.fn().mockResolvedValue(run),
+    listEvents: vi.fn().mockResolvedValue(events),
+    listSteps: vi
+      .fn()
+      .mockResolvedValue({ data: [], hasMore: false, cursor: null }),
+  };
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  fixture.world.events.createWriteSession = () => ({
+    reads,
+    create: (event, params) => create(fixture.runId, event, params),
+    dispose() {},
+  });
+  vi.spyOn(fixture.world.runs, 'get').mockRejectedValue(
+    new Error('HTTP run read')
+  );
+  vi.spyOn(fixture.world.events, 'list').mockRejectedValue(
+    new Error('HTTP event read')
+  );
+  vi.spyOn(fixture.world.steps, 'list').mockRejectedValue(
+    new Error('HTTP step read')
+  );
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  expect(reads.getRun).toHaveBeenCalledTimes(1);
+  expect(reads.listEvents).toHaveBeenCalledTimes(1);
+  expect(reads.listSteps).toHaveBeenCalledTimes(1);
+  await fixture.finished;
+});
+
+it('fails a buffered durability barrier without running the user step', async () => {
+  const fixture = await setup();
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  const body = vi.fn();
+  registerStepFunction('retainedWrite', body);
+  let fail = false;
+  fixture.world.events.createWriteSession = () => ({
+    create: (event, params) => create(fixture.runId, event, params),
+    stage: (event, params) => create(fixture.runId, event, params),
+    flush: async () => {
+      if (fail) throw new Error('durability failed');
+    },
+    dispose() {},
+  });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  fail = true;
+  await expect(fixture.send('buffered-failure', 'one')).rejects.toThrow();
+  expect(body).not.toHaveBeenCalled();
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('failed');
+});
+
+it('uses canonical materialized step state returned by flush before invoking the body', async () => {
+  const fixture = await setup();
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  const results: EventResult[] = [];
+  let canonicalStart: Date | undefined;
+  const execute = vi.spyOn(stepExecutor, 'executeStep');
+  const body = vi.fn();
+  registerStepFunction('retainedWrite', body);
+  fixture.world.events.createWriteSession = () => ({
+    create: (event, params) => create(fixture.runId, event, params),
+    stage: async (event, params) => {
+      const result = await create(fixture.runId, event, params);
+      results.push(result);
+      if (result.step?.startedAt && event.eventType === 'step_started') {
+        canonicalStart = result.step.startedAt;
+        return {
+          ...result,
+          step: { ...result.step, startedAt: new Date(+canonicalStart - 100) },
+        };
+      }
+      return result;
+    },
+    flush: async () => results.splice(0),
+    dispose() {},
+  });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.send('canonical-flush', 'one');
+  await vi.waitFor(() => expect(body).toHaveBeenCalled());
+  expect(execute.mock.calls[0][0].preclaimedStart?.step.startedAt).toEqual(
+    canonicalStart
+  );
+  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+});
+
+it('rejects a changed event clock from flush before running user code', async () => {
+  const fixture = await setup();
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  const results: EventResult[] = [];
+  const body = vi.fn();
+  registerStepFunction('retainedWrite', body);
+  fixture.world.events.createWriteSession = () => ({
+    create: (event, params) => create(fixture.runId, event, params),
+    stage: async (event, params) => {
+      const result = await create(fixture.runId, event, params);
+      results.push(
+        result.event?.eventType === 'hook_received'
+          ? {
+              ...result,
+              event: {
+                ...result.event,
+                createdAt: new Date(+result.event.createdAt + 1),
+              },
+            }
+          : result
+      );
+      return result;
+    },
+    flush: async () => results.splice(0),
+    dispose() {},
+  });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await expect(fixture.send('wrong-clock', 'one')).rejects.toThrow();
+  expect(body).not.toHaveBeenCalled();
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('failed');
+});
 
 function lazyEvent(
   event: Event,
@@ -111,7 +344,7 @@ it.each([
   await fixture.send('a', 'one');
   await fixture.send('b', 'two');
   await fixture.send('c', 'three');
-  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+  await fixture.finished;
   expect(values).toEqual(['one', 'two', 'three']);
   expect(list).not.toHaveBeenCalled();
   expect(get).not.toHaveBeenCalled();
@@ -359,7 +592,7 @@ it('opens hook inputs sealed to the run while retaining its VM', async () => {
       fixture.metadata
     );
   }
-  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+  await fixture.finished;
   expect(values).toEqual(['one', 'two', 'three']);
   expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
     'completed'

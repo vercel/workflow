@@ -168,6 +168,7 @@ export class RetainedRunner {
   private payloadCache?: ReplayPayloadCache;
   private initialized = false;
   private eventWriter?: EventWriteSession;
+  private failureCommitted = false;
   private loopIteration = 0;
   private pending: MailboxItem[] = [];
   private signal?: () => void;
@@ -408,94 +409,168 @@ export class RetainedRunner {
     });
   }
 
+  private async observed<T>(
+    phase: string,
+    operation: () => Promise<T>,
+    details: Record<string, unknown> = {},
+    spanId = randomUUID()
+  ): Promise<T> {
+    const started = performance.now();
+    this.observe(phase, 'begin', spanId, details);
+    try {
+      const result = await operation();
+      this.observe(phase, 'end', spanId, {
+        ...details,
+        status: 'completed',
+        elapsedMs: performance.now() - started,
+      });
+      return result;
+    } catch (error) {
+      this.observe(phase, 'end', spanId, {
+        ...details,
+        status: 'error',
+        elapsedMs: performance.now() - started,
+      });
+      throw error;
+    }
+  }
+
   private async initialize() {
     if (this.initialized) return;
+    const spanId = randomUUID();
+    return this.observed(
+      'initialize',
+      () => this.initializeSnapshot(spanId),
+      {},
+      spanId
+    );
+  }
+
+  private async initializeSnapshot(parentSpanId: string) {
     this.eventWriter ??= this.backend.events.createWriteSession?.(this.runId);
+    if (Boolean(this.eventWriter?.stage) !== Boolean(this.eventWriter?.flush))
+      throw new RunnerFault(
+        'persistence',
+        new Error('Buffered writer requires both stage and flush')
+      );
     const history: Event[] = [];
     const steps: Step[] = [];
-    // Start history reads and channel setup at the first owner-loop turn.
+    const reads = this.eventWriter?.reads;
+    await reads?.ready?.();
+    const eventReads = { parentSpanId, pageCount: 0, eventCount: 0 };
+    const stepReads = { parentSpanId, pageCount: 0, stepCount: 0 };
+    // Run bootstrap reads in parallel after any session channel is ready.
     // Each task owns its partial results until all snapshot reads have succeeded.
     const snapshot = await Promise.allSettled([
-      (async () => {
-        this.runState = await this.backend.runs.get(this.runId);
-        if (this.runState.executionContext?.retainedRunnerVersion !== 1)
-          throw new InputRejected(
-            'Run was not created for retained execution',
-            {
+      this.observed(
+        'load_run',
+        async () => {
+          this.runState = await (reads?.getRun(this.runId) ??
+            this.backend.runs.get(this.runId));
+          if (this.runState.executionContext?.retainedRunnerVersion !== 1)
+            throw new InputRejected(
+              'Run was not created for retained execution',
+              {
+                status: 409,
+              }
+            );
+          if (useQuickJSVm(this.runState))
+            throw new RunnerFault(
+              'execution',
+              new Error('Retained runner requires the Node VM')
+            );
+          if (this.runState.expiredAt)
+            throw new InputRejected('Workflow has expired', { status: 410 });
+          if (
+            `${this.prefix}${this.runState.workflowName}` !==
+            this.metadata.queueName
+          )
+            throw new InputRejected('Invocation target mismatch', {
               status: 409,
-            }
-          );
-        if (useQuickJSVm(this.runState))
-          throw new RunnerFault(
-            'execution',
-            new Error('Retained runner requires the Node VM')
-          );
-        if (this.runState.expiredAt)
-          throw new InputRejected('Workflow has expired', { status: 410 });
-        if (
-          `${this.prefix}${this.runState.workflowName}` !==
-          this.metadata.queueName
-        )
-          throw new InputRejected('Invocation target mismatch', {
-            status: 409,
-          });
-        if (
-          this.backend.capabilities?.deploymentAffinity &&
-          process.env.VERCEL_DEPLOYMENT_ID &&
-          this.runState.deploymentId !== process.env.VERCEL_DEPLOYMENT_ID
-        )
-          throw new InputRejected('Pinned deployment mismatch', {
-            status: 409,
-          });
-        this.deadline =
-          (await this.backend.getRuntimeDeadline?.())?.getTime() ?? Infinity;
-        this.key = await resolveRunEncryptionKey(this.backend, this.runState);
-        this.payloadCache = new ReplayPayloadCache(this.key);
-      })(),
-      (async () => {
-        let cursor: string | null = null;
-        do {
-          const page = await this.backend.events.list({
-            runId: this.runId,
-            resolveData: 'all',
-            pagination: {
-              limit: 100,
-              sortOrder: 'asc',
-              ...(cursor ? { cursor } : {}),
-            },
-          });
-          history.push(...page.data);
-          cursor = page.hasMore ? page.cursor : null;
-        } while (cursor);
-      })(),
-      (async () => {
-        let cursor: string | null = null;
-        do {
-          const page: {
-            data: Step[];
-            hasMore: boolean;
-            cursor: string | null;
-          } = await this.backend.steps.list({
-            runId: this.runId,
-            resolveData: 'all',
-            pagination: { limit: 100, ...(cursor ? { cursor } : {}) },
-          });
-          steps.push(...page.data);
-          cursor = page.hasMore ? page.cursor : null;
-        } while (cursor);
-      })(),
+            });
+          if (
+            this.backend.capabilities?.deploymentAffinity &&
+            process.env.VERCEL_DEPLOYMENT_ID &&
+            this.runState.deploymentId !== process.env.VERCEL_DEPLOYMENT_ID
+          )
+            throw new InputRejected('Pinned deployment mismatch', {
+              status: 409,
+            });
+          this.deadline =
+            (await this.backend.getRuntimeDeadline?.())?.getTime() ?? Infinity;
+          this.key = await resolveRunEncryptionKey(this.backend, this.runState);
+          this.payloadCache = new ReplayPayloadCache(this.key);
+        },
+        { parentSpanId }
+      ),
+      this.observed(
+        'load_events',
+        async () => {
+          let cursor: string | null = null;
+          do {
+            const page = await (
+              reads?.listEvents ??
+              this.backend.events.list.bind(this.backend.events)
+            )({
+              runId: this.runId,
+              resolveData: 'all',
+              pagination: {
+                limit: 100,
+                sortOrder: 'asc',
+                ...(cursor ? { cursor } : {}),
+              },
+            });
+            history.push(...page.data);
+            eventReads.pageCount++;
+            eventReads.eventCount = history.length;
+            cursor = page.hasMore ? page.cursor : null;
+          } while (cursor);
+        },
+        eventReads
+      ),
+      this.observed(
+        'load_steps',
+        async () => {
+          let cursor: string | null = null;
+          do {
+            const page: {
+              data: Step[];
+              hasMore: boolean;
+              cursor: string | null;
+            } = await (
+              reads?.listSteps ??
+              this.backend.steps.list.bind(this.backend.steps)
+            )({
+              runId: this.runId,
+              resolveData: 'all',
+              pagination: { limit: 100, ...(cursor ? { cursor } : {}) },
+            });
+            steps.push(...page.data);
+            stepReads.pageCount++;
+            stepReads.stepCount = steps.length;
+            cursor = page.hasMore ? page.cursor : null;
+          } while (cursor);
+        },
+        stepReads
+      ),
     ]);
     const failed = snapshot.find((result) => result.status === 'rejected');
     if (failed?.status === 'rejected') throw failed.reason;
-    for (const event of history) {
-      if (requireEventSlot(event.eventId) !== this.events.length + 1)
-        throw new RunnerFault(
-          'conflict',
-          new Error('Initial event history is not contiguous')
-        );
-      this.apply(event);
-    }
-    for (const step of steps) this.steps.set(step.stepId, step);
+    await this.observed(
+      'apply_history',
+      async () => {
+        for (const event of history) {
+          if (requireEventSlot(event.eventId) !== this.events.length + 1)
+            throw new RunnerFault(
+              'conflict',
+              new Error('Initial event history is not contiguous')
+            );
+          this.apply(event);
+        }
+        for (const step of steps) this.steps.set(step.stepId, step);
+      },
+      { parentSpanId, eventCount: history.length, stepCount: steps.length }
+    );
     this.initialized = true;
     if (!isTerminalWorkflowRunStatus(this.run.status) && !this.run.startedAt)
       await this.commit({
@@ -557,12 +632,45 @@ export class RetainedRunner {
     }
   }
 
+  private validateStepTransition(event: CreateEventRequest) {
+    if (
+      !['step_created', 'step_started', 'step_completed'].includes(
+        event.eventType
+      )
+    )
+      return;
+    const invalid = (reason: string): never => {
+      this.fault ??= new RunnerFault(
+        'conflict',
+        new Error('Invalid owner step transition'),
+        reason
+      );
+      throw this.fault;
+    };
+    if (!event.correlationId) invalid('missing_step_id');
+    const step = this.steps.get(event.correlationId!);
+    if (event.eventType === 'step_created') {
+      if (step) invalid('duplicate_step');
+      return;
+    }
+    if (!step || ['completed', 'failed', 'cancelled'].includes(step.status))
+      invalid('terminal_or_missing_step');
+    if (event.eventType === 'step_started') {
+      if (step!.retryAfter && +step!.retryAfter > Date.now())
+        invalid('retry_not_due');
+      const name = event.eventData?.stepName;
+      if (typeof name === 'string' && name !== step!.stepName)
+        invalid('step_name');
+    }
+  }
+
   private commit(
     event: CreateEventRequest,
     options?: CreateEventParams
   ): Promise<EventResult> {
     const work = this.commitTail.then(async () => {
       if (this.fault) throw this.fault;
+      this.validateStepTransition(event);
       const field = getEventDataPayloadField(event.eventType);
       const payload = field
         ? (event.eventData as Record<string, unknown> | undefined)?.[field]
@@ -583,7 +691,8 @@ export class RetainedRunner {
             } as CreateEventRequest)
           : submitted;
       const spanId = randomUUID();
-      this.observe('persist', 'begin', spanId, { eventType: event.eventType });
+      const phase = this.eventWriter?.stage ? 'stage' : 'persist';
+      this.observe(phase, 'begin', spanId, { eventType: event.eventType });
       try {
         const params: CreateEventParams = {
           ...options,
@@ -592,7 +701,11 @@ export class RetainedRunner {
           skipPreload: true,
         };
         const result = await (this.eventWriter
-          ? this.eventWriter.create(wire, params)
+          ? (this.eventWriter.stage ?? this.eventWriter.create).call(
+              this.eventWriter,
+              wire,
+              params
+            )
           : this.backend.events.create(this.runId, wire, params));
         const conflict = (reason: string): never => {
           throw new RunnerFault(
@@ -681,7 +794,7 @@ export class RetainedRunner {
         if (materialized.run) this.runState = materialized.run;
         if (materialized.step)
           this.steps.set(materialized.step.stepId, materialized.step);
-        this.observe('persist', 'end', spanId, {
+        this.observe(phase, 'end', spanId, {
           eventType: event.eventType,
           status: 'completed',
           payloadSource: committed === result.event ? 'response' : 'submitted',
@@ -698,7 +811,7 @@ export class RetainedRunner {
                   : 'persistence',
                 cause
               );
-        this.observe('persist', 'end', spanId, {
+        this.observe(phase, 'end', spanId, {
           eventType: event.eventType,
           status: 'error',
           errorCode: this.fault.kind,
@@ -723,7 +836,13 @@ export class RetainedRunner {
         );
       await this.completeDueWaits();
       const before = this.events.length;
-      await this.replayCache.prewarm(this.runState, this.events);
+      if (!this.session)
+        await this.observed(
+          'replay_prewarm',
+          () => this.replayCache.prewarm(this.runState!, this.events),
+          { eventCount: this.events.length }
+        );
+      else await this.replayCache.prewarm(this.runState, this.events);
       const mode = this.session ? 'retained' : 'replay';
       const result = await observeWorkflowPass(
         {
@@ -784,6 +903,10 @@ export class RetainedRunner {
           );
         }
       }
+      const starts: Array<{
+        step: Step;
+        claimed?: Step & { startedAt: Date };
+      }> = [];
       for (const step of this.steps.values()) {
         if (
           'retryAfter' in step &&
@@ -794,10 +917,149 @@ export class RetainedRunner {
         if (
           (step.status === 'pending' || step.status === 'running') &&
           !this.workers.has(step.stepId)
-        )
-          this.startStep(step);
+        ) {
+          if (this.eventWriter?.stage) {
+            const result = await this.commit({
+              eventType: 'step_started',
+              correlationId: step.stepId,
+              specVersion: SPEC_VERSION_CURRENT,
+              eventData: { stepName: step.stepName },
+            });
+            if (!result.step?.startedAt)
+              throw new RunnerFault(
+                'persistence',
+                new Error('Step start did not return its started state')
+              );
+            starts.push({
+              step,
+              claimed: { ...result.step, startedAt: result.step.startedAt },
+            });
+          } else starts.push({ step });
+        }
+      }
+      // Tentative VM progress is private; user code needs a durable start prefix.
+      if (starts.length) await this.flushWriter();
+      for (const { step, claimed } of starts) {
+        // Flush may replace tentative entities with the native materialization.
+        const canonical = claimed ? this.steps.get(step.stepId) : undefined;
+        if (claimed && !canonical?.startedAt)
+          throw new RunnerFault(
+            'persistence',
+            new Error('Missing committed step start')
+          );
+        this.startStep(
+          step,
+          canonical?.startedAt
+            ? { ...canonical, startedAt: canonical.startedAt }
+            : claimed
+        );
       }
       if (this.events.length === before) return;
+    }
+  }
+
+  private async flushWriter() {
+    if (!this.eventWriter?.flush) return;
+    const spanId = randomUUID();
+    this.observe('flush', 'begin', spanId, { eventCount: this.events.length });
+    try {
+      const acknowledgements = await this.eventWriter.flush();
+      if (acknowledgements) this.confirmStaged(acknowledgements);
+      this.failureCommitted = this.runState?.status === 'failed';
+      this.observe('flush', 'end', spanId, {
+        status: 'completed',
+        eventCount: this.events.length,
+        ...(acknowledgements
+          ? {
+              committedEventCount: acknowledgements.length,
+              committedEventTypes: acknowledgements
+                .map((result) => result.event?.eventType)
+                .join(','),
+            }
+          : {}),
+      });
+    } catch (cause) {
+      this.fault ??=
+        cause instanceof RunnerFault
+          ? cause
+          : new RunnerFault('persistence', cause);
+      this.observe('flush', 'end', spanId, {
+        status: 'error',
+        errorCode: 'persistence',
+      });
+      throw this.fault;
+    }
+  }
+
+  /** Confirm private VM progress against native persistence responses before it
+   * can authorize a user step or become an acknowledged input. */
+  private confirmStaged(results: readonly EventResult[]) {
+    const conflict = (reason: string): never => {
+      throw new RunnerFault(
+        'conflict',
+        new Error('Buffered persistence changed a tentative transition'),
+        reason
+      );
+    };
+    for (const result of results) {
+      if (!result.event) conflict('missing_event');
+      const event = result.event!;
+      const slot = requireEventSlot(event.eventId);
+      const tentative = this.events[slot - 1];
+      if (
+        !tentative ||
+        event.runId !== this.runId ||
+        event.eventType !== tentative.eventType ||
+        event.resumeId !== tentative.resumeId ||
+        !equivalent(event.correlationId, tentative.correlationId)
+      )
+        conflict('event_identity');
+      const committed = materializeEventPayload(event, tentative);
+      if (+committed.createdAt !== +tentative.createdAt)
+        conflict('event_clock');
+      if (!equivalent(committed.eventData, tentative.eventData))
+        conflict('event_data');
+      if (
+        result.events?.some(
+          (extra) =>
+            extra.eventId !== event.eventId &&
+            !this.events.some(
+              (known) =>
+                known.eventId === extra.eventId &&
+                equivalent(materializeEventPayload(extra, known), known)
+            )
+        )
+      )
+        conflict('reported_events');
+      this.events[slot - 1] = committed;
+      const later = this.events.slice(slot);
+      if (
+        result.step &&
+        !later.some(
+          (next) =>
+            next.correlationId === result.step!.stepId &&
+            next.eventType.startsWith('step_')
+        )
+      ) {
+        const known = this.steps.get(result.step.stepId);
+        if (
+          !known ||
+          result.step.status !== known.status ||
+          result.step.attempt !== known.attempt
+        )
+          conflict('step_state');
+        this.steps.set(
+          result.step.stepId,
+          materializeEntityPayloads(result.step, { ...known })
+        );
+      }
+      if (
+        result.run &&
+        !later.some((next) => next.eventType.startsWith('run_'))
+      )
+        this.runState = materializeEntityPayloads(result.run, {
+          ...this.runState,
+        });
     }
   }
 
@@ -818,7 +1080,7 @@ export class RetainedRunner {
         });
   }
 
-  private startStep(step: Step) {
+  private startStep(step: Step, claimed?: Step & { startedAt: Date }) {
     const stepSpanId = randomUUID();
     const parentSpanId = this.currentTurnId;
     const work = Promise.resolve().then(() =>
@@ -842,6 +1104,9 @@ export class RetainedRunner {
               runSpecVersion: this.run.specVersion,
               suppressOptimisticStart: true,
               authoritativeAttempt: (step.attempt ?? 0) + 1,
+              ...(claimed
+                ? { preclaimedStart: { owned: true as const, step: claimed } }
+                : {}),
             });
             this.observe('step', 'end', stepSpanId, {
               parentSpanId,
@@ -944,7 +1209,18 @@ export class RetainedRunner {
       this.failurePromise = (async () => {
         const spanId = randomUUID();
         this.observe('failure', 'begin', spanId, { errorCode: fault.kind });
-        let durable = this.runState?.status === 'failed';
+        let durable =
+          this.runState?.status === 'failed' &&
+          (!this.eventWriter?.stage || this.failureCommitted);
+        // Stop the owned socket before attempting the terminal write. A failed
+        // prefix must not keep accepting events, and the terminal failure must
+        // not accidentally reuse a channel whose sequence is now uncertain.
+        try {
+          await this.eventWriter?.dispose();
+        } catch {
+          // Still attempt the native terminal write and report its durability.
+        }
+        this.eventWriter = undefined;
         if (!durable) {
           try {
             const result = await this.backend.events.create(this.runId, {
@@ -998,6 +1274,7 @@ export class RetainedRunner {
         this.observe('turn', 'begin', spanId, { inputId });
         try {
           const result = await operation();
+          await this.flushWriter();
           this.observe('turn', 'end', spanId, { inputId, status: 'completed' });
           return result;
         } catch (cause) {

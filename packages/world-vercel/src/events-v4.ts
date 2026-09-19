@@ -22,6 +22,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { channel } from 'node:diagnostics_channel';
 import {
   CorruptedEventLogError,
   StreamError,
@@ -68,6 +69,7 @@ import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import {
   ErrorType,
+  injectTraceContextIntoHeaders,
   NetworkProtocolName,
   StepLatencyOptimizations,
   StepStsoMs,
@@ -117,6 +119,20 @@ async function fetchV4(
   opName: string,
   attributes?: Record<string, string | number | boolean | string[]>
 ): Promise<Response> {
+  if (config?.readRequest) {
+    if (init.method !== 'GET')
+      throw new Error('Owner read transport only accepts GET');
+    const response = await config.readRequest(url);
+    if (!response.ok)
+      throw await errorFromV4Response(
+        response.status,
+        headersToRecord(response.headers),
+        new Uint8Array(await response.arrayBuffer()),
+        opName,
+        url
+      );
+    return response;
+  }
   const dispatcher = getEventsDispatcher(config);
   const response = await instrumentedFetch({
     method: init.method,
@@ -1325,10 +1341,9 @@ function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
  * key to the server's log line for the same frame. A synthetic span that hid
  * which transport produced it would be a trap, not a convenience.
  *
- * Two things the HTTP envelope has that this one deliberately does not: the
- * cache-bust header (a frame is memoized by nothing) and a per-frame
- * `traceparent` (frames carry no headers; trace context rides the upgrade
- * instead, so the server parents to the connection's span, not to this one).
+ * Frames need no cache-bust header. Ordinary WS keeps its upgrade-context
+ * behavior; eventsync additionally carries the current trace context per frame
+ * so later invocations on a retained connection remain correctly correlated.
  *
  * One gap this cannot close: Vercel's observability *outgoing requests* view is
  * built by instrumenting the global `fetch`, not by reading OpenTelemetry spans,
@@ -1398,6 +1413,9 @@ async function postEventFrameOverWs(
       const start = Date.now();
       let reply: WsFrameReply;
       try {
+        const traceHeaders = new Headers();
+        if (process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync')
+          await injectTraceContextIntoHeaders(traceHeaders);
         // `runId` isn't repeated here, since it's already in `wsUrl`, one
         // connection per run. The server's request-frame schema is a
         // discriminated union on
@@ -1410,10 +1428,23 @@ async function postEventFrameOverWs(
           // reconnect legitimately re-uses low numbers.
           span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
           return encodeFrame(
-            { reqId, type: 'event', event: buildPostFrameMeta(input) },
+            {
+              reqId,
+              type: 'event',
+              ...(traceHeaders.has('traceparent')
+                ? {
+                    traceparent: traceHeaders.get('traceparent'),
+                    tracestate: traceHeaders.get('tracestate') ?? undefined,
+                  }
+                : {}),
+              event: buildPostFrameMeta(input),
+              ...(config?.flushEvent === undefined
+                ? {}
+                : { flush: config.flushEvent }),
+            },
             input.payload ?? new Uint8Array(0)
           );
-        });
+        }, config?.onEventSent);
       } catch (err) {
         // Anything `transport.request()` throws means the frame was never acked.
         // `code: 'TRANSPORT'` is the shape `utils.ts` gives a failed `fetch`, so
@@ -1436,6 +1467,25 @@ async function postEventFrameOverWs(
         throw error;
       }
       const ms = Date.now() - start;
+      const commit = reply.meta.eventsyncCommit as
+        | Record<string, unknown>
+        | undefined;
+      if (
+        commit &&
+        typeof commit.eventCount === 'number' &&
+        typeof commit.eventTypes === 'string' &&
+        typeof commit.committedTo === 'number'
+      )
+        channel('workflow.eventsync').publish({
+          version: 1,
+          runId,
+          event: 'committed',
+          at: Date.now(),
+          eventCount: commit.eventCount,
+          eventTypes: commit.eventTypes,
+          committedTo: commit.committedTo,
+          kind: commit.kind,
+        });
 
       const status = wsReplyStatus(reply, endpoint);
       const headerRecord = replyMetaToHeaderRecord(reply.meta);

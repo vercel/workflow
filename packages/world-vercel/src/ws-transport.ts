@@ -25,7 +25,7 @@
 import { getVercelOidcToken } from '@vercel/oidc';
 import { debugLog, globalSingleton } from '@workflow/utils';
 import { WebSocket } from 'ws';
-import { type DecodedFrame, decodeFrames } from './frames.js';
+import { type DecodedFrame, decodeFrames, encodeFrame } from './frames.js';
 import {
   getRequestTimeoutMs,
   headersToRecord,
@@ -165,7 +165,8 @@ class WsEventsTransport {
   /** Send one request frame and wait for its matching reply. `buildFrame`
    *  receives the reqId to embed in the meta before framing. */
   async request(
-    buildFrame: (reqId: number) => Uint8Array
+    buildFrame: (reqId: number) => Uint8Array,
+    onSent?: () => void
   ): Promise<WsFrameReply> {
     if (this.closed) {
       // Unreachable through `resolveWsTransport`, which only hands back a
@@ -208,7 +209,10 @@ class WsEventsTransport {
         }, timeoutMs);
         deadline.unref?.();
         conn.ws.send(frame, (err) => {
-          if (!err) return;
+          if (!err) {
+            onSent?.();
+            return;
+          }
           // `ws.send()` does not throw when the socket isn't OPEN; it
           // reports here instead, so without this callback the request would
           // wait for a reply that is never coming. `delete` doubles as the
@@ -760,6 +764,10 @@ export function toEventsWsUrl(baseUrl: string, runId: string): string {
   const url = new URL(baseUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.pathname = `${url.pathname.replace(/\/$/, '')}/websockets/v1/runs/${encodeURIComponent(runId)}`;
+  if (process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync') {
+    url.pathname += '/eventsync';
+    url.searchParams.set('protocol', '4');
+  }
   return url.toString();
 }
 
@@ -815,7 +823,11 @@ export { isWsEventsTransportEnabled };
  * inside it hits an already-closed instance, returns early, and leaves that
  * invocation on HTTP for its whole duration with nothing to signal it.
  */
-export type WsChannelLease = (() => void) & { ready(): Promise<void> };
+export type WsChannelLease = (() => void) & {
+  read(endpoint: string): Promise<Response>;
+  ready(): Promise<void>;
+  flushThrough(head: number): Promise<void>;
+};
 
 export function openWsChannel(
   runId: string,
@@ -851,7 +863,56 @@ export function openWsChannel(
       released = true;
       transport.release('invocation complete');
     },
-    { ready: () => transport.ready() }
+    {
+      ready: () => transport.ready(),
+      async read(endpoint: string) {
+        const url = new URL(endpoint, 'https://eventsync.internal');
+        const path = url.pathname.replace(/^\/api\//, '/');
+        const traceHeaders = new Headers();
+        await injectTraceContextIntoHeaders(traceHeaders);
+        const reply = await transport.request((reqId) =>
+          encodeFrame(
+            {
+              reqId,
+              type: 'read',
+              endpoint: path + url.search,
+              ...(traceHeaders.has('traceparent')
+                ? {
+                    traceparent: traceHeaders.get('traceparent'),
+                    tracestate: traceHeaders.get('tracestate') ?? undefined,
+                  }
+                : {}),
+            },
+            new Uint8Array()
+          )
+        );
+        if (
+          reply.meta.type !== 'read_ack' ||
+          typeof reply.meta.status !== 'number'
+        )
+          throw new WsTransportError('Invalid eventsync read acknowledgement');
+        return new Response(Uint8Array.from(reply.body).buffer, {
+          status: reply.meta.status,
+          headers:
+            typeof reply.meta.headers === 'object' &&
+            reply.meta.headers !== null
+              ? (reply.meta.headers as Record<string, string>)
+              : {},
+        });
+      },
+      async flushThrough(through: number) {
+        const reply = await transport.request((reqId) =>
+          encodeFrame({ reqId, type: 'flush', through }, new Uint8Array())
+        );
+        if (
+          reply.meta.type !== 'flush_ack' ||
+          reply.meta.status !== 200 ||
+          typeof reply.meta.committedTo !== 'number' ||
+          reply.meta.committedTo < through
+        )
+          throw new WsTransportError('Invalid eventsync flush acknowledgement');
+      },
+    }
   );
 }
 

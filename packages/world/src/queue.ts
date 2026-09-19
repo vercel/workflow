@@ -515,6 +515,9 @@ export interface InvokeOptions {
   idempotencyKey?: string;
   /** Maximum time to await a response. Timeout does not undo processing. */
   timeoutMs?: number;
+  /** Immutable routing context already resolved from this run's hook. The
+   * executor still authenticates and validates the invocation normally. */
+  target?: { deploymentId: string; workflowName: string };
 }
 
 export interface Queue {
