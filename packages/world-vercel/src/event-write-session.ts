@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { channel } from 'node:diagnostics_channel';
 import type {
   CreateEventParams,
   CreateEventRequest,
@@ -15,6 +17,26 @@ export function createEventWriteSession(
   config?: APIConfig
 ): EventWriteSession {
   let disposed = false;
+  const observations = channel('workflow.eventsync');
+  const spanId = randomUUID();
+  const started = performance.now();
+  const observeReady = (event: 'begin' | 'end', status?: string) => {
+    if (
+      process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync' &&
+      observations.hasSubscribers
+    )
+      observations.publish({
+        version: 1,
+        runId,
+        spanId,
+        phase: 'writer_ready',
+        event,
+        at: Date.now(),
+        status,
+        elapsedMs: performance.now() - started,
+      });
+  };
+  observeReady('begin');
   // Handle rejection immediately even when snapshot loading fails before a write.
   const opened = (
     isWsEventsTransportEnabled()
@@ -23,8 +45,21 @@ export function createEventWriteSession(
         )
       : Promise.resolve(undefined)
   ).then(
-    (lease) => ({ lease, error: undefined, failed: false }),
-    (error: unknown) => ({ lease: undefined, error, failed: true })
+    (lease) => {
+      // Keep the lease immediately available for disposal while observing the
+      // connection that openWsChannel already starts beside snapshot loading.
+      if (lease && process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync')
+        void lease.ready().then(
+          () => observeReady('end', 'completed'),
+          () => observeReady('end', 'error')
+        );
+      else if (!lease) observeReady('end', 'error');
+      return { lease, error: undefined, failed: false };
+    },
+    (error: unknown) => {
+      observeReady('end', 'error');
+      return { lease: undefined, error, failed: true };
+    }
   );
   let disposal: Promise<void> | undefined;
   const write = async (

@@ -46,6 +46,71 @@ const code = `
   globalThis.__private_workflows = new Map([['workflow', workflow]]);
 `;
 
+it.each([
+  false,
+  true,
+])('observes nested owner snapshot reads and closes initialization on failure=%s', async (failRead) => {
+  const fixture = await setup();
+  const observations: Record<string, unknown>[] = [];
+  const receive = (message: unknown) => {
+    const event = message as Record<string, unknown>;
+    if (event.runId === fixture.runId) observations.push(event);
+  };
+  channel('workflow.runner').subscribe(receive);
+  cleanups.push(async () => channel('workflow.runner').unsubscribe(receive));
+  const gate = Promise.withResolvers<void>();
+  const list = fixture.world.events.list.bind(fixture.world.events);
+  vi.spyOn(fixture.world.events, 'list').mockImplementation(async (params) => {
+    await gate.promise;
+    if (failRead) throw new Error('snapshot unavailable');
+    return list(params);
+  });
+  const startup = fixture.owner.submit(
+    { runId: fixture.runId },
+    fixture.metadata
+  );
+  const outcome = startup.then(
+    () => undefined,
+    (error: unknown) => error
+  );
+  await vi.waitFor(() =>
+    expect(observations.some((e) => e.phase === 'load_events')).toBe(true)
+  );
+  const initial = observations.find(
+    (e) => e.phase === 'initialize' && e.event === 'begin'
+  )!;
+  for (const phase of ['load_run', 'load_events', 'load_steps'])
+    expect(
+      observations.find((e) => e.phase === phase && e.event === 'begin')
+        ?.parentSpanId
+    ).toBe(initial.spanId);
+  expect(
+    observations.some((e) => e.phase === 'initialize' && e.event === 'end')
+  ).toBe(false);
+  gate.resolve();
+  const error = await outcome;
+  expect(Boolean(error)).toBe(failRead);
+  const ended = observations.find(
+    (e) => e.phase === 'initialize' && e.event === 'end'
+  );
+  expect(ended?.status).toBe(failRead ? 'error' : 'completed');
+  expect(ended?.elapsedMs).toBeGreaterThanOrEqual(0);
+  if (!failRead) {
+    expect(
+      observations.find((e) => e.phase === 'load_events' && e.event === 'end')
+    ).toMatchObject({ pageCount: 1, eventCount: 1 });
+    expect(
+      observations.find((e) => e.phase === 'apply_history' && e.event === 'end')
+    ).toMatchObject({ parentSpanId: initial.spanId, eventCount: 1 });
+    expect(
+      observations.some(
+        (e) => e.phase === 'replay_prewarm' && e.event === 'end'
+      )
+    ).toBe(true);
+  }
+  await fixture.finished;
+});
+
 it('groups buffered input/create/start and awaits durability before user code or acknowledgement', async () => {
   const fixture = await setup();
   const create = fixture.world.events.create.bind(fixture.world.events);
