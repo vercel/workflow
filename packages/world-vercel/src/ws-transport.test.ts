@@ -263,6 +263,13 @@ describe('toEventsWsUrl', () => {
 
 describe('owner event writer', () => {
   it('carries native bootstrap reads over its socket without HTTP fallback', async () => {
+    let traceparent = '00-1234567890abcdef1234567890abcdef-12345678901234ab-01';
+    vi.spyOn(
+      await import('./telemetry.js'),
+      'injectTraceContextIntoHeaders'
+    ).mockImplementation(async (headers) => {
+      headers.set('traceparent', traceparent);
+    });
     const previous = process.env.WORKFLOW_EVENTS_TRANSPORT;
     process.env.WORKFLOW_EVENTS_TRANSPORT = 'eventsync';
     const fetch = vi
@@ -287,6 +294,7 @@ describe('owner event writer', () => {
       const sent = { meta: decode(raw.subarray(4, 4 + length)) };
       expect(sent.meta).toMatchObject({
         type: 'read',
+        traceparent,
         endpoint:
           '/v2/runs/wrun_test/steps?limit=100&remoteRefBehavior=resolve',
       });
@@ -302,12 +310,22 @@ describe('owner event writer', () => {
         )
       );
       expect(await read).toEqual({ data: [], hasMore: false, cursor: null });
+      traceparent = '00-abcdef1234567890abcdef1234567890-12345678901234cd-01';
       const history = writer.reads!.listEvents({
         runId: 'wrun_test',
         pagination: { limit: 100 },
       });
       await tick();
       expect(socket.sent).toHaveLength(2);
+      const second = socket.sent[1];
+      const secondLength = new DataView(
+        second.buffer,
+        second.byteOffset,
+        second.byteLength
+      ).getUint32(0, false);
+      expect(decode(second.subarray(4, 4 + secondLength)).traceparent).toBe(
+        traceparent
+      );
       socket.deliver(
         encodeFrame(
           {

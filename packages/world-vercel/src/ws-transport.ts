@@ -868,9 +868,21 @@ export function openWsChannel(
       async read(endpoint: string) {
         const url = new URL(endpoint, 'https://eventsync.internal');
         const path = url.pathname.replace(/^\/api\//, '/');
+        const traceHeaders = new Headers();
+        await injectTraceContextIntoHeaders(traceHeaders);
         const reply = await transport.request((reqId) =>
           encodeFrame(
-            { reqId, type: 'read', endpoint: path + url.search },
+            {
+              reqId,
+              type: 'read',
+              endpoint: path + url.search,
+              ...(traceHeaders.has('traceparent')
+                ? {
+                    traceparent: traceHeaders.get('traceparent'),
+                    tracestate: traceHeaders.get('tracestate') ?? undefined,
+                  }
+                : {}),
+            },
             new Uint8Array()
           )
         );

@@ -69,6 +69,7 @@ import { hasSerializedDataFormatPrefix } from './serialized-data.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import {
   ErrorType,
+  injectTraceContextIntoHeaders,
   NetworkProtocolName,
   StepLatencyOptimizations,
   StepStsoMs,
@@ -1340,10 +1341,9 @@ function wsReplyStatus(reply: WsFrameReply, endpoint: string): number {
  * key to the server's log line for the same frame. A synthetic span that hid
  * which transport produced it would be a trap, not a convenience.
  *
- * Two things the HTTP envelope has that this one deliberately does not: the
- * cache-bust header (a frame is memoized by nothing) and a per-frame
- * `traceparent` (frames carry no headers; trace context rides the upgrade
- * instead, so the server parents to the connection's span, not to this one).
+ * Frames need no cache-bust header. Ordinary WS keeps its upgrade-context
+ * behavior; eventsync additionally carries the current trace context per frame
+ * so later invocations on a retained connection remain correctly correlated.
  *
  * One gap this cannot close: Vercel's observability *outgoing requests* view is
  * built by instrumenting the global `fetch`, not by reading OpenTelemetry spans,
@@ -1413,6 +1413,9 @@ async function postEventFrameOverWs(
       const start = Date.now();
       let reply: WsFrameReply;
       try {
+        const traceHeaders = new Headers();
+        if (process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync')
+          await injectTraceContextIntoHeaders(traceHeaders);
         // `runId` isn't repeated here, since it's already in `wsUrl`, one
         // connection per run. The server's request-frame schema is a
         // discriminated union on
@@ -1428,6 +1431,12 @@ async function postEventFrameOverWs(
             {
               reqId,
               type: 'event',
+              ...(traceHeaders.has('traceparent')
+                ? {
+                    traceparent: traceHeaders.get('traceparent'),
+                    tracestate: traceHeaders.get('tracestate') ?? undefined,
+                  }
+                : {}),
               event: buildPostFrameMeta(input),
               ...(config?.flushEvent === undefined
                 ? {}
