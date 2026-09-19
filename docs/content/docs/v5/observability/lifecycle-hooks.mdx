@@ -39,20 +39,22 @@ export async function register() {
 
 Keep the dynamic `workflow/api` import inside the `NEXT_RUNTIME === "nodejs"` guard. Next.js also compiles `instrumentation.ts` for the Edge runtime. A top-level static import pulls Node.js-only dependencies into that compilation and breaks webpack Edge builds, even if the registration call is guarded.
 
-`registerLifecycleHooks` returns an unregister function. You can register multiple hook sets, and handlers run in registration order.
+`registerLifecycleHooks` returns an unregister function. You can register multiple hook sets, and handlers run in registration order. Registrations are not deduplicated: register each hook set once per process, and call its unregister function before registering it again during hot reload or module re-evaluation. Otherwise, repeated registrations invoke the same handler multiple times for each transition.
 
 ## Handler parameters
 
 Both handlers receive a `workflowName` string and the [`Run`](/docs/api-reference/workflow-api/get-run) instance for the transitioned run. `workflowName` is the machine-readable workflow identifier, such as `workflow//./src/workflows/order//processOrder`. Use this parameter to filter runs without a backend read. `run.runId` is also available without a read.
 
-The `Run` instance hydrates lazily. Accessors such as `run.workflowName`, `run.status`, and `run.returnValue` still fetch from the backend when used. Lazy access defers those reads; it does not make them free.
+The `Run` instance hydrates lazily. Accessors such as `run.workflowName`, `run.status`, and `run.returnValue` still fetch from the backend when used. In particular, `workflowName` is a string, while `run.workflowName` is a `Promise<string>`. Lazy access defers those reads; it does not make them free.
 
-`onRunFailed` additionally receives the failure as a `WorkflowRunFailedError`, the same shape `run.returnValue` rejects with:
+`onRunFailed` additionally receives a `WorkflowRunFailedError` hydrated for reporting. Unlike `run.returnValue`, it defers readable stream I/O and uses persisted abort snapshots:
 
 - `error.errorCode`: the failure classification (`USER_ERROR`, `RUNTIME_ERROR`, `MAX_DELIVERIES_EXCEEDED`, and more). See [error codes](/docs/errors) for the full list.
-- `error.cause`: the thrown value hydrated from the persisted error data, with registered Error subclass identity, message, stack, and cause chain preserved. Streamed values load lazily when consumed, and abort signals reflect their persisted state without live subscriptions. If hydration fails, the cause is a generic `Error`, matching `run.returnValue`'s fallback. Any JavaScript value can be thrown, so this is typed `unknown`.
+- `error.cause`: the thrown value hydrated from the persisted error data, with registered Error subclass identity, message, stack, and cause chain preserved. Readable streams load lazily when consumed, and abort signals reflect their persisted state without live subscriptions. Writable streams retain their normal forwarding pipe and lock-polling setup during hydration. If hydration fails, the cause is a generic `Error`, matching `run.returnValue`'s fallback. Any JavaScript value can be thrown, so this is typed `unknown`.
 
 In `onRunFailed`, `run.returnValue` rejects because the run failed. Use `error.cause` to inspect or report the thrown value instead of awaiting `run.returnValue`.
+
+The invocation's `waitUntil` scope includes background stream operations from the hydrated cause, even after a handler returns or throws. Close or release stream reader and writer locks when finished so that work can settle. Await other asynchronous reporting work in your handler, such as `Sentry.flush()` below, to keep it in the same lifetime scope.
 
 ## Reporting failed runs to Sentry
 

@@ -836,14 +836,16 @@ export function workflowEntrypoint(
               errorAttribution: maxDeliveriesDescription.attribution,
             }
           );
+          let encryptionKey: PayloadKey | undefined;
+          let dehydratedError: Uint8Array;
           try {
             const world = await getWorld();
             const getEncryptionKey = memoizeEncryptionKey(world, runId);
             const err = new FatalError(
               `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`
             );
-            const encryptionKey = await getEncryptionKey();
-            const dehydratedError = await dehydrateRunError(
+            encryptionKey = await getEncryptionKey();
+            dehydratedError = await dehydrateRunError(
               err,
               runId,
               encryptionKey
@@ -859,13 +861,6 @@ export function workflowEntrypoint(
                 },
               },
               { requestId }
-            );
-            dispatchRunFailedHooks(
-              runId,
-              workflowName,
-              dehydratedError,
-              encryptionKey,
-              RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
             );
           } catch (err) {
             if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
@@ -885,7 +880,15 @@ export function workflowEntrypoint(
                 errorStack: err instanceof Error ? err.stack : undefined,
               }
             );
+            return;
           }
+          dispatchRunFailedHooks(
+            runId,
+            workflowName,
+            dehydratedError,
+            encryptionKey,
+            RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
+          );
           return;
         }
 

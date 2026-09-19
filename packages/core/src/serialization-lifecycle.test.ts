@@ -26,6 +26,7 @@ class Fixture {
   constructor(
     readonly type:
       | 'ReadableStream'
+      | 'WritableStream'
       | 'Response'
       | 'AbortController'
       | 'AbortSignal',
@@ -35,13 +36,17 @@ class Fixture {
 
 function serialize(value: unknown): Uint8Array {
   const reducers = Object.fromEntries(
-    ['ReadableStream', 'Response', 'AbortController', 'AbortSignal'].map(
-      (type) => [
-        type,
-        (value: unknown) =>
-          value instanceof Fixture && value.type === type && value.descriptor,
-      ]
-    )
+    [
+      'ReadableStream',
+      'WritableStream',
+      'Response',
+      'AbortController',
+      'AbortSignal',
+    ].map((type) => [
+      type,
+      (value: unknown) =>
+        value instanceof Fixture && value.type === type && value.descriptor,
+    ])
   );
   return encodeWithFormatPrefix(
     SerializationFormat.DEVALUE_V1,
@@ -74,7 +79,8 @@ async function hydrate(value: unknown, ops: Promise<void>[] = []) {
     undefined,
     ops,
     globalThis,
-    getExternalRevivers(globalThis, ops, runId, undefined, policy)
+    undefined,
+    policy
   );
 }
 
@@ -86,6 +92,38 @@ beforeEach(() => {
 });
 
 describe('terminal error hydration policies', () => {
+  it('passes the hydration policy through the legacy flattened-array path', async () => {
+    const ops: Promise<void>[] = [];
+    const stream = (await hydrateRunError(
+      [['ReadableStream', 1], { name: 2, type: 3 }, 'legacy', 'bytes'],
+      runId,
+      undefined,
+      ops,
+      globalThis,
+      undefined,
+      policy
+    )) as ReadableStream;
+    expect(stream).toBeInstanceOf(ReadableStream);
+    expect(world.streams.get).not.toHaveBeenCalled();
+    expect(ops).toHaveLength(0);
+    world.streams.get.mockResolvedValue(
+      transport(new TextEncoder().encode('legacy body'))
+    );
+    expect(await new Response(stream).text()).toBe('legacy body');
+    await Promise.all(ops);
+  });
+
+  it('retains forwarding setup for an unused writable and settles its background work', async () => {
+    const ops: Promise<void>[] = [];
+    const stream = await hydrate(
+      new Fixture('WritableStream', { name: 'unused' }),
+      ops
+    );
+    expect(stream).toBeInstanceOf(WritableStream);
+    expect(ops).toHaveLength(1);
+    await Promise.all(ops);
+  });
+
   it.each([
     undefined,
     'raw',
