@@ -53,18 +53,15 @@ const singleFlight = globalSingleton(
 export async function runStepSingleFlight(
   runId: string,
   correlationId: string,
-  execute: () => Promise<StepExecutionResult>
+  execute: () => Promise<StepExecutionResult>,
+  logLevel: 'debug' | 'warn' = 'warn'
 ): Promise<StepExecutionResult> {
   const key = `${runId}:${correlationId}`;
   const existing = singleFlight.inFlight.get(key);
   if (existing) {
-    // warn (always printed, unlike debug/info): the single-flight is
-    // absorbing what would have been a duplicate execution, typically a
-    // delayed backstop or retry message landing in the same process while
-    // the owner is still mid-body. Rare by design; a burst of these means
-    // leases are expiring under live executions (raise
-    // WORKFLOW_INLINE_OWNERSHIP_LEASE_SECONDS).
-    runtimeLogger.warn(
+    // Fresh inline claims can overlap during ordinary wake replays. Recovery
+    // callers keep warning: repeated overlap can indicate expiring leases.
+    runtimeLogger[logLevel](
       'Step execution already in flight in this process; awaiting its settlement instead of executing again',
       { workflowRunId: runId, stepId: correlationId }
     );
