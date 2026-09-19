@@ -34,11 +34,18 @@ export class BufferedEventWriter implements EventWriteSession {
   constructor(
     private runId: string,
     private write: Write,
-    private release: () => Promise<void>
+    private release: () => Promise<void>,
+    private flushThrough: (head: number) => Promise<void> = async () => {}
   ) {}
 
   get heads() {
     return { queued: this.queued, committed: this.committed };
+  }
+
+  private rememberStep(step: Step) {
+    if (['completed', 'failed', 'cancelled'].includes(step.status))
+      this.queuedSteps.delete(step.stepId);
+    else this.queuedSteps.set(step.stepId, step);
   }
 
   private assertOpen(params?: CreateEventParams) {
@@ -69,6 +76,7 @@ export class BufferedEventWriter implements EventWriteSession {
       const result = await this.write(event, params);
       if (!result.event) throw new Error('Missing canonical event');
       this.queued = this.committed = requireEventSlot(result.event.eventId);
+      if (result.step) this.rememberStep(result.step);
       return result;
     } catch (error) {
       throw this.fail(error);
@@ -96,7 +104,10 @@ export class BufferedEventWriter implements EventWriteSession {
       size <= 8 * 1024 * 1024 &&
       (event.eventType === 'hook_received' ||
         event.eventType === 'step_created' ||
-        (event.eventType === 'step_started' && previous?.status === 'pending'));
+        (event.eventType === 'step_started' &&
+          previous?.status === 'pending') ||
+        (event.eventType === 'step_completed' &&
+          previous?.status === 'running'));
     if (!eligible) return this.create(event, params);
     if (this.pending.length >= 64 || this.bytes + size > 8 * 1024 * 1024)
       await this.drain();
@@ -130,6 +141,14 @@ export class BufferedEventWriter implements EventWriteSession {
         status: 'running',
         attempt: previous!.attempt + 1,
         startedAt: occurredAt,
+        updatedAt: occurredAt,
+      });
+    } else if (event.eventType === 'step_completed') {
+      expected.step = StepSchema.parse({
+        ...previous,
+        status: 'completed',
+        output: event.eventData?.result,
+        completedAt: occurredAt,
         updatedAt: occurredAt,
       });
     }
@@ -184,13 +203,15 @@ export class BufferedEventWriter implements EventWriteSession {
     const pending = this.pending;
     if (!pending.length) return;
     try {
+      await this.flushThrough(this.queued!);
       const results = await Promise.all(pending.map((item) => item.completion));
       this.confirmed.push(...results);
       this.committed = requireEventSlot(
         results[results.length - 1].event!.eventId
       );
       this.pending = [];
-      this.queuedSteps.clear();
+      for (const result of results)
+        if (result.step) this.rememberStep(result.step);
       this.bytes = 0;
     } catch (error) {
       throw this.fail(error);

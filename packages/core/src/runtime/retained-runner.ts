@@ -563,12 +563,45 @@ export class RetainedRunner {
     }
   }
 
+  private validateStepTransition(event: CreateEventRequest) {
+    if (
+      !['step_created', 'step_started', 'step_completed'].includes(
+        event.eventType
+      )
+    )
+      return;
+    const invalid = (reason: string): never => {
+      this.fault ??= new RunnerFault(
+        'conflict',
+        new Error('Invalid owner step transition'),
+        reason
+      );
+      throw this.fault;
+    };
+    if (!event.correlationId) invalid('missing_step_id');
+    const step = this.steps.get(event.correlationId!);
+    if (event.eventType === 'step_created') {
+      if (step) invalid('duplicate_step');
+      return;
+    }
+    if (!step || ['completed', 'failed', 'cancelled'].includes(step.status))
+      invalid('terminal_or_missing_step');
+    if (event.eventType === 'step_started') {
+      if (step!.retryAfter && +step!.retryAfter > Date.now())
+        invalid('retry_not_due');
+      const name = event.eventData?.stepName;
+      if (typeof name === 'string' && name !== step!.stepName)
+        invalid('step_name');
+    }
+  }
+
   private commit(
     event: CreateEventRequest,
     options?: CreateEventParams
   ): Promise<EventResult> {
     const work = this.commitTail.then(async () => {
       if (this.fault) throw this.fault;
+      this.validateStepTransition(event);
       const field = getEventDataPayloadField(event.eventType);
       const payload = field
         ? (event.eventData as Record<string, unknown> | undefined)?.[field]
@@ -1104,6 +1137,15 @@ export class RetainedRunner {
         let durable =
           this.runState?.status === 'failed' &&
           (!this.eventWriter?.stage || this.failureCommitted);
+        // Stop the owned socket before attempting the terminal write. A failed
+        // prefix must not keep accepting events, and the terminal failure must
+        // not accidentally reuse a channel whose sequence is now uncertain.
+        try {
+          await this.eventWriter?.dispose();
+        } catch {
+          // Still attempt the native terminal write and report its durability.
+        }
+        this.eventWriter = undefined;
         if (!durable) {
           try {
             const result = await this.backend.events.create(this.runId, {

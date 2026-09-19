@@ -128,6 +128,8 @@ export interface APIConfig {
   onEventSent?: () => void;
   /** @internal A single-writer prefix must fail rather than retry ambiguously. */
   failStopEventWrites?: boolean;
+  /** @internal An immediately awaited write cannot wait for the batching timer. */
+  flushEvent?: boolean;
   projectConfig?: {
     /** The real Vercel project ID (e.g., prj_xxx) */
     projectId?: string;

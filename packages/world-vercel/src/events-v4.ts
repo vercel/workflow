@@ -22,6 +22,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { channel } from 'node:diagnostics_channel';
 import {
   CorruptedEventLogError,
   StreamError,
@@ -1410,7 +1411,14 @@ async function postEventFrameOverWs(
           // reconnect legitimately re-uses low numbers.
           span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
           return encodeFrame(
-            { reqId, type: 'event', event: buildPostFrameMeta(input) },
+            {
+              reqId,
+              type: 'event',
+              event: buildPostFrameMeta(input),
+              ...(config?.flushEvent === undefined
+                ? {}
+                : { flush: config.flushEvent }),
+            },
             input.payload ?? new Uint8Array(0)
           );
         }, config?.onEventSent);
@@ -1436,6 +1444,25 @@ async function postEventFrameOverWs(
         throw error;
       }
       const ms = Date.now() - start;
+      const commit = reply.meta.eventsyncCommit as
+        | Record<string, unknown>
+        | undefined;
+      if (
+        commit &&
+        typeof commit.eventCount === 'number' &&
+        typeof commit.eventTypes === 'string' &&
+        typeof commit.committedTo === 'number'
+      )
+        channel('workflow.eventsync').publish({
+          version: 1,
+          runId,
+          event: 'committed',
+          at: Date.now(),
+          eventCount: commit.eventCount,
+          eventTypes: commit.eventTypes,
+          committedTo: commit.committedTo,
+          kind: commit.kind,
+        });
 
       const status = wsReplyStatus(reply, endpoint);
       const headerRecord = replyMetaToHeaderRecord(reply.meta);

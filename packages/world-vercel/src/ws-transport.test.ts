@@ -42,7 +42,7 @@ type Listener = (...args: unknown[]) => void;
 it('selects canonical eventsync only on explicit opt-in', () => {
   vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'eventsync');
   expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
-    'wss://example.test/api/websockets/v1/runs/wrun_test/eventsync?protocol=2'
+    'wss://example.test/api/websockets/v1/runs/wrun_test/eventsync?protocol=3'
   );
   vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'ws');
   expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
@@ -295,7 +295,7 @@ describe('owner event writer', () => {
         staged.push(
           await writer.stage!(event, { eventCount: 3 + i, resolveData: 'none' })
         );
-      expect(socket.url).toContain('/eventsync?protocol=2');
+      expect(socket.url).toContain('/eventsync?protocol=3');
       expect(socket.sent).toHaveLength(3);
       let durable = false;
       const flushed = writer.flush!().then((results) => {
@@ -303,10 +303,23 @@ describe('owner event writer', () => {
         return results;
       });
       expect(durable).toBe(false);
+      await tick();
+      expect(socket.sent).toHaveLength(4);
       for (const [i, result] of staged.entries())
         socket.deliver(
           ackFrame(Number(sentReqIds(socket)[i]), 200, encode(result))
         );
+      socket.deliver(
+        encodeFrame(
+          {
+            reqId: sentReqIds(socket)[3],
+            type: 'flush_ack',
+            status: 200,
+            committedTo: 6,
+          },
+          EMPTY
+        )
+      );
       expect(await flushed).toHaveLength(3);
       expect(durable).toBe(true);
     } finally {

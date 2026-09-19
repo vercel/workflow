@@ -145,3 +145,39 @@ it('copies submitted bytes before the caller can mutate them', async () => {
   calls[0].resolve(staged);
   await writer.flush();
 });
+
+it('buffers a completion using the acknowledged step state and sends flush-through before awaiting replies', async () => {
+  const calls: {
+    event: CreateEventRequest;
+    resolve(value: EventResult): void;
+  }[] = [];
+  const flush = vi.fn(async () => {});
+  const writer = new BufferedEventWriter(
+    'wrun_test',
+    (event, _params, sent) => {
+      sent?.();
+      return new Promise((resolve) => calls.push({ event, resolve }));
+    },
+    async () => {},
+    flush
+  );
+  const created = await writer.stage(createStep, { eventCount: 1 });
+  const started = await writer.stage(startStep, { eventCount: 2 });
+  calls[0].resolve(created);
+  calls[1].resolve(started);
+  await writer.flush();
+  const completed = await writer.stage(
+    {
+      eventType: 'step_completed',
+      specVersion: 6,
+      correlationId: 'step_test',
+      eventData: { result: Uint8Array.of(8) },
+    },
+    { eventCount: 3 }
+  );
+  expect(completed.step?.status).toBe('completed');
+  const barrier = writer.flush();
+  expect(flush).toHaveBeenLastCalledWith(4);
+  calls[2].resolve(completed);
+  await barrier;
+});

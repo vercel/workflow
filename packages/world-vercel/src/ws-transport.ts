@@ -25,7 +25,7 @@
 import { getVercelOidcToken } from '@vercel/oidc';
 import { debugLog, globalSingleton } from '@workflow/utils';
 import { WebSocket } from 'ws';
-import { type DecodedFrame, decodeFrames } from './frames.js';
+import { type DecodedFrame, decodeFrames, encodeFrame } from './frames.js';
 import {
   getRequestTimeoutMs,
   headersToRecord,
@@ -766,7 +766,7 @@ export function toEventsWsUrl(baseUrl: string, runId: string): string {
   url.pathname = `${url.pathname.replace(/\/$/, '')}/websockets/v1/runs/${encodeURIComponent(runId)}`;
   if (process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync') {
     url.pathname += '/eventsync';
-    url.searchParams.set('protocol', '2');
+    url.searchParams.set('protocol', '3');
   }
   return url.toString();
 }
@@ -823,7 +823,10 @@ export { isWsEventsTransportEnabled };
  * inside it hits an already-closed instance, returns early, and leaves that
  * invocation on HTTP for its whole duration with nothing to signal it.
  */
-export type WsChannelLease = (() => void) & { ready(): Promise<void> };
+export type WsChannelLease = (() => void) & {
+  ready(): Promise<void>;
+  flushThrough(head: number): Promise<void>;
+};
 
 export function openWsChannel(
   runId: string,
@@ -859,7 +862,21 @@ export function openWsChannel(
       released = true;
       transport.release('invocation complete');
     },
-    { ready: () => transport.ready() }
+    {
+      ready: () => transport.ready(),
+      async flushThrough(through: number) {
+        const reply = await transport.request((reqId) =>
+          encodeFrame({ reqId, type: 'flush', through }, new Uint8Array())
+        );
+        if (
+          reply.meta.type !== 'flush_ack' ||
+          reply.meta.status !== 200 ||
+          typeof reply.meta.committedTo !== 'number' ||
+          reply.meta.committedTo < through
+        )
+          throw new WsTransportError('Invalid eventsync flush acknowledgement');
+      },
+    }
   );
 }
 
