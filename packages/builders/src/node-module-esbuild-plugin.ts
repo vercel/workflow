@@ -24,6 +24,14 @@ const runtimeModulesRegex = new RegExp(
   `^((node:)?${nodeModulesPattern}|bun(:.*)?)$`
 );
 
+/**
+ * Whether a specifier names a Node.js or Bun built-in module (with or without
+ * the `node:` / `bun:` prefix).
+ */
+export function isRuntimeBuiltinSpecifier(specifier: string): boolean {
+  return runtimeModulesRegex.test(specifier);
+}
+
 type PackageViolation = {
   packageName: string;
   importer: string;

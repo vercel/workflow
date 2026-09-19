@@ -27,6 +27,26 @@ Workflow functions run in a sandboxed environment without full Node.js runtime a
 
 Node.js modules have side effects and non-deterministic behavior that could break workflow replay guarantees.
 
+## Transitive dependencies and dynamic `require()`
+
+The same error is reported for a module the workflow bundle could not inline, even when your own code never imports it directly:
+
+```text
+Workflow bundle cannot run in the workflow sandbox.
+
+Imports left external (1):
+  • "node:fs"
+    imported by node_modules/leaky-pkg/index.js
+    via app/workflows/order.ts → node_modules/wrapper-pkg/index.js → node_modules/leaky-pkg/index.js
+
+Unresolved require() calls (1):
+  • dynamic require() in node_modules/lazy-pkg/index.js (bundle 412:31)
+```
+
+The workflow sandbox has no `require`, so both would throw `ReferenceError: require is not defined` when the bundle loads. Follow the import chain to the first file you own and move that work into a step function, or replace a dynamic `require()` with a static import so the bundler can inline it.
+
+As a last resort — for example a `require()` that can never run — set `WORKFLOW_ALLOW_UNSAFE_FLOW_BUNDLE=1` to downgrade the build failure to a warning. The bundle still fails at runtime if the code is reached.
+
 ## Quick fix
 
 Move any code using Node.js modules to a step function. Step functions have full Node.js runtime access.

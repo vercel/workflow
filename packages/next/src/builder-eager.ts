@@ -1,9 +1,10 @@
 import { constants, type Dirent } from 'node:fs';
 import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
-import type {
-  NextConfig as BuilderNextConfig,
-  WorkflowManifest,
+import {
+  assertFlowBundleIsSandboxSafe,
+  type NextConfig as BuilderNextConfig,
+  type WorkflowManifest,
 } from '@workflow/builders';
 import chokidar from 'chokidar';
 import type { NextConfig as ProjectNextConfig } from 'next';
@@ -285,6 +286,15 @@ export async function getNextBuilderEager(
               'Invariant: expected workflow output from hot rebuild'
             );
           }
+
+          // Hot rebuilds drive the esbuild context directly, so they bypass
+          // the check `createWorkflowsBundle()` runs on a cold build. Without
+          // this, an edit that externalizes a Node.js builtin would only be
+          // caught after a dev server restart.
+          await assertFlowBundleIsSandboxSafe({
+            bundleText: workflowOutput,
+            metafile: workflowResult.metafile,
+          });
 
           await workflowsCtx.bundleFinal(workflowOutput);
           await writeManifest(mergeCombinedManifest(stepsManifest));
