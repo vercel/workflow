@@ -246,7 +246,7 @@ it.each([
   await fixture.send('a', 'one');
   await fixture.send('b', 'two');
   await fixture.send('c', 'three');
-  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+  await fixture.finished;
   expect(values).toEqual(['one', 'two', 'three']);
   expect(list).not.toHaveBeenCalled();
   expect(get).not.toHaveBeenCalled();
@@ -494,7 +494,7 @@ it('opens hook inputs sealed to the run while retaining its VM', async () => {
       fixture.metadata
     );
   }
-  await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
+  await fixture.finished;
   expect(values).toEqual(['one', 'two', 'three']);
   expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
     'completed'
