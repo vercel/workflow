@@ -413,7 +413,9 @@ describe('createCreateHook', () => {
       // Hold an earlier delivery after the serial queue has drained. This
       // is the window in which hasCreated/hasConflict is already true but
       // the registration acknowledgement cannot yet reach workflow code.
-      const earlier = registerDeliveryBarrier(ctx, -1, 'step');
+      const earlier = registerDeliveryBarrier(ctx, -1, 'step', {
+        deliveredAt: 0,
+      });
       const hook = createCreateHook(ctx)({ token: 'config' });
       const settled: unknown[] = [];
       const observe = (promise: Promise<unknown>) =>
