@@ -24,7 +24,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import { encodeFrame } from './frames.js';
+import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { REQUEST_TIMEOUT_MS } from './http-core.js';
 import { createStorage } from './storage.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
@@ -42,7 +42,7 @@ type Listener = (...args: unknown[]) => void;
 it('selects canonical eventsync only on explicit opt-in', () => {
   vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'eventsync');
   expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
-    'wss://example.test/api/websockets/v1/runs/wrun_test/eventsync?protocol=3'
+    'wss://example.test/api/websockets/v1/runs/wrun_test/eventsync?protocol=4'
   );
   vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'ws');
   expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
@@ -262,6 +262,71 @@ describe('toEventsWsUrl', () => {
 });
 
 describe('owner event writer', () => {
+  it('carries native bootstrap reads over its socket without HTTP fallback', async () => {
+    const previous = process.env.WORKFLOW_EVENTS_TRANSPORT;
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'eventsync';
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('Unexpected HTTP read'));
+    const writer = createStorage({ token: 'test-token' }).events
+      .createWriteSession!('wrun_test');
+    try {
+      const socket = await nextSocket();
+      socket.open();
+      const read = writer.reads!.listSteps({
+        runId: 'wrun_test',
+        pagination: { limit: 100 },
+      });
+      await tick();
+      const raw = socket.sent[0];
+      const length = new DataView(
+        raw.buffer,
+        raw.byteOffset,
+        raw.byteLength
+      ).getUint32(0, false);
+      const sent = { meta: decode(raw.subarray(4, 4 + length)) };
+      expect(sent.meta).toMatchObject({
+        type: 'read',
+        endpoint:
+          '/v2/runs/wrun_test/steps?limit=100&remoteRefBehavior=resolve',
+      });
+      socket.deliver(
+        encodeFrame(
+          {
+            reqId: sent.meta.reqId,
+            type: 'read_ack',
+            status: 200,
+            headers: { 'content-type': 'application/cbor' },
+          },
+          encode({ data: [], hasMore: false, cursor: null })
+        )
+      );
+      expect(await read).toEqual({ data: [], hasMore: false, cursor: null });
+      const history = writer.reads!.listEvents({
+        runId: 'wrun_test',
+        pagination: { limit: 100 },
+      });
+      await tick();
+      expect(socket.sent).toHaveLength(2);
+      socket.deliver(
+        encodeFrame(
+          {
+            reqId: sentReqIds(socket)[1],
+            type: 'read_ack',
+            status: 200,
+            headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+          },
+          encodeFrame({ _end: 1, hasMore: false }, EMPTY)
+        )
+      );
+      expect((await history).data).toEqual([]);
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      await writer.dispose();
+      if (previous === undefined) delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+      else process.env.WORKFLOW_EVENTS_TRANSPORT = previous;
+    }
+  });
   it('pipelines the canonical resume prefix over one socket before receiving ACKs', async () => {
     const previous = process.env.WORKFLOW_EVENTS_TRANSPORT;
     process.env.WORKFLOW_EVENTS_TRANSPORT = 'eventsync';
@@ -295,7 +360,7 @@ describe('owner event writer', () => {
         staged.push(
           await writer.stage!(event, { eventCount: 3 + i, resolveData: 'none' })
         );
-      expect(socket.url).toContain('/eventsync?protocol=3');
+      expect(socket.url).toContain('/eventsync?protocol=4');
       expect(socket.sent).toHaveLength(3);
       let durable = false;
       const flushed = writer.flush!().then((results) => {

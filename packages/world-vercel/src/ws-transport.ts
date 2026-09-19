@@ -766,7 +766,7 @@ export function toEventsWsUrl(baseUrl: string, runId: string): string {
   url.pathname = `${url.pathname.replace(/\/$/, '')}/websockets/v1/runs/${encodeURIComponent(runId)}`;
   if (process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync') {
     url.pathname += '/eventsync';
-    url.searchParams.set('protocol', '3');
+    url.searchParams.set('protocol', '4');
   }
   return url.toString();
 }
@@ -824,6 +824,7 @@ export { isWsEventsTransportEnabled };
  * invocation on HTTP for its whole duration with nothing to signal it.
  */
 export type WsChannelLease = (() => void) & {
+  read(endpoint: string): Promise<Response>;
   ready(): Promise<void>;
   flushThrough(head: number): Promise<void>;
 };
@@ -864,6 +865,29 @@ export function openWsChannel(
     },
     {
       ready: () => transport.ready(),
+      async read(endpoint: string) {
+        const url = new URL(endpoint, 'https://eventsync.internal');
+        const path = url.pathname.replace(/^\/api\//, '/');
+        const reply = await transport.request((reqId) =>
+          encodeFrame(
+            { reqId, type: 'read', endpoint: path + url.search },
+            new Uint8Array()
+          )
+        );
+        if (
+          reply.meta.type !== 'read_ack' ||
+          typeof reply.meta.status !== 'number'
+        )
+          throw new WsTransportError('Invalid eventsync read acknowledgement');
+        return new Response(Uint8Array.from(reply.body).buffer, {
+          status: reply.meta.status,
+          headers:
+            typeof reply.meta.headers === 'object' &&
+            reply.meta.headers !== null
+              ? (reply.meta.headers as Record<string, string>)
+              : {},
+        });
+      },
       async flushThrough(through: number) {
         const reply = await transport.request((reqId) =>
           encodeFrame({ reqId, type: 'flush', through }, new Uint8Array())

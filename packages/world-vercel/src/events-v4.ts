@@ -118,6 +118,20 @@ async function fetchV4(
   opName: string,
   attributes?: Record<string, string | number | boolean | string[]>
 ): Promise<Response> {
+  if (config?.readRequest) {
+    if (init.method !== 'GET')
+      throw new Error('Owner read transport only accepts GET');
+    const response = await config.readRequest(url);
+    if (!response.ok)
+      throw await errorFromV4Response(
+        response.status,
+        headersToRecord(response.headers),
+        new Uint8Array(await response.arrayBuffer()),
+        opName,
+        url
+      );
+    return response;
+  }
   const dispatcher = getEventsDispatcher(config);
   const response = await instrumentedFetch({
     method: init.method,

@@ -455,15 +455,18 @@ export class RetainedRunner {
       );
     const history: Event[] = [];
     const steps: Step[] = [];
+    const reads = this.eventWriter?.reads;
+    await reads?.ready?.();
     const eventReads = { parentSpanId, pageCount: 0, eventCount: 0 };
     const stepReads = { parentSpanId, pageCount: 0, stepCount: 0 };
-    // Start history reads and channel setup at the first owner-loop turn.
+    // Run bootstrap reads in parallel after any session channel is ready.
     // Each task owns its partial results until all snapshot reads have succeeded.
     const snapshot = await Promise.allSettled([
       this.observed(
         'load_run',
         async () => {
-          this.runState = await this.backend.runs.get(this.runId);
+          this.runState = await (reads?.getRun(this.runId) ??
+            this.backend.runs.get(this.runId));
           if (this.runState.executionContext?.retainedRunnerVersion !== 1)
             throw new InputRejected(
               'Run was not created for retained execution',
@@ -505,7 +508,10 @@ export class RetainedRunner {
         async () => {
           let cursor: string | null = null;
           do {
-            const page = await this.backend.events.list({
+            const page = await (
+              reads?.listEvents ??
+              this.backend.events.list.bind(this.backend.events)
+            )({
               runId: this.runId,
               resolveData: 'all',
               pagination: {
@@ -531,7 +537,10 @@ export class RetainedRunner {
               data: Step[];
               hasMore: boolean;
               cursor: string | null;
-            } = await this.backend.steps.list({
+            } = await (
+              reads?.listSteps ??
+              this.backend.steps.list.bind(this.backend.steps)
+            )({
               runId: this.runId,
               resolveData: 'all',
               pagination: { limit: 100, ...(cursor ? { cursor } : {}) },

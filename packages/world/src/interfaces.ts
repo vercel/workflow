@@ -43,6 +43,14 @@ import type {
 /** Run-scoped transport resources for a single in-memory event writer.
  * This does not acquire ownership. Buffered writers explicitly expose a durability barrier. */
 export interface EventWriteSession {
+  /** Optional canonical bootstrap reads sharing the owner's transport. These do
+   * not acquire ownership or replace the public storage read APIs. */
+  reads?: {
+    ready?(): Promise<void>;
+    getRun: Storage['runs']['get'];
+    listEvents: Storage['events']['list'];
+    listSteps: Storage['steps']['list'];
+  };
   /** Optional tentative transition, paired with flush(). The owning loop must
    * flush before input acknowledgement or externally visible step execution. */
   stage?(

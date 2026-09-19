@@ -158,6 +158,39 @@ it('groups buffered input/create/start and awaits durability before user code or
   await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
 });
 
+it('uses owner-session bootstrap reads instead of the public storage transport', async () => {
+  const fixture = await setup();
+  const run = await fixture.world.runs.get(fixture.runId);
+  const events = await fixture.world.events.list({ runId: fixture.runId });
+  const reads = {
+    getRun: vi.fn().mockResolvedValue(run),
+    listEvents: vi.fn().mockResolvedValue(events),
+    listSteps: vi
+      .fn()
+      .mockResolvedValue({ data: [], hasMore: false, cursor: null }),
+  };
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  fixture.world.events.createWriteSession = () => ({
+    reads,
+    create: (event, params) => create(fixture.runId, event, params),
+    dispose() {},
+  });
+  vi.spyOn(fixture.world.runs, 'get').mockRejectedValue(
+    new Error('HTTP run read')
+  );
+  vi.spyOn(fixture.world.events, 'list').mockRejectedValue(
+    new Error('HTTP event read')
+  );
+  vi.spyOn(fixture.world.steps, 'list').mockRejectedValue(
+    new Error('HTTP step read')
+  );
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  expect(reads.getRun).toHaveBeenCalledTimes(1);
+  expect(reads.listEvents).toHaveBeenCalledTimes(1);
+  expect(reads.listSteps).toHaveBeenCalledTimes(1);
+  await fixture.finished;
+});
+
 it('fails a buffered durability barrier without running the user step', async () => {
   const fixture = await setup();
   const create = fixture.world.events.create.bind(fixture.world.events);
