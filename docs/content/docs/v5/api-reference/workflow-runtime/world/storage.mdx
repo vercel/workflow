@@ -196,7 +196,7 @@ const result = await world.runs.list({ // [!code highlight]
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `params.workflowName` | `string` | Only return runs of this workflow |
-| `params.status` | `WorkflowRunStatus \| WorkflowRunStatus[]` | Only return runs in this status. With an array, runs matching any of the listed statuses are returned |
+| `params.status` | `WorkflowRunStatus \| WorkflowRunStatus[]` | Only return runs in this status. Pass an array to match any of the listed statuses; an empty array matches no runs. `@workflow/world-vercel` accepts a single status only and throws `WorkflowWorldError` (`INVALID_ARGUMENT`) for an array |
 | `params.pagination.cursor` | `string` | Cursor for the next page |
 | `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data |
 
