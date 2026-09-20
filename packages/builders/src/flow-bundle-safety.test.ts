@@ -75,6 +75,34 @@ describe('findDynamicRequireCandidates', () => {
     expect(findDynamicRequireCandidates(code)).toEqual([]);
   });
 
+  it('ignores an optional-dependency probe guarded by try/catch', () => {
+    // framer-motion ships exactly this: the ReferenceError the sandbox raises
+    // is caught, so the bundle still loads.
+    const code = [
+      'try {',
+      '  loadExternalIsValidProp(require("@emotion/is-prop-valid").default);',
+      '} catch {',
+      '}',
+      'try { load(require(emotionPkg).default); } catch {}',
+    ].join('\n');
+    expect(findDynamicRequireCandidates(code)).toEqual([]);
+  });
+
+  it('still flags a require after the try block closes', () => {
+    const code = [
+      'try { optional = require("opt"); } catch {}',
+      'var fs = require("node:fs");',
+    ].join('\n');
+    const found = findDynamicRequireCandidates(code);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ line: 2, specifier: 'node:fs' });
+  });
+
+  it('still flags a require inside a catch block', () => {
+    const code = 'try { a(); } catch { fallback = require("node:fs"); }';
+    expect(findDynamicRequireCandidates(code)).toHaveLength(1);
+  });
+
   it('ignores require mentions inside comments and strings', () => {
     const code = [
       '// we used to require("node:fs") here',
@@ -263,6 +291,61 @@ describe('analyzeFlowBundleSafety', () => {
       ].join('\n'),
     });
     expect(report.dynamicRequires).toEqual([]);
+  });
+
+  it('does not report an external whose only require is inside a try block', async () => {
+    // esbuild externalizes an unresolvable `require()` when it is wrapped in
+    // try/catch, so the metafile reports an import for code that is meant to
+    // fail at runtime.
+    const report = await analyzeFlowBundleSafety({
+      bundleText: 'try { load(require("@emotion/is-prop-valid")); } catch {}',
+      metafile: metafileWith(
+        {
+          'virtual-entry.js': {
+            bytes: 0,
+            format: 'esm',
+            imports: [
+              {
+                path: '@emotion/is-prop-valid',
+                kind: 'require-call',
+                external: true,
+              },
+            ],
+          },
+        },
+        [
+          {
+            path: '@emotion/is-prop-valid',
+            kind: 'require-call',
+            external: true,
+          },
+        ]
+      ),
+    });
+    expect(report.externalImports).toEqual([]);
+    expect(report.dynamicRequires).toEqual([]);
+  });
+
+  it('still reports an external that is also required outside a try block', async () => {
+    const report = await analyzeFlowBundleSafety({
+      bundleText: [
+        'try { load(require("opt-pkg")); } catch {}',
+        'var eager = require("opt-pkg");',
+      ].join('\n'),
+      metafile: metafileWith(
+        {
+          'virtual-entry.js': {
+            bytes: 0,
+            format: 'esm',
+            imports: [
+              { path: 'opt-pkg', kind: 'require-call', external: true },
+            ],
+          },
+        },
+        [{ path: 'opt-pkg', kind: 'require-call', external: true }]
+      ),
+    });
+    expect(report.externalImports).toHaveLength(1);
   });
 
   it('reports a free dynamic require', async () => {

@@ -122,6 +122,29 @@ describe('flow bundle sandbox safety (esbuild)', () => {
     expect(interimBundleText).toContain('typeof require');
   });
 
+  it('builds a workflow that reaches a guarded optional-dependency probe', async () => {
+    // The shape framer-motion ships: `require` is expected to be missing and
+    // the resulting ReferenceError is caught, so the bundle still loads.
+    const outputDir = createFixture({
+      'optional-probe.ts': [
+        'export let isValidProp: ((key: string) => boolean) | undefined;',
+        'try {',
+        '  isValidProp = require("@emotion/is-prop-valid").default;',
+        '} catch {',
+        '  // optional dependency, fall back to the default',
+        '}',
+      ].join('\n'),
+      'workflow.ts': [
+        "import { isValidProp } from './optional-probe.js';",
+        'export async function wf() { "use workflow"; return Boolean(isValidProp); }',
+      ].join('\n'),
+    });
+
+    const { interimBundleText } = await buildWorkflow(outputDir);
+
+    expect(interimBundleText).toContain('@emotion/is-prop-valid');
+  });
+
   it('fails when a transitive dependency pulls in a Node.js builtin', async () => {
     const outputDir = createFixture({
       ...packageFiles(

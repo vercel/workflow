@@ -45,6 +45,16 @@ Unresolved require() calls (1):
 
 The workflow sandbox has no `require`, so both would throw `ReferenceError: require is not defined` when the bundle loads. Follow the import chain to the first file you own and move that work into a step function, or replace a dynamic `require()` with a static import so the bundler can inline it.
 
+A `require()` wrapped in `try`/`catch` is not reported — that is how packages probe for an optional dependency, and the sandbox's error is caught:
+
+```js
+try {
+  loadOptional(require("@emotion/is-prop-valid").default);
+} catch {
+  // optional dependency, fall back
+}
+```
+
 As a last resort — for example a `require()` that can never run — set `WORKFLOW_ALLOW_UNSAFE_FLOW_BUNDLE=1` to downgrade the build failure to a warning. The bundle still fails at runtime if the code is reached.
 
 ## Quick fix

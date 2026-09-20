@@ -17,6 +17,12 @@
  * workflow in the deployment breaks, not just the code path that needed the
  * module.
  *
+ * The exception is a `require()` inside a `try` block. That is how packages
+ * probe for an optional dependency (framer-motion ships one, and esbuild
+ * externalizes an unresolvable `require()` precisely when it is wrapped that
+ * way), and the sandbox's `ReferenceError` lands in the `catch`, so the bundle
+ * still loads. Those are left alone.
+ *
  * Those failures used to be silent at build time.
  * `createNodeModuleErrorPlugin()` marks Node.js/Bun builtins as external and
  * only reports the ones it can trace back to an `import … from "pkg"`
@@ -111,6 +117,13 @@ export interface MaskResult {
   masked: string;
   /** Column-0 line comments, in source order. */
   banners: BannerComment[];
+  /** Offsets of `try { … }` bodies, from the `{` to the matching `}`. */
+  tryBlocks: SourceRange[];
+}
+
+export interface SourceRange {
+  start: number;
+  end: number;
 }
 
 const IDENTIFIER_CHAR = /[A-Za-z0-9_$]/;
@@ -304,12 +317,14 @@ function scanNonCodeToken(
 export function maskNonCodeRegions(code: string): MaskResult {
   const parts: string[] = [];
   const banners: BannerComment[] = [];
+  const tryBlocks: SourceRange[] = [];
   let copyFrom = 0;
   let i = 0;
   let lastSignificantChar = '';
   let lastSignificantIndex = -1;
   let inTemplate = false;
-  let braceDepth = 0;
+  // One entry per open `{`; `isTry` marks the body of a `try` statement.
+  const braceStack: { isTry: boolean; start: number }[] = [];
   // Brace depth recorded when entering each `${`, so the matching `}` can be
   // told apart from ordinary object/block braces.
   const templateBraceStack: number[] = [];
@@ -325,7 +340,7 @@ export function maskNonCodeRegions(code: string): MaskResult {
       mask(i, chunk.end);
       if (chunk.substitution) {
         inTemplate = false;
-        templateBraceStack.push(braceDepth);
+        templateBraceStack.push(braceStack.length);
         i = chunk.end + 2; // skip `${`
       } else {
         inTemplate = false;
@@ -364,18 +379,25 @@ export function maskNonCodeRegions(code: string): MaskResult {
     }
 
     if (ch === '{') {
-      braceDepth += 1;
+      braceStack.push({
+        isTry:
+          lastSignificantIndex >= 0 &&
+          IDENTIFIER_CHAR.test(lastSignificantChar) &&
+          identifierEndingAt(code, lastSignificantIndex + 1) === 'try',
+        start: i,
+      });
     } else if (ch === '}') {
       if (
         templateBraceStack.length > 0 &&
-        templateBraceStack[templateBraceStack.length - 1] === braceDepth
+        templateBraceStack[templateBraceStack.length - 1] === braceStack.length
       ) {
         templateBraceStack.pop();
         inTemplate = true;
         i += 1;
         continue;
       }
-      braceDepth = Math.max(0, braceDepth - 1);
+      const open = braceStack.pop();
+      if (open?.isTry) tryBlocks.push({ start: open.start, end: i });
     }
 
     if (!/\s/.test(ch)) {
@@ -386,7 +408,7 @@ export function maskNonCodeRegions(code: string): MaskResult {
   }
 
   parts.push(code.slice(copyFrom));
-  return { masked: parts.join(''), banners };
+  return { masked: parts.join(''), banners, tryBlocks };
 }
 
 // ---------------------------------------------------------------------------
@@ -485,9 +507,22 @@ function moduleForIndex(
   return match;
 }
 
+function isInsideAnyRange(ranges: SourceRange[], index: number): boolean {
+  return ranges.some((range) => index > range.start && index < range.end);
+}
+
+/** A `require` reference found in the bundle text. */
+export interface RequireSite extends DynamicRequireViolation {
+  /**
+   * The reference sits inside a `try { … }` block, so the sandbox's
+   * `ReferenceError` is caught and the bundle still loads.
+   */
+  guarded: boolean;
+}
+
 /**
- * Finds every `require` token in `bundleText` that looks like it will be
- * evaluated at runtime.
+ * Finds every `require` reference in `bundleText` that will be evaluated at
+ * runtime, flagging the ones a `try` block protects.
  *
  * This is a cheap pre-filter: it runs on every build, so it must be fast and
  * must not flag the patterns that show up in ordinary bundled output
@@ -495,13 +530,13 @@ function moduleForIndex(
  * does flag is confirmed with esbuild's own scope analysis before it fails a
  * build — see {@link probeFreeRequireReferences}.
  */
-export function findDynamicRequireCandidates(
+export function findRequireSites(
   bundleText: string,
   knownModules?: Set<string>
-): DynamicRequireViolation[] {
-  const { masked, banners } = maskNonCodeRegions(bundleText);
+): RequireSite[] {
+  const { masked, banners, tryBlocks } = maskNonCodeRegions(bundleText);
   const lineStarts = computeLineStarts(bundleText);
-  const violations: DynamicRequireViolation[] = [];
+  const sites: RequireSite[] = [];
 
   REQUIRE_TOKEN.lastIndex = 0;
   let match = REQUIRE_TOKEN.exec(masked);
@@ -525,7 +560,7 @@ export function findDynamicRequireCandidates(
         lineStarts[line - 1],
         lineStarts[line] ?? bundleText.length
       );
-      violations.push({
+      sites.push({
         module: moduleForIndex(banners, knownModules, index),
         line,
         column,
@@ -534,13 +569,46 @@ export function findDynamicRequireCandidates(
             ? readLiteralArgument(bundleText, afterStart)
             : undefined,
         snippet: truncate(lineText.trim(), 160),
+        // `try { require("optional-dep") } catch {}` is how packages probe for
+        // an optional dependency — framer-motion ships exactly this, and
+        // esbuild itself externalizes unresolvable requires when they are
+        // wrapped this way. The sandbox's `ReferenceError` lands in the
+        // `catch`, so the bundle still loads.
+        guarded: isInsideAnyRange(tryBlocks, index),
       });
     }
 
     match = REQUIRE_TOKEN.exec(masked);
   }
 
-  return violations;
+  return sites;
+}
+
+/** The unguarded subset of {@link findRequireSites}. */
+export function findDynamicRequireCandidates(
+  bundleText: string,
+  knownModules?: Set<string>
+): DynamicRequireViolation[] {
+  return findRequireSites(bundleText, knownModules).filter(
+    (site) => !site.guarded
+  );
+}
+
+/**
+ * Specifiers whose every emitted `require("…")` call site sits inside a `try`
+ * block. esbuild leaves an unresolvable `require()` external when it is
+ * wrapped that way (it says so in the "Could not resolve" hint), so the
+ * metafile reports an external import for code that is designed to fail.
+ */
+function findGuardedSpecifiers(sites: RequireSite[]): Set<string> {
+  const guarded = new Set<string>();
+  const unguarded = new Set<string>();
+  for (const site of sites) {
+    if (site.specifier === undefined) continue;
+    (site.guarded ? guarded : unguarded).add(site.specifier);
+  }
+  for (const specifier of unguarded) guarded.delete(specifier);
+  return guarded;
 }
 
 interface FreeRequireProbe {
@@ -582,12 +650,17 @@ async function probeFreeRequireReferences(
     `(?<![A-Za-z0-9_$])${FREE_REQUIRE_SENTINEL}(?![A-Za-z0-9_$])`,
     'g'
   );
-  const { masked } = maskNonCodeRegions(code);
+  const { masked, tryBlocks } = maskNonCodeRegions(code);
   let match = sentinel.exec(masked);
   while (match !== null) {
     const beforeEnd = skipWhitespaceBackward(masked, match.index);
     const previousWord = identifierEndingAt(masked, beforeEnd);
-    if (previousWord !== 'typeof') {
+    // Mirror the scan's exclusions so a `typeof` probe or a try-guarded
+    // optional require cannot confirm an unrelated candidate.
+    if (
+      previousWord !== 'typeof' &&
+      !isInsideAnyRange(tryBlocks, match.index)
+    ) {
       const afterStart = skipWhitespaceForward(
         masked,
         match.index + FREE_REQUIRE_SENTINEL.length
@@ -745,25 +818,26 @@ export async function analyzeFlowBundleSafety({
   bundleText: string;
   metafile?: esbuild.Metafile;
 }): Promise<FlowBundleSafetyReport> {
-  const externalImports = metafile ? collectExternalImports(metafile) : [];
+  const knownModules = metafile
+    ? new Set(Object.keys(metafile.inputs))
+    : undefined;
+  const sites = findRequireSites(bundleText, knownModules);
+  const guardedSpecifiers = findGuardedSpecifiers(sites);
+
+  const externalImports = (
+    metafile ? collectExternalImports(metafile) : []
+  ).filter((violation) => !guardedSpecifiers.has(violation.specifier));
   const externalSpecifiers = new Set(
     externalImports.map((violation) => violation.specifier)
   );
 
-  const knownModules = metafile
-    ? new Set(Object.keys(metafile.inputs))
-    : undefined;
-
   // External imports are emitted as `require("<specifier>")`, so drop the
-  // candidates they account for: they are already reported above, with a much
+  // sites they account for: they are already reported above, with a much
   // better import chain than a bundle line number.
-  const candidates = findDynamicRequireCandidates(
-    bundleText,
-    knownModules
-  ).filter(
-    (candidate) =>
-      candidate.specifier === undefined ||
-      !externalSpecifiers.has(candidate.specifier)
+  const candidates = sites.filter(
+    (site) =>
+      !site.guarded &&
+      (site.specifier === undefined || !externalSpecifiers.has(site.specifier))
   );
 
   if (candidates.length === 0) {
