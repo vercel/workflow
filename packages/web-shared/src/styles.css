@@ -294,9 +294,9 @@
   --breakpoint-xl: 1200px;
   --breakpoint-2xl: 1400px;
 
-  --color-geist-cyan: var(--geist-cyan);
-  --color-geist-warning: var(--geist-warning);
-  --color-geist-error: var(--geist-error);
+  --color-geist-cyan: var(--geist-cyan, #50e3c2);
+  --color-geist-warning: var(--geist-warning, #f5a623);
+  --color-geist-error: var(--geist-error, var(--ds-red-700));
 
   --color-black: var(--ds-black);
   --color-white: var(--ds-white);

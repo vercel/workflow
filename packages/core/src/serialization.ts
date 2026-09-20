@@ -2810,6 +2810,42 @@ export async function getForwardedWritableEncryptionKey(
   return rawKey ? await importKey(rawKey, ['encrypt']) : undefined;
 }
 
+/**
+ * Defer a forwarded writable's key lookup until the first chunk is written.
+ *
+ * Calling {@link getForwardedWritableEncryptionKey} starts the lookup, and the
+ * only consumer of the promise it returns is the serialize transform, which
+ * awaits it on the first write. Handing the reviver that promise directly
+ * therefore leaves a rejection unobserved on every forwarded writable nobody
+ * writes to — and its slow path (`runs.get` for a descriptor minted before
+ * deployment ids and public keys were carried on the wire) is exactly the kind
+ * of request that times out. Node kills the process for an unhandled rejection,
+ * so a stream the caller never touched could take down an unrelated invocation.
+ *
+ * The thunk closes that gap without giving up memoization: the lookup runs at
+ * most once, starts only when a write needs the key, and a failure rejects the
+ * write that asked for it. `EncryptionKeyParam` already accepts a resolver, and
+ * this mirrors how the readable side (`resolveKey` in the `ReadableStream`
+ * reviver) and `Run#getWritable` (`resolveTarget`) defer the same lookup.
+ *
+ * @internal
+ */
+function lazyForwardedWritableEncryptionKey(
+  runId: string,
+  deploymentId: string | undefined,
+  encryptionPublicKey: string | undefined
+): () => Promise<PayloadKey | undefined> {
+  let keyPromise: Promise<PayloadKey | undefined> | undefined;
+  return () => {
+    keyPromise ??= getForwardedWritableEncryptionKey(
+      runId,
+      deploymentId,
+      encryptionPublicKey
+    );
+    return keyPromise;
+  };
+}
+
 /** Tags a forwarded writable with its owner's metadata. @internal */
 export function tagForwardedWritableTarget(
   writable: WritableStream,
@@ -2904,6 +2940,20 @@ export function getRunReadableStream<T>(
   startIndex: number | undefined,
   cryptoKey: EncryptionKeyParam
 ): ReadableStream<T> {
+  return getLazyReadableStream((onReadableState) =>
+    getExternalRevivers(global, ops, runId, cryptoKey, {
+      onReadableState,
+    }).ReadableStream!({ name, startIndex })
+  );
+}
+
+/** Defer the entire source/transform assembly until the public stream is read. */
+function getLazyReadableStream<T>(
+  reviveReadable: (
+    onReadableState: NonNullable<ExternalReviverOptions['onReadableState']>
+  ) => ReadableStream<T>,
+  onReadableState?: ExternalReviverOptions['onReadableState']
+): ReadableStream<T> {
   let reader: ReadableStreamDefaultReader<T> | undefined;
   let lockState: ReturnType<typeof createFlushableState> | undefined;
   let lockPollingStarted = false;
@@ -2914,17 +2964,16 @@ export function getRunReadableStream<T>(
       async pull(controller) {
         try {
           if (!reader) {
-            const stream = getExternalRevivers(global, ops, runId, cryptoKey, {
-              onReadableState: (state) => {
-                lockState = state;
-              },
-            }).ReadableStream!({ name, startIndex }) as ReadableStream<T>;
+            const stream = reviveReadable((state) => {
+              lockState = state;
+            });
             reader = stream.getReader();
             if (lockState && !lockPollingStarted) {
               lockPollingStarted = true;
               // The caller owns this wrapper's reader, so polling it preserves
               // the documented releaseLock() completion signal.
-              pollReadableLock(userReadable, lockState);
+              if (onReadableState) onReadableState(lockState);
+              else pollReadableLock(userReadable, lockState);
             }
           }
           const result = await reader.read();
@@ -2945,8 +2994,12 @@ export function getRunReadableStream<T>(
   return userReadable;
 }
 
-/** Options for externally revived object streams. @internal */
+/** Options for external hydration. Defaults preserve live, eager hydration. @internal */
 type ExternalReviverOptions = {
+  /** Defer readable stream I/O until consumption, including nested streams. */
+  lazyStreams?: boolean;
+  /** Set false for terminal reporting: revive only the persisted abort snapshot. */
+  liveAbortSignals?: boolean;
   /** Receives completion state when a wrapper owns the public readable. */
   onReadableState?: (state: ReturnType<typeof createFlushableState>) => void;
 };
@@ -2966,6 +3019,78 @@ export function getExternalRevivers(
   cryptoKey: EncryptionKeyParam,
   options?: ExternalReviverOptions
 ): Partial<Revivers> {
+  function reviveReadableStream(
+    value: Exclude<
+      SerializableSpecial['ReadableStream'],
+      { bodyInit: unknown }
+    >,
+    onReadableState = options?.onReadableState
+  ): ReadableStream {
+    if (value.type === 'bytes') {
+      // Absent / 'raw' framing is legacy raw bytes; framed-v1 needs unframing.
+      const readable = new WorkflowServerReadableStream(
+        runId,
+        value.name,
+        value.startIndex
+      );
+      const state = createFlushableState();
+      ops.push(state.promise);
+
+      const { readable: userReadable, writable } =
+        value.framing === 'framed-v1'
+          ? getByteUnframingStream()
+          : new global.TransformStream();
+
+      flushablePipe(readable, writable, state).catch(() => {
+        // Errors are handled via state.reject
+      });
+
+      if (onReadableState) onReadableState(state);
+      else pollReadableLock(userReadable, state);
+
+      return userReadable;
+    }
+
+    // Object streams reconnect at frame boundaries. Share the speculative key
+    // lookup with the deserializer so callbacks run only once per session.
+    let keyPromise: Promise<PayloadKey | undefined> | undefined;
+    const resolveKey = (): Promise<PayloadKey | undefined> => {
+      keyPromise ??= resolveEncryptionKey(cryptoKey);
+      return keyPromise;
+    };
+    const readable = createReconnectingFramedStream(
+      runId,
+      value.name,
+      value.startIndex,
+      resolveKey
+    );
+    const transform = getDeserializeStream(
+      getExternalRevivers(global, ops, runId, resolveKey, {
+        lazyStreams: options?.lazyStreams,
+        liveAbortSignals: options?.liveAbortSignals,
+      }),
+      resolveKey
+    );
+    const state = createFlushableState();
+    ops.push(state.promise);
+
+    flushablePipe(readable, transform.writable, state).catch(() => {
+      // Errors are handled via state.reject
+    });
+
+    // A wrapper polls its public readable; nested streams own their own state.
+    if (onReadableState) onReadableState(state);
+    else pollReadableLock(transform.readable, state);
+
+    return transform.readable;
+  }
+
+  function reviveAbortSnapshot(value: SerializableSpecial['AbortController']) {
+    const controller = new AbortController();
+    if (value.aborted) controller.abort(value.reason);
+    return controller;
+  }
+
   return {
     ...getCommonRevivers(global),
 
@@ -3026,80 +3151,12 @@ export function getExternalRevivers(
         return response.body;
       }
 
-      if (value.type === 'bytes') {
-        // For byte streams, use flushable pipe with lock polling.
-        // If the producer wrote framed bytes (framing === 'framed-v1'),
-        // unwrap the length-prefix envelope before handing chunks to
-        // the user. Absent / 'raw' framing means legacy raw bytes:
-        // pipe through unchanged for backwards compatibility.
-        //
-        // No auto-reconnect here yet: raw byte streams have no wire
-        // framing to count consumed chunks with. Framed-v1 byte streams
-        // make frame counting possible, so extending the reconnecting
-        // reader to them is a separate follow-up.
-        const readable = new WorkflowServerReadableStream(
-          runId,
-          value.name,
-          value.startIndex
-        );
-        const state = createFlushableState();
-        ops.push(state.promise);
-
-        // Create an identity (or unframing) transform to give the user a readable
-        const { readable: userReadable, writable } =
-          value.framing === 'framed-v1'
-            ? getByteUnframingStream()
-            : new global.TransformStream();
-
-        // Start the flushable pipe in the background
-        flushablePipe(readable, writable, state).catch(() => {
-          // Errors are handled via state.reject
-        });
-
-        // Direct reviver callers hold this readable. A future public wrapper
-        // can provide the state and poll the readable it hands to the caller.
-        if (options?.onReadableState) options.onReadableState(state);
-        else pollReadableLock(userReadable, state);
-
-        return userReadable;
-      } else {
-        // Non-byte streams carry length-prefixed frames, so we can count
-        // completed frames and transparently reconnect when the server
-        // stream connection times out mid-run.
-        // Memoize this resolver per readable session. The first raw pull
-        // starts it concurrently with the stream GET; getDeserializeStream
-        // joins the same promise when an encrypted frame arrives. This also
-        // avoids invoking arbitrary EncryptionKeyParam callbacks twice.
-        let keyPromise: Promise<PayloadKey | undefined> | undefined;
-        const resolveKey = (): Promise<PayloadKey | undefined> => {
-          keyPromise ??= resolveEncryptionKey(cryptoKey);
-          return keyPromise;
-        };
-        const readable = createReconnectingFramedStream(
-          runId,
-          value.name,
-          value.startIndex,
-          resolveKey
-        );
-        const transform = getDeserializeStream(
-          getExternalRevivers(global, ops, runId, resolveKey),
-          resolveKey
-        );
-        const state = createFlushableState();
-        ops.push(state.promise);
-
-        // Start the flushable pipe in the background.
-        flushablePipe(readable, transform.writable, state).catch(() => {
-          // Errors are handled via state.reject
-        });
-
-        // Direct reviver callers hold this readable. The public Run factory
-        // wraps it for first-pull laziness and polls that wrapper instead.
-        if (options?.onReadableState) options.onReadableState(state);
-        else pollReadableLock(transform.readable, state);
-
-        return transform.readable;
-      }
+      return options?.lazyStreams
+        ? getLazyReadableStream(
+            (onReadableState) => reviveReadableStream(value, onReadableState),
+            options.onReadableState
+          )
+        : reviveReadableStream(value);
     },
     WritableStream: (value) => {
       // Same handling as `getStepRevivers.WritableStream`: see comments
@@ -3109,7 +3166,7 @@ export function getExternalRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(
+          : lazyForwardedWritableEncryptionKey(
               targetRunId,
               value.deploymentId,
               value.encryptionPublicKey
@@ -3126,8 +3183,14 @@ export function getExternalRevivers(
       });
     },
 
-    AbortController: (value) => reviveAbortController(value, ops, runId),
-    AbortSignal: (value) => reviveAbortSignal(value, ops, runId),
+    AbortController: (value) =>
+      options?.liveAbortSignals === false
+        ? reviveAbortSnapshot(value)
+        : reviveAbortController(value, ops, runId),
+    AbortSignal: (value) =>
+      options?.liveAbortSignals === false
+        ? reviveAbortSnapshot(value).signal
+        : reviveAbortSignal(value, ops, runId),
   };
 }
 
@@ -3479,12 +3542,13 @@ function getStepRevivers(
       // Cross-run case (parent → child via `start()`): the descriptor
       // carries the original `runId` and `name`. Open a server writable
       // against the original `(runId, name)` and resolve THAT run's key
-      // for encryption. The resolution is async but doesn't need to
-      // block reviver return: `getSerializeStream` accepts the
-      // `Promise<CryptoKey | undefined>` directly and awaits it lazily
-      // on the first chunk written. The key is imported encrypt-only
-      // so the receiving run can never decrypt anything else on the
-      // owning run's stream; it can only contribute new writes.
+      // for encryption. The lookup does not start until the first chunk
+      // is written: `getSerializeStream` accepts an `EncryptionKeyParam`
+      // resolver and calls it on demand, so a failed lookup errors the
+      // stream that needed the key instead of leaving an unobserved
+      // rejection behind. The key is imported encrypt-only so the
+      // receiving run can never decrypt anything else on the owning
+      // run's stream; it can only contribute new writes.
       const targetRunId = typeof value.runId === 'string' ? value.runId : runId;
       const targetDeploymentId =
         typeof value.deploymentId === 'string'
@@ -3495,7 +3559,7 @@ function getStepRevivers(
       const targetKey: EncryptionKeyParam =
         targetRunId === runId
           ? cryptoKey
-          : getForwardedWritableEncryptionKey(
+          : lazyForwardedWritableEncryptionKey(
               targetRunId,
               targetDeploymentId,
               value.encryptionPublicKey

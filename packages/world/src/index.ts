@@ -13,6 +13,7 @@ export {
 } from './analytics.js';
 export type * from './attributes.js';
 export {
+  ATTRIBUTE_EVENT_DATA_MAX_BYTES,
   ATTRIBUTE_KEY_MAX_LENGTH,
   ATTRIBUTE_MAX_PER_RUN,
   ATTRIBUTE_VALUE_MAX_BYTES,
@@ -33,6 +34,7 @@ export {
   type RunRetention,
   readRunRetention,
   validateAttributeChanges,
+  validateAttributeEventDataSize,
 } from './attributes.js';
 export {
   _resetEnvWarnCacheForTests,
@@ -83,6 +85,10 @@ export {
   HookSchema,
 } from './hooks.js';
 export type * from './interfaces.js';
+export type {
+  InvocationOutcome,
+  SerializedWorkflowError,
+} from './invocation.js';
 // The client this flag selects lives in `./node-http.js`, which is reachable
 // only by subpath: it imports node builtins statically, and this index is also
 // pulled into browser bundles.

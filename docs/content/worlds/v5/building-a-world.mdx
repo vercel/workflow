@@ -158,6 +158,8 @@ interface Storage {
 
 **Run creation:** For `run_created` events, the `runId` parameter may be a client-provided string or `null`. When `null`, your World generates and returns a new `runId`.
 
+**Run listing:** `runs.list({ status })` accepts a single status or an array. With an array, return runs whose status matches any listed value, and return no runs for an empty array (the same semantics as SQL `IN ()`). Treat an omitted `status` as no filter.
+
 **Hook tokens:** Hook tokens must be unique. If a `hook_created` event conflicts with an active hook or a token still reserved after its run ended, return a `hook_conflict` event and include the owner's run ID as `eventData.conflictingRunId`.
 
 Keep the owning run available for at least as long as its token remains unavailable because conflicts return that run.
@@ -264,12 +266,51 @@ interface Queue {
     messages: readonly { message: QueuePayload; opts?: QueueOptions }[]
   ): Promise<QueueBatchResult[]>;
 
+  // Optional request/response delivery, enabled with capabilities.invoke.
+  invoke?(runId: string, payload: unknown, options?: InvokeOptions): Promise<unknown>;
+
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
-    handler: (message: unknown, meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }) => Promise<void | { timeoutSeconds: number }>
+    handler: (message: unknown, meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }) => Promise<unknown>
   ): (req: Request) => Promise<Response>;
 }
 ```
+
+### Invocation delivery
+
+Implement the optional `invoke` method to send an input to a workflow runner and
+return the runner's response. Enable `capabilities.invoke` only when your World
+supports this operation.
+
+Your World must guarantee at most one active workflow runner per `runId` across
+all worker processes. Different runs may execute concurrently. A replacement
+runner can take over after the previous runner stops.
+
+Route inputs to the active runner, or start or resume the runner when none is
+active. Call the existing `createQueueHandler` callback with
+`{ runId, invoke: true, requestId, input }`. The callback validates the input,
+waits for required event writes, and returns a result. Deliver that result to the
+original caller. Support input processing while the runner awaits step work,
+without starting a second runner for the same run.
+
+`requestId` identifies the logical input across retries and is separate from a
+queue delivery ID. `InvokeOptions` accepts an `idempotencyKey` and a `timeoutMs`
+response-wait limit.
+
+Treat invocation return values as response data, including any `timeoutSeconds`
+property. Ordinary workflow wake results use `timeoutSeconds` to schedule another
+execution.
+
+You can transport results with `InvocationOutcome`, using `{ ok: true, value }`
+for success or `{ ok: false, error: SerializedWorkflowError }` for an error. The
+helpers in `@workflow/errors/invocation` capture handler results and restore
+errors with their known Workflow classes and diagnostic fields. Return the value
+or throw the restored error from `invoke()`.
+
+Keep failures to store or deliver a response distinct from handler errors. A
+transport failure leaves processing unknown, and a handler error may follow
+committed event writes. If your World advertises `hookResumeDedup`, enforce that
+capability when retrying a hook event whose response was lost.
 
 ### Batched publishing
 

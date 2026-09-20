@@ -433,8 +433,22 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       try {
         const result = await handler(body, { attempt, queueName, messageId });
 
+        if (
+          typeof body === 'object' &&
+          body !== null &&
+          'invoke' in body &&
+          body.invoke === true
+        ) {
+          return Response.json({ result });
+        }
+
         let timeoutSeconds: number | null = null;
-        if (typeof result?.timeoutSeconds === 'number') {
+        if (
+          typeof result === 'object' &&
+          result !== null &&
+          'timeoutSeconds' in result &&
+          typeof result.timeoutSeconds === 'number'
+        ) {
           timeoutSeconds = Math.min(
             result.timeoutSeconds,
             LOCAL_QUEUE_MAX_VISIBILITY

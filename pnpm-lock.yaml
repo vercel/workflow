@@ -700,6 +700,9 @@ importers:
       '@workflow/utils':
         specifier: workspace:*
         version: link:../utils
+      '@workflow/world':
+        specifier: workspace:*
+        version: link:../world
       ms:
         specifier: 2.1.3
         version: 2.1.3
@@ -713,9 +716,6 @@ importers:
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
-      '@workflow/world':
-        specifier: workspace:*
-        version: link:../world
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

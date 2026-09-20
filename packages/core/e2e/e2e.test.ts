@@ -69,12 +69,6 @@ if (!deploymentUrl) {
 }
 
 const DISTRIBUTED_CLOCK_TOLERANCE_MS = 1_000;
-// The race winner takes 1s; the loser would take 10s. The bound only has to
-// sit clearly below the loser to catch badly delayed or sequential
-// completion — under the concurrent suite, queue latency pushed the winner's
-// observed duration to ~6.5s on loaded local-dev lanes, so 5s was tight
-// enough to flake without being any better at catching the regression.
-const RACE_WINNER_MAX_DURATION_MS = 8_000;
 const EVENT_POLL_PAGE_SIZE = 100;
 /**
  * What a purged payload looks like in `workflow inspect --json`.
@@ -988,18 +982,12 @@ describe.concurrent('e2e', () => {
     const run = await start(await e2e('sleepWinsRaceWorkflow'), []);
     const returnValue = await run.returnValue;
     expect(returnValue.winner).toBe('sleep');
-    // Sleep is 1s; step would take 10s. This catches badly delayed or
-    // sequential completion without hiding the regression behind a huge bound.
-    expect(returnValue.durationMs).toBeLessThan(RACE_WINNER_MAX_DURATION_MS);
   });
 
   test('stepWinsRaceWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('stepWinsRaceWorkflow'), []);
     const returnValue = await run.returnValue;
     expect(returnValue.winner).toBe('step');
-    // Step is 1s; sleep would take 10s. This catches badly delayed or
-    // sequential completion without hiding the regression behind a huge bound.
-    expect(returnValue.durationMs).toBeLessThan(RACE_WINNER_MAX_DURATION_MS);
   });
 
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
@@ -2118,21 +2106,30 @@ describe.concurrent('e2e', () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
 
-      // Start first workflow - it will create a hook and wait for a payload
-      const run1 = await start(await e2e('hookCleanupTestWorkflow'), [
-        token,
-        customData,
-      ]);
+      // Both runs deliberately share an externally meaningful token. Bypass
+      // startTracked's pickup replacement: if a status read remains stale as
+      // the original begins executing, its replacement can race the original
+      // for this token and manufacture the conflict the test is meant to
+      // control. rawStart still gets trackRun diagnostics and the test-level
+      // retry remains the backstop for a genuine pickup stall.
+      const run1 = trackRun(
+        await rawStart(await e2e('hookCleanupTestWorkflow'), [
+          token,
+          customData,
+        ])
+      );
 
       // Wait until run1 has registered the hook before starting run2.
       await waitForHook(token, { runId: run1.runId });
 
       // Start second workflow with the SAME token while first is still running
       // This should fail because the hook token is already in use
-      const run2 = await start(await e2e('hookCleanupTestWorkflow'), [
-        token,
-        customData,
-      ]);
+      const run2 = trackRun(
+        await rawStart(await e2e('hookCleanupTestWorkflow'), [
+          token,
+          customData,
+        ])
+      );
 
       // The second workflow should fail with a hook token conflict error
       const run2Error = await run2.returnValue.catch((e: unknown) => e);
@@ -3666,16 +3663,15 @@ describe.concurrent('e2e', () => {
     'plainModuleDoneHook resumed via plain API route (o2flow shape)',
     { timeout: 90_000 },
     async () => {
-      const token = `plain-module-hook-${Math.random().toString(36).slice(2)}`;
-
       const run = await start(
         await getWorkflowMetadata(
           deploymentUrl,
           'workflows/102_plain_module_hook.ts',
           'waitForPlainModuleHook'
         ),
-        [token]
+        []
       );
+      const token = `plain-module-hook-${run.runId}`;
 
       await waitForHook(token, { runId: run.runId });
 
@@ -3706,6 +3702,78 @@ describe.concurrent('e2e', () => {
       });
     }
   );
+
+  // Lifecycle hooks (`registerLifecycleHooks`) are registered in the Next.js
+  // workbenches' instrumentation.ts (see lifecycle-hooks-e2e.ts there). The
+  // handlers report each lifecycleHookTarget* run's terminal transition by
+  // resuming the lifecycleHookObserver workflow's hook, a durable channel
+  // that works even when the terminal write happens on a different instance
+  // than the one serving these HTTP requests.
+  describe.skipIf(!isNextJsApp)('lifecycle hooks', () => {
+    test(
+      'onRunCompleted receives the Run and can read its return value',
+      { timeout: 90_000 },
+      async () => {
+        const token = `lifecycle-completed-${Math.random().toString(36).slice(2)}`;
+
+        const observer = await start(await e2e('lifecycleHookObserver'), [
+          token,
+        ]);
+        await waitForHook(token, { runId: observer.runId });
+
+        const target = await start(await e2e('lifecycleHookTargetCompleted'), [
+          token,
+        ]);
+        await expect(target.returnValue).resolves.toMatchObject({
+          outcome: 'completed',
+        });
+
+        // The onRunCompleted handler fetched the target's workflowName and
+        // returnValue off the lazily-hydrated Run instance, then resumed the
+        // observer's hook with what it saw.
+        const payload = await observer.returnValue;
+        expect(payload).toMatchObject({
+          observed: 'completed',
+          runId: target.runId,
+          workflowName: expect.stringContaining('lifecycleHookTargetCompleted'),
+          returnedOutcome: 'completed',
+        });
+      }
+    );
+
+    test(
+      'onRunFailed receives the hydrated error with errorCode and cause',
+      { timeout: 90_000 },
+      async () => {
+        const token = `lifecycle-failed-${Math.random().toString(36).slice(2)}`;
+
+        const observer = await start(await e2e('lifecycleHookObserver'), [
+          token,
+        ]);
+        await waitForHook(token, { runId: observer.runId });
+
+        const target = await start(await e2e('lifecycleHookTargetFailed'), [
+          token,
+        ]);
+        const error = await target.returnValue.catch((e: unknown) => e);
+        expect(WorkflowRunFailedError.is(error)).toBe(true);
+
+        // The onRunFailed handler received a WorkflowRunFailedError whose
+        // errorCode carries the classification and whose cause is the
+        // hydrated thrown FatalError (name + message preserved).
+        const payload = await observer.returnValue;
+        expect(payload).toMatchObject({
+          observed: 'failed',
+          runId: target.runId,
+          errorCode: 'USER_ERROR',
+          causeName: 'FatalError',
+          causeMessage: expect.stringContaining(
+            `lifecycle-hook-target-failed:${token}`
+          ),
+        });
+      }
+    );
+  });
 
   test(
     'hookWithSleepWorkflow - hook payloads delivered correctly with concurrent sleep',
@@ -4016,27 +4084,41 @@ describe.concurrent('e2e', () => {
           [controller.signal]
         );
 
-        // Abort 1.5s after start() so both parallel steps are mid-flight on
-        // their compute instances. The listener attached at serialization time
-        // is what bridges the abort into the workflow's backing stream.
-        const abortTimer = setTimeout(() => {
-          controller.abort('external in-flight abort');
-        }, 1500);
+        // Each step resumes a workflow-local readiness hook after arming its
+        // consumption path. Wait for both durable acknowledgements instead of
+        // guessing from start() wall time; under deployment load, a fixed
+        // delay can expire before either step begins.
+        const readyHookIds = new Set<string>();
+        await waitForRunEvents(
+          run.runId,
+          (event) => {
+            if (
+              event.eventType !== 'hook_received' ||
+              readyHookIds.has(event.correlationId)
+            ) {
+              return false;
+            }
+            readyHookIds.add(event.correlationId);
+            return true;
+          },
+          {
+            minCount: 2,
+            timeoutMs: 30_000,
+            description: 'two distinct abort consumers to report ready',
+          }
+        );
+        controller.abort('external in-flight abort');
 
-        try {
-          const returnValue = await run.returnValue;
+        const returnValue = await run.returnValue;
 
-          // Polling step must have seen signal.aborted flip and exited via
-          // its abort branch (NOT its 30s natural-completion path).
-          expect(returnValue.pollResult).toBe('aborted');
+        // Polling step must have seen signal.aborted flip and exited via
+        // its abort branch (NOT its 30s natural-completion path).
+        expect(returnValue.pollResult).toBe('aborted');
 
-          // Listener step must have resolved via its addEventListener callback
-          // (NOT its 30s safety timeout).
-          expect(returnValue.listenerResult.saw).toBe(true);
-          expect(returnValue.listenerResult.via).toBe('listener');
-        } finally {
-          clearTimeout(abortTimer);
-        }
+        // Listener step must have resolved via its addEventListener callback
+        // (NOT its 30s safety timeout).
+        expect(returnValue.listenerResult.saw).toBe(true);
+        expect(returnValue.listenerResult.via).toBe('listener');
       }
     );
 

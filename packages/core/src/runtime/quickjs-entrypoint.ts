@@ -64,6 +64,10 @@ import {
   runDispatchContext,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
+import {
+  dispatchRunCompletedHooks,
+  dispatchRunFailedHooks,
+} from './lifecycle-hooks.js';
 import { QuickJSLogView } from './quickjs-log-view.js';
 import {
   BASELINE_BUNDLE_FILENAME,
@@ -2009,6 +2013,7 @@ export async function runWorkflowWithQuickJS(params: {
         },
       });
       wfdiag('exit_completed', { result: 'run_completed_written' });
+      dispatchRunCompletedHooks(runId, workflowName);
     } catch (err) {
       if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
         runtimeLogger.warn(
@@ -2375,6 +2380,13 @@ export async function runWorkflowWithQuickJS(params: {
       });
       throw err;
     }
+    dispatchRunFailedHooks(
+      runId,
+      workflowName,
+      dehydratedError,
+      encryptionKey,
+      errorCode
+    );
     wfdiag('exit_failed', { result: 'run_failed_written' });
   }
 }

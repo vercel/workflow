@@ -1,11 +1,175 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   createBaseBuilderConfig,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 import * as esbuild from 'esbuild';
+import { resolveAbsentNestPeers } from './nest-optional-peers.js';
+import { normalizeBasePath } from './options.js';
+
+const FLOW_FUNCTION_NAME = '__workflow_nest_flow';
+const FLOW_DESTINATION = `/${FLOW_FUNCTION_NAME}`;
+const WEBHOOK_DESTINATION = '/.well-known/workflow/v1/webhook/[token]';
+
+export interface HealthMetadata {
+  specVersion: number;
+  workflowCoreVersion: string;
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Compose the Build Output routes owned by the Nest integration.
+ *
+ * Dedicated workflow functions must be rewritten explicitly before the Nest
+ * catch-all. The public HTTP copy uses a non-dot internal name because Vercel
+ * does not resolve a same-path rewrite to the queue-triggered function nested
+ * under `.well-known`; those requests otherwise continue into `__nest.func`,
+ * which intentionally has no local bundles.
+ *
+ * @internal Exported for regression tests.
+ */
+export function createNestVercelRoutes(
+  existingRoutes: unknown[],
+  appFunctionName: string,
+  basePath?: string
+): unknown[] {
+  const prefix = escapeRegex(normalizeBasePath(basePath));
+  const workflowPrefix = `${prefix}/\\.well-known/workflow/v1`;
+  const workflowRoutes: unknown[] = [
+    {
+      src: `${workflowPrefix}/flow`,
+      dest: FLOW_DESTINATION,
+    },
+  ];
+
+  // The shared builder already emits the unprefixed webhook rewrite. Add the
+  // prefixed form when generated callback URLs include a base path.
+  if (prefix) {
+    workflowRoutes.push({
+      src: `${workflowPrefix}/webhook/([^/]+)`,
+      dest: WEBHOOK_DESTINATION,
+    });
+  }
+
+  return [
+    ...existingRoutes,
+    { handle: 'filesystem' },
+    ...workflowRoutes,
+    {
+      src: '/(.*)',
+      dest: `/${appFunctionName}`,
+      check: true,
+    },
+  ];
+}
+
+/**
+ * Create an HTTP-addressable health function for the workflow endpoint.
+ *
+ * Vercel does not expose a function carrying `experimentalTriggers` over HTTP.
+ * Keep the queue consumer isolated in the trigger-protected function and expose
+ * only a minimal handler that rejects queue delivery requests.
+ *
+ * @internal Exported for regression tests.
+ */
+export async function createHttpFlowFunction(
+  functionsDir: string,
+  healthMetadata: HealthMetadata
+): Promise<void> {
+  const source = join(functionsDir, '.well-known/workflow/v1/flow.func');
+  const destination = join(functionsDir, `${FLOW_FUNCTION_NAME}.func`);
+  await rm(destination, { recursive: true, force: true });
+  await mkdir(destination, { recursive: true });
+
+  const config = JSON.parse(
+    await readFile(join(source, '.vc-config.json'), 'utf-8')
+  );
+  delete config.experimentalTriggers;
+  await writeFile(
+    join(destination, '.vc-config.json'),
+    JSON.stringify(config, null, 2)
+  );
+  await writeFile(join(destination, 'package.json'), '{"type":"module"}\n');
+  await writeFile(
+    join(destination, 'index.mjs'),
+    `const healthCheckCorsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS, GET, HEAD',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+function healthOnly(request) {
+  const url = new URL(request.url);
+  const isQueueDelivery =
+    request.headers.has('ce-type') ||
+    request.headers.has('ce-vqsreceipthandle') ||
+    request.headers.has('ce-vqsdeliverycount') ||
+    request.headers.has('ce-vqsmessageid');
+  if (isQueueDelivery || !url.searchParams.has('__health')) {
+    return new Response(null, {
+      status: 405,
+      headers: { allow: 'POST, OPTIONS, GET, HEAD' },
+    });
+  }
+
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: healthCheckCorsHeaders,
+    });
+  }
+
+  return new Response(
+    JSON.stringify({
+      healthy: true,
+      endpoint: url.pathname,
+      specVersion: ${JSON.stringify(healthMetadata.specVersion)},
+      workflowCoreVersion: ${JSON.stringify(healthMetadata.workflowCoreVersion)},
+    }),
+    {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        ...healthCheckCorsHeaders,
+      },
+    }
+  );
+}
+
+export const POST = healthOnly;
+export const OPTIONS = healthOnly;
+export const GET = healthOnly;
+export const HEAD = healthOnly;
+`
+  );
+}
+
+/** @internal Exported for regression tests. */
+export async function resolveHealthMetadata(
+  workingDir: string
+): Promise<HealthMetadata> {
+  const requireFromApp = createRequire(join(workingDir, 'package.json'));
+  const workflowRuntimePath = requireFromApp.resolve('workflow/runtime');
+  const requireFromWorkflow = createRequire(workflowRuntimePath);
+  const coreRuntimePath = requireFromWorkflow.resolve('@workflow/core/runtime');
+  const corePackage = JSON.parse(
+    await readFile(resolve(coreRuntimePath, '../../package.json'), 'utf-8')
+  );
+  const requireFromCore = createRequire(coreRuntimePath);
+  const worldPath = requireFromCore.resolve('@workflow/world');
+  const world = await import(pathToFileURL(worldPath).href);
+
+  return {
+    specVersion: world.SPEC_VERSION_CURRENT,
+    workflowCoreVersion: corePackage.version,
+  };
+}
 
 export interface NestVercelBuilderOptions {
   /**
@@ -44,6 +208,11 @@ export interface NestVercelBuilderOptions {
   runtime?: string;
   /** esbuild sourcemap mode for workflow bundles. */
   sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
+  /**
+   * Route prefix the app is served under, stamped into the generated flow route
+   * so the runtime generates matching callback URLs.
+   */
+  basePath?: string;
 }
 
 /**
@@ -75,7 +244,14 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
         dirs,
         runtime: options.runtime,
         sourcemap: options.sourcemap,
+        // A step that imports an application service pulls `@nestjs/common`
+        // into the workflow function, and `@nestjs/common` `require()`s its
+        // optional peers behind try/catch. Without this the build fails to
+        // resolve `class-validator` and friends in any app that does not
+        // install them.
+        externalPackages: resolveAbsentNestPeers(workingDir),
       }),
+      basePath: options.basePath,
       buildTarget: 'vercel-build-output-api',
     });
     this.#workingDir = workingDir;
@@ -88,6 +264,14 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
     // 1. Emit the workflow functions (flow.func + webhook + manifest + config)
     //    via the shared builder, identical to every other integration.
     await super.build();
+
+    // Vercel queue-triggered functions are not HTTP-addressable. Keep the
+    // original flow.func as the VQS consumer and create a separate HTTP health
+    // function at a private internal URL for GET/HEAD/OPTIONS requests.
+    await createHttpFlowFunction(
+      resolve(this.#workingDir, '.vercel/output/functions'),
+      await resolveHealthMetadata(this.#workingDir)
+    );
 
     // 2. Bundle the NestJS app as the catch-all function.
     await this.#buildAppFunction();
@@ -104,17 +288,11 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
    * WorkflowModule's lazy import when `skipBuild` is false (never on Vercel),
    * so bundling esbuild/SWC/native binaries would only bloat the function.
    *
-   * NestJS `require()`s optional peers (validation, transports, cache, …)
-   * behind try/catch via its internal `loadPackage`. We externalize such a
-   * peer ONLY when it is not installed in the app: an installed peer is one the
-   * app actually uses (e.g. `class-validator` for `ValidationPipe`), so it must
-   * be bundled into the self-contained function rather than left as a bare
-   * `require()` that cannot resolve in the deployed `.func`. Uninstalled peers
-   * stay external so esbuild does not fail to resolve them and NestJS's
-   * try/catch tolerates their absence at runtime.
+   * NestJS's optional peers are handled by `resolveAbsentNestPeers`, which
+   * externalizes only the ones the app has not installed.
    */
   #resolveExternals(): string[] {
-    const alwaysExternal = [
+    return [
       'node:*',
       '@workflow/builders',
       '@swc/core',
@@ -127,47 +305,8 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
       // is not yet supported on Vercel; see the limitation called out in the
       // README's "Deploying to Vercel" section and the changeset.
       '*.node',
+      ...resolveAbsentNestPeers(this.#workingDir),
     ];
-
-    const optionalPeers = [
-      '@nestjs/websockets',
-      '@nestjs/microservices',
-      '@nestjs/platform-fastify',
-      '@nestjs/platform-socket.io',
-      'class-validator',
-      'class-transformer',
-      'cache-manager',
-      '@fastify/static',
-      '@grpc/grpc-js',
-      '@grpc/proto-loader',
-      'kafkajs',
-      'mqtt',
-      'nats',
-      'amqplib',
-      'amqp-connection-manager',
-      'ioredis',
-    ];
-
-    const require = createRequire(join(this.#workingDir, 'package.json'));
-    const isInstalled = (pkg: string): boolean => {
-      try {
-        require.resolve(pkg);
-        return true;
-      } catch {
-        return false;
-      }
-    };
-
-    const externalPeers: string[] = [];
-    for (const pkg of optionalPeers) {
-      // Installed => bundle it (the app uses it). Not installed => keep external
-      // (esbuild won't try to resolve it; NestJS tolerates it being absent).
-      if (!isInstalled(pkg)) {
-        externalPeers.push(pkg, `${pkg}/*`);
-      }
-    }
-
-    return [...alwaysExternal, ...externalPeers];
   }
 
   async #buildAppFunction(): Promise<void> {
@@ -214,18 +353,11 @@ export class NestVercelBuilder extends VercelBuildOutputAPIBuilder {
       ? config.routes
       : [];
 
-    // Keep the workflow webhook rewrite (already written by super.build),
-    // then let filesystem routing serve the workflow functions, then fall
-    // through to the NestJS app for everything else.
-    config.routes = [
-      ...existingRoutes,
-      { handle: 'filesystem' },
-      {
-        src: '/(.*)',
-        dest: `/${this.#appFunctionName}`,
-        check: true,
-      },
-    ];
+    config.routes = createNestVercelRoutes(
+      existingRoutes,
+      this.#appFunctionName,
+      this.config.basePath
+    );
 
     await writeFile(configPath, JSON.stringify(config, null, 2));
   }

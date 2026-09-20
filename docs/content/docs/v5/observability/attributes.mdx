@@ -57,6 +57,8 @@ export async function cleanupAttributes() {
 
 Attribute keys must be 1-256 characters, values must be strings up to 256 bytes, and each run can have up to 64 attributes. Keys that start with `$` are reserved for framework and library code.
 
+Each `setAttributes` call also writes one `attr_set` event, and that event's complete data (keys, values, and writer metadata) must fit in 8192 UTF-8 JSON bytes (8KiB). Split large updates across several calls; the calls still share the 64-attribute limit. A call that exceeds a limit rejects with [`FatalError`](/docs/api-reference/workflow/fatal-error) before anything is written, so catch it when the metadata is best-effort.
+
 ## Reserved keys
 
 When `start()` is called from inside a running workflow or step, the new run is automatically tagged with two reserved attributes:

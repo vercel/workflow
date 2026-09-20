@@ -141,6 +141,27 @@
       "when": 1786060800000,
       "tag": "0019_add_event_slots",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1789430400000,
+      "tag": "0020_add_invocations",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1789516800000,
+      "tag": "0021_invocation_identity_retention",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1789603200000,
+      "tag": "0022_invocation_outcomes",
+      "breakpoints": true
     }
   ]
 }

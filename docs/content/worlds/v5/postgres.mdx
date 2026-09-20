@@ -80,6 +80,60 @@ The migration is idempotent and can safely be run as a post-deployment lifecycle
 
 ## Starting the World
 
+### Experimental invocation delivery
+
+Set `WORKFLOW_POSTGRES_INVOKE=1`, or pass `enableInvoke: true` to the Postgres
+World's factory, to send hook inputs to the run's executor and wait for its
+response. Invocation is off by default. Apply the migrations and upgrade
+producers and workers together before enabling it.
+
+The executor validates the hook input and writes its event before responding.
+Workflow user code can consume the event later. The World stores inputs and
+responses in `workflow.workflow_invocations`. Inserting an input and enqueueing
+a workflow execution job share one transaction. Retries also enqueue an execution
+job, including when a retained response already exists, so committed events can
+be replayed after a runner failure.
+
+With the default job prefix, Graphile uses `workflow_flows_executor` for workflow
+execution and `workflow_flows` for step jobs and health checks. Execution jobs
+use a named queue per run, `workflow_flows:<runId>:executor`. Graphile permits
+one active job on each named queue across workers. Other runs, steps, and health
+checks can run concurrently. `queueConcurrency` limits total active jobs per
+worker process and defaults to 50. A custom job prefix replaces `workflow_` in
+these names.
+
+The HTTP receiver checks each execution request against its active Graphile job
+before processing pending inputs. Updated workers and receivers move legacy
+orchestration requests to the run's named queue. Before acknowledging an execution
+job, the World finishes any input already being processed and replays newly
+committed events. These entry checks do not stop an old handler from writing
+after its job is reclaimed.
+
+The caller receives a stored return value or a restored Workflow error. Terminal
+errors are retained as outcomes; transient or unrecognized failures leave inputs
+pending for Graphile to retry. Migration 0022 preserves the meaning of responses
+stored by earlier previews. Failure to store or read a response leaves the
+processing outcome unknown. Durable resume identities deduplicate the hook event
+when response storage must be retried.
+
+A shared `LISTEN/NOTIFY` connection signals changes to pending inputs and
+responses. Notifications contain identifiers, and readers fetch data from the
+table. Use a session-capable connection for `LISTEN`. Readers fall back to polling
+at 1s intervals if notifications fail, and connection retries use a 1s backoff.
+Notification failure and recovery are logged once per transition without
+payloads or connection details.
+
+The response-wait timeout defaults to 30s and can be set with `timeoutMs`. Encoded
+inputs and outcomes are limited to 1 MiB each. A timeout does not cancel
+processing. `$retention: 0` purges invocation data and prevents late writes from
+restoring it. Callers whose result has expired receive a 410 error with code
+`INVOCATION_DATA_EXPIRED`, even if the hook event committed earlier.
+
+Automatic cleanup of other results, stopping writes from reclaimed handlers, and
+routing requests across incompatible worker versions remain unimplemented.
+
+### Server startup
+
 To subscribe to the graphile-worker queue, your workflow app needs to start the world on server start. Here are examples for a few frameworks:
 
 <Callout type="warn">

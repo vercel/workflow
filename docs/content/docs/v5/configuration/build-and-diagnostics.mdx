@@ -53,6 +53,15 @@ Accepted values:
 - The SDK's own runtime serde classes (for example, `Run`) stay registered because they are reached through a seeded entry point, and imports *within* `node_modules` are still followed.
 - Explicit framework config wins over this environment variable.
 
+## Testing
+
+### `WORKFLOW_VITEST_VERSION_CHECK`
+
+- Default: enabled
+- Read by [`@workflow/vitest`](/docs/api-reference/vitest) in `globalSetup`, once per test run.
+- The plugin builds and runs your workflows against the copy of `@workflow/core` it was installed with. Before building, it compares that copy with the one your app resolves: a different major fails the run with the install command that fixes it, and any other difference logs a warning.
+- Set `off` (or `0` / `false`) to skip the check, for example in a setup that resolves two copies on purpose.
+
 ## Development diagnostics
 
 ### `WORKFLOW_DEV_HMR_LOGS`

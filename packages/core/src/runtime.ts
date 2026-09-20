@@ -91,6 +91,11 @@ import {
   stepDispatchIdempotencyKey,
   withHealthCheck,
 } from './runtime/helpers.js';
+import { withRunInputs } from './runtime/invocations.js';
+import {
+  dispatchRunCompletedHooks,
+  dispatchRunFailedHooks,
+} from './runtime/lifecycle-hooks.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
@@ -120,8 +125,8 @@ import {
 } from './runtime/suspension-handler.js';
 import { useQuickJSVm } from './runtime/vm-mode.js';
 import { getWaitContinuationDispatch } from './runtime/wait-continuation.js';
-import { getWorld, type WorldHandlers } from './runtime/world.js';
-import { dehydrateRunError } from './serialization.js';
+import { getWorld } from './runtime/world.js';
+import { dehydrateRunError, type PayloadKey } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
@@ -135,7 +140,12 @@ import {
   withTraceContext,
   withWorkflowBaggage,
 } from './telemetry.js';
-import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
+import {
+  formatErrorCauseChain,
+  getErrorName,
+  getErrorStack,
+  normalizeUnknownError,
+} from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
 import {
   compileWorkflowBundle,
@@ -380,6 +390,7 @@ async function recordFatalRunError({
   world,
   workflowRun,
   runId,
+  workflowName,
   requestId,
   err,
   errorCode,
@@ -388,6 +399,7 @@ async function recordFatalRunError({
   world: World;
   workflowRun: WorkflowRun | undefined;
   runId: string;
+  workflowName: string;
   requestId: string | undefined;
   err: unknown;
   errorCode: RunErrorCode;
@@ -399,21 +411,25 @@ async function recordFatalRunError({
     error: err instanceof Error ? err.message : String(err),
   });
 
+  let encryptionKey: PayloadKey | undefined;
+  let dehydratedError: Uint8Array;
   try {
     const getEncryptionKey = memoizeEncryptionKey(world, workflowRun ?? runId);
+    encryptionKey = await getEncryptionKey();
+    dehydratedError = await dehydrateRunError(
+      err,
+      runId,
+      encryptionKey,
+      globalThis,
+      (workflowRun?.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
+    );
     await world.events.create(
       runId,
       {
         eventType: 'run_failed',
         specVersion: SPEC_VERSION_CURRENT,
         eventData: {
-          error: await dehydrateRunError(
-            err,
-            runId,
-            await getEncryptionKey(),
-            globalThis,
-            (workflowRun?.specVersion ?? 0) >= SPEC_VERSION_SUPPORTS_COMPRESSION
-          ),
+          error: dehydratedError,
           errorCode,
         },
       },
@@ -436,6 +452,13 @@ async function recordFatalRunError({
     }
     throw failErr;
   }
+  dispatchRunFailedHooks(
+    runId,
+    workflowName,
+    dehydratedError,
+    encryptionKey,
+    errorCode
+  );
 }
 
 function findRecordedTerminalRunEvent(
@@ -579,6 +602,7 @@ function getRetentionDecision({
   suspension,
   serializationBlockerCount,
   hookContinuation = false,
+  invocationContinuation = false,
 }: {
   suspension: WorkflowSuspension;
   serializationBlockerCount: number;
@@ -589,6 +613,7 @@ function getRetentionDecision({
    * write of its own. See the policy above.
    */
   hookContinuation?: boolean;
+  invocationContinuation?: boolean;
 }): RetentionDecision {
   if (!isVmRetentionEnabled()) {
     return { retain: false, reason: 'disabled' };
@@ -602,7 +627,11 @@ function getRetentionDecision({
   if (hookContinuation) {
     return { retain: true };
   }
-  if (suspension.stepCount === 0 && suspension.attributeCount === 0) {
+  if (
+    !invocationContinuation &&
+    suspension.stepCount === 0 &&
+    suspension.attributeCount === 0
+  ) {
     return { retain: false, reason: 'no_replay_driver' };
   }
   return { retain: true };
@@ -710,10 +739,10 @@ export function workflowEntrypoint(
   const namespace = resolveQueueNamespace(options?.namespace);
   const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
 
-  const handler = (worldHandlers: WorldHandlers) =>
+  const handler = (worldHandlers: World) =>
     worldHandlers.createQueueHandler(
       workflowPrefix,
-      async (message_, metadata) => {
+      withRunInputs(worldHandlers)(async (message_, metadata, activity) => {
         // T2 of the hook-resume TTR window (see runtime/resume-latency.ts):
         // the instant this consumer began, before message parsing. Only used
         // when the message turns out to carry resume timing; taking it
@@ -813,21 +842,30 @@ export function workflowEntrypoint(
             const err = new FatalError(
               `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${maxQueueDeliveries})`
             );
+            const encryptionKey = await getEncryptionKey();
+            const dehydratedError = await dehydrateRunError(
+              err,
+              runId,
+              encryptionKey
+            );
             await world.events.create(
               runId,
               {
                 eventType: 'run_failed',
                 specVersion: SPEC_VERSION_CURRENT,
                 eventData: {
-                  error: await dehydrateRunError(
-                    err,
-                    runId,
-                    await getEncryptionKey()
-                  ),
+                  error: dehydratedError,
                   errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
                 },
               },
               { requestId }
+            );
+            dispatchRunFailedHooks(
+              runId,
+              workflowName,
+              dehydratedError,
+              encryptionKey,
+              RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED
             );
           } catch (err) {
             if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
@@ -1268,6 +1306,7 @@ export function workflowEntrypoint(
                       world,
                       workflowRun,
                       runId,
+                      workflowName,
                       requestId,
                       err,
                       errorCode,
@@ -1599,6 +1638,7 @@ export function workflowEntrypoint(
                       await guardDeploymentAffinity({
                         world,
                         run,
+                        workflowName,
                         requestId,
                         retryCount: deploymentMismatchRetryCount,
                         beforeStop,
@@ -1960,6 +2000,24 @@ export function workflowEntrypoint(
                         return { timeoutSeconds: stepResult.timeoutSeconds };
                       }
 
+                      // Invoke-capable worlds serialize orchestrator deliveries,
+                      // not step bodies. Return the replay to that executor lane.
+                      if (
+                        world.capabilities?.invoke &&
+                        stepResult.type !== 'gone'
+                      ) {
+                        await queueMessage(
+                          world,
+                          getWorkflowQueueName(workflowName, namespace),
+                          {
+                            runId,
+                            traceCarrier: await nextTraceCarrier(),
+                            requestedAt: new Date(),
+                          }
+                        );
+                        return;
+                      }
+
                       // If step had pending ops (stream writes), break and let
                       // waitUntil flush them, so can't continue inline.
                       if (
@@ -2122,6 +2180,7 @@ export function workflowEntrypoint(
                         world,
                         workflowRun,
                         runId,
+                        workflowName,
                         requestId,
                         err,
                         errorCode,
@@ -2892,6 +2951,7 @@ export function workflowEntrypoint(
 
                   // Main replay loop
                   while (true) {
+                    const invocationRevision = activity?.revision ?? 0;
                     loopIteration++;
 
                     // Replay-budget check: bail out (retry or fail) if
@@ -3400,6 +3460,7 @@ export function workflowEntrypoint(
                         }
                         throw err;
                       }
+                      dispatchRunCompletedHooks(runId, workflowName);
 
                       span?.setAttributes({
                         ...Attribute.WorkflowRunStatus('completed'),
@@ -3570,23 +3631,27 @@ export function workflowEntrypoint(
                               errorMessage: suspensionError.message,
                             }
                           );
+                          let failureKey: PayloadKey | undefined;
+                          let dehydratedError: Uint8Array;
                           try {
                             // Turbo: order the terminal write after the
                             // backgrounded run_started so the run exists.
                             await awaitRunReady();
+                            failureKey = await encryptionKey.value;
+                            dehydratedError = await dehydrateRunError(
+                              suspensionError,
+                              runId,
+                              failureKey,
+                              globalThis,
+                              (workflowRun?.specVersion ?? 0) >=
+                                SPEC_VERSION_SUPPORTS_COMPRESSION
+                            );
                             await createEvent(
                               {
                                 eventType: 'run_failed',
                                 specVersion: SPEC_VERSION_CURRENT,
                                 eventData: {
-                                  error: await dehydrateRunError(
-                                    suspensionError,
-                                    runId,
-                                    await encryptionKey.value,
-                                    globalThis,
-                                    (workflowRun?.specVersion ?? 0) >=
-                                      SPEC_VERSION_SUPPORTS_COMPRESSION
-                                  ),
+                                  error: dehydratedError,
                                   errorCode,
                                 },
                               },
@@ -3608,6 +3673,13 @@ export function workflowEntrypoint(
                             }
                             throw failErr;
                           }
+                          dispatchRunFailedHooks(
+                            runId,
+                            workflowName,
+                            dehydratedError,
+                            failureKey,
+                            errorCode
+                          );
                           span?.setAttributes({
                             ...Attribute.WorkflowRunStatus('failed'),
                             ...Attribute.WorkflowErrorCode(errorCode),
@@ -3649,6 +3721,7 @@ export function workflowEntrypoint(
                               hookContinuation:
                                 suspensionResult.hasAwaitedHookCreation ||
                                 suspensionResult.hasHookConflict,
+                              invocationContinuation: activity !== undefined,
                             })
                           : undefined;
                         if (retentionDecision?.retain === false) {
@@ -4328,6 +4401,15 @@ export function workflowEntrypoint(
                             // Hand the run back for a fresh replay over the
                             // committed hook_created.
                             return await reinvoke(0);
+                          }
+                          if (
+                            activity &&
+                            Date.now() - invocationStartTime <
+                              noInlineReplayAfterMs &&
+                            (await activity.waitForActivity(invocationRevision))
+                          ) {
+                            eventLog = nextEventLogLoad(eventLog);
+                            continue;
                           }
                           return;
                         }
@@ -5110,6 +5192,16 @@ export function workflowEntrypoint(
                           // throw produced no stack to carry it.
                           errorMessage,
                           errorStack,
+                          // Neither of those reaches a wrapped error's
+                          // reason: `TypeError: fetch failed` carries an
+                          // empty message by design and a stack of pure
+                          // `node:internal/` frames, and the world layer's
+                          // own wrappers name the request that failed
+                          // rather than what failed about it. Undefined
+                          // when there is no cause, so the row disappears
+                          // for an ordinary user throw.
+                          errorCause:
+                            formatErrorCauseChain(terminalError) || undefined,
                         });
 
                         // Apply the source-map-remapped stack to the thrown
@@ -5137,23 +5229,27 @@ export function workflowEntrypoint(
                         // recoverable (the run can be re-run from the
                         // dashboard), whereas a spurious *completion* commits a
                         // wrong result.
+                        let failureKey: PayloadKey | undefined;
+                        let dehydratedError: Uint8Array;
                         try {
                           // Turbo: order the terminal write after the
                           // backgrounded run_started so the run exists.
                           await awaitRunReady();
+                          failureKey = await encryptionKey.value;
+                          dehydratedError = await dehydrateRunError(
+                            terminalError,
+                            runId,
+                            failureKey,
+                            globalThis,
+                            (workflowRun?.specVersion ?? 0) >=
+                              SPEC_VERSION_SUPPORTS_COMPRESSION
+                          );
                           await createEvent(
                             {
                               eventType: 'run_failed',
                               specVersion: SPEC_VERSION_CURRENT,
                               eventData: {
-                                error: await dehydrateRunError(
-                                  terminalError,
-                                  runId,
-                                  await encryptionKey.value,
-                                  globalThis,
-                                  (workflowRun?.specVersion ?? 0) >=
-                                    SPEC_VERSION_SUPPORTS_COMPRESSION
-                                ),
+                                error: dehydratedError,
                                 errorCode,
                               },
                             },
@@ -5197,6 +5293,13 @@ export function workflowEntrypoint(
                           }
                           throw failErr;
                         }
+                        dispatchRunFailedHooks(
+                          runId,
+                          workflowName,
+                          dehydratedError,
+                          failureKey,
+                          errorCode
+                        );
 
                         span?.setAttributes({
                           ...Attribute.WorkflowRunStatus('failed'),
@@ -5214,7 +5317,7 @@ export function workflowEntrypoint(
             }
           );
         });
-      }
+      })
     );
 
   let cachedHandler: ((req: Request) => Promise<Response>) | undefined;

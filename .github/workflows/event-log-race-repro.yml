@@ -70,6 +70,15 @@ on:
       wake_loop_fresh_ratio:
         description: 'wake-loop: share of wakes that carry work (a stale wake emits no step, a fresh one emits four)'
         required: false
+      dag_runner_attempts:
+        description: 'Number of dag-runner runs (a ready-set scheduler whose worker nodes bind a hook mid-fan-out; the run supplies its own concurrency)'
+        required: false
+      dag_runner_width:
+        description: 'dag-runner: nodes in flight at once. Keep it above the inline step limit (3) so waves mix inline and dispatched steps'
+        required: false
+      dag_runner_worker_every:
+        description: 'dag-runner: every Nth node binds a hook (awaiting getConflict) and waits for a worker callback; 0 disables'
+        required: false
       poke_interval_ms:
         description: 'step-storm: cadence of out-of-band resumes to the never-read poke hook'
         required: false
@@ -171,6 +180,9 @@ jobs:
           EVENT_LOG_RACE_REPRO_WAKE_LOOP_ATTEMPTS: ${{ inputs.wake_loop_attempts }}
           EVENT_LOG_RACE_REPRO_WAKE_LOOP_HEARTBEAT_MS: ${{ inputs.wake_loop_heartbeat_ms }}
           EVENT_LOG_RACE_REPRO_WAKE_LOOP_FRESH_RATIO: ${{ inputs.wake_loop_fresh_ratio }}
+          EVENT_LOG_RACE_REPRO_DAG_RUNNER_ATTEMPTS: ${{ inputs.dag_runner_attempts }}
+          EVENT_LOG_RACE_REPRO_DAG_RUNNER_WIDTH: ${{ inputs.dag_runner_width }}
+          EVENT_LOG_RACE_REPRO_DAG_RUNNER_WORKER_EVERY: ${{ inputs.dag_runner_worker_every }}
           EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS: ${{ inputs.poke_interval_ms }}
           EVENT_LOG_RACE_REPRO_POKE_MAX: ${{ inputs.poke_max }}
           EVENT_LOG_RACE_REPRO_POKE_DECAY_FACTOR: ${{ inputs.poke_decay_factor }}
@@ -282,6 +294,9 @@ jobs:
           EVENT_LOG_RACE_REPRO_WAKE_LOOP_ATTEMPTS: ${{ inputs.wake_loop_attempts }}
           EVENT_LOG_RACE_REPRO_WAKE_LOOP_HEARTBEAT_MS: ${{ inputs.wake_loop_heartbeat_ms }}
           EVENT_LOG_RACE_REPRO_WAKE_LOOP_FRESH_RATIO: ${{ inputs.wake_loop_fresh_ratio }}
+          EVENT_LOG_RACE_REPRO_DAG_RUNNER_ATTEMPTS: ${{ inputs.dag_runner_attempts }}
+          EVENT_LOG_RACE_REPRO_DAG_RUNNER_WIDTH: ${{ inputs.dag_runner_width }}
+          EVENT_LOG_RACE_REPRO_DAG_RUNNER_WORKER_EVERY: ${{ inputs.dag_runner_worker_every }}
           EVENT_LOG_RACE_REPRO_POKE_INTERVAL_MS: ${{ inputs.poke_interval_ms }}
           EVENT_LOG_RACE_REPRO_POKE_MAX: ${{ inputs.poke_max }}
           EVENT_LOG_RACE_REPRO_POKE_DECAY_FACTOR: ${{ inputs.poke_decay_factor }}

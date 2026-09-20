@@ -1,7 +1,11 @@
 import { Buffer } from 'node:buffer';
 import { gzipSync } from 'node:zlib';
 import { WorkflowWorldError } from '@workflow/errors';
-import type { AnyEventRequest, CreateEventParams } from '@workflow/world';
+import {
+  type AnyEventRequest,
+  type CreateEventParams,
+  EventSchema,
+} from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
 import { MockAgent } from 'undici';
@@ -14,6 +18,11 @@ import {
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { encode as encodeRunId, REGION_IDS } from './run-id/index.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
+import {
+  getWsEventsTransport,
+  resolveWsTransport,
+  toEventsWsUrl,
+} from './ws-transport.js';
 
 const ORIGIN = WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
 const STARTED_AT = new Date('2026-06-10T00:00:00.000Z');
@@ -615,18 +624,20 @@ describe('splitEventDataForV4 attribute fields', () => {
   });
 
   it('carries initial run attributes on run_created', () => {
+    const input = new Uint8Array(8192);
     const { payload, meta } = splitEventDataForV4({
       eventType: 'run_created',
       specVersion: 4,
       eventData: {
         deploymentId: 'dpl_1',
         workflowName: 'wf',
-        input: new TextEncoder().encode('[]'),
+        input,
         attributes: { sourceAtStart: 'api' },
       },
     } as AnyEventRequest);
 
-    expect(payload).toBeInstanceOf(Uint8Array);
+    expect(payload).toBe(input);
+    expect(meta.input).toBeUndefined();
     expect(meta.attributes).toEqual({ sourceAtStart: 'api' });
     expect(meta.deploymentId).toBe('dpl_1');
     expect(meta.workflowName).toBe('wf');
@@ -652,6 +663,7 @@ describe('splitEventDataForV4 attribute fields', () => {
   it('lifts workflowName into the frame meta on outcome events (step_completed/step_created), keeping the payload in the body', () => {
     // The backend keys payload refs by workflow name; carrying it in the
     // frame meta lets the v4 POST handler skip the per-step run lookup.
+    const result = new Uint8Array(8192);
     const completed = splitEventDataForV4({
       eventType: 'step_completed',
       correlationId: 'step_1',
@@ -659,12 +671,12 @@ describe('splitEventDataForV4 attribute fields', () => {
       eventData: {
         stepName: 's',
         workflowName: 'wf',
-        result: new TextEncoder().encode('"ok"'),
+        result,
       },
     } as AnyEventRequest);
     expect(completed.meta.workflowName).toBe('wf');
     // The result still travels as the opaque body, not in meta.
-    expect(completed.payload).toBeInstanceOf(Uint8Array);
+    expect(completed.payload).toBe(result);
     expect(completed.meta.result).toBeUndefined();
 
     const created = splitEventDataForV4({
@@ -818,6 +830,116 @@ describe('splitEventDataForV4 attribute fields', () => {
     expect(malformed.meta.stepCount).toBeUndefined();
     expect(malformed.meta.eventCount).toBeUndefined();
     expect(malformed.meta.optimizations).toBeUndefined();
+  });
+});
+
+describe('attr_set eventData size limit', () => {
+  function attributeEvent(bytes: number) {
+    const padding = { key: 'padding', value: '' };
+    // Each value stays within 256 bytes; the aggregate JSON reaches the cap.
+    const eventData = {
+      changes: [
+        ...Array.from({ length: 28 }, (_, i) => ({
+          key: `key${i}`,
+          value: '\u00e9'.repeat(128),
+        })),
+        padding,
+      ],
+      writer: { type: 'step' as const, stepId: 'step_1', attempt: 2 },
+      allowReservedAttributes: true as const,
+    };
+    padding.value = 'x'.repeat(
+      bytes - Buffer.byteLength(JSON.stringify(eventData))
+    );
+    return {
+      eventType: 'attr_set' as const,
+      correlationId: 'attr_1',
+      specVersion: 4,
+      eventData,
+    } satisfies AnyEventRequest;
+  }
+
+  it('accepts exactly 8192 UTF-8 JSON bytes and rejects 8193 including writer metadata', () => {
+    const accepted = attributeEvent(8192);
+    expect(Buffer.byteLength(JSON.stringify(accepted.eventData))).toBe(8192);
+    expect(splitEventDataForV4(accepted)).toEqual({
+      payload: undefined,
+      meta: accepted.eventData,
+    });
+
+    const rejected = attributeEvent(8193);
+    expect(Buffer.byteLength(JSON.stringify(rejected.eventData))).toBe(8193);
+    expect(() => splitEventDataForV4(rejected)).toThrow(
+      expect.objectContaining({
+        name: 'WorkflowWorldError',
+        status: 400,
+        message: expect.stringContaining('received 8193 bytes'),
+      })
+    );
+  });
+
+  it.each([
+    'http',
+    'ws',
+  ])('rejects a direct oversized create before %s transport without retrying', async (transportKind) => {
+    vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', transportKind);
+    vi.useFakeTimers();
+    const retryTimer = vi.spyOn(globalThis, 'setTimeout');
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        new Response('Unexpected HTTP request', { status: 400 })
+      );
+    const config = { token: 'test-token' };
+    const transport = getWsEventsTransport(
+      toEventsWsUrl(`${ORIGIN}/api`, 'wrun_1'),
+      async () => ({ authorization: 'Bearer test-token' })
+    );
+    const requestSpy = vi
+      .spyOn(transport, 'request')
+      .mockRejectedValue(
+        new WorkflowWorldError('Unexpected WS request', { status: 400 })
+      );
+
+    try {
+      expect(resolveWsTransport('wrun_1', config)?.transport).toBe(transport);
+      const result = createWorkflowRunEvent(
+        'wrun_1',
+        attributeEvent(8193),
+        undefined,
+        config
+      ).catch((error) => error);
+      await vi.runAllTimersAsync();
+
+      const error = await result;
+      expect(error).toBeInstanceOf(WorkflowWorldError);
+      expect(error).toMatchObject({
+        status: 400,
+        message: expect.stringContaining('received 8193 bytes'),
+      });
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(requestSpy).not.toHaveBeenCalled();
+      expect(retryTimer).not.toHaveBeenCalled();
+    } finally {
+      transport.close('test cleanup');
+      requestSpy.mockRestore();
+      fetchSpy.mockRestore();
+      retryTimer.mockRestore();
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('still parses persisted attr_set events larger than the write limit', () => {
+    const event = attributeEvent(8193);
+    expect(
+      EventSchema.parse({
+        ...event,
+        eventId: 'evnt_1',
+        runId: 'wrun_1',
+        createdAt: STARTED_AT,
+      }).eventData
+    ).toEqual(event.eventData);
   });
 });
 
