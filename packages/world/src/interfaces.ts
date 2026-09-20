@@ -426,10 +426,10 @@ export interface Storage {
      * of the log (never a hole), so replaying it stays correct and the
      * next reload self-corrects.
      *
-     * Presence of the method IS the capability declaration: the core runtime
-     * batches only when the World implements it (and the run's spec version
-     * supports slot identity); absent, every write takes the single-event
-     * `create` path unchanged. A World must implement it with real
+     * The method and `capabilities.eventsCreateBatch` together declare this
+     * capability: the core runtime batches only when both are present and the
+     * run's spec version supports slot identity. Absent, every write takes the
+     * single-event `create` path unchanged. A World must implement it with real
      * atomicity per attempt (a lost race must leave nothing behind) or not
      * implement it at all.
      *
@@ -497,6 +497,15 @@ export interface Storage {
  * explicitly declares it.
  */
 export interface WorldCapabilities {
+  /**
+   * The World implements `events.createBatch` with the atomic-per-attempt
+   * ordering and retry semantics required by the runtime's clean fan-out
+   * optimization. The runtime also requires the method to be present and the
+   * run to use slot-numbered event identity; absent (or false) keeps the
+   * existing single-event path.
+   */
+  eventsCreateBatch?: boolean;
+
   /**
    * Enables invoke() and request/response processing through createQueueHandler.
    * Requires at most one active workflow runner per runId across all worker

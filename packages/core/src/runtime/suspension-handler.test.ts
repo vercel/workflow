@@ -2006,13 +2006,15 @@ describe('handleSuspension batched fan-out', () => {
 
   function createBatchWorld(
     eventsCreate: ReturnType<typeof vi.fn>,
-    createBatch?: ReturnType<typeof vi.fn>
+    createBatch?: ReturnType<typeof vi.fn>,
+    capabilities: World['capabilities'] = { eventsCreateBatch: true }
   ): World {
     return {
       events: {
         create: eventsCreate,
         ...(createBatch ? { createBatch } : {}),
       },
+      capabilities,
       getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
     } as unknown as World;
   }
@@ -2184,6 +2186,27 @@ describe('handleSuspension batched fan-out', () => {
     });
 
     expect(eventsCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the single path when createBatch is present but not advertised', async () => {
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const createBatch = successfulCreateBatch();
+    const world = createBatchWorld(eventsCreate, createBatch, {});
+
+    await handleSuspension({
+      suspension: new WorkflowSuspension(
+        stepsAndWait(['s1', 's2'], 'w1'),
+        globalThis
+      ),
+      world,
+      run: slotRun,
+    });
+
+    expect(createBatch).not.toHaveBeenCalled();
+    // s1 defers; s2 and the wait use the existing single-event writes.
+    expect(eventsCreate).toHaveBeenCalledTimes(2);
   });
 
   it('leaves the pre-claim path fully inert on a World without createBatch', async () => {
@@ -3035,6 +3058,7 @@ describe('handleSuspension batched fan-out', () => {
       const world = {
         events: { create: vi.fn(), createBatch },
         queue,
+        capabilities: { eventsCreateBatch: true },
         getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
       } as unknown as World;
       return { world, queue };
@@ -3218,6 +3242,7 @@ describe('handleSuspension batched fan-out', () => {
       const world = {
         events: { create: eventsCreate, createBatch },
         queue,
+        capabilities: { eventsCreateBatch: true },
         getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
       } as unknown as World;
 
@@ -3370,6 +3395,7 @@ describe('handleSuspension batched fan-out', () => {
       const world = {
         events: { create: eventsCreate, createBatch },
         queue: vi.fn().mockResolvedValue({ messageId: 'msg_q' }),
+        capabilities: { eventsCreateBatch: true },
         getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
       } as unknown as World;
 
@@ -3662,6 +3688,7 @@ describe('step-argument serialization failure', () => {
         // The batch flush publishes chunk step messages when a dispatch
         // target is provided.
         queue: vi.fn().mockResolvedValue({ messageId: 'msg_1' }),
+        capabilities: { eventsCreateBatch: true },
         getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
       } as unknown as World;
       // s1 defers (cap 1); s_bad fails serialization; s3 + s4 fold into the
