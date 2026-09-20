@@ -312,13 +312,17 @@ const config: NextConfig = {
         permanent: true,
       },
       // --- Version-switcher fallbacks ---
-      // The version switcher adds or drops the /v4 route prefix without
-      // checking that the page exists in the target version, so pages that
-      // live in only one docs tree 404 on switch. Each rule below covers a
-      // page missing from one version and lands on the nearest equivalent
-      // (usually the section index). All are temporary redirects: they must
-      // be revisited when content is backported, and the /v4 ones can be
-      // dropped wholesale once the v4 docs are retired.
+      // Swapping the /v4 route prefix on a page that exists in only one docs
+      // tree lands on a URL with no page behind it. The switcher dropdown
+      // resolves that client-side against the paths from
+      // getVersionSwitchPaths(), but nothing else does: the maintenance
+      // banner's "Go to Workflow 5" link is a straight prefix swap, and a
+      // hand-edited or inbound URL never reaches the switcher at all. Each
+      // rule below covers a page missing from one version and lands on the
+      // nearest equivalent (usually the section index). All are temporary
+      // redirects: they must be revisited when content is backported, and
+      // the /v4 ones can be dropped wholesale once the v4 docs are retired.
+      // Keep them in step with a `comm` of the two content trees.
       //
       // Pages that exist only in v5 (v5 -> v4 switch):
       {
