@@ -343,8 +343,13 @@ const config: NextConfig = {
         permanent: false,
       },
       {
+        source: '/v4/docs/api-reference/workflow-api/register-lifecycle-hooks',
+        destination: '/v4/docs/api-reference/workflow-api',
+        permanent: false,
+      },
+      {
         source:
-          '/v4/docs/changelog/(attributes-mvp|eager-processing|step-message-ownership)',
+          '/v4/docs/changelog/(attributes-mvp|batched-event-writes|eager-processing|lazy-hook-resume|resilient-resume|step-message-ownership)',
         destination: '/v4/docs/changelog',
         permanent: false,
       },
@@ -359,7 +364,8 @@ const config: NextConfig = {
         permanent: false,
       },
       {
-        source: '/v4/docs/errors/abort-signal-timeout-in-workflow',
+        source:
+          '/v4/docs/errors/(abort-signal-timeout-in-workflow|run-expired)',
         destination: '/v4/docs/errors',
         permanent: false,
       },
@@ -392,7 +398,8 @@ const config: NextConfig = {
         permanent: false,
       },
       {
-        source: '/v4/docs/observability/(attributes|tracing)',
+        source:
+          '/v4/docs/observability/(attributes|lifecycle-hooks|retention|tracing)',
         destination: '/v4/docs/observability',
         permanent: false,
       },

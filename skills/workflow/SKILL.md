@@ -574,7 +574,7 @@ describe("createUser step", () => {
 });
 ```
 
-**Integration testing:** Use `@workflow/vitest` for workflows using `sleep()`, hooks, webhooks, or retries. Install it on the same npm dist-tag as `workflow`: `npm i -D @workflow/vitest@beta` for Workflow 5, because `@workflow/vitest@latest` is still the 4.x line. The plugin fails the run when its `@workflow/core` major differs from the app's.
+**Integration testing:** Use `@workflow/vitest` for workflows using `sleep()`, hooks, webhooks, or retries. Install it next to `workflow` and keep the two on the same major: `npm i -D @workflow/vitest`. The plugin fails the run when its `@workflow/core` major differs from the app's.
 
 ```typescript
 // vitest.integration.config.ts
@@ -639,7 +639,7 @@ await resumeWebhook(hook.token, new Request("https://example.com/webhook", {
 
 **Best practices:**
 - Keep unit tests (no plugin) and integration tests (`workflow()` plugin) in separate configs
-- Install `@workflow/vitest` on the same dist-tag as `workflow` and upgrade them together
+- Install `@workflow/vitest` on the same major as `workflow` and upgrade them together
 - Use deterministic hook tokens based on test data for easier resumption
 - Set generous `testTimeout` values because workflows may run longer than typical unit tests
 - `vi.mock()` never reaches workflow bodies (they run in a VM), and reaches step code only when the generated bundles load through Vitest's module runner; project-local modules are bundled into the step bundle, so mock the npm leaf, inject the dependency, or unit test the step

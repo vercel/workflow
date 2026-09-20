@@ -8,11 +8,11 @@ The `@workflow/vitest` package provides a Vitest plugin and test helpers for run
 ## Installation
 
 ```package-install
-npm i -D @workflow/vitest@beta
+npm i -D @workflow/vitest
 ```
 
 <Callout type="warn">
-`@workflow/vitest@latest` is still the 4.x line, so a Workflow 5 app has to install the `beta` tag (or pin the matching beta, for example `@workflow/vitest@5.0.0-beta.53`). The package carries its own copy of `@workflow/core` and runs your workflows against it, so it has to move with `workflow`.
+The package carries its own copy of `@workflow/core` and runs your workflows against it, so it has to move with `workflow` and stay on the same major.
 
 `globalSetup` compares the two copies once per run: a different major fails the run with the install command that fixes it, and any other difference logs a warning. Set [`WORKFLOW_VITEST_VERSION_CHECK=off`](/docs/configuration/build-and-diagnostics#workflow_vitest_version_check) to skip the check.
 </Callout>
