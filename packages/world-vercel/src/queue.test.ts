@@ -1,3 +1,8 @@
+import {
+  ThrottleError,
+  TooEarlyError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -430,6 +435,53 @@ describe('createQueue', () => {
             deliveryCount: 8,
           })
         ).toEqual({ afterSeconds: 96 });
+
+        // A server-directed lower bound wins over both the ordinary 1s first
+        // retry and downward jitter. These are the typed errors produced by
+        // HTTP and WS response mapping before they reach this final boundary.
+        for (const error of [
+          new ThrottleError('slow down', { retryAfter: 120 }),
+          new TooEarlyError('not yet', { retryAfter: 120 }),
+          new WorkflowWorldError('transport busy', {
+            code: 'TRANSPORT',
+            retryAfter: 120,
+          }),
+        ]) {
+          expect(
+            options.retry(error, {
+              messageId: 'msg-123',
+              deliveryCount: 1,
+            })
+          ).toEqual({ afterSeconds: 120 });
+        }
+        // The existing exponential policy still wins when it is longer.
+        expect(
+          options.retry(new ThrottleError('slow down', { retryAfter: 120 }), {
+            messageId: 'msg-123',
+            deliveryCount: 9,
+          })
+        ).toEqual({ afterSeconds: 192 });
+
+        // Constructor identity is not reliable across VM/bundler realms. The
+        // final boundary deliberately recognizes a usable numeric field.
+        expect(
+          options.retry(
+            { name: 'ThrottleError', retryAfter: 120.1 },
+            { messageId: 'msg-123', deliveryCount: 1 }
+          )
+        ).toEqual({ afterSeconds: 121 });
+        expect(
+          options.retry(
+            { name: 'ThrottleError', retryAfter: Number.NaN },
+            { messageId: 'msg-123', deliveryCount: 1 }
+          )
+        ).toEqual({ afterSeconds: 1 });
+        expect(
+          options.retry(
+            { name: 'ThrottleError', retryAfter: 1_200 },
+            { messageId: 'msg-123', deliveryCount: 1 }
+          )
+        ).toEqual({ afterSeconds: 900 });
       } finally {
         randomSpy.mockRestore();
         consoleErrorSpy.mockRestore();
