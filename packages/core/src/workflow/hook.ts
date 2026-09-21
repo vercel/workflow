@@ -149,11 +149,20 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // gate for calls made after hasCreated/hasConflict becomes true as well.
     let registrationDelivered = Promise.resolve();
 
-    function deliverRegistration(settle: () => void): void {
+    // `deliveredAt` is the registration event's `createdAt`: the outcome is a
+    // delivery the code after `await hook.getConflict()` (or a payload
+    // awaiter rejected by a conflict) runs off, so the clock it reads is this
+    // event's time.
+    function deliverRegistration(
+      deliveredAt: number,
+      settle: () => void
+    ): void {
       const eventIndex = ctx.eventsConsumer.eventIndex;
       // Always deliver, even without an awaiter yet: unlike a buffered
       // payload, registration does not need a future claim to make progress.
-      const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook');
+      const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook', {
+        deliveredAt,
+      });
       const earlierDelivered = awaitEarlierDeliveries(ctx, eventIndex, 'hook');
       // Never await the gate inside promiseQueue: earlier deliveries and
       // their quiescence checks need that queue to drain in order to finish.
@@ -243,7 +252,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
         const pendingGetConflictPromises = getConflictPromises.slice();
         getConflictPromises.length = 0;
-        deliverRegistration(() => {
+        deliverRegistration(+event.createdAt, () => {
           for (const resolver of pendingGetConflictPromises) {
             resolver.resolve(null);
           }
@@ -286,7 +295,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const pendingGetConflictPromises = getConflictPromises.slice();
         getConflictPromises.length = 0;
 
-        deliverRegistration(() => {
+        deliverRegistration(+event.createdAt, () => {
           for (const resolver of pendingPromises) {
             resolver.reject(conflictError);
           }
@@ -339,6 +348,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const hasWaitingConsumer = promises.length > 0;
         const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook', {
           armed: hasWaitingConsumer,
+          deliveredAt: +event.createdAt,
         });
 
         if (hasWaitingConsumer) {
