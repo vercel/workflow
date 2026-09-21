@@ -85,7 +85,19 @@ Unit testing works well for individual steps. A workflow that only calls steps c
 For workflows that rely on runtime features like [hooks](/docs/foundations/hooks), [webhooks](/docs/foundations/hooks#understanding-webhooks), [`sleep()`](/docs/api-reference/workflow/sleep), or error retries, you need to test against a real workflow setup. The `@workflow/vitest` plugin handles everything automatically: it compiles your workflow directives, builds the runtime bundles, and executes workflows entirely in-process. No server required.
 
 <Callout type="warn">
-`vi.mock()` and related calls do _not_ work inside workflow functions, only step functions. Your workflow functions cannot import third party code that needs to be mocked. Mocking works for npm packages imported in step functions. If something needs to be mocked, it likely belongs inside a step function either way.
+`vi.mock()` cannot reach code inside workflow functions at all, and reaches step code only under specific conditions. Read [Mocking](#mocking) before reaching for it.
+</Callout>
+
+### Installation
+
+```package-install
+npm i -D @workflow/vitest@beta
+```
+
+<Callout type="warn">
+**Workflow 5 needs the `beta` tag.** `@workflow/vitest@latest` is still the 4.x line, so a plain `npm i -D @workflow/vitest` installs a v4 plugin next to a v5 app. Install `@workflow/vitest@beta`, or pin the beta your app is on (for example `@workflow/vitest@5.0.0-beta.53`), and upgrade it together with `workflow`.
+
+The plugin builds and runs your workflows against the copy of `@workflow/core` it was installed with, so it checks this for you. At the start of each run it compares that copy with the one your app resolves: a different major fails the run with the install command that fixes it, and any other difference logs a warning. Set [`WORKFLOW_VITEST_VERSION_CHECK=off`](/docs/configuration/build-and-diagnostics#workflow_vitest_version_check) to skip the check.
 </Callout>
 
 ### Vitest configuration
@@ -303,6 +315,72 @@ describe("ingestWorkflow", () => {
 });
 ```
 
+### Referencing workflows by name
+
+Importing the workflow function is the best way to start it: [`start()`](/docs/api-reference/workflow-api/start) keeps its argument and return types. When a test cannot import it, because the workflow lives in a module the test does not pull in or because the test drives runs by name, look it up with [`getWorkflowRef()`](/docs/api-reference/vitest#getworkflowref) instead of hand-writing the generated `workflow//...` id:
+
+```typescript title="workflows/approval.integration.test.ts" lineNumbers
+import { describe, it, expect } from "vitest";
+import { start } from "workflow/api";
+import { getWorkflowRef, listWorkflowRefs } from "@workflow/vitest"; // [!code highlight]
+
+describe("approvalWorkflow", () => {
+  it("is part of the test build", () => {
+    expect(listWorkflowRefs().map((ref) => ref.name)).toContain( // [!code highlight]
+      "approvalWorkflow"
+    );
+  });
+
+  it("can be started by name", async () => {
+    const run = await start(getWorkflowRef("approvalWorkflow"), ["doc-1"]); // [!code highlight]
+    expect(run.runId).toMatch(/^wrun_/);
+  });
+});
+```
+
+The names come from the manifest the test build writes next to its bundles, so they follow your code when files move. When one exported name appears in several files, qualify it with the file, `getWorkflowRef("workflows/approval.ts#approvalWorkflow")`, which also matches by path suffix. An unknown or ambiguous name throws with the workflows the build does contain.
+
+<Callout type="info">
+A reference is matched by name, so the run is typed as `Run<unknown>`. Import the workflow function when you want the argument and return types checked.
+</Callout>
+
+### Mocking
+
+Steps do not run from your test file's module graph. They run from the bundles the plugin builds, and workflow bodies run from a code string inside the sandboxed VM, so `vi.mock()` reaches less here than in an ordinary Vitest test:
+
+| What you mock | Step code sees it | Workflow body sees it |
+| --- | --- | --- |
+| An npm package a step file imports | Only when the generated bundles load through Vitest's module runner (see below) | No |
+| An npm package imported by a local module that a step file imports | Same as above | No |
+| A project-local module a step file imports | No: it is bundled into the step bundle, so there is no module left to replace | No |
+| A step function imported and called directly, with no `workflow()` plugin | Yes, ordinary Vitest rules | n/a |
+
+Workflow bodies execute in a VM that has no module registry, so nothing can intercept their imports. That is the same reason side effects belong in steps: if a dependency needs mocking, it belongs on the step side.
+
+Whether step code sees an npm mock depends on how Vitest loaded the plugin. In a normal install `@workflow/vitest` is external to Vitest, Node loads the generated bundle directly, and steps get the real package. Ask for the other behavior explicitly:
+
+```typescript title="vitest.integration.config.ts" lineNumbers
+import { defineConfig } from "vitest/config";
+import { workflow } from "@workflow/vitest";
+
+export default defineConfig({
+  plugins: [workflow()],
+  test: {
+    // Route the generated bundles through Vitest's module runner, so vi.mock()
+    // applies to the npm packages your steps import.
+    server: { deps: { inline: [/@workflow\/vitest/] } }, // [!code highlight]
+  },
+});
+```
+
+The cost is that the generated bundle goes through Vite's transform pipeline in every test worker.
+
+Three approaches work regardless of how the plugin was loaded:
+
+- **Unit test the step directly.** Without the plugin, `"use step"` is a no-op and the function is an ordinary async function, so `vi.mock()` behaves normally.
+- **Pass the dependency in.** A step that takes its collaborator as an argument is controlled by the caller, with no module interception involved.
+- **Feed values through hooks.** Resume a [hook](/docs/foundations/hooks) with the data you want instead of mocking whatever would have produced it.
+
 ### Manual setup
 
 If you need more control over the test lifecycle, the plugin also exports the individual setup functions:
@@ -403,6 +481,10 @@ Workflows may take longer to execute than typical unit tests, especially when th
 
 Integration tests are the right place to verify that your workflows handle errors correctly, including retryable errors, fatal errors, and timeout scenarios.
 
+### Upgrade `@workflow/vitest` with the SDK
+
+`@workflow/vitest` carries its own copy of the Workflow runtime, so treat it as part of the same upgrade as `workflow`. While Workflow 5 is in beta, that means the `beta` tag on both. See [Installation](#installation).
+
 ## Further reading
 
 - [Hooks & Webhooks](/docs/foundations/hooks) - Pausing and resuming workflows with external data
@@ -410,7 +492,7 @@ Integration tests are the right place to verify that your workflows handle error
 - [`resumeHook()` API Reference](/docs/api-reference/workflow-api/resume-hook) - Resume hooks with data
 - [`resumeWebhook()` API Reference](/docs/api-reference/workflow-api/resume-webhook) - Resume webhooks with Request objects
 - [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Check workflow run status and wake up sleeping runs
-- [`@workflow/vitest` API Reference](/docs/api-reference/vitest) - Test helpers: `waitForSleep()`, `waitForHook()`, and plugin setup
+- [`@workflow/vitest` API Reference](/docs/api-reference/vitest) - Test helpers: `waitForSleep()`, `waitForHook()`, `getWorkflowRef()`, and plugin setup
 - [Vite Integration](/docs/getting-started/vite) - Set up the Vite plugin
 - [Observability](/docs/observability) - Inspect and debug workflow runs with the CLI and Web UI
 - [Server-based testing](/docs/testing/server-based) - Integration testing with a running server
