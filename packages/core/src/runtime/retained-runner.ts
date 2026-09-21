@@ -28,9 +28,11 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
+import { getStepFunction } from '../private.js';
 import { ReplayPayloadCache } from '../replay-payload-cache.js';
 import type { PayloadKey } from '../serialization/encryption.js';
-import { dehydrateRunError } from '../serialization.js';
+import { dehydrateRunError, dehydrateStepError } from '../serialization.js';
+import { serializeTraceCarrier } from '../telemetry.js';
 import {
   replayWorkflow,
   resumeWorkflow,
@@ -39,7 +41,16 @@ import {
 import { observeWorkflowPass } from './execution-observation.js';
 import { resolveRunEncryptionKey } from './helpers.js';
 import { HookInvocationSchema, withRunInputs } from './invocations.js';
-import { executeStep } from './step-executor.js';
+import {
+  executeOwnedStep,
+  isOwnedStepMessage,
+  isStepOutcome,
+  OwnedStepResultSchema,
+  OwnedStepStatusSchema,
+  QueuedStepPolicySchema,
+  stepOutcomeDigest,
+} from './owned-step.js';
+import { DEFAULT_STEP_MAX_RETRIES, executeStep } from './step-executor.js';
 import { handleSuspension } from './suspension-handler.js';
 import { useQuickJSVm } from './vm-mode.js';
 import { withScopedWorld } from './world.js';
@@ -182,6 +193,17 @@ export class RetainedRunner {
   private closing = false;
   private deadline = Infinity;
   private currentTurnId?: string;
+  private stepStarts = new Map<string, { event: Event; attempt: number }>();
+  private stepOutcomes = new Map<
+    string,
+    { event: Event; digest: string; attempt: number }
+  >();
+  private recoveryWakeAt = 0;
+
+  private get queuedSteps() {
+    const value = this.runState?.executionContext?.stepExecution;
+    return value ? QueuedStepPolicySchema.parse(value) : undefined;
+  }
 
   private get run(): WorkflowRun {
     if (!this.runState)
@@ -334,6 +356,15 @@ export class RetainedRunner {
       if (`${this.prefix}${this.run.workflowName}` !== metadata.queueName)
         throw new InputRejected('Invocation target mismatch', { status: 409 });
       if (parsed.invoke) {
+        if (
+          parsed.input &&
+          typeof parsed.input === 'object' &&
+          'type' in parsed.input &&
+          (parsed.input.type === 'step_result' ||
+            parsed.input.type === 'step_status')
+        ) {
+          return this.receiveStepInput(parsed.input);
+        }
         if (
           parsed.input &&
           typeof parsed.input === 'object' &&
@@ -581,6 +612,20 @@ export class RetainedRunner {
 
   private apply(event: Event) {
     this.events.push(event);
+    if (event.eventType === 'step_started') {
+      this.stepStarts.set(event.correlationId, {
+        event,
+        attempt: (this.stepStarts.get(event.correlationId)?.attempt ?? 0) + 1,
+      });
+    } else if (this.queuedSteps && isStepOutcome(event)) {
+      const start = this.stepStarts.get(event.correlationId!);
+      if (start)
+        this.stepOutcomes.set(start.event.eventId, {
+          event,
+          digest: stepOutcomeDigest(event),
+          attempt: start.attempt,
+        });
+    }
     if (this.runState) {
       if (event.eventType === 'run_started')
         Object.assign(this.runState, {
@@ -831,6 +876,7 @@ export class RetainedRunner {
   private async advance() {
     if (!this.runState || isTerminalWorkflowRunStatus(this.runState.status))
       return;
+    if (this.queuedSteps) await this.expireQueuedSteps();
     for (;;) {
       if (this.fault) throw this.fault;
       if (Date.now() >= this.deadline - 2000)
@@ -911,6 +957,12 @@ export class RetainedRunner {
         step: Step;
         claimed?: Step & { startedAt: Date };
       }> = [];
+      const policy = this.queuedSteps;
+      if (policy) await this.armStepRecovery();
+      let available =
+        16 -
+        [...this.steps.values()].filter((step) => step.status === 'running')
+          .length;
       for (const step of this.steps.values()) {
         if (
           'retryAfter' in step &&
@@ -922,7 +974,9 @@ export class RetainedRunner {
           (step.status === 'pending' || step.status === 'running') &&
           !this.workers.has(step.stepId)
         ) {
-          if (this.eventWriter?.stage) {
+          if (policy && (step.status === 'running' || available-- <= 0))
+            continue;
+          if (policy || this.eventWriter?.stage) {
             const result = await this.commit({
               eventType: 'step_started',
               correlationId: step.stepId,
@@ -943,6 +997,7 @@ export class RetainedRunner {
       }
       // Tentative VM progress is private; user code needs a durable start prefix.
       if (starts.length) await this.flushWriter();
+      const remote: Array<Step & { startedAt: Date }> = [];
       for (const { step, claimed } of starts) {
         // Flush may replace tentative entities with the native materialization.
         const canonical = claimed ? this.steps.get(step.stepId) : undefined;
@@ -951,13 +1006,20 @@ export class RetainedRunner {
             'persistence',
             new Error('Missing committed step start')
           );
-        this.startStep(
-          step,
-          canonical?.startedAt
-            ? { ...canonical, startedAt: canonical.startedAt }
-            : claimed
-        );
+        const admitted = canonical?.startedAt
+          ? { ...canonical, startedAt: canonical.startedAt }
+          : claimed;
+        if (policy) {
+          if (!admitted)
+            throw new RunnerFault(
+              'persistence',
+              new Error('Missing queued step admission')
+            );
+          remote.push(admitted);
+        } else this.startStep(step, admitted);
       }
+      if (remote.length)
+        await this.dispatchSteps(remote, policy!.attemptTimeoutMs);
       if (this.events.length === before) return;
     }
   }
@@ -1082,6 +1144,257 @@ export class RetainedRunner {
           correlationId: id,
           specVersion: SPEC_VERSION_CURRENT,
         });
+  }
+
+  private async receiveStepInput(value: unknown) {
+    if (!this.queuedSteps)
+      throw new InputRejected('Run does not use queued steps', { status: 409 });
+    const result = OwnedStepResultSchema.safeParse(value);
+    const status = OwnedStepStatusSchema.safeParse(value);
+    if (!result.success && !status.success)
+      throw new InputRejected('Invalid step input', { status: 400 });
+    const input = result.success ? result.data : status.data!;
+    let digest: string | undefined;
+    try {
+      if (result.success) digest = stepOutcomeDigest(result.data.outcome);
+    } catch {
+      throw new InputRejected('Invalid serialized step outcome', {
+        status: 400,
+      });
+    }
+    const prior = this.stepOutcomes.get(input.executionId);
+    if (prior) {
+      if (
+        prior.event.correlationId !== input.stepId ||
+        prior.attempt !== input.attempt
+      )
+        throw new InputRejected('Step outcome identity mismatch', {
+          status: 400,
+        });
+      if (result.success && prior.digest !== digest) {
+        // The owner may have timed out and superseded this execution. Its
+        // eventual worker outcome must not fault the newer attempt/run.
+        if (
+          prior.event.eventType !== 'step_completed' ||
+          this.stepStarts.get(input.stepId)?.event.eventId !== input.executionId
+        )
+          return { status: 'superseded' };
+        throw new RunnerFault(
+          'conflict',
+          new Error('Step result identity reused'),
+          'step_result_payload'
+        );
+      }
+      return { status: 'accepted', eventId: prior.event.eventId };
+    }
+    const start = this.stepStarts.get(input.stepId);
+    if (
+      isTerminalWorkflowRunStatus(this.run.status) ||
+      !start ||
+      start.event.eventId !== input.executionId ||
+      start.attempt !== input.attempt
+    )
+      return { status: 'superseded' };
+    const step = this.steps.get(input.stepId);
+    if (step?.status !== 'running') return { status: 'superseded' };
+    if (!result.success) {
+      // A redelivery cannot rerun an uncertain body. Recovery alone decides
+      // whether to durably supersede this attempt and publish a new one.
+      await this.advance();
+      const outcome = this.stepOutcomes.get(input.executionId);
+      return outcome
+        ? { status: 'accepted', eventId: outcome.event.eventId }
+        : { status: 'pending' };
+    }
+    const event = result.data.outcome;
+    if (
+      !isStepOutcome(event) ||
+      event.correlationId !== input.stepId ||
+      event.eventData.stepName !== step.stepName ||
+      event.specVersion !== SPEC_VERSION_CURRENT
+    )
+      throw new InputRejected('Step result does not match its admission', {
+        status: 400,
+      });
+    if (
+      event.eventType === 'step_completed' &&
+      event.eventData.workflowName !== this.run.workflowName
+    )
+      throw new InputRejected('Step result workflow mismatch', { status: 400 });
+    if (event.eventType === 'step_retrying') {
+      const maxRetries =
+        getStepFunction(step.stepName)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
+      if (input.attempt >= maxRetries + 1)
+        throw new RunnerFault(
+          'conflict',
+          new Error('Step retry budget exceeded'),
+          'step_retry_budget'
+        );
+      const retryAt = event.eventData.retryAfter;
+      if (!retryAt)
+        throw new InputRejected('Missing retry deadline', { status: 400 });
+      await this.armStepRecovery(+retryAt);
+    }
+    const committed = await this.commit(event);
+    // The incoming outcome is applied before a cold owner's replay/dispatch,
+    // otherwise recovery could re-run the very step that just completed.
+    await this.advance();
+    return { status: 'accepted', eventId: committed.event?.eventId };
+  }
+
+  private async armStepRecovery(explicitAt?: number) {
+    const policy = this.queuedSteps;
+    if (!policy) return;
+    const now = Date.now();
+    const due = [...this.steps.values()].flatMap((step) => {
+      if (step.status === 'running') {
+        const start = this.stepStarts.get(step.stepId);
+        return start ? [+start.event.createdAt + policy.attemptTimeoutMs] : [];
+      }
+      if (step.status === 'pending')
+        return [
+          step.retryAfter ? +step.retryAfter : now + policy.attemptTimeoutMs,
+        ];
+      return [];
+    });
+    if (explicitAt !== undefined) due.push(explicitAt);
+    if (!due.length) return;
+    const at = Math.max(now + 1000, Math.min(...due));
+    if (this.recoveryWakeAt > now && this.recoveryWakeAt <= at) return;
+    await this.backend.queue(
+      this.metadata.queueName,
+      { runId: this.runId },
+      {
+        deploymentId: this.run.deploymentId,
+        delaySeconds: Math.max(1, Math.ceil((at - now) / 1000)),
+        idempotencyKey: `step-recovery:${this.runId}:${randomUUID()}`,
+      }
+    );
+    this.recoveryWakeAt = at;
+  }
+
+  private async expireQueuedSteps() {
+    const policy = this.queuedSteps!;
+    for (const step of this.steps.values()) {
+      const start = this.stepStarts.get(step.stepId);
+      if (
+        step.status !== 'running' ||
+        !start ||
+        +start.event.createdAt + policy.attemptTimeoutMs > Date.now()
+      )
+        continue;
+      const maxRetries =
+        getStepFunction(step.stepName)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
+      const exhausted = start.attempt >= maxRetries + 1;
+      const retryAfter = new Date(Date.now() + 1000);
+      if (!exhausted) await this.armStepRecovery(+retryAfter);
+      const error = await dehydrateStepError(
+        new Error(`Step attempt ${start.attempt} timed out`),
+        this.runId,
+        this.key,
+        [],
+        globalThis,
+        (this.run.specVersion ?? 1) >= 5
+      );
+      await this.commit({
+        eventType: exhausted ? 'step_failed' : 'step_retrying',
+        correlationId: step.stepId,
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          stepName: step.stepName,
+          error,
+          ...(!exhausted ? { retryAfter } : {}),
+        },
+      });
+    }
+  }
+
+  private async dispatchSteps(
+    steps: Array<Step & { startedAt: Date }>,
+    timeoutMs: number
+  ) {
+    const traceCarrier = await serializeTraceCarrier();
+    const messages = steps.map((step) => {
+      const start = this.stepStarts.get(step.stepId);
+      if (!start)
+        throw new RunnerFault(
+          'conflict',
+          new Error('Step start missing'),
+          'step_dispatch'
+        );
+      return {
+        message: {
+          runId: this.runId,
+          stepId: step.stepId,
+          stepName: step.stepName,
+          traceCarrier,
+          runContext: {
+            deploymentId: this.run.deploymentId,
+            specVersion: this.run.specVersion ?? 1,
+            startedAt: +(this.run.startedAt ?? this.run.createdAt),
+          },
+          input: {
+            type: 'step_execute',
+            version: 1,
+            executionId: start.event.eventId,
+            attempt: start.attempt,
+            deadline: +start.event.createdAt + timeoutMs,
+            workflowName: this.run.workflowName,
+            workflowStartedAt: +(this.run.startedAt ?? this.run.createdAt),
+            step,
+          },
+        },
+        opts: {
+          deploymentId: this.run.deploymentId,
+          specVersion: this.run.specVersion,
+          idempotencyKey: `step-execute:${this.runId}:${start.event.eventId}`,
+        },
+      };
+    });
+    try {
+      await this.observed(
+        'step_dispatch',
+        async () => {
+          const results = this.backend.queueBatch
+            ? await this.backend.queueBatch(this.metadata.queueName, messages)
+            : await Promise.all(
+                messages.map(async ({ message, opts }) => {
+                  try {
+                    return await this.backend.queue(
+                      this.metadata.queueName,
+                      message,
+                      opts
+                    );
+                  } catch {
+                    return {
+                      messageId: null,
+                      error: 'Queue publication failed',
+                    };
+                  }
+                })
+              );
+          if (results.length !== messages.length)
+            throw new RunnerFault(
+              'conflict',
+              new Error('Queue batch omitted an outcome'),
+              'step_dispatch_count'
+            );
+          if (results.some((result) => 'error' in result && result.error))
+            throw new WorkflowWorldError(
+              'Some admitted steps await recovery after publication failure',
+              { status: 503 }
+            );
+        },
+        { stepCount: steps.length, executionMode: 'queued' }
+      );
+    } catch (error) {
+      if (error instanceof RunnerFault) throw error;
+      // Starts are durable and the backstop was durably armed BEFORE them.
+      // An ambiguous publish cannot justify rerunning the same attempt here.
+      console.error('[workflow] Queued step publication awaits recovery', {
+        runId: this.runId,
+      });
+    }
   }
 
   private startStep(step: Step, claimed?: Step & { startedAt: Date }) {
@@ -1324,7 +1637,13 @@ export function withRetainedRunner(
   workflowCode: string
 ) {
   return (legacy: LegacyHandler): Handler => {
-    if (!retainedRunnerEnabled()) return withRunInputs(world)(legacy);
+    if (!retainedRunnerEnabled()) {
+      const fallback = withRunInputs(world)(legacy);
+      return (message, metadata) =>
+        isOwnedStepMessage(message)
+          ? executeOwnedStep(world, message, metadata)
+          : fallback(message, metadata);
+    }
     if (!world.capabilities?.invoke || !world.invoke)
       throw new WorkflowRuntimeError(
         'Retained runner requires an invoke-capable World'
@@ -1341,6 +1660,8 @@ export function withRetainedRunner(
     }
     const registry = owners;
     return async (message, metadata) => {
+      if (isOwnedStepMessage(message))
+        return executeOwnedStep(world, message, metadata);
       if (HealthCheckPayloadSchema.safeParse(message).success)
         return legacy(message, metadata);
       const input = WorkflowInvokePayloadSchema.parse(message);

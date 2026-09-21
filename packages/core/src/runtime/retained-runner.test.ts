@@ -23,7 +23,8 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from '../serialization.js';
-import { RetainedRunner } from './retained-runner.js';
+import { executeOwnedStep } from './owned-step.js';
+import { RetainedRunner, withRetainedRunner } from './retained-runner.js';
 import * as stepExecutor from './step-executor.js';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -46,6 +47,335 @@ const code = `
   }
   globalThis.__private_workflows = new Map([['workflow', workflow]]);
 `;
+
+const parallelCode = `
+  const createHook = globalThis[Symbol.for('WORKFLOW_CREATE_HOOK')];
+  const work = globalThis[Symbol.for('WORKFLOW_USE_STEP')]('queuedWork');
+  async function workflow() {
+    const hook = createHook({ token: 'retained-token' });
+    await hook;
+    const results = await Promise.all([work(0), work(1)]);
+    hook[Symbol.dispose]();
+    return results;
+  }
+  globalThis.__private_workflows = new Map([['workflow', workflow]]);
+`;
+
+async function queuedFixture() {
+  const fixture = await setup(parallelCode, false, true);
+  fixture.world.capabilities = { ...fixture.world.capabilities, invoke: true };
+  const queue = vi
+    .spyOn(fixture.world, 'queue')
+    .mockResolvedValue({ messageId: null });
+  const invoke = vi.fn(async (runId, input, options) =>
+    fixture.owner.submit(
+      {
+        runId,
+        invoke: true,
+        input,
+        requestId: options?.idempotencyKey,
+      },
+      fixture.metadata
+    )
+  );
+  fixture.world.invoke = invoke;
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.send('fanout', 'start');
+  const messages = queue.mock.calls
+    .map((call) => call[1])
+    .filter((message) => 'stepId' in message);
+  return { ...fixture, queue, invoke, messages };
+}
+
+it('dispatches admitted steps, executes concurrent workers without worker writes, and preserves completion order', async () => {
+  const gates = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const started: number[] = [];
+  registerStepFunction('queuedWork', async (value) => {
+    const n = value as number;
+    started.push(n);
+    await gates[n].promise;
+    return n;
+  });
+  const fixture = await queuedFixture();
+  expect(fixture.messages).toHaveLength(2);
+  expect(started).toEqual([]);
+  for (const message of fixture.messages) {
+    if (!('stepId' in message)) throw new Error('not a step');
+    expect(
+      (await fixture.world.steps.get(fixture.runId, message.stepId!)).status
+    ).toBe('running');
+  }
+  const write = vi.spyOn(fixture.world.events, 'create');
+  const workers = fixture.messages.map((message) =>
+    executeOwnedStep(fixture.world, message, fixture.metadata)
+  );
+  await vi.waitFor(() => expect(started).toEqual([0, 1]));
+  expect(write).not.toHaveBeenCalled();
+  gates[1].resolve();
+  await workers[1];
+  const first = fixture.owner.events.filter(
+    (event) => event.eventType === 'step_completed'
+  );
+  expect(first).toHaveLength(1);
+  expect(first[0].correlationId).toBe(
+    (fixture.messages[1] as { stepId: string }).stepId
+  );
+  gates[0].resolve();
+  await workers[0];
+  await fixture.finished;
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
+  );
+  expect(
+    fixture.invoke.mock.calls.filter(
+      ([, input]) => input.type === 'step_result'
+    )
+  ).toHaveLength(2);
+  expect(
+    fixture.owner.events.filter((event) => event.eventType === 'step_started')
+  ).toHaveLength(2);
+});
+
+it('retries a lost result acknowledgement with the original outcome, without rerunning the body', async () => {
+  const body = vi.fn(async (n) => n);
+  registerStepFunction('queuedWork', body);
+  const fixture = await queuedFixture();
+  let lose = true;
+  const invoke = fixture.world.invoke!;
+  fixture.world.invoke = async (...args) => {
+    const reply = await invoke(...args);
+    if (lose && (args[1] as { type: string }).type === 'step_result') {
+      lose = false;
+      throw new WorkflowWorldError('Lost ACK', { status: 502 });
+    }
+    return reply;
+  };
+  await expect(
+    executeOwnedStep(fixture.world, fixture.messages[0], fixture.metadata)
+  ).rejects.toThrow('Lost ACK');
+  await executeOwnedStep(fixture.world, fixture.messages[0], {
+    ...fixture.metadata,
+    attempt: 2,
+  });
+  expect(body).toHaveBeenCalledTimes(1);
+  expect(
+    fixture.owner.events.filter((event) => event.eventType === 'step_completed')
+  ).toHaveLength(1);
+  await executeOwnedStep(fixture.world, fixture.messages[1], fixture.metadata);
+  await fixture.finished;
+});
+
+it('holds a queued result acknowledgement behind the owner flush barrier', async () => {
+  registerStepFunction('queuedWork', async (n) => n);
+  const fixture = await queuedFixture();
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  // Install a session before a replacement owner bootstraps, so the real result
+  // path (rather than the fixture's transport) is responsible for its barrier.
+  await fixture.finished;
+  const gate = Promise.withResolvers<void>();
+  let blocked = false;
+  let awaitingFlush = false;
+  fixture.world.events.createWriteSession = () => ({
+    create: (event, params) => create(fixture.runId, event, params),
+    stage: (event, params) => create(fixture.runId, event, params),
+    flush: async () => {
+      if (blocked) {
+        awaitingFlush = true;
+        await gate.promise;
+      }
+    },
+    dispose() {},
+  });
+  const owner = new RetainedRunner(
+    fixture.world,
+    fixture.runId,
+    '__wkf_workflow_',
+    parallelCode,
+    fixture.metadata,
+    () => {},
+    500
+  );
+  fixture.world.invoke = (runId, input, options) =>
+    owner.submit(
+      {
+        runId,
+        invoke: true,
+        requestId: options?.idempotencyKey,
+        input,
+      },
+      fixture.metadata
+    );
+  blocked = true;
+  let settled = false;
+  const worker = executeOwnedStep(
+    fixture.world,
+    fixture.messages[0],
+    fixture.metadata
+  ).then(() => {
+    settled = true;
+  });
+  await vi.waitFor(() => expect(awaitingFlush).toBe(true));
+  expect(settled).toBe(false);
+  gate.resolve();
+  await worker;
+  await executeOwnedStep(fixture.world, fixture.messages[1], fixture.metadata);
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
+  );
+});
+
+it('does not publish queued bodies before the start prefix is durable', async () => {
+  registerStepFunction('queuedWork', async (n) => n);
+  const fixture = await setup(parallelCode, false, true);
+  fixture.world.capabilities = { ...fixture.world.capabilities, invoke: true };
+  fixture.world.invoke = (runId, input, options) =>
+    fixture.owner.submit(
+      {
+        runId,
+        invoke: true,
+        requestId: options?.idempotencyKey,
+        input,
+      },
+      fixture.metadata
+    );
+  const queue = vi
+    .spyOn(fixture.world, 'queue')
+    .mockResolvedValue({ messageId: null });
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  const gate = Promise.withResolvers<void>();
+  let block = false;
+  let flushing = false;
+  fixture.world.events.createWriteSession = () => ({
+    create: (event, params) => create(fixture.runId, event, params),
+    stage: (event, params) => create(fixture.runId, event, params),
+    flush: async () => {
+      if (block) {
+        flushing = true;
+        await gate.promise;
+      }
+    },
+    dispose() {},
+  });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  block = true;
+  const send = fixture.send('admission', 'start');
+  await vi.waitFor(() => expect(flushing).toBe(true));
+  expect(queue.mock.calls.some(([, payload]) => 'stepId' in payload)).toBe(
+    false
+  );
+  expect(queue.mock.calls.some(([, , options]) => options?.delaySeconds)).toBe(
+    true
+  );
+  gate.resolve();
+  await send;
+  const messages = queue.mock.calls
+    .map(([, payload]) => payload)
+    .filter((payload) => 'stepId' in payload);
+  const legacy = vi.fn();
+  const workerHandler = withRetainedRunner(
+    fixture.world,
+    '__wkf_workflow_',
+    parallelCode
+  )(legacy);
+  const list = vi
+    .spyOn(fixture.world.events, 'list')
+    .mockRejectedValue(new Error('worker read history'));
+  await Promise.all(
+    messages.map((message) => workerHandler(message, fixture.metadata))
+  );
+  expect(list).not.toHaveBeenCalled();
+  expect(legacy).not.toHaveBeenCalled();
+  await fixture.finished;
+});
+
+it('rejects a contradictory result while another fan-out branch remains active', async () => {
+  registerStepFunction('queuedWork', async (n) => n);
+  const fixture = await queuedFixture();
+  await executeOwnedStep(fixture.world, fixture.messages[0], fixture.metadata);
+  const original = fixture.invoke.mock.calls.find(
+    ([, input]) => input.type === 'step_result'
+  )![1];
+  const changed = structuredClone(original);
+  changed.outcome.eventData.result = await dehydrateStepReturnValue(
+    'changed',
+    fixture.runId,
+    undefined,
+    [],
+    globalThis,
+    false
+  );
+  await expect(
+    fixture.world.invoke!(fixture.runId, changed, {
+      idempotencyKey: 'conflict',
+    })
+  ).rejects.toThrow('conflict');
+  await fixture.finished;
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('failed');
+});
+
+it('a late result cannot fault an execution already superseded by a timeout', async () => {
+  registerStepFunction('queuedWork', async (n) => n);
+  const fixture = await queuedFixture();
+  const message = fixture.messages[0] as {
+    stepId: string;
+    input: { executionId: string; attempt: number; deadline: number };
+  };
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    vi.setSystemTime(message.input.deadline + 100);
+    await fixture.world.invoke!(
+      fixture.runId,
+      {
+        type: 'step_status',
+        version: 1,
+        stepId: message.stepId,
+        executionId: message.input.executionId,
+        attempt: message.input.attempt,
+      },
+      { idempotencyKey: 'recovery' }
+    );
+    const response = await fixture.world.invoke!(
+      fixture.runId,
+      {
+        type: 'step_result',
+        version: 1,
+        stepId: message.stepId,
+        executionId: message.input.executionId,
+        attempt: message.input.attempt,
+        outcome: {
+          eventType: 'step_completed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: message.stepId,
+          eventData: {
+            stepName: 'queuedWork',
+            workflowName: 'workflow',
+            result: await dehydrateStepReturnValue(
+              'late',
+              fixture.runId,
+              undefined,
+              [],
+              globalThis,
+              false
+            ),
+          },
+        },
+      },
+      { idempotencyKey: 'late' }
+    );
+    expect(response).toEqual({ status: 'superseded' });
+    expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+      'running'
+    );
+    await fixture.world.invoke!(
+      fixture.runId,
+      { type: 'run_cancel', version: 1 },
+      { idempotencyKey: 'cancel' }
+    );
+    await fixture.finished;
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 it.each([
   false,
@@ -600,7 +930,11 @@ it('opens hook inputs sealed to the run while retaining its VM', async () => {
   );
 });
 
-async function setup(workflowCode = code, ownerJournal = false) {
+async function setup(
+  workflowCode = code,
+  ownerJournal = false,
+  queued = false
+) {
   const directory = await mkdtemp(join(tmpdir(), 'retained-runner-'));
   const world = createWorld({ dataDir: directory }) as World;
   cleanups.push(async () => {
@@ -617,6 +951,9 @@ async function setup(workflowCode = code, ownerJournal = false) {
       executionContext: {
         retainedRunnerVersion: 1,
         ...(ownerJournal ? { ownerJournalVersion: 1 } : {}),
+        ...(queued
+          ? { stepExecution: { mode: 'queued', attemptTimeoutMs: 1000 } }
+          : {}),
       },
       input: await dehydrateWorkflowArguments([], runId, undefined, []),
     },
@@ -638,7 +975,7 @@ async function setup(workflowCode = code, ownerJournal = false) {
     workflowCode,
     metadata,
     retired,
-    40
+    queued ? 500 : 40
   );
   const send = async (requestId: string, value: string, target = owner) => {
     const hook = target.events.find(

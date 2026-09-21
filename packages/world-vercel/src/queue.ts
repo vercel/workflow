@@ -722,7 +722,15 @@ export function createQueue(config?: APIConfig): Queue {
       // (which would record a `step_started` later than the work it
       // timestamps). This path also absorbs `ws`'s module init.
       const wsEvents = wsEventsChannelForInvocation(
-        getRunIdFromPayload(payload),
+        'stepId' in payload &&
+          payload.stepId &&
+          'input' in payload &&
+          payload.input &&
+          typeof payload.input === 'object' &&
+          'type' in payload.input &&
+          payload.input.type === 'step_execute'
+          ? undefined
+          : getRunIdFromPayload(payload),
         config
       );
       wsEvents.open();
@@ -812,7 +820,7 @@ export function createQueue(config?: APIConfig): Queue {
         const started = performance.now();
         if (direct) logInvocationRouting('execution.received', observation);
         try {
-          const wakeRunId = getRunIdFromPayload(payload);
+          const wakeRunId = orchestrationRunId(payload);
           if (forwardWake && wakeRunId && !('__healthCheck' in payload)) {
             await forwardWake(wakeRunId, payload, {
               idempotencyKey: metadata.messageId,

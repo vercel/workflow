@@ -30,3 +30,31 @@ created retained-owner runs for journal-only persistence. Core validates retries
 and step transitions locally and keeps terminal failure on the same serialized
 writer. If persistence cannot record the failure, diagnostics expose
 `terminalPersisted=false` instead of starting a competing write path.
+
+### Queued steps in a retained run (experimental)
+
+`start(workflow, args, { experimental_stepExecution: { mode: 'queued' } })`
+persists an immutable queued-step policy on a new retained run. This requires an
+invoke-capable World and the current deployment as the target. The optional
+`attemptTimeoutMs` defaults to 60,000 (range 1,000–900,000). Existing runs keep
+their execution policy. Up to sixteen admitted bodies can be outstanding per run.
+
+The owner durably commits step creation/start before publishing through the
+existing Queue API. The generated flow handler selects the worker branch before
+creating a retained owner. A worker uses the committed start descriptor, executes
+one body, and sends its native serialized outcome to the owner using `invoke`.
+Only the owner writes the journal; results and downstream bodies wait for its
+durable prefix. No extra World capability or compiler transform is needed.
+
+A recovery wake is armed before admission to cover the commit-to-publish gap.
+Worker redelivery first resolves uncertain execution through the owner; transport
+delivery count is not a new step attempt. Lost result acknowledgements reuse the
+serialized outcome while it remains cached in the worker. Recovery reconstructs
+outcome identities from canonical history. Expired attempts are superseded by
+native retry/failure events; bodies are at-least-once across attempts. Application
+side effects must therefore remain idempotent. Native payload/queue limits apply.
+
+The worker reuses native hydration, serialization, error/retry and stream-op
+handling. Its event sink accepts only its own step outcome; arbitrary workflow
+event writes from a worker are rejected. Key and payload APIs remain available
+for capabilities outside the owner event channel.

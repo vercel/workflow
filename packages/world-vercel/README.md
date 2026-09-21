@@ -120,6 +120,12 @@ entity state. It does not read its own payload back. Resolved payload mismatches
 and conflicting acknowledgement metadata remain fatal; diagnostics identify the
 failed check.
 
+Owner-managed queued step messages use the existing flow queue and step identity.
+They bypass retained orchestration wake forwarding and do not open an owner event
+channel. The worker returns its result through the existing direct invoke path;
+the single owner commits the native outcome. Step delivery remains queue-based,
+with pinned deployment routing and normal queue backpressure/redelivery.
+
 V4 response schemas are compiled once and reused. Each acknowledgement still
 validates its shape and returned event type, including native hook-conflict outcomes.
 

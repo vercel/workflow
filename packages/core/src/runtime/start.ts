@@ -41,6 +41,7 @@ import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName, healthCheck } from './helpers.js';
+import { QueuedStepPolicySchema } from './owned-step.js';
 import { Run } from './run.js';
 import { getWorkflowVmFromEnv } from './vm-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
@@ -187,6 +188,13 @@ export interface StartOptionsBase {
    * recognize the value keeps the data.
    */
   experimental_retention?: RunRetention;
+
+  /** Execute retained-run step bodies through the existing queue, returning all
+   * outcomes to the owner via invoke. The policy is immutable for this new run. */
+  experimental_stepExecution?: {
+    mode: 'queued';
+    attemptTimeoutMs?: number;
+  };
 
   /**
    * The ID of an existing run this run is being replayed from, if any.
@@ -638,7 +646,22 @@ export async function start<TArgs extends unknown[], TResult>(
       // getWorkflowVmFromEnv().
       const workflowVm = getWorkflowVmFromEnv();
 
+      const stepExecution = opts.experimental_stepExecution
+        ? QueuedStepPolicySchema.parse(opts.experimental_stepExecution)
+        : undefined;
+      if (
+        stepExecution &&
+        (process.env.WORKFLOW_RETAINED_RUNNER !== '1' ||
+          !world.capabilities?.invoke ||
+          !world.invoke ||
+          deploymentId !== currentDeploymentId)
+      )
+        throw new WorkflowRuntimeError(
+          'Queued step execution requires a local-target retained owner with invoke'
+        );
+
       const executionContext = {
+        ...(stepExecution ? { stepExecution } : {}),
         ...(process.env.WORKFLOW_RETAINED_RUNNER === '1' &&
         world.capabilities?.invoke &&
         deploymentId === currentDeploymentId
