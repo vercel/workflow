@@ -136,8 +136,10 @@ execution model; new runs carry `executionContext.retainedRunnerVersion: 1`.
 `WORKFLOW_OWNER_JOURNAL=1` opts newly created retained-owner runs into
 `executionContext.ownerJournalVersion: 1`. It requires a compatible eventsync
 backend (`WORKFLOW_EVENTS_TRANSPORT=eventsync`) and guaranteed exclusive ownership,
-including handoff and unfinished storage requests. Protocol 5 negotiates the
-persisted mode; older runs retain their original persistence behavior.
+including handoff and unfinished storage requests. One experimental eventsync
+wire contract uses the persisted storage-mode marker; older runs retain their
+original persistence behavior. There is no `?protocol=` selector. Update the
+experimental client and endpoint together when changing that contract.
 
 The owner validates transitions locally and commits contiguous event prefixes
 sequentially. Canonical events remain intact; derived Step state is reconstructed
