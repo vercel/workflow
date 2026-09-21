@@ -122,6 +122,9 @@ export async function runWorkflow(
         : `http://localhost:${(await getPortLazy()) ?? 3000}`
     );
 
+    // Seed and initial clock must be available before I/O and remain stable on
+    // replay. The clock then advances as deliveries reach the workflow (see
+    // `advanceClock` below).
     const {
       context,
       globalThis: vmGlobalThis,
@@ -148,10 +151,25 @@ export async function runWorkflow(
     // is before any delivery can be registered against it.
     const deliveryIdleHolder = { current: (): boolean => true };
 
+    // The VM clock only ever moves forward, and it moves when a
+    // branch-deciding delivery (a step result, a hook payload, a wait
+    // completion, a hook's registration outcome) is handed to the workflow,
+    // not when the consumer walk reads an event. See
+    // `WorkflowOrchestratorContext.advanceClock` for why consumption is the
+    // wrong anchor: the walk runs ahead of delivery, so a later event's time
+    // would leak into an earlier delivery's cascade and `Date.now()` would
+    // depend on how much log this replay loaded. Deliveries reach the workflow
+    // in log order (the barrier registry), so the clock a cascade observes is
+    // a function of the log prefix alone.
+    let clock = +startedAt;
+    const advanceClock = (at: number) => {
+      if (at > clock) {
+        clock = at;
+        updateTimestamp(at);
+      }
+    };
+
     const eventsConsumer = new EventsConsumer(events, {
-      onConsumedEvent: (event) => {
-        updateTimestamp(+event.createdAt);
-      },
       onUnconsumedEvent: (event) => {
         workflowDiscontinuation.reject(
           new ReplayDivergenceError(
@@ -183,6 +201,7 @@ export async function runWorkflow(
       },
       pendingDeliveries: 0,
       pendingDeliveryBarriers: new Map(),
+      advanceClock,
       stepHydrationCache,
     };
 

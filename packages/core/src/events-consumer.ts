@@ -28,9 +28,13 @@ type EventConsumerCallback = (event: Event | null) => EventConsumerResult;
 
 export interface EventsConsumerOptions {
   /**
-   * Callback invoked after an event has been consumed. Consumers such as the
-   * deterministic workflow clock must not observe events that are merely
-   * inspected while waiting for user code to subscribe to the next operation.
+   * Observation callback invoked after an event has been consumed (not for one
+   * the walk merely inspected while waiting for user code to subscribe to the
+   * next operation). Diagnostics and tests read it. Do NOT anchor the
+   * workflow's deterministic clock here: consumption runs ahead of delivery,
+   * so a later event's time would leak into an earlier delivery's cascade;
+   * the clock advances from `registerDeliveryBarrier` when a delivery is
+   * handed to the workflow.
    */
   onConsumedEvent?: (event: Event) => void;
   /**

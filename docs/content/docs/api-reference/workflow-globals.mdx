@@ -23,7 +23,7 @@ These APIs are available but are **seeded or fixed** to ensure deterministic beh
 | API | Behavior |
 |-----|----------|
 | [`Math.random()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Math/random) | Seeded random number generator — same seed produces the same sequence every replay |
-| [`Date`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date) / `Date.now()` / `new Date()` | Returns a fixed timestamp that advances with the workflow's logical clock |
+| [`Date`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date) / `Date.now()` / `new Date()` | Returns the workflow's logical clock: the run's creation time until the first step result, hook payload, hook registration or wait completion reaches the workflow, then the time that event was recorded, advancing as each later one is delivered. Identical on every replay of the same log |
 | [`crypto.getRandomValues()`](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues) | Seeded — produces deterministic output for a given workflow run |
 | [`crypto.randomUUID()`](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/randomUUID) | Seeded — produces deterministic UUIDs for a given workflow run |
 | [`crypto.subtle.digest()`](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/digest) | Passes through to the real implementation (SHA-256, etc. are deterministic by nature) |

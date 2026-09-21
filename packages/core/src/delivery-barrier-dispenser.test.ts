@@ -306,7 +306,10 @@ describe('barrier safety-net dispenser', () => {
     const rejected = Promise.reject(new Error('poisoned queue'));
     rejected.catch(() => {});
     ctx.promiseQueue = rejected as Promise<void>;
-    const barrier = registerDeliveryBarrier(ctx, 0, 'hook', { armed: false });
+    const barrier = registerDeliveryBarrier(ctx, 0, 'hook', {
+      armed: false,
+      deliveredAt: 0,
+    });
     void barrier; // retired by the dispenser, never marked delivered
     expect(isDeliveryIdle(ctx)).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 25));
