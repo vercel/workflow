@@ -1,5 +1,9 @@
 # @workflow/web
 
+## 5.0.0-beta.55
+
+No changes in this release.
+
 ## 5.0.0-beta.54
 
 ### Patch Changes
