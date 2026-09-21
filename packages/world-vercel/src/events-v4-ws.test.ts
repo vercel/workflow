@@ -9,7 +9,11 @@
  * what happens when it isn't one this client understands.
  */
 
-import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  ThrottleError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import { encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -425,6 +429,8 @@ describe('retry is owned by the shared policy, not the adapter', () => {
       token: 'test-token',
     }).catch((e: unknown) => e);
 
+    expect(ThrottleError.is(err)).toBe(true);
+    expect((err as ThrottleError).retryAfter).toBe(2);
     expect(isRetryableEventPostError(err)).toBe(false);
     expect(requestMock).toHaveBeenCalledTimes(1);
   });
