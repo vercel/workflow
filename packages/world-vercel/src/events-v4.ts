@@ -1011,14 +1011,9 @@ async function decodeCreateEventResponse<T extends EventType>(
       code: 'PARSE_ERROR',
     });
   }
-  const schema: z.ZodType<EventResult<T> & { event: Event }> = z.compile(
-    CreateEventV4BodySchemas[eventType].refine(
-      ({ event }) =>
-        event.eventType === eventType ||
-        (eventType === 'hook_created' && event.eventType === 'hook_conflict'),
-      { path: ['event', 'eventType'] }
-    )
-  );
+  // These schemas are already compiled. Refining and compiling a fresh schema
+  // per acknowledgement puts compiler work on every event's critical path.
+  const schema = CreateEventV4BodySchemas[eventType];
   let decoded: unknown;
   try {
     decoded = decode(bodyBytes);
@@ -1033,6 +1028,24 @@ async function decodeCreateEventResponse<T extends EventType>(
     throw new WorkflowWorldError('v4 createEvent: invalid response body', {
       code: 'SCHEMA_VALIDATION',
       cause: parsedBody.error,
+    });
+  }
+  if (
+    parsedBody.data.event.eventType !== eventType &&
+    !(
+      eventType === 'hook_created' &&
+      parsedBody.data.event.eventType === 'hook_conflict'
+    )
+  ) {
+    throw new WorkflowWorldError('v4 createEvent: invalid response body', {
+      code: 'SCHEMA_VALIDATION',
+      cause: new z.ZodError([
+        {
+          code: 'custom',
+          path: ['event', 'eventType'],
+          message: 'Invalid input',
+        },
+      ]),
     });
   }
   return parsedBody.data;

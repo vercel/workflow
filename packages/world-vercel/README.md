@@ -120,6 +120,9 @@ entity state. It does not read its own payload back. Resolved payload mismatches
 and conflicting acknowledgement metadata remain fatal; diagnostics identify the
 failed check.
 
+V4 response schemas are compiled once and reused. Each acknowledgement still
+validates its shape and returned event type, including native hook-conflict outcomes.
+
 Unexpected returned events or persistence failures stop the owner. It attempts
 to persist `run_failed` and rejects unfinished inputs. No event-write retries or
 conflict reconciliation are performed in this mode. If the terminal failure
