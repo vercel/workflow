@@ -118,6 +118,46 @@ export async function POST() {
 Calling a step function outside a workflow function provides neither retry semantics nor observability. Additionally, certain workflow-specific functions like [`getStepMetadata()`](/docs/api-reference/workflow/get-step-metadata) will throw an error when used inside a step that's called outside a workflow.
 </Callout>
 
+### Replay-derived step arguments
+
+By default, Workflow persists every step's arguments. For a loop that passes an accumulating history to each step, storing that history repeatedly takes quadratic space as the number of turns grows.
+
+Set `replayInputs` on a step function to reconstruct selected arguments through workflow replay instead:
+
+```typescript lineNumbers
+async function turnStep(state: string[], execution: { turn: number }) {
+  "use step";
+  // Return only the new data produced by this turn.
+  return `Turn ${execution.turn}: history contains ${state.length} entries`;
+}
+
+turnStep.replayInputs = [0];
+
+export async function conversation(turns: number) {
+  "use workflow";
+  const state: string[] = [];
+  for (let turn = 0; turn < turns; turn++) {
+    const delta = await turnStep(state, { turn });
+    state.push(delta);
+  }
+  return state;
+}
+```
+
+`replayInputs` is an array of distinct, non-negative argument indices in the original function signature. In this example, argument `0` (`state`) is reconstructed; argument `1` (`execution`) is persisted normally. Configure the original step before calling or binding it. Bound arguments count toward the original indices. An omitted argument remains omitted, so default parameters keep working.
+
+Workflow captures selected values **when the step is called**. Later workflow mutations cannot change that invocation's input, and mutations inside the step remain isolated from workflow state. Captured closures and `this` continue to be persisted. Selecting an argument does not omit another reference to the same data in an ordinary argument, closure, or receiver.
+
+The persisted input contains a versioned marker and SHA-256 fingerprint for each selected argument. Input inspection shows **"reconstructed through replay"** in its place. Warm execution uses the captured value in memory. Queued execution and retries replay the workflow to regenerate the invocation, check its fingerprints, and combine the selected values with the recorded ordinary arguments. A fingerprint or configuration mismatch fails the step before its body executes. Completed steps still replay their recorded results without executing again.
+
+The first version supports plain objects, arrays, strings, finite numbers, booleans, `null`, and `undefined`. Sparse arrays, cycles, and shared references within a selected argument are preserved. Each selected argument is captured independently. Live handles, streams, proxies, custom classes and serializers, accessors, symbol properties, non-enumerable properties, and non-finite numbers must use ordinary persisted arguments. State nesting is limited to 512 levels.
+
+Both Node and QuickJS support this setting. Existing steps and stored inputs retain their default behavior. This setting applies only at a workflow-to-step boundary; direct calls behave like ordinary JavaScript calls.
+
+With fixed-size output deltas, selected input metadata grows linearly with the number of steps. Large ordinary arguments, closures, receivers, and full-snapshot outputs still consume storage. The application owns delta creation and state reconstruction; Workflow does not automatically diff state or introduce a separate state store.
+
+Cold recovery costs more compute than directly loading persisted step arguments: it replays the workflow prefix and captures and fingerprints the selected values again. This reduces stored and transferred input bytes; it does not make cumulative replay work linear or remove the need to keep workflow code deterministic.
+
 ### Suspension and resumption
 
 Workflow functions have the ability to automatically suspend while they wait on asynchronous work. While suspended, the workflow's state is stored via the [event log](/docs/how-it-works/event-sourcing) and no compute resources are used until the workflow resumes execution.

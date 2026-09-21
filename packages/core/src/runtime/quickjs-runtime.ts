@@ -54,6 +54,11 @@ import {
 import seedrandom from 'seedrandom';
 import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
+import {
+  REPLAY_INPUT_LABEL,
+  type ReplayInputCapture,
+  replayInputEnvelope,
+} from '../replay-inputs.js';
 import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
 import { decrypt } from '../serialization/encryption.js';
@@ -62,7 +67,11 @@ import {
   getReplayTimeoutMs,
   isQuickJSBaselineSnapshotEnabled,
 } from './constants.js';
-import { quickjsExtensions, quickjsWasm } from './quickjs-assets.generated.js';
+import {
+  quickjsExtensions,
+  quickjsWasm,
+  replayInputCaptureSource,
+} from './quickjs-assets.generated.js';
 import {
   adoptSerdeRoot,
   captureSerdeRoot,
@@ -96,6 +105,7 @@ async function prepareBytesForVM(
 // ---- Types ----
 
 export interface PendingStep {
+  replayInputs?: ReplayInputCapture[];
   type: 'step';
   correlationId: string;
   stepId: string;
@@ -270,6 +280,8 @@ export interface QuickJSRuntimeOptions {
  * - globalThis[Symbol.for("WORKFLOW_SLEEP")] - sleep function
  */
 const VM_BOOTSTRAP = `
+${replayInputCaptureSource}
+const captureReplayInputs = __workflowReplayCapture.captureReplayInputs;
 // Symbol.dispose / Symbol.asyncDispose polyfills for QuickJS
 if (typeof Symbol.dispose === "undefined") {
   Symbol.dispose = Symbol.for("Symbol.dispose");
@@ -466,6 +478,8 @@ globalThis.module = { exports: globalThis.exports };
 globalThis[Symbol.for("WORKFLOW_USE_STEP")] = function(stepId, closureVarsFn) {
   var fn = function() {
     var args = Array.prototype.slice.call(arguments);
+    var replayInputs = captureReplayInputs(args, fn.replayInputs, globalThis.__workflowIsProxy);
+    (replayInputs || []).forEach(function(capture) { if (capture.index < args.length) args[capture.index] = ${JSON.stringify(REPLAY_INPUT_LABEL)}; });
     var correlationId = "step_" + globalThis.__generateUlid();
     // Capture 'this' for method invocations (e.g., MyClass.method())
     var thisVal = (this !== undefined && this !== null && this !== globalThis) ? this : undefined;
@@ -482,6 +496,7 @@ globalThis[Symbol.for("WORKFLOW_USE_STEP")] = function(stepId, closureVarsFn) {
       correlationId: correlationId,
       stepId: stepId,
       input: input,
+      replayInputs: replayInputs,
       hasCreatedEvent: false,
     });
     return new Promise(function(resolve, reject) {
@@ -502,6 +517,7 @@ globalThis[Symbol.for("WORKFLOW_USE_STEP")] = function(stepId, closureVarsFn) {
     var partialArgs = Array.prototype.slice.call(arguments, 1);
     var bound = Function.prototype.bind.apply(this, [thisArg].concat(partialArgs));
     bound.stepId = stepId;
+    if (fn.replayInputs !== undefined) bound.replayInputs = fn.replayInputs;
     if (closureVarsFn) bound.__closureVarsFn = closureVarsFn;
     bound.__boundThis = thisArg;
     if (partialArgs.length > 0) bound.__boundArgs = partialArgs;
@@ -1127,6 +1143,13 @@ function makeDeterministicClockWasi(getNowMs: () => number): WasiOptions {
   });
 }
 
+function installReplayInputProxyCheck(vm: QuickJS): void {
+  using check = vm.newFunction('__workflowIsProxy', (value) =>
+    value.isProxy ? vm.true : vm.false
+  );
+  vm.global.setProp('__workflowIsProxy', check);
+}
+
 async function initWorkflowVM(
   getNowMs: () => number,
   interruptBudget: InterruptBudget
@@ -1256,6 +1279,7 @@ async function prepareBaselineSnapshot(
   });
   try {
     vm.evalCode(VM_BOOTSTRAP, 'bootstrap.js').dispose();
+    installReplayInputProxyCheck(vm);
 
     // Placeholder host fns under the SAME NAMES the per-run phase uses.
     // They exist so module-scope code can execute at hydrate time, and to
@@ -1520,6 +1544,7 @@ export async function startQuickJSWorkflow(
 
   // ---- Phase 2: per-run initialization ----
   async function runWorkflowInVM(): Promise<QuickJSWorkflowSession> {
+    installReplayInputProxyCheck(vm);
     vm.evalCode(
       `globalThis.__worldCapabilities = ${JSON.stringify(options.worldCapabilities)};`
     ).dispose();
@@ -2588,6 +2613,7 @@ function dumpPendingOps(
     globalThis.__pending.forEach(function(p){
       if (p.hasCreatedEvent && !globalThis.__resolvers[p.correlationId] && !p.abortRequested) {
         settled.push(p.correlationId);
+        delete p.replayInputs;
       }
     });
     return { settled: settled, ops: ops.map(function(p){
@@ -2638,6 +2664,12 @@ function dumpPendingOps(
       if (!bytes) {
         using valueHandle = rawFields.getProp(String(index));
         try {
+          if (op.type === 'step' && field === 'input' && op.replayInputs) {
+            using envelope = vm.evalCode(
+              '(' + JSON.stringify(replayInputEnvelope(op.replayInputs)) + ')'
+            );
+            valueHandle.setProp('replayInputs', envelope);
+          }
           bytes = serde.serialize(valueHandle);
         } catch (err) {
           // A step input that refuses to serialize is a deterministic user

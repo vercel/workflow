@@ -14,6 +14,7 @@
  * `base64` extension anymore.
  */
 
+import { build } from 'esbuild';
 import { readFileSync, writeFileSync } from 'fs';
 import { createRequire } from 'module';
 import { dirname, resolve } from 'path';
@@ -80,6 +81,18 @@ output += `export const quickjsExtensions: ExtensionDescriptor[] = [
   { name: 'url', wasm: urlSo },
   { name: 'structured-clone', wasm: structuredCloneSo, initFn: 'qjs_ext_structured_clone_init' },
 ];\n`;
+
+const captureBundle = await build({
+  entryPoints: [resolve(srcDir, 'replay-inputs-capture.ts')],
+  bundle: true,
+  write: false,
+  format: 'iife',
+  globalName: '__workflowReplayCapture',
+  platform: 'neutral',
+  target: 'es2022',
+  minify: true,
+});
+output += `export const replayInputCaptureSource = ${JSON.stringify(captureBundle.outputFiles[0].text)};\n`;
 
 const outPath = resolve(srcDir, 'runtime/quickjs-assets.generated.ts');
 writeFileSync(outPath, output);

@@ -170,6 +170,7 @@ export interface SerializableSpecial {
   SyntaxError: { message: string; stack?: string; cause?: unknown };
   StepFunction: {
     stepId: string;
+    replayInputs?: readonly number[];
     closureVars?: Record<string, any>;
     /**
      * Captured lexical `this` for step proxies that were created via

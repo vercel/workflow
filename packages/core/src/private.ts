@@ -16,6 +16,8 @@ export type StepFunction<
   Result extends Serializable | unknown = unknown,
 > = ((...args: Args) => Promise<Result>) & {
   maxRetries?: number;
+  /** Argument indices reconstructed through workflow replay instead of persisted. Plain state data only. */
+  replayInputs?: readonly number[];
   stepId?: string;
 };
 
