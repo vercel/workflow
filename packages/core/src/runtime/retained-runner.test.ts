@@ -8,6 +8,7 @@ import {
   type EventResult,
   getEventDataPayloadField,
   MessageId,
+  requireEventSlot,
   SPEC_VERSION_CURRENT,
   ValidQueueName,
   type World,
@@ -599,7 +600,7 @@ it('opens hook inputs sealed to the run while retaining its VM', async () => {
   );
 });
 
-async function setup(workflowCode = code) {
+async function setup(workflowCode = code, ownerJournal = false) {
   const directory = await mkdtemp(join(tmpdir(), 'retained-runner-'));
   const world = createWorld({ dataDir: directory }) as World;
   cleanups.push(async () => {
@@ -613,7 +614,10 @@ async function setup(workflowCode = code) {
     eventData: {
       deploymentId: 'test',
       workflowName: 'workflow',
-      executionContext: { retainedRunnerVersion: 1 },
+      executionContext: {
+        retainedRunnerVersion: 1,
+        ...(ownerJournal ? { ownerJournalVersion: 1 } : {}),
+      },
       input: await dehydrateWorkflowArguments([], runId, undefined, []),
     },
   });
@@ -741,6 +745,58 @@ it('fails every unfinished input and durably fails the run after a persistence f
   expect(
     fixture.owner.events.some((event) => event.eventType === 'hook_received')
   ).toBe(false);
+});
+
+it.each([
+  false,
+  true,
+])('keeps terminal failure on the owner channel, broken=%s', async (broken) => {
+  registerStepFunction('retainedWrite', async () => undefined);
+  const fixture = await setup(code, true);
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  let failed = false;
+  let head = 1;
+  const disposed = vi.fn(async () => {});
+  fixture.world.events.createWriteSession = () => ({
+    get heads() {
+      return { queued: head, committed: head };
+    },
+    dispose: disposed,
+    create: async (event, params) => {
+      if (failed) throw new Error('channel failed');
+      if (broken && event.eventType === 'hook_received') {
+        failed = true;
+        throw new Error('uncertain storage write');
+      }
+      const result = await create(fixture.runId, event, params);
+      if (result.event) head = requireEventSlot(result.event.eventId);
+      if (event.eventType === 'hook_received' && result.event)
+        return {
+          ...result,
+          event: { ...result.event, correlationId: 'unexpected-hook' },
+        };
+      return result;
+    },
+  });
+  const native = vi.spyOn(fixture.world.events, 'create');
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  const results = await Promise.allSettled([
+    fixture.send('a', 'one'),
+    fixture.send('b', 'two'),
+  ]);
+  for (const result of results) {
+    expect(result.status).toBe('rejected');
+    if (result.status === 'rejected')
+      expect(result.reason).toMatchObject({
+        terminalPersisted: !broken,
+      });
+  }
+  expect(native).not.toHaveBeenCalled();
+  expect(disposed).toHaveBeenCalled();
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    broken ? 'running' : 'failed'
+  );
 });
 
 it('treats an unexpected returned event as fatal and records a durable terminal failure', async () => {

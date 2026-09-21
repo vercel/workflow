@@ -202,6 +202,22 @@ Node diagnostics channels `workflow.runner` and `workflow.execution` expose
 owner turns, persistence, step execution, failure recording and VM mode without
 including workflow payloads. Existing pinned runs keep their previous behavior.
 
+### `WORKFLOW_OWNER_JOURNAL` (experimental)
+
+Set `WORKFLOW_OWNER_JOURNAL=1` only with retained-owner execution and a compatible
+eventsync backend (`WORKFLOW_EVENTS_TRANSPORT=eventsync`). Newly created runs
+persist `executionContext.ownerJournalVersion: 1`; older runs keep their existing
+mode. This requires exclusive ownership across runner handoff and unfinished
+storage requests; the transport itself does not acquire that ownership.
+
+The owner validates run-local transitions in memory and commits contiguous event
+prefixes sequentially. All canonical events remain intact. The backend derives
+Step state from them, commits one event with an ordinary Put, and commits a larger
+prefix atomically. Flush-through barriers precede input acknowledgement and user
+step execution. Shared-resource operations still use their native independent
+path. Terminal failure stays on the same owner writer; an uncertain or broken
+writer reports `terminalPersisted=false` rather than starting a competing write.
+
 ## Limitations
 
 - **No run migration**: A run's region is fixed at creation. Existing runs cannot be moved to a different region.

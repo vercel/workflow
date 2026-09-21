@@ -634,9 +634,13 @@ export class RetainedRunner {
 
   private validateStepTransition(event: CreateEventRequest) {
     if (
-      !['step_created', 'step_started', 'step_completed'].includes(
-        event.eventType
-      )
+      ![
+        'step_created',
+        'step_started',
+        'step_completed',
+        'step_failed',
+        'step_retrying',
+      ].includes(event.eventType)
     )
       return;
     const invalid = (reason: string): never => {
@@ -1212,18 +1216,22 @@ export class RetainedRunner {
         let durable =
           this.runState?.status === 'failed' &&
           (!this.eventWriter?.stage || this.failureCommitted);
-        // Stop the owned socket before attempting the terminal write. A failed
-        // prefix must not keep accepting events, and the terminal failure must
-        // not accidentally reuse a channel whose sequence is now uncertain.
-        try {
-          await this.eventWriter?.dispose();
-        } catch {
-          // Still attempt the native terminal write and report its durability.
+        const ownerJournal =
+          this.runState?.executionContext?.ownerJournalVersion === 1;
+        // Preserve the legacy terminal-write path for older runs. Journal owners
+        // instead use their existing writer, which rejects permanently if its
+        // sequence or persistence outcome is uncertain.
+        if (!ownerJournal) {
+          try {
+            await this.eventWriter?.dispose();
+          } catch {
+            // The legacy path can still attempt its native terminal write.
+          }
+          this.eventWriter = undefined;
         }
-        this.eventWriter = undefined;
         if (!durable) {
           try {
-            const result = await this.backend.events.create(this.runId, {
+            const terminal: CreateEventRequest = {
               eventType: 'run_failed',
               specVersion: SPEC_VERSION_CURRENT,
               eventData: {
@@ -1237,9 +1245,18 @@ export class RetainedRunner {
                     ? RUN_ERROR_CODES.WORLD_CONTRACT_ERROR
                     : RUN_ERROR_CODES.RUNTIME_ERROR,
               },
-            });
-            durable = result.event?.eventType === 'run_failed';
-            if (result.event?.eventType === 'run_failed' && this.runState)
+            };
+            // Never start a second writer after an uncertain owner prefix. A
+            // healthy channel can append failure after its prefix; a failed
+            // channel rejects it and exposes terminalPersisted=false below.
+            const result = ownerJournal
+              ? await this.eventWriter?.create(terminal, {
+                  eventCount:
+                    this.eventWriter.heads?.queued ?? this.events.length,
+                })
+              : await this.backend.events.create(this.runId, terminal);
+            durable = result?.event?.eventType === 'run_failed';
+            if (result?.event?.eventType === 'run_failed' && this.runState)
               Object.assign(this.runState, {
                 status: 'failed',
                 completedAt: result.event.createdAt,
@@ -1247,6 +1264,14 @@ export class RetainedRunner {
           } catch {
             durable = false;
           }
+        }
+        if (ownerJournal) {
+          try {
+            await this.eventWriter?.dispose();
+          } catch {
+            // Durability is determined by the canonical acknowledgement above.
+          }
+          this.eventWriter = undefined;
         }
         this.observe('failure', 'end', spanId, {
           status: 'error',

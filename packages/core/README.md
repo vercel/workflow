@@ -24,3 +24,9 @@ boundaries, reusing a retained Node virtual machine when available.
 
 Errors returned by the executor propagate through `world.invoke()` to the caller
 of `resumeHook()`.
+
+With a compatible single-owner World, `WORKFLOW_OWNER_JOURNAL=1` marks newly
+created retained-owner runs for journal-only persistence. Core validates retries
+and step transitions locally and keeps terminal failure on the same serialized
+writer. If persistence cannot record the failure, diagnostics expose
+`terminalPersisted=false` instead of starting a competing write path.

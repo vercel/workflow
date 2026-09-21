@@ -43,6 +43,12 @@ import type {
 /** Run-scoped transport resources for a single in-memory event writer.
  * This does not acquire ownership. Buffered writers explicitly expose a durability barrier. */
 export interface EventWriteSession {
+  /** Writer-local positions, when available. Queued progress is not a durability
+   * acknowledgement; only committed progress may be exposed as official state. */
+  readonly heads?: {
+    readonly queued: number | undefined;
+    readonly committed: number | undefined;
+  };
   /** Optional canonical bootstrap reads sharing the owner's transport. These do
    * not acquire ownership or replace the public storage read APIs. */
   reads?: {

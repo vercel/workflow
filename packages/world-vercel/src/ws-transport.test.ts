@@ -50,6 +50,16 @@ it('selects canonical eventsync only on explicit opt-in', () => {
   );
 });
 
+it('selects owner-journal protocol only on its explicit opt-in', () => {
+  vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'eventsync');
+  vi.stubEnv('WORKFLOW_OWNER_JOURNAL', '1');
+  expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
+    'wss://example.test/api/websockets/v1/runs/wrun_test/eventsync?protocol=5'
+  );
+  vi.stubEnv('WORKFLOW_OWNER_JOURNAL', '');
+  vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'ws');
+});
+
 const { FakeWebSocket, sockets } = vi.hoisted(() => {
   const sockets: FakeSocket[] = [];
 

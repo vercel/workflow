@@ -91,9 +91,10 @@ Step bodies currently run in the owning process; the mailbox remains available
 while they await I/O. Queue wakes enter through the direct endpoint instead of
 starting a second execution path.
 
-An input's `hook_received` event is committed before it is fed to the retained
-VM. Follow-up events emitted by the VM must also commit before the input is
-acknowledged. The idle wait is 60 seconds, bounded by the host deadline; the
+An immediate writer commits `hook_received` before advancing the retained VM.
+A buffered writer can advance private VM state while its prefix is pending;
+the receipt and follow-up events must commit before user-step execution or input
+acknowledgement. The idle wait is 60 seconds, bounded by the host deadline; the
 caller does not wait for that idle interval. After retirement, the next owner
 reconstructs its state from committed history.
 
@@ -102,7 +103,8 @@ optional `events.createWriteSession(runId)` before loading the initial run,
 history and step snapshot in parallel. In this World the writer opens the run's
 events WebSocket early, joins its readiness before writes, and retains the
 channel across inputs, asynchronous steps and bounded idle waits. Initial
-history reads still use GET/LIST. The channel is released with owner retirement,
+history reads use the session's canonical readers when provided, otherwise GET/LIST.
+The channel is released with owner retirement,
 not with the input HTTP response. A warm owner automatically reuses it for hook
 and step event writes; unexpected channel loss cannot silently demote that
 writer to HTTP. An explicit HTTP transport configuration or a World using an
@@ -128,6 +130,21 @@ persistence, step execution, and terminal-failure recording. Messages include
 owner/span identities and timing, not workflow payloads. `workflow.execution`
 reports replay versus retained VM passes. Older pinned runs retain their prior
 execution model; new runs carry `executionContext.retainedRunnerVersion: 1`.
+
+### Owner-journal mode (experimental)
+
+`WORKFLOW_OWNER_JOURNAL=1` opts newly created retained-owner runs into
+`executionContext.ownerJournalVersion: 1`. It requires a compatible eventsync
+backend (`WORKFLOW_EVENTS_TRANSPORT=eventsync`) and guaranteed exclusive ownership,
+including handoff and unfinished storage requests. Protocol 5 negotiates the
+persisted mode; older runs retain their original persistence behavior.
+
+The owner validates transitions locally and commits contiguous event prefixes
+sequentially. Canonical events remain intact; derived Step state is reconstructed
+from them by the backend. Single-event prefixes use a normal Put and larger
+prefixes use an atomic transaction. Queued progress is not a durability ACK.
+Terminal failure uses the same writer. If that writer is broken, diagnostics
+report `terminalPersisted=false`; no competing fallback writer is started.
 
 ## Custom dispatcher
 

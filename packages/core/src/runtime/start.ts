@@ -642,7 +642,12 @@ export async function start<TArgs extends unknown[], TResult>(
         ...(process.env.WORKFLOW_RETAINED_RUNNER === '1' &&
         world.capabilities?.invoke &&
         deploymentId === currentDeploymentId
-          ? { retainedRunnerVersion: 1 }
+          ? {
+              retainedRunnerVersion: 1,
+              ...(process.env.WORKFLOW_OWNER_JOURNAL === '1'
+                ? { ownerJournalVersion: 1 }
+                : {}),
+            }
           : {}),
         traceCarrier,
         workflowCoreVersion,
