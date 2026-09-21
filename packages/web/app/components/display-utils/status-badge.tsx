@@ -1,12 +1,8 @@
+import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
 import type { Step, WorkflowRun } from '@workflow/world';
 import { Check, Copy } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '~/components/ui/button';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '~/components/ui/tooltip';
 import { getStatusColorClass } from '~/lib/status-colors';
 import { cn, formatDuration } from '~/lib/utils';
 
