@@ -1485,6 +1485,8 @@ async function postEventFrameOverWs(
           eventTypes: commit.eventTypes,
           committedTo: commit.committedTo,
           kind: commit.kind,
+          serverTiming: commit.serverTiming,
+          serverCommittedAt: commit.serverCommittedAt,
         });
 
       const status = wsReplyStatus(reply, endpoint);

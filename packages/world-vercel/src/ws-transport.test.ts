@@ -13,6 +13,7 @@
  * backoff is deterministic and a microtask flush is a single `tick()`.
  */
 
+import { channel } from 'node:diagnostics_channel';
 import type { CreateEventRequest } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import {
@@ -359,6 +360,11 @@ describe('owner event writer', () => {
     }
   });
   it('pipelines the canonical resume prefix over one socket before receiving ACKs', async () => {
+    const observations: unknown[] = [];
+    const observe = (message: unknown) => {
+      observations.push(message);
+    };
+    channel('workflow.eventsync').subscribe(observe);
     const previous = process.env.WORKFLOW_EVENTS_TRANSPORT;
     process.env.WORKFLOW_EVENTS_TRANSPORT = 'eventsync';
     const writer = createStorage({ token: 'test-token' }).events
@@ -404,7 +410,26 @@ describe('owner event writer', () => {
       expect(socket.sent).toHaveLength(4);
       for (const [i, result] of staged.entries())
         socket.deliver(
-          ackFrame(Number(sentReqIds(socket)[i]), 200, encode(result))
+          encodeFrame(
+            {
+              reqId: Number(sentReqIds(socket)[i]),
+              type: 'event_ack',
+              status: 200,
+              ...(i === 0
+                ? {
+                    eventsyncCommit: {
+                      eventCount: 3,
+                      eventTypes: 'hook_received,step_created,step_started',
+                      committedTo: 6,
+                      kind: 'journal_batch',
+                      serverTiming: 'parse;dur=2, commit;dur=8',
+                      serverCommittedAt: '1234',
+                    },
+                  }
+                : {}),
+            },
+            encode(result)
+          )
         );
       socket.deliver(
         encodeFrame(
@@ -419,7 +444,15 @@ describe('owner event writer', () => {
       );
       expect(await flushed).toHaveLength(3);
       expect(durable).toBe(true);
+      expect(observations).toContainEqual(
+        expect.objectContaining({
+          event: 'committed',
+          serverTiming: 'parse;dur=2, commit;dur=8',
+          serverCommittedAt: '1234',
+        })
+      );
     } finally {
+      channel('workflow.eventsync').unsubscribe(observe);
       await writer.dispose();
       if (previous === undefined) delete process.env.WORKFLOW_EVENTS_TRANSPORT;
       else process.env.WORKFLOW_EVENTS_TRANSPORT = previous;
