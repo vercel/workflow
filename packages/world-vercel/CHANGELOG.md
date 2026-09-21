@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.50
+
+### Patch Changes
+
+- [#4275](https://github.com/vercel/workflow/pull/4275) [`39f1d5c`](https://github.com/vercel/workflow/commit/39f1d5c0a17ad8912efc6a0cd329cf6c66173e50) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Honor server-provided Retry-After delays when scheduling queue redeliveries.
+
 ## 5.0.0-beta.49
 
 ### Patch Changes

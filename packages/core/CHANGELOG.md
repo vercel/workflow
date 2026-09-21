@@ -1,5 +1,13 @@
 # @workflow/core
 
+## 5.0.0-beta.55
+
+### Patch Changes
+
+- [#4266](https://github.com/vercel/workflow/pull/4266) [`101d347`](https://github.com/vercel/workflow/commit/101d3472f6f150f0900713b4340c95d422ed673c) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Stop warning about expected overlapping inline step executions in the QuickJS runtime, debug log instead
+- Updated dependencies [[`39f1d5c`](https://github.com/vercel/workflow/commit/39f1d5c0a17ad8912efc6a0cd329cf6c66173e50)]:
+  - @workflow/world-vercel@5.0.0-beta.50
+
 ## 5.0.0-beta.54
 
 ### Minor Changes
