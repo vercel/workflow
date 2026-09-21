@@ -111026,6 +111026,20 @@ var Vercel = class extends ClientSDK {
 
 // src/wait-for-deployment.ts
 var fs = __toESM(require("fs"));
+
+// src/deployment-state.mjs
+var TERMINAL_FAILURE_STATES = /* @__PURE__ */ new Set(["ERROR", "CANCELED"]);
+function getTerminalDeploymentState(deployment) {
+  if (deployment.state && TERMINAL_FAILURE_STATES.has(deployment.state.toUpperCase())) {
+    return deployment.state;
+  }
+  if (deployment.readyState && TERMINAL_FAILURE_STATES.has(deployment.readyState.toUpperCase())) {
+    return deployment.readyState;
+  }
+  return void 0;
+}
+
+// src/wait-for-deployment.ts
 async function run() {
   try {
     const teamId = core.getInput("team-id", { required: true });
@@ -111123,6 +111137,7 @@ async function run() {
           console.log(`Found deployment: ${deployment.uid}`);
           console.log(`Deployment state: ${deployment.state}`);
           console.log(`Deployment readyState: ${deployment.readyState}`);
+          const terminalState = getTerminalDeploymentState(deployment);
           if (deployment.state === "READY" || deployment.readyState === "READY") {
             console.log("\u2705 Deployment is ready!");
             const deploymentUrl = `https://${deployment.url}`;
@@ -111130,10 +111145,12 @@ async function run() {
             core.setOutput("deployment-url", deploymentUrl);
             core.setOutput("deployment-id", deployment.uid);
             return;
-          } else if (deployment.state === "ERROR" || deployment.state === "CANCELED") {
-            throw new Error(
-              `Deployment failed with state: ${deployment.state}`
+          } else if (terminalState) {
+            const inspectorUrl = deployment.inspectorUrl ? ` (${deployment.inspectorUrl})` : "";
+            core.setFailed(
+              `Deployment ${deployment.uid} failed with state: ${terminalState}${inspectorUrl}`
             );
+            return;
           } else {
             console.log(
               `\u{1F504} Deployment in progress (state: ${deployment.state}, readyState: ${deployment.readyState})`

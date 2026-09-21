@@ -2,7 +2,8 @@
   "private": true,
   "description": "Wait for Vercel project deployment using Vercel API",
   "scripts": {
-    "build": "esbuild src/wait-for-deployment.ts --bundle --outfile=dist/index.js --platform=node --target=node20 --format=cjs"
+    "build": "esbuild src/wait-for-deployment.ts --bundle --outfile=dist/index.js --platform=node --target=node20 --format=cjs",
+    "test": "node --test src/*.test.mjs"
   },
   "dependencies": {
     "@actions/core": "^1.11.1",
