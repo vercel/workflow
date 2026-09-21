@@ -1,11 +1,6 @@
 'use client';
 
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@vercel/geistdocs/components/tooltip';
-import {
   AlertCircle,
   CheckCircle2,
   Clock,
@@ -23,6 +18,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { BenchmarkHistoryChart } from './BenchmarkHistoryChart';
 import { formatTime, type World } from './types';
 

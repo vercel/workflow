@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { TooltipProvider } from '@workflow/web-shared';
 import { afterEach, describe, expect, it } from 'vitest';
-import { TooltipProvider } from '~/components/ui/tooltip';
 import { StatusBadge } from './status-badge';
 
 afterEach(cleanup);

@@ -1,4 +1,9 @@
-import { analyzeEvents } from '@workflow/web-shared';
+import {
+  analyzeEvents,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@workflow/web-shared';
 import type { Event, WorkflowRunStatus } from '@workflow/world';
 import {
   AlarmClockOff,
@@ -15,11 +20,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '~/components/ui/dropdown-menu';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '~/components/ui/tooltip';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
