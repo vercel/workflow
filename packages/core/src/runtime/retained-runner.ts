@@ -1341,6 +1341,7 @@ export class RetainedRunner {
             deadline: +start.event.createdAt + timeoutMs,
             workflowName: this.run.workflowName,
             workflowStartedAt: +(this.run.startedAt ?? this.run.createdAt),
+            parentSpanId: this.currentTurnId,
             step,
           },
         },

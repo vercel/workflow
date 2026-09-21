@@ -36,6 +36,7 @@ export const OwnedStepExecutionSchema = z.compile(
     deadline: z.number().finite(),
     workflowName: z.string(),
     workflowStartedAt: z.number(),
+    parentSpanId: z.string().optional(),
     step: StepSchema,
   })
 );
@@ -306,6 +307,7 @@ export async function executeOwnedStep(
         at: Date.now(),
         stepId: step.stepId,
         stepName: step.stepName,
+        parentSpanId: input.parentSpanId,
         executionId: input.executionId,
         attempt: input.attempt,
         executionMode: 'queued',
