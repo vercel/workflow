@@ -1,5 +1,10 @@
 'use client';
 
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@vercel/geistdocs/components/tooltip';
 import { BadgeCheck, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
 import { Badge } from '@/components/ui/badge';
@@ -10,11 +15,6 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
 import type { World } from './types';
 
 interface WorldCardSimpleProps {
@@ -37,7 +37,7 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
                       <BadgeCheck className="size-4 text-gray-900 shrink-0" />
                     </TooltipTrigger>
                     <TooltipContent side="top">
-                      Maintained by Vercel
+                      <span className="text-xs">Maintained by Vercel</span>
                     </TooltipContent>
                   </Tooltip>
                 )}
@@ -63,7 +63,7 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
                 </Badge>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-[200px]">
-                End-to-end user data encryption
+                <p className="text-xs">End-to-end user data encryption</p>
               </TooltipContent>
             </Tooltip>
           )}

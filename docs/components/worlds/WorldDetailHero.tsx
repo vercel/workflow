@@ -2,6 +2,11 @@
 
 import { Button } from '@vercel/geistdocs/components/button';
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@vercel/geistdocs/components/tooltip';
+import {
   BadgeCheck,
   CheckIcon,
   ChevronRight,
@@ -25,11 +30,6 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
 
 import type { World } from './types';
 
@@ -104,7 +104,9 @@ export function WorldDetailHero({
                 <TooltipTrigger asChild>
                   <BadgeCheck className="h-8 w-8 text-blue-900" />
                 </TooltipTrigger>
-                <TooltipContent side="top">Maintained by Vercel</TooltipContent>
+                <TooltipContent side="top">
+                  <p className="text-xs">Maintained by Vercel</p>
+                </TooltipContent>
               </Tooltip>
             ) : (
               <Tooltip>
@@ -112,7 +114,7 @@ export function WorldDetailHero({
                   <HeartHandshake className="h-8 w-8 text-pink-900" />
                 </TooltipTrigger>
                 <TooltipContent side="top">
-                  Maintained by the community
+                  <p className="text-xs">Maintained by the community</p>
                 </TooltipContent>
               </Tooltip>
             )}

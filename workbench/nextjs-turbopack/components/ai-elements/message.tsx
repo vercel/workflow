@@ -92,7 +92,7 @@ export const MessageAction = ({
 
   if (tooltip) {
     return (
-      <TooltipProvider delayDuration={0}>
+      <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>{button}</TooltipTrigger>
           <TooltipContent>

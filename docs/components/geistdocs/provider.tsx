@@ -4,7 +4,6 @@ import { Analytics } from '@vercel/analytics/next';
 import { GeistdocsProvider as PackageProvider } from '@vercel/geistdocs/layout';
 import { SpeedInsights } from '@vercel/speed-insights/next';
 import type { ComponentProps } from 'react';
-import { TooltipProvider } from '@/components/ui/tooltip';
 import { config } from '@/lib/geistdocs/config';
 
 type GeistdocsProviderProps = Omit<
@@ -23,9 +22,7 @@ export const GeistdocsProvider = ({
   ...props
 }: GeistdocsProviderProps) => (
   <>
-    <TooltipProvider delayDuration={0}>
-      <PackageProvider config={config} lang={lang} {...props} />
-    </TooltipProvider>
+    <PackageProvider config={config} lang={lang} {...props} />
     <Analytics />
     <SpeedInsights />
   </>

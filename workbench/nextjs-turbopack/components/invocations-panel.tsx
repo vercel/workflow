@@ -147,12 +147,18 @@ export function InvocationsPanel({
         status === 'failed') &&
       error
     ) {
+      const tooltipBg =
+        status === 'failed'
+          ? 'bg-red-600'
+          : status === 'error'
+            ? 'bg-orange-600'
+            : '';
       return (
         <Tooltip>
           <TooltipTrigger asChild>
             <div className="cursor-help">{badge}</div>
           </TooltipTrigger>
-          <TooltipContent side="left" className="max-w-md">
+          <TooltipContent side="left" className={`max-w-md ${tooltipBg}`}>
             <div className="space-y-1">
               <div className="font-semibold">
                 {status === 'failed'

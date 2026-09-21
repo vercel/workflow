@@ -21,12 +21,6 @@
   --input: 0 0% 89.8%;
   --ring: 0 0% 3.9%;
   --radius: 0.5rem;
-
-  /* Geist tokens used by the shared tooltip surface. Mirrors
-     packages/web-shared/src/styles.css so the tooltip renders identically
-     in the workbench apps. */
-  --ds-background-100: oklch(1 0 0);
-  --ds-gray-1000: oklch(0.205 0 0);
 }
 
 @theme inline {
@@ -49,14 +43,8 @@
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
-  --color-background-100: var(--ds-background-100);
-  --color-gray-1000: var(--ds-gray-1000);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@utility text-label-13 {
-  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[13px] leading-[16px];
 }
 
 @media (prefers-color-scheme: dark) {
@@ -80,9 +68,6 @@
     --border: 0 0% 14.9%;
     --input: 0 0% 14.9%;
     --ring: 0 0% 83.1%;
-
-    --ds-background-100: oklch(0 0 0);
-    --ds-gray-1000: oklch(0.946 0 0);
   }
 }
 
