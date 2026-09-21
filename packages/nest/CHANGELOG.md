@@ -1,5 +1,19 @@
 # @workflow/nest
 
+## 5.0.0-beta.54
+
+### Minor Changes
+
+- [#3695](https://github.com/vercel/workflow/pull/3695) [`5a05f40`](https://github.com/vercel/workflow/commit/5a05f409aa23f528f214640295f389cabdcb5a9d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Preserve raw request and response bytes on the workflow routes, serve `GET`/`HEAD`/`OPTIONS` on the flow route, adopt `setGlobalPrefix()` for generated URLs, add `forRootAsync`, `basePath`, `manageWorldLifecycle` and `preloadBundles`, and fail startup when `skipBuild` is set without pre-built bundles.
+
+### Patch Changes
+
+- [#4206](https://github.com/vercel/workflow/pull/4206) [`426bdb6`](https://github.com/vercel/workflow/commit/426bdb6ab98e08902c4cab4cf9a7e1983add55f6) Thanks [@pranaygp](https://github.com/pranaygp)! - Document that `preloadBundles` defaults to `false` on Vercel.
+
+- [#4208](https://github.com/vercel/workflow/pull/4208) [`f1f5b7d`](https://github.com/vercel/workflow/commit/f1f5b7d0c2e7a445766702e7dacfbb53d28358b5) Thanks [@e0-gh-vercel-connect](https://github.com/apps/e0-gh-vercel-connect)! - Prevent HTTP requests from invoking the NestJS workflow queue consumer.
+- Updated dependencies [[`5a05f40`](https://github.com/vercel/workflow/commit/5a05f409aa23f528f214640295f389cabdcb5a9d)]:
+  - @workflow/builders@5.0.0-beta.54
+
 ## 5.0.0-beta.53
 
 ### Patch Changes
