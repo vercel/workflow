@@ -87,8 +87,12 @@ async function queuedFixture() {
   return { ...fixture, queue, invoke, messages };
 }
 
-it('keeps three local bodies and runs overflow outside the owner turn with invoke results', async () => {
-  const gates = Array.from({ length: 5 }, () => Promise.withResolvers<void>());
+it.each([
+  5, 100,
+])('keeps three local bodies in a %i-step batch and processes remote invoke results without deadlock', async (count) => {
+  const gates = Array.from({ length: count }, () =>
+    Promise.withResolvers<void>()
+  );
   const started: number[] = [];
   registerStepFunction('queuedWork', async (n) => {
     started.push(n as number);
@@ -98,7 +102,7 @@ it('keeps three local bodies and runs overflow outside the owner turn with invok
   const fixture = await setup(
     parallelCode.replace(
       '[work(0), work(1)]',
-      '[work(0), work(1), work(2), work(3), work(4)]'
+      `Array.from({ length: ${count} }, (_, i) => work(i))`
     ),
     false,
     'hybrid'
@@ -133,9 +137,9 @@ it('keeps three local bodies and runs overflow outside the owner turn with invok
     });
   await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
   await fixture.send('hybrid', 'start');
-  await vi.waitFor(() => expect(started).toHaveLength(5));
-  expect(remote).toHaveLength(2);
-  gates[4].resolve();
+  await vi.waitFor(() => expect(started).toHaveLength(count));
+  expect(remote).toHaveLength(count - 3);
+  gates[count - 1].resolve();
   await vi.waitFor(() =>
     expect(
       fixture.owner.events.filter((e) => e.eventType === 'step_completed')
@@ -148,10 +152,10 @@ it('keeps three local bodies and runs overflow outside the owner turn with invok
   );
   expect(
     results.mock.calls.filter(([, input]) => input.type === 'step_result')
-  ).toHaveLength(2);
+  ).toHaveLength(count - 3);
   expect(
     queue.mock.calls.filter(([, message]) => 'stepId' in message)
-  ).toHaveLength(2);
+  ).toHaveLength(count - 3);
 });
 
 it('dispatches admitted steps, executes concurrent workers without worker writes, and preserves completion order', async () => {
@@ -1047,7 +1051,7 @@ async function setup(
           ? {
               stepExecution: {
                 mode: queued === 'hybrid' ? 'hybrid' : 'queued',
-                attemptTimeoutMs: 1000,
+                attemptTimeoutMs: queued === 'hybrid' ? 60_000 : 1000,
               },
             }
           : {}),
