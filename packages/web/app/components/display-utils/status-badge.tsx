@@ -1,8 +1,12 @@
-import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
+import {
+  Button,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@workflow/web-shared';
 import type { Step, WorkflowRun } from '@workflow/world';
 import { Check, Copy } from 'lucide-react';
 import { useState } from 'react';
-import { Button } from '~/components/ui/button';
 import { getStatusColorClass } from '~/lib/status-colors';
 import { cn, formatDuration } from '~/lib/utils';
 
@@ -112,9 +116,11 @@ function ErrorCodeBadge({
         <div className="flex items-center gap-2 p-1.5">
           <span className="text-xs font-mono">{errorCode}</span>
           <Button
-            variant="ghost"
-            size="icon"
+            variant="tertiary"
+            size="tiny"
+            shape="square"
             className="h-5 w-5 shrink-0"
+            aria-label="Copy error code"
             onClick={handleCopy}
           >
             {copied ? (

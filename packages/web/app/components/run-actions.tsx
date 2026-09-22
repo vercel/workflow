@@ -1,5 +1,6 @@
 import {
   analyzeEvents,
+  Button,
   Tooltip,
   TooltipContent,
   TooltipTrigger,
@@ -27,7 +28,6 @@ import {
   reenqueueRun,
   wakeUpRun,
 } from '~/lib/workflow-api-client';
-import { Button } from './ui/button';
 
 // ============================================================================
 // Shared Props and Types
@@ -369,8 +369,8 @@ export function RunActionsButtons({
         <TooltipTrigger asChild>
           <span>
             <Button
-              variant="outline"
-              size="sm"
+              variant="secondary"
+              size="small"
               onClick={onRerunClick}
               disabled={!canRerun}
             >
@@ -397,8 +397,8 @@ export function RunActionsButtons({
         <TooltipTrigger asChild>
           <span>
             <Button
-              variant="outline"
-              size="sm"
+              variant="secondary"
+              size="small"
               onClick={onCancelClick}
               disabled={!canCancel}
             >
@@ -421,7 +421,12 @@ export function RunActionsButtons({
         <Tooltip>
           <TooltipTrigger asChild>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm">
+              <Button
+                variant="secondary"
+                size="small"
+                shape="square"
+                aria-label="More actions"
+              >
                 <MoreHorizontal className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>

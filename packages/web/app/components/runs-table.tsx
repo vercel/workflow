@@ -1,5 +1,10 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
+import {
+  Button,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@workflow/web-shared';
 import {
   BULK_CANCEL_MAX_RUN_IDS,
   type Event,
@@ -20,7 +25,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
-import { Button } from '~/components/ui/button';
 import { Card, CardContent } from '~/components/ui/card';
 import {
   DropdownMenu,
@@ -140,9 +144,10 @@ function LazyDropdownMenu({
     <DropdownMenu open={isOpen} onOpenChange={setIsOpen}>
       <DropdownMenuTrigger asChild>
         <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8"
+          variant="tertiary"
+          size="small"
+          shape="square"
+          aria-label="Run actions"
           onClick={(e) => e.stopPropagation()}
         >
           <MoreHorizontal className="h-4 w-4" />
@@ -408,8 +413,8 @@ function FilterControls({
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
-              variant="outline"
-              size="sm"
+              variant="secondary"
+              size="small"
               onClick={onSortToggle}
               disabled={loading}
             >
@@ -430,8 +435,8 @@ function FilterControls({
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
-              variant="outline"
-              size="sm"
+              variant="secondary"
+              size="small"
               onClick={onRefresh}
               disabled={loading}
             >
@@ -972,8 +977,8 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
-                  variant="ghost"
-                  size="sm"
+                  variant="tertiary"
+                  size="small"
                   className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
                   onClick={handleBulkReenqueue}
                   disabled={isBulkReenqueuing || selectedRuns.length === 0}
@@ -998,8 +1003,8 @@ export function RunsTable({ onRunClick }: RunsTableProps) {
                       button is disabled */}
                   <span className="inline-flex">
                     <Button
-                      variant="ghost"
-                      size="sm"
+                      variant="tertiary"
+                      size="small"
                       className="h-7 text-primary-foreground hover:bg-primary-foreground/10 hover:text-primary-foreground"
                       onClick={handleBulkCancel}
                       disabled={isBulkCancelling || exceedsBulkCancelLimit}
