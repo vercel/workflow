@@ -1,0 +1,112 @@
+name: Reconcile Vercel Deployment Dispatches
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: 'Number of days to compare (observer artifacts retain 14 days)'
+        required: true
+        default: '7'
+        type: choice
+        options:
+          - '1'
+          - '3'
+          - '7'
+          - '14'
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: reconcile-vercel-deployment-dispatches
+  cancel-in-progress: false
+
+jobs:
+  reconcile-nextjs-turbopack:
+    name: Reconcile nextjs-turbopack dispatches
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted reconciler
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Define observation window
+        id: window
+        env:
+          LOOKBACK_DAYS: ${{ inputs.lookback_days || '7' }}
+        run: |
+          set -euo pipefail
+          to=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          from=$(date -u -d "$LOOKBACK_DAYS days ago" +'%Y-%m-%dT%H:%M:%SZ')
+          echo "from=$from" >> "$GITHUB_OUTPUT"
+          echo "to=$to" >> "$GITHUB_OUTPUT"
+
+      - name: Find observer runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FROM: ${{ steps.window.outputs.from }}
+        run: |
+          set -euo pipefail
+          mkdir -p observations
+          workflow_id=$(gh api \
+            --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows" \
+            --paginate \
+            -f per_page=100 \
+            --jq '.workflows[] | select(.path == ".github/workflows/vercel-deployment-dispatch-observer.yml") | .id')
+          test -n "$workflow_id"
+          gh api \
+            --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow_id/runs" \
+            --paginate \
+            -f event=repository_dispatch \
+            -f status=completed \
+            -f created=">=$FROM" \
+            -f per_page=100 \
+            --jq '[.workflow_runs[] | {databaseId: .id, createdAt: .created_at, conclusion, event, headSha: .head_sha, url: .html_url}]' \
+            | jq -s 'add' > observer-runs.json
+
+          : > artifact-download-failures.txt
+          jq -r '.[] | select(.conclusion == "success") | .databaseId' \
+            observer-runs.json |
+          while read -r run_id; do
+            [ -n "$run_id" ] || continue
+            if ! gh run download "$run_id" \
+              --repo "$GITHUB_REPOSITORY" \
+              --dir "observations/$run_id"; then
+              echo "$run_id" >> artifact-download-failures.txt
+              echo "::warning::Could not download observation artifact from run $run_id"
+            fi
+          done
+
+      - name: Reconcile with Vercel deployments
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          VERCEL_TEAM_ID: team_nO2mCG4W8IxPIeKoSsqwAxxB
+        run: |
+          set -euo pipefail
+          node .github/scripts/reconcile-vercel-deployment-dispatches.js \
+            --from '${{ steps.window.outputs.from }}' \
+            --to '${{ steps.window.outputs.to }}' \
+            --observations observations \
+            --runs observer-runs.json \
+            --download-failures artifact-download-failures.txt \
+            --output vercel-deployment-dispatch-reconciliation.json \
+            --markdown vercel-deployment-dispatch-reconciliation.md
+          cat vercel-deployment-dispatch-reconciliation.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reconciliation report
+        uses: actions/upload-artifact@v4
+        with:
+          name: vercel-deployment-dispatch-reconciliation-${{ github.run_id }}
+          path: |
+            vercel-deployment-dispatch-reconciliation.json
+            vercel-deployment-dispatch-reconciliation.md
+          retention-days: 30
+          if-no-files-found: error
