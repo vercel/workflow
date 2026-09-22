@@ -377,6 +377,31 @@ it('a late result cannot fault an execution already superseded by a timeout', as
   }
 });
 
+it('does not acknowledge an unknown execution as superseded on an active owner', async () => {
+  registerStepFunction('queuedWork', async (n) => n);
+  const fixture = await queuedFixture();
+  await expect(
+    fixture.world.invoke!(
+      fixture.runId,
+      {
+        type: 'step_status',
+        version: 1,
+        stepId: 'step_unknown',
+        executionId: 'evnt_unknown',
+        attempt: 1,
+      },
+      { idempotencyKey: 'unknown' }
+    )
+  ).rejects.toMatchObject({ code: 'UNKNOWN_STEP_EXECUTION' });
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('running');
+  await Promise.all(
+    fixture.messages.map((message) =>
+      executeOwnedStep(fixture.world, message, fixture.metadata)
+    )
+  );
+  await fixture.finished;
+});
+
 it.each([
   false,
   true,

@@ -1188,13 +1188,29 @@ export class RetainedRunner {
       return { status: 'accepted', eventId: prior.event.eventId };
     }
     const start = this.stepStarts.get(input.stepId);
+    if (isTerminalWorkflowRunStatus(this.run.status))
+      return { status: 'superseded' };
+    if (!start)
+      throw new InputRejected(
+        'Step execution is absent from the owner snapshot',
+        {
+          status: 409,
+          code: 'UNKNOWN_STEP_EXECUTION',
+        }
+      );
     if (
-      isTerminalWorkflowRunStatus(this.run.status) ||
-      !start ||
       start.event.eventId !== input.executionId ||
       start.attempt !== input.attempt
-    )
-      return { status: 'superseded' };
+    ) {
+      if (input.attempt < start.attempt) return { status: 'superseded' };
+      throw new InputRejected(
+        'Step execution does not match the owner snapshot',
+        {
+          status: 409,
+          code: 'UNKNOWN_STEP_EXECUTION',
+        }
+      );
+    }
     const step = this.steps.get(input.stepId);
     if (step?.status !== 'running') return { status: 'superseded' };
     if (!result.success) {
