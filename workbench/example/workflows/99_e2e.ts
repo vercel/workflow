@@ -3910,6 +3910,18 @@ export async function crossRegionStreamWorkflow(chunkCount: number) {
   return 'done';
 }
 
+/**
+ * Parks a run while region-pinned HTTP routes contribute to its default
+ * stream. The iad1 route performs the first write; the sfo1 route performs the
+ * second write and close, then resumes this hook so the run can finish.
+ */
+export async function crossRegionRedisRelayWorkflow(token: string) {
+  'use workflow';
+  using hook = createHook<{ done: true }>({ token });
+  await hook;
+  return 'done';
+}
+
 // ============================================================
 // LIFECYCLE HOOK TESTS
 // Exercised only by the Next.js workbenches, whose
