@@ -188,6 +188,7 @@ export class RetainedRunner {
   private commitTail: Promise<unknown> = Promise.resolve();
   private inTurn = new AsyncLocalStorage<boolean>();
   private workers = new Map<string, Promise<void>>();
+  private localWorkers = new Set<string>();
   private timerWakeups = new Set<string>();
   private lifetime?: Promise<void>;
   private closing = false;
@@ -328,7 +329,7 @@ export class RetainedRunner {
       return Promise.reject(
         new WorkflowWorldError('Runner is retiring', { status: 409 })
       );
-    if (this.pending.length >= 32)
+    if (this.pending.length >= (this.queuedSteps?.mode === 'hybrid' ? 128 : 32))
       return Promise.reject(
         new WorkflowWorldError('Runner mailbox is full', { status: 429 })
       );
@@ -960,7 +961,7 @@ export class RetainedRunner {
       const policy = this.queuedSteps;
       if (policy) await this.armStepRecovery();
       let available =
-        16 -
+        (policy?.mode === 'hybrid' ? 100 : 16) -
         [...this.steps.values()].filter((step) => step.status === 'running')
           .length;
       for (const step of this.steps.values()) {
@@ -998,6 +999,8 @@ export class RetainedRunner {
       // Tentative VM progress is private; user code needs a durable start prefix.
       if (starts.length) await this.flushWriter();
       const remote: Array<Step & { startedAt: Date }> = [];
+      let localSlots =
+        policy?.mode === 'hybrid' ? 3 - this.localWorkers.size : 0;
       for (const { step, claimed } of starts) {
         // Flush may replace tentative entities with the native materialization.
         const canonical = claimed ? this.steps.get(step.stepId) : undefined;
@@ -1009,7 +1012,7 @@ export class RetainedRunner {
         const admitted = canonical?.startedAt
           ? { ...canonical, startedAt: canonical.startedAt }
           : claimed;
-        if (policy) {
+        if (policy && localSlots-- <= 0) {
           if (!admitted)
             throw new RunnerFault(
               'persistence',
@@ -1358,6 +1361,10 @@ export class RetainedRunner {
             workflowName: this.run.workflowName,
             workflowStartedAt: +(this.run.startedAt ?? this.run.createdAt),
             parentSpanId: this.currentTurnId,
+            executionMode:
+              this.queuedSteps?.mode === 'hybrid'
+                ? ('remote' as const)
+                : ('queued' as const),
             step,
           },
         },
@@ -1368,6 +1375,44 @@ export class RetainedRunner {
         },
       };
     });
+    if (this.queuedSteps?.mode === 'hybrid') {
+      // Direct execution can wait for a result invoke. Never await it inside the
+      // serialized owner turn: that would deadlock its own result admission.
+      const parentSpanId = this.currentTurnId;
+      for (const { message, opts } of messages) {
+        const work = this.inTurn.run(false, async () => {
+          try {
+            await this.observed(
+              'step_dispatch',
+              async () => {
+                const result = await this.backend.queue(
+                  this.metadata.queueName,
+                  message,
+                  opts
+                );
+                if ('error' in result && result.error)
+                  throw new Error('Remote step delivery failed');
+              },
+              { parentSpanId, stepId: message.stepId, executionMode: 'remote' }
+            );
+          } catch (cause) {
+            await this.enqueue('step.delivery_failed', async () => {
+              // A lost HTTP reply after a committed callback is not a lost step.
+              if (
+                !this.stepOutcomes.has(message.input.executionId) &&
+                !isTerminalWorkflowRunStatus(this.run.status)
+              )
+                throw cause;
+            }).catch(() => {});
+          } finally {
+            this.workers.delete(message.stepId);
+            this.signal?.();
+          }
+        });
+        this.workers.set(message.stepId, work);
+      }
+      return;
+    }
     try {
       await this.observed(
         'step_dispatch',
@@ -1415,6 +1460,7 @@ export class RetainedRunner {
   }
 
   private startStep(step: Step, claimed?: Step & { startedAt: Date }) {
+    this.localWorkers.add(step.stepId);
     const stepSpanId = randomUUID();
     const parentSpanId = this.currentTurnId;
     const work = Promise.resolve().then(() =>
@@ -1474,6 +1520,7 @@ export class RetainedRunner {
               }).catch(() => {});
             }
           } finally {
+            this.localWorkers.delete(step.stepId);
             this.workers.delete(step.stepId);
             this.signal?.();
           }

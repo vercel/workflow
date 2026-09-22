@@ -22,7 +22,7 @@ import { withScopedWorld } from './world.js';
 /** Runner protocol inside Queue's existing opaque input field. */
 export const QueuedStepPolicySchema = z.compile(
   z.object({
-    mode: z.literal('queued'),
+    mode: z.enum(['queued', 'hybrid']),
     attemptTimeoutMs: z.number().int().min(1000).max(900_000).default(60_000),
   })
 );
@@ -37,6 +37,7 @@ export const OwnedStepExecutionSchema = z.compile(
     workflowName: z.string(),
     workflowStartedAt: z.number(),
     parentSpanId: z.string().optional(),
+    executionMode: z.enum(['queued', 'remote']).optional(),
     step: StepSchema,
   })
 );
@@ -131,7 +132,7 @@ const workers = globalSingleton(
 );
 const observations = channel('workflow.runner');
 
-/** Authenticated queue delivery has already happened; this never creates an owner. */
+/** Authenticated delivery has already happened; this never creates an owner. */
 export async function executeOwnedStep(
   world: World,
   message: unknown,
@@ -310,7 +311,7 @@ export async function executeOwnedStep(
         parentSpanId: input.parentSpanId,
         executionId: input.executionId,
         attempt: input.attempt,
-        executionMode: 'queued',
+        executionMode: input.executionMode ?? 'queued',
         ...details,
       });
     observe('begin');

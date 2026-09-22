@@ -58,3 +58,20 @@ The worker reuses native hydration, serialization, error/retry and stream-op
 handling. Its event sink accepts only its own step outcome; arbitrary workflow
 event writes from a worker are rejected. Key and payload APIs remain available
 for capabilities outside the owner event channel.
+
+### Three-local-step overflow (experimental)
+
+`experimental_stepExecution: { mode: 'hybrid' }` keeps at most three concurrent
+step bodies in the retained owner and admits up to 100 outstanding bodies per
+run. Overflow uses the existing Queue delivery primitive with
+`input.executionMode: 'remote'`; the backend must implement direct execution for
+these messages rather than publishing them to a queue. A generated step-only
+handler executes the admitted body and returns its result with `invoke`.
+
+Direct delivery is tracked outside the serialized owner turn, so a synchronous
+HTTP worker can await its result acknowledgement without deadlocking the owner.
+Starts remain durable before any local or remote user code runs. Results are
+acknowledged only after the owner's durability barrier. A delivery failure without
+a committed outcome faults the run instead of silently falling back to a queue.
+The existing durable delayed wake remains the recovery backstop for interrupted
+attempts; it is not the overflow execution or result transport.

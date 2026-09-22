@@ -518,6 +518,16 @@ export function createQueue(config?: APIConfig): Queue {
     payload: QueuePayload,
     opts?: QueueOptions
   ) => {
+    if (
+      'input' in payload &&
+      payload.input &&
+      typeof payload.input === 'object' &&
+      'executionMode' in payload.input &&
+      payload.input.executionMode === 'remote'
+    )
+      throw new Error(
+        'Direct step execution transport is not configured; refusing VQS fallback'
+      );
     // Check if we have a deployment ID either from options or environment
     const deploymentId = opts?.deploymentId ?? process.env.VERCEL_DEPLOYMENT_ID;
     if (!deploymentId) {

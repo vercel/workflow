@@ -6,6 +6,10 @@ Integrates with Vercel's infrastructure for storage, queuing, and authentication
 
 Used by default for deployments on Vercel. Authentication and API endpoints are configured automatically in Vercel deployments.
 
+Experimental owner-managed overflow messages marked `input.executionMode: 'remote'`
+require an installed direct-execution transport. The VQS adapter rejects these
+messages rather than silently falling back to queued execution.
+
 ## Connection failures
 
 Backend connection failures and interrupted event streams follow existing retry policies, including failures with unrecognized error codes. Repeated HTTP/2 session failures rebuild the shared events connection pool. Invalid backend URL protocols, embedded credentials, Fetch-blocked ports, and unsupported request headers fail immediately. Interrupted event writes retain their existing in-process retries; caller cancellations are excluded.

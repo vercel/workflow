@@ -189,10 +189,11 @@ export interface StartOptionsBase {
    */
   experimental_retention?: RunRetention;
 
-  /** Execute retained-run step bodies through the existing queue, returning all
-   * outcomes to the owner via invoke. The policy is immutable for this new run. */
+  /** Owner-managed steps. Hybrid keeps three bodies local and uses the existing
+   * Queue delivery primitive for direct-execution overflow; the backend must
+   * support that transport. Remote outcomes return through invoke. */
   experimental_stepExecution?: {
-    mode: 'queued';
+    mode: 'queued' | 'hybrid';
     attemptTimeoutMs?: number;
   };
 

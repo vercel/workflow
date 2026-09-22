@@ -87,6 +87,73 @@ async function queuedFixture() {
   return { ...fixture, queue, invoke, messages };
 }
 
+it('keeps three local bodies and runs overflow outside the owner turn with invoke results', async () => {
+  const gates = Array.from({ length: 5 }, () => Promise.withResolvers<void>());
+  const started: number[] = [];
+  registerStepFunction('queuedWork', async (n) => {
+    started.push(n as number);
+    await gates[n as number].promise;
+    return n;
+  });
+  const fixture = await setup(
+    parallelCode.replace(
+      '[work(0), work(1)]',
+      '[work(0), work(1), work(2), work(3), work(4)]'
+    ),
+    false,
+    'hybrid'
+  );
+  fixture.world.capabilities = { ...fixture.world.capabilities, invoke: true };
+  const results = vi.fn(async (runId, input, options) =>
+    fixture.owner.submit(
+      {
+        runId,
+        invoke: true,
+        input,
+        requestId: options?.idempotencyKey,
+      },
+      fixture.metadata
+    )
+  );
+  fixture.world.invoke = results;
+  const remote: unknown[] = [];
+  const queue = vi
+    .spyOn(fixture.world, 'queue')
+    .mockImplementation(async (_name, message) => {
+      if ('stepId' in message) {
+        remote.push(message);
+        expect(
+          (await fixture.world.steps.get(fixture.runId, message.stepId!)).status
+        ).toBe('running');
+        // Model a synchronous HTTP function call which cannot finish until its
+        // step_result callback is accepted by the same owner's mailbox.
+        await executeOwnedStep(fixture.world, message, fixture.metadata);
+      }
+      return { messageId: null };
+    });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.send('hybrid', 'start');
+  await vi.waitFor(() => expect(started).toHaveLength(5));
+  expect(remote).toHaveLength(2);
+  gates[4].resolve();
+  await vi.waitFor(() =>
+    expect(
+      fixture.owner.events.filter((e) => e.eventType === 'step_completed')
+    ).toHaveLength(1)
+  );
+  for (const gate of gates) gate.resolve();
+  await fixture.finished;
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
+    'completed'
+  );
+  expect(
+    results.mock.calls.filter(([, input]) => input.type === 'step_result')
+  ).toHaveLength(2);
+  expect(
+    queue.mock.calls.filter(([, message]) => 'stepId' in message)
+  ).toHaveLength(2);
+});
+
 it('dispatches admitted steps, executes concurrent workers without worker writes, and preserves completion order', async () => {
   const gates = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
   const started: number[] = [];
@@ -958,7 +1025,7 @@ it('opens hook inputs sealed to the run while retaining its VM', async () => {
 async function setup(
   workflowCode = code,
   ownerJournal = false,
-  queued = false
+  queued: boolean | 'hybrid' = false
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'retained-runner-'));
   const world = createWorld({ dataDir: directory }) as World;
@@ -977,7 +1044,12 @@ async function setup(
         retainedRunnerVersion: 1,
         ...(ownerJournal ? { ownerJournalVersion: 1 } : {}),
         ...(queued
-          ? { stepExecution: { mode: 'queued', attemptTimeoutMs: 1000 } }
+          ? {
+              stepExecution: {
+                mode: queued === 'hybrid' ? 'hybrid' : 'queued',
+                attemptTimeoutMs: 1000,
+              },
+            }
           : {}),
       },
       input: await dehydrateWorkflowArguments([], runId, undefined, []),

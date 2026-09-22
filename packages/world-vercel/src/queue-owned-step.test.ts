@@ -40,7 +40,19 @@ vi.mock('./ws-transport-enabled.js', () => ({
   isWsEventsTransportEnabled: () => true,
 }));
 
+import { ValidQueueName } from '@workflow/world';
 import { createQueue } from './queue.js';
+
+it('does not silently publish direct overflow execution to VQS', async () => {
+  await expect(
+    createQueue().queue(ValidQueueName.parse('__wkf_workflow_test'), {
+      runId: 'run',
+      stepId: 'step',
+      stepName: 'work',
+      input: { type: 'step_execute', executionMode: 'remote' },
+    })
+  ).rejects.toThrow('refusing VQS fallback');
+});
 
 afterEach(() => {
   vi.unstubAllEnvs();
