@@ -70,3 +70,248 @@ jobs:
           path: vercel-deployment-dispatch-observation.json
           retention-days: 14
           if-no-files-found: error
+
+  verify-e2e-deployment:
+    name: Verify nextjs-turbopack E2E deployment
+    needs: observe-nextjs-turbopack
+    if: >-
+      github.event_name == 'repository_dispatch' &&
+      github.event.action == 'vercel.deployment.success' &&
+      github.event.client_payload.project.id ==
+      'prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
+    outputs:
+      deployment-id: ${{ steps.identity.outputs.deployment-id }}
+      deployment-url: ${{ steps.identity.outputs.deployment-url }}
+      environment: ${{ steps.identity.outputs.environment }}
+      project-id: ${{ steps.identity.outputs.project-id }}
+      project-name: ${{ steps.identity.outputs.project-name }}
+      ref: ${{ steps.identity.outputs.ref }}
+      sha: ${{ steps.identity.outputs.sha }}
+    steps:
+      - name: Checkout trusted verifier
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Verify dispatch against Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          VERCEL_TEAM_ID: team_nO2mCG4W8IxPIeKoSsqwAxxB
+        run: >-
+          node .github/scripts/verify-vercel-deployment-dispatch.js
+          --event-path "$GITHUB_EVENT_PATH"
+          --output deployment-identity.json
+
+      - name: Verify first-party Git ref and set pending status
+        id: identity
+        uses: actions/github-script@v7
+        env:
+          IDENTITY_PATH: deployment-identity.json
+          STATUS_CONTEXT: Workflow Dispatch E2E – nextjs-turbopack
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('node:fs');
+            const identity = JSON.parse(
+              fs.readFileSync(process.env.IDENTITY_PATH, 'utf8')
+            );
+            const ref = identity.ref.replace(/^refs\/heads\//, '');
+            if (
+              !ref ||
+              ref.startsWith('refs/') ||
+              ref.startsWith('pull/') ||
+              ref.includes('..') ||
+              ref.includes('\\')
+            ) {
+              core.setFailed(`Refusing untrusted Git ref: ${identity.ref}`);
+              return;
+            }
+
+            let tip;
+            try {
+              ({ data: { object: tip } } = await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${ref}`,
+              }));
+            } catch {
+              core.setFailed(`Ref ${ref} does not exist in ${context.repo.owner}/${context.repo.repo}`);
+              return;
+            }
+
+            if (tip.type !== 'commit') {
+              core.setFailed(`Ref ${ref} does not point to a commit`);
+              return;
+            }
+            if (tip.sha.toLowerCase() !== identity.sha.toLowerCase()) {
+              const { data: comparison } = await github.rest.repos.compareCommits({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                base: identity.sha,
+                head: tip.sha,
+              });
+              if (comparison.behind_by !== 0) {
+                core.setFailed(
+                  `Deployment SHA ${identity.sha} is not reachable from first-party ref ${ref}`
+                );
+                return;
+              }
+            }
+
+            for (const [name, value] of Object.entries({
+              'deployment-id': identity.deploymentId,
+              'deployment-url': identity.deploymentUrl,
+              environment: identity.environment,
+              'project-id': identity.projectId,
+              'project-name': identity.projectName,
+              ref,
+              sha: identity.sha,
+            })) {
+              core.setOutput(name, value);
+            }
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: identity.sha,
+              state: 'pending',
+              context: process.env.STATUS_CONTEXT,
+              description: 'Dispatch E2E pilot is running',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
+
+  # This job executes the deployed commit, so verify-e2e-deployment must first
+  # prove that Vercel built the expected project from a SHA reachable from a
+  # first-party vercel/workflow branch. Fork and pull refs never reach this job.
+  # The credential surface then matches the existing PR E2E matrix: read-only
+  # repository access, Vercel/Turbo test credentials, and Trusted Sources OIDC.
+  e2e:
+    name: Dispatch E2E nextjs-turbopack (${{ matrix.vm }})
+    needs: verify-e2e-deployment
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        vm: [node, quickjs]
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
+      WORKFLOW_RETURN_VALUE_POLL_INTERVAL_MS: '5000'
+    steps:
+      - name: Checkout verified deployed commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify-e2e-deployment.outputs.sha }}
+          persist-credentials: false
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          build-packages: 'false'
+
+      - name: Build CLI
+        run: pnpm turbo run build --filter='@workflow/cli'
+
+      - name: Record E2E start time
+        id: e2eStart
+        run: echo "ms=$(($(date +%s) * 1000))" >> "$GITHUB_OUTPUT"
+
+      - name: Run E2E tests
+        run: >-
+          pnpm run test:e2e
+          --reporter=verbose
+          --reporter=json
+          --reporter=./packages/core/e2e/github-reporter.ts
+          "--outputFile=e2e-vercel-dispatch-nextjs-turbopack-$WORKFLOW_VM.json"
+        env:
+          APP_NAME: nextjs-turbopack
+          DEPLOYMENT_URL: ${{ needs.verify-e2e-deployment.outputs.deployment-url }}
+          NODE_OPTIONS: '--enable-source-maps'
+          VERCEL_DEPLOYMENT_ID: ${{ needs.verify-e2e-deployment.outputs.deployment-id }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ needs.verify-e2e-deployment.outputs.environment != 'production' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_ENV: ${{ needs.verify-e2e-deployment.outputs.environment }}
+          WORKFLOW_VERCEL_PROJECT: ${{ needs.verify-e2e-deployment.outputs.project-id }}
+          WORKFLOW_VERCEL_PROJECT_SLUG: ${{ needs.verify-e2e-deployment.outputs.project-name }}
+          WORKFLOW_VERCEL_TEAM: team_nO2mCG4W8IxPIeKoSsqwAxxB
+          WORKFLOW_VM: ${{ matrix.vm }}
+
+      - name: Capture runtime logs on failure
+        if: failure()
+        env:
+          APP_NAME: nextjs-turbopack
+          E2E_START_MS: ${{ steps.e2eStart.outputs.ms }}
+          VERCEL_DEPLOYMENT_ID: ${{ needs.verify-e2e-deployment.outputs.deployment-id }}
+          WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
+          WORKFLOW_VERCEL_ENV: ${{ needs.verify-e2e-deployment.outputs.environment }}
+          WORKFLOW_VERCEL_PROJECT: ${{ needs.verify-e2e-deployment.outputs.project-id }}
+          WORKFLOW_VERCEL_TEAM: team_nO2mCG4W8IxPIeKoSsqwAxxB
+        run: node .github/scripts/fetch-e2e-runtime-logs.mjs
+
+      - name: Generate E2E summary
+        if: always()
+        env:
+          APP_NAME: nextjs-turbopack
+          WORKFLOW_VM: ${{ matrix.vm }}
+        run: >-
+          node .github/scripts/aggregate-e2e-results.js .
+          --job-name "Dispatch E2E nextjs-turbopack ($WORKFLOW_VM)"
+          >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload E2E results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dispatch-e2e-nextjs-turbopack-${{ matrix.vm }}-${{ github.run_id }}
+          path: |
+            e2e-vercel-dispatch-nextjs-turbopack-${{ matrix.vm }}.json
+            e2e-vercel-dispatch-nextjs-turbopack-${{ matrix.vm }}.flaky.json
+            e2e-metadata-nextjs-turbopack-vercel.json
+            e2e-failures-nextjs-turbopack-vercel.json
+            e2e-infra-nextjs-turbopack-vercel.json
+            e2e-diagnostics-nextjs-turbopack-vercel.json
+            e2e-runtime-logs-nextjs-turbopack-vercel.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  report:
+    name: Report dispatch E2E pilot
+    needs: [verify-e2e-deployment, e2e]
+    if: always() && needs.verify-e2e-deployment.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    steps:
+      - name: Publish advisory commit status
+        uses: actions/github-script@v7
+        env:
+          E2E_RESULT: ${{ needs.e2e.result }}
+          SHA: ${{ needs.verify-e2e-deployment.outputs.sha }}
+          STATUS_CONTEXT: Workflow Dispatch E2E – nextjs-turbopack
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const passed = process.env.E2E_RESULT === 'success';
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: process.env.SHA,
+              state: passed ? 'success' : 'failure',
+              context: process.env.STATUS_CONTEXT,
+              description: passed
+                ? 'Dispatch E2E pilot passed'
+                : `Dispatch E2E pilot ${process.env.E2E_RESULT}`,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
