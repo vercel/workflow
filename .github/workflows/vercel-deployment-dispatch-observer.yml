@@ -1,0 +1,72 @@
+name: Observe Vercel Deployment Dispatch
+run-name: >-
+  Observe Vercel deployment -
+  ${{ github.event.client_payload.project.name || 'manual simulation' }}
+  (${{ github.event.client_payload.state.type || inputs.event_type }})
+
+on:
+  repository_dispatch:
+    types:
+      - 'vercel.deployment.success'
+      - 'vercel.deployment.error'
+      - 'vercel.deployment.failed'
+      - 'vercel.deployment.canceled'
+      - 'vercel.deployment.ignored'
+      - 'vercel.deployment.skipped'
+  workflow_dispatch:
+    inputs:
+      event_type:
+        description: 'Vercel repository_dispatch event type to simulate'
+        required: true
+        default: 'vercel.deployment.success'
+        type: choice
+        options:
+          - 'vercel.deployment.success'
+          - 'vercel.deployment.error'
+          - 'vercel.deployment.failed'
+          - 'vercel.deployment.canceled'
+          - 'vercel.deployment.ignored'
+          - 'vercel.deployment.skipped'
+      client_payload:
+        description: 'JSON client_payload matching the Vercel deployment event schema'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  observe-nextjs-turbopack:
+    name: Observe nextjs-turbopack dispatch
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.client_payload.project.id == 'prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout observer
+        uses: actions/checkout@v4
+        with:
+          # repository_dispatch always executes the workflow definition from
+          # the default branch, and must execute trusted observer code from the
+          # same place. Once this workflow exists on main, later revisions can
+          # use a manual run against their selected branch for validation.
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || 'main' }}
+          persist-credentials: false
+
+      - name: Normalize deployment event
+        run: >-
+          node .github/scripts/observe-vercel-deployment-dispatch.js
+          --event-path "$GITHUB_EVENT_PATH"
+          --output vercel-deployment-dispatch-observation.json
+
+      - name: Upload observation
+        uses: actions/upload-artifact@v4
+        with:
+          name: >-
+            vercel-dispatch-${{
+              github.event.client_payload.project.name || 'manual'
+            }}-${{ github.run_id }}
+          path: vercel-deployment-dispatch-observation.json
+          retention-days: 14
+          if-no-files-found: error
