@@ -245,6 +245,8 @@ interface CreateEventV4InputBase {
   hookTokenRetentionUntil?: Date;
   hookIsWebhook?: boolean;
   hookIsSystem?: boolean;
+  /** hook_created: `createHook({ experimental_force })`. */
+  hookForce?: boolean;
   /** Lazy hook resume idempotency key. Set only on a `hook_received` written
    *  from a queue message's `hookInput`; routes the event through the
    *  server's `(runId, resumeId)` constraint so repeated deliveries of one
@@ -602,6 +604,7 @@ function buildPostFrameMeta(
   if (input.hookIsWebhook !== undefined)
     meta.hookIsWebhook = input.hookIsWebhook;
   if (input.hookIsSystem !== undefined) meta.hookIsSystem = input.hookIsSystem;
+  if (input.hookForce !== undefined) meta.hookForce = input.hookForce;
   if (input.resumeId !== undefined) meta.resumeId = input.resumeId;
   if (input.errorCode !== undefined) meta.errorCode = input.errorCode;
   if (input.cancelReason !== undefined) meta.cancelReason = input.cancelReason;
@@ -672,7 +675,12 @@ function errorFromV4Response(
   if (record) {
     if (typeof record.message === 'string') message = record.message;
     if (typeof record.code === 'string') code = record.code;
+    // The server's generic error responder names the code `error`.
+    else if (typeof record.error === 'string') code = record.error;
     if (statusCode === 412) details = decodePreconditionDetails(record);
+    if (statusCode === 409 && code === 'hook-force-claimed') {
+      details = { claimedBy: record.claimedBy };
+    }
   } else if (text) {
     // body wasn't a structured object, so keep the default message and append
     // whatever the server did send
@@ -697,6 +705,9 @@ function errorFromV4Response(
 interface V4ErrorBody {
   message?: unknown;
   code?: unknown;
+  error?: unknown;
+  /** 409 hook-force-claimed: the run and hook the token now belongs to. */
+  claimedBy?: unknown;
   events?: unknown;
   cursor?: unknown;
 }

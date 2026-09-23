@@ -21,6 +21,7 @@ import type { Attributes, Span } from '@opentelemetry/api';
 import { getVercelOidcToken } from '@vercel/oidc';
 import {
   EntityConflictError,
+  HookForceClaimedError,
   PreconditionFailedError,
   RunExpiredError,
   StreamError,
@@ -383,6 +384,22 @@ export function errorForResponse(
   } = {}
 ): Error {
   const { retryAfter, code, url, mitigated, details } = opts;
+  if (status === 409 && code === 'hook-force-claimed') {
+    // A hook_received refused because the hook's token was taken over by
+    // another run (`experimental_force`). The server completed the transfer
+    // before answering, so a fresh by-token lookup names the claimer; the
+    // event layer re-keys this with the token and `resumeHook()` follows it.
+    const claimedBy =
+      details && typeof details === 'object'
+        ? (details as { claimedBy?: { runId?: unknown; hookId?: unknown } })
+            .claimedBy
+        : undefined;
+    return new HookForceClaimedError(
+      '',
+      typeof claimedBy?.runId === 'string' ? claimedBy.runId : 'unknown',
+      typeof claimedBy?.hookId === 'string' ? claimedBy.hookId : undefined
+    );
+  }
   if (status === 409) return new EntityConflictError(message);
   if (status === 410) {
     if (code === 'stream-expired') {

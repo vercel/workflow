@@ -1,6 +1,7 @@
 export {
   EntityConflictError,
   HookConflictError,
+  HookForceClaimedError,
   HookNotFoundError,
   PreconditionFailedError,
   RunExpiredError,
