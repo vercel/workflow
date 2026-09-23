@@ -166,6 +166,21 @@ export interface NextConfig extends BaseWorkflowConfig {
   stepsBundlePath: string;
   workflowsBundlePath: string;
   webhookBundlePath: string;
+
+  /**
+   * Experimental: route segment the generated workflow routes are emitted
+   * below, so they answer at `<prefix>/.well-known/workflow/v1/*` instead of
+   * `/.well-known/workflow/v1/*`. Normalized to a leading slash with no
+   * trailing slash (for example `/ship`); undefined keeps the app-root layout.
+   *
+   * Unlike Next.js' `basePath`, which moves the whole app, this moves only the
+   * workflow routes. `basePath` must still carry the prefix so runtime URLs
+   * (webhook URLs, the local/Postgres queue target, health probes) address the
+   * routes where they were emitted.
+   *
+   * Set from `withWorkflow`'s `workflows.experimentalRoutePrefix` option.
+   */
+  experimentalRoutePrefix?: string;
 }
 
 /**

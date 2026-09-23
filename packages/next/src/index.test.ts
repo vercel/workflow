@@ -2,6 +2,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -185,6 +186,90 @@ describe('withWorkflow builder config', () => {
     expect(builderConfigs[0]).toMatchObject({
       basePath: '/v2',
     });
+  });
+
+  it('leaves the base path unset without basePath or a route prefix', async () => {
+    const config = withWorkflow({});
+
+    await config('phase-production-build', { defaultConfig: {} });
+
+    expect(builderConfigs[0]).toMatchObject({
+      basePath: undefined,
+      experimentalRoutePrefix: undefined,
+    });
+  });
+
+  it('passes a normalized route prefix to the workflow builder', async () => {
+    const config = withWorkflow(
+      {},
+      { workflows: { experimentalRoutePrefix: 'ship/' } }
+    );
+
+    await config('phase-production-build', { defaultConfig: {} });
+
+    expect(builderConfigs).toHaveLength(1);
+    expect(builderConfigs[0]).toMatchObject({
+      // The runtime resolves workflow URLs against the base path, so it has
+      // to carry the prefix the routes were emitted under.
+      basePath: '/ship',
+      experimentalRoutePrefix: '/ship',
+    });
+  });
+
+  it('appends the route prefix to the Next basePath', async () => {
+    const config = withWorkflow(
+      { basePath: '/v2' },
+      { workflows: { experimentalRoutePrefix: '/ship' } }
+    );
+
+    await config('phase-production-build', { defaultConfig: {} });
+
+    expect(builderConfigs[0]).toMatchObject({
+      basePath: '/v2/ship',
+      experimentalRoutePrefix: '/ship',
+    });
+  });
+
+  it('rejects an unusable route prefix when the config is created', () => {
+    expect(() =>
+      withWorkflow({}, { workflows: { experimentalRoutePrefix: '/[team]' } })
+    ).toThrowError(/workflows\.experimentalRoutePrefix/);
+  });
+
+  it('copies the diagnostics manifest from the prefixed route directory', async () => {
+    const projectDir = mkdtempSync(
+      join(realTmpDir, 'workflow-next-route-prefix-')
+    );
+    const manifest = '{"version":"1.0.0"}';
+    writeFile(
+      join(projectDir, 'app/ship/.well-known/workflow/v1/manifest.json'),
+      manifest
+    );
+
+    try {
+      const nextConfig = await withWorkflow(
+        {},
+        { workflows: { experimentalRoutePrefix: '/ship' } }
+      )('phase-production-build', { defaultConfig: {} });
+
+      await (
+        nextConfig.compiler as {
+          runAfterProductionCompile?: (metadata: {
+            projectDir: string;
+            distDir: string;
+          }) => Promise<void>;
+        }
+      ).runAfterProductionCompile?.({ projectDir, distDir: '.next' });
+
+      expect(
+        readFileSync(
+          join(projectDir, '.next/diagnostics/workflows-manifest.json'),
+          'utf-8'
+        )
+      ).toBe(manifest);
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
   });
 
   it('externalizes the non-bundlable Vercel packages while preserving user externals', async () => {
