@@ -125,6 +125,11 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // concurrent awaits share it (see `createHookPromise`).
     const promises: PromiseWithResolvers<T>[] = [];
 
+    // The awaiter a consumed `hook_received` payload is on its way to. It
+    // leaves `promises` when the event is consumed but only settles after
+    // earlier deliveries, so awaits made in between must share it too.
+    let inFlight: PromiseWithResolvers<T> | undefined;
+
     // Queue of promises that resolve once hook registration is confirmed
     // (with `null`) or a token conflict is detected (with the conflicting
     // `Run`). These back the `hook.getConflict()` getter.
@@ -374,6 +379,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
           );
           const next = promises.shift();
           if (next) {
+            inFlight = next;
             // Hydrate through a promiseQueue slot (so async deserialization
             // stays in event-log order), then defer behind earlier waits and
             // steps before resolving. The deferral runs OFF the serial queue
@@ -407,6 +413,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
               }
               void earlierDelivered.then(() => {
                 barrier.markDelivered();
+                if (inFlight === next) {
+                  inFlight = undefined;
+                }
                 if (hydrateOutcome.ok) {
                   next.resolve(hydrateOutcome.value);
                 } else {
@@ -521,6 +530,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         return resolvers.promise;
       }
 
+      // A payload already consumed from the log but not yet settled is the
+      // next one in log order, ahead of anything buffered after it.
+      if (inFlight) {
+        return inFlight.promise;
+      }
+
       if (payloadsQueue.length > 0) {
         const nextDelivery = payloadsQueue.shift();
         if (nextDelivery) {
@@ -542,7 +557,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       // so the next payload settles every one of them. A `Promise.race` that
       // loses to another branch abandons its awaiter without telling the hook;
       // enrolling a fresh awaiter per `then()` would hand the next payload to
-      // that abandoned await instead of the one still waiting.
+      // that abandoned await instead of the one still waiting. `inFlight`
+      // above covers the same case once the payload has been consumed.
       const pending = promises[0];
       if (pending) {
         return pending.promise;
