@@ -40,6 +40,17 @@ import type {
   StepWithoutData,
 } from './steps.js';
 
+/** Run-scoped transport resources for a single in-memory event writer.
+ * This does not acquire ownership or change event persistence semantics. */
+export interface EventWriteSession {
+  create(
+    event: CreateEventRequest,
+    params?: CreateEventParams
+  ): Promise<EventResult>;
+  /** Release resources after the owning loop and its writes have finished. */
+  dispose(): Promise<void> | void;
+}
+
 export interface StreamWriteSession {
   /**
    * Write one ordered group from this in-memory writer lifetime.
@@ -384,6 +395,9 @@ export interface Storage {
    * reader has already passed, breaks the property every replay depends on.
    */
   events: {
+    /** Begin transport setup synchronously, so it can overlap snapshot reads.
+     * Optional: runtimes otherwise use events.create directly. */
+    createWriteSession?(runId: string): EventWriteSession;
     /**
      * Create a run_created event to start a new workflow run.
      * The runId may be provided by the client or left as null for the server to generate.

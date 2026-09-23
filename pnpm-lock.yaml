@@ -1632,6 +1632,9 @@ importers:
       cbor-x:
         specifier: 1.6.0
         version: 1.6.0
+      jose:
+        specifier: 5.10.0
+        version: 5.10.0
       ulid:
         specifier: 'catalog:'
         version: 3.0.1

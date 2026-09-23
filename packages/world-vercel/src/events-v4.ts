@@ -947,11 +947,17 @@ export async function createWorkflowRunEventV4<T extends EventType>(
   input: CreateEventV4Input & { eventType: T },
   config?: APIConfig
 ): Promise<EventResult<T> & { event: Event }> {
-  if (isWsEventsTransportEnabled()) {
+  if (config?.requireWsEvents || isWsEventsTransportEnabled()) {
     // Absent means no socket was resolvable for this run, not that the write
     // failed, so fall through to HTTP.
     const reply = await postEventFrameOverWs(input, config);
     if (reply) return decodeCreateEventResponse(reply, input.eventType);
+    if (config?.requireWsEvents) {
+      throw new WorkflowWorldError(
+        'Owner event writer lost its WebSocket channel',
+        { code: 'TRANSPORT' }
+      );
+    }
     assertWsFallbackAllowed(input.eventType);
   }
 

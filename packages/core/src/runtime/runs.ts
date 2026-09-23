@@ -136,6 +136,19 @@ export async function cancelRun(
 ): Promise<void> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'none' });
+    if (
+      process.env.WORKFLOW_RETAINED_RUNNER === '1' &&
+      world.capabilities?.invoke &&
+      world.invoke &&
+      run.executionContext?.retainedRunnerVersion === 1
+    ) {
+      await world.invoke(runId, {
+        type: 'run_cancel',
+        version: 1,
+        cancelReason: options?.cancelReason,
+      });
+      return;
+    }
     const specVersion = run.specVersion ?? SPEC_VERSION_LEGACY;
     const compatMode = isLegacySpecVersion(specVersion);
     const eventRequest = {
@@ -194,7 +207,14 @@ export async function cancelRuns(
   }
 
   // Fast path: a single batch operation when the world supports it.
-  if (world.runs.cancelMany) {
+  if (
+    world.runs.cancelMany &&
+    !(
+      process.env.WORKFLOW_RETAINED_RUNNER === '1' &&
+      world.capabilities?.invoke &&
+      world.invoke
+    )
+  ) {
     return world.runs.cancelMany({
       runIds,
       ...(options?.cancelReason !== undefined

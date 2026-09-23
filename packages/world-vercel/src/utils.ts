@@ -24,7 +24,7 @@ import {
   parseRetryAfter,
   validateHttpUrl,
 } from './http-core.js';
-
+import type { VercelInvokeConfig } from './invocation.js';
 import {
   ErrorType,
   getSpanKind,
@@ -100,6 +100,8 @@ const getTestLimitOverridesHeader = (): string =>
   process.env.WORKFLOW_TEST_LIMIT_OVERRIDES?.trim() || '';
 
 export interface APIConfig {
+  /** Experimental direct invocation transport; absent by default. */
+  invoke?: VercelInvokeConfig;
   token?: string;
   headers?: RequestInit['headers'];
   /**
@@ -120,6 +122,8 @@ export interface APIConfig {
    * (the built-in stream dispatcher retries only on transient errors and 429).
    */
   dispatcher?: unknown;
+  /** @internal An owner-scoped writer must not silently lose its event channel. */
+  requireWsEvents?: boolean;
   projectConfig?: {
     /** The real Vercel project ID (e.g., prj_xxx) */
     projectId?: string;

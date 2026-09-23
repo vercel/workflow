@@ -289,6 +289,21 @@ export class Run<TResult> {
   async cancel(options?: CancelRunOptions): Promise<void> {
     'use step';
     const world = await this.#lazyWorldPromise;
+    if (
+      process.env.WORKFLOW_RETAINED_RUNNER === '1' &&
+      world.capabilities?.invoke &&
+      world.invoke
+    ) {
+      const run = await world.runs.get(this.runId, { resolveData: 'none' });
+      if (run.executionContext?.retainedRunnerVersion === 1) {
+        await world.invoke(this.runId, {
+          type: 'run_cancel',
+          version: 1,
+          cancelReason: options?.cancelReason,
+        });
+        return;
+      }
+    }
     await world.events.create(this.runId, {
       eventType: 'run_cancelled',
       specVersion: SPEC_VERSION_CURRENT,

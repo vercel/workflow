@@ -49,6 +49,43 @@ vi.mock('../telemetry.js', () => ({
 }));
 
 describe('start', () => {
+  it('commits retained-runner creation before publishing its wake', async () => {
+    vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
+    const entered = Promise.withResolvers<void>();
+    const committed = Promise.withResolvers<unknown>();
+    const create = vi.fn((_runId: string | null, _event: unknown) => {
+      entered.resolve();
+      return committed.promise;
+    });
+    const queue = vi.fn().mockResolvedValue(undefined);
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { invoke: true },
+      invoke: vi.fn(),
+      getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+      events: { create },
+      queue,
+    });
+    try {
+      const workflow = Object.assign(async () => 'result', {
+        workflowId: 'retained-test',
+      });
+      const starting = start(workflow, []);
+      await entered.promise;
+      expect(queue).not.toHaveBeenCalled();
+      expect(create.mock.calls[0][1]).toMatchObject({
+        eventData: { executionContext: { retainedRunnerVersion: 1 } },
+      });
+      committed.resolve({
+        run: { runId: create.mock.calls[0][0], status: 'pending' },
+      });
+      await starting;
+      expect(queue).toHaveBeenCalledTimes(1);
+    } finally {
+      setWorld(undefined);
+      vi.unstubAllEnvs();
+    }
+  });
   describe('error handling', () => {
     it('should throw WorkflowRuntimeError when workflow is undefined', async () => {
       await expect(
