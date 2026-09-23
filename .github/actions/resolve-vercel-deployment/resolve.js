@@ -164,6 +164,16 @@ function describe(observation) {
   return `${uid} is ${observation.state} (${inspectorUrl})`;
 }
 
+function timeoutError(subject, lastState) {
+  // A canceled build is waited on rather than failed: a redeploy of the same
+  // commit replaces it, and a newer commit cancels this run.
+  return new FatalError(
+    lastState === 'CANCELED'
+      ? `Timed out: the ${subject} was canceled and not redeployed`
+      : `Timed out waiting for the ${subject} (last state: ${lastState ?? 'unknown'})`
+  );
+}
+
 async function waitForDeployment({
   timeoutMs,
   intervalMs,
@@ -194,13 +204,7 @@ async function waitForDeployment({
       throw new FatalError(`${uid} failed to build: ${inspectorUrl}`);
     }
     if (now() + intervalMs > deadline) {
-      // A canceled build is waited on rather than failed: a redeploy of the
-      // same commit replaces it, and a newer commit cancels this run.
-      throw new FatalError(
-        lastState === 'CANCELED'
-          ? `Timed out: the ${subject} was canceled and not redeployed`
-          : `Timed out waiting for the ${subject} (last state: ${lastState ?? 'unknown'})`
-      );
+      throw timeoutError(subject, lastState);
     }
     await sleep(intervalMs);
   }
