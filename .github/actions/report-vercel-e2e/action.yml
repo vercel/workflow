@@ -54,14 +54,14 @@ runs:
         WORKFLOW_VERCEL_ENV: ${{ inputs.environment }}
         VERCEL_DEPLOYMENT_ID: ${{ inputs.deployment-id }}
         E2E_START_MS: ${{ inputs.e2e-start-ms }}
-      run: node .github/scripts/fetch-e2e-runtime-logs.mjs
+      run: node "$GITHUB_ACTION_PATH/../../scripts/fetch-e2e-runtime-logs.mjs"
 
     - name: Generate E2E summary
       if: always()
       shell: bash
       env:
         SUMMARY_TITLE: ${{ inputs.summary-title }}
-      run: node .github/scripts/aggregate-e2e-results.js . --job-name "$SUMMARY_TITLE" >> "$GITHUB_STEP_SUMMARY" || true
+      run: node "$GITHUB_ACTION_PATH/../../scripts/aggregate-e2e-results.js" . --job-name "$SUMMARY_TITLE" >> "$GITHUB_STEP_SUMMARY" || true
 
     - name: Upload E2E results
       if: always()

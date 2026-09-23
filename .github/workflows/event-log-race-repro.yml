@@ -134,9 +134,17 @@ jobs:
       - name: Build CLI
         run: pnpm turbo run build --filter='@workflow/cli'
 
+      # See "Checkout CI tooling" in tests.yml's ci-scope job.
+      - name: Checkout CI tooling
+        uses: actions/checkout@v4
+        with:
+          path: .ci
+          sparse-checkout: .github
+          persist-credentials: false
+
       - name: Resolve Vercel deployment
         id: deployment
-        uses: ./.github/actions/resolve-vercel-deployment
+        uses: ./.ci/.github/actions/resolve-vercel-deployment
         with:
           project-id: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
           token: ${{ secrets.VERCEL_LABS_TOKEN }}

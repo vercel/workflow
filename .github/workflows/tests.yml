@@ -73,10 +73,26 @@ jobs:
           echo "slot=$((RUN_ID % slots))" >> "$GITHUB_OUTPUT"
           echo "Vercel e2e lanes use slot $((RUN_ID % slots)) of $slots"
 
+      # CI tooling this workflow calls (local actions and scripts under
+      # .github/) is read from the commit the workflow file itself came from,
+      # not the PR head the jobs test, so a branch that predates a tooling
+      # change still finds what the workflow calls. On `pull_request` that
+      # commit is the merge commit, which the PR author already controls
+      # through the workflow file, so this grants nothing the PR could not
+      # already do. Do not copy it into a `pull_request_target` or
+      # `workflow_run` workflow, where the workflow is trusted and the PR is
+      # not.
+      - name: Checkout CI tooling
+        uses: actions/checkout@v4
+        with:
+          path: .ci
+          sparse-checkout: .github
+          persist-credentials: false
+
       # Vercel projects and per-lane matrices for the e2e-vercel-* jobs.
       - name: Build Vercel e2e matrices
         id: vercel-matrix
-        run: node .github/scripts/vercel-e2e-matrix.js >> "$GITHUB_OUTPUT"
+        run: node .ci/.github/scripts/vercel-e2e-matrix.js >> "$GITHUB_OUTPUT"
 
   # Phase 0: Update PR comment to show tests are running
   pr-comment-start:
@@ -407,6 +423,14 @@ jobs:
       - name: Build CLI
         run: pnpm turbo run build --filter='@workflow/cli'
 
+      # See "Checkout CI tooling" in the ci-scope job.
+      - name: Checkout CI tooling
+        uses: actions/checkout@v4
+        with:
+          path: .ci
+          sparse-checkout: .github
+          persist-credentials: false
+
       # Pull requests test their head commit's preview deployment and main
       # tests its production deployment. `changeset-release/*` PRs (the
       # changesets "Version Packages" PR) are deliberately not deployed: the
@@ -416,7 +440,7 @@ jobs:
       # production deployment of their base commit instead.
       - name: Resolve Vercel deployment
         id: deployment
-        uses: ./.github/actions/resolve-vercel-deployment
+        uses: ./.ci/.github/actions/resolve-vercel-deployment
         with:
           project-id: ${{ matrix.app.project-id }}
           team-id: ${{ env.VERCEL_TEAM_ID }}
@@ -455,7 +479,7 @@ jobs:
 
       - name: Report E2E results
         if: always()
-        uses: ./.github/actions/report-vercel-e2e
+        uses: ./.ci/.github/actions/report-vercel-e2e
         with:
           results-name: vercel-prod-${{ matrix.app.name }}-${{ matrix.vm }}
           app: ${{ matrix.app.name }}
@@ -510,10 +534,18 @@ jobs:
       - name: Build CLI
         run: pnpm turbo run build --filter='@workflow/cli'
 
+      # See "Checkout CI tooling" in the ci-scope job.
+      - name: Checkout CI tooling
+        uses: actions/checkout@v4
+        with:
+          path: .ci
+          sparse-checkout: .github
+          persist-credentials: false
+
       # See the note on e2e-vercel-prod's deployment step.
       - name: Resolve Vercel deployment
         id: deployment
-        uses: ./.github/actions/resolve-vercel-deployment
+        uses: ./.ci/.github/actions/resolve-vercel-deployment
         with:
           project-id: ${{ env.VERCEL_PROJECT_ID }}
           team-id: ${{ env.VERCEL_TEAM_ID }}
@@ -540,7 +572,7 @@ jobs:
 
       - name: Report E2E results
         if: always()
-        uses: ./.github/actions/report-vercel-e2e
+        uses: ./.ci/.github/actions/report-vercel-e2e
         with:
           results-name: vercel-multi-region-nextjs-turbopack
           app: nextjs-turbopack
@@ -601,6 +633,14 @@ jobs:
       - name: Build CLI
         run: pnpm turbo run build --filter='@workflow/cli'
 
+      # See "Checkout CI tooling" in the ci-scope job.
+      - name: Checkout CI tooling
+        uses: actions/checkout@v4
+        with:
+          path: .ci
+          sparse-checkout: .github
+          persist-credentials: false
+
       # Strict mode turns a silent HTTP demotion into a failed run, so this
       # lane asserts the socket carried traffic instead of only asserting the
       # feature was harmless. Scoped to `step_completed`; see
@@ -608,7 +648,7 @@ jobs:
       # back legitimately. Never set on e2e-vercel-prod.
       - name: Deploy a dedicated WS-transport preview
         id: deployment
-        uses: ./.github/actions/deploy-vercel-preview
+        uses: ./.ci/.github/actions/deploy-vercel-preview
         with:
           project-id: ${{ matrix.app.project-id }}
           team-id: ${{ env.VERCEL_TEAM_ID }}
@@ -637,7 +677,7 @@ jobs:
 
       - name: Report E2E results
         if: always()
-        uses: ./.github/actions/report-vercel-e2e
+        uses: ./.ci/.github/actions/report-vercel-e2e
         with:
           results-name: vercel-ws-transport-${{ matrix.app.name }}
           app: ${{ matrix.app.name }}
@@ -714,13 +754,21 @@ jobs:
       - name: Build CLI
         run: pnpm turbo run build --filter='@workflow/cli'
 
+      # See "Checkout CI tooling" in the ci-scope job.
+      - name: Checkout CI tooling
+        uses: actions/checkout@v4
+        with:
+          path: .ci
+          sparse-checkout: .github
+          persist-credentials: false
+
       # `http` is the one value that opts out; the gate compares against
       # exactly this string, so a typo here would silently test the default
       # instead of the fallback and this lane would quietly become a
       # duplicate of e2e-vercel-prod.
       - name: Deploy a dedicated HTTP-transport preview
         id: deployment
-        uses: ./.github/actions/deploy-vercel-preview
+        uses: ./.ci/.github/actions/deploy-vercel-preview
         with:
           project-id: ${{ matrix.app.project-id }}
           team-id: ${{ env.VERCEL_TEAM_ID }}
@@ -748,7 +796,7 @@ jobs:
 
       - name: Report E2E results
         if: always()
-        uses: ./.github/actions/report-vercel-e2e
+        uses: ./.ci/.github/actions/report-vercel-e2e
         with:
           results-name: vercel-http-transport-${{ matrix.app.name }}
           app: ${{ matrix.app.name }}
