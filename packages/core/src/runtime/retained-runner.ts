@@ -370,6 +370,22 @@ export class RetainedRunner {
           parsed.input &&
           typeof parsed.input === 'object' &&
           'type' in parsed.input &&
+          parsed.input.type === 'run_start'
+        ) {
+          // Start delivered to this owner rather than through the queue. The
+          // run is already durably created; a repeated start only re-advances.
+          if ((parsed.input as { version?: unknown }).version !== 1)
+            throw new InputRejected('Invalid start input', { status: 400 });
+          // A retained session means the run already advanced to a
+          // suspension; re-advancing without new events is not a valid resume.
+          if (!this.session && !isTerminalWorkflowRunStatus(this.run.status))
+            await this.advance();
+          return { status: 'accepted' };
+        }
+        if (
+          parsed.input &&
+          typeof parsed.input === 'object' &&
+          'type' in parsed.input &&
           parsed.input.type === 'run_cancel'
         ) {
           const cancel = parsed.input as {

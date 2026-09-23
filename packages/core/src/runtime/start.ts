@@ -747,10 +747,36 @@ export async function start<TArgs extends unknown[], TResult>(
             ...(opts.region !== undefined ? { region: opts.region } : {}),
           }
         );
+      // Retained runs start on their owner through invoke, so the first turn
+      // runs where later inputs are routed. An unknown or failed invoke
+      // outcome falls back to the queue wake: a duplicate start only
+      // re-advances the owner, while no fallback could orphan the run.
+      const startOwner = async () => {
+        try {
+          if (!world.invoke) throw new Error('World invoke is unavailable');
+          await world.invoke(
+            runId,
+            { type: 'run_start', version: 1 },
+            {
+              idempotencyKey: `run-start:${runId}`,
+              target: { deploymentId, workflowName },
+            }
+          );
+        } catch (error) {
+          runtimeLogger.warn(
+            'Direct run start did not confirm; falling back to the queue.',
+            {
+              workflowRunId: runId,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+          await enqueue();
+        }
+      };
       const [runCreatedResult, queueResult] = await Promise.allSettled([
         creation,
         executionContext.retainedRunnerVersion === 1
-          ? creation.then(enqueue)
+          ? creation.then(startOwner)
           : enqueue(),
       ]);
 

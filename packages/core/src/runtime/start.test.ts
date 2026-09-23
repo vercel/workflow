@@ -49,7 +49,7 @@ vi.mock('../telemetry.js', () => ({
 }));
 
 describe('start', () => {
-  it('commits retained-runner creation before publishing its wake', async () => {
+  it('commits retained-runner creation before starting its owner through invoke', async () => {
     vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
     const entered = Promise.withResolvers<void>();
     const committed = Promise.withResolvers<unknown>();
@@ -58,10 +58,11 @@ describe('start', () => {
       return committed.promise;
     });
     const queue = vi.fn().mockResolvedValue(undefined);
+    const invoke = vi.fn().mockResolvedValue({ status: 'accepted' });
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
       capabilities: { invoke: true },
-      invoke: vi.fn(),
+      invoke,
       getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
       events: { create },
       queue,
@@ -72,20 +73,59 @@ describe('start', () => {
       });
       const starting = start(workflow, []);
       await entered.promise;
-      expect(queue).not.toHaveBeenCalled();
+      expect(invoke).not.toHaveBeenCalled();
       expect(create.mock.calls[0][1]).toMatchObject({
         eventData: { executionContext: { retainedRunnerVersion: 1 } },
       });
-      committed.resolve({
-        run: { runId: create.mock.calls[0][0], status: 'pending' },
-      });
+      const runId = create.mock.calls[0][0];
+      committed.resolve({ run: { runId, status: 'pending' } });
       await starting;
-      expect(queue).toHaveBeenCalledTimes(1);
+      expect(invoke).toHaveBeenCalledWith(
+        runId,
+        { type: 'run_start', version: 1 },
+        {
+          idempotencyKey: `run-start:${runId}`,
+          target: { deploymentId: 'deploy_123', workflowName: 'retained-test' },
+        }
+      );
+      expect(queue).not.toHaveBeenCalled();
     } finally {
       setWorld(undefined);
       vi.unstubAllEnvs();
     }
   });
+
+  it('falls back to the queue wake when the direct start outcome is unknown', async () => {
+    vi.stubEnv('WORKFLOW_RETAINED_RUNNER', '1');
+    const create = vi.fn(async (runId: string | null) => ({
+      run: { runId, status: 'pending' },
+    }));
+    const queue = vi.fn().mockResolvedValue(undefined);
+    const invoke = vi.fn().mockRejectedValue(new Error('outcome unknown'));
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { invoke: true },
+      invoke,
+      getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+      events: { create },
+      queue,
+    });
+    try {
+      const workflow = Object.assign(async () => 'result', {
+        workflowId: 'retained-test',
+      });
+      await start(workflow, []);
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(queue).toHaveBeenCalledTimes(1);
+      expect(queue.mock.calls[0][1]).toMatchObject({
+        runId: create.mock.calls[0][0],
+      });
+    } finally {
+      setWorld(undefined);
+      vi.unstubAllEnvs();
+    }
+  });
+
   describe('error handling', () => {
     it('should throw WorkflowRuntimeError when workflow is undefined', async () => {
       await expect(

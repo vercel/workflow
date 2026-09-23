@@ -980,6 +980,33 @@ it.each([
   expect((await fixture.world.runs.get(fixture.runId)).status).toBe('failed');
 });
 
+it('starts a created run from a run_start invocation and accepts repeats', async () => {
+  registerStepFunction('retainedWrite', async () => undefined);
+  const fixture = await setup();
+  const start = {
+    runId: fixture.runId,
+    invoke: true,
+    requestId: `run-start:${fixture.runId}`,
+    input: { type: 'run_start', version: 1 },
+  };
+  await expect(fixture.owner.submit(start, fixture.metadata)).resolves.toEqual({
+    status: 'accepted',
+  });
+  const types = fixture.owner.events.map((event) => event.eventType);
+  expect(types).toContain('run_started');
+  expect(types).toContain('hook_created');
+  await expect(fixture.owner.submit(start, fixture.metadata)).resolves.toEqual({
+    status: 'accepted',
+  });
+  expect(fixture.owner.events.map((event) => event.eventType)).toEqual(types);
+  await expect(
+    fixture.owner.submit(
+      { ...start, input: { type: 'run_start', version: 2 } },
+      fixture.metadata
+    )
+  ).rejects.toThrow('Invalid start input');
+});
+
 it('opens hook inputs sealed to the run while retaining its VM', async () => {
   const values: unknown[] = [];
   registerStepFunction('retainedWrite', async (value) => {
