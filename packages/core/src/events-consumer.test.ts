@@ -489,6 +489,51 @@ describe('EventsConsumer', () => {
     });
   });
 
+  describe('abandon', () => {
+    // #4231: a session thrown away mid-build leaves the walk armed on an event
+    // no consumer will ever claim, and the check it scheduled fires long after
+    // the caller has its error.
+    it('drops a check already scheduled', async () => {
+      const event = createMockEvent();
+      const onUnconsumedEvent = vi.fn();
+      const consumer = new EventsConsumer([event], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      });
+      consumer.subscribe(() => EventConsumerResult.NotConsumed);
+      await waitForNextTick();
+
+      consumer.abandon();
+
+      // Past the deferred window, so "not fired" is not "not fired yet".
+      await new Promise((resolve) =>
+        setTimeout(resolve, DEFERRED_CHECK_DELAY_MS * 3)
+      );
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+
+    it('schedules no check for a later pass', async () => {
+      const event = createMockEvent();
+      const onUnconsumedEvent = vi.fn();
+      const consumer = new EventsConsumer([event], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+        isDeliveryIdle: () => true,
+      });
+
+      consumer.abandon();
+      // A subscribe() after abandonment still walks; what it must not do is
+      // arm a new check, since the version bump only covers the in-flight one.
+      consumer.subscribe(() => EventConsumerResult.NotConsumed);
+
+      await new Promise((resolve) =>
+        setTimeout(resolve, DEFERRED_CHECK_DELAY_MS * 3)
+      );
+      expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    });
+  });
+
   describe('parking events that carry no ordering claim', () => {
     /**
      * A log event of a real type. The rest of this file uses a mock shape with
