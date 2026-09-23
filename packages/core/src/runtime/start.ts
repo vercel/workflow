@@ -15,6 +15,8 @@ import {
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
   workflowRunIdSchema,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
@@ -40,7 +42,11 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
 import { getWorldLazy } from './get-world-lazy.js';
-import { getWorkflowQueueName, healthCheck } from './helpers.js';
+import {
+  getWorkflowQueueName,
+  type HealthCheckResult,
+  healthCheck,
+} from './helpers.js';
 import { Run } from './run.js';
 import { getWorkflowVmFromEnv } from './vm-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
@@ -63,6 +69,50 @@ const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
  * travels as `'0'`, not as the name of a mode.
  */
 const RETENTION_ZERO_ATTRIBUTE_VALUE = '0';
+
+/**
+ * The spec version to stamp on a run that another deployment will execute.
+ *
+ * A run's spec version is a promise about the runtime that reads and writes
+ * its event log, and for a cross-deployment start that is the target, not
+ * this caller. The capability probe runs inside the target and reports the
+ * version the target itself mints (which already honours the target's own
+ * `WORKFLOW_SEALED_LOG` switch), so that is the answer, capped at what this
+ * caller's World mints: the caller writes `run_created` and the arguments,
+ * and must never stamp a version it could not have written itself.
+ *
+ * When the target cannot tell us, this errs low rather than falling back to
+ * the caller's own version, because the two directions do not fail alike. A
+ * version below what the target supports only switches version-gated
+ * behaviour off for this run; one above it is rejected by the target's
+ * `requiresNewerWorld` check when it picks the run up, after `start()` has
+ * already returned, leaving a run that never starts. So:
+ *
+ * - a target that answers in the pre-JSON plain-text format predates the
+ *   versioned health response (spec 3), and is stamped as event-sourced;
+ * - a probe that times out (or no probe channel at all) gets the lowest
+ *   version this runtime serves, `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY`.
+ *
+ * Exported for tests.
+ */
+export function resolveCrossDeploymentSpecVersion(
+  probe: Pick<HealthCheckResult, 'healthy' | 'specVersion'> | undefined,
+  callerSpecVersion: number
+): number {
+  let target: number;
+  if (
+    typeof probe?.specVersion === 'number' &&
+    Number.isInteger(probe.specVersion) &&
+    probe.specVersion >= 1
+  ) {
+    target = probe.specVersion;
+  } else if (probe?.healthy) {
+    target = SPEC_VERSION_SUPPORTS_EVENT_SOURCING;
+  } else {
+    target = SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
+  }
+  return Math.min(target, callerSpecVersion);
+}
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
@@ -119,7 +169,11 @@ export interface StartOptionsBase {
   world?: World;
 
   /**
-   * The spec version to use for the workflow run. Defaults to the latest version.
+   * The spec version to use for the workflow run. Defaults to the spec
+   * version of the deployment that will execute the run: the configured
+   * World's for a same-deployment start, and for a cross-deployment start
+   * (`deploymentId` naming another deployment) the version the target
+   * reports on its capability probe, capped at the configured World's.
    */
   specVersion?: number;
 
@@ -400,12 +454,18 @@ export async function start<TArgs extends unknown[], TResult>(
       // Public key of the target run, when the capability probe was able to
       // supply one (cross-deployment only).
       let probedRunPublicKey: string | undefined;
-      if (deploymentId === currentDeploymentId) {
+      // The spec version of the runtime that will execute this run: this
+      // process for a same-deployment start, the target (as reported by the
+      // probe) otherwise. See `resolveCrossDeploymentSpecVersion`.
+      let targetSpecVersion: number;
+      const crossDeployment = deploymentId !== currentDeploymentId;
+      if (!crossDeployment) {
         framedByteStreams = true;
         targetSupportsCompression = true;
         // Same deployment: this process is the consumer, so its own constant
         // is authoritative.
         targetHookResumeInputVersion = HOOK_RESUME_INPUT_VERSION;
+        targetSpecVersion = world.specVersion;
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
         targetSupportsCompression = false;
@@ -413,6 +473,11 @@ export async function start<TArgs extends unknown[], TResult>(
         // honors `hookInput`; leave the marker off (older producers fail
         // closed to their sequential path).
         targetHookResumeInputVersion = undefined;
+        // Nor its spec version, so err low for the same reason.
+        targetSpecVersion = resolveCrossDeploymentSpecVersion(
+          undefined,
+          world.specVersion
+        );
       } else {
         // Ask for this run's public key while we're here. The probe already
         // blocks `start()` on every cross-deployment call, and the responder
@@ -437,6 +502,10 @@ export async function start<TArgs extends unknown[], TResult>(
         // `hookResumeInputVersion` reflects the consumer. Undefined on an
         // older target or a probe timeout, leaving the marker off.
         targetHookResumeInputVersion = probe?.hookResumeInputVersion;
+        targetSpecVersion = resolveCrossDeploymentSpecVersion(
+          probe,
+          world.specVersion
+        );
       }
 
       const ops: Promise<void>[] = [];
@@ -444,17 +513,26 @@ export async function start<TArgs extends unknown[], TResult>(
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
 
-      // Default new runs to the configured world's spec version. The world
-      // itself has already been checked against this runtime's spec version.
-      const specVersion = opts.specVersion ?? world.specVersion;
+      // Default new runs to the spec version of the deployment that will
+      // execute them: the configured world's for a same-deployment start
+      // (the world itself has already been checked against this runtime's
+      // spec version), the probed target's for a cross-deployment one. An
+      // explicit `specVersion` still wins.
+      const specVersion = opts.specVersion ?? targetSpecVersion;
+      // Once a probe can lower the version, a failed gate below is about the
+      // target deployment, not this caller's World: say so.
+      const attributesUnsupported = (featureRequires: string) =>
+        new WorkflowRuntimeError(
+          crossDeployment && opts.specVersion === undefined
+            ? `${featureRequires} spec version ${SPEC_VERSION_SUPPORTS_ATTRIBUTES} or later, but the target deployment (${deploymentId}) runs spec version ${specVersion}.`
+            : `${featureRequires} a World that supports spec version ${SPEC_VERSION_SUPPORTS_ATTRIBUTES} or later.`
+        );
       const v1Compat = isLegacySpecVersion(specVersion);
       const allowReservedAttributes = opts.allowReservedAttributes === true;
       let attributes: Record<string, string> | undefined;
       if (opts.attributes && Object.keys(opts.attributes).length > 0) {
         if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
-          throw new WorkflowRuntimeError(
-            'Initial workflow attributes require a World that supports spec version 4 or later.'
-          );
+          throw attributesUnsupported('Initial workflow attributes require');
         }
         // `normalizeAttributeChanges` treats `undefined` as "remove this
         // key", which is meaningless at creation time. Reject it up front
@@ -498,8 +576,8 @@ export async function start<TArgs extends unknown[], TResult>(
           );
         }
         if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
-          throw new WorkflowRuntimeError(
-            'start({ experimental_retention }) requires a World that supports spec version 4 or later.'
+          throw attributesUnsupported(
+            'start({ experimental_retention }) requires'
           );
         }
         retentionAttribute = {
