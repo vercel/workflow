@@ -1,0 +1,80 @@
+name: Report Vercel E2E results
+description: >
+  Captures the deployment's runtime logs when the lane failed, writes the
+  lane's step summary, and uploads its result files for the E2E Summary and
+  flake-history jobs. Call it with `if: always()`.
+
+inputs:
+  results-name:
+    description: >
+      Lane result name, e.g. `vercel-prod-express-node`. The test run writes
+      `e2e-<results-name>.json`; the artifact is `e2e-results-<results-name>`.
+      Downstream scripts derive the lane and app from these names.
+    required: true
+  app:
+    description: Workbench app name.
+    required: true
+  summary-title:
+    description: Heading for the step summary.
+    required: true
+  capture-runtime-logs:
+    description: "`true` when the lane failed; pass `job.status == 'failure'`."
+    required: true
+  deployment-id:
+    description: Deployment under test; empty if it was never resolved.
+    required: false
+  environment:
+    description: Vercel environment of the deployment (production or preview).
+    required: false
+  project-id:
+    description: Vercel project ID.
+    required: true
+  team-id:
+    description: Vercel team ID.
+    required: true
+  token:
+    description: Vercel API token used to read runtime logs.
+    required: true
+  e2e-start-ms:
+    description: Epoch milliseconds when the tests started, bounding the log query.
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Capture runtime logs
+      if: always() && inputs.capture-runtime-logs == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        APP_NAME: ${{ inputs.app }}
+        WORKFLOW_VERCEL_AUTH_TOKEN: ${{ inputs.token }}
+        WORKFLOW_VERCEL_TEAM: ${{ inputs.team-id }}
+        WORKFLOW_VERCEL_PROJECT: ${{ inputs.project-id }}
+        WORKFLOW_VERCEL_ENV: ${{ inputs.environment }}
+        VERCEL_DEPLOYMENT_ID: ${{ inputs.deployment-id }}
+        E2E_START_MS: ${{ inputs.e2e-start-ms }}
+      run: node .github/scripts/fetch-e2e-runtime-logs.mjs
+
+    - name: Generate E2E summary
+      if: always()
+      shell: bash
+      env:
+        SUMMARY_TITLE: ${{ inputs.summary-title }}
+      run: node .github/scripts/aggregate-e2e-results.js . --job-name "$SUMMARY_TITLE" >> "$GITHUB_STEP_SUMMARY" || true
+
+    - name: Upload E2E results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: e2e-results-${{ inputs.results-name }}
+        path: |
+          e2e-${{ inputs.results-name }}.json
+          e2e-${{ inputs.results-name }}.flaky.json
+          e2e-metadata-${{ inputs.app }}-vercel.json
+          e2e-failures-${{ inputs.app }}-vercel.json
+          e2e-infra-${{ inputs.app }}-vercel.json
+          e2e-diagnostics-${{ inputs.app }}-vercel.json
+          e2e-runtime-logs-${{ inputs.app }}-vercel.json
+        retention-days: 7
+        if-no-files-found: ignore

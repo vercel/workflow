@@ -15,6 +15,7 @@ import {
   sleep,
 } from 'workflow';
 import { getHookByToken, getRun, Run, resumeHook, start } from 'workflow/api';
+import { HookConflictError, HookForceClaimedError } from 'workflow/errors';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -932,6 +933,191 @@ export async function hookSupersedeOwnerWorkflow(token: string) {
   }
 
   throw new Error(`Could not claim ${token} after cancelling the owner`);
+}
+
+//////////////////////////////////////////////////////////
+// createHook({ experimental_force: true })
+
+/**
+ * Owns `token` until another run takes it. Awaits one payload; when the token
+ * is taken over first, `await hook` rejects with HookForceClaimedError, which
+ * this workflow catches and reports — the run completes, so a completed run
+ * proves both the durable signal and the wake reached it.
+ */
+export async function hookForceClaimVictimWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({ token });
+  try {
+    const payload = await hook;
+    return { role: 'owner' as const, received: payload.message };
+  } catch (err) {
+    if (HookForceClaimedError.is(err)) {
+      return {
+        role: 'force_claimed' as const,
+        claimedByRunId: err.claimedByRunId,
+        claimedByHookId: err.claimedByHookId ?? null,
+        token: err.token,
+      };
+    }
+    throw err;
+  }
+}
+
+/**
+ * Takes `token` over and awaits one payload, but — like the victim — reports
+ * a later takeover instead of failing. The middle link of a chain.
+ */
+export async function hookForceClaimVictimWorkflowForced(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({
+    token,
+    experimental_force: true,
+  });
+  try {
+    const payload = await hook;
+    return { role: 'owner' as const, received: payload.message };
+  } catch (err) {
+    if (HookForceClaimedError.is(err)) {
+      return {
+        role: 'force_claimed' as const,
+        claimedByRunId: err.claimedByRunId,
+        claimedByHookId: err.claimedByHookId ?? null,
+        token: err.token,
+      };
+    }
+    throw err;
+  }
+}
+
+/**
+ * Takes `token` over from whoever holds it and awaits one payload.
+ */
+export async function hookForceClaimClaimerWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({
+    token,
+    experimental_force: true,
+  });
+  const conflict = await hook.getConflict();
+  const payload = await hook;
+  return {
+    role: 'claimer' as const,
+    conflict: conflict ? conflict.runId : null,
+    received: payload.message,
+  };
+}
+
+/**
+ * Iterates payloads until the token is taken over, then reports what it
+ * received before that. Payloads delivered before the takeover stay with
+ * this run; the error arrives only once they are drained.
+ */
+export async function hookForceClaimIteratingVictimWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ n: number }>({ token });
+  const received: number[] = [];
+  try {
+    for await (const payload of hook) {
+      received.push(payload.n);
+    }
+  } catch (err) {
+    if (HookForceClaimedError.is(err)) {
+      return { received, claimedByRunId: err.claimedByRunId };
+    }
+    throw err;
+  }
+  return { received, claimedByRunId: null };
+}
+
+/**
+ * Takes `token` over and collects `count` payloads.
+ */
+export async function hookForceClaimCollectorWorkflow(
+  token: string,
+  count: number
+) {
+  'use workflow';
+
+  using hook = createHook<{ n: number }>({ token, experimental_force: true });
+  const received: number[] = [];
+  for await (const payload of hook) {
+    received.push(payload.n);
+    if (received.length >= count) break;
+  }
+  return { received };
+}
+
+/**
+ * Holds `token` past its own completion (`experimental_minRetention`), so a
+ * later forced creation takes it from a finished run.
+ */
+export async function hookForceClaimRetainedVictimWorkflow(token: string) {
+  'use workflow';
+
+  // Deliberately not `using`: disposing would release the token at scope
+  // exit, and the point is a token that outlives its run.
+  const hook = createHook<{ message: string }>({
+    token,
+    experimental_minRetention: '1h',
+  });
+  const payload = await hook;
+  return { received: payload.message };
+}
+
+/**
+ * Takes over its own earlier hook: the first hook's awaiter rejects with
+ * HookForceClaimedError naming this same run, the second receives the payload.
+ */
+export async function hookForceClaimOwnHookWorkflow(token: string) {
+  'use workflow';
+
+  const first = createHook<{ message: string }>({ token });
+  const firstOutcome = first.then(
+    (payload) => ({ ok: true as const, message: payload.message }),
+    (err: unknown) =>
+      HookForceClaimedError.is(err)
+        ? { ok: false as const, claimedByRunId: err.claimedByRunId }
+        : Promise.reject(err)
+  );
+  using second = createHook<{ message: string }>({
+    token,
+    experimental_force: true,
+  });
+  const payload = await second;
+  const firstResult = await firstOutcome;
+  first.dispose();
+  return { first: firstResult, second: payload.message };
+}
+
+/**
+ * Forces `token` but treats a refusal as the ordinary conflict it is: the
+ * World declines to take a token from a run whose runtime could not read the
+ * disposal (started below `SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM`), and the
+ * forced hook then rejects with `HookConflictError` naming that run.
+ */
+export async function hookForceClaimTolerantClaimerWorkflow(token: string) {
+  'use workflow';
+
+  using hook = createHook<{ message: string }>({
+    token,
+    experimental_force: true,
+  });
+  try {
+    const payload = await hook;
+    return { role: 'claimer' as const, received: payload.message };
+  } catch (err) {
+    if (HookConflictError.is(err)) {
+      return {
+        role: 'refused' as const,
+        conflictingRunId: err.conflictingRunId ?? null,
+      };
+    }
+    throw err;
+  }
 }
 
 //////////////////////////////////////////////////////////
