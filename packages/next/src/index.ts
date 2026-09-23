@@ -58,6 +58,20 @@ const BASE_PATH_SYMBOL = Symbol.for('@workflow/core/basePath');
 const globalConfig = globalThis as typeof globalThis &
   Record<symbol, string | undefined>;
 
+// Per-process record of working dirs whose workflow build has started.
+// WORKFLOW_NEXT_PRIVATE_BUILT alone is not enough: in `next dev`, a forced
+// @next/env reload restores process.env to its initial snapshot (dropping the
+// flag) before Next re-evaluates next.config, which would rebuild and start a
+// second watcher. See https://github.com/vercel/workflow/issues/4309.
+const BUILT_WORKING_DIRS_SYMBOL = Symbol.for('@workflow/next/builtWorkingDirs');
+
+function getWorkflowBuilds(): Map<string, Promise<void>> {
+  const globalWithBuilds = globalThis as typeof globalThis &
+    Record<symbol, Map<string, Promise<void>> | undefined>;
+  globalWithBuilds[BUILT_WORKING_DIRS_SYMBOL] ??= new Map();
+  return globalWithBuilds[BUILT_WORKING_DIRS_SYMBOL];
+}
+
 // Keep this local: @workflow/next is CommonJS, while @workflow/utils is ESM-only.
 function setWorkflowBasePath(basePath: string | undefined): void {
   globalConfig[BASE_PATH_SYMBOL] = basePath ?? '';
@@ -688,9 +702,19 @@ export function withWorkflow(
       !process.env.WORKFLOW_NEXT_PRIVATE_BUILT &&
       phase !== 'phase-production-server'
     ) {
-      const workflowBuilder = await getWorkflowBuilder();
+      const builds = getWorkflowBuilds();
+      let build = builds.get(workingDir);
+      if (!build) {
+        build = (async () => {
+          const workflowBuilder = await getWorkflowBuilder();
+          await workflowBuilder.build();
+        })();
+        builds.set(workingDir, build);
+        // Allow a retry on the next evaluation if the build failed.
+        build.catch(() => builds.delete(workingDir));
+      }
 
-      await workflowBuilder.build();
+      await build;
       process.env.WORKFLOW_NEXT_PRIVATE_BUILT = '1';
     }
 
