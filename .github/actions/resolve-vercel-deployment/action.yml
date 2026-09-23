@@ -1,0 +1,72 @@
+name: Resolve Vercel deployment
+description: >
+  Waits for the Vercel Git deployment of the commit under test and returns its
+  ID and URL, using the Vercel API. Pull requests resolve their head commit's
+  preview deployment; pushes to main resolve the production deployment; and
+  `changeset-release/*` PRs resolve the production deployment of their base
+  commit. Fails immediately if the deployment errors.
+
+inputs:
+  project-id:
+    description: Vercel project ID (prj_...).
+    required: true
+  team-id:
+    description: Vercel team ID.
+    required: false
+    default: team_nO2mCG4W8IxPIeKoSsqwAxxB
+  token:
+    description: Vercel API token with read access to the project.
+    required: true
+  sha:
+    description: Override the commit SHA derived from the event.
+    required: false
+  branch:
+    description: Override the branch derived from the event.
+    required: false
+  environment:
+    description: Override the target environment (production or preview) derived from the event.
+    required: false
+  timeout-seconds:
+    description: How long to wait for the deployment.
+    required: false
+    default: '1000'
+  interval-seconds:
+    description: How often to poll the Vercel API.
+    required: false
+    default: '15'
+
+outputs:
+  deployment-id:
+    description: Deployment ID (dpl_...).
+    value: ${{ steps.resolve.outputs.deployment-id }}
+  deployment-url:
+    description: The deployment's own https URL.
+    value: ${{ steps.resolve.outputs.deployment-url }}
+  inspector-url:
+    description: Vercel dashboard URL for the deployment.
+    value: ${{ steps.resolve.outputs.inspector-url }}
+  environment:
+    description: Target environment of the deployment (production or preview).
+    value: ${{ steps.resolve.outputs.environment }}
+  sha:
+    description: Commit SHA of the deployment.
+    value: ${{ steps.resolve.outputs.sha }}
+  branch:
+    description: Branch the deployment was built from.
+    value: ${{ steps.resolve.outputs.branch }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        INPUT_PROJECT_ID: ${{ inputs.project-id }}
+        INPUT_TEAM_ID: ${{ inputs.team-id }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_SHA: ${{ inputs.sha }}
+        INPUT_BRANCH: ${{ inputs.branch }}
+        INPUT_ENVIRONMENT: ${{ inputs.environment }}
+        INPUT_TIMEOUT_SECONDS: ${{ inputs.timeout-seconds }}
+        INPUT_INTERVAL_SECONDS: ${{ inputs.interval-seconds }}
+      run: node "$GITHUB_ACTION_PATH/resolve.js"

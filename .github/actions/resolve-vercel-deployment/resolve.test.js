@@ -1,0 +1,280 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const test = require('node:test');
+
+const {
+  FatalError,
+  applyOverrides,
+  main,
+  resolveTarget,
+  selectDeployment,
+  waitForDeployment,
+} = require('./resolve.js');
+
+const SHA = 'a'.repeat(40);
+const BASE_SHA = 'b'.repeat(40);
+
+function deployment(overrides = {}) {
+  const { meta, ...rest } = overrides;
+  return {
+    uid: 'dpl_1',
+    url: 'app-abc.labs.vercel.dev',
+    inspectorUrl: 'https://vercel.com/team/app/1',
+    source: 'git',
+    target: null,
+    readyState: 'READY',
+    createdAt: 1,
+    meta: { githubCommitSha: SHA, githubCommitRef: 'feature', ...meta },
+    ...rest,
+  };
+}
+
+function pullRequest(headRef, headSha = SHA) {
+  return {
+    pull_request: {
+      head: { ref: headRef, sha: headSha },
+      base: { ref: 'main', sha: BASE_SHA },
+    },
+  };
+}
+
+const previewTarget = { sha: SHA, branch: 'feature', environment: 'preview' };
+
+test('pull requests resolve their head preview deployment', () => {
+  assert.deepEqual(
+    resolveTarget({
+      eventName: 'pull_request',
+      event: pullRequest('feature'),
+    }),
+    previewTarget
+  );
+});
+
+test('changeset-release PRs resolve the production deployment of their base', () => {
+  assert.deepEqual(
+    resolveTarget({
+      eventName: 'pull_request',
+      event: pullRequest('changeset-release/main'),
+    }),
+    { sha: BASE_SHA, branch: 'main', environment: 'production' }
+  );
+});
+
+test('pushes to main resolve production; other refs resolve preview', () => {
+  assert.deepEqual(
+    resolveTarget({ eventName: 'push', githubSha: SHA, githubRefName: 'main' }),
+    { sha: SHA, branch: 'main', environment: 'production' }
+  );
+  assert.deepEqual(
+    resolveTarget({
+      eventName: 'workflow_dispatch',
+      githubSha: SHA,
+      githubRefName: 'feature',
+    }),
+    previewTarget
+  );
+});
+
+test('overrides replace derived values and are validated', () => {
+  assert.deepEqual(
+    applyOverrides(previewTarget, {
+      sha: BASE_SHA.toUpperCase(),
+      environment: 'production',
+    }),
+    { sha: BASE_SHA, branch: 'feature', environment: 'production' }
+  );
+  assert.throws(
+    () => applyOverrides(previewTarget, { sha: 'abc123' }),
+    /full commit SHA/
+  );
+  assert.throws(
+    () => applyOverrides(previewTarget, { environment: 'staging' }),
+    /production" or "preview/
+  );
+});
+
+test('selects only Git deployments of the exact commit, branch, and environment', () => {
+  const match = deployment({ uid: 'dpl_match' });
+  const candidates = [
+    deployment({ uid: 'dpl_cli', source: 'cli', createdAt: 9 }),
+    deployment({
+      uid: 'dpl_other_branch',
+      meta: { githubCommitRef: 'feature-candidate-1' },
+      createdAt: 9,
+    }),
+    deployment({ uid: 'dpl_production', target: 'production', createdAt: 9 }),
+    deployment({
+      uid: 'dpl_other_sha',
+      meta: { githubCommitSha: BASE_SHA },
+      createdAt: 9,
+    }),
+    match,
+  ];
+  assert.equal(selectDeployment(candidates, previewTarget), match);
+  assert.equal(
+    selectDeployment(candidates.slice(0, 4), previewTarget),
+    undefined
+  );
+});
+
+test('prefers the newest matching deployment', () => {
+  const newer = deployment({ uid: 'dpl_new', createdAt: 2 });
+  assert.equal(
+    selectDeployment(
+      [deployment({ uid: 'dpl_old', readyState: 'CANCELED' }), newer],
+      previewTarget
+    ),
+    newer
+  );
+});
+
+function harness(responses) {
+  let clock = 0;
+  const requests = [];
+  return {
+    requests,
+    options: {
+      projectId: 'prj_1',
+      teamId: 'team_1',
+      token: 'secret',
+      target: previewTarget,
+      timeoutMs: 60_000,
+      intervalMs: 15_000,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+      log: () => {},
+      fetchImpl: async (url, init) => {
+        requests.push({ url: new URL(url), init });
+        const next = responses.shift();
+        if (next instanceof Error) {
+          throw next;
+        }
+        return {
+          ok: next.status === undefined || next.status < 400,
+          status: next.status ?? 200,
+          json: async () => ({ deployments: next.deployments ?? [] }),
+        };
+      },
+    },
+  };
+}
+
+test('polls until the deployment is ready, tolerating transient failures', async () => {
+  const { options, requests } = harness([
+    { deployments: [] },
+    new Error('socket hang up'),
+    { status: 503 },
+    { status: 429 },
+    { deployments: [deployment({ readyState: 'BUILDING' })] },
+    { deployments: [deployment()] },
+  ]);
+  options.timeoutMs = 120_000;
+  const result = await waitForDeployment(options);
+  assert.equal(result.uid, 'dpl_1');
+  assert.equal(requests.length, 6);
+  const { url, init } = requests[0];
+  assert.equal(
+    url.origin + url.pathname,
+    'https://api.vercel.com/v6/deployments'
+  );
+  assert.equal(url.searchParams.get('projectId'), 'prj_1');
+  assert.equal(url.searchParams.get('teamId'), 'team_1');
+  assert.equal(url.searchParams.get('sha'), SHA);
+  assert.equal(init.headers.authorization, 'Bearer secret');
+});
+
+test('fails immediately when the deployment errors', async () => {
+  const { options, requests } = harness([
+    { deployments: [deployment({ readyState: 'ERROR' })] },
+  ]);
+  await assert.rejects(waitForDeployment(options), (error) => {
+    assert.ok(error instanceof FatalError);
+    assert.match(error.message, /dpl_1 failed to build/);
+    return true;
+  });
+  assert.equal(requests.length, 1);
+});
+
+test('fails immediately on authorization errors', async () => {
+  const { options } = harness([{ status: 403 }]);
+  await assert.rejects(waitForDeployment(options), /returned 403/);
+});
+
+test('waits for a redeploy after a canceled build, then times out', async () => {
+  const canceled = { deployments: [deployment({ readyState: 'CANCELED' })] };
+  const { options, requests } = harness(Array(10).fill(canceled));
+  await assert.rejects(
+    waitForDeployment(options),
+    /canceled and not redeployed/
+  );
+  assert.equal(requests.length, 5);
+});
+
+test('a redeploy replaces a canceled build', async () => {
+  const { options } = harness([
+    { deployments: [deployment({ readyState: 'CANCELED' })] },
+    {
+      deployments: [
+        deployment({ readyState: 'CANCELED' }),
+        deployment({ uid: 'dpl_2', createdAt: 2 }),
+      ],
+    },
+  ]);
+  assert.equal((await waitForDeployment(options)).uid, 'dpl_2');
+});
+
+test('times out when no deployment appears', async () => {
+  const { options } = harness(Array(10).fill({ deployments: [] }));
+  await assert.rejects(waitForDeployment(options), /last state: missing/);
+});
+
+test('main writes step outputs for the resolved deployment', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'resolve-deployment-'));
+  const eventPath = path.join(dir, 'event.json');
+  const outputPath = path.join(dir, 'output');
+  fs.writeFileSync(eventPath, JSON.stringify(pullRequest('feature')));
+  const { options } = harness([{ deployments: [deployment()] }]);
+  delete options.projectId;
+  delete options.teamId;
+  delete options.token;
+  delete options.target;
+  delete options.timeoutMs;
+  delete options.intervalMs;
+  const outputs = await main(
+    {
+      GITHUB_EVENT_NAME: 'pull_request',
+      GITHUB_EVENT_PATH: eventPath,
+      GITHUB_OUTPUT: outputPath,
+      INPUT_PROJECT_ID: 'prj_1',
+      INPUT_TEAM_ID: 'team_1',
+      INPUT_TOKEN: 'secret',
+      INPUT_TIMEOUT_SECONDS: '60',
+      INPUT_INTERVAL_SECONDS: '15',
+    },
+    options
+  );
+  assert.deepEqual(outputs, {
+    'deployment-id': 'dpl_1',
+    'deployment-url': 'https://app-abc.labs.vercel.dev',
+    'inspector-url': 'https://vercel.com/team/app/1',
+    environment: 'preview',
+    sha: SHA,
+    branch: 'feature',
+  });
+  assert.equal(
+    fs.readFileSync(outputPath, 'utf8'),
+    [
+      'deployment-id=dpl_1',
+      'deployment-url=https://app-abc.labs.vercel.dev',
+      'inspector-url=https://vercel.com/team/app/1',
+      'environment=preview',
+      `sha=${SHA}`,
+      'branch=feature',
+      '',
+    ].join('\n')
+  );
+});

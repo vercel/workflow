@@ -84,8 +84,8 @@ jobs:
         with:
           node-version: 22.x
 
-      - name: Run .github/scripts unit tests
-        run: node --test ".github/scripts/**/*.test.js"
+      - name: Run .github/scripts and .github/actions unit tests
+        run: node --test ".github/scripts/**/*.test.js" ".github/actions/**/*.test.js"
 
   changesets:
     name: Changesets
