@@ -4101,6 +4101,96 @@ describe('Storage (Postgres integration)', () => {
         ]);
       });
 
+      it('takes the victim run row before its hook row, so a delivery racing the takeover cannot deadlock it', async () => {
+        // `createHookResume` locks the run row, then the hook row. A takeover
+        // that locked the hook row first and the run row second formed a lock
+        // cycle with a concurrent resume of the same hook — Postgres killed
+        // one of them with 40P01 and a delivery surfaced a raw deadlock error
+        // (seen on CI: two in-flight resumes plus the takeover). Here a holder
+        // plays the resume's first half — run row held — while the takeover
+        // starts, then takes the hook row as the resume's second half would.
+        // With the takeover locking in the same order it is queued behind
+        // the run row and holds nothing else, so the holder's hook lock is
+        // granted and both complete. With the old order the holder's hook
+        // lock would wait on the takeover, which waits on the run row: a
+        // cycle, and one of the two would fail with a deadlock.
+        const token = `force-lock-order-${ulid()}`;
+        const victim = await createRun(events, {
+          deploymentId: 'dpl_lock_victim',
+          workflowName: 'lock-victim',
+          input: new Uint8Array(),
+        });
+        await updateRun(events, victim.runId, 'run_started');
+        const victimHook = await createHook(events, victim.runId, {
+          hookId: 'hook_lock_victim',
+          token,
+        });
+        const claimer = await createRun(events, {
+          deploymentId: 'dpl_lock_claimer',
+          workflowName: 'lock-claimer',
+          input: new Uint8Array(),
+        });
+        await updateRun(events, claimer.runId, 'run_started');
+
+        const holderPool = new Pool({
+          connectionString: process.env.DATABASE_URL,
+          max: 1,
+        });
+        let signalLocked!: () => void;
+        const locked = new Promise<void>((resolve) => {
+          signalLocked = resolve;
+        });
+        let releaseHolder!: () => void;
+        const release = new Promise<void>((resolve) => {
+          releaseHolder = resolve;
+        });
+        try {
+          const holder = createClient(holderPool).transaction(async (tx) => {
+            await tx
+              .select({ status: DrizzleSchema.runs.status })
+              .from(DrizzleSchema.runs)
+              .where(eq(DrizzleSchema.runs.runId, victim.runId))
+              .for('update')
+              .limit(1);
+            signalLocked();
+            await release;
+            // The resume's second lock. Granted at once when the takeover is
+            // waiting on the run row; a deadlock if the takeover held the
+            // hook row while waiting for the run row.
+            await tx
+              .select({ hookId: DrizzleSchema.hooks.hookId })
+              .from(DrizzleSchema.hooks)
+              .where(eq(DrizzleSchema.hooks.hookId, victimHook.hookId))
+              .for('update')
+              .limit(1);
+          });
+          await locked;
+          const takeover = events.create(claimer.runId, {
+            eventType: 'hook_created',
+            correlationId: 'hook_lock_claimer',
+            eventData: { token, force: true },
+          });
+          const takeoverOutcome = takeover.then(
+            (result) => result,
+            (error: unknown) => error
+          );
+          // Long enough for the takeover to reach its run-row lock and block.
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          releaseHolder();
+          await holder;
+
+          const outcome = await takeoverOutcome;
+          expect(outcome).toMatchObject({
+            event: { eventType: 'hook_created' },
+            hook: {
+              claimedFrom: { runId: victim.runId, hookId: victimHook.hookId },
+            },
+          });
+        } finally {
+          await holderPool.end();
+        }
+      });
+
       it('still accepts a hook_received while the hook is live', async () => {
         // The lock must not reject an ordinary delivery: nothing holds the
         // hook's row while it is alive, so the re-check finds it every time.

@@ -2197,8 +2197,41 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             // written, and an `EntityConflictError` the runtime swallows as
             // "already created" — a run suspended forever on a hook that was
             // never registered.
-            const takeover = await journaledHookCreated(() =>
+            //
+            // Lock order: the victim's RUN row first, then its HOOK row — the
+            // same order `createHookResume` takes (run, then hook), so a
+            // delivery racing this takeover on the same victim queues behind
+            // it instead of deadlocking with it (two resumes plus a takeover
+            // made a three-way cycle on CI, 40P01, and one of the resumes was
+            // the transaction Postgres killed). The owner is read unlocked to
+            // learn which run row to lock; if the hook row, once locked, no
+            // longer names that owner, the token changed hands in between and
+            // the transaction restarts from the top, bounded.
+            const OWNER_CHANGED = Symbol('owner changed before lock');
+            const takeoverAttempt = () =>
               drizzle.transaction(async (tx) => {
+                const [candidate] = await tx
+                  .select({
+                    runId: Schema.hooks.runId,
+                    hookId: Schema.hooks.hookId,
+                  })
+                  .from(Schema.hooks)
+                  .where(eq(Schema.hooks.token, eventData.token))
+                  .limit(1);
+                if (!candidate) {
+                  return { free: true as const };
+                }
+                const [victimRun] = await tx
+                  .select({
+                    status: Schema.runs.status,
+                    workflowName: Schema.runs.workflowName,
+                    deploymentId: Schema.runs.deploymentId,
+                    specVersion: Schema.runs.specVersion,
+                  })
+                  .from(Schema.runs)
+                  .where(eq(Schema.runs.runId, candidate.runId))
+                  .for('update')
+                  .limit(1);
                 const [victim] = await tx
                   .select()
                   .from(Schema.hooks)
@@ -2209,23 +2242,18 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   return { free: true as const };
                 }
                 if (
+                  victim.runId !== candidate.runId ||
+                  victim.hookId !== candidate.hookId
+                ) {
+                  throw OWNER_CHANGED;
+                }
+                if (
                   victim.runId === effectiveRunId &&
                   victim.hookId === data.correlationId
                 ) {
                   // Our own earlier attempt committed and its response was lost.
                   return { owned: victim };
                 }
-                const [victimRun] = await tx
-                  .select({
-                    status: Schema.runs.status,
-                    workflowName: Schema.runs.workflowName,
-                    deploymentId: Schema.runs.deploymentId,
-                    specVersion: Schema.runs.specVersion,
-                  })
-                  .from(Schema.runs)
-                  .where(eq(Schema.runs.runId, victim.runId))
-                  .for('update')
-                  .limit(1);
                 const victimRunning =
                   victimRun !== undefined &&
                   !isTerminalWorkflowRunStatus(victimRun.status);
@@ -2326,8 +2354,24 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
                   );
                 }
                 return { inserted, claimedFrom, journaled, journaledEventData };
-              }, SLOT_INSERT_TRANSACTION)
-            );
+              }, SLOT_INSERT_TRANSACTION);
+            const takeover = await journaledHookCreated(async () => {
+              const MAX_OWNER_CHANGES = 5;
+              for (let attempt = 0; ; attempt++) {
+                try {
+                  return await takeoverAttempt();
+                } catch (err) {
+                  if (err !== OWNER_CHANGED || attempt >= MAX_OWNER_CHANGES) {
+                    throw err === OWNER_CHANGED
+                      ? new WorkflowWorldError(
+                          `Hook token "${eventData.token}" changed owner ${attempt} times while being force-claimed; retry`,
+                          { status: 503 }
+                        )
+                      : err;
+                  }
+                }
+              }
+            });
             if ('free' in takeover) {
               // The token was released between the read above and the
               // transaction: an ordinary creation after all.
