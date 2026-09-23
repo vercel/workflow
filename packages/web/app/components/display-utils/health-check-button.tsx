@@ -1,12 +1,8 @@
+import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
 import { Activity, Loader2 } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '~/components/ui/button';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '~/components/ui/tooltip';
 import { runHealthCheck } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 

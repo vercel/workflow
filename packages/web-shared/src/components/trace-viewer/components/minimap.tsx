@@ -14,6 +14,7 @@ import type { Span } from '../types';
 import { formatDurationPrecise, getHighResInMs } from '../util/timing';
 import {
   clampViewportToRoot,
+  isSpanCancelled,
   isSpanErrored,
   type RootBounds,
   type ViewportRange,
@@ -83,7 +84,9 @@ function computeDensityLayout(
   spans.forEach((span, index) => {
     const token = isSpanErrored(span)
       ? ERROR_LINE_TOKEN
-      : (RESOURCE_LINE_TOKENS[span.resource] ?? DEFAULT_LINE_TOKEN);
+      : isSpanCancelled(span)
+        ? '--ds-gray-600'
+        : (RESOURCE_LINE_TOKENS[span.resource] ?? DEFAULT_LINE_TOKEN);
     const startMs = getHighResInMs(span.startTime);
     const endMs = getHighResInMs(span.endTime);
     const x =

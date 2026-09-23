@@ -143,9 +143,12 @@ type EventConsumerCallback = (event: Event | null) => EventConsumerResult;
 
 export interface EventsConsumerOptions {
   /**
-   * Callback invoked after an event has been consumed. Consumers such as the
-   * deterministic workflow clock must not observe events that are merely
-   * inspected while waiting for user code to subscribe to the next operation.
+   * Observation callback invoked after an event has been consumed (not for one
+   * the walk merely inspected, parked, or skipped). Diagnostics and tests read
+   * it. Do NOT anchor the workflow's deterministic clock here: consumption runs
+   * ahead of delivery, so a later event's time would leak into an earlier
+   * delivery's cascade; the clock advances from `registerDeliveryBarrier`
+   * when a delivery is handed to the workflow.
    */
   onConsumedEvent?: (event: Event) => void;
   /**
@@ -663,10 +666,9 @@ export class EventsConsumer {
   /** Steps the walk over a repeat of an already-consumed class. */
   private skipDuplicateEvent(event: Event, firstType: Event['eventType']) {
     this.eventIndex++;
-    // Deliberately not routed through `notifyConsumedEvent`: the deterministic
-    // clock advances only on events the workflow actually observed. A skipped
-    // event is invisible to the workflow body, and a log that happens to
-    // contain one must produce the same timestamps as a log that does not.
+    // Deliberately not routed through `notifyConsumedEvent`: a skipped event
+    // is invisible to the workflow body, and observers of consumption must not
+    // see it either.
     eventsLogger.debug(
       'Skipping event that repeats a class already in the log',
       {

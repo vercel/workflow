@@ -54,6 +54,7 @@ import { COMPUTE_INSTANCE_ID } from './runtime/compute-instance.js';
 import {
   getMaxEventsOverride,
   getMaxQueueDeliveries,
+  getOpenWaitClockSkewMs,
   getPreconditionMaxInProcessRestarts,
   getPreconditionMaxReinvocations,
   getPreconditionReinvokeDelaySeconds,
@@ -96,6 +97,10 @@ import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './runtime/lifecycle-hooks.js';
+import {
+  hasOpenWaitDueBy,
+  openHookAndWaitState,
+} from './runtime/open-hook-wait-state.js';
 import {
   handleReplayBudgetExhausted,
   ReplayBudget,
@@ -500,49 +505,6 @@ function countMissingIds(ids: Iterable<string>, present: Set<string>): number {
     if (!present.has(id)) missing++;
   }
   return missing;
-}
-
-/**
- * Whether the run has a hook and/or wait that an out-of-band writer could
- * append an event for between an inline step's `step_completed` write and
- * the next replay, namely an open hook (a `hook_created` not yet
- * `hook_disposed`, which a webhook receiver can resolve with
- * `hook_received`) or an open wait (a `wait_created` not yet
- * `wait_completed`, which the wait timer can resolve with
- * `wait_completed`).
- *
- * Open waits block inline deltas. Open hooks and waits disable turbo's forced
- * optimistic start. Open hooks additionally suppress operator-enabled
- * optimistic start until the `step_started` claim succeeds; open waits leave
- * that explicit, idempotency-only opt-in alone.
- *
- * Step-body `attr_set` writes are NOT a concern: they land before the
- * step's terminal write and are therefore already inside the returned
- * delta.
- */
-function openHookAndWaitState(events: Event[]): {
-  openHook: boolean;
-  openWait: boolean;
-} {
-  const hooks = new Set<string>();
-  const waits = new Set<string>();
-  for (const event of events) {
-    switch (event.eventType) {
-      case 'hook_created':
-        hooks.add(event.correlationId);
-        break;
-      case 'hook_disposed':
-        hooks.delete(event.correlationId);
-        break;
-      case 'wait_created':
-        waits.add(event.correlationId);
-        break;
-      case 'wait_completed':
-        waits.delete(event.correlationId);
-        break;
-    }
-  }
-  return { openHook: hooks.size > 0, openWait: waits.size > 0 };
 }
 
 type RetentionDecision =
@@ -985,6 +947,24 @@ export function workflowEntrypoint(
                     world,
                     invocationStartTime
                   );
+                  // Latest moment an open wait's `wait_completed` could still
+                  // land while this invocation is scheduling inline batches:
+                  // the end of the inline window plus clock skew. Waits due
+                  // later than this do not gate the inline delta. See
+                  // `OPEN_WAIT_CLOCK_SKEW_MS`.
+                  const openWaitDueDeadlineMs =
+                    invocationStartTime +
+                    noInlineReplayAfterMs +
+                    getOpenWaitClockSkewMs();
+                  // Whether the log's most recent extension came from a
+                  // step-terminal inline delta rather than an `events.list`.
+                  // A delta is the log as of that write's commit; anything
+                  // appended after it (a `wait_completed` from `run.wakeUp()`,
+                  // which ignores `resumeAt`) is not in it. Before this
+                  // invocation parks on a wait, such a log is re-read so a
+                  // completion that already exists is acted on now rather
+                  // than when the wait's own timer would have fired.
+                  let eventLogFromInlineDelta = false;
                   let loopIteration = 0;
                   const replayRecoveryReporter = replayDivergence
                     ? new ReplayRecoveryReporter(replayDivergence.count)
@@ -3106,6 +3086,7 @@ export function workflowEntrypoint(
                       }
 
                       if (eventLog.type !== 'ready') {
+                        eventLogFromInlineDelta = false;
                         const page = await loadWorkflowRunEvents(
                           runId,
                           eventLog.type === 'loadAfter'
@@ -3223,6 +3204,7 @@ export function workflowEntrypoint(
                       );
 
                       if (missingWaitCompletions.length > 0) {
+                        eventLogFromInlineDelta = false;
                         // Load only events after the original snapshot cursor
                         // so concurrent durable events, such as hook_received,
                         // keep their ordering relative to wait_completed. Fall
@@ -3936,6 +3918,63 @@ export function workflowEntrypoint(
 
                         const pendingSteps = suspensionResult.pendingSteps;
 
+                        // About to park on a wait (nothing to run or queue,
+                        // only a wait timer to arm), over a log whose last
+                        // extension was an inline delta, and that log holds a
+                        // wait that was already open when the delta's step
+                        // ran. The delta is the log as of the step's terminal
+                        // write; a `wait_completed` appended after it is not
+                        // in this view. The wait timer's own completion cannot
+                        // have landed yet (the delta was requested only
+                        // because no pending wait was due within this
+                        // invocation), but `run.wakeUp()` completes waits
+                        // regardless of `resumeAt`, from the public API and
+                        // the dashboard's "cancel sleeps" action. Parking here
+                        // on that stale view would arm a continuation for the
+                        // ORIGINAL `resumeAt` (chained up to 23h for a long
+                        // sleep) while a completion the user already requested
+                        // sits unread in the log, and the wake message
+                        // `run.wakeUp()` sent may have deferred to this
+                        // invocation's own in-flight step and be gone. One
+                        // `events.list` from the cursor settles it: a
+                        // completion that landed is replayed over now, and an
+                        // unchanged log parks on the next pass.
+                        //
+                        // `openWait` is the right test for "already open": a
+                        // wait this suspension created (`await step(); await
+                        // sleep(...)`, the common polling shape) did not exist
+                        // when the delta was taken, so nothing can sit above
+                        // the delta for it, and its `wait_created` is not in
+                        // the scanned log (wait creates do not fold a delta
+                        // back; hook creates do). That shape parks without the
+                        // read. Only a wait that predates the step, the
+                        // `Promise.race` loser this gate exists for, pays it,
+                        // once per park, at a queue hand-off boundary. Every
+                        // real read and the delta's own partial-page fallback
+                        // clear the flag, so this fires at most once per park.
+                        if (
+                          eventLogFromInlineDelta &&
+                          suspensionResult.waitTimeout !== undefined &&
+                          pendingSteps.length === 0 &&
+                          !suspensionResult.hasAwaitedHookCreation &&
+                          openHookWait.value.openWait
+                        ) {
+                          runtimeLogger.debug(
+                            'Re-reading the event log before parking on a wait over an inline delta',
+                            {
+                              workflowRunId: runId,
+                              loopIteration,
+                              waitCorrelationId:
+                                suspensionResult.waitTimeout.correlationId,
+                            }
+                          );
+                          span?.setAttributes({
+                            'workflow.wait_park_reread': true,
+                          });
+                          eventLog = nextEventLogLoad(eventLog);
+                          continue;
+                        }
+
                         // Inline execution is gated on ownership. The
                         // suspension handler deferred the step_created write for
                         // up to `getMaxInlineSteps()` steps (`lazyInlineSteps`)
@@ -4416,7 +4455,33 @@ export function workflowEntrypoint(
 
                         // Open hooks/waits are consulted by all three gates
                         // below; resolve the memoized scan once here.
+                        //
+                        // The delta gate cares whether a pending wait can fire
+                        // while THIS invocation is still scheduling inline
+                        // batches, not whether one exists at all. Two sources
+                        // name the pending waits: the log scan (waits whose
+                        // `wait_created` this replay read) and the suspension's
+                        // own queue (every wait the workflow still holds,
+                        // including ones this suspension just created and a
+                        // `sleep()` that lost a `Promise.race`, which stays
+                        // queued until its `wait_completed`). Either source
+                        // alone can miss a wait the other has, so the soonest
+                        // deadline across both is what the window is tested
+                        // against. See `OPEN_WAIT_CLOCK_SKEW_MS`.
                         const openHookWaitState = openHookWait.value;
+                        // Written as `!(resumeAt > deadline)` so an
+                        // unreadable deadline (NaN) gates, matching the log
+                        // scan's treatment of an unparseable `resumeAt`.
+                        const waitDueThisInvocation =
+                          hasOpenWaitDueBy(
+                            openHookWaitState,
+                            openWaitDueDeadlineMs
+                          ) ||
+                          (suspensionResult.waitTimeout !== undefined &&
+                            !(
+                              suspensionResult.waitTimeout.resumeAtMs >
+                              openWaitDueDeadlineMs
+                            ));
 
                         // Inline-delta fast path gate. We request the delta
                         // (and on the next iteration consume it in place of the
@@ -4432,13 +4497,27 @@ export function workflowEntrypoint(
                         //    (`lazyInlineSteps.length === 1`: no parallel
                         //    siblings queued to background handlers, and no other
                         //    inline step writing its own events out of band).
-                        //  - No pending wait timer from THIS suspension, and no
-                        //    open wait in the cumulative log. A `wait_completed`
-                        //    is a resolution the replay is waiting on rather
-                        //    than an event it can observe one iteration late,
-                        //    so consuming a delta that predates it would settle
-                        //    the sleep from a view that does not contain its
-                        //    completion.
+                        //  - No pending wait, whether created by this
+                        //    suspension or still queued from an earlier one,
+                        //    that can fire before this invocation's inline
+                        //    window ends (`waitDueThisInvocation`). A
+                        //    `wait_completed` is a resolution the replay is
+                        //    waiting on rather than an event it can observe
+                        //    one iteration late, so consuming a delta that
+                        //    predates it would settle the sleep from a view
+                        //    that does not contain its completion. A wait's
+                        //    timer cannot produce one before `resumeAt`, so a
+                        //    wait due after this invocation has handed the
+                        //    run off is no hazard here, and since nothing
+                        //    disposes a wait, a `sleep()` that lost a race
+                        //    against a hook would otherwise hold every later
+                        //    boundary of the run on the fetch path. The one
+                        //    writer that ignores `resumeAt`, `run.wakeUp()`,
+                        //    is covered by the re-read before parking above:
+                        //    a completion it lands after a step's terminal
+                        //    write is read before this invocation would arm
+                        //    a continuation over it. See
+                        //    `OPEN_WAIT_CLOCK_SKEW_MS` for the bound.
                         //  - An open (or this-suspension-created) hook is
                         //    fine, and that is the gate this used to carry.
                         //    The delta snapshots the log at the step_completed
@@ -4477,12 +4556,24 @@ export function workflowEntrypoint(
                         const requestInlineDelta =
                           typeof eventLog.cursor === 'string' &&
                           err.stepCount === 1 &&
-                          err.waitCount === 0 &&
                           pendingSteps.length === 1 &&
                           lazyInlineSteps.length === 1 &&
                           ownedRecoverySteps.length === 0 &&
-                          !suspensionResult.waitTimeout &&
-                          !openHookWaitState.openWait;
+                          !waitDueThisInvocation;
+                        // The delta was taken while a wait is pending, which
+                        // the gate admits only for a wait due after this
+                        // invocation's window. Surfaced so traces can count
+                        // how often the relaxed gate is exercised and, should
+                        // a run misbehave, whether it was on this path.
+                        if (
+                          requestInlineDelta &&
+                          (openHookWaitState.openWait ||
+                            suspensionResult.waitTimeout !== undefined)
+                        ) {
+                          span?.setAttributes({
+                            'workflow.inline_delta_over_pending_wait': true,
+                          });
+                        }
 
                         // Stale-sensitive batch: a hook is open in the run (or
                         // was created by this suspension, so its hook_received
@@ -4525,11 +4616,28 @@ export function workflowEntrypoint(
                         // in an earlier iteration of the same delivery (e.g. a
                         // fire-and-forget `createHook(...)` that doesn't block the
                         // workflow, letting the replay loop continue to later pure
-                        // step suspensions). Once any hook or wait is open in the
+                        // step suspensions). Once any hook is open in the
                         // cumulative log, resume/parallel invocations are possible
                         // for the rest of the run, so turbo must latch off
                         // permanently, checked here via `openHookAndWaitState`
                         // over the cumulative event log.
+                        //
+                        // Waits keep the unconditional latch, unlike the
+                        // inline-delta gate above, which admits a wait due
+                        // after this invocation's window. The two failure
+                        // modes differ in kind. A delta that misses a
+                        // `wait_completed` delays a wake and is repaired by
+                        // the next read. A forced body that a peer's claim
+                        // then wins is a step executed twice, which nothing
+                        // repairs. And a wait's deadline bounds only its
+                        // timer: `run.wakeUp()` completes a wait at any time
+                        // and enqueues a wake, so a far-future sleep plus a
+                        // dashboard click is exactly a peer racing this
+                        // invocation for its next claim. Turbo is the start
+                        // delivery only, so a run that opens a wait during it
+                        // pays the await-then-run path for the rest of that
+                        // one invocation, which is cheap next to the
+                        // alternative.
                         //
                         // NOTE: `WORKFLOW_SEQUENTIAL_REPLAYS=1` (per-run flow
                         // topics consumed with `maxConcurrency: 1`) would in
@@ -4987,6 +5095,7 @@ export function workflowEntrypoint(
                           const only = stepResults[0];
                           if (only.type === 'completed' && only.inlineDelta) {
                             appendEventLog(eventLog, only.inlineDelta);
+                            eventLogFromInlineDelta = !only.inlineDelta.hasMore;
                             eventLog = only.inlineDelta.hasMore
                               ? nextEventLogLoad(eventLog)
                               : { ...eventLog, type: 'ready' };

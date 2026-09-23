@@ -202,7 +202,9 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           // deliveries stays a function of log position alone, and barriers
           // that retire before this slot runs are still seen.
           const eventIndex = ctx.eventsConsumer.eventIndex;
-          const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook');
+          const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook', {
+            deliveredAt: +event.createdAt,
+          });
           const earlierDelivered = awaitEarlierDeliveries(
             ctx,
             eventIndex,

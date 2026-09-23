@@ -1939,16 +1939,22 @@ async function processEvents(
     // schedule into replay. Because the clock is monotonic, every later
     // Date.now() in the run with it. That would make a log whose hole was
     // sealed replay differently from the same log whose hole its own writer
-    // filled, and differently from this log on the node:vm engine, which
-    // skips noops in `EventsConsumer` before `onConsumedEvent` feeds the
-    // clock. Same rule, both engines, one predicate.
+    // filled, and differently from this log on the node:vm engine, whose
+    // `EventsConsumer` skips noops without ever delivering them. Same rule,
+    // both engines, one predicate.
     if (isSealedNoopEvent(event)) continue;
 
     // Advance the VM's deterministic clock to this event's creation time
     // BEFORE resolving anything, so workflow code unblocked by this event
     // observes Date.now() at (or after, since the clock is monotonic) the time
-    // the event was recorded. Mirrors the node:vm engine's
-    // `onConsumedEvent → updateTimestamp(+event.createdAt)`.
+    // the event was recorded. This engine processes events strictly in log
+    // order and drains the VM to quiescence after each one, so advancing per
+    // event is prefix-stable here. It is not the node:vm rule: that engine's
+    // consumer walks ahead of delivery, so it advances the clock only when a
+    // delivery (step result, hook payload, wait completion, registration
+    // outcome, abort) reaches the workflow, and a non-delivering event such as
+    // a `step_created` or an unread `hook_received` moves this engine's clock
+    // but not that one's. Aligning the two is a follow-up.
     advanceClock(+event.createdAt);
 
     const cid = event.correlationId;

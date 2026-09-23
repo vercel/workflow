@@ -9,6 +9,9 @@ import {
   StreamViewer,
   StreamViewerSkeleton,
   stepEventsToStepEntity,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
   TraceViewer,
 } from '@workflow/web-shared';
 import { type Event, isStepEventType, type WorkflowRun } from '@workflow/world';
@@ -43,11 +46,7 @@ import {
   BreadcrumbSeparator,
 } from '~/components/ui/breadcrumb';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '~/components/ui/tooltip';
+import { useCancellationReason } from '~/lib/client/hooks/use-cancellation-reason';
 import { useEventsListData } from '~/lib/client/hooks/use-events-list-data';
 import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
@@ -333,6 +332,7 @@ export function RunDetailView({
   } = useWorkflowTraceViewerData(env, runId, { live: true });
 
   const run = runData ?? ({} as WorkflowRun);
+  const cancelReason = useCancellationReason(env, runId, run.status, allEvents);
 
   // Encryption key persisted for the lifetime of this run page.
   // Once fetched (via Decrypt button), it's used automatically for all
@@ -602,7 +602,10 @@ export function RunDetailView({
               <div className="flex flex-col gap-1">
                 <div className="text-xs text-muted-foreground">Status</div>
                 {run.status ? (
-                  <StatusBadge status={run.status} context={run} />
+                  <StatusBadge
+                    status={run.status}
+                    context={{ error: run.error, cancelReason }}
+                  />
                 ) : (
                   <Skeleton className="w-[55px] h-[24px]" />
                 )}

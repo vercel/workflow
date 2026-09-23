@@ -1,5 +1,25 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.55
+
+### Patch Changes
+
+- Updated dependencies [[`101d347`](https://github.com/vercel/workflow/commit/101d3472f6f150f0900713b4340c95d422ed673c)]:
+  - @workflow/core@5.0.0-beta.55
+
+## 5.0.0-beta.54
+
+### Patch Changes
+
+- [#4250](https://github.com/vercel/workflow/pull/4250) [`7840c15`](https://github.com/vercel/workflow/commit/7840c15617c801e0df8f0a85145f43de25f96cc4) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Align run and event status colors with Workflow Observability and show a cancelled run's reason in a tooltip on its top status.
+
+- [#4271](https://github.com/vercel/workflow/pull/4271) [`6c1b1e8`](https://github.com/vercel/workflow/commit/6c1b1e881b68f44244bdcf7c8e2cc12225dc946c) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix the `--ds-*` colour tokens in the web UI. `packages/web/app/globals.css` redefined about 27 of them with unrelated values that shadowed the ones it imports from `@workflow/web-shared`, so `text-pink-600` rendered a different palette than the `text-blue-600` next to it. Its `prefers-color-scheme: dark` rule also carried a stale palette on a selector that out-specified `.dark`, which meant a dark-mode browser got those values whatever theme the user had picked.
+
+- [#4272](https://github.com/vercel/workflow/pull/4272) [`f160d64`](https://github.com/vercel/workflow/commit/f160d64c1b2912d4898cb78921212cd7a17a23dd) Thanks [@mitul-s](https://github.com/mitul-s)! - Use a single Geist tooltip everywhere in the observability UI. `@workflow/web-shared` now exports `Tooltip`, `TooltipTrigger`, `TooltipContent`, and `TooltipProvider`, and `@workflow/web` consumes them instead of its own shadcn copy, so every tooltip matches the one used by the trace detail panel's "Navigate up"/"Navigate down" controls.
+- Updated dependencies [[`d3ea4a6`](https://github.com/vercel/workflow/commit/d3ea4a6275a7782df44ea92dac2da51aa064cb75), [`f75b184`](https://github.com/vercel/workflow/commit/f75b184a853b50a030659bc6d78ef461c2a82a4d), [`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050), [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6), [`20ad2b3`](https://github.com/vercel/workflow/commit/20ad2b358240819c6e590fd4752b97da1c64b390)]:
+  - @workflow/core@5.0.0-beta.54
+  - @workflow/world@5.0.0-beta.37
+
 ## 5.0.0-beta.53
 
 ### Patch Changes
