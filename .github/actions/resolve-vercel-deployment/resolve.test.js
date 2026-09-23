@@ -95,7 +95,7 @@ test('overrides replace derived values and are validated', () => {
   );
 });
 
-test('selects only Git deployments of the exact commit, branch, and environment', () => {
+test('selects only Git deployments and redeploys of the exact commit, branch, and environment', () => {
   const match = deployment({ uid: 'dpl_match' });
   const candidates = [
     deployment({ uid: 'dpl_cli', source: 'cli', createdAt: 9 }),
@@ -113,6 +113,15 @@ test('selects only Git deployments of the exact commit, branch, and environment'
     match,
   ];
   assert.equal(selectDeployment(candidates, previewTarget), match);
+  const redeploy = deployment({
+    uid: 'dpl_redeploy',
+    source: 'redeploy',
+    createdAt: 2,
+  });
+  assert.equal(
+    selectDeployment([...candidates, redeploy], previewTarget),
+    redeploy
+  );
   assert.equal(
     selectDeployment(candidates.slice(0, 4), previewTarget),
     undefined
@@ -130,11 +139,26 @@ test('prefers the newest matching deployment', () => {
   );
 });
 
-function harness(responses) {
+function respond(next) {
+  if (next instanceof Error) {
+    throw next;
+  }
+  return {
+    ok: next.status === undefined || next.status < 400,
+    status: next.status ?? 200,
+    json: async () => next.body ?? { deployments: next.deployments ?? [] },
+  };
+}
+
+// `responses` answer the per-commit deployment list, in order. `details` maps a
+// deployment ID to its v13 record, and `history` is the branch's READY list.
+function harness(responses, { details = {}, history = [] } = {}) {
   let clock = 0;
   const requests = [];
+  const lookups = [];
   return {
     requests,
+    lookups,
     options: {
       projectId: 'prj_1',
       teamId: 'team_1',
@@ -147,17 +171,19 @@ function harness(responses) {
         clock += ms;
       },
       log: () => {},
-      fetchImpl: async (url, init) => {
-        requests.push({ url: new URL(url), init });
-        const next = responses.shift();
-        if (next instanceof Error) {
-          throw next;
+      fetchImpl: async (input, init) => {
+        const url = new URL(input);
+        if (url.pathname.startsWith('/v13/deployments/')) {
+          lookups.push(url);
+          const uid = decodeURIComponent(url.pathname.split('/').at(-1));
+          return respond({ body: details[uid] ?? {} });
         }
-        return {
-          ok: next.status === undefined || next.status < 400,
-          status: next.status ?? 200,
-          json: async () => ({ deployments: next.deployments ?? [] }),
-        };
+        if (url.searchParams.has('branch')) {
+          lookups.push(url);
+          return respond({ deployments: history });
+        }
+        requests.push({ url, init });
+        return respond(responses.shift());
       },
     },
   };
@@ -225,6 +251,117 @@ test('a redeploy replaces a canceled build', async () => {
     },
   ]);
   assert.equal((await waitForDeployment(options)).uid, 'dpl_2');
+});
+
+test('a skipped build resolves to the branch deployment it left serving', async () => {
+  const skipped = deployment({
+    uid: 'dpl_skipped',
+    readyState: 'CANCELED',
+    createdAt: 10,
+  });
+  const serving = deployment({
+    uid: 'dpl_serving',
+    createdAt: 5,
+    meta: { githubCommitSha: BASE_SHA },
+  });
+  const { options, lookups } = harness([{ deployments: [skipped] }], {
+    details: { dpl_skipped: { buildSkipped: true } },
+    history: [
+      deployment({
+        uid: 'dpl_later',
+        createdAt: 11,
+        meta: { githubCommitSha: BASE_SHA },
+      }),
+      deployment({
+        uid: 'dpl_other_branch',
+        createdAt: 6,
+        meta: { githubCommitRef: 'other', githubCommitSha: BASE_SHA },
+      }),
+      deployment({
+        uid: 'dpl_older',
+        createdAt: 1,
+        meta: { githubCommitSha: BASE_SHA },
+      }),
+      serving,
+    ],
+  });
+  assert.equal((await waitForDeployment(options)).uid, 'dpl_serving');
+  const branchQuery = lookups.find((url) => url.searchParams.has('branch'));
+  assert.equal(branchQuery.searchParams.get('branch'), 'feature');
+  assert.equal(branchQuery.searchParams.get('state'), 'READY');
+  assert.equal(branchQuery.searchParams.has('target'), false);
+});
+
+test('a skipped production build queries production deployments', async () => {
+  const productionTarget = {
+    sha: SHA,
+    branch: 'main',
+    environment: 'production',
+  };
+  const meta = { githubCommitRef: 'main' };
+  const { options, lookups } = harness(
+    [
+      {
+        deployments: [
+          deployment({
+            uid: 'dpl_skipped',
+            target: 'production',
+            readyState: 'CANCELED',
+            createdAt: 10,
+            meta,
+          }),
+        ],
+      },
+    ],
+    {
+      details: {
+        dpl_skipped: {
+          errorLink:
+            'https://vercel.com/docs/monorepos#skipping-unaffected-projects',
+        },
+      },
+      history: [
+        deployment({
+          uid: 'dpl_prod',
+          target: 'production',
+          createdAt: 5,
+          meta: { ...meta, githubCommitSha: BASE_SHA },
+        }),
+      ],
+    }
+  );
+  options.target = productionTarget;
+  assert.equal((await waitForDeployment(options)).uid, 'dpl_prod');
+  const branchQuery = lookups.find((url) => url.searchParams.has('branch'));
+  assert.equal(branchQuery.searchParams.get('target'), 'production');
+});
+
+test('a skipped build with nothing earlier on the branch fails', async () => {
+  const { options } = harness(
+    [
+      {
+        deployments: [
+          deployment({ uid: 'dpl_skipped', readyState: 'CANCELED' }),
+        ],
+      },
+    ],
+    {
+      details: {
+        dpl_skipped: {
+          buildSkipped: true,
+          readyStateReason: 'Ignored Build Step',
+        },
+      },
+    }
+  );
+  await assert.rejects(waitForDeployment(options), (error) => {
+    assert.ok(error instanceof FatalError);
+    assert.match(
+      error.message,
+      /skipped \(Ignored Build Step\) and feature has no earlier/
+    );
+    return true;
+  });
 });
 
 test('times out when no deployment appears', async () => {

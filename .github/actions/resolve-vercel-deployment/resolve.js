@@ -82,34 +82,62 @@ function deploymentEnvironment(deployment) {
   return deployment.target === 'production' ? 'production' : 'preview';
 }
 
+// Redeploys of a Git deployment keep its commit metadata. CLI deployments,
+// including the ones CI creates from a checkout of the same commit, are
+// excluded: their branch is recorded as `HEAD`.
+const DEPLOYMENT_SOURCES = new Set(['git', 'redeploy']);
+
+function createdAt(deployment) {
+  return deployment.createdAt ?? deployment.created;
+}
+
+function matchesBranch(deployment, target) {
+  return (
+    DEPLOYMENT_SOURCES.has(deployment.source) &&
+    deployment.meta?.githubCommitRef === target.branch &&
+    deploymentEnvironment(deployment) === target.environment
+  );
+}
+
+function newest(deployments) {
+  return deployments.sort((a, b) => createdAt(b) - createdAt(a)).at(0);
+}
+
 // Returns the newest deployment of the target, or undefined if Vercel has not
 // created one yet. A newer deployment supersedes an older one for the same
 // commit, e.g. a redeploy after a canceled build.
 function selectDeployment(deployments, target) {
-  return deployments
-    .filter(
+  return newest(
+    deployments.filter(
       (deployment) =>
-        deployment.source === 'git' &&
-        deployment.meta?.githubCommitSha?.toLowerCase() === target.sha &&
-        deployment.meta?.githubCommitRef === target.branch &&
-        deploymentEnvironment(deployment) === target.environment
+        matchesBranch(deployment, target) &&
+        deployment.meta?.githubCommitSha?.toLowerCase() === target.sha
     )
-    .sort((a, b) => (b.createdAt ?? b.created) - (a.createdAt ?? a.created))
-    .at(0);
+  );
 }
 
 function deploymentState(deployment) {
   return deployment.readyState ?? deployment.state;
 }
 
+// Vercel records a build it chose not to run as a CANCELED deployment: an
+// Ignored Build Step sets `buildSkipped`, and skipping an unaffected monorepo
+// project links the docs section that explains it.
+function isSkipped(details) {
+  return (
+    details.buildSkipped === true ||
+    String(details.errorLink ?? '').includes('#skipping-unaffected-projects')
+  );
+}
+
 class FatalError extends Error {}
 
-async function listDeployments({ fetchImpl, token, teamId, projectId, sha }) {
-  const url = new URL('https://api.vercel.com/v6/deployments');
+async function vercelGet({ fetchImpl, token, teamId }, path, params = {}) {
+  const url = new URL(path, 'https://api.vercel.com');
   url.searchParams.set('teamId', teamId);
-  url.searchParams.set('projectId', projectId);
-  url.searchParams.set('sha', sha);
-  url.searchParams.set('limit', '100');
+  for (const [key, value] of Object.entries(params)) {
+    url.searchParams.set(key, value);
+  }
   const response = await fetchImpl(url, {
     headers: { authorization: `Bearer ${token}` },
   });
@@ -117,40 +145,83 @@ async function listDeployments({ fetchImpl, token, teamId, projectId, sha }) {
     throw new Error(`Vercel API returned ${response.status}`);
   }
   if (!response.ok) {
-    throw new FatalError(
-      `Vercel API returned ${response.status} listing deployments for ${projectId}`
-    );
+    throw new FatalError(`Vercel API returned ${response.status} for ${path}`);
   }
-  const body = await response.json();
+  return response.json();
+}
+
+async function listDeployments(context, params) {
+  const body = await vercelGet(context, '/v6/deployments', {
+    projectId: context.projectId,
+    limit: '100',
+    ...params,
+  });
   if (!Array.isArray(body.deployments)) {
     throw new Error('Vercel API response has no deployments array');
   }
   return body.deployments;
 }
 
+// A skipped build leaves the branch served by its previous deployment, which
+// is what the skipped commit would have deployed.
+async function findServingDeployment(context, skipped) {
+  const { target } = context;
+  const deployments = await listDeployments(context, {
+    branch: target.branch,
+    state: 'READY',
+    ...(target.environment === 'production' ? { target: 'production' } : {}),
+  });
+  return newest(
+    deployments.filter(
+      (deployment) =>
+        matchesBranch(deployment, target) &&
+        deploymentState(deployment) === 'READY' &&
+        createdAt(deployment) < createdAt(skipped)
+    )
+  );
+}
+
+async function observeDeployment(context) {
+  const { target } = context;
+  const deployment = selectDeployment(
+    await listDeployments(context, { sha: target.sha }),
+    target
+  );
+  if (!deployment) {
+    return { state: 'missing' };
+  }
+  const state = deploymentState(deployment);
+  if (state !== 'CANCELED') {
+    return { state, deployment };
+  }
+  const details = await vercelGet(
+    context,
+    `/v13/deployments/${encodeURIComponent(deployment.uid)}`
+  );
+  if (!isSkipped(details)) {
+    return { state, deployment };
+  }
+  const serving = await findServingDeployment(context, deployment);
+  if (!serving) {
+    throw new FatalError(
+      `${deployment.uid} was skipped (${details.readyStateReason}) and ${target.branch} has no earlier ready deployment to test`
+    );
+  }
+  return { state: 'SKIPPED', deployment: serving, skipped: deployment };
+}
+
 // Returns what the Vercel API currently reports for the target: the newest
 // matching deployment and its state, `missing`, or a `transient` failure worth
 // retrying. Throws FatalError for failures a retry cannot fix.
-async function observe({ fetchImpl, token, teamId, projectId, target }) {
-  let deployments;
+async function observe(context) {
   try {
-    deployments = await listDeployments({
-      fetchImpl,
-      token,
-      teamId,
-      projectId,
-      sha: target.sha,
-    });
+    return await observeDeployment(context);
   } catch (error) {
     if (error instanceof FatalError) {
       throw error;
     }
     return { state: 'transient', message: error.message };
   }
-  const deployment = selectDeployment(deployments, target);
-  return deployment
-    ? { state: deploymentState(deployment), deployment }
-    : { state: 'missing' };
 }
 
 function describe(observation) {
@@ -159,6 +230,10 @@ function describe(observation) {
   }
   if (observation.state === 'missing') {
     return 'No matching deployment yet';
+  }
+  if (observation.state === 'SKIPPED') {
+    const { skipped, deployment } = observation;
+    return `${skipped.uid} was skipped; testing ${deployment.uid}, the branch's latest ready deployment (${deployment.inspectorUrl})`;
   }
   const { uid, inspectorUrl } = observation.deployment;
   return `${uid} is ${observation.state} (${inspectorUrl})`;
@@ -196,7 +271,7 @@ async function waitForDeployment({
     if (observation.state !== 'transient') {
       lastState = observation.state;
     }
-    if (observation.state === 'READY') {
+    if (observation.state === 'READY' || observation.state === 'SKIPPED') {
       return observation.deployment;
     }
     if (observation.state === 'ERROR') {

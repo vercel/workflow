@@ -4,7 +4,9 @@ description: >
   ID and URL, using the Vercel API. Pull requests resolve their head commit's
   preview deployment; pushes to main resolve the production deployment; and
   `changeset-release/*` PRs resolve the production deployment of their base
-  commit. Fails immediately if the deployment errors.
+  commit. Fails immediately if the deployment errors. A build Vercel skipped
+  (an Ignored Build Step, or a monorepo project the commit did not affect)
+  resolves to the branch's previous ready deployment, which is still serving.
 
 inputs:
   project-id:
