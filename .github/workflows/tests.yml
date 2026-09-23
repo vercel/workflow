@@ -45,33 +45,20 @@ jobs:
       # Slot index for the Vercel e2e lanes' concurrency groups (see the
       # `concurrency` block on e2e-vercel-prod for what the groups do). The
       # slot count is how many runs' worth of Vercel e2e traffic may be in
-      # flight repo-wide at once; everything past that queues.
+      # flight repo-wide at once; everything past that queues. It defaults to
+      # one, so runs no longer overlap each other on the shared Vercel
+      # projects, and it cannot be raised past the ceiling in the script.
       #
-      # The modulo happens here because GitHub expressions have no arithmetic
-      # operators, so the lanes can only read a precomputed value through
-      # `needs`. Keying on run_id rather than something random keeps a re-run
-      # of a run in the same slot it had, so a re-run queues behind the run it
-      # replaces instead of contending with a third one.
-      #
-      # Tunable without a code change: set the repository variable
-      # E2E_VERCEL_CONCURRENCY_SLOTS (Settings > Secrets and variables >
-      # Actions > Variables). Raise it if PRs are waiting too long, lower it
-      # to 1 to serialize the Vercel lanes across the whole repo.
+      # Still tunable without a code change, within that ceiling: set the
+      # repository variable E2E_VERCEL_CONCURRENCY_SLOTS (Settings > Secrets
+      # and variables > Actions > Variables). See the comments in
+      # .github/scripts/pick-e2e-slot.js for why the ceiling exists and what
+      # to weigh before moving it.
       - name: Pick Vercel e2e concurrency slot
         id: e2e-slot
         env:
-          SLOTS: ${{ vars.E2E_VERCEL_CONCURRENCY_SLOTS }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          slots="${SLOTS:-2}"
-          case "$slots" in
-            '' | *[!0-9]*) slots=2 ;;
-          esac
-          if [ "$slots" -lt 1 ]; then
-            slots=1
-          fi
-          echo "slot=$((RUN_ID % slots))" >> "$GITHUB_OUTPUT"
-          echo "Vercel e2e lanes use slot $((RUN_ID % slots)) of $slots"
+          E2E_VERCEL_CONCURRENCY_SLOTS: ${{ vars.E2E_VERCEL_CONCURRENCY_SLOTS }}
+        run: node .github/scripts/pick-e2e-slot.js >> "$GITHUB_OUTPUT"
 
       # Vercel projects and per-lane matrices for the e2e-vercel-* jobs.
       - name: Build Vercel e2e matrices
@@ -366,8 +353,8 @@ jobs:
     # cell is a distinct group. What collides is the *same* cell from a
     # *different* run, which waits instead of doubling the load on the
     # backend and on the shared Vercel project this cell deploys to. With
-    # the default two slots that leaves at most two runs' worth of Vercel
-    # e2e in flight repo-wide, however many PRs are pushed at once.
+    # the default single slot that leaves one run's worth of Vercel e2e in
+    # flight repo-wide, however many PRs are pushed at once.
     #
     # `queue: max` is what makes this safe to apply to a required check.
     # The default (`queue: single`) keeps one pending entry per group and
