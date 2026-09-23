@@ -78,10 +78,10 @@ describe('hook indexes', () => {
       'token-index',
       hashToken('indexed-token')
     );
-    expect(tokenEntries).toEqual([`${created.event.eventId}.json`]);
+    expect(tokenEntries).toEqual([`${runId}-${created.event.eventId}.json`]);
 
     const idEntries = await listDirSafe('hooks', 'id-index', 'hook_indexed');
-    expect(idEntries).toEqual([`${created.event.eventId}.json`]);
+    expect(idEntries).toEqual([`${runId}-${created.event.eventId}.json`]);
 
     const byRunMarkers = await listDirSafe('hooks', 'by-run');
     expect(byRunMarkers).toEqual([`${runId}-hook_indexed.json`]);
@@ -126,6 +126,90 @@ describe('hook indexes', () => {
     });
     expect(conflict.event.eventType).toBe('hook_conflict');
     expect((conflict.event as any).eventData.conflictingRunId).toBe(runId);
+  });
+
+  it('rebuilds the live successor after cache loss when two runs used the token at the same event slot', async () => {
+    // Event ids are per-run slot numbers, so a token disposed by one run and
+    // reused by another at the same slot indexes two entries with the same
+    // event id — one file name, the first writer's, if the name omitted the
+    // run. A cache rebuild must land on the live hook, not stop at the
+    // disposed one it happens to list first.
+    const first = await newRun();
+    const second = await newRun();
+    const a = await createHook(storage, first, {
+      hookId: 'hook_slot_a',
+      token: 'same-slot-token',
+    });
+    await disposeHook(storage, first, 'hook_slot_a');
+    const b = await createHook(storage, second, {
+      hookId: 'hook_slot_b',
+      token: 'same-slot-token',
+    });
+    expect(
+      await listDirSafe('hooks', 'token-index', hashToken('same-slot-token'))
+    ).toHaveLength(2);
+
+    await fs.unlink(
+      path.join(
+        testDir,
+        'hooks',
+        'tokens',
+        `${hashToken('same-slot-token')}.json`
+      )
+    );
+    await fs.unlink(path.join(testDir, 'hooks', 'hook_slot_b.json'));
+
+    const rebuilt = await storage.hooks.getByToken('same-slot-token');
+    expect(rebuilt.hookId).toBe(b.hookId);
+    expect(rebuilt.runId).toBe(second);
+    expect(rebuilt.hookId).not.toBe(a.hookId);
+  });
+
+  it('rebuilds a force-claimed token to its current owner, provenance included, after cache loss', async () => {
+    // The reviewer's case (vercel/workflow#4193): force-claim a token, lose
+    // the winning entity and the token claim, look the token up. The victim's
+    // and the claimer's creations share an event slot, and the victim's is
+    // the closed one; the rebuild must pick the claimer and restore where its
+    // token came from.
+    const victimRun = await newRun();
+    const claimerRun = await newRun();
+    const victim = await createHook(storage, victimRun, {
+      hookId: 'hook_force_victim',
+      token: 'force-lost-caches',
+    });
+    const claimed = await storage.events.create(claimerRun, {
+      eventType: 'hook_created',
+      correlationId: 'hook_force_claimer',
+      eventData: { token: 'force-lost-caches', force: true },
+    });
+    expect(claimed.event.eventType).toBe('hook_created');
+    expect(claimed.hook?.claimedFrom).toMatchObject({
+      runId: victimRun,
+      hookId: victim.hookId,
+    });
+
+    await fs.unlink(
+      path.join(
+        testDir,
+        'hooks',
+        'tokens',
+        `${hashToken('force-lost-caches')}.json`
+      )
+    );
+    await fs.unlink(path.join(testDir, 'hooks', 'hook_force_claimer.json'));
+
+    const rebuilt = await storage.hooks.getByToken('force-lost-caches');
+    expect(rebuilt.hookId).toBe('hook_force_claimer');
+    expect(rebuilt.runId).toBe(claimerRun);
+    expect(rebuilt.claimedFrom).toMatchObject({
+      runId: victimRun,
+      hookId: victim.hookId,
+    });
+    // The rebuilt claim carries the provenance too, so the fast path agrees.
+    const again = await storage.hooks.getByToken('force-lost-caches');
+    expect(again.claimedFrom).toMatchObject({ runId: victimRun });
+    // The victim is still gone by id, as before the cache loss.
+    await expect(storage.hooks.get('hook_force_victim')).rejects.toThrow();
   });
 
   it('cleans up only the terminal run’s hooks via by-run markers', async () => {

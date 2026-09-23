@@ -25,10 +25,18 @@ import { hashToken } from './helpers.js';
  * event log: O(total history) on every first-time hook creation.
  *
  * Indexes maintained here:
- *   - `hooks/token-index/{sha256(token)}/{eventId}[.tag].json` → `{runId}`
- *   - `hooks/id-index/{hookId}/{eventId}[.tag].json` → `{runId}`
+ *   - `hooks/token-index/{sha256(token)}/{runId}-{eventId}[.tag].json` → `{runId}`
+ *   - `hooks/id-index/{hookId}/{runId}-{eventId}[.tag].json` → `{runId}`
  *   - `hooks/by-run/{runId}-{hookId}[.tag].json` → `{hookId, tag?}`
  *     (per live hook entity, for run-termination cleanup)
+ *
+ * Entry names carry the run: event ids are per-run slot numbers, so two
+ * runs' hooks on one token (a disposed-then-reused token, or a force-claim
+ * victim and its claimer) routinely share an `eventId`, and a name keyed on
+ * the event alone would let the first writer's `writeExclusive` swallow the
+ * second entry — the live hook then invisible to a cache rebuild. Entries
+ * written before this change are named `{eventId}[.tag].json`; the reader
+ * accepts both (the content names the run either way).
  *
  * Crash-ordering invariant: entries are written BEFORE the write they
  * index (event publish / entity write), so a crash can only leave a
@@ -107,7 +115,9 @@ export async function writeHookCreatedIndexEntries(
   assertSafeEntityId('runId', runId);
   assertSafeEntityId('eventId', eventId);
   if (tag !== undefined) assertSafeEntityId('tag', tag);
-  const fileName = tag ? `${eventId}.${tag}.json` : `${eventId}.json`;
+  const fileName = tag
+    ? `${runId}-${eventId}.${tag}.json`
+    : `${runId}-${eventId}.json`;
   const content = JSON.stringify({ runId });
   await Promise.all([
     writeExclusive(path.join(tokenIndexDir(basedir, token), fileName), content),
@@ -308,14 +318,18 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
 }
 
 /**
- * Find the newest visible `hook_created` event for a token or hookId.
- * Entries are iterated newest-first (eventIds are ULIDs); dangling or
- * non-matching entries are skipped. Liveness is the caller's job.
+ * Find a visible `hook_created` event for a token or hookId that `accept`s.
+ * Dangling, non-matching and rejected entries are skipped and the next is
+ * tried, so a token whose index lists several runs' hooks (a reused token,
+ * a force-claim victim beside its claimer) still resolves to the one that is
+ * live when `accept` checks liveness — which entry sorts first is not a
+ * liveness order, since event ids are per-run slots. Entries are iterated
+ * newest-first by event id as a tiebreak only.
  */
-export async function findNewestIndexedHookCreatedEvent(
+export async function findIndexedHookCreatedEvent(
   basedir: string,
   index: { kind: 'token'; token: string } | { kind: 'id'; hookId: string },
-  matches: (event: Event) => boolean,
+  accept: (event: Event) => boolean | Promise<boolean>,
   tag?: string
 ): Promise<Event | null> {
   await ensureHookIndexes(basedir);
@@ -329,6 +343,12 @@ export async function findNewestIndexedHookCreatedEvent(
     return null;
   }
 
+  const eventIdOf = (entryId: string, runId: string): string => {
+    const stripped = stripTag(entryId);
+    return stripped.startsWith(`${runId}-`)
+      ? stripped.slice(runId.length + 1)
+      : stripped;
+  };
   const entryIds = (await listJSONFiles(dir))
     .filter((fileId) => isVisibleToTag(fileId, tag))
     .sort((a, b) => stripTag(b).localeCompare(stripTag(a)));
@@ -347,7 +367,7 @@ export async function findNewestIndexedHookCreatedEvent(
     }
     if (!entry) continue;
 
-    const eventId = stripTag(entryId);
+    const eventId = eventIdOf(entryId, entry.runId);
     let eventPath: string;
     try {
       eventPath = taggedPath(
@@ -363,7 +383,7 @@ export async function findNewestIndexedHookCreatedEvent(
     if (!event) continue;
     if (event.eventType !== 'hook_created') continue;
     if (typeof event.correlationId !== 'string') continue;
-    if (!matches(event)) continue;
+    if (!(await accept(event))) continue;
     return event;
   }
   return null;

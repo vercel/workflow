@@ -22,7 +22,10 @@ import { resumeHook, resumeWebhook } from './resume-hook.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
-vi.mock('../telemetry.js', () => ({
+vi.mock('../telemetry.js', async (importOriginal) => ({
+  // Everything else real: the Request-body stream writes below go through
+  // the ordinary span helpers.
+  ...(await importOriginal<typeof import('../telemetry.js')>()),
   linkToTraceCarrier: vi.fn(),
   trace: vi.fn((_name, fn) => fn(undefined)),
 }));
@@ -360,7 +363,7 @@ describe('resumeHook', () => {
         ...overrides,
       }) as Hook;
     const victimHook = baseHook({});
-    const claimerHook = baseHook({
+    const claimerOverrides: Partial<Hook> = {
       runId: 'wrun_claimer',
       hookId: 'hook_claimer',
       resumeContext: {
@@ -369,7 +372,12 @@ describe('resumeHook', () => {
         runSpecVersion: SPEC_VERSION_CURRENT,
       },
       claimedFrom: { runId: 'wrun_victim', hookId: 'hook_victim' },
-    });
+    };
+    const claimerHook = baseHook(claimerOverrides);
+    // `resumeWebhook` defines the lazy metadata getter on the very object the
+    // World returned, so tests that go through it get their own records.
+    const freshVictim = () => baseHook({});
+    const freshClaimer = () => baseHook(claimerOverrides);
 
     it('follows a HookForceClaimedError to the new owner with the same resumeId and wakes the new owner', async () => {
       const getByToken = vi
@@ -526,6 +534,130 @@ describe('resumeHook', () => {
       expect(peekFormatPrefix(first)).toBe(SerializationFormat.ENCRYPTED);
       expect(peekFormatPrefix(second)).toBe(SerializationFormat.SEALED);
       expect(getEncryptionKeyForRun).not.toHaveBeenCalled();
+    });
+
+    it('never clones the Request of an ordinary webhook resume (no per-delivery tee for users who do not force)', async () => {
+      // The reviewer's regression: `Request.clone()` tees the body and
+      // buffers the unread copy for the whole payload, on every delivery, to
+      // serve a redirect that only a force-claim ever needs. Not acceptable
+      // as steady-state cost. A plain successful resume must not clone.
+      const clone = vi.spyOn(Request.prototype, 'clone');
+      try {
+        const createEvent = vi.fn().mockResolvedValue(undefined);
+        setWorld({
+          specVersion: SPEC_VERSION_CURRENT,
+          hooks: { getByToken: vi.fn().mockResolvedValue(freshVictim()) },
+          runs: { get: vi.fn() },
+          events: { create: createEvent },
+          streams: {
+            write: vi.fn().mockResolvedValue(undefined),
+            writeMulti: vi.fn().mockResolvedValue(undefined),
+            close: vi.fn().mockResolvedValue(undefined),
+          },
+          getEncryptionKeyForRun: vi.fn(),
+          queue: vi.fn().mockResolvedValue(undefined),
+          getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+        } as unknown as World);
+        const response = await resumeWebhook(
+          'shared',
+          new Request('http://x', { method: 'POST', body: 'payload' })
+        );
+        expect(response.status).toBe(202);
+        expect(createEvent).toHaveBeenCalledTimes(1);
+        expect(clone).not.toHaveBeenCalled();
+      } finally {
+        clone.mockRestore();
+      }
+    });
+
+    it('fails a consumed webhook Request that would need a redirect with a retryable error, delivering it nowhere', async () => {
+      // A Request body streams to the World once; without an up-front clone
+      // it cannot be re-sent to the new owner. The World refused the write to
+      // the old owner, so nothing landed anywhere: surface that as a clear,
+      // retryable error rather than a body-already-used serialization error
+      // or an empty payload for the new owner.
+      const clone = vi.spyOn(Request.prototype, 'clone');
+      try {
+        const getByToken = vi
+          .fn()
+          .mockResolvedValueOnce(freshVictim())
+          .mockResolvedValueOnce(freshClaimer());
+        const createEvent = vi
+          .fn()
+          .mockRejectedValueOnce(
+            new HookForceClaimedError('shared', 'wrun_claimer', 'hook_claimer')
+          )
+          .mockResolvedValueOnce(undefined);
+        setWorld({
+          specVersion: SPEC_VERSION_CURRENT,
+          hooks: { getByToken },
+          runs: { get: vi.fn() },
+          events: { create: createEvent },
+          streams: {
+            write: vi.fn().mockResolvedValue(undefined),
+            writeMulti: vi.fn().mockResolvedValue(undefined),
+            close: vi.fn().mockResolvedValue(undefined),
+          },
+          getEncryptionKeyForRun: vi.fn(),
+          queue: vi.fn().mockResolvedValue(undefined),
+          getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+        } as unknown as World);
+        const outcome = await resumeWebhook(
+          'shared',
+          new Request('http://x', { method: 'POST', body: 'payload' })
+        ).then(
+          () => undefined,
+          (e: unknown) => e
+        );
+        expect(WorkflowRuntimeError.is(outcome)).toBe(true);
+        expect((outcome as Error).message).toMatch(
+          /changed owner while this webhook request was being delivered/
+        );
+        expect((outcome as Error).message).toMatch(/retry the request/);
+        expect(HookForceClaimedError.is((outcome as Error).cause)).toBe(true);
+        // Exactly one write was attempted; the new owner got nothing.
+        expect(createEvent).toHaveBeenCalledTimes(1);
+        expect(clone).not.toHaveBeenCalled();
+      } finally {
+        clone.mockRestore();
+      }
+    });
+
+    it('still redirects a Request payload whose body was never read (the attempt failed before serializing)', async () => {
+      // A not-found on the token lookup happens before the body is touched,
+      // so the same Request is re-sent to the relocated owner — no clone.
+      const clone = vi.spyOn(Request.prototype, 'clone');
+      try {
+        const getByToken = vi
+          .fn()
+          .mockRejectedValueOnce(new HookNotFoundError('shared'))
+          .mockResolvedValueOnce(freshClaimer());
+        const createEvent = vi.fn().mockResolvedValue(undefined);
+        setWorld({
+          specVersion: SPEC_VERSION_CURRENT,
+          hooks: { getByToken },
+          runs: { get: vi.fn() },
+          events: { create: createEvent },
+          streams: {
+            write: vi.fn().mockResolvedValue(undefined),
+            writeMulti: vi.fn().mockResolvedValue(undefined),
+            close: vi.fn().mockResolvedValue(undefined),
+          },
+          getEncryptionKeyForRun: vi.fn(),
+          queue: vi.fn().mockResolvedValue(undefined),
+          getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+        } as unknown as World);
+        const resumed = await resumeHook(
+          'shared',
+          new Request('http://x', { method: 'POST', body: 'payload' })
+        );
+        expect(resumed.runId).toBe('wrun_claimer');
+        expect(createEvent).toHaveBeenCalledTimes(1);
+        expect(createEvent.mock.calls[0][0]).toBe('wrun_claimer');
+        expect(clone).not.toHaveBeenCalled();
+      } finally {
+        clone.mockRestore();
+      }
     });
 
     it('keeps HookNotFoundError when the token still names the same hook', async () => {

@@ -234,6 +234,8 @@ A token can only be taken from a run whose runtime understands being taken from.
 This option is experimental. It requires an explicit `token` (a generated token can never conflict) and is not accepted by `createWebhook()`. If the configured World does not support force-claiming at all, the workflow fails when registering the Hook; a World that declines a specific takeover because the current owner cannot be woken answers with `HookConflictError` instead.
 
 Senders on an older SDK release are not redirected. A `resumeHook()` from a deployment that predates this option and that looked the token up inside the short handoff window gets an error (`EntityConflictError`) instead of following the token; the payload is refused, never delivered to the wrong run, and a retry resolves the new owner. Upgrade the sending deployment for the transparent redirect.
+
+Webhook requests are not redirected either. [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook) streams the request body once, and buffering a copy of every webhook body on the chance that its token is being taken over at that moment would be a cost paid by everyone who never uses this option. A webhook delivery that lands inside the handoff window fails with a retryable error naming the takeover; nothing is delivered anywhere, and the sender's retry reaches the new owner.
 </Callout>
 
 ### Waiting for multiple payloads

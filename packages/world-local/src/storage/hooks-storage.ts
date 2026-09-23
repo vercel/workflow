@@ -40,7 +40,7 @@ import {
 import {
   deleteHookByRunMarkerFile,
   ensureHookIndexes,
-  findNewestIndexedHookCreatedEvent,
+  findIndexedHookCreatedEvent,
   listHookByRunMarkers,
   writeHookByRunMarker,
 } from './hook-index.js';
@@ -52,12 +52,21 @@ function getHookCreatedToken(event: Event): string | undefined {
 }
 
 export function hookFromCreatedEvent(event: HookCreatedEvent): Hook {
-  const { token, metadata, isWebhook, isSystem, tokenRetentionUntil } =
-    event.eventData;
+  const {
+    token,
+    metadata,
+    isWebhook,
+    isSystem,
+    tokenRetentionUntil,
+    forceClaimedFrom,
+  } = event.eventData;
   return {
     runId: event.runId,
     hookId: event.correlationId,
     token,
+    // The journaled row is the durable record of a takeover; a rebuilt
+    // entity must say where its token came from just as the original did.
+    ...(forceClaimedFrom !== undefined && { claimedFrom: forceClaimedFrom }),
     metadata,
     ownerId: 'local-owner',
     projectId: 'local-project',
@@ -112,33 +121,33 @@ async function findAvailableHookCreatedEvent(
   matches: (event: Event) => boolean,
   tag?: string
 ): Promise<HookCreatedEvent | null> {
-  const newest = await findNewestIndexedHookCreatedEvent(
+  // Liveness is decided per entry, inside the iteration: a token's index
+  // can name several runs' hooks (a disposed one beside its successor, a
+  // force-claim victim beside its claimer) and at most one of them is live,
+  // so the first entry to pass is the answer and a closed one must not end
+  // the search.
+  const isLive = async (event: HookCreatedEvent): Promise<boolean> => {
+    if (await isTerminalRunCache(basedir, event.runId, tag)) {
+      const retainedUntil = event.eventData.tokenRetentionUntil;
+      if (!retainedUntil || retainedUntil.getTime() <= Date.now()) {
+        return false;
+      }
+    }
+    // A committed disposal (dispose lock on disk) closes the hook even when
+    // its `hook_disposed` event has not landed in the log yet: the disposer
+    // writes the lock, releases the token claim and hook entity, and only
+    // then appends the event. Rebuilding the caches from the log in that
+    // window would resurrect a claim for a hook that is being torn down. A
+    // force-claim takeover writes the same lock for the victim.
+    return !(await isHookDisposalCommitted(basedir, event.correlationId, tag));
+  };
+  const found = await findIndexedHookCreatedEvent(
     basedir,
     index,
-    (event) => isMatchingHookCreatedEvent(event, matches),
+    (event) => isMatchingHookCreatedEvent(event, matches) && isLive(event),
     tag
   );
-  if (!newest || !isMatchingHookCreatedEvent(newest, matches)) {
-    return null;
-  }
-
-  if (await isTerminalRunCache(basedir, newest.runId, tag)) {
-    const retainedUntil = newest.eventData.tokenRetentionUntil;
-    if (!retainedUntil || retainedUntil.getTime() <= Date.now()) {
-      return null;
-    }
-  }
-
-  // A committed disposal (dispose lock on disk) closes the hook even when
-  // its `hook_disposed` event has not landed in the log yet: the disposer
-  // writes the lock, releases the token claim and hook entity, and only
-  // then appends the event. Rebuilding the caches from the log in that
-  // window would resurrect a claim for a hook that is being torn down.
-  if (await isHookDisposalCommitted(basedir, newest.correlationId, tag)) {
-    return null;
-  }
-
-  return newest;
+  return found && isMatchingHookCreatedEvent(found, matches) ? found : null;
 }
 
 async function restoreHookCachesFromEvent(
@@ -157,6 +166,7 @@ async function restoreHookCachesFromEvent(
       runId: hook.runId,
       eventId: event.eventId,
       tokenRetentionUntil: event.eventData.tokenRetentionUntil,
+      ...(hook.claimedFrom && { claimedFrom: hook.claimedFrom }),
     })
   );
   // Marker before entity (see hook-index.ts crash-ordering invariant).

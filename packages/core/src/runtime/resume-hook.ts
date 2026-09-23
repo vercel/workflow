@@ -435,14 +435,17 @@ async function resumeHookImpl<T = any>(
       // re-resolve too, because a finished run that retained its token can be
       // taken over without any row being written for it to refuse with.
       //
-      // A `Request` payload (resumeWebhook) is consumed by the attempt that
-      // serializes it, so a spare is cloned BEFORE each attempt and used only
-      // if that attempt is redirected. The original — not a clone — goes first,
-      // because `resumeWebhook` installs the manual-response writable on it as
-      // a symbol property that `Request.clone()` does not carry; the spare has
-      // it copied back. Other stream-bearing payloads cannot be re-read, and a
-      // redirect of one fails as the serialization error it is rather than
-      // delivering an empty stream to the new owner.
+      // A `Request` payload (resumeWebhook) streams its body to the World, so
+      // the attempt that serialized it has consumed it. It is NOT cloned up
+      // front: `Request.clone()` tees the body and buffers the unread copy
+      // for the length of the payload, on every webhook delivery, for a
+      // redirect that only ever happens to a token some run is force-claiming
+      // — a cost users who never opt in must not pay. So a consumed Request
+      // that turns out to need a redirect fails with a clear, retryable error
+      // instead: nothing was delivered anywhere, and the sender's retry (the
+      // norm for webhooks) looks the token up fresh and lands on the new
+      // owner. A Request whose body was not read yet (the attempt failed
+      // before serializing, e.g. on the lookup) is re-sent as is.
       let target: string | ResumableHook = tokenOrHook;
       let fresh = hookFreshlyLookedUp;
       // `resumeWebhook` resolved this key for the run it first looked up. A
@@ -460,23 +463,32 @@ async function resumeHookImpl<T = any>(
       // after a redirect.
       let lookupsAfterRedirect = 0;
       const MAX_LOOKUPS_AFTER_REDIRECT = 5;
-      let attemptPayload: T = payload;
-      let spare: T | undefined;
       // One logical resume, one resumeId, whichever run it ends up in. The
       // per-run (runId, resumeId) claim then dedups a retry of the redirected
       // write exactly as it dedups a retry of a plain one.
       const resumeId = generateResumeId();
+      const assertResendable = (cause: unknown): void => {
+        if (
+          payload instanceof Request &&
+          payload.body !== null &&
+          payload.bodyUsed
+        ) {
+          span?.setAttributes({
+            'workflow.hook.resume_redirect_unresendable': true,
+          });
+          throw new WorkflowRuntimeError(
+            `Hook token "${token}" changed owner while this webhook request was being delivered; a request body can be sent only once and it was not delivered anywhere — retry the request, which will reach the token's new owner`,
+            { cause }
+          );
+        }
+      };
       for (;;) {
-        spare =
-          attemptPayload instanceof Request
-            ? (cloneRequestForRedirect(attemptPayload) as T)
-            : undefined;
         try {
           return await resumeHookAttempt(
             world,
             span,
             target,
-            attemptPayload,
+            payload,
             keyOverride,
             fresh,
             resumeRequestedAtMs,
@@ -501,6 +513,7 @@ async function resumeHookImpl<T = any>(
           if (HookForceClaimedError.is(err)) {
             // The old owner's World completed the transfer before answering,
             // so a fresh lookup names the claimer.
+            assertResendable(err);
             redirects++;
             span?.setAttributes({
               'workflow.hook.resume_redirects': redirects,
@@ -510,7 +523,6 @@ async function resumeHookImpl<T = any>(
             fresh = true;
             keyOverride = undefined;
             lookupsAfterRedirect = 0;
-            if (spare !== undefined) attemptPayload = spare;
             continue;
           }
           if (
@@ -519,9 +531,9 @@ async function resumeHookImpl<T = any>(
             typeof target === 'string' &&
             lookupsAfterRedirect < MAX_LOOKUPS_AFTER_REDIRECT
           ) {
+            assertResendable(err);
             lookupsAfterRedirect++;
             await new Promise((resolve) => setTimeout(resolve, 50));
-            if (spare !== undefined) attemptPayload = spare;
             continue;
           }
           if (HookNotFoundError.is(err) && redirects === 0) {
@@ -556,6 +568,7 @@ async function resumeHookImpl<T = any>(
               relocated?.claimedFrom !== undefined &&
               relocated.hookId !== attemptedHookId
             ) {
+              assertResendable(err);
               redirects++;
               span?.setAttributes({
                 'workflow.hook.resume_redirects': redirects,
@@ -564,7 +577,6 @@ async function resumeHookImpl<T = any>(
               target = relocated;
               fresh = true;
               keyOverride = undefined;
-              if (spare !== undefined) attemptPayload = spare;
               continue;
             }
           }
@@ -573,23 +585,6 @@ async function resumeHookImpl<T = any>(
       }
     });
   });
-}
-
-/**
- * A `Request` for a redirected attempt: the body cloned before the first
- * attempt consumed it, and the manual-response writable `resumeWebhook`
- * installed carried over (`Request.clone()` copies no symbol properties).
- */
-function cloneRequestForRedirect(request: Request): Request {
-  const clone = request.clone();
-  const writable = (request as unknown as Record<symbol, unknown>)[
-    WEBHOOK_RESPONSE_WRITABLE
-  ];
-  if (writable !== undefined) {
-    (clone as unknown as Record<symbol, unknown>)[WEBHOOK_RESPONSE_WRITABLE] =
-      writable;
-  }
-  return clone;
 }
 
 async function resumeHookAttempt<T = any>(

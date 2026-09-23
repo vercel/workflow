@@ -28,7 +28,7 @@ A hook token is owned by one active run at a time. Normally a second run asking 
 
 1. The holder's hook is disposed, and a `hook_disposed` event naming the new owner is written to the holder's event log.
 2. The holder is woken. If it was awaiting the hook, that promise rejects with `HookForceClaimedError`. Payloads that arrived before the takeover are still delivered first; a `for await...of` loop drains them and then throws.
-3. Every `resumeHook()` for the token from then on reaches the new owner, including a delivery that was already in flight. Senders are never told the token moved.
+3. Every `resumeHook()` for the token from then on reaches the new owner, including a delivery that was already in flight. Senders are never told the token moved. The one exception is a `resumeWebhook()` request caught inside the handoff window: its body can be sent only once, so it fails with a retryable error instead of being redirected, and the sender's retry reaches the new owner.
 
 This is expected behavior, not a failure of the replaced run. It usually means a newer run for the same subject (a channel, a conversation, a device) has started and is meant to take over.
 
