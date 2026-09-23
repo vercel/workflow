@@ -357,6 +357,11 @@ These variables are primarily for tests, debugging, or unusual deployments.
 - Default: `1000`
 - Total reconnect cap per stream session.
 
+### `WORKFLOW_FRAMED_STREAM_MAX_STALLS_BELOW_TAIL`
+
+- Default: `3`
+- Consecutive stream-reader sessions that may end without delivering a chunk while the stream reports a chunk at the resume index. Past this, the read fails with a `StreamError` naming the unreadable index, so the consumer can resume after it with `startIndex` instead of waiting indefinitely.
+
 ### `WORKFLOW_WAIT_CONTINUATION_MAX_DELAY_SECONDS`
 
 - Default: `82800` (23 hours)
