@@ -1,6 +1,7 @@
 import {
   EntityConflictError,
   RunExpiredError,
+  StreamError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
@@ -196,6 +197,36 @@ describe('isRetryableEventPostError', () => {
         })
       )
     ).toBe(false);
+  });
+
+  it.each([
+    'AbortError',
+    'ABORT_ERR',
+    'UND_ERR_ABORTED',
+    'ERR_HTTP2_STREAM_CANCEL',
+  ])('does not retry STREAM_ERROR wrapping cancellation marker %s', (marker) => {
+    const cause = Object.assign(new Error('cancelled'), {
+      code: marker,
+      name: marker,
+      cause: transportErr('ECONNRESET'),
+    });
+    expect(
+      isRetryableEventPostError(
+        new StreamError('stream failed', {
+          cause: new Error('wrapper', { cause }),
+        })
+      )
+    ).toBe(false);
+  });
+
+  it('retries STREAM_ERROR wrapping an internal timeout', () => {
+    expect(
+      isRetryableEventPostError(
+        new StreamError('stream timed out', {
+          cause: new DOMException('deadline', 'TimeoutError'),
+        })
+      )
+    ).toBe(true);
   });
 
   it('does not retry an unclassified error', () => {

@@ -14,7 +14,10 @@ import {
 } from '../class-serialization.js';
 import { EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
-import type { WorkflowOrchestratorContext } from '../private.js';
+import {
+  registerDeliveryBarrier,
+  type WorkflowOrchestratorContext,
+} from '../private.js';
 import { ReplayPayloadCache } from '../replay-payload-cache.js';
 import { Run } from '../runtime/run.js';
 import { dehydrateStepReturnValue } from '../serialization.js';
@@ -359,6 +362,97 @@ describe('createCreateHook', () => {
         hasConflictAwaiter: true,
       });
     }
+  });
+
+  describe.each([
+    false,
+    true,
+  ])('pending registration awaiter: %s', (pending) => {
+    it.each([
+      {
+        outcome: 'created',
+        registration: {
+          eventType: 'hook_created',
+          eventData: { token: 'config' },
+        },
+        expected: null,
+      },
+      {
+        outcome: 'conflict',
+        registration: {
+          eventType: 'hook_conflict',
+          eventData: {
+            token: 'config',
+            conflictingRunId: 'wrun_conflicting_owner',
+          },
+        },
+        expected: expect.any(Run),
+      },
+      {
+        outcome: 'legacy conflict',
+        registration: {
+          eventType: 'hook_conflict',
+          eventData: { token: 'config' },
+        },
+        expected: expect.any(HookConflictError),
+      },
+    ] as const)('orders late $outcome awaits behind the registration delivery', async ({
+      registration,
+      expected,
+    }) => {
+      const ctx = setupWorkflowContext([
+        {
+          ...registration,
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+          createdAt: new Date(),
+        },
+      ]);
+      ctx.pendingDeliveryBarriers = new Map();
+      // Hold an earlier delivery after the serial queue has drained. This
+      // is the window in which hasCreated/hasConflict is already true but
+      // the registration acknowledgement cannot yet reach workflow code.
+      const earlier = registerDeliveryBarrier(ctx, -1, 'step', {
+        deliveredAt: 0,
+      });
+      const hook = createCreateHook(ctx)({ token: 'config' });
+      const settled: unknown[] = [];
+      const observe = (promise: Promise<unknown>) =>
+        promise.then(
+          (value) => {
+            settled.push(value);
+          },
+          (error) => {
+            settled.push(error);
+          }
+        );
+      const observations: Promise<void>[] = [];
+      if (pending) observations.push(observe(hook.getConflict()));
+      try {
+        await settleTimers();
+        expect(ctx.eventsConsumer.eventIndex).toBe(1);
+        observations.push(observe(hook.getConflict()));
+        if (registration.eventType === 'hook_conflict') {
+          observations.push(observe(hook.then((value) => value)));
+        }
+        await settleTimers();
+        expect(settled).toEqual([]);
+      } finally {
+        earlier.markDelivered();
+      }
+      await Promise.all(observations);
+      const registrationCount = pending ? 2 : 1;
+      const expectedSettlements = Array.from(
+        { length: registrationCount },
+        () => expected
+      );
+      if (registration.eventType === 'hook_conflict')
+        expectedSettlements.push(expect.any(HookConflictError));
+      expect(settled).toEqual(expectedSettlements);
+      expect(ctx.pendingDeliveryBarriers.size).toBe(0);
+      expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+    });
   });
 
   // The hook consumer's suspension signal carries the generation guard (see

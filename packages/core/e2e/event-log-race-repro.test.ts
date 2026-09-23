@@ -35,10 +35,13 @@ import {
  * one loop racing a reusable hook read against a heartbeat sleep, with the
  * concurrency supplied by the driver's resumes rather than by fan-out, taken
  * from a production run whose replays of one immutable prefix diverged
- * non-deterministically. `hook-sleep` is retained
- * as a calibration control: it is the shape that has historically produced a
- * nonzero — but very low, ~0.1% — corruption rate, so its rate is the yardstick
- * the storms are meant to beat.
+ * non-deterministically. `dag-runner` is a ready-set scheduler over a fixed
+ * DAG whose worker nodes bind a hook (awaiting `getConflict()`) mid-fan-out;
+ * it supplies its own concurrency and needs no racing driver, taken from a
+ * production runner whose single-writer logs failed to replay. `hook-sleep`
+ * is retained as a calibration control: it is the shape that has
+ * historically produced a nonzero — but very low, ~0.1% — corruption rate,
+ * so its rate is the yardstick the storms are meant to beat.
  *
  * Every non-`completed`, non-`infra` outcome is reported and fails the test, so a
  * corruption shows up loudly and the sticky PR comment can be diffed between a
@@ -72,6 +75,7 @@ type Scenario =
   | 'hook-storm'
   | 'blocked-branch'
   | 'wake-loop'
+  | 'dag-runner'
   | 'hook-sleep';
 
 type Outcome =
@@ -93,6 +97,7 @@ interface ReproConfig {
   hookStormAttempts: number;
   blockedBranchAttempts: number;
   wakeLoopAttempts: number;
+  dagRunnerAttempts: number;
   hookSleepAttempts: number;
   concurrency: number;
   /** Wall-clock budget for *launching* attempts. Once it is spent no new
@@ -192,6 +197,26 @@ interface ReproConfig {
   wakeLoopIdleRatio: number;
   /** `wake-loop`: hard cap on cycles per run. */
   wakeLoopMaxCycles: number;
+  /** `dag-runner`: nodes in the DAG and how many are in flight at once. The
+   *  width sits above the inline step limit so every wave mixes inline and
+   *  dispatched steps. */
+  dagRunnerNodes: number;
+  dagRunnerWidth: number;
+  /** `dag-runner`: the node's long step, and the deterministic per-node spread
+   *  that makes sibling completions land milliseconds to seconds apart. */
+  dagRunnerEvaluateMs: number;
+  dagRunnerEvaluateJitterMs: number;
+  /** `dag-runner`: the three short bookkeeping steps of a node. */
+  dagRunnerShortStepMs: number;
+  /** `dag-runner`: every Nth node binds a hook (awaiting `getConflict()`) and
+   *  waits for a worker callback. 0 disables. */
+  dagRunnerWorkerEvery: number;
+  /** `dag-runner`: how long a worker node waits for its callback. */
+  dagRunnerWorkerWatchdogMs: number;
+  /** `dag-runner`: the driver's delay before answering a worker's hook. */
+  dagRunnerWorkerCallbackMs: number;
+  /** `dag-runner`: sequential step + bound hook pairs before the DAG. */
+  dagRunnerPreludeBinds: number;
   /** `hook-sleep` control knobs. */
   iterations: number;
   sleepMs: number;
@@ -233,6 +258,14 @@ interface ReproRunResult {
       cycles?: number;
       heartbeats?: number;
       staleConsumed?: number;
+    };
+    /** `dag-runner`: worker callbacks the driver answered, and what the run
+     *  recorded for its worker nodes. */
+    dagRunner?: {
+      callbacksSent: number;
+      received?: number;
+      watchdogs?: number;
+      bindsConfirmed?: number;
     };
   };
   /** How far a `stuck` run actually got, read off its event log when the
@@ -276,6 +309,7 @@ const config: ReproConfig = {
     6
   ),
   wakeLoopAttempts: envNumber('EVENT_LOG_RACE_REPRO_WAKE_LOOP_ATTEMPTS', 6),
+  dagRunnerAttempts: envNumber('EVENT_LOG_RACE_REPRO_DAG_RUNNER_ATTEMPTS', 6),
   hookSleepAttempts: envNumber('EVENT_LOG_RACE_REPRO_ATTEMPTS', 2),
   // Cross-run concurrency is throughput only — the race being reproduced is
   // between concurrent replays *within* one run, driven by `rounds`/`width` and
@@ -374,6 +408,36 @@ const config: ReproConfig = {
     0.3
   ),
   wakeLoopMaxCycles: envNumber('EVENT_LOG_RACE_REPRO_WAKE_LOOP_MAX_CYCLES', 80),
+  dagRunnerNodes: envNumber('EVENT_LOG_RACE_REPRO_DAG_RUNNER_NODES', 12),
+  dagRunnerWidth: envNumber('EVENT_LOG_RACE_REPRO_DAG_RUNNER_WIDTH', 5),
+  dagRunnerEvaluateMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_DAG_RUNNER_EVALUATE_MS',
+    1500
+  ),
+  dagRunnerEvaluateJitterMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_DAG_RUNNER_EVALUATE_JITTER_MS',
+    2500
+  ),
+  dagRunnerShortStepMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_DAG_RUNNER_SHORT_STEP_MS',
+    150
+  ),
+  dagRunnerWorkerEvery: envNumber(
+    'EVENT_LOG_RACE_REPRO_DAG_RUNNER_WORKER_EVERY',
+    3
+  ),
+  dagRunnerWorkerWatchdogMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_DAG_RUNNER_WORKER_WATCHDOG_MS',
+    6000
+  ),
+  dagRunnerWorkerCallbackMs: envNumber(
+    'EVENT_LOG_RACE_REPRO_DAG_RUNNER_WORKER_CALLBACK_MS',
+    2500
+  ),
+  dagRunnerPreludeBinds: envNumber(
+    'EVENT_LOG_RACE_REPRO_DAG_RUNNER_PRELUDE_BINDS',
+    2
+  ),
   iterations: envNumber('EVENT_LOG_RACE_REPRO_ITERATIONS', 8),
   sleepMs: envNumber('EVENT_LOG_RACE_REPRO_SLEEP_MS', 5000),
   resumeDelayMs: envNumber('EVENT_LOG_RACE_REPRO_RESUME_DELAY_MS', 15_000),
@@ -1262,6 +1326,206 @@ async function runWakeLoopAttempt(attempt: number): Promise<ReproRunResult> {
 }
 
 /**
+ * Consistency check for a `dag-runner` ledger: every node settled exactly once,
+ * every worker node reports a callback outcome, every bind was confirmed.
+ */
+/** Consistency of one `dag-runner` ledger entry against the nodes seen so far. */
+function dagNodeError(entry: unknown, seen: Set<number>): string | undefined {
+  if (!isRecord(entry) || typeof entry.node !== 'number') {
+    return 'Ledger entry was not a node record.';
+  }
+  if (seen.has(entry.node)) {
+    return `Node ${entry.node} settled twice.`;
+  }
+  seen.add(entry.node);
+  if (entry.worker && entry.callback === 'none') {
+    return `Worker node ${entry.node} recorded no callback outcome.`;
+  }
+  if (!entry.worker && entry.callback !== 'none') {
+    return `Non-worker node ${entry.node} recorded a callback outcome.`;
+  }
+  return undefined;
+}
+
+function validateDagRunnerReturn(value: unknown): { error?: string } {
+  if (!isRecord(value)) {
+    return { error: 'Run returned a non-object value.' };
+  }
+  const ledger = value.ledger;
+  if (!Array.isArray(ledger)) {
+    return { error: 'Run did not return a ledger.' };
+  }
+  if (ledger.length !== config.dagRunnerNodes) {
+    return {
+      error: `Run settled ${ledger.length} nodes instead of ${config.dagRunnerNodes}.`,
+    };
+  }
+  const nodes = new Set<number>();
+  for (const entry of ledger) {
+    const error = dagNodeError(entry, nodes);
+    if (error) {
+      return { error };
+    }
+  }
+  // Every worker node (the workflow's own `worker` predicate, mirrored by
+  // `workerNodes` in the driver) binds one hook, on top of the prelude binds.
+  const workers = ledger.filter((entry) => isRecord(entry) && entry.worker);
+  const expectedBinds = config.dagRunnerPreludeBinds + workers.length;
+  if (value.bindsConfirmed !== expectedBinds) {
+    return {
+      error: `Run confirmed ${String(value.bindsConfirmed)} binds instead of ${expectedBinds}.`,
+    };
+  }
+  return {};
+}
+
+/**
+ * `dag-runner`: a ready-set scheduler over a fixed DAG (see
+ * `dagRunnerReproWorkflow`). The run supplies its own concurrency; the
+ * driver's only job is to play the workers, answering each worker node's
+ * hook after a fixed delay, the way a queue consumer would call back. Worker
+ * hooks are discovered by their `${token}:node:${n}` tokens as the run
+ * creates them.
+ */
+async function runDagRunnerAttempt(attempt: number): Promise<ReproRunResult> {
+  const scenario: Scenario = 'dag-runner';
+  const startedAt = Date.now();
+  const token = makeToken(scenario, attempt);
+
+  try {
+    const workflow = await getWorkflowMetadata(
+      deploymentUrl,
+      STORM_WORKFLOW_FILE,
+      'dagRunnerReproWorkflow'
+    );
+    const run = await start(
+      scenario,
+      STORM_WORKFLOW_FILE,
+      'dagRunnerReproWorkflow',
+      workflow,
+      [
+        {
+          evaluateJitterMs: config.dagRunnerEvaluateJitterMs,
+          evaluateMs: config.dagRunnerEvaluateMs,
+          nodes: config.dagRunnerNodes,
+          preludeBinds: config.dagRunnerPreludeBinds,
+          shortStepMs: config.dagRunnerShortStepMs,
+          token,
+          width: config.dagRunnerWidth,
+          workerEvery: config.dagRunnerWorkerEvery,
+          workerWatchdogMs: config.dagRunnerWorkerWatchdogMs,
+        },
+      ]
+    );
+
+    // Mirrors the workflow's own `worker` predicate in
+    // `dagRunnerReproWorkflow` (103_event_log_corruption_repro.ts), which is
+    // also what `validateDagRunnerReturn`'s bind count rests on; the three
+    // must agree.
+    const workerNodes: number[] = [];
+    if (config.dagRunnerWorkerEvery > 0) {
+      for (let node = 0; node < config.dagRunnerNodes; node += 1) {
+        if (
+          node % config.dagRunnerWorkerEvery ===
+          config.dagRunnerWorkerEvery - 1
+        ) {
+          workerNodes.push(node);
+        }
+      }
+    }
+
+    let callbacksSent = 0;
+    const { runResult, state } = await drive(
+      run,
+      startedAt,
+      scenario,
+      async (driverState) => {
+        // Nodes are scheduled in order, so their hooks appear in order too.
+        // Each worker is answered `workerCallbackMs` after its hook shows up,
+        // concurrently with the next one being awaited.
+        const pending: Promise<void>[] = [];
+        for (const node of workerNodes) {
+          if (driverState.done) break;
+          const hook = await waitForHook(
+            `${token}:node:${node}`,
+            run.runId,
+            driverState,
+            config.runTimeoutMs
+          );
+          pending.push(
+            sleep(config.dagRunnerWorkerCallbackMs).then(async () => {
+              if (driverState.done) return;
+              callbacksSent += 1;
+              await tryResume(driverState, hook, { node, sentAt: Date.now() });
+            })
+          );
+        }
+        await Promise.all(pending);
+      }
+    );
+
+    const pressure = {
+      resumesFailed: state.resumesFailed,
+      resumesSent: state.resumesSent,
+    };
+
+    // A run that did not complete reports only what the driver sent; a
+    // completed one adds what the run recorded for its worker nodes below.
+    if (runResult.outcome !== 'completed') {
+      return {
+        ...runResult,
+        attempt,
+        pressure: { ...pressure, dagRunner: { callbacksSent } },
+        scenario,
+        token,
+      };
+    }
+
+    const returnValue = await withTimeout(
+      run.returnValue,
+      30_000,
+      `Timed out reading return value for run ${run.runId}`
+    );
+    const validation = validateDagRunnerReturn(returnValue);
+    if (validation.error) {
+      return {
+        ...runResult,
+        attempt,
+        errorCode: 'BAD_DAG_RUNNER_LEDGER',
+        errorMessage: validation.error,
+        outcome: 'other',
+        pressure: { ...pressure, dagRunner: { callbacksSent } },
+        scenario,
+        token,
+      };
+    }
+    const summary = returnValue as {
+      bindsConfirmed: number;
+      ledger: Array<{ callback: string }>;
+    };
+    return {
+      ...runResult,
+      attempt,
+      pressure: {
+        ...pressure,
+        dagRunner: {
+          callbacksSent,
+          bindsConfirmed: summary.bindsConfirmed,
+          received: summary.ledger.filter((n) => n.callback === 'received')
+            .length,
+          watchdogs: summary.ledger.filter((n) => n.callback === 'watchdog')
+            .length,
+        },
+      },
+      scenario,
+      token,
+    };
+  } catch (err) {
+    return harnessFailure(scenario, attempt, token, startedAt, err);
+  }
+}
+
+/**
  * The calibration control, unchanged in shape from the original harness: a
  * single hook read raced against a single sleep, resumed once after a jittered
  * delay. Kept at low attempt counts purely so each run reports a rate for the
@@ -1415,6 +1679,7 @@ function summarizeByScenario(results: ReproRunResult[]) {
       'hook-storm': emptyOutcomeCounts(),
       'blocked-branch': emptyOutcomeCounts(),
       'wake-loop': emptyOutcomeCounts(),
+      'dag-runner': emptyOutcomeCounts(),
       'hook-sleep': emptyOutcomeCounts(),
     }
   );
@@ -1433,6 +1698,7 @@ const plannedAttempts =
   config.hookStormAttempts +
   config.blockedBranchAttempts +
   config.wakeLoopAttempts +
+  config.dagRunnerAttempts +
   config.hookSleepAttempts;
 let overallDeadline = Number.POSITIVE_INFINITY;
 let launchDeadline = Number.POSITIVE_INFINITY;
@@ -1590,6 +1856,22 @@ describe('event log race repro', { retry: 0 }, () => {
       );
     }
 
+    // dag-runner: the worker callback has to beat the watchdog, or every
+    // worker node takes the watchdog path and the hook is never read.
+    if (config.dagRunnerWorkerCallbackMs >= config.dagRunnerWorkerWatchdogMs) {
+      console.warn(
+        `[event-log-race-repro] dag-runner worker callback delay (${config.dagRunnerWorkerCallbackMs}ms) ` +
+          `is not below its watchdog (${config.dagRunnerWorkerWatchdogMs}ms). Every worker ` +
+          `node will time out instead of receiving its callback.`
+      );
+    }
+    if (config.dagRunnerWidth <= 3) {
+      console.warn(
+        `[event-log-race-repro] dag-runner width (${config.dagRunnerWidth}) does not exceed ` +
+          `the inline step limit (3), so no wave mixes inline and dispatched steps.`
+      );
+    }
+
     const sleepBudgetMs = config.iterations * config.sleepMs;
     const resumeCeilingMs = config.resumeDelayMs + config.resumeJitterMs;
     if (resumeCeilingMs >= sleepBudgetMs) {
@@ -1629,6 +1911,11 @@ describe('event log race repro', { retry: 0 }, () => {
         config.wakeLoopAttempts,
         config.concurrency,
         runWakeLoopAttempt
+      );
+      await runScenario(
+        config.dagRunnerAttempts,
+        config.concurrency,
+        runDagRunnerAttempt
       );
       await runScenario(
         config.hookSleepAttempts,

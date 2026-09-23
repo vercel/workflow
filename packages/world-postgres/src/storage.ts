@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   EntityConflictError,
   HookNotFoundError,
@@ -56,6 +57,7 @@ import {
   validateUlidTimestamp,
   WorkflowRunSchema,
 } from '@workflow/world';
+import { encode } from 'cbor-x';
 import {
   and,
   asc,
@@ -76,6 +78,10 @@ import {
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
+import {
+  invocationDataExpired,
+  invocationExpiredError,
+} from './invocation-retention.js';
 import { purgeRunUserDataIfZeroRetention } from './retention.js';
 import {
   getRunStatusPollIntervalMs,
@@ -338,6 +344,156 @@ function getHookRetentionLimitMs(): number {
   return days * DAY_MS;
 }
 
+/** Persist a hook event and deduplicate retries using its resumeId. */
+async function createHookResume(
+  drizzle: Drizzle,
+  runId: string,
+  data: Extract<AnyEventRequest, { eventType: 'hook_received' }>,
+  params: CreateEventParams & { resumeId: string }
+): Promise<EventResult> {
+  if (!data.correlationId)
+    throw new WorkflowWorldError('Hook identity is required', { status: 400 });
+  const bytes =
+    data.eventData.payload instanceof Uint8Array
+      ? data.eventData.payload
+      : encode(data.eventData.payload);
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  if (params.resumePayloadDigest && params.resumePayloadDigest !== digest) {
+    throw new WorkflowWorldError(
+      'Hook resume digest does not match its payload',
+      { status: 422 }
+    );
+  }
+  const event = await drizzle.transaction(async (tx) => {
+    const [run] = await tx
+      .select({
+        status: Schema.runs.status,
+        attributes: Schema.runs.attributes,
+        expiredAt: Schema.runs.expiredAt,
+      })
+      .from(Schema.runs)
+      .where(eq(Schema.runs.runId, runId))
+      .for('update')
+      .limit(1);
+    if (!run) throw new WorkflowRunNotFoundError(runId);
+    if (invocationDataExpired(run)) throw invocationExpiredError();
+    const [prior] = await tx
+      .select()
+      .from(Schema.events)
+      .where(
+        and(
+          eq(Schema.events.runId, runId),
+          eq(Schema.events.resumeId, params.resumeId),
+          eq(Schema.events.eventType, 'hook_received')
+        )
+      )
+      .limit(1);
+    if (prior) {
+      const parsed = EventSchema.parse(
+        compact({ ...prior, eventData: prior.eventData ?? prior.eventDataJson })
+      );
+      if (
+        parsed.eventType !== 'hook_received' ||
+        prior.correlationId !== data.correlationId ||
+        prior.resumePayloadDigest !== digest ||
+        parsed.eventData?.token !== data.eventData.token
+      ) {
+        throw new WorkflowWorldError(
+          'Hook resume identity reused with different contents',
+          { status: 422 }
+        );
+      }
+      return parsed;
+    }
+    if (isTerminalWorkflowRunStatus(run.status))
+      throw new RunExpiredError('Cannot resume a hook on a terminal run');
+    const [hook] = await tx
+      .select()
+      .from(Schema.hooks)
+      .where(
+        and(
+          eq(Schema.hooks.hookId, data.correlationId),
+          eq(Schema.hooks.runId, runId)
+        )
+      )
+      .for('update')
+      .limit(1);
+    if (
+      !hook ||
+      (data.eventData.token !== undefined &&
+        hook.token !== data.eventData.token)
+    ) {
+      throw new HookNotFoundError(data.correlationId);
+    }
+    const created = await insertEventRow(tx, {
+      runId,
+      eventId: await allocateEventId(tx, runId),
+      eventType: 'hook_received',
+      correlationId: data.correlationId,
+      eventData: data.eventData,
+      specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
+      resumeId: params.resumeId,
+      resumePayloadDigest: digest,
+    });
+    if (!created)
+      throw new EntityConflictError('Hook resume event could not be created');
+    return EventSchema.parse({
+      ...data,
+      ...created,
+      runId,
+      resumeId: params.resumeId,
+    });
+  }, SLOT_INSERT_TRANSACTION);
+  const resolveData = params.resolveData ?? 'all';
+  const result: EventResult = { event: stripEventDataRefs(event, resolveData) };
+  if (typeof params.sinceCursor === 'string') {
+    const rows = await drizzle
+      .select()
+      .from(Schema.events)
+      .where(
+        and(
+          eq(Schema.events.runId, runId),
+          gt(Schema.events.eventId, params.sinceCursor)
+        )
+      )
+      .orderBy(Schema.events.eventId)
+      .limit(101);
+    const events = rows.slice(0, 100).map((row) =>
+      stripEventDataRefs(
+        EventSchema.parse(
+          compact({
+            ...row,
+            eventData: row.eventData ?? row.eventDataJson,
+          })
+        ),
+        resolveData
+      )
+    );
+    return {
+      ...result,
+      events,
+      cursor: events.at(-1)?.eventId ?? null,
+      hasMore: rows.length > 100,
+    };
+  } else if (params.eventCount !== undefined) {
+    const skipped = await reportSkippedSlots(
+      drizzle,
+      runId,
+      event.eventId,
+      params.eventCount,
+      resolveData
+    );
+    if (skipped)
+      return {
+        ...result,
+        events: skipped.events,
+        hasMore: skipped.hasMore,
+        cursor: null,
+      };
+  }
+  return result;
+}
+
 /**
  * Read helper for the deprecated `error` text column (legacy: JSON-stringified
  * `StructuredError`). In the current event-sourced model, the `error` field on
@@ -477,7 +633,9 @@ export function createRunsStorage(
           and(
             map(fromCursor, (c) => lt(runs.runId, c)),
             map(params?.workflowName, (wf) => eq(runs.workflowName, wf)),
-            map(params?.status, (wf) => eq(runs.status, wf))
+            map(params?.status, (s) =>
+              Array.isArray(s) ? inArray(runs.status, s) : eq(runs.status, s)
+            )
           )
         )
         .orderBy(desc(runs.runId))
@@ -1040,6 +1198,15 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         (data.eventType === 'attr_set' || data.eventType === 'run_started')
       ) {
         throw new WorkflowRunNotFoundError(effectiveRunId);
+      }
+
+      // Retry convergence must precede the hook existence/terminal checks.
+      // A committed resume stays accepted after disposal or run completion.
+      if (data.eventType === 'hook_received' && params?.resumeId) {
+        return createHookResume(drizzle, effectiveRunId, data, {
+          ...params,
+          resumeId: params.resumeId,
+        });
       }
 
       // Lazy step start: a step_started carrying step-creation data

@@ -95,6 +95,108 @@ export function getTransientTransportCode(error: unknown): string | undefined {
   return undefined;
 }
 
+/** Reject invalid URLs before dispatch, where a failure would be retryable. */
+export function validateHttpUrl(url: string): void {
+  const { protocol, username, password } = new URL(url);
+  // Both fetch and nodeHttpFetch can reject unsupported schemes without an
+  // error code, so describeTransportFailure cannot identify these faults.
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    throw new TypeError(
+      `Unsupported URL protocol ${protocol}; expected http: or https:`
+    );
+  }
+  // Fetch rejects URL userinfo locally with a code-less TypeError. Keep that
+  // permanent configuration fault outside the transport classifier, and make
+  // the node:http and Fetch paths agree instead of allowing one to send it.
+  if (username || password) {
+    throw new TypeError(
+      'HTTP(S) URLs with embedded credentials are unsupported'
+    );
+  }
+}
+
+/**
+ * Codes that mean the request was never *formed*, as opposed to formed and
+ * then failed on the wire. `fetch()` reports a malformed URL, an invalid
+ * header name/value, or a bad argument as a rejected `TypeError` that is
+ * structurally identical to the `TypeError: fetch failed` it raises for a dead
+ * socket, and the node:http path throws Node's own `ERR_*`.
+ *
+ * These faults are permanent — every redelivery re-forms the same broken
+ * request — so they must keep propagating raw rather than being classified as
+ * a retryable transport failure, which would spend the run's whole delivery
+ * budget before failing it with a less specific error than it started with.
+ */
+const REQUEST_CONSTRUCTION_ERROR_CODES = new Set([
+  'ERR_INVALID_URL',
+  'ERR_INVALID_ARG_TYPE',
+  'ERR_INVALID_ARG_VALUE',
+  'ERR_INVALID_CHAR',
+  'ERR_INVALID_HTTP_TOKEN',
+  'ERR_HTTP_INVALID_HEADER_VALUE',
+  'ERR_UNESCAPED_CHARACTERS',
+  // Undici validates request options and headers during dispatch, after
+  // Fetch has constructed the Request (e.g. unsupported Expect headers).
+  'UND_ERR_INVALID_ARG',
+  'UND_ERR_NOT_SUPPORTED',
+]);
+
+/**
+ * Classify a rejection from `fetch()` / `nodeHttpFetch()`, calls that only
+ * settle once the response headers are in hand.
+ *
+ * A rejection leaves the request outcome unknown: it may have failed locally,
+ * or the backend may have applied it without a response reaching the caller.
+ * Preserve known request-construction faults; route other failures through
+ * the existing retry policies instead of attributing them to user code.
+ *
+ * {@link TRANSIENT_TRANSPORT_ERROR_CODES} alone could not hold that line,
+ * because it can only list failures someone has already seen. The ones it
+ * misses are not exotic: HTTP/2 session errors (`ERR_HTTP2_GOAWAY_SESSION` and
+ * friends — the shared events pool negotiates h2), TLS handshake failures,
+ * `ENETUNREACH` / `EHOSTUNREACH`, and the `AggregateError` a happy-eyeballs
+ * connect raises, which carries its codes on `errors[]` where a `cause` walk
+ * cannot see them. Each of those used to propagate raw, and a raw
+ * `TypeError: fetch failed` is indistinguishable from a user throw by the time
+ * it reaches `classifyRunError`: the run failed as `USER_ERROR`, attributing a
+ * backend outage to the customer, and the queue never redelivered it.
+ *
+ * Returns the most specific marker available to name the failure in the error
+ * message: the allowlisted code when there is one (so known failures keep
+ * reporting exactly what they reported before), otherwise the first `code` in
+ * the cause chain, otherwise the innermost error name. `undefined` means the
+ * request was never formed and the caller should rethrow as-is.
+ */
+export function describeTransportFailure(error: unknown): string | undefined {
+  const known = getTransientTransportCode(error);
+  if (known) return known;
+
+  let firstCode: string | undefined;
+  let innermostName: string | undefined;
+  let current = error;
+  for (let depth = 0; current && depth < 8; depth++) {
+    const { code, name, message } = current as {
+      code?: unknown;
+      name?: unknown;
+      message?: unknown;
+    };
+    // Node Fetch enforces the Fetch Standard's port blocking after Request
+    // construction. Its `TypeError: fetch failed` wraps a code-less
+    // `Error: bad port`; retrying cannot make that URL acceptable. Preserve
+    // the original rejection without duplicating Fetch's blocked-port list.
+    if (name === 'Error' && message === 'bad port' && code === undefined) {
+      return undefined;
+    }
+    if (typeof code === 'string' && code) {
+      if (REQUEST_CONSTRUCTION_ERROR_CODES.has(code)) return undefined;
+      firstCode ??= code;
+    }
+    if (typeof name === 'string' && name) innermostName = name;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return firstCode ?? innermostName ?? 'unknown';
+}
+
 /**
  * Effective per-request timeout. Override via `WORKFLOW_REQUEST_TIMEOUT_MS`
  * (e.g. dialed down on an e2e deployment to exercise the timeout path).
@@ -595,6 +697,7 @@ export async function instrumentedFetch(
     transportErrorCode = 'TRANSPORT',
   } = opts;
   const label = logLabel ?? url;
+  validateHttpUrl(url);
 
   return withHttpClientSpan(
     { method, url, peerService, spanName, attributes },
@@ -617,19 +720,24 @@ export async function instrumentedFetch(
           ? AbortSignal.any([callerSignal, timeoutSignal])
           : (callerSignal ?? timeoutSignal);
 
+      // With no dispatcher to honor, `WORKFLOW_NODE_HTTP` takes the request
+      // off undici altogether rather than leaving it on the undici behind
+      // `fetch`. A dispatcher the caller supplied is an instruction to use
+      // undici, so it keeps the request on `fetch`.
+      //
+      // Resolved outside the try: the catch below reads everything it sees as
+      // a failure of the request on the wire, and picking an agent happens
+      // before there is one.
+      const nodeAgents = dispatcher ? undefined : getNodeHttpAgents();
+      // Both transports issue the same span against the same URL, so this is
+      // the only thing that tells them apart in a trace.
+      span?.setAttributes({
+        ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
+      });
+
       const start = Date.now();
       let response: Response;
       try {
-        // With no dispatcher to honor, `WORKFLOW_NODE_HTTP` takes the request
-        // off undici altogether rather than leaving it on the undici behind
-        // `fetch`. A dispatcher the caller supplied is an instruction to use
-        // undici, so it keeps the request on `fetch`.
-        const nodeAgents = dispatcher ? undefined : getNodeHttpAgents();
-        // Both transports issue the same span against the same URL, so this is
-        // the only thing that tells them apart in a trace.
-        span?.setAttributes({
-          ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
-        });
         const request = nodeAgents
           ? nodeHttpFetch(url, {
               method,
@@ -681,7 +789,10 @@ export async function instrumentedFetch(
           span?.recordException?.(timeoutError);
           throw timeoutError;
         }
-        const transportCode = getTransientTransportCode(error);
+        // Nothing below this point saw a response, so anything that is not a
+        // request-construction fault is a transport failure — including codes
+        // the allowlist has never seen. See describeTransportFailure.
+        const transportCode = describeTransportFailure(error);
         if (transportCode) {
           const message = `${method} ${label} transport failure after ${elapsed}ms (${transportCode})`;
           const errorCode =

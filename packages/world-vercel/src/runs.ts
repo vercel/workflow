@@ -141,6 +141,15 @@ export async function listWorkflowRuns(
   const searchParams = new URLSearchParams();
 
   if (workflowName) searchParams.set('workflowName', workflowName);
+  if (Array.isArray(status)) {
+    // The world-vercel backend's `/v2/runs` only accepts a single status
+    // value today. Reject explicitly rather than joining into a value the
+    // backend would silently reject or misinterpret.
+    throw new WorkflowWorldError(
+      'listWorkflowRuns: status does not support an array of statuses on world-vercel yet; pass a single status',
+      { code: 'INVALID_ARGUMENT', field: 'status' }
+    );
+  }
   if (status) searchParams.set('status', status);
   if (pagination?.limit) searchParams.set('limit', pagination.limit.toString());
   if (pagination?.cursor) searchParams.set('cursor', pagination.cursor);

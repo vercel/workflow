@@ -47,6 +47,12 @@ export function isSpanErrored(span: Span): boolean {
   return span.status.code === 2 || workflowStatus === 'failed';
 }
 
+export function isSpanCancelled(span: Span): boolean {
+  const workflowStatus = (span.attributes.data as Record<string, unknown>)
+    ?.status as string | undefined;
+  return workflowStatus === 'cancelled';
+}
+
 // ---------------------------------------------------------------------------
 // Viewport
 // ---------------------------------------------------------------------------
@@ -325,6 +331,7 @@ export type SegmentStatus =
   | 'pending'
   | 'running'
   | 'completed'
+  | 'cancelled'
   | 'failed'
   | 'retrying'
   | 'succeeded'
@@ -488,6 +495,7 @@ function computeSleepSegmentsFromSpan(
 
 function runSegmentStatus(runStatus: string | undefined): SegmentStatus {
   if (runStatus === 'failed') return 'failed';
+  if (runStatus === 'cancelled') return 'cancelled';
   if (runStatus === 'pending') return 'pending';
   if (runStatus === 'running') return 'running';
   return 'completed';

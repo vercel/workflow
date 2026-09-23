@@ -64,6 +64,10 @@ import {
   runDispatchContext,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
+import {
+  dispatchRunCompletedHooks,
+  dispatchRunFailedHooks,
+} from './lifecycle-hooks.js';
 import { QuickJSLogView } from './quickjs-log-view.js';
 import {
   BASELINE_BUNDLE_FILENAME,
@@ -1817,41 +1821,45 @@ export async function runWorkflowWithQuickJS(params: {
       try {
         outcomes = await Promise.all(
           inlineCandidates.map((step) =>
-            runStepSingleFlight(runId, step.correlationId, () =>
-              (async () =>
-                executeStep({
-                  world,
-                  workflowRunId: runId,
-                  workflowDeploymentId: workflowRun.deploymentId,
-                  workflowName: workflowRun.workflowName,
-                  workflowStartedAt,
-                  requestId,
-                  rootRunId,
-                  stepId: step.correlationId,
-                  stepName: step.stepId,
-                  encryptionKey,
-                  runSpecVersion: workflowRun.specVersion,
-                  // Lazy inline claim: step_created is deferred (dispatch
-                  // skipped it) and this step_started carries the input,
-                  // so the world creates the step atomically:
-                  // exactly-one-owner. A concurrent claimant gets
-                  // EntityConflictError → { type: 'skipped' } and never
-                  // runs the body. Mirrors the node engine's inline path.
-                  lazyStepInput: await encryptSerializedData(
-                    step.input,
-                    encryptionKey
-                  ),
-                  // Ownership stamp: wake replays see the body as in
-                  // flight in this invocation and arm a delayed backstop
-                  // instead of immediately requeueing the step.
-                  ownerMessageId,
-                  // A lazy step is brand-new by construction: first
-                  // attempt.
-                  authoritativeAttempt: 1,
-                  ...(inlineDeltaSinceCursor !== undefined
-                    ? { inlineDeltaSinceCursor }
-                    : {}),
-                }))()
+            runStepSingleFlight(
+              runId,
+              step.correlationId,
+              () =>
+                (async () =>
+                  executeStep({
+                    world,
+                    workflowRunId: runId,
+                    workflowDeploymentId: workflowRun.deploymentId,
+                    workflowName: workflowRun.workflowName,
+                    workflowStartedAt,
+                    requestId,
+                    rootRunId,
+                    stepId: step.correlationId,
+                    stepName: step.stepId,
+                    encryptionKey,
+                    runSpecVersion: workflowRun.specVersion,
+                    // Lazy inline claim: step_created is deferred (dispatch
+                    // skipped it) and this step_started carries the input,
+                    // so the world creates the step atomically:
+                    // exactly-one-owner. A concurrent claimant gets
+                    // EntityConflictError → { type: 'skipped' } and never
+                    // runs the body. Mirrors the node engine's inline path.
+                    lazyStepInput: await encryptSerializedData(
+                      step.input,
+                      encryptionKey
+                    ),
+                    // Ownership stamp: wake replays see the body as in
+                    // flight in this invocation and arm a delayed backstop
+                    // instead of immediately requeueing the step.
+                    ownerMessageId,
+                    // A lazy step is brand-new by construction: first
+                    // attempt.
+                    authoritativeAttempt: 1,
+                    ...(inlineDeltaSinceCursor !== undefined
+                      ? { inlineDeltaSinceCursor }
+                      : {}),
+                  }))(),
+              'debug'
             )
           )
         );
@@ -2009,6 +2017,7 @@ export async function runWorkflowWithQuickJS(params: {
         },
       });
       wfdiag('exit_completed', { result: 'run_completed_written' });
+      dispatchRunCompletedHooks(runId, workflowName);
     } catch (err) {
       if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
         runtimeLogger.warn(
@@ -2375,6 +2384,13 @@ export async function runWorkflowWithQuickJS(params: {
       });
       throw err;
     }
+    dispatchRunFailedHooks(
+      runId,
+      workflowName,
+      dehydratedError,
+      encryptionKey,
+      errorCode
+    );
     wfdiag('exit_failed', { result: 'run_failed_written' });
   }
 }

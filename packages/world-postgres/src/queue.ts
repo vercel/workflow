@@ -2,6 +2,11 @@ import { connect } from 'node:net';
 import * as Stream from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
+import { WorkflowWorldError } from '@workflow/errors';
+import {
+  captureInvocationOutcome,
+  isTerminalInvocationError,
+} from '@workflow/errors/invocation';
 import {
   createWorkflowBaseUrl,
   createWorkflowHealthEndpoint,
@@ -10,6 +15,7 @@ import {
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
   getQueueTopicPrefix,
+  HealthCheckPayloadSchema,
   MessageId,
   parseQueueName,
   type Queue,
@@ -19,6 +25,11 @@ import {
   type ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from '@workflow/world';
+import {
+  createNodeHttpAgents,
+  destroyNodeHttpAgents,
+  nodeHttpFetch,
+} from '@workflow/world/node-http.js';
 import { createWorld } from '@workflow/world-local';
 import {
   Logger,
@@ -31,7 +42,43 @@ import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
+import { executeWithInputs } from './executor.js';
+import { createInvocations } from './invocations.js';
 import { MessageData } from './message.js';
+
+/**
+ * Serialize Graphile Worker log metadata. `JSON.stringify` alone renders an
+ * `Error` as `{}` because `name`, `message`, `stack`, and `cause` are
+ * non-enumerable, which is how a failed delivery used to log `"error": {}`.
+ * Errors are expanded to those fields plus their enumerable properties (such as
+ * a transport `code`), recursively through `cause` and `AggregateError.errors`.
+ * An error that has already been expanded is replaced with a marker: a cyclic
+ * cause chain would otherwise make `JSON.stringify` throw from inside the
+ * logger, and Graphile has no fallback for a logger that throws.
+ */
+export function serializeGraphileMeta(meta: unknown): string {
+  const seen = new WeakSet<object>();
+  const expandError = (error: Error): Record<string, unknown> => {
+    if (seen.has(error)) {
+      return { name: error.name, message: error.message, repeated: true };
+    }
+    seen.add(error);
+    const expanded: Record<string, unknown> = {
+      ...error,
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+    if (error.cause !== undefined) expanded.cause = error.cause;
+    if (error instanceof AggregateError) expanded.errors = error.errors;
+    return expanded;
+  };
+  return JSON.stringify(
+    meta,
+    (_key, value) => (value instanceof Error ? expandError(value) : value),
+    2
+  );
+}
 
 function createGraphileLogger() {
   const isJsonMode = () => process.env.WORKFLOW_JSON_MODE === '1';
@@ -43,7 +90,7 @@ function createGraphileLogger() {
     const pipe = level === 'error' ? process.stderr : process.stdout;
     if (meta) {
       pipe.write(
-        `[Graphile Worker] ${message} ${JSON.stringify(meta, null, 2)}\n`
+        `[Graphile Worker] ${message} ${serializeGraphileMeta(meta)}\n`
       );
     } else {
       pipe.write(`[Graphile Worker] ${message}\n`);
@@ -52,15 +99,71 @@ function createGraphileLogger() {
 }
 
 const graphileLogger = createGraphileLogger();
+
+/**
+ * Default deadlines for a queue delivery's response: none. A delivery executes
+ * the workflow body inline, so response headers arrive only once that work is
+ * done, and a bound here declares a slow-but-healthy delivery crashed and
+ * redelivers it while the original is still running (two executions of the
+ * same steps). Crash recovery is covered by Graphile releasing the job when
+ * the worker dies, plus `reenqueueActiveRuns` on start.
+ */
+export const DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS = 0;
+export const DEFAULT_DELIVERY_BODY_TIMEOUT_MS = 0;
+
+function envTimeoutMs(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/**
+ * Per-request deadlines for the loopback delivery request. `0` disables the
+ * deadline. An operator who prefers a hung handler to be redelivered rather
+ * than hold its worker slot until restart sets these to a value above the
+ * longest inline step they expect.
+ */
+export function getDeliveryTimeouts() {
+  return {
+    headersTimeoutMs: envTimeoutMs(
+      'WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS',
+      DEFAULT_DELIVERY_HEADERS_TIMEOUT_MS
+    ),
+    bodyTimeoutMs: envTimeoutMs(
+      'WORKFLOW_POSTGRES_BODY_TIMEOUT_MS',
+      DEFAULT_DELIVERY_BODY_TIMEOUT_MS
+    ),
+  };
+}
 const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
 // Core records MAX_DELIVERIES_EXCEEDED on delivery 49.
 const MAX_GRAPHILE_JOB_ATTEMPTS = 49;
+const EXECUTOR_JOB_HEADER = 'x-workflow-postgres-executor-job';
+const EXECUTOR_WORKER_HEADER = 'x-workflow-postgres-executor-worker';
+const EXECUTOR_ATTEMPT_HEADER = 'x-workflow-postgres-executor-attempt';
+const ExecutorDelivery = z.object({
+  id: z.string().regex(/^\d+$/),
+  worker: z.string().min(1),
+  attempt: z.coerce.number().int().positive(),
+});
+type ExecutorDelivery = z.infer<typeof ExecutorDelivery>;
+
 const GraphileHelpers = z.compile(
   z.object({
     abortSignal: z.instanceof(AbortSignal).optional(),
     job: z.object({
       attempts: z.number().int().positive(),
+      id: z.string().optional(),
+      locked_by: z.string().nullable().optional(),
+      task_identifier: z.string().optional(),
+      max_attempts: z.number().int().positive().optional(),
     }),
+    getQueueName: z
+      .custom<() => string | null | Promise<string | null>>(
+        (value) => typeof value === 'function'
+      )
+      .optional(),
   })
 );
 
@@ -77,8 +180,14 @@ type HttpExecutionResult =
 type RunnerStart = { controller: AbortController; promise: Promise<void> };
 type LoopbackTarget = { hosts: string[]; port: number };
 
+function executorInput(message: unknown) {
+  if (HealthCheckPayloadSchema.safeParse(message).success) return undefined;
+  const parsed = WorkflowInvokePayloadSchema.safeParse(message);
+  return parsed.success && !parsed.data.stepId ? parsed.data : undefined;
+}
+
 /**
- * The Postgres queue stores messages under one graphile-worker flow task.
+ * Process workflow and step jobs, with optional run-scoped execution queues for invoke().
  */
 export type PostgresQueue = Queue & {
   start(): Promise<void>;
@@ -91,6 +200,16 @@ export function createQueue(
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createWorld({ dataDir: undefined, port });
+  // Deliveries go over Node's core HTTP client rather than the global `fetch`:
+  // undici's default 300s headers/body deadlines cannot be lifted without a
+  // custom dispatcher, and a queue-owned pool keeps these sockets out of the
+  // process-global agent. Concurrency is bounded by the Graphile runner, so
+  // the pool itself does not need a socket cap.
+  const httpAgents = createNodeHttpAgents({
+    maxSockets: Infinity,
+    keepAliveMs: 30_000,
+  });
+  const deliveryTimeouts = getDeliveryTimeouts();
 
   // JSON transport that preserves Uint8Array values via a tagged
   // envelope ({ __type: 'Uint8Array', data: '<base64>' }).  Required
@@ -132,7 +251,120 @@ export function createQueue(
     return `${jobPrefix}flows`;
   }
 
-  const createQueueHandler = localWorld.createQueueHandler;
+  const invocations = config.enableInvoke ? createInvocations(pool) : undefined;
+  const executorQueueName = (runId: string) =>
+    `${getJobQueueName()}:${runId}:executor`;
+  const executorTask = () => `${getJobQueueName()}_executor`;
+
+  const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
+    if (!invocations) return localWorld.createQueueHandler(prefix, handler);
+    return async (req) => {
+      // Keep transport provenance request-scoped; it is not a World API field.
+      const delivery = ExecutorDelivery.safeParse({
+        id: req.headers.get(EXECUTOR_JOB_HEADER),
+        worker: req.headers.get(EXECUTOR_WORKER_HEADER),
+        attempt: req.headers.get(EXECUTOR_ATTEMPT_HEADER),
+      });
+      const hasDelivery = [
+        EXECUTOR_JOB_HEADER,
+        EXECUTOR_WORKER_HEADER,
+        EXECUTOR_ATTEMPT_HEADER,
+      ].some((header) => req.headers.has(header));
+      return localWorld.createQueueHandler(
+        prefix,
+        async (message, metadata) => {
+          const input = executorInput(message);
+          if (!input) {
+            return handler(message, metadata);
+          }
+          if (!hasDelivery) {
+            // Old workers can still POST ordinary orchestrator deliveries. Move
+            // those to the serialized lane before acknowledging, never run them here.
+            await transferToExecutor(
+              {
+                id: parseQueueName(metadata.queueName).id,
+                data: transport.serialize(message) as Buffer,
+                messageId: metadata.messageId,
+                attempt: metadata.attempt,
+              },
+              input.runId,
+              metadata.attempt
+            );
+            return;
+          }
+          if (!delivery.success)
+            throw new WorkflowWorldError('Invalid executor delivery metadata', {
+              status: 400,
+            });
+          const proof = delivery.data;
+          // Use Graphile's public jobs view, not private tables. This verifies the
+          // actual active task/queue/attempt rather than trusting a boolean header.
+          // It is an admission check, NOT a fence on later journal writes.
+          const { rows } = await pool.query(
+            `SELECT id FROM graphile_worker.jobs
+         WHERE id = $1 AND task_identifier = $2 AND queue_name = $3
+           AND locked_by = $4 AND attempts = $5 AND locked_at IS NOT NULL`,
+            [
+              proof.id,
+              executorTask(),
+              executorQueueName(input.runId),
+              proof.worker,
+              proof.attempt,
+            ]
+          );
+          if (rows.length === 0)
+            throw new WorkflowWorldError(
+              'Executor delivery is not active on the run queue',
+              { status: 409 }
+            );
+          if (input.invoke) {
+            if (!input.requestId)
+              throw new WorkflowWorldError('Invocation requestId is required', {
+                status: 400,
+              });
+            const outcome = await captureInvocationOutcome(
+              () => handler(message, metadata),
+              isTerminalInvocationError
+            );
+            await invocations.respondOutcome(
+              input.runId,
+              input.requestId,
+              outcome
+            );
+            return;
+          }
+          const initial = await invocations.pending(input.runId);
+          // A responded input may have committed just before the previous executor
+          // died. Always drive the run; an empty mailbox alone is not a no-op proof.
+          const feed = invocations.feed(input.runId, initial);
+          return executeWithInputs(
+            feed,
+            () => handler(message, metadata),
+            async (pending) => {
+              const outcome = await captureInvocationOutcome(
+                () =>
+                  handler(
+                    {
+                      runId: input.runId,
+                      invoke: true,
+                      requestId: pending.id,
+                      input: pending.payload,
+                    },
+                    metadata
+                  ),
+                isTerminalInvocationError
+              );
+              await invocations.respondOutcome(
+                input.runId,
+                pending.id,
+                outcome
+              );
+            }
+          );
+        }
+      )(req);
+    };
+  };
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
     return 'postgres';
@@ -140,10 +372,6 @@ export function createQueue(
 
   const completedMessages = new Set<string>();
   const inflightMessages = new Map<string, Promise<void>>();
-  const inflightWorkflowRuns = new Map<
-    string,
-    Promise<'completed' | 'rescheduled'>
-  >();
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
   let runnerStart: RunnerStart | null = null;
@@ -170,6 +398,9 @@ export function createQueue(
     headers,
     delaySeconds,
     jobKey,
+    executorRunId,
+    attemptOffset,
+    maxAttempts = MAX_GRAPHILE_JOB_ATTEMPTS,
   }: {
     queueId: string;
     body: Buffer | Uint8Array;
@@ -179,6 +410,9 @@ export function createQueue(
     headers?: Record<string, string>;
     delaySeconds?: number;
     jobKey?: string;
+    executorRunId?: string;
+    attemptOffset?: number;
+    maxAttempts?: number;
   }) {
     const utils = workerUtils;
     if (!utils) {
@@ -191,11 +425,12 @@ export function createQueue(
         : undefined;
 
     await utils.addJob(
-      getJobQueueName(),
+      executorRunId ? executorTask() : getJobQueueName(),
       MessageData.encode({
         id: queueId,
         data: Buffer.from(body),
         attempt,
+        ...(attemptOffset !== undefined ? { attemptOffset } : {}),
         messageId,
         idempotencyKey,
         headers,
@@ -203,9 +438,34 @@ export function createQueue(
       {
         ...(jobKey ? { jobKey } : {}),
         ...(runAt ? { runAt } : {}),
-        maxAttempts: MAX_GRAPHILE_JOB_ATTEMPTS,
+        maxAttempts,
+        ...(executorRunId
+          ? { queueName: executorQueueName(executorRunId) }
+          : {}),
       }
     );
+  }
+
+  async function transferToExecutor(
+    message: MessageData,
+    runId: string,
+    attempt: number,
+    remainingAttempts = Math.max(1, MAX_GRAPHILE_JOB_ATTEMPTS - attempt + 1)
+  ) {
+    await start();
+    await addGraphileJob({
+      queueId: message.id,
+      body: message.data,
+      messageId: message.messageId,
+      attempt,
+      attemptOffset: attempt - 1,
+      maxAttempts: remainingAttempts,
+      idempotencyKey: message.idempotencyKey,
+      headers: message.headers,
+      // A distinct key avoids replacing the legacy job that is still locked.
+      jobKey: `${executorTask()}:transfer:${message.messageId}`,
+      executorRunId: runId,
+    });
   }
 
   async function getExecutionBaseUrl(): Promise<string | undefined> {
@@ -335,6 +595,7 @@ export function createQueue(
     body,
     headers: extraHeaders,
     abortSignal,
+    executorDelivery,
   }: {
     queueName: ValidQueueName;
     messageId: MessageId;
@@ -342,25 +603,40 @@ export function createQueue(
     body: Uint8Array;
     headers?: Record<string, string>;
     abortSignal?: AbortSignal;
+    executorDelivery?: ExecutorDelivery;
   }): Promise<HttpExecutionResult> {
-    const headers: Record<string, string> = {
-      ...extraHeaders,
-      'content-type': 'application/json',
-      'x-vqs-queue-name': queueName,
-      'x-vqs-message-id': messageId,
-      'x-vqs-message-attempt': String(attempt),
-    };
+    const headers = new Headers(extraHeaders);
+    headers.set('content-type', 'application/json');
+    headers.set('x-vqs-queue-name', queueName);
+    headers.set('x-vqs-message-id', messageId);
+    headers.set('x-vqs-message-attempt', String(attempt));
+    // Strip caller-supplied provenance case-insensitively. Only the verified
+    // executor task may set these headers, including on retries.
+    headers.delete(EXECUTOR_JOB_HEADER);
+    headers.delete(EXECUTOR_WORKER_HEADER);
+    headers.delete(EXECUTOR_ATTEMPT_HEADER);
+    if (executorDelivery) {
+      headers.set(EXECUTOR_JOB_HEADER, executorDelivery.id);
+      headers.set(EXECUTOR_WORKER_HEADER, executorDelivery.worker);
+      headers.set(EXECUTOR_ATTEMPT_HEADER, String(executorDelivery.attempt));
+    }
     const baseUrl = await getExecutionBaseUrl();
     if (!baseUrl) {
       throw new Error('Unable to resolve base URL for workflow queue.');
     }
-    const response = await fetch(createWorkflowUrl(baseUrl, { type: 'flow' }), {
-      method: 'POST',
-      duplex: 'half',
-      headers,
-      body,
-      signal: abortSignal,
-    } as any);
+    // Queue shutdown aborts the delivery through Graphile's signal; the
+    // deadlines are the operator's (see `getDeliveryTimeouts`).
+    const response = await nodeHttpFetch(
+      createWorkflowUrl(baseUrl, { type: 'flow' }),
+      {
+        method: 'POST',
+        headers: new Headers(headers),
+        body,
+        signal: abortSignal,
+        agents: httpAgents,
+        ...deliveryTimeouts,
+      }
+    );
     const text = await response.text();
 
     if (!response.ok) {
@@ -500,6 +776,7 @@ export function createQueue(
     const { id: queueId } = parseQueueName(queue);
     const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
+    const input = invocations ? executorInput(message) : undefined;
     await addGraphileJob({
       queueId,
       body,
@@ -509,8 +786,43 @@ export function createQueue(
       headers: opts?.headers,
       delaySeconds: opts?.delaySeconds,
       jobKey: opts?.idempotencyKey ?? messageId,
+      ...(input ? { executorRunId: input.runId } : {}),
     });
     return { messageId };
+  };
+
+  const invoke: NonNullable<Queue['invoke']> = async (
+    runId,
+    payload,
+    options
+  ) => {
+    if (!invocations) throw new Error('Postgres invoke is not enabled');
+    await start();
+    return invocations.invoke(
+      runId,
+      payload,
+      options,
+      async (client, _id, run) => {
+        const wake = MessageData.encode({
+          id: run.workflowName,
+          data: transport.serialize({ runId }) as Buffer,
+          messageId: MessageId.parse(`msg_${generateMessageId()}`),
+          attempt: 1,
+        });
+        // The mailbox insertion and wake share this transaction. No job_key:
+        // every invoke (including a completed request's retry) gets a wake.
+        await client.query(
+          `SELECT graphile_worker.add_job(identifier => $1, payload => $2::json,
+          queue_name => $3, max_attempts => $4)`,
+          [
+            executorTask(),
+            JSON.stringify(wake),
+            executorQueueName(runId),
+            MAX_GRAPHILE_JOB_ATTEMPTS,
+          ]
+        );
+      }
+    );
   };
 
   async function deserializeMessageBody(data: Buffer): Promise<unknown> {
@@ -518,21 +830,53 @@ export function createQueue(
     return transport.deserialize(bodyStream as ReadableStream<Uint8Array>);
   }
 
-  function createTaskHandler(queue: QueuePrefix) {
+  function createTaskHandler(queue: QueuePrefix, executor = false) {
     return async (payload: unknown, helpers: unknown) => {
       const messageData = MessageData.parse(payload);
       const graphileHelpers = GraphileHelpers.safeParse(helpers);
       const attempt = graphileHelpers.success
-        ? graphileHelpers.data.job.attempts
+        ? graphileHelpers.data.job.attempts + (messageData.attemptOffset ?? 0)
         : messageData.attempt;
       const queueName = `${queue}${messageData.id}` as ValidQueueName;
       const body = await deserializeMessageBody(messageData.data);
       QueuePayloadSchema.parse(body);
-      const workflowInvoke = WorkflowInvokePayloadSchema.safeParse(body);
-      const workflowRunSerializationKey =
-        workflowInvoke.success && !workflowInvoke.data.stepId
-          ? `workflow:${workflowInvoke.data.runId}`
-          : undefined;
+      const orchestration = invocations ? executorInput(body) : undefined;
+      let executorDelivery: ExecutorDelivery | undefined;
+      if (orchestration) {
+        const actualQueue =
+          executor && graphileHelpers.success
+            ? await graphileHelpers.data.getQueueName?.call(helpers)
+            : undefined;
+        if (
+          !executor ||
+          !graphileHelpers.success ||
+          graphileHelpers.data.job.task_identifier !== executorTask() ||
+          actualQueue !== executorQueueName(orchestration.runId)
+        ) {
+          const job = graphileHelpers.success
+            ? graphileHelpers.data.job
+            : undefined;
+          await transferToExecutor(
+            messageData,
+            orchestration.runId,
+            attempt,
+            job
+              ? Math.max(
+                  1,
+                  (job.max_attempts ?? MAX_GRAPHILE_JOB_ATTEMPTS) -
+                    job.attempts +
+                    1
+                )
+              : undefined
+          );
+          return;
+        }
+        executorDelivery = ExecutorDelivery.parse({
+          id: graphileHelpers.data.job.id,
+          worker: graphileHelpers.data.job.locked_by,
+          attempt: graphileHelpers.data.job.attempts,
+        });
+      }
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
         const result = await executeMessageOverHttp({
           queueName,
@@ -540,6 +884,7 @@ export function createQueue(
           attempt,
           body: messageData.data,
           headers: messageData.headers,
+          executorDelivery,
           abortSignal: graphileHelpers.success
             ? graphileHelpers.data.abortSignal
             : undefined,
@@ -557,10 +902,12 @@ export function createQueue(
             body: messageData.data,
             messageId: messageData.messageId,
             attempt: attempt + 1,
+            attemptOffset: messageData.attemptOffset,
             idempotencyKey: messageData.idempotencyKey,
             headers: messageData.headers,
             delaySeconds: result.timeoutSeconds,
             jobKey: messageData.idempotencyKey ?? messageData.messageId,
+            ...(orchestration ? { executorRunId: orchestration.runId } : {}),
           });
           return 'rescheduled';
         }
@@ -572,28 +919,8 @@ export function createQueue(
 
       const idempotencyKey = messageData.idempotencyKey;
       if (!idempotencyKey) {
-        if (workflowRunSerializationKey) {
-          // Preserve step fan-out while preventing two workflow replays from
-          // mutating the same run's event log at the same time.
-          const previous = inflightWorkflowRuns.get(
-            workflowRunSerializationKey
-          );
-          const execution = (previous ?? Promise.resolve())
-            .catch(() => {})
-            .then(() => executeTask())
-            .finally(() => {
-              if (
-                inflightWorkflowRuns.get(workflowRunSerializationKey) ===
-                execution
-              ) {
-                inflightWorkflowRuns.delete(workflowRunSerializationKey);
-              }
-            });
-          inflightWorkflowRuns.set(workflowRunSerializationKey, execution);
-          await execution;
-          return;
-        }
-
+        // A delivery can hold an inline step until another wake aborts it.
+        // Run-level exclusion here would also exclude that required wake.
         await executeTask();
         return;
       }
@@ -630,6 +957,8 @@ export function createQueue(
     const namespace = resolveQueueNamespace(config.namespace);
     const workflowPrefix = getQueueTopicPrefix('workflow', namespace);
     taskList[getJobQueueName()] = createTaskHandler(workflowPrefix);
+    if (invocations)
+      taskList[executorTask()] = createTaskHandler(workflowPrefix, true);
 
     runner = await run({
       pgPool: pool,
@@ -656,9 +985,11 @@ export function createQueue(
     createQueueHandler,
     getDeploymentId,
     queue,
+    ...(invocations ? { invoke } : {}),
     start,
     async close() {
       closing = true;
+      await invocations?.close();
       if (runnerStart) {
         runnerStart.controller.abort();
         await runnerStart.promise;
@@ -685,6 +1016,7 @@ export function createQueue(
         workerUtils = null;
       }
       startPromise = null;
+      destroyNodeHttpAgents(httpAgents);
       await localWorld.close?.();
     },
   };

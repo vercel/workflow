@@ -12,6 +12,8 @@ export type PostgresWorldConfig = PgConnectionConfig & {
    */
   namespace?: string;
   queueConcurrency?: number;
+  /** Enable experimental invoke() delivery with one Graphile execution queue per run. */
+  enableInvoke?: boolean;
   /**
    * Whether the application coordinates shutdown instead of Graphile Worker
    * responding automatically. The application must await world.close().

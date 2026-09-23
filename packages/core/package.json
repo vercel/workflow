@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "5.0.0-beta.51",
+  "version": "5.0.0-beta.55",
   "description": "Core runtime and engine for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -35,6 +35,10 @@
     "./runtime/run": {
       "types": "./dist/runtime/run.d.ts",
       "default": "./dist/runtime/run.js"
+    },
+    "./runtime/lifecycle-hooks": {
+      "types": "./dist/runtime/lifecycle-hooks.d.ts",
+      "default": "./dist/runtime/lifecycle-hooks.js"
     },
     "./runtime/start": {
       "types": "./dist/runtime/start.d.ts",

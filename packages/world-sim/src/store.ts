@@ -1192,7 +1192,7 @@ export function createSimStore(options: SimStoreOptions): SimStore {
       },
       async list(params?: {
         workflowName?: string;
-        status?: WorkflowRun['status'];
+        status?: WorkflowRun['status'] | WorkflowRun['status'][];
         pagination?: PaginationOptions;
         resolveData?: ResolveData;
       }) {
@@ -1200,8 +1200,12 @@ export function createSimStore(options: SimStoreOptions): SimStore {
         if (params?.workflowName) {
           items = items.filter((r) => r.workflowName === params.workflowName);
         }
-        if (params?.status) {
-          items = items.filter((r) => r.status === params.status);
+        if (params?.status !== undefined) {
+          const statuses = Array.isArray(params.status)
+            ? params.status
+            : [params.status];
+          // Empty array matches no runs, mirroring world-local/world-postgres.
+          items = items.filter((r) => statuses.includes(r.status));
         }
         const page = paginate(items, {
           pagination: params?.pagination,

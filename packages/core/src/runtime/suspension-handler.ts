@@ -250,9 +250,15 @@ export interface SuspensionHandlerResult {
    * correlationId of the wait that produced that timeout. The
    * correlationId seeds the idempotency key for the wait-continuation
    * queue message so that repeated suspension passes over the same
-   * pending wait collapse into a single delayed continuation.
+   * pending wait collapse into a single delayed continuation. `resumeAtMs`
+   * is that wait's absolute deadline, for gates that ask whether it can fire
+   * within some window rather than how long until it does.
+   *
+   * Covers every wait still in the workflow's queue, not only ones this
+   * suspension created: a `sleep()` that lost a `Promise.race` stays queued
+   * (and reported here) until its `wait_completed` lands.
    */
-  waitTimeout?: { seconds: number; correlationId: string };
+  waitTimeout?: { seconds: number; correlationId: string; resumeAtMs: number };
   /**
    * Whether a hook create committed a `hook_conflict` — the token was already
    * claimed, so this run's hook was never created and the workflow must
@@ -1954,7 +1960,9 @@ export async function handleSuspension({
 
   // Find the soonest pending wait (minimum timeout)
   const now = Date.now();
-  let soonestWait: { seconds: number; correlationId: string } | undefined;
+  let soonestWait:
+    | { seconds: number; correlationId: string; resumeAtMs: number }
+    | undefined;
   for (const queueItem of waitItems) {
     const resumeAtMs = queueItem.resumeAt.getTime();
     const delayMs = Math.max(1000, resumeAtMs - now);
@@ -1963,6 +1971,7 @@ export async function handleSuspension({
       soonestWait = {
         seconds: timeoutSeconds,
         correlationId: queueItem.correlationId,
+        resumeAtMs,
       };
     }
   }

@@ -212,7 +212,31 @@ const HANDLER_ERROR_RETRY_AFTER_SECONDS = 1;
 const HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS = 900;
 const HANDLER_ERROR_RETRY_JITTER_RATIO = 0.25;
 
-function getHandlerErrorRetryAfterSeconds(deliveryCount: number): number {
+function getErrorRetryAfterSeconds(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+
+  // Read structurally rather than with instanceof: errors can cross VM and
+  // bundled-module realms before they reach the queue callback. This covers
+  // ThrottleError, TooEarlyError, and retryable WorkflowWorldError variants
+  // without coupling the final retry boundary to their constructors.
+  const retryAfter = (error as { retryAfter?: unknown }).retryAfter;
+  if (
+    typeof retryAfter !== 'number' ||
+    !Number.isFinite(retryAfter) ||
+    retryAfter <= 0
+  ) {
+    return undefined;
+  }
+
+  // VQS ultimately schedules through SQS, whose per-hop delay ceiling is 900s.
+  // Round upward so a fractional server delay is never retried early.
+  return Math.min(Math.ceil(retryAfter), HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS);
+}
+
+function getHandlerErrorRetryAfterSeconds(
+  error: unknown,
+  deliveryCount: number
+): number {
   const backoffSeconds = Math.min(
     Math.max(HANDLER_ERROR_RETRY_AFTER_SECONDS, 2 ** (deliveryCount - 1)),
     HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS
@@ -221,9 +245,16 @@ function getHandlerErrorRetryAfterSeconds(deliveryCount: number): number {
     Math.random() *
       (Math.ceil(backoffSeconds * HANDLER_ERROR_RETRY_JITTER_RATIO) + 1)
   );
-  return Math.max(
+  const jitteredBackoffSeconds = Math.max(
     HANDLER_ERROR_RETRY_AFTER_SECONDS,
     backoffSeconds - jitterSeconds
+  );
+
+  // Jitter only the delivery-count backoff. Applying it after this max could
+  // turn Retry-After: 120 into an earlier retry, defeating server load shed.
+  return Math.max(
+    jitteredBackoffSeconds,
+    getErrorRetryAfterSeconds(error) ?? HANDLER_ERROR_RETRY_AFTER_SECONDS
   );
 }
 
@@ -724,7 +755,13 @@ export function createQueue(config?: APIConfig): Queue {
             requestId,
           });
 
-          if (typeof result?.timeoutSeconds === 'number') {
+          if (
+            !('invoke' in payload && payload.invoke === true) &&
+            typeof result === 'object' &&
+            result !== null &&
+            'timeoutSeconds' in result &&
+            typeof result.timeoutSeconds === 'number'
+          ) {
             // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
             // Otherwise, clamp to one continuation hop (23h by default). Longer
             // sleeps chain delayed messages until the full duration has elapsed.
@@ -753,7 +790,10 @@ export function createQueue(config?: APIConfig): Queue {
         // redrive in lockstep. Workflow handlers are event-sourced and must
         // remain idempotent because queue retries can happen close together.
         retry: (error, { messageId, deliveryCount }) => {
-          const afterSeconds = getHandlerErrorRetryAfterSeconds(deliveryCount);
+          const afterSeconds = getHandlerErrorRetryAfterSeconds(
+            error,
+            deliveryCount
+          );
           console.error(
             `[workflow] Queue handler failed for message "${messageId}" on delivery attempt ${deliveryCount}; retrying in ${afterSeconds}s:`,
             error

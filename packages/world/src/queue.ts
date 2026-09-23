@@ -309,6 +309,11 @@ export type HookResumeTiming = z.infer<typeof HookResumeTimingSchema>;
 export const WorkflowInvokePayloadSchema = z.compile(
   z.object({
     runId: z.string(),
+    /** Process this input and return the handler's result as response data. */
+    invoke: z.literal(true).optional(),
+    /** Identifies one input across retries, separately from the queue delivery ID. */
+    requestId: z.string().optional(),
+    input: z.unknown().optional(),
     traceCarrier: TraceCarrierSchema.optional(),
     requestedAt: z.coerce.date().optional(),
     /**
@@ -505,8 +510,29 @@ export type QueueBatchResult =
       retryable: boolean;
     };
 
+export interface InvokeOptions {
+  /** Retries of one request reuse this key and the exact same payload. */
+  idempotencyKey?: string;
+  /** Maximum time to await a response. Timeout does not undo processing. */
+  timeoutMs?: number;
+}
+
 export interface Queue {
   getDeploymentId(): Promise<string>;
+
+  /**
+   * Send an invocation to a run's executor. Must be enabled via capabilities.invoke.
+   * An invocation carries an out-of-band request that must be processed by the
+   * executor. The executor's response is propagated back and errors are rethrown
+   * by invoke(). A transport error is an unknown outcome: the request may have
+   * been successfully processed by the executor, for example, and the success
+   * result may be lost.
+   */
+  invoke?(
+    runId: string,
+    payload: unknown,
+    options?: InvokeOptions
+  ): Promise<unknown>;
 
   /**
    * Returns true only when a queue error definitively means the explicitly
@@ -566,6 +592,8 @@ export interface Queue {
   /**
    * Creates an HTTP queue handler for processing messages from a specific queue.
    * A rejected handler must retry the same message with an incremented attempt.
+   * With `invoke: true`, the return value is response data delivered by World.
+   * Only ordinary wake results interpret `{ timeoutSeconds }` as queue control.
    *
    * `meta.messageId` SHOULD be stable across redeliveries of the same message
    * (one ID per enqueued message, reused on every delivery attempt). The
@@ -587,7 +615,6 @@ export interface Queue {
         messageId: MessageId;
         requestId?: string;
       }
-      // biome-ignore lint/suspicious/noConfusingVoidType: it is what it is
-    ) => Promise<void | { timeoutSeconds: number }>
+    ) => Promise<unknown>
   ): (req: Request) => Promise<Response>;
 }

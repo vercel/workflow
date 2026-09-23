@@ -1,4 +1,5 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
 import {
   BULK_CANCEL_MAX_RUN_IDS,
   type Event,
@@ -41,11 +42,6 @@ import {
   TableHeader,
   TableRow,
 } from '~/components/ui/table';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '~/components/ui/tooltip';
 import {
   bulkCancelToastSeverity,
   shouldRetainSelectionAfterBulkCancel,

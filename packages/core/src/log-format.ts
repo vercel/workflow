@@ -15,6 +15,7 @@ import {
  *       user error · FatalError
  *       run    wrun_…
  *       step   step_… · add (./workflows/x)
+ *       cause  TypeError: fetch failed
  *       hint:  Move the call to a step function.
  *     FatalError: …
  *         at … (trimmed stack, internals collapsed)
@@ -90,6 +91,7 @@ function renderStructuredFields(
     'errorName',
     'errorMessage',
     'errorStack',
+    'errorCause',
     'hint',
     'attempt',
     'retryCount',
@@ -157,6 +159,15 @@ function renderStructuredFields(
 
   if (errorMessage && !redundant.has('errorMessage')) {
     lines.push(`  ${kvKey('error')} ${formatPassthroughValue(errorMessage)}`);
+  }
+
+  // What the error was wrapping. Sits directly under the message it explains,
+  // one link per line (see `formatErrorCauseChain`). Skipped when the stack
+  // body already spells the chain out, which happens when the stack came off
+  // an already-inspected error and carries `[cause]:` lines of its own.
+  const errorCause = pickString(metadata, 'errorCause');
+  if (errorCause && !body.includes(errorCause)) {
+    lines.push(`  ${kvKey('cause')} ${formatPassthroughValue(errorCause)}`);
   }
 
   const hint = pickString(metadata, 'hint');

@@ -1,6 +1,6 @@
 ---
 title: Postgres World
-description: Production-ready, self-hosted world using PostgreSQL for storage and graphile-worker for job processing.
+description: Self-hosted reference world using PostgreSQL for storage and graphile-worker for job processing.
 type: integration
 summary: Deploy workflows to your own infrastructure using PostgreSQL and graphile-worker.
 prerequisites:
@@ -10,9 +10,19 @@ related:
   - /worlds/vercel
 ---
 
-The Postgres World is a production-ready backend for self-hosted deployments. It uses PostgreSQL for durable storage and [graphile-worker](https://github.com/graphile/worker) for reliable job processing.
+The Postgres World is a self-hosted backend that uses PostgreSQL for durable storage and [graphile-worker](https://github.com/graphile/worker) for reliable job processing.
 
 Use the Postgres World to deploy workflows on your own infrastructure outside Vercel, such as a Docker container, Kubernetes cluster, or any cloud that supports long-running servers.
+
+<Callout type="warn">
+  The Postgres World is a **reference implementation**: it implements the
+  complete World spec and is tested, but it is not optimized for scale, speed,
+  or security, and it ships with **no authentication** on the workflow HTTP
+  routes. For production use-cases we recommend cloning it and adapting it to
+  your persistence, network stack, scale, and security requirements. If you
+  deploy it as is, you must restrict those routes yourself. Read
+  [Security](#security) first.
+</Callout>
 
 ## Installation
 
@@ -79,6 +89,60 @@ The migration is idempotent and can safely be run as a post-deployment lifecycle
 </Callout>
 
 ## Starting the World
+
+### Experimental invocation delivery
+
+Set `WORKFLOW_POSTGRES_INVOKE=1`, or pass `enableInvoke: true` to the Postgres
+World's factory, to send hook inputs to the run's executor and wait for its
+response. Invocation is off by default. Apply the migrations and upgrade
+producers and workers together before enabling it.
+
+The executor validates the hook input and writes its event before responding.
+Workflow user code can consume the event later. The World stores inputs and
+responses in `workflow.workflow_invocations`. Inserting an input and enqueueing
+a workflow execution job share one transaction. Retries also enqueue an execution
+job, including when a retained response already exists, so committed events can
+be replayed after a runner failure.
+
+With the default job prefix, Graphile uses `workflow_flows_executor` for workflow
+execution and `workflow_flows` for step jobs and health checks. Execution jobs
+use a named queue per run, `workflow_flows:<runId>:executor`. Graphile permits
+one active job on each named queue across workers. Other runs, steps, and health
+checks can run concurrently. `queueConcurrency` limits total active jobs per
+worker process and defaults to 50. A custom job prefix replaces `workflow_` in
+these names.
+
+The HTTP receiver checks each execution request against its active Graphile job
+before processing pending inputs. Updated workers and receivers move legacy
+orchestration requests to the run's named queue. Before acknowledging an execution
+job, the World finishes any input already being processed and replays newly
+committed events. These entry checks do not stop an old handler from writing
+after its job is reclaimed.
+
+The caller receives a stored return value or a restored Workflow error. Terminal
+errors are retained as outcomes; transient or unrecognized failures leave inputs
+pending for Graphile to retry. Migration 0022 preserves the meaning of responses
+stored by earlier previews. Failure to store or read a response leaves the
+processing outcome unknown. Durable resume identities deduplicate the hook event
+when response storage must be retried.
+
+A shared `LISTEN/NOTIFY` connection signals changes to pending inputs and
+responses. Notifications contain identifiers, and readers fetch data from the
+table. Use a session-capable connection for `LISTEN`. Readers fall back to polling
+at 1s intervals if notifications fail, and connection retries use a 1s backoff.
+Notification failure and recovery are logged once per transition without
+payloads or connection details.
+
+The response-wait timeout defaults to 30s and can be set with `timeoutMs`. Encoded
+inputs and outcomes are limited to 1 MiB each. A timeout does not cancel
+processing. `$retention: 0` purges invocation data and prevents late writes from
+restoring it. Callers whose result has expired receive a 410 error with code
+`INVOCATION_DATA_EXPIRED`, even if the hook event committed earlier.
+
+Automatic cleanup of other results, stopping writes from reclaimed handlers, and
+routing requests across incompatible worker versions remain unimplemented.
+
+### Server startup
 
 To subscribe to the graphile-worker queue, your workflow app needs to start the world on server start. Here are examples for a few frameworks:
 
@@ -230,6 +294,16 @@ How often a wait for a terminal run status re-reads the run, in milliseconds. De
 
 `await run.returnValue` asks the World to wait for the run to finish, and the Postgres World parks that wait on a `NOTIFY` issued by the run-terminal write. This interval is only the backstop: it bounds how long a lost notification can go unnoticed, so lowering it costs a query per waiting run per interval and buys nothing while notifications are arriving.
 
+### `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS`
+
+Maximum time in milliseconds a queue delivery waits for the workflow handler to begin responding before the delivery is failed and Graphile Worker redelivers the message. Default: `0` (no deadline).
+
+A delivery executes the workflow body inline, so the handler responds only once that work is done. A deadline shorter than your longest inline step declares a healthy delivery crashed and redelivers it while the original is still running, executing the same steps twice. Set this only if you would rather a hung handler be redelivered than hold its worker slot until the process restarts, and set it above the longest inline work you expect.
+
+### `WORKFLOW_POSTGRES_BODY_TIMEOUT_MS`
+
+Maximum gap in milliseconds between response body chunks from the workflow handler before the delivery is failed and redelivered. Default: `0` (no deadline). The same caution as `WORKFLOW_POSTGRES_HEADERS_TIMEOUT_MS` applies.
+
 ### `WORKFLOW_POSTGRES_HOOK_RETENTION_LIMIT_DAYS`
 
 Maximum [`experimental_minRetention`](/docs/api-reference/workflow/create-hook#keep-a-token-unavailable-after-the-run-ends) accepted by the Postgres World, in days. Default: `30`. Set this to the same limit as your production World so oversized values fail during development.
@@ -290,6 +364,34 @@ The Postgres World uses PostgreSQL as a durable backend:
 
 This architecture ensures workflows survive application restarts with all state reliably persisted. For implementation details, see the [source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres).
 
+## Security
+
+Unlike the [Vercel World](/worlds/vercel), which authenticates and [encrypts](/docs/how-it-works/encryption) workflow traffic automatically, the Postgres World does **not** automatically authenticate requests that drive workflow execution. Adding that is your responsibility and should be in place before an app using this World is used in production and reachable by untrusted clients. We also recommend [enabling encryption](/docs/how-it-works/encryption#custom-world-implementations).
+
+### Protect the queue route
+
+`POST /.well-known/workflow/v1/flow` is where the worker delivers workflow orchestration and queued step invocations. It is mounted in your application like any other route, so it is publicly reachable by default, and it accepts any request whose headers and body are well-formed: there is no signature, shared secret, or caller check. Anyone who can reach it can forge or replay a workflow or step invocation, including steps your application would only reach after its own gating. Restrict it before you expose the app.
+
+The other routes under `/.well-known/workflow/v1/` differ:
+
+- `webhook/:token`, created by [`createWebhook()`](/docs/api-reference/workflow/create-webhook), is authorized by the token in the URL and nothing else. Use [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own authenticated route and [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) when you need more than that.
+- `manifest.json` responds with `404` unless the app was built with `WORKFLOW_PUBLIC_MANIFEST=1`. That variable is read at build time, so unsetting it in the runtime environment of an already-built deployment does not withdraw the manifest. Leave it unset outside of testing, because the manifest lists your workflow and step names.
+
+### Bringing your own auth
+
+Workflow does not prescribe an auth mechanism for self-hosted Worlds, so restrict the flow route at the network edge rather than inside the application:
+
+- **Keep the flow route unreachable from outside.** By default the worker delivers to a loopback address (`http://localhost:{PORT}`, or `WORKFLOW_LOCAL_BASE_URL` when set), so in the common single-process topology nothing outside the container needs to reach it. Blocking external requests to `/.well-known/workflow/v1/flow` at your ingress, reverse proxy, or firewall costs you nothing, because loopback delivery never traverses that layer. Do not block the whole `/.well-known/workflow/` prefix if you use [`createWebhook()`](/docs/api-reference/workflow/create-webhook): its `webhook/:token` route sits under the same prefix and has to stay reachable by whoever calls it.
+- **Authenticate at the proxy when the routes must cross hosts.** If your web tier and workers are separate deployments, require mTLS or a shared-secret header at the proxy in front of the application, and strip any client-supplied copy of that header at the edge.
+- **Do not gate these paths in framework middleware.** The [Next.js setup guide](/docs/getting-started/next) tells you to exclude `/.well-known/workflow/*` from your proxy matcher, because a handler that consumes the internal request body breaks execution. Adding the paths back in order to gate them reintroduces that failure mode.
+- **Do not expect the World to present a credential.** It does not sign its delivery requests or attach a secret to them, so an in-application check that requires one will reject the World's own deliveries.
+
+### Data at rest
+
+The Postgres World does not currently implement `getEncryptionKeyForRun()`, so it does not participate in Workflow's [end-to-end encryption](/docs/how-it-works/encryption): workflow and step inputs and return values, hook payloads and metadata, and stream chunks are all stored in your database in readable form. A World derived from this one can opt in by implementing that one method; see [Custom World implementations](/docs/how-it-works/encryption#custom-world-implementations). Until then, protect the database, its credentials, and its backups accordingly.
+
+The [observability UI](/docs/observability) has no authentication of its own either. If you self-host `@workflow/web` against your Postgres database, put it behind your own auth layer, because everyone who can reach it can read every run.
+
 ## Deployment
 
 Deploy your application to any cloud that supports long-running servers:
@@ -304,6 +406,7 @@ Ensure your deployment has:
 - Network access to your PostgreSQL database
 - Environment variables configured correctly
 - The `start()` function called on server initialization
+- `/.well-known/workflow/v1/flow` restricted so untrusted clients cannot reach it (see [Security](#security))
 
 <Callout type="info">
 The Postgres World is not compatible with Vercel deployments. On Vercel, workflows automatically use the [Vercel World](/worlds/vercel) with zero configuration.
@@ -311,6 +414,9 @@ The Postgres World is not compatible with Vercel deployments. On Vercel, workflo
 
 ## Limitations
 
+- **Reference implementation**: Tested and implements the complete World spec, but is not optimized for scale, speed, or security; a production deployment typically clones it and adapts it, or runs workers in separate processes with a more robust queuing system
+- **No built-in authentication**: The workflow HTTP routes accept any request that reaches them; you must restrict them yourself (see [Security](#security))
+- **No encryption**: Workflow and step data is stored unencrypted; the World does not currently implement [end-to-end encryption](/docs/how-it-works/encryption)
 - **Requires long-running process**: Must call `start()` on server initialization; not compatible with serverless platforms
 - **PostgreSQL infrastructure**: Requires a PostgreSQL database (self-hosted or managed)
 - **Not compatible with Vercel**: Use the [Vercel World](/worlds/vercel) for Vercel deployments

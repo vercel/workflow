@@ -5,6 +5,7 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateRunError } from '../serialization.js';
 import { getReplayTimeoutMaxRetries, getReplayTimeoutMs } from './constants.js';
 import { memoizeEncryptionKey, type SlotSnapshotParams } from './helpers.js';
+import { dispatchRunFailedHooks } from './lifecycle-hooks.js';
 import { getWorld } from './world.js';
 
 /**
@@ -164,20 +165,29 @@ export async function handleReplayBudgetExhausted(args: {
   const timeoutErr = new FatalError(
     `Workflow replay exceeded maximum duration (${limitMs / 1000}s) after ${attempt} attempts`
   );
+  const encryptionKey = await getEncryptionKey();
+  const dehydratedError = await dehydrateRunError(
+    timeoutErr,
+    runId,
+    encryptionKey
+  );
   await world.events.create(
     runId,
     {
       eventType: 'run_failed',
       specVersion: SPEC_VERSION_CURRENT,
       eventData: {
-        error: await dehydrateRunError(
-          timeoutErr,
-          runId,
-          await getEncryptionKey()
-        ),
+        error: dehydratedError,
         errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
       },
     },
     { requestId, ...slotSnapshot }
+  );
+  dispatchRunFailedHooks(
+    runId,
+    workflowName,
+    dehydratedError,
+    encryptionKey,
+    RUN_ERROR_CODES.REPLAY_TIMEOUT
   );
 }

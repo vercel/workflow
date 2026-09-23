@@ -625,7 +625,7 @@ describe("createUser step", () => {
 });
 ```
 
-**Integration testing:** Use `@workflow/vitest` for workflows using `sleep()`, hooks, webhooks, or retries:
+**Integration testing:** Use `@workflow/vitest` for workflows using `sleep()`, hooks, webhooks, or retries. Install it on the same npm dist-tag as `workflow`: `npm i -D @workflow/vitest@beta` for Workflow 5, because `@workflow/vitest@latest` is still the 4.x line. The plugin fails the run when its `@workflow/core` major differs from the app's.
 
 ```typescript
 // vitest.integration.config.ts
@@ -686,12 +686,14 @@ await resumeWebhook(hook.token, new Request("https://example.com/webhook", {
 - `waitForHook(run, { token? })` / `waitForSleep(run)`: Wait for workflow to reach a pause point
 - `resumeHook(token, data)` / `resumeWebhook(token, request)`: Resume paused workflows
 - `getRun(runId).wakeUp({ correlationIds })`: Skip `sleep()` calls
+- `getWorkflowRef(name)` / `listWorkflowRefs()`: Look a workflow up in the test build's manifest when the test cannot import the function (never hand-write `workflow//...` ids)
 
 **Best practices:**
 - Keep unit tests (no plugin) and integration tests (`workflow()` plugin) in separate configs
+- Install `@workflow/vitest` on the same dist-tag as `workflow` and upgrade them together
 - Use deterministic hook tokens based on test data for easier resumption
 - Set generous `testTimeout` values because workflows may run longer than typical unit tests
-- `vi.mock()` does **not** work in integration tests because step dependencies are bundled by esbuild
+- `vi.mock()` never reaches workflow bodies (they run in a VM), and reaches step code only when the generated bundles load through Vitest's module runner; project-local modules are bundled into the step bundle, so mock the npm leaf, inject the dependency, or unit test the step
 
 ## Observability & World SDK
 

@@ -111,6 +111,7 @@ describe('resumeHook durable resume', () => {
       createEvent?: ReturnType<typeof vi.fn>;
       queue?: ReturnType<typeof vi.fn>;
       getByToken?: ReturnType<typeof vi.fn>;
+      invoke?: ReturnType<typeof vi.fn>;
     } = {},
     capabilities: World['capabilities'] = { hookResumeDedup: true }
   ) => {
@@ -125,6 +126,7 @@ describe('resumeHook durable resume', () => {
       events: { create: createEvent },
       getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
       queue,
+      invoke: overrides.invoke,
     } as unknown as World);
     return { createEvent, queue, getByToken };
   };
@@ -168,6 +170,98 @@ describe('resumeHook durable resume', () => {
       ...telemetrySpan.setAttributes.mock.calls.map(([value]) => value)
     );
     expect(attributes['workflow.hook.resume_strategy']).toBe('sequential');
+  });
+
+  it('uses invoke only when advertised and leaves event persistence to the executor', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext };
+    const invoke = vi.fn().mockResolvedValue({ status: 'accepted' });
+    const { createEvent, queue } = makeWorld(
+      hook,
+      { invoke },
+      { invoke: true }
+    );
+    await expect(resumeHook(hook.token, { value: 1 })).resolves.toMatchObject({
+      hookId: hook.hookId,
+    });
+    expect(invoke).toHaveBeenCalledWith(
+      hook.runId,
+      {
+        type: 'hook_resume',
+        version: 1,
+        hookId: hook.hookId,
+        token: hook.token,
+        payload: PAYLOAD_BYTES,
+      },
+      { idempotencyKey: expect.any(String) }
+    );
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
+  });
+
+  it('keeps the old path when invoke exists but the capability is false', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext };
+    const invoke = vi.fn();
+    const { createEvent, queue } = makeWorld(
+      hook,
+      { invoke },
+      { invoke: false }
+    );
+    await resumeHook(hook.token, {});
+    expect(invoke).not.toHaveBeenCalled();
+    expect(createEvent).toHaveBeenCalledOnce();
+    expect(queue).toHaveBeenCalledOnce();
+  });
+
+  it('does not bypass executor rejection or an ambiguous invoke failure', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext };
+    const invoke = vi
+      .fn()
+      .mockResolvedValue({ status: 'rejected', code: 'HOOK_NOT_FOUND' });
+    const { createEvent, queue } = makeWorld(
+      hook,
+      { invoke },
+      { invoke: true }
+    );
+    await expect(resumeHook(hook.token, {})).rejects.toSatisfy(
+      HookNotFoundError.is
+    );
+    const failure = new Error('response lost');
+    invoke.mockRejectedValueOnce(failure);
+    await expect(resumeHook(hook.token, {})).rejects.toBe(failure);
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
+  });
+
+  it('awaits payload uploads before invoke without awaiting response readback', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext };
+    const invoke = vi.fn().mockResolvedValue({ status: 'accepted' });
+    makeWorld(hook, { invoke }, { invoke: true });
+    let finishUpload!: () => void;
+    let finishReadback!: () => void;
+    const sent = resumeHook(hook.token, {
+      payloadOp: new Promise<void>((resolve) => {
+        finishUpload = resolve;
+      }),
+      payloadReadbackOp: new Promise<void>((resolve) => {
+        finishReadback = resolve;
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(invoke).not.toHaveBeenCalled();
+    finishUpload();
+    await sent;
+    expect(invoke).toHaveBeenCalledOnce();
+    finishReadback();
+  });
+
+  it('rejects an inconsistent invoke capability instead of falling back', async () => {
+    const hook = { ...baseHook, resumeContext: currentContext };
+    const { createEvent, queue } = makeWorld(hook, {}, { invoke: true });
+    await expect(resumeHook(hook.token, {})).rejects.toThrow(
+      'without implementing'
+    );
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
   });
 
   it('opens the resumeHook timing window at public entry', async () => {

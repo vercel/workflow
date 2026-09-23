@@ -14,8 +14,9 @@ import { NODE_HTTP_ENV_VAR } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { splitEventDataForV4 } from './events.js';
+import { createWorkflowRunEventBatch, splitEventDataForV4 } from './events.js';
 import {
+  createWorkflowRunEventsBatchV4,
   createWorkflowRunEventV4,
   createWorkflowRunStartedEventV4,
   getEventsByCorrelationIdV4,
@@ -1093,10 +1094,16 @@ describe('v4 transport uses global fetch (observability)', () => {
 
 describe('createWorkflowRunEventV4 over HTTP', () => {
   it.each([
-    ['an empty body', () => new Response(), 'PARSE_ERROR'],
+    [
+      'an empty body',
+      () => new Response(),
+      'WorkflowWorldError',
+      'PARSE_ERROR',
+    ],
     [
       'malformed CBOR',
       () => new Response(new Uint8Array([0xff, 0xfe, 0xfd])),
+      'WorkflowWorldError',
       'PARSE_ERROR',
     ],
     [
@@ -1109,9 +1116,10 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
             },
           })
         ),
-      'TRANSPORT',
+      'StreamError',
+      'STREAM_ERROR',
     ],
-  ])('classifies %s', async (_case, response, code) => {
+  ])('classifies %s', async (_case, response, name, code) => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(response());
@@ -1128,7 +1136,7 @@ describe('createWorkflowRunEventV4 over HTTP', () => {
           { token: 'test-token' }
         )
       ).rejects.toMatchObject({
-        name: 'WorkflowWorldError',
+        name,
         code,
       });
     } finally {
@@ -2241,5 +2249,245 @@ describe('v4 transport reports failures to the events recycler', () => {
     }
 
     expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
+  });
+
+  it.each([
+    'pre-header',
+    'post-header',
+  ])('keeps %s HTTP/2 session failures retryable and rebuilds the shared pool', async (phase) => {
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(
+      now + (phase === 'pre-header' ? 60_000 : 80_000)
+    );
+    const error = new TypeError('fetch failed', {
+      cause: Object.assign(new Error('Session received GOAWAY'), {
+        code: 'ERR_HTTP2_GOAWAY_SESSION',
+      }),
+    });
+    vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(new Response('', { status: 404 }))
+      .mockImplementation(async () => {
+        if (phase === 'pre-header') throw error;
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.error(error);
+            },
+          }),
+          { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+        );
+      });
+
+    // A completed response resets any failure streak from earlier requests
+    // that used this process-wide pool, even when the HTTP status is an error.
+    await expect(
+      getWorkflowRunEventsV4('wrun_1', {}, { token: 'test-token' })
+    ).rejects.toMatchObject({ status: 404 });
+
+    const before = getEventsDispatcher({ token: 'test-token' });
+    for (let i = 0; i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES; i++) {
+      const rejection = await getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        { token: 'test-token' }
+      ).catch((cause: unknown) => cause);
+      expect(StreamError.is(rejection)).toBe(true);
+      expect(rejection).toHaveProperty('cause', error);
+      if (i < EVENTS_RECYCLE_AFTER_CONSECUTIVE_FAILURES - 1) {
+        expect(getEventsDispatcher({ token: 'test-token' })).toBe(before);
+      }
+    }
+    expect(getEventsDispatcher({ token: 'test-token' })).not.toBe(before);
+  });
+});
+
+/**
+ * A rejection from `fetch` means no response was produced, which is a
+ * transport failure regardless of what the cause chain says. Left raw, a
+ * `TypeError: fetch failed` reaches the runtime as an ordinary throw:
+ * `classifyRunError` reads it as USER_ERROR and the queue never redelivers
+ * the run, so a backend blip fails the run and blames customer code.
+ */
+describe('v4 transport wraps pre-response failures the allowlist misses', () => {
+  beforeEach(() => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it('maps a bare `TypeError: fetch failed` to a StreamError', async () => {
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(
+      new TypeError('fetch failed')
+    );
+
+    const rejection = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token', dispatcher: {} }
+    ).catch((e) => e);
+
+    expect(StreamError.is(rejection)).toBe(true);
+    expect(rejection.message).toContain('transport failure');
+  });
+
+  it('rejects a credential-bearing backend URL without dispatch or retry', async () => {
+    vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', 'http://user:password@127.0.0.1');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    const rejection = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      { token: 'test-token' }
+    ).catch((error: unknown) => error);
+
+    expect(rejection).toMatchObject({
+      name: 'TypeError',
+      message: 'HTTP(S) URLs with embedded credentials are unsupported',
+    });
+    expect(StreamError.is(rejection)).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('preserves unsupported headers from the backend configuration as non-retryable', async () => {
+    vi.stubEnv('VERCEL_WORKFLOW_SERVER_URL', 'http://127.0.0.1:12345');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const rejection = await getWorkflowRunEventsV4(
+      'wrun_1',
+      {},
+      {
+        token: 'test-token',
+        headers: { Expect: '100-continue' },
+      }
+    ).catch((error: unknown) => error);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    await expect(fetchSpy.mock.results[0].value).rejects.toBe(rejection);
+    expect(rejection).toMatchObject({
+      name: 'TypeError',
+      cause: { code: 'UND_ERR_NOT_SUPPORTED' },
+    });
+    expect(StreamError.is(rejection)).toBe(false);
+  });
+
+  it('maps an unrecognized post-header batch failure to a StreamError', async () => {
+    const sessionFailure = Object.assign(
+      new Error('The session has been destroyed'),
+      { code: 'ERR_HTTP2_GOAWAY_SESSION' }
+    );
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(sessionFailure);
+          },
+        }),
+        { status: 200 }
+      )
+    );
+
+    const rejection = await createWorkflowRunEventsBatchV4(
+      {
+        runId: 'wrun_1',
+        events: [
+          {
+            runId: 'wrun_1',
+            eventType: 'step_completed',
+            specVersion: 6,
+            correlationId: 'step_1',
+          },
+        ],
+      },
+      { token: 'test-token', dispatcher: {} }
+    ).catch((error: unknown) => error);
+
+    expect(StreamError.is(rejection)).toBe(true);
+    expect(rejection).toMatchObject({
+      code: 'STREAM_ERROR',
+      cause: sessionFailure,
+    });
+  });
+
+  it('rethrows a request-construction fault unchanged', async () => {
+    const constructionFault = Object.assign(
+      new TypeError('Failed to parse URL from nonsense'),
+      {
+        cause: Object.assign(new TypeError('Invalid URL'), {
+          code: 'ERR_INVALID_URL',
+        }),
+      }
+    );
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(constructionFault);
+
+    await expect(
+      getWorkflowRunEventsV4(
+        'wrun_1',
+        {},
+        { token: 'test-token', dispatcher: {} }
+      )
+    ).rejects.toBe(constructionFault);
+  });
+});
+
+describe('V4 event-write retries after interrupted response bodies', () => {
+  beforeEach(() => {
+    vi.stubEnv(NODE_HTTP_ENV_VAR, '0');
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    [
+      'HTTP/2 GOAWAY',
+      Object.assign(new Error('session destroyed'), {
+        code: 'ERR_HTTP2_GOAWAY_SESSION',
+      }),
+      true,
+    ],
+    ['an uncoded body failure', new Error('connection lost'), true],
+    ['caller cancellation', new DOMException('cancelled', 'AbortError'), false],
+  ] as const)('handles %s through the event-write retry policy', async (_label, cause, retryable) => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.error(cause);
+            },
+          }),
+          { status: 200 }
+        )
+      )
+      // The original write landed; a retry observes its terminal state.
+      .mockResolvedValue(new Response('{}', { status: 409 }));
+    const result = createWorkflowRunEventBatch(
+      'wrun_1',
+      [
+        {
+          event: {
+            eventType: 'step_completed',
+            specVersion: 6,
+            correlationId: 'step_1',
+          },
+        },
+      ],
+      undefined,
+      { token: 'test-token', dispatcher: {} }
+    ).catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+    const rejection = await result;
+    expect(fetchSpy).toHaveBeenCalledTimes(retryable ? 2 : 1);
+    if (retryable) {
+      expect(EntityConflictError.is(rejection)).toBe(true);
+    } else {
+      expect(StreamError.is(rejection)).toBe(true);
+      expect(rejection).toHaveProperty('cause', cause);
+    }
   });
 });
