@@ -213,6 +213,35 @@ export async function collectHookWorkflow() {
 }
 ```
 
+### Racing a hook in a loop
+
+Each `await hook` resolves with the next payload. Reads made while no payload has arrived share that next payload, so a read that lost a `Promise.race` does not take the payload away from a later read. This makes it safe to race the hook against a fresh [`sleep()`](/docs/api-reference/workflow/sleep) on every iteration:
+
+```typescript lineNumbers
+import { createHook, sleep } from "workflow"
+
+declare function sendReminder(): Promise<void>; // @setup
+
+export async function approvalWithRemindersWorkflow() {
+  "use workflow";
+
+  using hook = createHook<{ approved: boolean }>();
+
+  while (true) {
+    const result = await Promise.race([ // [!code highlight]
+      hook, // [!code highlight]
+      sleep("1d").then(() => null), // [!code highlight]
+    ]); // [!code highlight]
+    if (result) return result.approved;
+    await sendReminder();
+  }
+}
+```
+
+<Callout type="warn">
+Race the hook itself, not the `for await...of` iterator's `next()`. Each `next()` call takes its own payload, so a `next()` that lost a race still consumes the next payload.
+</Callout>
+
 ### Disposing hooks early
 
 You can dispose a hook early to release its token for reuse by another workflow. This is useful for handoff patterns where one workflow needs to transfer a hook token to another workflow while still running.
