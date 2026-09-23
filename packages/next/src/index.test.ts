@@ -80,6 +80,9 @@ describe('withWorkflow builder config', () => {
     delete process.env.WORKFLOW_LOCAL_DATA_DIR;
     delete process.env.WORKFLOW_NEXT_PRIVATE_BUILT;
     delete process.env.WORKFLOW_TARGET_WORLD;
+    delete (globalThis as Record<symbol, unknown>)[
+      Symbol.for('@workflow/next/builtWorkingDirs')
+    ];
   });
 
   afterEach(() => {
@@ -134,6 +137,35 @@ describe('withWorkflow builder config', () => {
     expect(prewarmWorkflowSwcPluginCacheMock).toHaveBeenCalledWith(
       process.cwd()
     );
+  });
+
+  it('builds once per process when Next resets process.env between config evaluations', async () => {
+    // Next 16 dev re-evaluates next.config (validateTurboNextConfig) after
+    // startup, and a forced @next/env reload in between restores process.env
+    // to its initial snapshot, dropping WORKFLOW_NEXT_PRIVATE_BUILT.
+    const config = withWorkflow({});
+
+    await config('phase-development-server', { defaultConfig: {} });
+    delete process.env.WORKFLOW_NEXT_PRIVATE_BUILT;
+    await config('phase-development-server', { defaultConfig: {} });
+
+    expect(buildMock).toHaveBeenCalledOnce();
+    expect(builderConfigs).toHaveLength(1);
+    expect(process.env.WORKFLOW_NEXT_PRIVATE_BUILT).toBe('1');
+  });
+
+  it('shares an in-flight build between concurrent config evaluations', async () => {
+    buildMock.mockImplementationOnce(
+      () => new Promise<void>((resolve) => setTimeout(resolve, 20))
+    );
+    const config = withWorkflow({});
+
+    await Promise.all([
+      config('phase-development-server', { defaultConfig: {} }),
+      config('phase-development-server', { defaultConfig: {} }),
+    ]);
+
+    expect(buildMock).toHaveBeenCalledOnce();
   });
 
   it('does not prewarm the SWC plugin cache for the production server', async () => {
