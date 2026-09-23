@@ -222,6 +222,17 @@ export class WorkflowWorldError extends WorkflowError {
  * ```
  */
 export class WorkflowRunFailedError extends WorkflowError {
+  /**
+   * `failed` is terminal, and a run's terminal state is immutable. This error
+   * is only ever thrown after a *successful* read of such a run, so re-running
+   * the read returns the same record and throws the same error. Marking it
+   * non-retryable is what stops the step executor from spending a retry budget
+   * on that when the read happens inside a step — a parent awaiting a child's
+   * `returnValue` — and then replacing this error with its retry-exhaustion
+   * wrapper. A read that *fails* throws something else and stays retryable.
+   * See `FatalError.is()`.
+   */
+  fatal = true;
   runId: string;
   /**
    * The high-level error category (e.g. USER_ERROR, RUNTIME_ERROR) for the
@@ -973,6 +984,8 @@ export class PreconditionFailedError extends WorkflowWorldError {
  * ```
  */
 export class WorkflowRunCancelledError extends WorkflowError {
+  /** Terminal and immutable, for the same reason as {@link WorkflowRunFailedError.fatal}. */
+  fatal = true;
   runId: string;
 
   constructor(runId: string) {
