@@ -748,6 +748,85 @@ function defineTests(mode: 'sync' | 'async') {
         'progressStep'
       );
     });
+
+    // https://github.com/vercel/workflow/issues/4264
+    it('should deliver a payload to the pending await after the hook lost a race to sleep', async () => {
+      await setupHydrateMock();
+      const ops: Promise<any>[] = [];
+      const payload = await dehydrateStepReturnValue(
+        { value: 'delivered' },
+        'wrun_test',
+        undefined,
+        ops
+      );
+      const firstResumeAt = new Date('2026-05-20T22:16:57.197Z');
+      const secondResumeAt = new Date('2099-01-01');
+
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_created',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', isWebhook: false },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_test',
+          eventType: 'wait_created',
+          correlationId: `wait_${CORR_IDS[1]}`,
+          eventData: { resumeAt: firstResumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_test',
+          eventType: 'wait_completed',
+          correlationId: `wait_${CORR_IDS[1]}`,
+          eventData: { resumeAt: firstResumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_3',
+          runId: 'wrun_test',
+          eventType: 'wait_created',
+          correlationId: `wait_${CORR_IDS[2]}`,
+          eventData: { resumeAt: secondResumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_4',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', payload },
+          createdAt: new Date(),
+        },
+      ]);
+
+      const createHook = createCreateHook(ctx);
+      const sleep = createSleep(ctx);
+
+      const { result, error } = await runWithDiscontinuation(ctx, async () => {
+        const hook = createHook<{ value: string }>({ token: 'test-token' });
+
+        const first = await Promise.race([
+          hook.then(() => 'hook' as const),
+          sleep(firstResumeAt).then(() => 'sleep' as const),
+        ]);
+
+        const second = await Promise.race([
+          hook.then((received) => received.value),
+          sleep(secondResumeAt).then(() => 'timeout' as const),
+        ]);
+
+        return { first, second };
+      });
+
+      expect(error).toBeUndefined();
+      expect(result).toEqual({ first: 'sleep', second: 'delivered' });
+    });
   });
 
   describe(`hook + incomplete step ${label}`, () => {

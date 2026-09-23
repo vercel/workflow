@@ -121,7 +121,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // (see `ctx.pendingDeliveryBarriers`).
     const payloadsQueue: { claim: () => Promise<T> }[] = [];
 
-    // Queue of promises that resolve to the next hook payload
+    // The pending awaiter for the next hook payload. Holds at most one entry:
+    // concurrent awaits share it (see `createHookPromise`).
     const promises: PromiseWithResolvers<T>[] = [];
 
     // Queue of promises that resolve once hook registration is confirmed
@@ -535,6 +536,16 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
       if (eventLogEmpty) {
         scheduleWorkflowSuspension(ctx);
+      }
+
+      // Awaits made while no payload is available share one pending awaiter,
+      // so the next payload settles every one of them. A `Promise.race` that
+      // loses to another branch abandons its awaiter without telling the hook;
+      // enrolling a fresh awaiter per `then()` would hand the next payload to
+      // that abandoned await instead of the one still waiting.
+      const pending = promises[0];
+      if (pending) {
+        return pending.promise;
       }
 
       promises.push(resolvers);

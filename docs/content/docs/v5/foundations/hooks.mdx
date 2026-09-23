@@ -198,6 +198,36 @@ export async function dataCollectionWorkflow() {
 
 Each time you call `resumeHook()` with the same token, the loop receives another value.
 
+### Waiting with a timeout
+
+Race a hook against `sleep()` to stop waiting after a deadline. The race can run again in a loop: an event that arrives after an earlier race timed out still reaches the race that is currently waiting.
+
+```typescript lineNumbers
+import { createHook, sleep } from "workflow";
+
+export async function reminderWorkflow() {
+  "use workflow";
+
+  using hook = createHook<{ approved: boolean }>();
+
+  for (let reminder = 0; reminder < 3; reminder++) {
+    const result = await Promise.race([
+      hook.then((payload) => payload),
+      sleep("1d").then(() => "timeout" as const),
+    ]);
+
+    if (result !== "timeout") {
+      return result.approved;
+    }
+    // Send a reminder, then wait again
+  }
+
+  return false;
+}
+```
+
+Every `await` on a hook that happens while no event is available waits for the same next event, so `Promise.all([hook, hook])` resolves both with one payload. To receive separate events, await them one after another or iterate with `for await...of`.
+
 ### Disposing hooks early
 
 When a workflow ends, hooks are automatically disposed. However, you may want to release a hook token early so another workflow can use it while your workflow continues running. Use a block scope with `using` to control when disposal happens:
