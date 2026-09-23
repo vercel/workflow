@@ -74,8 +74,10 @@ import {
 } from '../fs.js';
 import { stripEventDataRefs } from './filters.js';
 import {
+  acquireHookTokenClaimLock,
   getObjectCreatedAt,
   type HookTokenClaim,
+  type HookTokenClaimLockHandle,
   hookDisposeLockPath,
   hookRecoveryMarkerPath,
   hookResumeClaimPath,
@@ -90,7 +92,6 @@ import {
   releaseHookTokenClaimIfOwnedBy,
   runTerminalMarkerPath,
   scanRunEventIds,
-  withHookTokenClaimLock,
 } from './helpers.js';
 import {
   deleteHookByRunMarker,
@@ -947,6 +948,17 @@ export function createEventsStorage(
       data: AnyEventRequest,
       params?: CreateEventParams
     ): Promise<EventResult> {
+      /**
+       * The Hook token claim lock this create holds, when it holds one. The
+       * `hook_created` branch acquires it and it stays held until the whole
+       * create settles (the publish included), so it is released in
+       * `createImpl`'s finally rather than at the end of the branch. See the
+       * branch for why the publish has to be inside the critical section.
+       * Declared up here, ahead of the dispatch below, because `createImpl`
+       * is hoisted and runs before anything past those `return`s.
+       */
+      let hookTokenClaimLock: HookTokenClaimLockHandle | undefined;
+
       if (
         data.eventType === 'hook_created' &&
         data.eventData.tokenRetentionUntil !== undefined &&
@@ -1019,6 +1031,27 @@ export function createEventsStorage(
       return createImpl();
 
       async function createImpl(): Promise<EventResult> {
+        let settled = false;
+        try {
+          const result = await createImplBody();
+          settled = true;
+          return result;
+        } finally {
+          const held = hookTokenClaimLock;
+          hookTokenClaimLock = undefined;
+          if (held) {
+            // After a success a failed release is this call's error to
+            // report; after a failure the original error wins.
+            if (settled) {
+              await held.release();
+            } else {
+              await held.release().catch(() => {});
+            }
+          }
+        }
+      }
+
+      async function createImplBody(): Promise<EventResult> {
         // Most paths use the freshly-drawn candidate eventId. The
         // hook_created dedup-recovery path below may reassign it to
         // the canonical eventId persisted in the durable token claim
@@ -2293,68 +2326,83 @@ export function createEventsStorage(
           // run cannot race its successor and create a spurious conflict
           // (issue #2778). Missing claim caches are rebuilt from the event log;
           // stale owners are removed before the successor is admitted.
-          const claimResult = await withHookTokenClaimLock(
+          //
+          // The lock is held until this create settles, not just across the
+          // claim decision (it is released in `createImpl`'s finally). The
+          // claim records this writer's *candidate* eventId, and an unpinned
+          // publish may bump past that slot if something else took it. A
+          // second writer that read the claim before this writer's publish
+          // committed would adopt the recorded slot, publish there first,
+          // and then the claimer's collision-and-bump publishes a second
+          // `hook_created` for the same hook. Keeping the lock through the
+          // publish means an adopter can only read a claim whose event is
+          // already in the log (and collides into the benign duplicate), or
+          // one whose writer crashed and left the lock stale (and repairs
+          // it). Per token, so nothing else serializes behind it.
+          hookTokenClaimLock = await acquireHookTokenClaimLock(
             basedir,
-            hookData.token,
-            async (signal) => {
-              let existingClaim = await readHookTokenClaim(constraintPath);
-              if (!existingClaim) {
-                // Repair a missing or corrupt claim from the event log.
-                signal.throwIfAborted();
-                await deleteJSON(constraintPath);
-                await rebuildLiveHookByTokenFromEventLog(
-                  basedir,
-                  hookData.token,
-                  tag
-                );
-                existingClaim = await readHookTokenClaim(constraintPath);
-              }
-
-              if (!existingClaim) {
-                signal.throwIfAborted();
-                assert(await writeExclusive(constraintPath, claimContent));
-                return { status: 'claimed' as const };
-              }
-              if (
-                existingClaim.runId === effectiveRunId &&
-                existingClaim.hookId === data.correlationId
-              ) {
-                return { status: 'owned' as const, claim: existingClaim };
-              }
-              if (
-                !(await isHookTokenClaimReleasable(basedir, existingClaim, tag))
-              ) {
-                return { status: 'conflict' as const, claim: existingClaim };
-              }
-
-              // The previous owner committed its release but did not finish
-              // cleanup. Remove that lifetime before admitting a successor.
+            hookData.token
+          );
+          const decideClaim = async (signal: AbortSignal) => {
+            let existingClaim = await readHookTokenClaim(constraintPath);
+            if (!existingClaim) {
+              // Repair a missing or corrupt claim from the event log.
               signal.throwIfAborted();
               await deleteJSON(constraintPath);
-              if (existingClaim.hookId) {
-                await deleteJSON(
-                  taggedPath(basedir, 'hooks', existingClaim.hookId, tag)
-                );
-                await deleteJSON(
-                  hookRecoveryMarkerPath(
-                    basedir,
-                    hookData.token,
-                    existingClaim.runId,
-                    existingClaim.hookId
-                  )
-                );
-                await deleteHookByRunMarker(
-                  basedir,
-                  existingClaim.runId,
-                  existingClaim.hookId,
-                  tag
-                );
-              }
+              await rebuildLiveHookByTokenFromEventLog(
+                basedir,
+                hookData.token,
+                tag
+              );
+              existingClaim = await readHookTokenClaim(constraintPath);
+            }
+
+            if (!existingClaim) {
               signal.throwIfAborted();
               assert(await writeExclusive(constraintPath, claimContent));
               return { status: 'claimed' as const };
             }
-          );
+            if (
+              existingClaim.runId === effectiveRunId &&
+              existingClaim.hookId === data.correlationId
+            ) {
+              return { status: 'owned' as const, claim: existingClaim };
+            }
+            if (
+              !(await isHookTokenClaimReleasable(basedir, existingClaim, tag))
+            ) {
+              return { status: 'conflict' as const, claim: existingClaim };
+            }
+
+            // The previous owner committed its release but did not finish
+            // cleanup. Remove that lifetime before admitting a successor.
+            signal.throwIfAborted();
+            await deleteJSON(constraintPath);
+            if (existingClaim.hookId) {
+              await deleteJSON(
+                taggedPath(basedir, 'hooks', existingClaim.hookId, tag)
+              );
+              await deleteJSON(
+                hookRecoveryMarkerPath(
+                  basedir,
+                  hookData.token,
+                  existingClaim.runId,
+                  existingClaim.hookId
+                )
+              );
+              await deleteHookByRunMarker(
+                basedir,
+                existingClaim.runId,
+                existingClaim.hookId,
+                tag
+              );
+            }
+            signal.throwIfAborted();
+            assert(await writeExclusive(constraintPath, claimContent));
+            return { status: 'claimed' as const };
+          };
+          const claimResult = await decideClaim(hookTokenClaimLock.signal);
+          hookTokenClaimLock.signal.throwIfAborted();
 
           // The claim and Hook entity are written before `hook_created`, so a
           // crash can leave either cache without the durable event. A retry by
