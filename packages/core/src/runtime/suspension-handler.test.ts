@@ -695,6 +695,89 @@ describe('handleSuspension', () => {
       });
     }
 
+    /**
+     * A World with a log behind it: every write lands on the next slot, and a
+     * delta is everything after the caller's cursor as of that write — so a
+     * later write's delta carries its earlier siblings with it, the way a
+     * World that computes the delta after its commit does.
+     *
+     * `truncate` answers the matching write with `hasMore: true`, the way a
+     * World whose delta overflowed a page does; `withhold` answers it with no
+     * delta at all, the way a World that ignores `sinceCursor` on that event
+     * type does.
+     */
+    function logWorld(
+      startSlot = 2,
+      {
+        conflict = false,
+        truncate,
+        withhold,
+      }: {
+        conflict?: boolean;
+        truncate?: (event: { eventType: string }) => boolean;
+        withhold?: (event: { eventType: string }) => boolean;
+      } = {}
+    ) {
+      const log: Event[] = [];
+      const cursorPosition = new Map<string, number>();
+      let slot = startSlot;
+      return vi.fn(async (_runId, event, params) => {
+        const substituted =
+          conflict && event.eventType === 'hook_created'
+            ? {
+                ...event,
+                eventType: 'hook_conflict',
+                eventData: {
+                  token: event.eventData?.token,
+                  conflictingRunId: 'wrun_token_owner',
+                },
+              }
+            : event;
+        const committed = {
+          ...substituted,
+          eventId: slotToEventId(slot++),
+        } as Event;
+        log.push(committed);
+        if (typeof params?.sinceCursor !== 'string' || withhold?.(event)) {
+          return { event: committed };
+        }
+        // A cursor this World never issued (the caller's initial one) sits
+        // below everything it has stored.
+        const events = log.slice(cursorPosition.get(params.sinceCursor) ?? 0);
+        const cursor = `eid:${committed.eventId}`;
+        cursorPosition.set(cursor, log.length);
+        return {
+          event: committed,
+          events,
+          cursor,
+          hasMore: truncate?.(event) === true,
+        };
+      });
+    }
+
+    function plainWait(correlationId = 'w1') {
+      return [
+        correlationId,
+        {
+          type: 'wait' as const,
+          correlationId,
+          resumeAt: new Date(Date.now() + 30_000),
+        },
+      ] as const;
+    }
+
+    function plainStep(correlationId = 's1') {
+      return [
+        correlationId,
+        {
+          type: 'step' as const,
+          correlationId,
+          stepName: correlationId,
+          args: [],
+        },
+      ] as const;
+    }
+
     it('folds the created hook event into the caller log and says so', async () => {
       const eventLog = {
         events: [slotEvent(1, 'run_started')],
@@ -776,12 +859,12 @@ describe('handleSuspension', () => {
       expect(result.awaitedHookCorrelationIds).toEqual([]);
     });
 
-    it('does not carry the log forward on a conflict when a wait also wrote', async () => {
-      // Same accounting as the creation case: the `wait_created` lands above
-      // the delta the hook write returned, so the caller has to read before
-      // continuing over the conflict. Also pins that a conflict suppresses the
-      // wait timeout — the caller advances the workflow over the conflict
-      // before scheduling anything, and the pass after it reports the wait.
+    it('carries a conflict and a wait forward together off the wait write', async () => {
+      // The `wait_created` lands after the conflict, so its delta is the one
+      // that holds both, and the caller can continue over the conflict with no
+      // read. Also pins that a conflict suppresses the wait timeout — the
+      // caller advances the workflow over the conflict before scheduling
+      // anything, and the pass after it reports the wait.
       const eventLog = {
         events: [slotEvent(1, 'run_started')],
         cursor: 'eid:cursor_1',
@@ -789,25 +872,51 @@ describe('handleSuspension', () => {
 
       const result = await handleSuspension({
         suspension: new WorkflowSuspension(
-          new Map([
-            awaitedHook('hook_taken'),
-            [
-              'w1',
-              {
-                type: 'wait' as const,
-                correlationId: 'w1',
-                resumeAt: new Date(Date.now() + 30_000),
-              },
-            ],
-          ]),
+          new Map([awaitedHook('hook_taken'), plainWait()]),
           globalThis
         ),
-        world: createWorld(deltaWorld(2, { conflict: true })),
+        world: createWorld(logWorld(2, { conflict: true })),
         run,
         eventLog,
       });
 
       expect(result.hookConflictCorrelationIds).toEqual(['hook_taken']);
+      expect(eventLog.events.map((e) => e.eventType)).toEqual([
+        'run_started',
+        'hook_conflict',
+        'wait_created',
+      ]);
+      expect(result.eventLogCarriedForward).toBe(true);
+      expect(result.waitTimeout).toBeUndefined();
+    });
+
+    it('does not carry a conflict forward when the wait write returns no delta', async () => {
+      // The Vercel World's shape: it answers `sinceCursor` on the hook create
+      // but not on a `wait_created`, so the only delta back is the hook's,
+      // which predates the wait. The caller has to read before continuing.
+      const eventLog = {
+        events: [slotEvent(1, 'run_started')],
+        cursor: 'eid:cursor_1',
+      };
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map([awaitedHook('hook_taken'), plainWait()]),
+          globalThis
+        ),
+        world: createWorld(
+          logWorld(2, {
+            conflict: true,
+            withhold: (event) => event.eventType === 'wait_created',
+          })
+        ),
+        run,
+        eventLog,
+      });
+
+      expect(result.hookConflictCorrelationIds).toEqual(['hook_taken']);
+      expect(eventLog.events.map((e) => e.eventType)).toEqual(['run_started']);
+      expect(eventLog.cursor).toBe('eid:cursor_1');
       expect(result.eventLogCarriedForward).toBe(false);
       expect(result.waitTimeout).toBeUndefined();
     });
@@ -889,31 +998,22 @@ describe('handleSuspension', () => {
       expect(result.hookConflictCorrelationIds).toEqual(['hook_taken']);
     });
 
-    it('does not carry the log forward when a step also wrote', async () => {
-      // The step_created lands above the delta the hook write returned, so the
-      // log is short of it and the caller has to read before continuing.
+    it('carries the log forward when a step also wrote, off the step write', async () => {
+      // The step_created lands above the hook's delta, and its own write asks
+      // for the delta too — so the longest one back holds both events, and
+      // the caller can continue over the hook_created with no read.
       const eventLog = {
         events: [slotEvent(1, 'run_started')],
         cursor: 'eid:cursor_1',
       };
+      const eventsCreate = logWorld();
 
       const result = await handleSuspension({
         suspension: new WorkflowSuspension(
-          new Map([
-            awaitedHook(),
-            [
-              's1',
-              {
-                type: 'step' as const,
-                correlationId: 's1',
-                stepName: 's1',
-                args: [],
-              },
-            ],
-          ]),
+          new Map([awaitedHook(), plainStep()]),
           globalThis
         ),
-        world: createWorld(deltaWorld()),
+        world: createWorld(eventsCreate),
         run,
         eventLog,
       });
@@ -923,18 +1023,54 @@ describe('handleSuspension', () => {
       expect(result.lazyInlineSteps).toEqual([]);
       expect(result.createdStepCorrelationIds).toContain('s1');
       expect(result.hasAwaitedHookCreation).toBe(true);
-      expect(result.eventLogCarriedForward).toBe(false);
+      expect(eventsCreate).toHaveBeenCalledWith(
+        run.runId,
+        expect.objectContaining({ eventType: 'step_created' }),
+        expect.objectContaining({ sinceCursor: 'eid:cursor_1' })
+      );
+      expect(eventLog.events.map((e) => e.eventType)).toEqual([
+        'run_started',
+        'hook_created',
+        'step_created',
+      ]);
+      expect(result.eventLogCarriedForward).toBe(true);
     });
 
-    it('asks for no delta when the suspension creates two hooks', async () => {
-      // Both creates would diff against the same cursor and only one delta
-      // could be folded in, so the log would end up short of the other's event
-      // with nothing to say so.
+    it('does not carry the log forward when a step also wrote and no delta holds both', async () => {
+      // A World whose deltas each carry only the write that returned them:
+      // the step_created is in no delta the hook write got, and the hook is
+      // in none the step write got, so the log is short of one of them
+      // whichever is taken. The caller has to read before continuing.
       const eventLog = {
         events: [slotEvent(1, 'run_started')],
         cursor: 'eid:cursor_1',
       };
-      const eventsCreate = deltaWorld();
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map([awaitedHook(), plainStep()]),
+          globalThis
+        ),
+        world: createWorld(deltaWorld()),
+        run,
+        eventLog,
+      });
+
+      expect(result.hasAwaitedHookCreation).toBe(true);
+      expect(eventLog.events.map((e) => e.eventType)).toEqual(['run_started']);
+      expect(eventLog.cursor).toBe('eid:cursor_1');
+      expect(result.eventLogCarriedForward).toBe(false);
+    });
+
+    it('carries two hook creates forward off the longest delta', async () => {
+      // Both creates diff against the same cursor. The one whose delta was
+      // computed after both had committed carries both events, so folding in
+      // that one leaves the log short of nothing.
+      const eventLog = {
+        events: [slotEvent(1, 'run_started')],
+        cursor: 'eid:cursor_1',
+      };
+      const eventsCreate = logWorld();
 
       const result = await handleSuspension({
         suspension: new WorkflowSuspension(
@@ -946,14 +1082,171 @@ describe('handleSuspension', () => {
         eventLog,
       });
 
+      expect(eventsCreate).toHaveBeenCalledTimes(2);
       for (const call of eventsCreate.mock.calls) {
-        expect(call[2]?.sinceCursor).toBeUndefined();
+        expect(call[2]?.sinceCursor).toBe('eid:cursor_1');
       }
+      expect(eventLog.events.map((e) => e.eventType)).toEqual([
+        'run_started',
+        'hook_created',
+        'hook_created',
+      ]);
+      expect(eventLog.cursor).toBe(`eid:${slotToEventId(3)}`);
+      expect(result.eventLogCarriedForward).toBe(true);
+      expect([...result.awaitedHookCorrelationIds].sort()).toEqual([
+        'hook_a',
+        'hook_b',
+      ]);
+      expect(result.reportedEventCount).toBe(0);
+    });
+
+    it('picks the longest delta across two hooks and a wait', async () => {
+      // Three guarded writes from one cursor. The wait phase runs after the
+      // hook phase, so the wait write's delta is the latest view and the only
+      // one that holds all three events; it is the one folded in.
+      const eventLog = {
+        events: [slotEvent(1, 'run_started')],
+        cursor: 'eid:cursor_1',
+      };
+      const eventsCreate = logWorld();
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map([awaitedHook('hook_a'), awaitedHook('hook_b'), plainWait()]),
+          globalThis
+        ),
+        world: createWorld(eventsCreate),
+        run,
+        eventLog,
+      });
+
+      expect(eventsCreate).toHaveBeenCalledTimes(3);
+      expect(eventLog.events.map((e) => e.eventType)).toEqual([
+        'run_started',
+        'hook_created',
+        'hook_created',
+        'wait_created',
+      ]);
+      expect(eventLog.cursor).toBe(`eid:${slotToEventId(4)}`);
+      expect(result.eventLogCarriedForward).toBe(true);
+    });
+
+    it('does not carry two hooks forward when no delta holds both', async () => {
+      // Each delta was computed before the sibling's commit was visible to
+      // it, so the longest one is still short of an event this suspension
+      // wrote. Taking it would move the cursor past that event; the caller
+      // reads from its unchanged cursor instead.
+      const eventLog = {
+        events: [slotEvent(1, 'run_started')],
+        cursor: 'eid:cursor_1',
+      };
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map([awaitedHook('hook_a'), awaitedHook('hook_b')]),
+          globalThis
+        ),
+        world: createWorld(deltaWorld()),
+        run,
+        eventLog,
+      });
+
+      expect(eventLog.events.map((e) => e.eventType)).toEqual(['run_started']);
+      expect(eventLog.cursor).toBe('eid:cursor_1');
       expect(result.eventLogCarriedForward).toBe(false);
       expect([...result.awaitedHookCorrelationIds].sort()).toEqual([
         'hook_a',
         'hook_b',
       ]);
+    });
+
+    it('declines the fast path when any delta in the suspension is truncated', async () => {
+      // A truncated page means the log grew past what one delta carries;
+      // rather than reason about which of the returned pages is still
+      // complete, the suspension falls back to the one read.
+      const eventLog = {
+        events: [slotEvent(1, 'run_started')],
+        cursor: 'eid:cursor_1',
+      };
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map([awaitedHook('hook_a'), awaitedHook('hook_b')]),
+          globalThis
+        ),
+        world: createWorld(
+          logWorld(2, {
+            truncate: (event) => event.eventType === 'hook_created',
+          })
+        ),
+        run,
+        eventLog,
+      });
+
+      expect(eventLog.events.map((e) => e.eventType)).toEqual(['run_started']);
+      expect(eventLog.cursor).toBe('eid:cursor_1');
+      expect(result.eventLogCarriedForward).toBe(false);
+    });
+
+    it('declines the fast path when a sibling write fails', async () => {
+      // A create that throws committed nothing this suspension can name, so
+      // no delta can be shown to hold every event it wrote. An
+      // already-existing hook is a tolerated failure; the caller still reads.
+      const eventLog = {
+        events: [slotEvent(1, 'run_started')],
+        cursor: 'eid:cursor_1',
+      };
+      const inner = logWorld();
+      const eventsCreate = vi.fn(async (runId, event, params) => {
+        if (event.eventData?.token === 'tok-hook_b') {
+          throw new EntityConflictError('hook already exists');
+        }
+        return inner(runId, event, params);
+      });
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map([awaitedHook('hook_a'), awaitedHook('hook_b')]),
+          globalThis
+        ),
+        world: createWorld(eventsCreate),
+        run,
+        eventLog,
+      });
+
+      expect(eventLog.events.map((e) => e.eventType)).toEqual(['run_started']);
+      expect(result.eventLogCarriedForward).toBe(false);
+      expect([...result.awaitedHookCorrelationIds].sort()).toEqual([
+        'hook_a',
+        'hook_b',
+      ]);
+    });
+
+    it('asks for no delta on a suspension that creates no hook', async () => {
+      // Nothing continues in-process over a step-only suspension, so its
+      // writes keep their bump-and-report instead of paying for a delta.
+      const eventLog = {
+        events: [slotEvent(1, 'run_started')],
+        cursor: 'eid:cursor_1',
+      };
+      const eventsCreate = logWorld();
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          new Map([plainStep('s1'), plainStep('s2'), plainWait()]),
+          globalThis
+        ),
+        world: createWorld(eventsCreate),
+        run,
+        eventLog,
+      });
+
+      expect(eventsCreate.mock.calls.length).toBeGreaterThan(0);
+      for (const call of eventsCreate.mock.calls) {
+        expect(call[2]?.sinceCursor).toBeUndefined();
+      }
+      expect(eventLog.cursor).toBe('eid:cursor_1');
+      expect(result.eventLogCarriedForward).toBe(false);
     });
 
     it('declines a truncated delta rather than moving the cursor past it', async () => {

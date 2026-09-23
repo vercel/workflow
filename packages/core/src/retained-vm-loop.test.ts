@@ -375,6 +375,21 @@ const hookConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STE
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
+// The same awaiter, in a suspension that creates two hooks: the awaited hook
+// and the hook-backed `AbortController` the workflow VM provides — the shape
+// of a turn in eve's session runtime. Both creates are guarded writes from one
+// cursor, so the continuation has to run over a log that holds both.
+const twoHookConflictWorkflow = `const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+  async function workflow() {
+    const hook = createHook({ token: "retained-conflict-token" });
+    const controller = new AbortController();
+    const conflict = await hook.getConflict();
+    const a = await s1();
+    return conflict === null && !controller.signal.aborted ? a : -1;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
 /** The token `drive({ conflictToken })` answers with a `hook_conflict`. */
 const CONFLICTING_TOKEN = 'retained-taken-token';
 
@@ -506,6 +521,12 @@ type DriveWorldOptions = {
    * assuming the log was carried forward.
    */
   withholdDelta?: boolean;
+  /**
+   * Answer the create carrying this token with a truncated delta
+   * (`hasMore: true`), the way a World whose delta overflowed one page does.
+   * The runtime must not take that page as the whole suffix.
+   */
+  truncateDeltaToken?: string;
   /**
    * Commit `hook_conflict` instead of `hook_created` for a create carrying
    * this token, the way a World does when another run already holds it. The
@@ -640,7 +661,9 @@ async function drive(
           ? {
               events: events.slice(cursorPosition.get(params.sinceCursor) ?? 0),
               cursor: nextCursor(),
-              hasMore: false,
+              hasMore:
+                options.truncateDeltaToken !== undefined &&
+                data.eventData?.token === options.truncateDeltaToken,
             }
           : undefined;
       // step_started returns a running step entity so executeStep proceeds to
@@ -1343,6 +1366,67 @@ describe('retained VM through the inline replay loop', () => {
 
       expect(createdHook).toBe(true);
       expect(result).toBeUndefined();
+    });
+
+    /**
+     * A suspension that creates more than one hook. Every guarded write asks
+     * for the delta from the same cursor, and the longest one back — computed
+     * after every sibling had committed — is what the continuation resumes
+     * over, so a second hook no longer costs the read a single hook never paid.
+     */
+    describe('when the suspension creates two hooks', () => {
+      it('resolves the awaiter in-process with no read, off the longest delta', async () => {
+        const { result, listCalls, queueSends, createParams, committedTypes } =
+          await drive('wrun_retained_two_hooks', twoHookConflictWorkflow);
+
+        expect(result).toBe(10);
+        // Both creates asked for the delta, from the same cursor.
+        const hookCreates = createParams.filter(
+          (p) => p.eventType === 'hook_created'
+        );
+        expect(hookCreates).toHaveLength(2);
+        expect(new Set(hookCreates.map((p) => p.sinceCursor)).size).toBe(1);
+        expect(hookCreates[0].sinceCursor).toEqual(expect.any(String));
+        // The second hook is the AbortController's, created for real.
+        expect(committedTypes.filter((t) => t === 'hook_created')).toHaveLength(
+          2
+        );
+        // One list: the invocation's initial load. The longest delta carried
+        // both hook events forward, so the continuation read nothing and
+        // nothing was enqueued.
+        expect(listCalls).toBe(1);
+        expect(queueSends).toBe(0);
+      });
+
+      it('reads exactly once and still continues when one delta is truncated', async () => {
+        const { result, listCalls, queueSends } = await drive(
+          'wrun_retained_two_hooks_truncated',
+          twoHookConflictWorkflow,
+          { type: 'normal' },
+          { truncateDeltaToken: 'retained-conflict-token' }
+        );
+
+        expect(result).toBe(10);
+        // The initial load plus the continuation's one incremental read: a
+        // truncated page rules the fast path out for the whole suspension.
+        expect(listCalls).toBe(2);
+        expect(queueSends).toBe(0);
+      });
+
+      it('reads from its cursor and still continues when the World returns no delta', async () => {
+        const { result, listCalls, queueSends } = await drive(
+          'wrun_retained_two_hooks_no_delta',
+          twoHookConflictWorkflow,
+          { type: 'normal' },
+          { withholdDelta: true }
+        );
+
+        expect(result).toBe(10);
+        // The initial load plus the continuation's incremental read (and,
+        // with every delta withheld, the inline loop's per-step read too).
+        expect(listCalls).toBeGreaterThan(1);
+        expect(queueSends).toBe(0);
+      });
     });
 
     /**
