@@ -2483,16 +2483,23 @@ export function createEventsStorage(
                   } satisfies Hook,
                   { overwrite: true }
                 );
+                // The victim's dispose lock, naming us, is written for a
+                // finished victim too (with no row: nothing reads its log).
+                // It is what marks the victim's hook closed for good: a
+                // finished victim's retained token would otherwise still
+                // look live to a cache rebuild from the token index
+                // (`findAvailableHookCreatedEvent`), which could then hand
+                // the token back to the victim instead of to us.
+                const lockWritten = await writeExclusive(
+                  hookDisposeLockPath(basedir, existingClaim.hookId, tag),
+                  JSON.stringify({
+                    forceClaimedBy: {
+                      runId: effectiveRunId,
+                      hookId: data.correlationId,
+                    },
+                  })
+                );
                 if (victimRunning) {
-                  const lockWritten = await writeExclusive(
-                    hookDisposeLockPath(basedir, existingClaim.hookId, tag),
-                    JSON.stringify({
-                      forceClaimedBy: {
-                        runId: effectiveRunId,
-                        hookId: data.correlationId,
-                      },
-                    })
-                  );
                   if (lockWritten) {
                     // The victim's row. Its own id in its own log: the
                     // takeover is the one writer of another run's log.

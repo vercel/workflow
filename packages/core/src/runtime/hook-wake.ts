@@ -178,6 +178,14 @@ export async function publishForceClaimVictimWake(
  * `hook_disposed` (a `dispose()` in its code) IS its progress and still ends
  * the debt, but a row another run put here does not. Both engines call this
  * on the log they loaded for the invocation, before writing anything.
+ *
+ * Reading only the last own row is sound because both engines keep every
+ * other write of the invocation off that tail until the wake is out: a token
+ * group holding a forced creation runs first, one group at a time, publishing
+ * its wake before its next write, and nothing else is dispatched until those
+ * groups have settled. Were a sibling hook's creation (or, in QuickJS, a step
+ * or wait) allowed to land concurrently, a crash before the publish would
+ * leave that row last and hide the debt.
  */
 export function forcedCreationOwingWake(
   events: readonly Event[] | undefined

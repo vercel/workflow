@@ -212,6 +212,54 @@ describe('hook indexes', () => {
     await expect(storage.hooks.get('hook_force_victim')).rejects.toThrow();
   });
 
+  for (const claimerIsOlder of [true, false]) {
+    it(`rebuilds a token taken over from a finished, retained victim to the claimer after cache loss (claimer run ${claimerIsOlder ? 'older' : 'newer'})`, async () => {
+      // A finished victim gets no `hook_disposed` row, and its retained token
+      // is still within retention, so only the dispose lock the takeover
+      // writes marks its hook closed. Without it a rebuild sees two live
+      // entries and takes whichever sorts first — the victim when the
+      // claimer's run is the older one.
+      const token = `retained-${claimerIsOlder ? 'older' : 'newer'}`;
+      let claimerRun: string;
+      let victimRun: string;
+      if (claimerIsOlder) {
+        claimerRun = await newRun();
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        victimRun = await newRun();
+      } else {
+        victimRun = await newRun();
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        claimerRun = await newRun();
+      }
+      await createHook(storage, victimRun, {
+        hookId: 'hook_retained_victim',
+        token,
+        tokenRetentionUntil: new Date(Date.now() + 60 * 60 * 1000),
+      });
+      await updateRun(storage, victimRun, 'run_completed', {
+        result: new Uint8Array(),
+      });
+      const claimed = await storage.events.create(claimerRun, {
+        eventType: 'hook_created',
+        correlationId: 'hook_retained_claimer',
+        eventData: { token, force: true },
+      });
+      expect(claimed.hook?.claimedFrom).toMatchObject({ runId: victimRun });
+
+      await fs.unlink(
+        path.join(testDir, 'hooks', 'tokens', `${hashToken(token)}.json`)
+      );
+      await fs.unlink(
+        path.join(testDir, 'hooks', 'hook_retained_claimer.json')
+      );
+
+      const rebuilt = await storage.hooks.getByToken(token);
+      expect(rebuilt.runId).toBe(claimerRun);
+      expect(rebuilt.hookId).toBe('hook_retained_claimer');
+      expect(rebuilt.claimedFrom).toMatchObject({ runId: victimRun });
+    });
+  }
+
   it('cleans up only the terminal run’s hooks via by-run markers', async () => {
     const runA = await newRun();
     const runB = await newRun();

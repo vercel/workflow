@@ -211,6 +211,73 @@ async function allocateEventId(
 }
 
 /**
+ * The refusal for a `hook_received` to a hook that no longer exists because
+ * another run took its token over (`experimental_force`): a redirect, so
+ * `resumeHook()` follows the token instead of dropping the payload. The
+ * evidence is the hook's own `hook_disposed{forceClaimedBy}` row, which the
+ * takeover writes in the hook's run; that the token now belongs to a hook
+ * with a `claimedFrom` is not enough, since a hook its run disposed itself
+ * may share its token with a later owner that took it from somebody else.
+ * The error names the token's current owner (the end of a chain of
+ * takeovers), falling back to the claimer the row names. `undefined` when
+ * the hook was not taken over: the caller answers not-found.
+ */
+async function forceClaimRefusal(
+  db: DrizzleLike,
+  runId: string,
+  hookId: string,
+  eventData: unknown
+): Promise<HookForceClaimedError | undefined> {
+  const [disposal] = await db
+    .select({
+      eventData: Schema.events.eventData,
+      eventDataJson: Schema.events.eventDataJson,
+    })
+    .from(Schema.events)
+    .where(
+      and(
+        eq(Schema.events.runId, runId),
+        eq(Schema.events.correlationId, hookId),
+        eq(Schema.events.eventType, 'hook_disposed')
+      )
+    )
+    .limit(1);
+  const disposalData = (disposal?.eventData ?? disposal?.eventDataJson) as
+    | {
+        token?: unknown;
+        forceClaimedBy?: { runId?: unknown; hookId?: unknown };
+      }
+    | undefined;
+  const claimedBy = disposalData?.forceClaimedBy;
+  if (
+    typeof claimedBy?.runId !== 'string' ||
+    typeof claimedBy.hookId !== 'string'
+  ) {
+    return undefined;
+  }
+  const requestToken = (eventData as { token?: unknown } | undefined)?.token;
+  const token =
+    typeof requestToken === 'string'
+      ? requestToken
+      : typeof disposalData?.token === 'string'
+        ? disposalData.token
+        : undefined;
+  const [successor] =
+    token === undefined
+      ? []
+      : await db
+          .select({ runId: Schema.hooks.runId, hookId: Schema.hooks.hookId })
+          .from(Schema.hooks)
+          .where(eq(Schema.hooks.token, token))
+          .limit(1);
+  return new HookForceClaimedError(
+    token ?? '',
+    successor?.runId ?? claimedBy.runId,
+    successor?.hookId ?? claimedBy.hookId
+  );
+}
+
+/**
  * Inserts one event row, retrying while the position it computed is taken.
  *
  * The primary-key conflict is absorbed by `ON CONFLICT DO NOTHING` rather than
@@ -1389,6 +1456,19 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .limit(1);
 
         if (!existingHook) {
+          // A delivery that resolved a hook before another run took its token
+          // over (`experimental_force`) is a redirect, not a drop, whether it
+          // arrives after the takeover committed (here) or races it (the
+          // locked re-check in the `hook_received` branch below).
+          if (data.eventType === 'hook_received') {
+            const refusal = await forceClaimRefusal(
+              drizzle,
+              effectiveRunId,
+              data.correlationId,
+              data.eventData
+            );
+            if (refusal) throw refusal;
+          }
           throw new HookNotFoundError(data.correlationId);
         }
       }
@@ -2546,33 +2626,15 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               .for('update')
               .limit(1);
             if (!liveHook) {
-              // Gone. If the token now names another live hook, this hook was
-              // taken over (`experimental_force`) and the delivery is a
-              // redirect, not a drop: `resumeHook()` follows the token.
-              const token = (data.eventData as { token?: unknown } | undefined)
-                ?.token;
-              if (typeof token === 'string') {
-                const [successor] = await tx
-                  .select({
-                    runId: Schema.hooks.runId,
-                    hookId: Schema.hooks.hookId,
-                    claimedFrom: Schema.hooks.claimedFrom,
-                  })
-                  .from(Schema.hooks)
-                  .where(eq(Schema.hooks.token, token))
-                  .limit(1);
-                if (
-                  successor &&
-                  successor.hookId !== data.correlationId &&
-                  successor.claimedFrom
-                ) {
-                  throw new HookForceClaimedError(
-                    token,
-                    successor.runId,
-                    successor.hookId
-                  );
-                }
-              }
+              // Gone. If THIS hook was taken over (`experimental_force`), the
+              // delivery is a redirect, not a drop; see `forceClaimRefusal`.
+              const refusal = await forceClaimRefusal(
+                tx,
+                effectiveRunId,
+                data.correlationId,
+                data.eventData
+              );
+              if (refusal) throw refusal;
               throw new HookNotFoundError(data.correlationId);
             }
           }

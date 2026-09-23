@@ -11,6 +11,7 @@
  * entrypoint through it from a committed log, with the VM mocked.
  */
 import {
+  type CreateEventRequest,
   type Event,
   SPEC_VERSION_CURRENT,
   slotToEventId,
@@ -150,5 +151,90 @@ describe('QuickJS force-claim victim wake on replay', () => {
       event(4, 'step_created', { stepName: 'after', input: [] }, 'step_after'),
     ]);
     expect(queue).not.toHaveBeenCalled();
+  });
+
+  it('writes nothing else between a forced creation and its victim wake', async () => {
+    // Every pending op is dispatched in parallel in this engine, so a step,
+    // wait or other hook row could land after the forced `hook_created`
+    // while the wake is in flight; a crash then would leave that row as the
+    // tail and the replay above would never repay the wake.
+    const order: string[] = [];
+    const queue = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      order.push('wake:wrun_victim');
+      return { messageId: 'msg_wake' };
+    });
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { hookForceClaim: true },
+      events: {
+        list: vi.fn(async () => ({ data: [], cursor: null, hasMore: false })),
+        create: vi.fn(async (_runId: string, request: CreateEventRequest) => {
+          order.push(`${request.eventType}:${request.correlationId}`);
+          return {
+            event: { ...request, runId, eventId: 'evnt_created' },
+            ...(request.correlationId === 'hook_forced' && {
+              hook: {
+                hookId: 'hook_forced',
+                claimedFrom: {
+                  runId: 'wrun_victim',
+                  hookId: 'hook_victim',
+                  workflowName: 'victim-workflow',
+                },
+              },
+            }),
+          };
+        }),
+      },
+      runs: { get: vi.fn(async () => workflowRun) },
+      queue,
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+    } as unknown as World);
+    startQuickJSWorkflow.mockResolvedValue({
+      result: {
+        suspended: {
+          pendingOperations: [
+            {
+              type: 'wait',
+              correlationId: 'wait_1',
+              resumeAt: Date.now() + 60 * 60 * 1000,
+              hasCreatedEvent: false,
+            },
+            {
+              type: 'hook',
+              correlationId: 'hook_plain',
+              token: 'plain-token',
+              isWebhook: false,
+              hasCreatedEvent: false,
+            },
+            {
+              type: 'hook',
+              correlationId: 'hook_forced',
+              token: 'forced-token',
+              isWebhook: false,
+              force: true,
+              hasCreatedEvent: false,
+            },
+          ],
+        },
+      },
+      continueWithEvents: vi.fn(),
+      dispose: vi.fn(),
+    });
+
+    const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+    await runWorkflowWithQuickJS({
+      workflowCode: '// not evaluated: the VM is mocked',
+      workflowName: 'workflow',
+      workflowRun,
+      preloadedEvents: [],
+    });
+
+    expect(order.slice(0, 2)).toEqual([
+      'hook_created:hook_forced',
+      'wake:wrun_victim',
+    ]);
+    expect(order).toContain('hook_created:hook_plain');
+    expect(order).toContain('wait_created:wait_1');
   });
 });

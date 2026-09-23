@@ -322,9 +322,10 @@ async function ensureHookIndexesImpl(basedir: string): Promise<void> {
  * Dangling, non-matching and rejected entries are skipped and the next is
  * tried, so a token whose index lists several runs' hooks (a reused token,
  * a force-claim victim beside its claimer) still resolves to the one that is
- * live when `accept` checks liveness — which entry sorts first is not a
- * liveness order, since event ids are per-run slots. Entries are iterated
- * newest-first by event id as a tiebreak only.
+ * live when `accept` checks liveness. Entries are iterated in descending
+ * order of their file name, which is `{runId}-{eventId}` (so, in effect, by
+ * run id): a deterministic order, not a liveness one, since event ids are
+ * per-run slots. Correctness rests on `accept` admitting at most one entry.
  */
 export async function findIndexedHookCreatedEvent(
   basedir: string,

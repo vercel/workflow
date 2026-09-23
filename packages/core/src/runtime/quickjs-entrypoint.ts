@@ -580,18 +580,39 @@ async function dispatchPendingOps(params: {
       hookOpsByToken.set(key, [op as PendingHook | PendingHookDispose]);
     }
   }
-  for (const group of hookOpsByToken.values()) {
-    opsPromises.push(
-      (async () => {
-        for (const op of group) {
-          if (op.type === 'hook') {
-            await processHookOp(op);
-          } else {
-            await processHookDisposeOp(op);
-          }
-        }
-      })()
+  const runHookGroup = async (
+    group: (PendingHook | PendingHookDispose)[]
+  ): Promise<void> => {
+    for (const op of group) {
+      if (op.type === 'hook') {
+        await processHookOp(op);
+      } else {
+        await processHookDisposeOp(op);
+      }
+    }
+  };
+  // A forced creation owes its victim a wake, and a replay can only tell that
+  // debt is still open while the forced `hook_created` is the last event this
+  // run wrote (`forcedCreationOwingWake`). Every op below runs in parallel, so
+  // a step, wait, attribute or other hook row could otherwise land between
+  // that row and the wake and hide the debt from the replay after a crash.
+  // Token groups holding a forced creation therefore run first, one at a time
+  // (the wake is published inside `processHookOp`, before the group's next
+  // write), and nothing else is dispatched until they have all settled.
+  // Invocations without a forced hook take the parallel path unchanged.
+  const hookGroups = [...hookOpsByToken.values()];
+  const holdsForcedCreation = (group: (PendingHook | PendingHookDispose)[]) =>
+    group.some(
+      (op) =>
+        op.type === 'hook' &&
+        (op as PendingHook).force === true &&
+        !op.hasCreatedEvent
     );
+  for (const group of hookGroups.filter(holdsForcedCreation)) {
+    await runHookGroup(group);
+  }
+  for (const group of hookGroups) {
+    if (!holdsForcedCreation(group)) opsPromises.push(runHookGroup(group));
   }
 
   for (const op of pendingOperations) {

@@ -403,6 +403,9 @@ export async function resumeHook<T = any>(
  *   resolution that hydrates hook metadata, and the `respondWith` setup) and
  *   stamping locally would silently exclude all of it, so the two entry points
  *   would report the same metric over different windows.
+ * @param webhookOnly - Set by `resumeWebhook`: every hook the resume reaches,
+ *   including one it is redirected to, must be a webhook; see
+ *   `notFoundReasons`.
  */
 /**
  * How many times one `resumeHook()` follows a token to a new owner before
@@ -412,12 +415,31 @@ export async function resumeHook<T = any>(
  */
 const MAX_FORCE_CLAIM_REDIRECTS = 3;
 
+/**
+ * Why a `HookNotFoundError` thrown by {@link resumeHookAttempt} must not be
+ * re-resolved by the redirect loop:
+ *
+ * - `lookup`: the attempt's own by-token lookup found nothing. Looking the
+ *   same token up again straight away is the same question, so the miss is
+ *   answered once, as it always was, instead of costing every caller of an
+ *   unknown or expired token a second lookup.
+ * - `not-webhook`: `resumeWebhook()` reached a hook that is not a webhook.
+ *   That is final: the public webhook endpoint never delivers to a
+ *   `createHook()` hook, whichever lookup (first or after a redirect) found
+ *   it, and answering not-found keeps it from confirming the token exists.
+ */
+// per-copy-ok: an entry is written by `resumeHookAttempt` and read by the
+// redirect loop in `resumeHookImpl` around one error object thrown between
+// them, always within this module copy.
+const notFoundReasons = new WeakMap<object, 'lookup' | 'not-webhook'>();
+
 async function resumeHookImpl<T = any>(
   tokenOrHook: string | ResumableHook,
   payload: T,
   encryptionKeyOverride: PayloadKey | undefined,
   hookFreshlyLookedUp: boolean,
-  resumeRequestedAtMs: number
+  resumeRequestedAtMs: number,
+  webhookOnly = false
 ): Promise<ResumedHook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
@@ -431,8 +453,8 @@ async function resumeHookImpl<T = any>(
       // `HookForceClaimedError` — never a silent drop — and the token, looked
       // up again, names the new owner. Follow it: the same logical resume,
       // re-encoded for the new run (its encryption key differs), with the
-      // same dedup semantics. A terminal-run / not-found rejection gets one
-      // re-resolve too, because a finished run that retained its token can be
+      // same dedup semantics. A terminal-run / not-found rejection is
+      // re-resolved too, because a finished run that retained its token can be
       // taken over without any row being written for it to refuse with.
       //
       // A `Request` payload (resumeWebhook) streams its body to the World, so
@@ -445,7 +467,8 @@ async function resumeHookImpl<T = any>(
       // instead: nothing was delivered anywhere, and the sender's retry (the
       // norm for webhooks) looks the token up fresh and lands on the new
       // owner. A Request whose body was not read yet (the attempt failed
-      // before serializing, e.g. on the lookup) is re-sent as is.
+      // before serializing, e.g. on a finished run's terminal check) is
+      // re-sent as is.
       let target: string | ResumableHook = tokenOrHook;
       let fresh = hookFreshlyLookedUp;
       // `resumeWebhook` resolved this key for the run it first looked up. A
@@ -492,9 +515,17 @@ async function resumeHookImpl<T = any>(
             keyOverride,
             fresh,
             resumeRequestedAtMs,
-            resumeId
+            resumeId,
+            webhookOnly
           );
         } catch (err) {
+          if (
+            err !== null &&
+            typeof err === 'object' &&
+            notFoundReasons.get(err) === 'not-webhook'
+          ) {
+            throw err;
+          }
           if (redirects >= MAX_FORCE_CLAIM_REDIRECTS) {
             if (HookForceClaimedError.is(err)) {
               // Every hop found the token already moved on again. Nothing was
@@ -536,15 +567,26 @@ async function resumeHookImpl<T = any>(
             await new Promise((resolve) => setTimeout(resolve, 50));
             continue;
           }
-          if (HookNotFoundError.is(err) && redirects === 0) {
+          if (
+            HookNotFoundError.is(err) &&
+            notFoundReasons.get(err) !== 'lookup'
+          ) {
             // A finished run that retained its token can be taken over
-            // without any row being written for it to refuse with, so its
-            // not-found is re-resolved once. The re-resolved hook must carry
-            // `claimedFrom` — evidence of a takeover — whatever the target
-            // was: a token that a run disposed and another run then
-            // registered normally is the ordinary handoff, and a resume aimed
+            // without any row being written for it to refuse with, and an
+            // executor answering an invocation reports a taken-over hook the
+            // same way, so a not-found from the attempt is re-resolved —
+            // after a redirect too, within the redirect budget, since the
+            // token can move again while the resume is in flight. The
+            // re-resolved hook must carry evidence of a takeover: for a
+            // token target any `claimedFrom` (the resume is for whoever holds
+            // the token); for a Hook object, a `claimedFrom` naming THAT
+            // hook. A token that a run disposed and another run then
+            // registered normally is the ordinary handoff, as is a stale Hook
+            // whose token later moved between two other runs: a resume aimed
             // at the old hook stays the HookNotFoundError it always was
-            // rather than landing in a run that never asked for it.
+            // rather than landing in a run that never asked for it. A miss on
+            // the attempt's own lookup is not re-resolved (see
+            // `notFoundReasons`).
             const attemptedHookId =
               typeof target === 'string' ? undefined : target.hookId;
             let relocated: ResumableHook | undefined;
@@ -566,7 +608,10 @@ async function resumeHookImpl<T = any>(
             }
             if (
               relocated?.claimedFrom !== undefined &&
-              relocated.hookId !== attemptedHookId
+              relocated.hookId !== attemptedHookId &&
+              (attemptedHookId === undefined ||
+                relocated.claimedFrom.hookId === attemptedHookId) &&
+              !(webhookOnly && relocated.isWebhook === false)
             ) {
               assertResendable(err);
               redirects++;
@@ -595,13 +640,32 @@ async function resumeHookAttempt<T = any>(
   encryptionKeyOverride: PayloadKey | undefined,
   hookFreshlyLookedUp: boolean,
   resumeRequestedAtMs: number,
-  logicalResumeId: string
+  logicalResumeId: string,
+  webhookOnly: boolean
 ): Promise<ResumedHook> {
   try {
     const suppliedToken = typeof tokenOrHook === 'string';
-    const hook: ResumableHook = suppliedToken
-      ? await world.hooks.getByToken(tokenOrHook)
-      : tokenOrHook;
+    let hook: ResumableHook;
+    if (suppliedToken) {
+      try {
+        hook = await world.hooks.getByToken(tokenOrHook);
+      } catch (lookupError) {
+        if (HookNotFoundError.is(lookupError)) {
+          notFoundReasons.set(lookupError, 'lookup');
+        }
+        throw lookupError;
+      }
+    } else {
+      hook = tokenOrHook;
+    }
+    // `resumeWebhook()` checked the hook it looked up; a redirect lands on a
+    // different hook, and one taken over by `createHook({ experimental_force
+    // })` is never a webhook. Same answer as the entry-point check.
+    if (webhookOnly && hook.isWebhook === false) {
+      const notWebhook = new HookNotFoundError(hook.token);
+      notFoundReasons.set(notWebhook, 'not-webhook');
+      throw notWebhook;
+    }
     // The dynamic, response-only `resumeCapabilities` may only be trusted
     // when it came from a by-token lookup performed during this resume.
     const hookResumeCapabilitiesAreFresh = suppliedToken || hookFreshlyLookedUp;
@@ -1026,7 +1090,8 @@ export async function resumeWebhook(
     request,
     metadataEncryptionKey(),
     true,
-    resumeRequestedAtMs
+    resumeRequestedAtMs,
+    true
   );
 
   if (responseReadable) {

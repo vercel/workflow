@@ -521,6 +521,74 @@ describe('handleSuspension', () => {
     });
   });
 
+  it('lands no other hook write between a forced creation and its victim wake', async () => {
+    // The replay repays an owed wake only while the forced `hook_created` is
+    // the last event the run wrote. A sibling hook created concurrently
+    // (another token, same suspension) could otherwise land after it while
+    // the wake is in flight, and a crash then would leave that sibling as
+    // the tail and the victim never woken.
+    const order: string[] = [];
+    const eventsCreate = vi.fn(async (_runId, event) => {
+      order.push(`${event.eventType}:${event.correlationId}`);
+      if (event.correlationId === 'hook_forced') {
+        return {
+          event,
+          hook: {
+            hookId: 'hook_forced',
+            claimedFrom: {
+              runId: 'wrun_victim',
+              hookId: 'hook_victim',
+              workflowName: 'victim-workflow',
+            },
+          },
+        };
+      }
+      return { event };
+    });
+    const queue = vi.fn(async () => {
+      // Give a concurrently started sibling every chance to write first.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      order.push('wake:wrun_victim');
+      return { messageId: 'msg_wake' };
+    });
+    const world = {
+      events: { create: eventsCreate },
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      queue,
+    } as unknown as World;
+    const pending = new Map([
+      [
+        'hook_plain',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_plain',
+          token: 'plain-token',
+        },
+      ],
+      [
+        'hook_forced',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_forced',
+          token: 'forced-token',
+          force: true,
+        },
+      ],
+    ]);
+
+    await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+    });
+
+    expect(order).toEqual([
+      'hook_created:hook_forced',
+      'wake:wrun_victim',
+      'hook_created:hook_plain',
+    ]);
+  });
+
   // Regression test for #2777: a dispose() of an earlier hook must be
   // flushed before a later same-token hook's creation is validated, or the
   // new hook records a spurious hook_conflict against the run's own

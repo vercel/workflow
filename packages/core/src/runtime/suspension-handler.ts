@@ -761,58 +761,77 @@ export async function handleSuspension({
   if (hookItemsByToken.size > 0) {
     const hookPhaseStart = Date.now();
     await ensureRunReady();
-    await settlePhase(
-      [...hookItemsByToken.values()].map(async (items) => {
-        for (const queueItem of items) {
-          let creationConflicted = false;
+    const processHookGroup = async (
+      items: HookInvocationQueueItem[]
+    ): Promise<void> => {
+      for (const queueItem of items) {
+        let creationConflicted = false;
 
-          if (!queueItem.hasCreatedEvent) {
-            const hookMetadata =
-              typeof queueItem.metadata === 'undefined'
-                ? undefined
-                : await dehydrateInput(queueItem.metadata, {
-                    source: 'hook_metadata',
-                    correlationId: queueItem.correlationId,
-                  });
-            const hookEvent: CreateEventRequest = {
-              eventType: 'hook_created' as const,
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: queueItem.correlationId,
-              eventData: {
-                token: queueItem.token,
-                tokenRetentionUntil: queueItem.tokenRetentionUntil,
-                metadata: hookMetadata,
-                isWebhook: queueItem.isWebhook ?? false,
-                ...(queueItem.isSystem && { isSystem: true }),
-                ...(queueItem.force && { force: true }),
-              },
-            };
-            const result = await createHookEvent({
-              runId,
-              hookEvent,
-              queueItem,
-              requestId,
-              sinceCursor: hookDeltaCursor,
-              createEvent: createGuarded,
-              world,
-            });
-            if (result.hasHookConflict) {
-              hookConflictCorrelationIds.push(queueItem.correlationId);
-            }
-            if (result.hasAwaitedHookCreation) {
-              awaitedHookCorrelationIds.push(queueItem.correlationId);
-            }
-            creationConflicted = result.hasHookConflict;
+        if (!queueItem.hasCreatedEvent) {
+          const hookMetadata =
+            typeof queueItem.metadata === 'undefined'
+              ? undefined
+              : await dehydrateInput(queueItem.metadata, {
+                  source: 'hook_metadata',
+                  correlationId: queueItem.correlationId,
+                });
+          const hookEvent: CreateEventRequest = {
+            eventType: 'hook_created' as const,
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: queueItem.correlationId,
+            eventData: {
+              token: queueItem.token,
+              tokenRetentionUntil: queueItem.tokenRetentionUntil,
+              metadata: hookMetadata,
+              isWebhook: queueItem.isWebhook ?? false,
+              ...(queueItem.isSystem && { isSystem: true }),
+              ...(queueItem.force && { force: true }),
+            },
+          };
+          const result = await createHookEvent({
+            runId,
+            hookEvent,
+            queueItem,
+            requestId,
+            sinceCursor: hookDeltaCursor,
+            createEvent: createGuarded,
+            world,
+          });
+          if (result.hasHookConflict) {
+            hookConflictCorrelationIds.push(queueItem.correlationId);
           }
-
-          // Dispose after creation for hooks born and disposed within this
-          // batch. A hook whose creation conflicted was never created, so
-          // there is nothing to dispose.
-          if (queueItem.disposed && !creationConflicted) {
-            await disposeHook(queueItem);
+          if (result.hasAwaitedHookCreation) {
+            awaitedHookCorrelationIds.push(queueItem.correlationId);
           }
+          creationConflicted = result.hasHookConflict;
         }
-      })
+
+        // Dispose after creation for hooks born and disposed within this
+        // batch. A hook whose creation conflicted was never created, so
+        // there is nothing to dispose.
+        if (queueItem.disposed && !creationConflicted) {
+          await disposeHook(queueItem);
+        }
+      }
+    };
+    // A forced creation owes its victim a wake, and a replay can only tell
+    // that debt is still open while the forced `hook_created` is the last
+    // event this run wrote (`forcedCreationOwingWake`). So nothing else this
+    // suspension writes may land between that row and the wake: token groups
+    // holding a forced creation run first, one at a time (their wake is
+    // published inside the group, before its next write), and every other
+    // group only starts once they have all settled. Suspensions without a
+    // forced hook take the concurrent path below unchanged.
+    const groups = [...hookItemsByToken.values()];
+    const holdsForcedCreation = (items: HookInvocationQueueItem[]) =>
+      items.some((item) => item.force === true && !item.hasCreatedEvent);
+    for (const items of groups.filter(holdsForcedCreation)) {
+      await settlePhase([processHookGroup(items)]);
+    }
+    await settlePhase(
+      groups
+        .filter((items) => !holdsForcedCreation(items))
+        .map(processHookGroup)
     );
     hookCreationMs = Date.now() - hookPhaseStart;
   }

@@ -2353,6 +2353,76 @@ describe('Storage (Postgres integration)', () => {
       });
     });
 
+    it('answers a delivery to a taken-over hook with a redirect naming the current owner, and a stale self-disposed hook with not-found', async () => {
+      const token = `force-redirect-${ulid()}`;
+      const running = async (name: string) => {
+        const run = await createRun(events, {
+          deploymentId: `dpl_${name}`,
+          workflowName: name,
+          input: new Uint8Array(),
+        });
+        await updateRun(events, run.runId, 'run_started');
+        return run.runId;
+      };
+      const deliver = (runId: string, hookId: string) =>
+        events
+          .create(runId, {
+            eventType: 'hook_received',
+            correlationId: hookId,
+            eventData: { token, payload: new Uint8Array() },
+          })
+          .then(
+            () => 'delivered',
+            (err: Error) => err
+          );
+
+      // A run disposes its own hook; another registers the token normally.
+      const stale = await running('stale');
+      await createHook(events, stale, { hookId: 'hook_stale', token });
+      await events.create(stale, {
+        eventType: 'hook_disposed',
+        correlationId: 'hook_stale',
+        eventData: { token },
+      });
+      const first = await running('first');
+      await createHook(events, first, { hookId: 'hook_first', token });
+
+      // Two takeovers in a row: first -> second -> third.
+      const second = await running('second');
+      await events.create(second, {
+        eventType: 'hook_created',
+        correlationId: 'hook_second',
+        eventData: { token, force: true },
+      });
+      const third = await running('third');
+      await events.create(third, {
+        eventType: 'hook_created',
+        correlationId: 'hook_third',
+        eventData: { token, force: true },
+      });
+
+      // A delivery that resolved an earlier owner is a redirect to the end of
+      // the chain, whichever owner it resolved.
+      for (const [runId, hookId] of [
+        [first, 'hook_first'],
+        [second, 'hook_second'],
+      ] as const) {
+        const outcome = await deliver(runId, hookId);
+        expect(outcome).toMatchObject({
+          name: 'HookForceClaimedError',
+          token,
+          claimedByRunId: third,
+          claimedByHookId: 'hook_third',
+        });
+      }
+      // The token's current owner having a `claimedFrom` is not evidence that
+      // a hook its own run disposed was taken over: that stays not-found.
+      expect(await deliver(stale, 'hook_stale')).toMatchObject({
+        name: 'HookNotFoundError',
+      });
+      expect(await deliver(third, 'hook_third')).toBe('delivered');
+    });
+
     it('should reject sequential duplicate step_created with EntityConflictError', async () => {
       await createStep(events, testRunId, {
         stepId: 'step_seq_dup',

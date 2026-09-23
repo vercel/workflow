@@ -624,19 +624,33 @@ describe('resumeHook', () => {
     });
 
     it('still redirects a Request payload whose body was never read (the attempt failed before serializing)', async () => {
-      // A not-found on the token lookup happens before the body is touched,
-      // so the same Request is re-sent to the relocated owner — no clone.
+      // A finished victim that retained its token was taken over. With no
+      // stored resume context the attempt reads the run, finds it ended and
+      // answers not-found before the body is touched, so the same Request is
+      // re-sent to the relocated owner — no clone.
       const clone = vi.spyOn(Request.prototype, 'clone');
       try {
         const getByToken = vi
           .fn()
-          .mockRejectedValueOnce(new HookNotFoundError('shared'))
+          .mockResolvedValueOnce(baseHook({ resumeContext: undefined }))
           .mockResolvedValueOnce(freshClaimer());
         const createEvent = vi.fn().mockResolvedValue(undefined);
         setWorld({
           specVersion: SPEC_VERSION_CURRENT,
           hooks: { getByToken },
-          runs: { get: vi.fn() },
+          runs: {
+            get: vi.fn().mockResolvedValue({
+              runId: 'wrun_victim',
+              status: 'completed',
+              deploymentId: 'dpl_victim',
+              workflowName: 'victimWorkflow',
+              specVersion: SPEC_VERSION_CURRENT,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+              completedAt: new Date(),
+              attributes: {},
+            }),
+          },
           events: { create: createEvent },
           streams: {
             write: vi.fn().mockResolvedValue(undefined),
@@ -658,6 +672,166 @@ describe('resumeHook', () => {
       } finally {
         clone.mockRestore();
       }
+    });
+
+    it('answers a token that resolves to nothing with one lookup, not two', async () => {
+      // The ordinary miss (unknown or expired token) must not pay for the
+      // force-claim re-resolve: looking the same token up again straight away
+      // asks the same question.
+      const getByToken = vi
+        .fn()
+        .mockRejectedValue(new HookNotFoundError('shared'));
+      const createEvent = vi.fn();
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken },
+        runs: { get: vi.fn() },
+        events: { create: createEvent },
+        queue: vi.fn(),
+        getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+      } as unknown as World);
+
+      await expect(resumeHook('shared', { n: 1 })).rejects.toSatisfy(
+        HookNotFoundError.is
+      );
+      expect(getByToken).toHaveBeenCalledTimes(1);
+      expect(createEvent).not.toHaveBeenCalled();
+    });
+
+    it('does not redirect a stale Hook object to an owner that took the token from a different hook', async () => {
+      // The stale hook's run disposed it itself; the token was later taken
+      // over between two OTHER runs. `claimedFrom` on the current owner is
+      // evidence of a takeover, but not of one from this hook.
+      const stale = baseHook({ runId: 'wrun_stale', hookId: 'hook_stale' });
+      const getByToken = vi.fn().mockResolvedValue(claimerHook);
+      const createEvent = vi
+        .fn()
+        .mockRejectedValue(new HookNotFoundError('hook_stale'));
+      const queue = vi.fn();
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken },
+        runs: { get: vi.fn() },
+        events: { create: createEvent },
+        queue,
+        getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+      } as unknown as World);
+
+      await expect(resumeHook(stale, { n: 1 })).rejects.toSatisfy(
+        HookNotFoundError.is
+      );
+      expect(createEvent).toHaveBeenCalledTimes(1);
+      expect(createEvent.mock.calls[0][0]).toBe('wrun_stale');
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('follows a Hook object to the owner that took the token from that very hook', async () => {
+      const getByToken = vi.fn().mockResolvedValue(claimerHook);
+      const createEvent = vi
+        .fn()
+        .mockRejectedValueOnce(new HookNotFoundError('hook_victim'))
+        .mockResolvedValueOnce(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken },
+        runs: { get: vi.fn() },
+        events: { create: createEvent },
+        queue: vi.fn().mockResolvedValue(undefined),
+        getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+      } as unknown as World);
+
+      const resumed = await resumeHook(victimHook, { n: 1 });
+      expect(resumed.runId).toBe('wrun_claimer');
+      expect(createEvent.mock.calls.map((c) => c[0])).toEqual([
+        'wrun_victim',
+        'wrun_claimer',
+      ]);
+    });
+
+    it('re-resolves after a redirect too, when the token moves again mid-resume (invoke path)', async () => {
+      // An executor answering an invocation reports a taken-over hook as
+      // HOOK_NOT_FOUND, never as force-claimed, so a chain A -> B -> C during
+      // one resume is two not-found re-resolves. Stopping after the first
+      // would surface a permanent-looking not-found for a token with a live
+      // owner.
+      const hookB = baseHook(claimerOverrides);
+      const hookC = baseHook({
+        runId: 'wrun_c',
+        hookId: 'hook_c',
+        resumeContext: {
+          deploymentId: 'dpl_c',
+          workflowName: 'cWorkflow',
+          runSpecVersion: SPEC_VERSION_CURRENT,
+        },
+        claimedFrom: { runId: 'wrun_claimer', hookId: 'hook_claimer' },
+      });
+      const getByToken = vi
+        .fn()
+        .mockResolvedValueOnce(victimHook)
+        .mockResolvedValueOnce(hookB)
+        .mockResolvedValue(hookC);
+      const invoke = vi
+        .fn()
+        .mockResolvedValueOnce({ status: 'rejected', code: 'HOOK_NOT_FOUND' })
+        .mockResolvedValueOnce({ status: 'rejected', code: 'HOOK_NOT_FOUND' })
+        .mockResolvedValue({ status: 'accepted' });
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        capabilities: { invoke: true },
+        hooks: { getByToken },
+        runs: { get: vi.fn() },
+        events: { create: vi.fn() },
+        invoke,
+        queue: vi.fn(),
+        getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+      } as unknown as World);
+
+      const resumed = await resumeHook('shared', { n: 1 });
+      expect(resumed.runId).toBe('wrun_c');
+      expect(invoke.mock.calls.map((c) => c[0])).toEqual([
+        'wrun_victim',
+        'wrun_claimer',
+        'wrun_c',
+      ]);
+    });
+
+    it('resumeWebhook never delivers into a non-webhook hook a redirect lands on', async () => {
+      // A forced createHook() can take a token a webhook holds, and the new
+      // owner is never a webhook. A request whose body was not read yet (a
+      // GET) would otherwise be redirected into it — delivered through the
+      // public webhook endpoint to a hook that endpoint must never reach, and
+      // answered 202 where a direct request gets 404.
+      const getByToken = vi
+        .fn()
+        .mockResolvedValueOnce(baseHook({ isWebhook: true }))
+        .mockResolvedValue(baseHook({ ...claimerOverrides, isWebhook: false }));
+      const createEvent = vi
+        .fn()
+        .mockRejectedValueOnce(
+          new HookForceClaimedError('shared', 'wrun_claimer', 'hook_claimer')
+        )
+        .mockResolvedValue(undefined);
+      const queue = vi.fn().mockResolvedValue(undefined);
+      setWorld({
+        specVersion: SPEC_VERSION_CURRENT,
+        hooks: { getByToken },
+        runs: { get: vi.fn() },
+        events: { create: createEvent },
+        streams: {
+          write: vi.fn().mockResolvedValue(undefined),
+          writeMulti: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn().mockResolvedValue(undefined),
+        },
+        getEncryptionKeyForRun: vi.fn(),
+        queue,
+        getDeploymentId: vi.fn().mockResolvedValue('dpl_resumer'),
+      } as unknown as World);
+
+      await expect(
+        resumeWebhook('shared', new Request('http://x', { method: 'GET' }))
+      ).rejects.toSatisfy(HookNotFoundError.is);
+      expect(createEvent.mock.calls.map((c) => c[0])).toEqual(['wrun_victim']);
+      expect(queue).not.toHaveBeenCalled();
     });
 
     it('keeps HookNotFoundError when the token still names the same hook', async () => {
