@@ -59,6 +59,18 @@
       "direction": "server_to_client",
       "meta": {
         "type": "error",
+        "reqId": 10,
+        "status": 429,
+        "message": "Too many requests",
+        "retryAfter": "2"
+      },
+      "bodyHex": "",
+      "frameHex": "00000046b900056474797065656572726f726572657149640a667374617475731901ad676d65737361676571546f6f206d616e792072657175657374736a72657472794166746572613200000000"
+    },
+    {
+      "direction": "server_to_client",
+      "meta": {
+        "type": "error",
         "status": 400,
         "message": "bad frame"
       },
