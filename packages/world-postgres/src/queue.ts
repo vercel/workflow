@@ -976,11 +976,7 @@ export function createQueue(
       ...(config.applicationManagedShutdown === true && {
         noHandleSignals: true,
       }),
-      // Each of the `concurrency` workers polls independently at this
-      // interval when idle, so idle load scales with concurrency, not just
-      // pollInterval. LISTEN/NOTIFY wakes a worker sooner for a newly
-      // enqueued job but does not replace this polling.
-      pollInterval: config.pollInterval ?? 500,
+      pollInterval: config.pollInterval ?? 500, // per worker; LISTEN/NOTIFY only wakes idle workers early
       taskList,
     });
   }

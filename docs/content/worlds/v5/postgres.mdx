@@ -278,6 +278,10 @@ Number of concurrent workers polling for jobs. Default: `50`.
 
 This value also bounds how many parent→child workflow polls can be in flight simultaneously. Every `await childRun.returnValue` inside a workflow holds a worker slot until the child run terminates. If you expect recursive or highly-fanned-out parent/child workflows, raise this ceiling above the peak number of concurrent polls. With the default of 50, the included `fibonacciWorkflow` end-to-end test (`fib(6)`, about 24 concurrent polls at peak) passes; deeper recursion or larger fanouts need a correspondingly larger setting.
 
+### `WORKFLOW_POSTGRES_POLL_INTERVAL_MS`
+
+Milliseconds between idle job fetches per worker. Each worker polls on its own, so an idle process runs about `queueConcurrency × 1000 / pollInterval` fetches per second. Default: `500`.
+
 ### `WORKFLOW_POSTGRES_MAX_POOL_SIZE`
 
 Maximum size of the internal `pg.Pool` used when `createWorld()` constructs the pool. Default: the `pg` default (`10`).
