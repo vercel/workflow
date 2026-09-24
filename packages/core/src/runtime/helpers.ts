@@ -636,7 +636,7 @@ export async function loadWorkflowRunEvents(
           },
           // Replay recomputes step arguments and never reads the recorded
           // ones; steps read their input from the step entity.
-          omitStepInputs: true,
+          resolveData: 'skip-step-inputs',
         });
       } catch (error) {
         if (

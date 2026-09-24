@@ -9,12 +9,13 @@ import {
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
 import { MockAgent } from 'undici';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createWorkflowRunEvent,
   getWorkflowRunEvents,
   splitEventDataForV4,
 } from './events.js';
+import { resetSkipStepInputsSupportForTests } from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { encode as encodeRunId, REGION_IDS } from './run-id/index.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
@@ -2194,7 +2195,7 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
   });
 });
 
-describe('omitStepInputs', () => {
+describe("resolveData 'skip-step-inputs'", () => {
   const headers = {
     'content-type': V4_FRAME_CONTENT_TYPE,
     'x-wf-event-id': 'evnt_1',
@@ -2203,8 +2204,10 @@ describe('omitStepInputs', () => {
     'x-wf-max-events': '10000',
   };
 
-  // A server honoring the parameter sends step_created with an empty body and
-  // no `input` in the frame meta; everything else about the event is intact.
+  afterEach(() => resetSkipStepInputsSupportForTests());
+
+  // A server honoring it sends step_created with an empty body and no `input`
+  // in the frame meta; everything else about the event is intact.
   const stepCreatedWithoutInput = encodeFrame(
     {
       eventId: 'evnt_2',
@@ -2217,34 +2220,29 @@ describe('omitStepInputs', () => {
     },
     new Uint8Array()
   );
+  const listBody = Buffer.concat([
+    stepCreatedWithoutInput,
+    encodeFrame(
+      { _end: 1, next: 'eid:evnt_2', hasMore: false },
+      new Uint8Array()
+    ),
+  ]);
 
-  it('asks the list endpoint to omit step inputs and accepts events without them', async () => {
+  it('lists with remoteRefBehavior=skip-step-inputs and accepts events without inputs', async () => {
     const agent = mockAgent();
     agent
       .get(ORIGIN)
       .intercept({
         path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
-        query: {
-          returnAll: 'true',
-          remoteRefBehavior: 'resolve',
-          omitStepInputs: 'true',
-        },
+        query: { returnAll: 'true', remoteRefBehavior: 'skip-step-inputs' },
       })
-      .reply(
-        200,
-        Buffer.concat([
-          stepCreatedWithoutInput,
-          encodeFrame(
-            { _end: 1, next: 'eid:evnt_2', hasMore: false },
-            new Uint8Array()
-          ),
-        ]),
-        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
-      );
+      .reply(200, listBody, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
 
     const result = await getWorkflowRunEvents(
-      { runId: 'wrun_1', omitStepInputs: true },
+      { runId: 'wrun_1', resolveData: 'skip-step-inputs' },
       { token: 'test-token', dispatcher: agent }
     );
 
@@ -2261,7 +2259,77 @@ describe('omitStepInputs', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('flags a create in its frame meta and carries the flag to the replay suffix', async () => {
+  it('falls back to resolve, once, against a backend that rejects the value', async () => {
+    // An older backend validates remoteRefBehavior as resolve | lazy.
+    const agent = mockAgent();
+    const pool = agent.get(ORIGIN);
+    pool
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { returnAll: 'true', remoteRefBehavior: 'skip-step-inputs' },
+      })
+      .reply(
+        400,
+        {
+          error: 'validation_error',
+          message:
+            "Invalid query: remoteRefBehavior: Invalid enum value. Expected 'resolve' | 'lazy'",
+        },
+        { headers: { 'content-type': 'application/json' } }
+      );
+    pool
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { returnAll: 'true', remoteRefBehavior: 'resolve' },
+      })
+      .reply(200, listBody, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      })
+      .times(2);
+    const config = { token: 'test-token', dispatcher: agent };
+
+    const first = await getWorkflowRunEvents(
+      { runId: 'wrun_1', resolveData: 'skip-step-inputs' },
+      config
+    );
+    // Remembered: the next read goes straight to resolve.
+    const second = await getWorkflowRunEvents(
+      { runId: 'wrun_1', resolveData: 'skip-step-inputs' },
+      config
+    );
+
+    expect(first.data).toHaveLength(1);
+    expect(second.data).toHaveLength(1);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('does not swallow an unrelated 400', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: { returnAll: 'true', remoteRefBehavior: 'skip-step-inputs' },
+      })
+      .reply(
+        400,
+        { error: 'validation_error', message: 'Invalid query: cursor' },
+        { headers: { 'content-type': 'application/json' } }
+      );
+
+    await expect(
+      getWorkflowRunEvents(
+        { runId: 'wrun_1', resolveData: 'skip-step-inputs' },
+        { token: 'test-token', dispatcher: agent }
+      )
+    ).rejects.toThrow('Invalid query: cursor');
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('asks for it on the event-log page a create returns, and on the replay suffix', async () => {
     const agent = mockAgent();
     let capturedMeta: Record<string, unknown> | undefined;
     const pool = agent.get(ORIGIN);
@@ -2287,30 +2355,23 @@ describe('omitStepInputs', () => {
         query: {
           returnAll: 'true',
           cursor: 'eid:evnt_1',
-          remoteRefBehavior: 'resolve',
-          omitStepInputs: 'true',
+          remoteRefBehavior: 'skip-step-inputs',
         },
       })
-      .reply(
-        200,
-        Buffer.concat([
-          stepCreatedWithoutInput,
-          encodeFrame(
-            { _end: 1, next: 'eid:evnt_2', hasMore: false },
-            new Uint8Array()
-          ),
-        ]),
-        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
-      );
+      .reply(200, listBody, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
 
     const result = await createWorkflowRunEvent(
       'wrun_1',
       { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
-      { omitStepInputs: true },
+      { resolveData: 'skip-step-inputs' },
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect(capturedMeta?.omitStepInputs).toBe(true);
+    expect(capturedMeta?.eventsRemoteRefBehavior).toBe('skip-step-inputs');
+    // The created entities keep their own resolution.
+    expect(capturedMeta?.remoteRefBehavior).toBe('resolve');
     expect(result.events?.map((e) => e.eventType)).toEqual([
       'run_created',
       'run_started',
@@ -2319,7 +2380,7 @@ describe('omitStepInputs', () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('leaves the frame meta unflagged when the caller does not ask', async () => {
+  it('leaves the event-log page alone when the caller does not ask', async () => {
     const agent = mockAgent();
     let capturedMeta: Record<string, unknown> | undefined;
     agent
@@ -2344,7 +2405,7 @@ describe('omitStepInputs', () => {
       { token: 'test-token', dispatcher: agent }
     );
 
-    expect('omitStepInputs' in (capturedMeta ?? {})).toBe(false);
+    expect('eventsRemoteRefBehavior' in (capturedMeta ?? {})).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 });

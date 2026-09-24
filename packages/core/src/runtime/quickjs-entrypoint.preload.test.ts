@@ -187,9 +187,9 @@ describe('QuickJS lazy hook preload sourcing', () => {
     // Replay never reads recorded step inputs, so every fetch lets the World
     // leave them out.
     for (const [params] of listEvents.mock.calls as unknown as Array<
-      [{ omitStepInputs?: boolean }]
+      [{ resolveData?: string }]
     >) {
-      expect(params.omitStepInputs).toBe(true);
+      expect(params.resolveData).toBe('skip-step-inputs');
     }
   });
 

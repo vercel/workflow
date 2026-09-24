@@ -1033,9 +1033,9 @@ export function workflowEntrypoint(
                     // Replay events a write hands back (an inline delta or a
                     // preload) only feed this log, and replay never reads
                     // recorded step inputs.
-                    const withSnapshot = {
+                    const withSnapshot: CreateEventParams = {
                       ...slotSnapshot(),
-                      omitStepInputs: true,
+                      resolveData: 'skip-step-inputs',
                       ...params,
                     };
                     const result = await replayRecoveryReporter.withEventCreate(

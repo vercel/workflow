@@ -47,6 +47,7 @@ import {
   type EventBatchResult,
   type EventDataPayloadField,
   type EventResult,
+  entityResolveData,
   type GetEventParams,
   getEventDataPayloadField,
   isHookEventRequiringExistence,
@@ -474,10 +475,12 @@ export async function getWorkflowRunEvents(
   // remain on the returned events.
   const listParams: ListEventsV4Params = {
     ...pagination,
-    remoteRefBehavior: resolveData === 'none' ? 'lazy' : 'resolve',
-    ...('omitStepInputs' in params && params.omitStepInputs
-      ? { omitStepInputs: true }
-      : {}),
+    remoteRefBehavior:
+      resolveData === 'none'
+        ? 'lazy'
+        : resolveData === 'skip-step-inputs'
+          ? 'skip-step-inputs'
+          : 'resolve',
   };
 
   const result = await ('correlationId' in params
@@ -706,7 +709,11 @@ async function createWorkflowRunEventInner(
   // of this on v1 routes, since the v4 protocol does not cover legacy runs.
   if (params?.v1Compat) {
     if (data.eventType === 'run_cancelled' && id) {
-      const run = await cancelWorkflowRunV1(id, params, config);
+      const run = await cancelWorkflowRunV1(
+        id,
+        { ...params, resolveData: entityResolveData(params.resolveData) },
+        config
+      );
       return { run: run as WorkflowRun };
     }
     if (data.eventType === 'run_created') {
@@ -795,9 +802,12 @@ async function createWorkflowRunEventInner(
     // defense-in-depth when it recorded a 412 rejection for this correlation
     // id and no step entity exists.
     ...(params?.viaStepDispatch ? { viaStepDispatch: true } : {}),
-    // Replay events this POST returns (a preload or a `sinceCursor` delta)
-    // may leave out step inputs; the created event and step entity never do.
-    ...(params?.omitStepInputs ? { omitStepInputs: true } : {}),
+    // The event-log page this POST returns (a preload or a `sinceCursor`
+    // delta) may leave out step inputs; the created event and step entity
+    // follow `remoteRefBehavior` and never do.
+    ...(params?.resolveData === 'skip-step-inputs'
+      ? { eventsRemoteRefBehavior: 'skip-step-inputs' as const }
+      : {}),
     remoteRefBehavior,
     payload,
     ...meta,

@@ -4,7 +4,11 @@ import { getEventDataRefFields } from './event-metadata.js';
 import type { Hook } from './hooks.js';
 import type { StartedWorkflowRun, WorkflowRun } from './runs.js';
 import { SerializedDataSchema } from './serialization.js';
-import type { PaginationOptions, ResolveData } from './shared.js';
+import type {
+  EventsResolveData,
+  PaginationOptions,
+  ResolveData,
+} from './shared.js';
 import type { StartedStep, Step } from './steps.js';
 import type { Wait } from './waits.js';
 
@@ -178,7 +182,7 @@ export function isChildEntityCreationEventType(
  */
 export function stripEventDataRefs(
   event: Event,
-  resolveData: ResolveData
+  resolveData: EventsResolveData
 ): Event {
   if (resolveData !== 'none') return event;
   if (!('eventData' in event)) return event;
@@ -795,15 +799,13 @@ export type CreateEventRequest = Exclude<
 
 export interface CreateEventParams {
   v1Compat?: boolean;
-  resolveData?: ResolveData;
   /**
-   * Advisory, as {@link ListEventsParams.omitStepInputs}: the World MAY omit
-   * `eventData.input` from `step_created` and `step_started` events among
-   * the replay events this create returns (the `sinceCursor` delta or a
-   * replay preload). It never affects the created `event` or the returned
-   * `step` entity, whose `input` is what step execution reads.
+   * `'skip-step-inputs'` applies only to the event-log page this create
+   * returns (the `sinceCursor` delta or a replay preload), never to the
+   * created `event` or the returned `step` entity, whose `input` is what step
+   * execution reads. See {@link EventsResolveData}.
    */
-  omitStepInputs?: boolean;
+  resolveData?: EventsResolveData;
   /**
    * Lazy hook resume idempotency key. Set only by `resumeHook()` when it
    * persists a `hook_received` event whose creation must be deduplicated
@@ -1196,21 +1198,7 @@ export interface ListEventsParams {
   runId: string;
   /** Omit `limit` to return every remaining event. */
   pagination?: PaginationOptions;
-  resolveData?: ResolveData;
-  /**
-   * Advisory: the caller will not read step input payloads from the returned
-   * replay events, so the World MAY omit `eventData.input` from
-   * `step_created` and `step_started` events it returns. All other fields of those events, and
-   * every other event, are unchanged. A World that ignores it is fully
-   * supported.
-   *
-   * Workflow replay recomputes step arguments by re-running workflow code and
-   * never reads the recorded ones; only step execution reads a step's input,
-   * from the step entity. For a workflow that passes growing state into its
-   * steps, the recorded inputs are the part of the log that grows
-   * quadratically.
-   */
-  omitStepInputs?: boolean;
+  resolveData?: EventsResolveData;
 }
 
 export interface ListEventsByCorrelationIdParams {

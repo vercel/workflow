@@ -398,7 +398,7 @@ export async function executeStep(
       // replay log, which never reads recorded step inputs.
       eventParams?.sinceCursor === undefined
         ? eventParams
-        : { omitStepInputs: true, ...eventParams },
+        : { resolveData: 'skip-step-inputs', ...eventParams },
       (p) => world.events.create(workflowRunId, data, p)
     );
 

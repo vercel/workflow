@@ -63,6 +63,29 @@ export type PaginatedResponse<T> = z.infer<
 export type ResolveData = 'none' | 'all';
 
 /**
+ * {@link ResolveData} for event-log reads, plus one mode for replay:
+ * - "skip-step-inputs": as "all", except that the World MAY leave `input` out
+ *   of `step_created` and `step_started` events. Workflow replay recomputes
+ *   step arguments by re-running workflow code and never reads the recorded
+ *   ones (a step reads its input from the step entity), and for a workflow
+ *   that passes growing state into its steps those inputs are the part of the
+ *   log that grows quadratically. A World that ignores it returns them.
+ */
+export type EventsResolveData = ResolveData | 'skip-step-inputs';
+
+/**
+ * The {@link ResolveData} an {@link EventsResolveData} asks for on everything
+ * other than an event-log page's step inputs: `'skip-step-inputs'` is `'all'`.
+ */
+export function entityResolveData<T extends EventsResolveData | undefined>(
+  resolveData: T
+): Exclude<T, 'skip-step-inputs'> | 'all' {
+  return (resolveData === 'skip-step-inputs' ? 'all' : resolveData) as
+    | Exclude<T, 'skip-step-inputs'>
+    | 'all';
+}
+
+/**
  * A standard error schema shape for propogating errors from runs and steps
  */
 export const StructuredErrorSchema = z.compile(

@@ -554,17 +554,17 @@ type DriveWorldOptions = {
    */
   staleFirstReload?: boolean;
   /**
-   * Honor `omitStepInputs` the way workflow-server does: every replay event
+   * Honor `resolveData: 'skip-step-inputs'` the way workflow-server does: every replay event
    * the World hands back (a list page, the `run_started` preload, an inline
    * delta) leaves `input` out of `step_created` / `step_started`, while the
    * created event and the `step` entity a `step_started` returns keep it.
    * `stripped` counts the events served without their input, so a test can
    * tell the omission actually happened.
    */
-  omitStepInputs?: { stripped: number };
+  skipStepInputs?: { stripped: number };
 };
 
-/** A replay event as a World honoring `omitStepInputs` serves it. */
+/** A replay event as a World honoring `skip-step-inputs` serves it. */
 function withoutStepInput(event: Event): Event {
   if (event.eventType !== 'step_created' && event.eventType !== 'step_started')
     return event;
@@ -594,9 +594,9 @@ async function drive(
   const events: Event[] = [];
   // What a replay read hands back: the log, minus step inputs when the caller
   // asked for that and the World honors it.
-  const served = (log: Event[], params?: { omitStepInputs?: boolean }) => {
-    const omission = options.omitStepInputs;
-    if (!omission || !params?.omitStepInputs) return log;
+  const served = (log: Event[], params?: { resolveData?: string }) => {
+    const omission = options.skipStepInputs;
+    if (!omission || params?.resolveData !== 'skip-step-inputs') return log;
     return log.map((event) => {
       const stripped = withoutStepInput(event);
       if (stripped !== event) omission.stripped++;
@@ -738,7 +738,7 @@ async function drive(
   );
 
   let listCallCount = 0;
-  const eventsList = vi.fn(async (params?: { omitStepInputs?: boolean }) => {
+  const eventsList = vi.fn(async (params?: { resolveData?: string }) => {
     listCallCount++;
     // The cursor is positioned at what the read actually showed, so a stale
     // read hands back a short log AND a cursor that still covers the events it
@@ -1640,7 +1640,7 @@ describe('retained VM through the inline replay loop', () => {
 /**
  * Replay recomputes every step's arguments by re-running workflow code, so a
  * World may leave the recorded inputs out of the replay events it returns
- * (`omitStepInputs`). This loop passes growing state rebuilt from earlier step
+ * (`resolveData: 'skip-step-inputs'`). This loop passes growing state rebuilt from earlier step
  * results — exactly the inputs that are omitted — so any replay path that
  * still depended on a recorded input would hand a step the wrong state.
  */
@@ -1681,19 +1681,21 @@ describe('replay without recorded step inputs', () => {
   ] as Array<
     [string, DriveWorldOptions, DriveMode]
   >)('completes with the same step inputs (%s)', async (_label, worldOptions, mode) => {
-    const omitStepInputs = { stripped: 0 };
+    const skipStepInputs = { stripped: 0 };
     const { result, listParams, createParams, durableLog } = await drive(
       `wrun_omit_${_label.replace(/\W+/g, '_')}`,
       growingStateWorkflow,
       mode,
-      { ...worldOptions, omitStepInputs }
+      { ...worldOptions, skipStepInputs }
     );
 
     expect(result).toEqual([0, 11, 22]);
     expect(seenStates).toEqual(expectedStates);
     // The World really served replay events without step inputs...
-    expect(omitStepInputs.stripped).toBeGreaterThan(0);
-    expect(listParams.every((p) => p?.omitStepInputs === true)).toBe(true);
+    expect(skipStepInputs.stripped).toBeGreaterThan(0);
+    expect(listParams.every((p) => p?.resolveData === 'skip-step-inputs')).toBe(
+      true
+    );
     // ...because every replay read, and every write that asks for replay
     // events back (an inline delta or the run_started preload), asked for it.
     expect(
@@ -1701,7 +1703,7 @@ describe('replay without recorded step inputs', () => {
         .filter(
           (p) => p.sinceCursor !== undefined || p.eventType === 'run_started'
         )
-        .every((p) => p.omitStepInputs === true)
+        .every((p) => p.resolveData === 'skip-step-inputs')
     ).toBe(true);
     // The recorded log itself still holds each step exactly once.
     expect(
