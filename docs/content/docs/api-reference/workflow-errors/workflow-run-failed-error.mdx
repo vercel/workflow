@@ -13,6 +13,8 @@ related:
 
 The `cause` property contains the underlying error with its message, stack trace, and optional error code.
 
+A failed run is terminal, so this error is non-retryable (`fatal: true`). Inside a workflow, `await run.returnValue` runs as a step, and that step fails on its first attempt instead of spending its retry budget re-reading a run that cannot change: the remote failure reaches the caller immediately, and the caller catches a `WorkflowRunFailedError` rather than a retry-exhaustion wrapper. Errors from *failing to read* the run, such as a transport blip, stay retryable.
+
 ```typescript lineNumbers
 import { WorkflowRunFailedError } from "workflow/errors"
 declare const run: { status: Promise<string>; returnValue: Promise<any> }; // @setup
@@ -40,6 +42,11 @@ interface WorkflowRunFailedError {
   runId: string;
   /** The underlying error that caused the failure. */
   cause: Error & { code?: string };
+  /**
+   * Always \`true\`. A failed run is terminal, so a step that reads one is not
+   * retried.
+   */
+  fatal: true;
   /** The error message. */
   message: string;
 }
