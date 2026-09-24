@@ -177,7 +177,7 @@ it('buffers a completion using the acknowledged step state and sends flush-throu
   );
   expect(completed.step?.status).toBe('completed');
   const barrier = writer.flush();
-  expect(flush).toHaveBeenLastCalledWith(4);
+  expect(flush).toHaveBeenLastCalledWith(4, undefined);
   calls[2].resolve(completed);
   await barrier;
 });

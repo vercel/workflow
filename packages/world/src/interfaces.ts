@@ -49,14 +49,15 @@ export interface EventWriteSession {
     readonly queued: number | undefined;
     readonly committed: number | undefined;
   };
-  /** Optional canonical bootstrap reads sharing the owner's transport. These do
-   * not acquire ownership or replace the public storage read APIs. */
-  reads?: {
-    ready?(): Promise<void>;
-    getRun: Storage['runs']['get'];
-    listEvents: Storage['events']['list'];
-    listSteps: Storage['steps']['list'];
-  };
+  /** Optional catch-up over the owner's own transport: every committed event
+   * after the writer's (initially empty) position, plus the run fields that
+   * are not events. Called once, before the first write. Event-sourced run,
+   * step and hook state is derived from these events by the owner. */
+  catchUp?(): Promise<{
+    events: Event[];
+    head: number;
+    expiredAt?: Date;
+  }>;
   /** Optional tentative transition, paired with flush(). The owning loop must
    * flush before input acknowledgement or externally visible step execution. */
   stage?(

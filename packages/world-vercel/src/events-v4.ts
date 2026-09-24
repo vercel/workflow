@@ -119,20 +119,6 @@ async function fetchV4(
   opName: string,
   attributes?: Record<string, string | number | boolean | string[]>
 ): Promise<Response> {
-  if (config?.readRequest) {
-    if (init.method !== 'GET')
-      throw new Error('Owner read transport only accepts GET');
-    const response = await config.readRequest(url);
-    if (!response.ok)
-      throw await errorFromV4Response(
-        response.status,
-        headersToRecord(response.headers),
-        new Uint8Array(await response.arrayBuffer()),
-        opName,
-        url
-      );
-    return response;
-  }
   const dispatcher = getEventsDispatcher(config);
   const response = await instrumentedFetch({
     method: init.method,
@@ -563,6 +549,38 @@ function decodeLegacyStructuredError(payload: Uint8Array): unknown {
   } catch {
     return payload;
   }
+}
+
+/** An eventsync ACK for a write the server found already committed, identically. */
+export class EventsyncDuplicateCommit extends Error {
+  readonly name = 'EventsyncDuplicateCommit';
+  constructor(
+    readonly eventId: string,
+    readonly createdAt: string
+  ) {
+    super(`Event ${eventId} was already committed with identical contents`);
+  }
+  static is(error: unknown): error is EventsyncDuplicateCommit {
+    return error instanceof EventsyncDuplicateCommit;
+  }
+}
+
+/** Decode an eventsync `history` body: a sequence of v4 event frames. */
+export async function decodeEventFrameSequence(
+  bytes: Uint8Array
+): Promise<Event[]> {
+  const events: Event[] = [];
+  const source = (async function* () {
+    yield bytes;
+  })();
+  for await (const frame of decodeFrames(source)) {
+    if (frame.meta._end !== undefined || frame.meta._error !== undefined)
+      throw new WorkflowWorldError('Unexpected frame in eventsync history', {
+        code: 'PARSE_ERROR',
+      });
+    events.push(decodeEventFrame(frame));
+  }
+  return events;
 }
 
 function decodeEventFrame({ meta, body }: DecodedFrame): Event {
@@ -1434,30 +1452,34 @@ async function postEventFrameOverWs(
         // discriminated union on
         // `type` with each type's payload nested under its own name, so a future
         // request type is a new variant rather than a reshape of this one.
-        reply = await transport.request((reqId) => {
-          // Recorded before the frame is sent so a request that fails, or one
-          // that never gets a reply, still carries the id the server logged it
-          // under. Assigned per attempt and per connection, so a retry or a
-          // reconnect legitimately re-uses low numbers.
-          span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
-          return encodeFrame(
-            {
-              reqId,
-              type: 'event',
-              ...(traceHeaders.has('traceparent')
-                ? {
-                    traceparent: traceHeaders.get('traceparent'),
-                    tracestate: traceHeaders.get('tracestate') ?? undefined,
-                  }
-                : {}),
-              event: buildPostFrameMeta(input),
-              ...(config?.flushEvent === undefined
-                ? {}
-                : { flush: config.flushEvent }),
-            },
-            input.payload ?? new Uint8Array(0)
-          );
-        }, config?.onEventSent);
+        reply = await transport.request(
+          (reqId) => {
+            // Recorded before the frame is sent so a request that fails, or one
+            // that never gets a reply, still carries the id the server logged it
+            // under. Assigned per attempt and per connection, so a retry or a
+            // reconnect legitimately re-uses low numbers.
+            span?.setAttributes({ ...WorkflowWsRequestId(reqId) });
+            return encodeFrame(
+              {
+                reqId,
+                type: 'event',
+                ...(traceHeaders.has('traceparent')
+                  ? {
+                      traceparent: traceHeaders.get('traceparent'),
+                      tracestate: traceHeaders.get('tracestate') ?? undefined,
+                    }
+                  : {}),
+                event: buildPostFrameMeta(input),
+                ...(config?.flushEvent === undefined
+                  ? {}
+                  : { flush: config.flushEvent }),
+              },
+              input.payload ?? new Uint8Array(0)
+            );
+          },
+          config?.onEventSent,
+          config?.wsGeneration
+        );
       } catch (err) {
         // Anything `transport.request()` throws means the frame was never acked.
         // `code: 'TRANSPORT'` is the shape `utils.ts` gives a failed `fetch`, so
@@ -1502,6 +1524,14 @@ async function postEventFrameOverWs(
           serverCommittedAt: commit.serverCommittedAt,
         });
 
+      if (reply.meta.duplicate === true && reply.meta.status === 200) {
+        // The slot already held exactly this write (an earlier commit of it
+        // from a replaced connection). The owner confirms it from its outbox.
+        throw new EventsyncDuplicateCommit(
+          String(reply.meta.eventId),
+          String(reply.meta.createdAt)
+        );
+      }
       const status = wsReplyStatus(reply, endpoint);
       const headerRecord = replyMetaToHeaderRecord(reply.meta);
       const headers = {

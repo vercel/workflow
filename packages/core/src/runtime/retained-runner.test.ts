@@ -585,20 +585,19 @@ it('groups buffered input/create/start and awaits durability before user code or
   await vi.waitFor(() => expect(fixture.retired).toHaveBeenCalled());
 });
 
-it('uses owner-session bootstrap reads instead of the public storage transport', async () => {
+it('initializes from the owner session catch-up alone, without run, event or step reads', async () => {
   const fixture = await setup();
-  const run = await fixture.world.runs.get(fixture.runId);
-  const events = await fixture.world.events.list({ runId: fixture.runId });
-  const reads = {
-    getRun: vi.fn().mockResolvedValue(run),
-    listEvents: vi.fn().mockResolvedValue(events),
-    listSteps: vi
-      .fn()
-      .mockResolvedValue({ data: [], hasMore: false, cursor: null }),
-  };
+  const events = await fixture.world.events.list({
+    runId: fixture.runId,
+    resolveData: 'all',
+  });
+  const catchUp = vi.fn().mockResolvedValue({
+    events: events.data,
+    head: events.data.length,
+  });
   const create = fixture.world.events.create.bind(fixture.world.events);
   fixture.world.events.createWriteSession = () => ({
-    reads,
+    catchUp,
     create: (event, params) => create(fixture.runId, event, params),
     dispose() {},
   });
@@ -612,10 +611,30 @@ it('uses owner-session bootstrap reads instead of the public storage transport',
     new Error('HTTP step read')
   );
   await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
-  expect(reads.getRun).toHaveBeenCalledTimes(1);
-  expect(reads.listEvents).toHaveBeenCalledTimes(1);
-  expect(reads.listSteps).toHaveBeenCalledTimes(1);
+  expect(catchUp).toHaveBeenCalledTimes(1);
   await fixture.finished;
+});
+
+it('refuses an expired run reported by the catch-up', async () => {
+  const fixture = await setup();
+  const events = await fixture.world.events.list({
+    runId: fixture.runId,
+    resolveData: 'all',
+  });
+  const create = vi.fn();
+  fixture.world.events.createWriteSession = () => ({
+    catchUp: async () => ({
+      events: events.data,
+      head: events.data.length,
+      expiredAt: new Date(),
+    }),
+    create,
+    dispose() {},
+  });
+  await expect(
+    fixture.owner.submit({ runId: fixture.runId }, fixture.metadata)
+  ).rejects.toThrow('expired');
+  expect(create).not.toHaveBeenCalled();
 });
 
 it('fails a buffered durability barrier without running the user step', async () => {

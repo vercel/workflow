@@ -100,8 +100,6 @@ const getTestLimitOverridesHeader = (): string =>
   process.env.WORKFLOW_TEST_LIMIT_OVERRIDES?.trim() || '';
 
 export interface APIConfig {
-  /** @internal Owner-scoped canonical reads over its event connection. */
-  readRequest?: (endpoint: string) => Promise<Response>;
   /** Experimental direct invocation transport; absent by default. */
   invoke?: VercelInvokeConfig;
   token?: string;
@@ -132,6 +130,8 @@ export interface APIConfig {
   failStopEventWrites?: boolean;
   /** @internal An immediately awaited write cannot wait for the batching timer. */
   flushEvent?: boolean;
+  /** @internal Eventsync: refuse to send on any connection but this one. */
+  wsGeneration?: number;
   projectConfig?: {
     /** The real Vercel project ID (e.g., prj_xxx) */
     projectId?: string;
@@ -365,18 +365,14 @@ export async function makeRequest<T>({
   // Normalized once: `Request` used to do this uppercasing on the way into
   // `fetch`, and both the idempotency check and the curl repro read it.
   const method = (options.method || 'GET').toUpperCase();
-  if (config.readRequest && method !== 'GET')
-    throw new Error('Owner read transport only accepts GET');
-  const { baseUrl, headers } = config.readRequest
-    ? { ...getHttpUrl(config), headers: new Headers() }
-    : await getHttpConfig(config);
+  const { baseUrl, headers } = await getHttpConfig(config);
   const url = `${baseUrl}${endpoint}`;
   validateHttpUrl(url);
 
   // Standard OTEL span name for HTTP client: "{method}"
   // See: https://opentelemetry.io/docs/specs/semconv/http/http-spans/#name
   return trace(
-    config.readRequest ? 'eventsync.read' : `http ${method}`,
+    `http ${method}`,
     { kind: await getSpanKind('CLIENT') },
     async (span) => {
       // Set standard OTEL HTTP client attributes
@@ -411,8 +407,7 @@ export async function makeRequest<T>({
       // already handed back the response by the time we consume the body, so
       // we retry such failures here. Only idempotent reads are re-issued; a
       // write must not be replayed (it could be applied twice).
-      const canRetryRead =
-        !config.readRequest && IDEMPOTENT_METHODS.has(method);
+      const canRetryRead = IDEMPOTENT_METHODS.has(method);
       let parseResult: ParseResult;
       let responseDiagnostics = '';
       for (let attempt = 0; ; attempt++) {
@@ -445,35 +440,30 @@ export async function makeRequest<T>({
         // is the only thing that tells them apart in a trace.
         span?.setAttributes({
           ...WorkflowHttpTransport(nodeAgents ? 'node-http' : 'undici'),
-          ...(config.readRequest
-            ? { 'workflow.events.transport': 'eventsync' }
-            : {}),
         });
         const fetchStart = Date.now();
         let response: Response;
         try {
-          response = config.readRequest
-            ? await config.readRequest(endpoint)
-            : nodeAgents
-              ? await nodeHttpFetch(url, {
-                  method,
-                  headers,
-                  body,
-                  signal,
-                  agents: nodeAgents,
-                  // Match undici's per-phase defaults (which the undici agents
-                  // inherit implicitly): without these the node:http path arms
-                  // no stalled-socket deadline.
-                  headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
-                  bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
-                })
-              : await fetch(
-                  undiciRequest as Request,
-                  {
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-                    dispatcher: undiciDispatcher,
-                  } as any
-                );
+          response = nodeAgents
+            ? await nodeHttpFetch(url, {
+                method,
+                headers,
+                body,
+                signal,
+                agents: nodeAgents,
+                // Match undici's per-phase defaults (which the undici agents
+                // inherit implicitly): without these the node:http path arms
+                // no stalled-socket deadline.
+                headersTimeoutMs: NODE_HTTP_HEADERS_TIMEOUT_MS,
+                bodyTimeoutMs: NODE_HTTP_BODY_TIMEOUT_MS,
+              })
+            : await fetch(
+                undiciRequest as Request,
+                {
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+                  dispatcher: undiciDispatcher,
+                } as any
+              );
         } catch (error) {
           const elapsed = Date.now() - fetchStart;
           // AbortSignal.timeout() surfaces as a DOMException with name

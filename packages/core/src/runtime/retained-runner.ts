@@ -50,6 +50,7 @@ import {
   QueuedStepPolicySchema,
   stepOutcomeDigest,
 } from './owned-step.js';
+import { reduceStep, runFromCreation } from './owner-state.js';
 import { DEFAULT_STEP_MAX_RETRIES, executeStep } from './step-executor.js';
 import { handleSuspension } from './suspension-handler.js';
 import { useQuickJSVm } from './vm-mode.js';
@@ -501,130 +502,159 @@ export class RetainedRunner {
         'persistence',
         new Error('Buffered writer requires both stage and flush')
       );
-    const history: Event[] = [];
-    const steps: Step[] = [];
-    const reads = this.eventWriter?.reads;
-    await reads?.ready?.();
-    const eventReads = { parentSpanId, pageCount: 0, eventCount: 0 };
-    const stepReads = { parentSpanId, pageCount: 0, stepCount: 0 };
-    // Run bootstrap reads in parallel after any session channel is ready.
-    // Each task owns its partial results until all snapshot reads have succeeded.
-    const snapshot = await Promise.allSettled([
-      this.observed(
-        'load_run',
+    const catchUp = this.eventWriter?.catchUp?.bind(this.eventWriter);
+    if (catchUp) {
+      // The owner's transport streams its whole committed history; run, Step
+      // and Hook state is derived from those events alone.
+      const loaded = await this.observed('catch_up', async () => catchUp(), {
+        parentSpanId,
+      });
+      await this.observed(
+        'apply_history',
         async () => {
-          this.runState = await (reads?.getRun(this.runId) ??
-            this.backend.runs.get(this.runId));
-          if (this.runState.executionContext?.retainedRunnerVersion !== 1)
-            throw new InputRejected(
-              'Run was not created for retained execution',
-              {
-                status: 409,
-              }
-            );
-          if (useQuickJSVm(this.runState))
-            throw new RunnerFault(
-              'execution',
-              new Error('Retained runner requires the Node VM')
-            );
-          if (this.runState.expiredAt)
-            throw new InputRejected('Workflow has expired', { status: 410 });
-          if (
-            `${this.prefix}${this.runState.workflowName}` !==
-            this.metadata.queueName
-          )
-            throw new InputRejected('Invocation target mismatch', {
-              status: 409,
-            });
-          if (
-            this.backend.capabilities?.deploymentAffinity &&
-            process.env.VERCEL_DEPLOYMENT_ID &&
-            this.runState.deploymentId !== process.env.VERCEL_DEPLOYMENT_ID
-          )
-            throw new InputRejected('Pinned deployment mismatch', {
-              status: 409,
-            });
-          this.deadline =
-            (await this.backend.getRuntimeDeadline?.())?.getTime() ?? Infinity;
-          this.key = await resolveRunEncryptionKey(this.backend, this.runState);
-          this.payloadCache = new ReplayPayloadCache(this.key);
+          for (const event of loaded.events) {
+            if (requireEventSlot(event.eventId) !== this.events.length + 1)
+              throw new RunnerFault(
+                'conflict',
+                new Error('Initial event history is not contiguous')
+              );
+            if (!this.runState) this.runState = runFromCreation(event);
+            else this.runState.updatedAt = event.createdAt;
+            this.apply(event);
+            reduceStep(this.steps, event);
+          }
+          if (!this.runState)
+            throw new InputRejected('Run not found', { status: 404 });
+          if (loaded.expiredAt) this.runState.expiredAt = loaded.expiredAt;
         },
-        { parentSpanId }
-      ),
-      this.observed(
-        'load_events',
-        async () => {
-          let cursor: string | null = null;
-          do {
-            const page = await (
-              reads?.listEvents ??
-              this.backend.events.list.bind(this.backend.events)
-            )({
-              runId: this.runId,
-              resolveData: 'all',
-              pagination: {
-                limit: 100,
-                sortOrder: 'asc',
-                ...(cursor ? { cursor } : {}),
-              },
-            });
-            history.push(...page.data);
-            eventReads.pageCount++;
-            eventReads.eventCount = history.length;
-            cursor = page.hasMore ? page.cursor : null;
-          } while (cursor);
-        },
-        eventReads
-      ),
-      this.observed(
-        'load_steps',
-        async () => {
-          let cursor: string | null = null;
-          do {
-            const page: {
-              data: Step[];
-              hasMore: boolean;
-              cursor: string | null;
-            } = await (
-              reads?.listSteps ??
-              this.backend.steps.list.bind(this.backend.steps)
-            )({
-              runId: this.runId,
-              resolveData: 'all',
-              pagination: { limit: 100, ...(cursor ? { cursor } : {}) },
-            });
-            steps.push(...page.data);
-            stepReads.pageCount++;
-            stepReads.stepCount = steps.length;
-            cursor = page.hasMore ? page.cursor : null;
-          } while (cursor);
-        },
-        stepReads
-      ),
-    ]);
-    const failed = snapshot.find((result) => result.status === 'rejected');
-    if (failed?.status === 'rejected') throw failed.reason;
-    await this.observed(
-      'apply_history',
-      async () => {
-        for (const event of history) {
-          if (requireEventSlot(event.eventId) !== this.events.length + 1)
-            throw new RunnerFault(
-              'conflict',
-              new Error('Initial event history is not contiguous')
-            );
-          this.apply(event);
+        {
+          parentSpanId,
+          eventCount: loaded.events.length,
+          head: loaded.head,
         }
-        for (const step of steps) this.steps.set(step.stepId, step);
-      },
-      { parentSpanId, eventCount: history.length, stepCount: steps.length }
-    );
+      );
+      await this.observed('load_run', () => this.validateRun(), {
+        parentSpanId,
+      });
+    } else {
+      const history: Event[] = [];
+      const steps: Step[] = [];
+      const eventReads = { parentSpanId, pageCount: 0, eventCount: 0 };
+      const stepReads = { parentSpanId, pageCount: 0, stepCount: 0 };
+      // Run bootstrap reads in parallel after any session channel is ready.
+      // Each task owns its partial results until all snapshot reads have succeeded.
+      const snapshot = await Promise.allSettled([
+        this.observed(
+          'load_run',
+          async () => {
+            this.runState = await this.backend.runs.get(this.runId);
+            await this.validateRun();
+          },
+          { parentSpanId }
+        ),
+        this.observed(
+          'load_events',
+          async () => {
+            let cursor: string | null = null;
+            do {
+              const page = await this.backend.events.list({
+                runId: this.runId,
+                resolveData: 'all',
+                pagination: {
+                  limit: 100,
+                  sortOrder: 'asc',
+                  ...(cursor ? { cursor } : {}),
+                },
+              });
+              history.push(...page.data);
+              eventReads.pageCount++;
+              eventReads.eventCount = history.length;
+              cursor = page.hasMore ? page.cursor : null;
+            } while (cursor);
+          },
+          eventReads
+        ),
+        this.observed(
+          'load_steps',
+          async () => {
+            let cursor: string | null = null;
+            do {
+              const page: {
+                data: Step[];
+                hasMore: boolean;
+                cursor: string | null;
+              } = await this.backend.steps.list({
+                runId: this.runId,
+                resolveData: 'all',
+                pagination: { limit: 100, ...(cursor ? { cursor } : {}) },
+              });
+              steps.push(...page.data);
+              stepReads.pageCount++;
+              stepReads.stepCount = steps.length;
+              cursor = page.hasMore ? page.cursor : null;
+            } while (cursor);
+          },
+          stepReads
+        ),
+      ]);
+      const failed = snapshot.find((result) => result.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+      await this.observed(
+        'apply_history',
+        async () => {
+          for (const event of history) {
+            if (requireEventSlot(event.eventId) !== this.events.length + 1)
+              throw new RunnerFault(
+                'conflict',
+                new Error('Initial event history is not contiguous')
+              );
+            this.apply(event);
+          }
+          for (const step of steps) this.steps.set(step.stepId, step);
+        },
+        { parentSpanId, eventCount: history.length, stepCount: steps.length }
+      );
+    }
     this.initialized = true;
     if (!isTerminalWorkflowRunStatus(this.run.status) && !this.run.startedAt)
       await this.commit({
         eventType: 'run_started',
         specVersion: SPEC_VERSION_CURRENT,
       });
+  }
+
+  private async validateRun() {
+    if (!this.runState)
+      throw new InputRejected('Run not found', { status: 404 });
+    if (this.runState!.executionContext?.retainedRunnerVersion !== 1)
+      throw new InputRejected('Run was not created for retained execution', {
+        status: 409,
+      });
+    if (useQuickJSVm(this.runState!))
+      throw new RunnerFault(
+        'execution',
+        new Error('Retained runner requires the Node VM')
+      );
+    if (this.runState!.expiredAt)
+      throw new InputRejected('Workflow has expired', { status: 410 });
+    if (
+      `${this.prefix}${this.runState!.workflowName}` !== this.metadata.queueName
+    )
+      throw new InputRejected('Invocation target mismatch', {
+        status: 409,
+      });
+    if (
+      this.backend.capabilities?.deploymentAffinity &&
+      process.env.VERCEL_DEPLOYMENT_ID &&
+      this.runState!.deploymentId !== process.env.VERCEL_DEPLOYMENT_ID
+    )
+      throw new InputRejected('Pinned deployment mismatch', {
+        status: 409,
+      });
+    this.deadline =
+      (await this.backend.getRuntimeDeadline?.())?.getTime() ?? Infinity;
+    this.key = await resolveRunEncryptionKey(this.backend, this.runState!);
+    this.payloadCache = new ReplayPayloadCache(this.key);
   }
 
   private apply(event: Event) {

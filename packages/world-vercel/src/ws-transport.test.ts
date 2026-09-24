@@ -276,89 +276,300 @@ describe('toEventsWsUrl', () => {
 });
 
 describe('owner event writer', () => {
-  it('carries native bootstrap reads over its socket without HTTP fallback', async () => {
-    let traceparent = '00-1234567890abcdef1234567890abcdef-12345678901234ab-01';
-    vi.spyOn(
-      await import('./telemetry.js'),
-      'injectTraceContextIntoHeaders'
-    ).mockImplementation(async (headers) => {
-      headers.set('traceparent', traceparent);
-    });
+  const slotId = (slot: number) => `evnt_${String(slot).padStart(26, '0')}`;
+  const created = new Date('2026-01-01T00:00:00.000Z');
+  /** v4 event frames for slots after..head, as a `history` push body. */
+  const history = (from: number, to: number) =>
+    new Uint8Array(
+      Buffer.concat(
+        Array.from({ length: to - from + 1 }, (_, i) =>
+          from + i === 1
+            ? encodeFrame(
+                {
+                  eventId: slotId(1),
+                  runId: 'wrun_test',
+                  eventType: 'run_created',
+                  createdAt: created,
+                  specVersion: 6,
+                  eventData: { deploymentId: 'dpl', workflowName: 'wf' },
+                },
+                Uint8Array.of(9)
+              )
+            : encodeFrame(
+                {
+                  eventId: slotId(from + i),
+                  runId: 'wrun_test',
+                  eventType: 'run_started',
+                  createdAt: created,
+                  specVersion: 6,
+                },
+                EMPTY
+              )
+        )
+      )
+    );
+  const catchUp = (
+    socket: ReturnType<typeof latest>,
+    after: number,
+    head: number
+  ) => {
+    if (head > after)
+      socket.deliver(
+        encodeFrame(
+          { reqId: -1, type: 'history', eventCount: head - after },
+          history(after + 1, head)
+        )
+      );
+    socket.deliver(encodeFrame({ reqId: -1, type: 'synced', head }, EMPTY));
+  };
+  const withEventsync = async (run: () => Promise<void>) => {
     const previous = process.env.WORKFLOW_EVENTS_TRANSPORT;
     process.env.WORKFLOW_EVENTS_TRANSPORT = 'eventsync';
-    const fetch = vi
-      .spyOn(globalThis, 'fetch')
-      .mockRejectedValue(new Error('Unexpected HTTP read'));
-    const writer = createStorage({ token: 'test-token' }).events
-      .createWriteSession!('wrun_test');
     try {
-      const socket = await nextSocket();
-      socket.open();
-      const read = writer.reads!.listSteps({
-        runId: 'wrun_test',
-        pagination: { limit: 100 },
-      });
-      await tick();
-      const raw = socket.sent[0];
-      const length = new DataView(
-        raw.buffer,
-        raw.byteOffset,
-        raw.byteLength
-      ).getUint32(0, false);
-      const sent = { meta: decode(raw.subarray(4, 4 + length)) };
-      expect(sent.meta).toMatchObject({
-        type: 'read',
-        traceparent,
-        endpoint:
-          '/v2/runs/wrun_test/steps?limit=100&remoteRefBehavior=resolve',
-      });
-      socket.deliver(
-        encodeFrame(
-          {
-            reqId: sent.meta.reqId,
-            type: 'read_ack',
-            status: 200,
-            headers: { 'content-type': 'application/cbor' },
-          },
-          encode({ data: [], hasMore: false, cursor: null })
-        )
-      );
-      expect(await read).toEqual({ data: [], hasMore: false, cursor: null });
-      traceparent = '00-abcdef1234567890abcdef1234567890-12345678901234cd-01';
-      const history = writer.reads!.listEvents({
-        runId: 'wrun_test',
-        pagination: { limit: 100 },
-      });
-      await tick();
-      expect(socket.sent).toHaveLength(2);
-      const second = socket.sent[1];
-      const secondLength = new DataView(
-        second.buffer,
-        second.byteOffset,
-        second.byteLength
-      ).getUint32(0, false);
-      expect(decode(second.subarray(4, 4 + secondLength)).traceparent).toBe(
-        traceparent
-      );
-      socket.deliver(
-        encodeFrame(
-          {
-            reqId: sentReqIds(socket)[1],
-            type: 'read_ack',
-            status: 200,
-            headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
-          },
-          encodeFrame({ _end: 1, hasMore: false }, EMPTY)
-        )
-      );
-      expect((await history).data).toEqual([]);
-      expect(fetch).not.toHaveBeenCalled();
+      await run();
     } finally {
-      await writer.dispose();
       if (previous === undefined) delete process.env.WORKFLOW_EVENTS_TRANSPORT;
       else process.env.WORKFLOW_EVENTS_TRANSPORT = previous;
     }
-  });
+  };
+
+  it('streams catch-up from the owner position before admitting writes, without HTTP', () =>
+    withEventsync(async () => {
+      const fetch = vi
+        .spyOn(globalThis, 'fetch')
+        .mockRejectedValue(new Error('Unexpected HTTP read'));
+      const writer = createStorage({ token: 'test-token' }).events
+        .createWriteSession!('wrun_test');
+      try {
+        const socket = await nextSocket();
+        expect(new URL(socket.url).searchParams.get('after')).toBe('0');
+        socket.open();
+        const loaded = writer.catchUp!();
+        await tick();
+        catchUp(socket, 0, 2);
+        const result = await loaded;
+        expect(result.head).toBe(2);
+        expect(result.events.map((event) => event.eventType)).toEqual([
+          'run_created',
+          'run_started',
+        ]);
+        expect(
+          (result.events[0].eventData as { input: Uint8Array }).input
+        ).toEqual(Uint8Array.of(9));
+        expect(writer.heads).toEqual({ queued: 2, committed: 2 });
+        expect(socket.sent).toHaveLength(0);
+        expect(fetch).not.toHaveBeenCalled();
+      } finally {
+        await writer.dispose();
+      }
+    }));
+
+  it('fails the catch-up on a server error frame instead of writing', () =>
+    withEventsync(async () => {
+      const writer = createStorage({ token: 'test-token' }).events
+        .createWriteSession!('wrun_test');
+      try {
+        const socket = await nextSocket();
+        socket.open();
+        const loaded = writer.catchUp!();
+        void loaded.catch(() => {});
+        await tick();
+        socket.deliver(
+          encodeFrame(
+            { reqId: -1, type: 'error', status: 409 },
+            new TextEncoder().encode(
+              JSON.stringify({ message: 'after-ahead-of-log' })
+            )
+          )
+        );
+        await expect(loaded).rejects.toThrow('after-ahead-of-log');
+      } finally {
+        await writer.dispose();
+      }
+    }));
+
+  it('reconnects from the committed head, confirms the committed outbox prefix and resends the rest', () =>
+    withEventsync(async () => {
+      const writer = createStorage({ token: 'test-token' }).events
+        .createWriteSession!('wrun_test');
+      try {
+        const first = await nextSocket();
+        first.open();
+        const loaded = writer.catchUp!();
+        await tick();
+        catchUp(first, 0, 2);
+        await loaded;
+        const hook: CreateEventRequest = {
+          eventType: 'hook_received',
+          specVersion: 6,
+          correlationId: 'hook_test',
+          eventData: { token: 'test', payload: Uint8Array.of(1) },
+        };
+        const step: CreateEventRequest = {
+          eventType: 'step_created',
+          specVersion: 6,
+          correlationId: 'step_test',
+          eventData: { stepName: 'step', input: Uint8Array.of(2) },
+        };
+        const staged = [
+          await writer.stage!(hook, { eventCount: 2, resolveData: 'none' }),
+          await writer.stage!(step, { eventCount: 3, resolveData: 'none' }),
+        ];
+        expect(first.sent).toHaveLength(2);
+        const flushed = writer.flush!();
+        await tick();
+        // The socket breaks with both writes unacknowledged; slot 3 committed.
+        first.close(1006);
+        const second = await nextSocket();
+        expect(new URL(second.url).searchParams.get('after')).toBe('2');
+        second.open();
+        await tick();
+        second.deliver(
+          encodeFrame(
+            { reqId: -1, type: 'history', eventCount: 1 },
+            encodeFrame(
+              {
+                eventId: slotId(3),
+                runId: 'wrun_test',
+                eventType: 'hook_received',
+                correlationId: 'hook_test',
+                createdAt: staged[0].event!.createdAt,
+                specVersion: 6,
+                eventData: { token: 'test' },
+              },
+              Uint8Array.of(1)
+            )
+          )
+        );
+        second.deliver(
+          encodeFrame({ reqId: -1, type: 'synced', head: 3 }, EMPTY)
+        );
+        await vi.advanceTimersByTimeAsync(200);
+        // Only the uncommitted entry is resent, at its original slot.
+        const resent = second.sent.map((raw) => {
+          const length = new DataView(
+            raw.buffer,
+            raw.byteOffset,
+            raw.byteLength
+          ).getUint32(0, false);
+          return decode(raw.subarray(4, 4 + length)) as Record<string, any>;
+        });
+        expect(resent[0]).toMatchObject({
+          type: 'event',
+          event: { eventType: 'step_created', maxSlot: 3 },
+        });
+        second.deliver(
+          encodeFrame(
+            { reqId: resent[0].reqId, type: 'event_ack', status: 200 },
+            encode(staged[1])
+          )
+        );
+        await tick();
+        const flush = resent.find((meta) => meta.type === 'flush');
+        expect(flush).toMatchObject({ through: 4 });
+        second.deliver(
+          encodeFrame(
+            {
+              reqId: flush!.reqId,
+              type: 'flush_ack',
+              status: 200,
+              committedTo: 4,
+            },
+            EMPTY
+          )
+        );
+        expect((await flushed).map((result) => result.event!.eventId)).toEqual([
+          slotId(3),
+          slotId(4),
+        ]);
+        expect(writer.heads).toEqual({ queued: 4, committed: 4 });
+      } finally {
+        await writer.dispose();
+      }
+    }));
+
+  it('fail-stops when the log after its committed head holds another write', () =>
+    withEventsync(async () => {
+      const writer = createStorage({ token: 'test-token' }).events
+        .createWriteSession!('wrun_test');
+      try {
+        const first = await nextSocket();
+        first.open();
+        const loaded = writer.catchUp!();
+        await tick();
+        catchUp(first, 0, 2);
+        await loaded;
+        await writer.stage!(
+          {
+            eventType: 'hook_received',
+            specVersion: 6,
+            correlationId: 'hook_test',
+            eventData: { token: 'test', payload: Uint8Array.of(1) },
+          },
+          { eventCount: 2, resolveData: 'none' }
+        );
+        const flushed = writer.flush!();
+        void flushed.catch(() => {});
+        await tick();
+        first.close(1006);
+        const second = await nextSocket();
+        second.open();
+        await tick();
+        catchUp(second, 2, 3); // slot 3 is someone else's run_started
+        await expect(flushed).rejects.toThrow('Owner superseded');
+        await expect(
+          writer.stage!(
+            {
+              eventType: 'step_created',
+              specVersion: 6,
+              correlationId: 'step_test',
+              eventData: { stepName: 'step', input: Uint8Array.of(2) },
+            },
+            { eventCount: 3, resolveData: 'none' }
+          )
+        ).rejects.toThrow('Owner superseded');
+      } finally {
+        await writer.dispose();
+      }
+    }));
+
+  it('fails every unfinished write when reconnect does not finish in 30 s', () =>
+    withEventsync(async () => {
+      const writer = createStorage({ token: 'test-token' }).events
+        .createWriteSession!('wrun_test');
+      try {
+        const first = await nextSocket();
+        first.open();
+        const loaded = writer.catchUp!();
+        await tick();
+        catchUp(first, 0, 2);
+        await loaded;
+        await writer.stage!(
+          {
+            eventType: 'hook_received',
+            specVersion: 6,
+            correlationId: 'hook_test',
+            eventData: { token: 'test', payload: Uint8Array.of(1) },
+          },
+          { eventCount: 2, resolveData: 'none' }
+        );
+        const flushed = writer.flush!();
+        void flushed.catch(() => {});
+        await tick();
+        first.close(1006);
+        // Every reconnect handshake fails.
+        for (let i = 0; i < 400 && sockets.length < 100; i++) {
+          await vi.advanceTimersByTimeAsync(250);
+          const socket = latest();
+          if (socket.readyState === 0) socket.failHandshake();
+        }
+        await vi.advanceTimersByTimeAsync(31_000);
+        await expect(flushed).rejects.toThrow('reconnect timeout');
+      } finally {
+        await writer.dispose();
+      }
+    }));
+
   it('pipelines the canonical resume prefix over one socket before receiving ACKs', async () => {
     const observations: unknown[] = [];
     const observe = (message: unknown) => {
@@ -372,6 +583,10 @@ describe('owner event writer', () => {
     try {
       const socket = await nextSocket();
       socket.open();
+      const loaded = writer.catchUp!();
+      await tick();
+      catchUp(socket, 0, 3);
+      await loaded;
       const events: CreateEventRequest[] = [
         {
           eventType: 'hook_received',

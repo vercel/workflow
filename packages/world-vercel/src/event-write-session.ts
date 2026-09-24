@@ -6,10 +6,12 @@ import type {
   EventResult,
   EventWriteSession,
 } from '@workflow/world';
-import { BufferedEventWriter } from './buffered-event-writer.js';
-import { createWorkflowRunEvent, getWorkflowRunEvents } from './events.js';
-import { getWorkflowRun } from './runs.js';
-import { listWorkflowRunSteps } from './steps.js';
+import {
+  BufferedEventWriter,
+  type WriterCatchUp,
+} from './buffered-event-writer.js';
+import { createWorkflowRunEvent } from './events.js';
+import { decodeEventFrameSequence } from './events-v4.js';
 import type { APIConfig } from './utils.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
 
@@ -39,11 +41,23 @@ export function createEventWriteSession(
       });
   };
   observeReady('begin');
+  // Eventsync: every (re)connect resumes from the writer's committed head. The
+  // initial connection opens at 0, so its catch-up is the owner's history.
+  let writer: BufferedEventWriter | undefined;
+  const catchUp =
+    process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync'
+      ? {
+          position: () => writer?.position ?? 0,
+          decode: decodeEventFrameSequence as (
+            body: Uint8Array
+          ) => Promise<unknown[]>,
+        }
+      : undefined;
   // Handle rejection immediately even when snapshot loading fails before a write.
   const opened = (
     isWsEventsTransportEnabled()
       ? import('./ws-transport.js').then(({ openWsChannel }) =>
-          openWsChannel(runId, config)
+          openWsChannel(runId, config, { catchUp })
         )
       : Promise.resolve(undefined)
   ).then(
@@ -67,7 +81,8 @@ export function createEventWriteSession(
   const write = async (
     event: CreateEventRequest,
     params?: CreateEventParams,
-    onSent?: () => void
+    onSent?: () => void,
+    generation?: number
   ): Promise<EventResult> => {
     if (disposed) throw new Error('Event writer is disposed');
     const { lease, error, failed } = await opened;
@@ -92,7 +107,7 @@ export function createEventWriteSession(
             failStopEventWrites:
               process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync',
             ...(process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync'
-              ? { flushEvent: !onSent }
+              ? { flushEvent: !onSent, wsGeneration: generation }
               : {}),
           }
         : config
@@ -112,47 +127,21 @@ export function createEventWriteSession(
     return disposal;
   };
   if (process.env.WORKFLOW_EVENTS_TRANSPORT === 'eventsync') {
-    const readConfig: APIConfig = {
-      ...config,
-      readRequest: async (endpoint) => {
-        if (disposed) throw new Error('Event writer is disposed');
-        const { lease, error, failed } = await opened;
-        if (failed) throw error;
-        if (!lease)
-          throw new Error('Canonical reads require an eventsync channel');
-        return lease.read(endpoint);
-      },
+    const lease = async () => {
+      const { lease, error, failed } = await opened;
+      if (failed) throw error;
+      if (!lease) throw new Error('Eventsync channel is unavailable');
+      return lease;
     };
-    const reads: NonNullable<EventWriteSession['reads']> = {
-      ready: async () => {
-        const { lease, error, failed } = await opened;
-        if (failed) throw error;
-        if (!lease)
-          throw new Error('Canonical reads require an eventsync channel');
-        await lease.ready();
-      },
-      getRun: ((id, params) => {
-        if (id !== runId) throw new Error('Owner read run mismatch');
-        return getWorkflowRun(id, params, readConfig);
-      }) as NonNullable<EventWriteSession['reads']>['getRun'],
-      listEvents: (params) => {
-        if (params.runId !== runId) throw new Error('Owner read run mismatch');
-        return getWorkflowRunEvents(params, readConfig);
-      },
-      listSteps: ((params) => {
-        if (params.runId !== runId) throw new Error('Owner read run mismatch');
-        return listWorkflowRunSteps(params, readConfig);
-      }) as NonNullable<EventWriteSession['reads']>['listSteps'],
-    };
-    return Object.assign(
-      new BufferedEventWriter(runId, write, dispose, async (head) => {
-        const { lease, error, failed } = await opened;
-        if (failed) throw error;
-        if (!lease) throw new Error('Eventsync channel is unavailable');
-        await lease.flushThrough(head);
-      }),
-      { reads }
+    writer = new BufferedEventWriter(
+      runId,
+      write,
+      dispose,
+      async (head, generation) =>
+        (await lease()).flushThrough(head, generation),
+      async () => (await lease()).takeCatchUp() as Promise<WriterCatchUp>
     );
+    return writer;
   }
   return { create: write, dispose };
 }
