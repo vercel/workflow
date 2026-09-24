@@ -237,21 +237,37 @@ export async function extractWorkflowGraphs(bundlePath: string): Promise<{
 
   try {
     let actualWorkflowCode = bundleCode;
+    let ast: Program;
 
-    const bundleAst = parseSync(bundleCode, {
-      syntax: 'ecmascript',
-      target: 'es2022',
-    });
+    // The workflow route wraps the workflow VM code in a template literal.
+    // Parsing the whole route file just to read that literal is the most
+    // expensive part of manifest generation for bundled outputs, where the
+    // route also carries the runtime and its dependencies, so read the
+    // literal from the source text and only parse the workflow code itself.
+    const workflowCodeTemplate = findWorkflowCodeTemplate(bundleCode);
+    if (workflowCodeTemplate !== null) {
+      actualWorkflowCode = workflowCodeTemplate;
+      ast = parseSync(actualWorkflowCode, {
+        syntax: 'ecmascript',
+        target: 'es2022',
+      });
+    } else {
+      const bundleAst = parseSync(bundleCode, {
+        syntax: 'ecmascript',
+        target: 'es2022',
+      });
 
-    const workflowCodeValue = extractWorkflowCodeFromBundle(bundleAst);
-    if (workflowCodeValue) {
-      actualWorkflowCode = workflowCodeValue;
+      const workflowCodeValue = extractWorkflowCodeFromBundle(bundleAst);
+      if (workflowCodeValue) {
+        actualWorkflowCode = workflowCodeValue;
+        ast = parseSync(actualWorkflowCode, {
+          syntax: 'ecmascript',
+          target: 'es2022',
+        });
+      } else {
+        ast = bundleAst;
+      }
     }
-
-    const ast = parseSync(actualWorkflowCode, {
-      syntax: 'ecmascript',
-      target: 'es2022',
-    });
 
     const stepDeclarations = extractStepDeclarations(actualWorkflowCode);
     const functionMap = buildFunctionMap(ast, stepDeclarations);
@@ -286,6 +302,39 @@ function extractWorkflowCodeFromBundle(ast: Program): string | null {
           }
         }
       }
+    }
+  }
+  return null;
+}
+
+/**
+ * A top-level `workflowCode` declaration initialized with a template literal,
+ * as emitted by the workflow route generator (`const`) or after esbuild
+ * re-bundles the route (`var`). Anchored to the start of a line so the
+ * declaration cannot match text inside the escaped workflow code, where every
+ * backtick is preceded by a backslash.
+ */
+const WORKFLOW_CODE_TEMPLATE_START = /^(?:var|let|const) workflowCode = `/m;
+
+/**
+ * Read the `workflowCode` template literal from the bundle source without
+ * parsing the bundle. Returns null when the declaration is missing or the
+ * literal has substitutions, so the caller can fall back to a full parse.
+ */
+function findWorkflowCodeTemplate(bundleCode: string): string | null {
+  const match = WORKFLOW_CODE_TEMPLATE_START.exec(bundleCode);
+  if (!match) {
+    return null;
+  }
+  const start = match.index + match[0].length;
+  for (let i = start; i < bundleCode.length; i++) {
+    const char = bundleCode[i];
+    if (char === '\\') {
+      i++;
+    } else if (char === '`') {
+      return decodeEscapedWorkflowCode(bundleCode.slice(start, i));
+    } else if (char === '$' && bundleCode[i + 1] === '{') {
+      return null;
     }
   }
   return null;
