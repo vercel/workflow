@@ -52,6 +52,7 @@ import {
   isHookEventRequiringExistence,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
+  mintedSpecVersion,
   type PaginatedResponse,
   validateUlidTimestamp,
   type WorkflowRun,
@@ -764,6 +765,9 @@ async function createWorkflowRunEventInner(
   const input = {
     runId: id,
     specVersion: data.specVersion ?? 2,
+    ...(data.eventType === 'run_started'
+      ? { executorSpecVersion: mintedSpecVersion() }
+      : {}),
     ...(data.correlationId ? { correlationId: data.correlationId } : {}),
     ...(params?.requestId ? { vercelId: params.requestId } : {}),
     ...(params?.computeInstanceId

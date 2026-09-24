@@ -217,6 +217,14 @@ interface CreateEventV4InputBase {
    *  user data (e.g. step_started). */
   payload?: Uint8Array;
   specVersion: number;
+  /**
+   * `run_started` only: the spec version this SDK runs. `specVersion` on
+   * `run_started` repeats the version the caller of `start()` stamped, which
+   * can be older when the run was started from another deployment. The server
+   * uses this to move such a run onto the event-id scheme this runtime reads
+   * before any event is numbered.
+   */
+  executorSpecVersion?: number;
   correlationId?: string;
   vercelId?: string;
   /** Compute instance that wrote this event; rides the frame meta by `vercelId`. */
@@ -582,6 +590,9 @@ function buildPostFrameMeta(
     eventType: input.eventType,
     specVersion: input.specVersion,
   };
+  if (input.executorSpecVersion !== undefined) {
+    meta.executorSpecVersion = input.executorSpecVersion;
+  }
   if (input.correlationId !== undefined)
     meta.correlationId = input.correlationId;
   if (input.vercelId !== undefined) meta.vercelId = input.vercelId;
