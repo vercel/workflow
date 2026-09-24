@@ -12,6 +12,12 @@ export type PostgresWorldConfig = PgConnectionConfig & {
    */
   namespace?: string;
   queueConcurrency?: number;
+  /**
+   * Milliseconds between idle job fetches per worker. Each of the
+   * `queueConcurrency` workers polls independently at this interval when
+   * idle. Defaults to 500.
+   */
+  pollInterval?: number;
   /** Enable experimental invoke() delivery with one Graphile execution queue per run. */
   enableInvoke?: boolean;
   /**
