@@ -1,12 +1,12 @@
-import { constants, type Dirent } from 'node:fs';
-import { access, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, mkdir, realpath, rm, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import type {
   NextConfig as BuilderNextConfig,
   WorkflowManifest,
 } from '@workflow/builders';
-import chokidar from 'chokidar';
 import type { NextConfig as ProjectNextConfig } from 'next';
+import Watchpack from 'watchpack';
 import { createWatchIgnorePredicate } from './watch-ignore.js';
 import {
   classifyRebuild,
@@ -17,20 +17,47 @@ import {
   replaceSourceSnapshots,
   type SourceSnapshot,
 } from './watch-rebuild.js';
+import {
+  createWatchScope,
+  ROOT_ENTRYPOINT_NAMES,
+  ROOT_MODULE_EXTENSIONS,
+  ROOT_MODULE_NAMES,
+} from './watch-scope.js';
 
 let CachedNextBuilderEager: any;
 const importEsm = new Function('specifier', 'return import(specifier)') as <T>(
   specifier: string
 ) => Promise<T>;
 
+/**
+ * The dev watcher belongs to the process, not to a builder instance. Next.js
+ * re-evaluates `next.config` more than once per dev session (on a config edit,
+ * and today also on the second evaluation that slips past the build guard), and
+ * every evaluation constructs a fresh builder. Without this, each one would
+ * leave the previous watcher attached: its handlers keep rebuilding against a
+ * module graph nobody is serving, and its directory watches are never released.
+ */
+let activeDevWatcher: { close(): void } | undefined;
+
+function closeActiveDevWatcher(): void {
+  activeDevWatcher?.close();
+  activeDevWatcher = undefined;
+}
+
+function setActiveDevWatcher(watcher: { close(): void }): void {
+  closeActiveDevWatcher();
+  activeDevWatcher = watcher;
+}
+
 const appEntrypoint =
   /^(?:page|route|layout|default|error|loading|template|not-found|forbidden|unauthorized|sitemap|(?:icon|apple-icon|opengraph-image|twitter-image)\d?)$/;
 const appRootEntrypoint = /^(?:global-error|global-not-found|robots|manifest)$/;
-const rootEntrypoint = /^(?:instrumentation|middleware|proxy)$/;
-const rootModuleEntrypoint =
-  /^(?:instrumentation-client|mdx-components)\.(?:mjs|[jt]sx?)$/;
-const rootModuleNames = ['instrumentation-client', 'mdx-components'];
-const rootModuleExtensions = ['js', 'mjs', 'tsx', 'ts', 'jsx'];
+// Built from the same lists the watch scope uses, so the set of filenames the
+// watcher covers cannot drift from the set discovery treats as entrypoints.
+const rootEntrypoint = new RegExp(`^(?:${ROOT_ENTRYPOINT_NAMES.join('|')})$`);
+const rootModuleEntrypoint = new RegExp(
+  `^(?:${ROOT_MODULE_NAMES.join('|')})\\.(?:${ROOT_MODULE_EXTENSIONS.join('|')})$`
+);
 
 export function createNextEntrypointMatcher(pageExtensions: readonly string[]) {
   const extensions = [...pageExtensions].sort((a, b) => b.length - a.length);
@@ -91,6 +118,17 @@ export async function getNextBuilderEager(
     };
 
     async build() {
+      if (this.config.watch) {
+        // Detach before the rebuild rather than after it, so a watcher from a
+        // previous config evaluation cannot queue rebuilds against the build
+        // that is about to replace it.
+        closeActiveDevWatcher();
+      }
+
+      // Marks the content this build is about to read. The watcher attaches
+      // with it so an edit that lands while the build runs is not lost to the
+      // gap between reading a file and watching it.
+      const buildStartedAt = Date.now();
       const outputDir = await this.findAppDirectory();
       const workflowGeneratedDir = join(outputDir, '.well-known/workflow/v1');
 
@@ -206,13 +244,13 @@ export async function getNextBuilderEager(
         const normalizedGeneratedDir = workflowGeneratedDir.replace(/\\/g, '/');
         const normalizedDistDir = normalizePath(this.config.distDir);
 
-        // Prune the dev watch set to keep chokidar from registering an
-        // fs.watch per directory across the whole project tree (chokidar 4
-        // dropped fsevents, so on macOS that exhausts the fd limit -> EMFILE
-        // on large monorepos). This honors `.gitignore` and the
+        // Prune ignored trees out of the watch set, so the recursive route-root
+        // watches below never descend into `node_modules`, the build output or
+        // anything `.gitignore` covers. This honors `.gitignore` and the
         // WORKFLOW_DEV_WATCH_IGNORED_PATHS env var in addition to the
         // built-in fragments. The generated workflow dir is passed as an
-        // extra fragment so it is pruned regardless of `.gitignore`.
+        // extra fragment so it is pruned regardless of `.gitignore`: the
+        // builder writes into it, and watching it would rebuild in a loop.
         const isIgnoredWatchPath = createWatchIgnorePredicate({
           workingDir: this.config.workingDir,
           projectRoot: this.transformProjectRoot,
@@ -227,6 +265,92 @@ export async function getNextBuilderEager(
             return true;
           }
           return isIgnoredWatchPath(normalizedPath);
+        };
+
+        const logDevHmr = (...args: unknown[]) => {
+          if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
+            console.log(...args);
+          }
+        };
+
+        const isNextEntrypoint = createNextEntrypointMatcher(
+          this.config.pageExtensions
+        );
+        const isNextEntrypointPath = (file: string) => {
+          const entry = relative(this.config.workingDir, file).replaceAll(
+            '\\',
+            '/'
+          );
+          if (entry.startsWith('../')) {
+            return false;
+          }
+          return isNextEntrypoint(entry);
+        };
+
+        // Watch the framework's module graph, not the project tree.
+        //
+        // Two things go wrong when the watcher is pointed at `workingDir`.
+        // chokidar registers an `fs.watch` per *file* it walks into, and on
+        // macOS libuv only routes a *directory* watch through FSEvents: a
+        // regular-file watch falls back to kqueue, which holds a descriptor for
+        // as long as the watch is open. A large app therefore accumulated one
+        // descriptor per source file until it reached the per-process limit,
+        // after which unrelated `fork()` calls started failing with
+        // `spawn EBADF`. And a file the app never imports cannot change a
+        // bundle, so every event outside the graph was work the classifier paid
+        // for and then discarded.
+        //
+        // Watchpack never watches a file directly (its own words: "Files are
+        // never watched directly"); it derives file events from the parent
+        // directory. The descriptor cost becomes O(watched directories) rather
+        // than O(source files), and directory watches are exactly what FSEvents
+        // handles well. It coalesces those directory watches into recursive
+        // watchers only where the OS implements recursion natively (macOS,
+        // Windows), and stays on plain per-directory watches on Linux. It is
+        // also the watcher Next.js itself runs, so a dev server does not gain a
+        // second watching strategy with its own ideas about polling.
+        const watcher = new Watchpack({
+          // A linked source file is watched through the directory holding the
+          // *link*, which never sees a write to the target. Resolving the chain
+          // watches both ends and still reports the path the graph knows the
+          // file by. Apps that symlink sources into place (this repo's own
+          // workbench among them) depend on it.
+          followSymlinks: true,
+          ignored: (pathname: string) =>
+            hasIgnoredPathFragment(normalizePath(pathname)),
+        });
+        setActiveDevWatcher(watcher);
+
+        /**
+         * Attach the watcher to the scope the current graph implies.
+         *
+         * `startTime` has to predate the reads that produced that graph rather
+         * than be "now". Discovery is what decides a file belongs to the graph,
+         * so a file only joins the watch set at the *end* of the build that
+         * found it — after that build published its manifest. An edit landing
+         * in between would otherwise be watched by nobody and lost. Watchpack
+         * replays it instead: a path attaching for the first time whose
+         * recorded mtime is at or after `startTime` gets a synthetic change
+         * ("watching can be started in the past"). Replays for content the
+         * build already consumed diff equal against the pinned baseline and
+         * classify as a no-op, so the cost of reaching back is a skip.
+         */
+        const applyWatchScope = (startTime: number) => {
+          const scope = createWatchScope({
+            workingDir: normalizePath(this.config.workingDir),
+            relevantFiles: getRelevantFiles({
+              discoveredEntries,
+              inputFiles: options.inputFiles,
+              normalizePath,
+            }),
+            pageExtensions: this.config.pageExtensions,
+            isIgnored: hasIgnoredPathFragment,
+          });
+
+          watcher.watch({ ...scope, startTime });
+          logDevHmr(
+            `workflow dev hmr: watching ${scope.files.length} graph files and ${scope.directories.length} entrypoint roots`
+          );
         };
 
         let rebuildQueue = Promise.resolve();
@@ -336,14 +460,27 @@ export async function getNextBuilderEager(
         const isWatchableFile = (path: string) =>
           watchableExtensions.has(extname(path));
 
-        const readKnownFiles = async () => {
-          const files = new Set<string>();
-          const aliases = new Map<string, string>();
+        /**
+         * The set of files the classifier has already seen, which is what
+         * separates "this file was edited" from "this file just appeared".
+         *
+         * It is seeded from the module graph rather than from a walk of the
+         * project tree: the graph is what the build consumed, it is what the
+         * watcher tracks, and reading it costs nothing on top of the discovery
+         * that already ran. Anything the route-root watches surface later is
+         * added on its first event.
+         */
+        const seedKnownFiles = () => {
           const relevantFiles = getRelevantFiles({
             discoveredEntries,
             inputFiles: options.inputFiles,
             normalizePath,
           });
+          const files = new Set(relevantFiles);
+          const aliases = new Map<string, string>();
+          for (const file of files) {
+            aliases.set(file, file);
+          }
 
           const addKnownFile = async (filePath: string) => {
             let realFilePath = filePath;
@@ -360,48 +497,6 @@ export async function getNextBuilderEager(
             return canonicalPath;
           };
 
-          const visit = async (directory: string): Promise<void> => {
-            let dirents: Dirent<string>[];
-            try {
-              dirents = await readdir(directory, { withFileTypes: true });
-            } catch {
-              return;
-            }
-
-            await Promise.all(
-              dirents.map(async (dirent) => {
-                const filePath = normalizePath(join(directory, dirent.name));
-                if (hasIgnoredPathFragment(filePath)) {
-                  return;
-                }
-
-                if (dirent.isDirectory()) {
-                  await visit(filePath);
-                  return;
-                }
-
-                let stats: Awaited<ReturnType<typeof stat>>;
-                try {
-                  stats = await stat(filePath);
-                } catch {
-                  return;
-                }
-
-                if (stats.isDirectory()) {
-                  await visit(filePath);
-                  return;
-                }
-
-                if (!stats.isFile() || !isWatchableFile(filePath)) {
-                  return;
-                }
-
-                await addKnownFile(filePath);
-              })
-            );
-          };
-
-          await visit(this.config.workingDir);
           return { files, aliases, addKnownFile };
         };
 
@@ -459,28 +554,24 @@ export async function getNextBuilderEager(
           addedFiles.length > 0 ||
           modifiedFiles.length > 0 ||
           removedFiles.length > 0;
-        const logDevHmr = (...args: unknown[]) => {
-          if (process.env.WORKFLOW_DEV_HMR_LOGS === '1') {
-            console.log(...args);
-          }
-        };
 
         // Known gap: the initial build has the same two-read shape (the
         // combined build above consumed sources, and this refresh re-reads
-        // them), but no pinning, and the watcher below attaches with
-        // `ignoreInitial: true`, so an edit landing inside the startup window
-        // is absorbed with no straggler event to recover it. Bounded by dev
-        // server startup rather than recurring per rebuild; knowingly out of
-        // scope for the mid-rebuild pinning above.
+        // them), but no pinning. The watcher does reach back over the build
+        // window, so an edit landing there produces an event — but this refresh
+        // has already absorbed that edit into the baseline, so the event
+        // classifies as a no-op and the build keeps the content it read.
+        // Bounded by dev server startup rather than recurring per rebuild;
+        // knowingly out of scope for the mid-rebuild pinning above.
         await refreshSourceSnapshots();
         let {
           files: knownFiles,
           aliases: knownFileAliases,
           addKnownFile: rememberKnownFile,
-        } = await readKnownFiles();
+        } = seedKnownFiles();
 
-        const refreshKnownFiles = async () => {
-          const nextKnown = await readKnownFiles();
+        const refreshKnownFiles = () => {
+          const nextKnown = seedKnownFiles();
           knownFiles = nextKnown.files;
           knownFileAliases = nextKnown.aliases;
           rememberKnownFile = nextKnown.addKnownFile;
@@ -491,10 +582,14 @@ export async function getNextBuilderEager(
             return;
           }
 
+          // Taken before anything reads a source file, so a rescope at the end
+          // still reaches back over every read this batch is about to do.
+          const batchStartedAt = Date.now();
           const decision = await classifyRebuild({
             discoveredEntries,
             fileChanges,
             inputFiles: options.inputFiles,
+            isEntrypoint: isNextEntrypointPath,
             normalizePath,
             parentHasChild,
             readSnapshot: readSourceSnapshot,
@@ -511,7 +606,10 @@ export async function getNextBuilderEager(
             logDevHmr('workflow dev hmr: full rediscovery');
             try {
               await fullRebuild();
-              await refreshKnownFiles();
+              refreshKnownFiles();
+              // Rediscovery is what moves files in and out of the graph, so the
+              // watch set is only correct once it follows.
+              applyWatchScope(batchStartedAt);
             } finally {
               // Lets a log reader tell "quiet" from "rebuild in flight".
               // The e2e HMR tests drain-to-quiet before counting lines.
@@ -580,23 +678,8 @@ export async function getNextBuilderEager(
           }
         };
 
-        const handleFileAdded = async (pathname: string) => {
-          const normalizedPath = normalizePath(pathname);
-          if (!isWatchableFile(normalizedPath)) {
-            return;
-          }
-
-          const existingPath = await resolveExistingEventPath(normalizedPath);
-          const wasKnown = existingPath ? knownFiles.has(existingPath) : false;
-          const canonicalPath = await rememberKnownFile(normalizedPath);
-          knownFiles.add(canonicalPath);
-          scheduleFileChanges({
-            addedFiles: wasKnown ? [] : [canonicalPath],
-            modifiedFiles: wasKnown ? [canonicalPath] : [],
-            removedFiles: [],
-          });
-        };
-
+        // Covers creation as well as modification: `classifyFileChanges` sorts
+        // the two apart by whether the path is already known.
         const handleFileChanged = async (pathname: string) => {
           const canonicalPath = await resolveExistingEventPath(pathname);
           if (!canonicalPath) {
@@ -631,34 +714,22 @@ export async function getNextBuilderEager(
           scheduleFileChanges(fileChanges);
         };
 
-        const watcher = chokidar.watch(this.config.workingDir, {
-          ignoreInitial: true,
-          followSymlinks: true,
-          ignored: (pathname) => {
-            const normalizedPath = normalizePath(String(pathname));
-            const extension = extname(normalizedPath);
-            if (extension && !watchableExtensions.has(extension)) {
-              return true;
-            }
-            return hasIgnoredPathFragment(normalizedPath);
-          },
-        });
-
-        watcher.on('add', (pathname) => {
-          void handleFileAdded(pathname);
-        });
-        watcher.on('change', (pathname) => {
+        watcher.on('change', (pathname: string, mtime: number | null) => {
+          // A file deleted from inside a watched directory tree arrives as a
+          // change with no mtime. Watchpack reserves `remove` for paths it was
+          // handed individually, which here means the graph files.
+          if (mtime === null) {
+            handleFileRemoved(pathname);
+            return;
+          }
           void handleFileChanged(pathname);
         });
-        watcher.on('unlink', (pathname) => {
+        watcher.on('remove', (pathname: string) => {
           handleFileRemoved(pathname);
         });
-        watcher.on('error', (error) => {
-          console.error('Workflow dev watcher error', error);
-        });
-        watcher.on('ready', () => {
-          logDevHmr('workflow dev hmr: ready');
-        });
+
+        applyWatchScope(buildStartedAt);
+        logDevHmr('workflow dev hmr: ready');
       }
     }
 
@@ -669,10 +740,10 @@ export async function getNextBuilderEager(
       );
       const inputFileSet = new Set(inputFiles);
       const rootModuleFiles = new Set(
-        rootModuleNames.flatMap((name) => {
+        ROOT_MODULE_NAMES.flatMap((name) => {
           const file = ['src', '']
             .flatMap((directory) =>
-              rootModuleExtensions.map((extension) =>
+              ROOT_MODULE_EXTENSIONS.map((extension) =>
                 join(this.config.workingDir, directory, `${name}.${extension}`)
               )
             )

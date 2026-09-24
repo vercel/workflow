@@ -1489,7 +1489,12 @@ ${apiFileContent}`
           },
           {
             description: 'workflow file removed from API import',
-            expectedLogCounts: { full: 1, skip: 1 },
+            // The delete and the import edit are one change to the graph, so
+            // exactly one rediscovery is the contract. Whether the watcher also
+            // delivers a trailing notification for the same edit — which the
+            // classifier then has to recognize as a no-op — depends on how it
+            // batches; the Next watcher coalesces both into the rediscovery.
+            expectedLogCounts: { full: 1, skip: { max: 1 } },
             write: async () => {
               await fs.rm(files.addedWorkflow, { force: true });
               await fs.writeFile(
@@ -1529,15 +1534,28 @@ ${apiFileContent}`
           snapshot = await waitForGeneratedArtifactStability();
         }
 
+        // A file nothing imports cannot change a bundle, so the contract is
+        // that it never rebuilds. Whether the watcher reports it and lets the
+        // classifier dismiss it, or scopes it out and never reports it at all,
+        // is up to the integration: the Next watcher tracks the module graph,
+        // so a file sitting unimported next to a workflow is not watched.
         const unrelatedLogCursor = await readDevServerLogCursor();
         await fs.writeFile(files.unrelated, 'export const unrelated = true;\n');
         snapshot = await expectGeneratedArtifactsUnchanged(snapshot);
-        await expectHmrLogCounts(unrelatedLogCursor, { skip: 1 });
+        await expectHmrLogCounts(unrelatedLogCursor, {
+          full: 0,
+          hot: 0,
+          skip: { max: 1 },
+        });
 
         const unrelatedRemovalLogCursor = await readDevServerLogCursor();
         await fs.unlink(files.unrelated);
         snapshot = await expectGeneratedArtifactsUnchanged(snapshot);
-        await expectHmrLogCounts(unrelatedRemovalLogCursor, { skip: 1 });
+        await expectHmrLogCounts(unrelatedRemovalLogCursor, {
+          full: 0,
+          hot: 0,
+          skip: { max: 1 },
+        });
       }
     );
   });
