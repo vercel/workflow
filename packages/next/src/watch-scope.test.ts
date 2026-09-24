@@ -15,18 +15,28 @@ import Watchpack from 'watchpack';
 import { createWatchScope } from './watch-scope.js';
 
 const toPosix = (pathname: string) => pathname.replace(/\\/g, '/');
+/**
+ * Compare paths the way the filesystem does. Watchpack builds event paths with
+ * `path.join`, which on Windows mixes in backslashes and preserves whatever
+ * casing the caller used, so raw string equality is not a path comparison
+ * there.
+ */
+const canonical = (pathname: string) =>
+  process.platform === 'win32'
+    ? toPosix(pathname).toLowerCase()
+    : toPosix(pathname);
 const pageExtensions = ['tsx', 'ts', 'jsx', 'js'];
 
 describe('createWatchScope', () => {
   let root: string;
 
-  const p = (...segments: string[]) => toPosix(join(root, ...segments));
+  const p = (...segments: string[]) => canonical(join(root, ...segments));
 
   const write = (relPath: string, content = '') => {
     const abs = join(root, relPath);
     mkdirSync(dirname(abs), { recursive: true });
     writeFileSync(abs, content);
-    return toPosix(abs);
+    return canonical(abs);
   };
 
   const scope = ({
@@ -44,7 +54,7 @@ describe('createWatchScope', () => {
     });
 
   beforeEach(() => {
-    root = toPosix(mkdtempSync(join(tmpdir(), 'wf-watch-scope-')));
+    root = canonical(mkdtempSync(join(tmpdir(), 'wf-watch-scope-')));
   });
 
   afterEach(() => {
@@ -154,17 +164,17 @@ describe('watching a scope', () => {
     return targets;
   };
 
-  const p = (...segments: string[]) => toPosix(join(root, ...segments));
+  const p = (...segments: string[]) => canonical(join(root, ...segments));
 
   const write = (relPath: string, content = 'export const value = 1;\n') => {
     const abs = join(root, relPath);
     mkdirSync(dirname(abs), { recursive: true });
     writeFileSync(abs, content);
-    return toPosix(abs);
+    return canonical(abs);
   };
 
   beforeEach(() => {
-    root = toPosix(mkdtempSync(join(tmpdir(), 'wf-watch-scope-fs-')));
+    root = canonical(mkdtempSync(join(tmpdir(), 'wf-watch-scope-fs-')));
     changes.length = 0;
     removals.length = 0;
   });
@@ -197,9 +207,9 @@ describe('watching a scope', () => {
     if (!watcher) {
       watcher = new Watchpack({ followSymlinks: false });
       watcher.on('change', (file, mtime) => {
-        (mtime === null ? removals : changes).push(toPosix(file));
+        (mtime === null ? removals : changes).push(canonical(file));
       });
-      watcher.on('remove', (file) => removals.push(toPosix(file)));
+      watcher.on('remove', (file) => removals.push(canonical(file)));
     }
     watcher.watch({ ...scope, startTime });
 
@@ -235,7 +245,7 @@ describe('watching a scope', () => {
     ).toEqual([]);
     // The route root, its nested directory, the project root (for the
     // root-entrypoint candidates) and the directory holding the tracked module.
-    expect(new Set(targets)).toEqual(
+    expect(new Set(targets.map(canonical))).toEqual(
       new Set([root, p('app'), p('app/dashboard'), p('workflows')])
     );
   });
