@@ -327,8 +327,23 @@ export function isRetryableEventPostError(err: unknown): boolean {
   return collectErrorMarkers(err).some((m) => TRANSIENT_CODES.has(m));
 }
 
-const sleep = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
+/** Rejects with `signal.reason`, clearing the timer, when `signal` aborts. */
+const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
+  new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 
 /** Gated like the rest of world-vercel's HTTP layer (`DEBUG=workflow:*`). Keeps
  * in-process retries visible during a latency/outage investigation; otherwise a
@@ -395,12 +410,13 @@ export interface EventPostRetryOptions {
  * out one 429's `retryAfter` (seconds; DEFAULT_THROTTLE_RETRY_AFTER_SECONDS
  * when absent) so the caller can re-attempt, or rethrows the 429 without
  * waiting once the cumulative wait would exceed THROTTLE_RETRY_BUDGET_MS.
+ * Aborting `signal` ends a wait early by rejecting with its reason.
  */
 export function createThrottleWaiter(
   target: string
-): (err: { retryAfter?: number }) => Promise<void> {
+): (err: { retryAfter?: number }, signal?: AbortSignal) => Promise<void> {
   let waitedMs = 0;
-  return async (err) => {
+  return async (err, signal) => {
     const waitMs =
       Math.max(
         1,
@@ -422,7 +438,7 @@ export function createThrottleWaiter(
     console.warn(
       `[workflow] Throttled (429) writing ${target}; retrying in-process in ${waitMs / 1000}s`
     );
-    await sleep(waitMs);
+    await sleep(waitMs, signal);
   };
 }
 

@@ -237,6 +237,8 @@ class VercelStreamWriteSession implements StreamWriteSession {
   private poisonError: unknown;
   /** The socket that returned a 429 whose retry is still waiting. */
   private throttledSocket: WebSocket | undefined;
+  /** Aborted on dispose or poison, ending any throttle wait early. */
+  private readonly terminated = new AbortController();
   private wsUrl: string | undefined;
   private closeAcknowledged = false;
   private idleReconnects = 0;
@@ -299,7 +301,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
     await this.transportDecision;
     this.assertUsable();
     if (this.mode === 'http') {
-      await this.writeHttp(chunks);
+      await this.writeHttpOrFail(chunks);
       return;
     }
     // Core's default group cap equals the wire cap, so splitting is normally
@@ -334,7 +336,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
       } catch (error) {
         if (!(error instanceof StreamWsRequestNotSentError)) throw error;
         this.fallbackToHttpBeforeSend();
-        await this.writeHttp(chunks.slice(offset));
+        await this.writeHttpOrFail(chunks.slice(offset));
         return;
       }
       if (reply.type !== 'write_ack') {
@@ -342,6 +344,21 @@ class VercelStreamWriteSession implements StreamWriteSession {
           new Error(`stream WebSocket write received ${reply.type}`)
         );
       }
+    }
+  }
+
+  /**
+   * An HTTP write whose outcome may be unknown fails the writer, as on every
+   * other transport, so a queued write cannot apply ahead of it.
+   */
+  private async writeHttpOrFail(
+    chunks: (string | Uint8Array)[]
+  ): Promise<void> {
+    try {
+      await this.writeHttp(chunks);
+    } catch (error) {
+      this.failUnknown(error);
+      throw this.poisonError;
     }
   }
 
@@ -424,6 +441,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
   dispose(): void {
     if (this.mode === 'closed') return;
     this.mode = 'closed';
+    this.terminated.abort();
     this.finishDrainWait();
     const pending = this.pending;
     this.pending = undefined;
@@ -1002,13 +1020,15 @@ class VercelStreamWriteSession implements StreamWriteSession {
   }
 
   private async waitOutThrottle(
-    wait: (error: StreamWsThrottledError) => Promise<void>,
+    wait: (error: StreamWsThrottledError, signal: AbortSignal) => Promise<void>,
     error: StreamWsThrottledError,
     operation: Operation
   ): Promise<void> {
     try {
-      await wait(error);
+      await wait(error, this.terminated.signal);
     } catch {
+      // Disposed or poisoned during the wait.
+      this.assertUsable();
       const poisoned = this.poison(
         new Error(
           `${error.message} (retry budget exhausted before the ${operation} was accepted)`,
@@ -1040,6 +1060,7 @@ class VercelStreamWriteSession implements StreamWriteSession {
     if (this.mode !== 'poisoned') {
       this.mode = 'poisoned';
       this.poisonError = error;
+      this.terminated.abort();
     }
     return this.poisonError;
   }
