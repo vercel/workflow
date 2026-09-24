@@ -67,9 +67,18 @@ export type ResolveData = 'none' | 'all';
  * - "skip-step-inputs": as "all", except that the World MAY leave `input` out
  *   of `step_created` and `step_started` events. Workflow replay recomputes
  *   step arguments by re-running workflow code and never reads the recorded
- *   ones (a step reads its input from the step entity), and for a workflow
- *   that passes growing state into its steps those inputs are the part of the
- *   log that grows quadratically. A World that ignores it returns them.
+ *   ones (a step takes its input from the `step_started` response or from
+ *   memory, never from the replay log), and for a workflow that passes
+ *   growing state into its steps those inputs are the part of the log that
+ *   grows quadratically.
+ *
+ * **A World MUST treat any value other than "none" as "all"** for everything
+ * it does not specifically implement. The runtime replays with
+ * "skip-step-inputs", so a World that tests `resolveData === 'all'` (reading
+ * the new value as "none") strips step results and breaks every replay, and
+ * one that validates against `['none', 'all']` rejects the read. Test
+ * `resolveData === 'none'`, or map with {@link entityResolveData}. The
+ * `@workflow/world-testing` suite checks this.
  */
 export type EventsResolveData = ResolveData | 'skip-step-inputs';
 

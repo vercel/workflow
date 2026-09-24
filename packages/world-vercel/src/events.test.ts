@@ -15,7 +15,10 @@ import {
   getWorkflowRunEvents,
   splitEventDataForV4,
 } from './events.js';
-import { resetSkipStepInputsSupportForTests } from './events-v4.js';
+import {
+  resetSkipStepInputsSupportForTests,
+  SKIP_STEP_INPUTS_REPROBE_MS,
+} from './events-v4.js';
 import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { encode as encodeRunId, REGION_IDS } from './run-id/index.js';
 import { WORKFLOW_SERVER_URL_OVERRIDE } from './utils.js';
@@ -2311,6 +2314,72 @@ describe("resolveData 'skip-step-inputs'", () => {
     expect(first.data).toHaveLength(1);
     expect(second.data).toHaveLength(1);
     agent.assertNoPendingInterceptors();
+  });
+
+  it('probes the backend again once the remembered rejection expires', async () => {
+    const agent = mockAgent();
+    const pool = agent.get(ORIGIN);
+    const asked: string[] = [];
+    let upgraded = false;
+    pool
+      .intercept({
+        path: (path) => path.startsWith('/api/v4/runs/wrun_1/events?'),
+        method: 'GET',
+      })
+      .reply((opts) => {
+        const behavior =
+          new URL(opts.path, ORIGIN).searchParams.get('remoteRefBehavior') ??
+          '';
+        asked.push(behavior);
+        if (behavior === 'skip-step-inputs' && !upgraded) {
+          return {
+            statusCode: 400,
+            data: {
+              success: false,
+              error: 'validation-error',
+              details: [{ path: ['remoteRefBehavior'] }],
+            },
+            responseOptions: {
+              headers: { 'content-type': 'application/json' },
+            },
+          };
+        }
+        return {
+          statusCode: 200,
+          data: listBody,
+          responseOptions: {
+            headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+          },
+        };
+      })
+      .persist();
+    const config = { token: 'test-token', dispatcher: agent };
+    const read = () =>
+      getWorkflowRunEvents(
+        { runId: 'wrun_1', resolveData: 'skip-step-inputs' },
+        config
+      );
+    const now = vi.spyOn(Date, 'now');
+    try {
+      // An old instance rejects the value; the read falls back to resolve.
+      now.mockReturnValue(1_000_000);
+      await read();
+      // Within the window the backend isn't asked again.
+      now.mockReturnValue(1_000_000 + SKIP_STEP_INPUTS_REPROBE_MS - 1);
+      await read();
+      // Once it has passed, it is, and the upgraded backend accepts.
+      upgraded = true;
+      now.mockReturnValue(1_000_000 + SKIP_STEP_INPUTS_REPROBE_MS);
+      await read();
+    } finally {
+      now.mockRestore();
+    }
+    expect(asked).toEqual([
+      'skip-step-inputs',
+      'resolve',
+      'resolve',
+      'skip-step-inputs',
+    ]);
   });
 
   it('surfaces a 400 that was about something else, without remembering the backend', async () => {

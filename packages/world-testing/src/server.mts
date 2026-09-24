@@ -1,5 +1,10 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { serve } from '@hono/node-server';
+import {
+  type EventsResolveData,
+  getEventDataPayloadField,
+} from '@workflow/world';
 import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { getWorld } from 'workflow/runtime';
@@ -50,6 +55,26 @@ const Invoke = z.compile(
 // below), so it runs as its own process with one module instance. There is no
 // host bundler to compile it into several layers.
 const flowInvocationCounts = new Map<string, number>();
+
+/**
+ * A digest of an event's payload field (its `input`, `result`, `output`, …),
+ * or null when the event carries none. Lets a test compare what two reads of
+ * the same log returned without shipping the payloads themselves.
+ */
+function payloadDigest(event: {
+  eventType: string;
+  eventData?: unknown;
+}): string | null {
+  const field = getEventDataPayloadField(event.eventType);
+  const eventData = event.eventData as Record<string, unknown> | undefined;
+  if (!field || !eventData || !(field in eventData)) return null;
+  const value = eventData[field];
+  const bytes =
+    value instanceof Uint8Array
+      ? value
+      : Buffer.from(JSON.stringify(value) ?? 'undefined');
+  return createHash('sha256').update(bytes).digest('hex');
+}
 
 const app = new Hono()
   .post('/.well-known/workflow/v1/flow', async (ctx) => {
@@ -124,23 +149,29 @@ const app = new Hono()
   })
   .get('/runs/:runId/events', async (ctx) => {
     const runId = ctx.req.param('runId');
+    const resolveData = ctx.req.query('resolveData') as
+      | EventsResolveData
+      | undefined;
     const world = await getWorld();
     const allEvents: {
       eventId: string;
       eventType: string;
       correlationId?: string;
+      payloadDigest: string | null;
     }[] = [];
     let cursor: string | undefined;
     while (true) {
       const page = await world.events.list({
         runId,
         pagination: { sortOrder: 'asc', cursor },
+        ...(resolveData ? { resolveData } : {}),
       });
       for (const e of page.data) {
         allEvents.push({
           eventId: e.eventId,
           eventType: e.eventType,
           correlationId: e.correlationId,
+          payloadDigest: payloadDigest(e),
         });
       }
       if (!page.hasMore) break;

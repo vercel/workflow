@@ -1884,23 +1884,38 @@ async function consumeListFrameStream(
 
 /**
  * Backends (by base URL) found not to accept `remoteRefBehavior=
- * skip-step-inputs`. One that predates it validates the value against
- * `resolve` / `lazy` and answers 400. Its first rejection moves this process
+ * skip-step-inputs`, and when. One that predates it validates the value
+ * against `resolve` / `lazy` and answers 400. Its rejection moves this process
  * to `resolve` for that backend, which returns the same events with their step
  * inputs: a replay read costs what it did before, instead of failing.
+ *
+ * Remembered for {@link SKIP_STEP_INPUTS_REPROBE_MS} only, so a long-lived
+ * process that met an old instance during a rolling deploy goes back to the
+ * cheaper read once the backend has upgraded.
  *
  * On `globalThis` (see `globalSingleton`) so that every bundled copy of this
  * module learns from one rejection instead of paying it once per copy.
  */
 const skipStepInputsSupport = globalSingleton(
   '@workflow/world-vercel//skipStepInputsSupport',
-  1,
-  () => ({ unsupportedBackends: new Set<string>() })
+  2,
+  () => ({ unsupportedSince: new Map<string, number>() })
 );
+
+/** How long a backend's rejection of `skip-step-inputs` is remembered. */
+export const SKIP_STEP_INPUTS_REPROBE_MS = 10 * 60_000;
+
+function skipStepInputsKnownUnsupported(baseUrl: string): boolean {
+  const since = skipStepInputsSupport.unsupportedSince.get(baseUrl);
+  if (since === undefined) return false;
+  if (Date.now() - since < SKIP_STEP_INPUTS_REPROBE_MS) return true;
+  skipStepInputsSupport.unsupportedSince.delete(baseUrl);
+  return false;
+}
 
 /** Test hook: forget which backends rejected `skip-step-inputs`. */
 export function resetSkipStepInputsSupportForTests(): void {
-  skipStepInputsSupport.unsupportedBackends.clear();
+  skipStepInputsSupport.unsupportedSince.clear();
 }
 
 /**
@@ -1935,7 +1950,7 @@ async function consumeListWithSkipFallback(
 ): Promise<EventFrameStreamResult> {
   if (
     requested === 'skip-step-inputs' &&
-    !skipStepInputsSupport.unsupportedBackends.has(baseUrl)
+    !skipStepInputsKnownUnsupported(baseUrl)
   ) {
     try {
       return await consumeListFrameStream(
@@ -1955,7 +1970,7 @@ async function consumeListWithSkipFallback(
       opName,
       replayEventObserver
     );
-    skipStepInputsSupport.unsupportedBackends.add(baseUrl);
+    skipStepInputsSupport.unsupportedSince.set(baseUrl, Date.now());
     return result;
   }
   return consumeListFrameStream(

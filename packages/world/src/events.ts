@@ -804,6 +804,10 @@ export interface CreateEventParams {
    * returns (the `sinceCursor` delta or a replay preload), never to the
    * created `event` or the returned `step` entity, whose `input` is what step
    * execution reads. See {@link EventsResolveData}.
+   *
+   * Code that forwards these params to an entity read (runs, steps, hooks,
+   * whose `resolveData` is a plain {@link ResolveData}) must map them with
+   * `entityResolveData()` first.
    */
   resolveData?: EventsResolveData;
   /**
