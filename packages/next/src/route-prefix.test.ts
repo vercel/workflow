@@ -24,6 +24,8 @@ describe('normalizeWorkflowRoutePrefix', () => {
 
   it.each([
     ['https://example.com/ship'],
+    // No scheme, so a `://` test alone would read the host as a path segment.
+    ['//example.com/ship'],
     ['/ship?x=1'],
     ['/ship#top'],
     ['\\ship'],
@@ -31,12 +33,22 @@ describe('normalizeWorkflowRoutePrefix', () => {
     ['/../ship'],
     ['/./ship'],
     ['/[team]'],
+    ['/(group)'],
+    ['/@slot'],
     ['/my ship'],
     ['/ship%2Fflows'],
+    // Next.js excludes `_`-prefixed folders from routing, so these would build
+    // and then 404.
+    ['/_ship'],
+    ['/ship/_flows'],
   ])('rejects %o', (input) => {
     expect(() => normalizeWorkflowRoutePrefix(input)).toThrowError(
       /workflows\.experimentalRoutePrefix/
     );
+  });
+
+  it('allows an underscore inside a segment', () => {
+    expect(normalizeWorkflowRoutePrefix('/my_ship')).toBe('/my_ship');
   });
 });
 
@@ -46,8 +58,10 @@ describe('workflowRoutePrefixDirectory', () => {
     expect(workflowRoutePrefixDirectory('/ship/flows')).toBe('ship/flows');
   });
 
-  it('is empty without a prefix, which path.join drops', () => {
-    expect(workflowRoutePrefixDirectory(undefined)).toBe('');
+  // `path.join` drops the empty fragment, so unprefixed layouts keep their
+  // exact paths. `null` is reachable from an untyped `next.config.js`.
+  it.each([undefined, null, ''])('is empty for %o', (prefix) => {
+    expect(workflowRoutePrefixDirectory(prefix as string | undefined)).toBe('');
   });
 });
 

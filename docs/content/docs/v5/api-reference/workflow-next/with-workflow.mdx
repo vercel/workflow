@@ -160,7 +160,11 @@ With that prefix, the build emits:
 
 The queue trigger that makes the flow route a queue consumer is written next to the prefixed route, so deliveries reach it without any additional routing configuration. Webhook URLs, health checks, and the local and Postgres queue targets are all built from the prefix, so `createWebhook()` returns a URL under `/ship/.well-known/workflow/v1/webhook/:token`.
 
-The prefix is a plain path of one or more segments. Leading and trailing slashes are optional, and dynamic segments such as `/[team]` are rejected because the generated routes have to sit at a fixed, addressable path.
+The prefix is a plain path of one or more segments. Leading and trailing slashes are optional. Anything Next.js would not serve at a fixed path is rejected when the config is created: dynamic segments such as `/[team]`, route groups such as `/(group)`, and `_`-prefixed segments, which Next.js excludes from routing entirely.
+
+<Callout type="warn">
+If you cache your build with Turborepo, update the `outputs` globs to the prefixed paths. `app/.well-known/workflow/**` no longer matches `app/ship/.well-known/workflow/**`, and a cache hit would restore a build with no workflow routes in it.
+</Callout>
 
 <Callout type="warn">
 Your routing layer must send the prefixed paths to this app. With Microfrontends, that means choosing a prefix the child app is already routed in the group's [routing configuration](https://vercel.com/docs/microfrontends/routing).

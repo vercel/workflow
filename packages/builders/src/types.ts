@@ -170,8 +170,11 @@ export interface NextConfig extends BaseWorkflowConfig {
   /**
    * Experimental: route segment the generated workflow routes are emitted
    * below, so they answer at `<prefix>/.well-known/workflow/v1/*` instead of
-   * `/.well-known/workflow/v1/*`. Normalized to a leading slash with no
-   * trailing slash (for example `/ship`); undefined keeps the app-root layout.
+   * `/.well-known/workflow/v1/*`. Undefined keeps the app-root layout.
+   *
+   * A path of one or more plain segments, with or without surrounding slashes
+   * (`/ship`, `ship/`); the builder normalizes it and rejects anything that
+   * would not address a Next.js route.
    *
    * Unlike Next.js' `basePath`, which moves the whole app, this moves only the
    * workflow routes. `basePath` must still carry the prefix so runtime URLs

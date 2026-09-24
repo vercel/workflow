@@ -1,22 +1,24 @@
-// Name of the public `withWorkflow` option, used in validation errors so the
-// message points at what the user wrote rather than at an internal field.
-const OPTION_NAME = 'workflows.experimentalRoutePrefix';
-
 // Unreserved URL characters only. A route prefix is both a URL segment and a
 // directory name below `app/`, so anything that needs escaping in either place
 // (dynamic segments like `[slug]`, spaces, `%`, `:`) is rejected rather than
 // silently producing a route that cannot be addressed.
 const SEGMENT_PATTERN = /^[A-Za-z0-9._~-]+$/;
 
+// The error names the public option because that is where nearly every prefix
+// comes from, but it does not claim the caller used `withWorkflow()`: the
+// builder validates its own config too, and a custom integration can set the
+// field directly.
 function invalid(prefix: string, reason: string): Error {
   return new Error(
-    `Invalid \`${OPTION_NAME}\` (${JSON.stringify(prefix)}) in withWorkflow(): ${reason}. ` +
-      'Expected a path such as "/ship" whose segments contain only letters, numbers, ".", "_", "~" or "-".'
+    `Invalid workflow route prefix ${JSON.stringify(prefix)}: ${reason}. ` +
+      '`workflows.experimentalRoutePrefix` expects a path such as "/ship".'
   );
 }
 
 function assertPathShape(prefix: string, trimmed: string): void {
-  if (trimmed.includes('://')) {
+  // `//host/path` carries no scheme, so the `://` test alone would let a URL
+  // through and silently reinterpret its host as the first path segment.
+  if (trimmed.includes('://') || trimmed.startsWith('//')) {
     throw invalid(prefix, 'expected a path, not a URL');
   }
   if (/[?#]/.test(trimmed)) {
@@ -34,10 +36,19 @@ function assertSegment(prefix: string, segment: string): void {
   if (segment === '.' || segment === '..') {
     throw invalid(prefix, 'relative path segments are not allowed');
   }
+  // Next.js opts `_`-prefixed folders and everything below them out of
+  // routing, so such a prefix would build and then answer 404 for every queue
+  // delivery and webhook.
+  if (segment.startsWith('_')) {
+    throw invalid(
+      prefix,
+      `the segment ${JSON.stringify(segment)} starts with "_", which Next.js excludes from routing`
+    );
+  }
   if (!SEGMENT_PATTERN.test(segment)) {
     throw invalid(
       prefix,
-      `the segment ${JSON.stringify(segment)} is not a plain path segment`
+      `the segment ${JSON.stringify(segment)} may only contain letters, numbers, ".", "_", "~" or "-"`
     );
   }
 }
@@ -80,7 +91,9 @@ export function normalizeWorkflowRoutePrefix(
 export function workflowRoutePrefixDirectory(
   prefix: string | undefined
 ): string {
-  return prefix === undefined ? '' : prefix.replace(/^\/+/, '');
+  // Nullish rather than `=== undefined`, matching `normalizeWorkflowRoutePrefix`:
+  // both are reachable from untyped `next.config.js`.
+  return prefix ? prefix.replace(/^\/+/, '') : '';
 }
 
 /**

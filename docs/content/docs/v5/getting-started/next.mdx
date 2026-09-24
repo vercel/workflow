@@ -311,6 +311,8 @@ Add the following to your `turbo.json`:
 
 Without this configuration, you may experience intermittent issues where workflows fail to register properly on cache hits, while working correctly on cache misses.
 
+If you set [`workflows.experimentalRoutePrefix`](/docs/api-reference/workflow-next/with-workflow#workflow-route-prefix), include the prefix in these globs (for example `app/ship/.well-known/workflow/**`).
+
 ### `start()` says it received an invalid workflow function
 
 If you see this error:

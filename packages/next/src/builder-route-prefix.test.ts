@@ -1,4 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -24,6 +30,9 @@ const manifestDirs: string[] = [];
 function createBuildersStub(): typeof import('@workflow/builders') {
   class BaseBuilderStub {
     protected config: Record<string, any>;
+    // Forced on rather than read from `WORKFLOW_PUBLIC_MANIFEST`: the env
+    // gating lives on the real getter, while these cases are about where the
+    // public copy lands once it is enabled.
     protected shouldExposePublicManifest = true;
 
     constructor(config: Record<string, any>) {
@@ -87,15 +96,23 @@ function createBuildersStub(): typeof import('@workflow/builders') {
   } as unknown as typeof import('@workflow/builders');
 }
 
-async function buildProject(experimentalRoutePrefix?: string): Promise<string> {
-  const workingDir = mkdtempSync(
-    join(tmpdir(), 'workflow-next-builder-prefix-')
-  );
-  mkdirSync(join(workingDir, 'app'), { recursive: true });
+// `getNextBuilderEager` memoizes the class it builds, so the first stub is the
+// one every case in this file runs against.
+const buildersStub = createBuildersStub();
+const workingDirs: string[] = [];
 
-  // The class is memoized, so every case in this file shares one stub module.
-  const NextBuilder = await getNextBuilderEager(createBuildersStub());
-  const builder = new NextBuilder({
+function createWorkingDir(label: string): string {
+  const workingDir = mkdtempSync(join(tmpdir(), `workflow-next-${label}-`));
+  workingDirs.push(workingDir);
+  return workingDir;
+}
+
+async function build(
+  workingDir: string,
+  experimentalRoutePrefix?: string
+): Promise<void> {
+  const NextBuilder = await getNextBuilderEager(buildersStub);
+  await new NextBuilder({
     buildTarget: 'next',
     dirs: ['.'],
     pageExtensions: ['tsx', 'ts', 'jsx', 'js'],
@@ -107,9 +124,13 @@ async function buildProject(experimentalRoutePrefix?: string): Promise<string> {
     stepsBundlePath: '',
     workflowsBundlePath: '',
     webhookBundlePath: '',
-  });
-  await builder.build();
+  }).build();
+}
 
+async function buildProject(experimentalRoutePrefix?: string): Promise<string> {
+  const workingDir = createWorkingDir('builder-prefix');
+  mkdirSync(join(workingDir, 'app'), { recursive: true });
+  await build(workingDir, experimentalRoutePrefix);
   return workingDir;
 }
 
@@ -120,11 +141,13 @@ describe('NextBuilder route prefix', () => {
     manifestDirs.length = 0;
     // `writeFunctionsConfig` is a no-op in development.
     vi.stubEnv('NODE_ENV', 'production');
-    vi.stubEnv('WORKFLOW_PUBLIC_MANIFEST', '1');
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    for (const workingDir of workingDirs.splice(0)) {
+      rmSync(workingDir, { recursive: true, force: true });
+    }
   });
 
   it('emits the routes, function config and manifest at the app root by default', async () => {
@@ -190,42 +213,50 @@ describe('NextBuilder route prefix', () => {
     });
   });
 
-  it('removes a generated app-root route directory left by an earlier build', async () => {
-    const workingDir = mkdtempSync(
-      join(tmpdir(), 'workflow-next-builder-stale-')
-    );
-    const staleDir = join(workingDir, 'app/.well-known/workflow/v1');
-    mkdirSync(join(staleDir, 'flow'), { recursive: true });
-    // The marker this builder writes into directories it generates.
-    await writeFile(join(staleDir, '.gitignore'), '*');
-    await writeFile(join(staleDir, 'flow/route.js'), '// generated');
+  // Every one of these leaves a second flow route carrying the queue trigger,
+  // which would give the deployment two consumers of the same topic.
+  it.each([
+    { from: undefined, to: '/ship', stale: 'app/.well-known/workflow/v1' },
+    { from: '/ship', to: '/cargo', stale: 'app/ship/.well-known/workflow/v1' },
+    { from: '/ship', to: undefined, stale: 'app/ship/.well-known/workflow/v1' },
+  ])('removes the generated routes from a previous $from build when building $to', async ({
+    from,
+    to,
+    stale,
+  }) => {
+    const workingDir = createWorkingDir('builder-reprefix');
+    mkdirSync(join(workingDir, 'app'), { recursive: true });
 
-    const NextBuilder = await getNextBuilderEager(createBuildersStub());
-    await new NextBuilder({
-      buildTarget: 'next',
-      dirs: ['.'],
-      pageExtensions: ['ts'],
-      workingDir,
-      distDir: '.next',
-      experimentalRoutePrefix: '/ship',
-      watch: false,
-      stepsBundlePath: '',
-      workflowsBundlePath: '',
-      webhookBundlePath: '',
-    }).build();
+    await build(workingDir, from);
+    expect(existsSync(join(workingDir, stale))).toBe(true);
 
-    expect(existsSync(staleDir)).toBe(false);
+    await build(workingDir, to);
+
+    expect(existsSync(join(workingDir, stale))).toBe(false);
     expect(
       existsSync(
-        join(workingDir, 'app/ship/.well-known/workflow/v1/config.json')
+        join(workingDir, 'app', to ?? '', '.well-known/workflow/v1/config.json')
+      )
+    ).toBe(true);
+    // The public copy follows the routes rather than accumulating one
+    // manifest per prefix ever configured.
+    expect(existsSync(join(workingDir, stale.replace(/^app/, 'public')))).toBe(
+      false
+    );
+    expect(
+      existsSync(
+        join(
+          workingDir,
+          'public',
+          to ?? '',
+          '.well-known/workflow/v1/manifest.json'
+        )
       )
     ).toBe(true);
   });
 
   it('keeps a hand-written route directory that carries no generated marker', async () => {
-    const workingDir = mkdtempSync(
-      join(tmpdir(), 'workflow-next-builder-manual-')
-    );
+    const workingDir = createWorkingDir('builder-manual');
     const manualRoute = join(
       workingDir,
       'app/.well-known/workflow/v1/custom/route.ts'
@@ -233,19 +264,7 @@ describe('NextBuilder route prefix', () => {
     mkdirSync(dirname(manualRoute), { recursive: true });
     await writeFile(manualRoute, 'export function GET() {}');
 
-    const NextBuilder = await getNextBuilderEager(createBuildersStub());
-    await new NextBuilder({
-      buildTarget: 'next',
-      dirs: ['.'],
-      pageExtensions: ['ts'],
-      workingDir,
-      distDir: '.next',
-      experimentalRoutePrefix: '/ship',
-      watch: false,
-      stepsBundlePath: '',
-      workflowsBundlePath: '',
-      webhookBundlePath: '',
-    }).build();
+    await build(workingDir, '/ship');
 
     expect(existsSync(manualRoute)).toBe(true);
   });
