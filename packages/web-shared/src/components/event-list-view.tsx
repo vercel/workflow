@@ -1,7 +1,11 @@
 'use client';
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, WorkflowRun } from '@workflow/world';
+import {
+  type Event,
+  getEventDataRefFields,
+  type WorkflowRun,
+} from '@workflow/world';
 import { Check, ChevronRight, Copy } from 'lucide-react';
 import type {
   KeyboardEvent as ReactKeyboardEvent,
@@ -105,29 +109,29 @@ function formatEventType(eventType: Event['eventType']): string {
 // Event type → status color (small dot only)
 // ──────────────────────────────────────────────────────────────────────────
 
-/** Returns a CSS color using Geist design tokens for the status dot. */
+/** Returns the Workflow Observability status color for the event's state. */
 function getStatusDotColor(eventType: string): string {
-  // Failed → red
+  // Failed → error red
   if (
     eventType === 'step_failed' ||
     eventType === 'run_failed' ||
     eventType === 'workflow_failed'
   ) {
-    return 'var(--ds-red-700)';
+    return 'var(--geist-error, var(--ds-red-700))';
   }
-  // Cancelled → amber
+  // Cancelled → gray
   if (eventType === 'run_cancelled') {
-    return 'var(--ds-amber-700)';
+    return 'var(--ds-gray-500)';
   }
-  // Retrying → amber
+  // Retrying → warning amber
   if (eventType === 'step_retrying') {
-    return 'var(--ds-amber-700)';
+    return 'var(--geist-warning, var(--ds-amber-700))';
   }
   // Attribute changes → teal
   if (eventType === 'attr_set') {
     return 'var(--ds-teal-900)';
   }
-  // Completed/succeeded → green
+  // Completed/succeeded → cyan
   if (
     eventType === 'step_completed' ||
     eventType === 'run_completed' ||
@@ -135,24 +139,23 @@ function getStatusDotColor(eventType: string): string {
     eventType === 'hook_disposed' ||
     eventType === 'wait_completed'
   ) {
-    return 'var(--ds-green-700)';
+    return 'var(--geist-cyan, var(--ds-teal-700))';
   }
-  // Started/running → blue
+  // Started/running → warning amber
   if (
     eventType === 'step_started' ||
     eventType === 'run_started' ||
     eventType === 'workflow_started' ||
     eventType === 'hook_received'
   ) {
-    return 'var(--ds-blue-700)';
+    return 'var(--geist-warning, var(--ds-amber-700))';
   }
-  // Sealed positions → dim gray, one step quieter than pending: the row is
-  // log filler the run never observed.
+  // Sealed positions → gray: the row is log filler the run never observed.
   if (eventType === 'noop') {
     return 'var(--ds-gray-500)';
   }
   // Created/pending → gray
-  return 'var(--ds-gray-600)';
+  return 'var(--ds-gray-500)';
 }
 
 /**
@@ -924,7 +927,17 @@ export function EventRow({
   const displayedCreatedAt = showSeparateEventOccurrenceTimestamps
     ? createdAt
     : getEffectiveEventDate(event);
-  const hasExistingEventData = 'eventData' in event && event.eventData != null;
+  // List endpoints resolve events with `resolveData: 'none'`, which strips the
+  // ref/payload fields (input, result, error, …) and leaves a partial stub
+  // (stepName, timings, …). Rendering that stub while the full payload loads
+  // flashes an incomplete JSON document whose missing fields pop in after a
+  // skeleton, so only trust inline eventData when it can't be a stub: either
+  // there is no loader to fetch the full payload, or the event type carries
+  // no ref fields (its eventData is never stripped).
+  const hasExistingEventData =
+    'eventData' in event &&
+    event.eventData != null &&
+    (!onLoadEventData || getEventDataRefFields(event.eventType).length === 0);
   const isRun = isRunLevel(event.eventType);
   const eventName = isRun
     ? (workflowName ?? '-')
@@ -957,6 +970,12 @@ export function EventRow({
     }
     if (cachedEventData !== null) {
       setLoadedEventData(cachedEventData);
+      setHasAttemptedLoad(true);
+      return;
+    }
+    // Inline eventData of a ref-less event type is already complete (ref
+    // fields are the only ones ever stripped), so there is nothing to fetch.
+    if (hasExistingEventData) {
       setHasAttemptedLoad(true);
       return;
     }
@@ -995,6 +1014,7 @@ export function EventRow({
     encryptionKey,
     onEncryptedDataDetected,
     cachedEventData,
+    hasExistingEventData,
   ]);
 
   // Auto-load event data when remounting in expanded state without cached data

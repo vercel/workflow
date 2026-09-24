@@ -1,6 +1,6 @@
 {
   "name": "workflow",
-  "version": "5.0.0-beta.50",
+  "version": "5.0.0-beta.56",
   "description": "Workflow SDK - Build durable, resilient, and observable workflows",
   "main": "dist/typescript-plugin.cjs",
   "type": "module",
@@ -63,7 +63,7 @@
     "dev": "tsc --watch",
     "test": "vitest run src",
     "typecheck": "tsc --noEmit",
-    "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/v5/. ./docs/",
+    "prepack": "mkdir -p docs/worlds && cp -r ../../docs/content/docs/v5/. ./docs/ && cp -r ../../docs/content/worlds/v5/. ./docs/worlds/",
     "postpack": "rm -rf docs"
   },
   "dependencies": {

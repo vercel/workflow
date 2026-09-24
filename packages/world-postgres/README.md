@@ -1,6 +1,93 @@
 # @workflow/world-postgres
 
-An embedded worker and workflow system backed by PostgreSQL for multi-host self-hosted solutions. This is a reference implementation. A production system might run workers in separate processes with a dedicated queuing system.
+An embedded worker and workflow system backed by PostgreSQL for multi-host self-hosted solutions.
+
+> **This is a reference implementation.** It shows how to implement the World
+> interface on top of a database and a queue, and it is a reasonable starting
+> point for self-hosting. It is not a managed backend: it ships **without
+> authentication**, and it is not tuned for the performance or scale properties
+> of one. A production deployment typically runs workers in separate processes
+> with a more robust queuing system, and **must** put its own authentication in
+> front of the workflow HTTP routes. Read [Security](#security) before you
+> deploy it.
+>
+> While some customers have been successful in deploying the Postgres World as
+> is, for production use-cases, we highly recommend cloning this reference
+> implementation and adapting it to your persistence, network stack, scale and
+> security requirements.
+
+## Security
+
+The Postgres World does **not** automatically authenticate the requests that
+drive workflow execution. Adding that is your responsibility, and it should be
+in place before an app using this World is reachable by untrusted clients.
+
+### Protect the queue route
+
+`POST /.well-known/workflow/v1/flow` is where the worker delivers workflow
+orchestration and queued step invocations. It is mounted in your application
+like any other route, so it is publicly reachable by default, and the queue
+handler, inherited from
+[`@workflow/world-local`](https://github.com/vercel/workflow/tree/main/packages/world-local),
+accepts any request whose `x-vqs-*` headers and queue-name prefix are
+well-formed, leaving the payload itself to be validated later by the runtime
+that consumes the message. There is no signature, shared secret, or caller check,
+so anyone who can reach the route can forge or replay a workflow or step
+invocation, including steps your application would only reach after its own
+gating. Restrict it before you expose the app.
+
+The other routes under `/.well-known/workflow/v1/` differ:
+
+- `webhook/:token`, created by
+  [`createWebhook()`](https://workflow-sdk.dev/docs/api-reference/workflow/create-webhook),
+  is authorized by the token in the URL and nothing else. Use
+  [`createHook()`](https://workflow-sdk.dev/docs/api-reference/workflow/create-hook)
+  behind your own authenticated route and
+  [`resumeHook()`](https://workflow-sdk.dev/docs/api-reference/workflow-api/resume-hook)
+  when you need more than that.
+- `manifest.json` responds with `404` unless the app was built with
+  `WORKFLOW_PUBLIC_MANIFEST=1`. That variable is read at build time, so
+  unsetting it in the runtime environment of an already-built deployment does
+  not withdraw the manifest. Leave it unset outside of testing, because the
+  manifest lists your workflow and step names.
+
+### Bringing your own auth
+
+Workflow does not prescribe an auth mechanism, so gate the flow route at the
+network edge rather than inside the application:
+
+- **Keep the flow route unreachable from outside.** By default the worker
+  delivers to a loopback address (`http://localhost:{PORT}`, or
+  `WORKFLOW_LOCAL_BASE_URL` when set), so in the common single-process topology
+  nothing outside the container needs to reach it. Blocking external requests to
+  `/.well-known/workflow/v1/flow` at your ingress, reverse proxy, or firewall
+  costs you nothing, because loopback delivery never traverses that layer. Do
+  not block the whole `/.well-known/workflow/` prefix if you use
+  `createWebhook()`: its `webhook/:token` route sits under the same prefix and
+  has to stay reachable by whoever calls it.
+- **Authenticate at the proxy when the routes must cross hosts.** If your web
+  tier and workers are separate deployments, require mTLS or a shared-secret
+  header at the proxy in front of the application, and strip any client-supplied
+  copy of that header at the edge.
+- **Do not gate these paths in framework middleware.** The setup guides tell you
+  to exclude `/.well-known/workflow/*` from your Next.js proxy matcher, because a
+  handler that consumes the internal request body breaks execution. Adding the
+  paths back in order to gate them reintroduces that failure mode.
+- **Do not expect the World to present a credential.** It does not sign its
+  delivery requests or attach a secret to them, so an in-application check that
+  requires one will reject the World's own deliveries.
+
+### Data at rest
+
+This World does not currently implement `getEncryptionKeyForRun()`, so it does
+not participate in Workflow's
+[end-to-end encryption](https://workflow-sdk.dev/docs/how-it-works/encryption):
+workflow and step inputs and return values, hook payloads and metadata, and
+stream chunks are all stored in your database in readable form. A World derived
+from this one can opt in by implementing that single method (see
+[Custom World implementations](https://workflow-sdk.dev/docs/how-it-works/encryption#custom-world-implementations)),
+which is the recommended route if your workflows carry sensitive data. Until
+then, protect the database, its credentials, and its backups accordingly.
 
 ## Installation
 
@@ -188,6 +275,146 @@ and its token can be reused. If the token is never reused, the expired
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - Workflow orchestration and queued step execution are both sent through `/.well-known/workflow/v1/flow`
+
+### Experimental synchronous invocation
+
+Enable synchronous hook-input delivery with `WORKFLOW_POSTGRES_INVOKE=1` when
+using `WORKFLOW_TARGET_WORLD`, or pass `enableInvoke: true` to `createWorld()`.
+Invocation is off by default.
+
+Apply the database migrations before running the upgraded World, including when
+invocation is disabled, because hook deduplication and data purging use new
+columns. Upgrade producers and workers together, using matching versions and the
+same job prefix and namespace. Migration 0022 versions stored responses so values
+from earlier previews keep their original meaning.
+
+With invocation enabled, the World advertises `capabilities.invoke`.
+`resumeHook()` sends the hook input to the run's executor, which validates the
+input, writes the hook event, and responds. The response confirms that processing
+has finished; workflow user code may consume the event later.
+
+The World calls the SDK handler with `{ runId, invoke: true, requestId, input }`
+and stores its response as an `InvocationOutcome`. `invoke()` returns the value
+or throws the restored Workflow error with its diagnostic fields. Invocation
+results are response data, including any `timeoutSeconds` property.
+
+A terminal error, such as a missing hook or an input-identity conflict, is stored
+as the request's outcome. Retrying that identity returns the stored error while
+the result is retained. Transient or unrecognized failures leave the input pending
+and cause Graphile to retry the workflow execution job. Failure to store or read
+a response leaves the caller's outcome unknown. Earlier event writes may have
+committed in either case.
+
+Postgres stores inputs and responses in `workflow.workflow_invocations`. The
+input is inserted into `workflow_invocations` and a request is enqueued in
+Graphile in the same transaction. Retrying a retained input also enqueues a
+workflow execution request, even when its response is already stored. This lets
+the runner check committed events if a previous runner stopped after responding
+but before replaying them.
+
+Reuse an `idempotencyKey` with the same payload when retrying an invocation.
+Without a key, each call creates a new input.
+
+With invocation disabled (the default), deliveries for the same run may execute
+concurrently. A workflow request can execute a step inline and wait for a hook
+wake to abort that step, so the queue cannot hold a per-run lock for the entire
+request. Each queue instance coalesces in-flight and recently completed deliveries
+with the same idempotency key. Handlers must still tolerate at-least-once delivery
+across worker processes, restarts, or completed-message cache eviction.
+
+With invocation enabled, each Graphile worker pool registers two task
+identifiers. A task identifier selects a handler. A named queue controls which
+jobs can execute concurrently. The default job prefix produces these names:
+
+| Task identifier | Work | Named queue |
+| --- | --- | --- |
+| `workflow_flows_executor` | Start or resume workflow execution | `workflow_flows:<runId>:executor`, one queue per run |
+| `workflow_flows` | Step execution and health checks | No run-scoped named queue |
+
+Graphile permits one active job per run's named queue across worker processes.
+Different runs, step jobs, and health checks can execute concurrently.
+`queueConcurrency` limits the total active Graphile jobs per worker process
+across both task identifiers and defaults to **50**.
+
+While a workflow execution job is active, the World passes pending invocation
+inputs to the SDK handler, including while inline steps wait. After an execution
+returns, the World checks for idle time or an expired 120s input-intake budget.
+Before acknowledging the job, the World stops reading new inputs, finishes any
+input already being processed, and replays events committed since the previous
+replay began. A later job can resume the run in another process.
+
+A workflow execution request is the HTTP request sent by a Graphile
+`workflow_flows_executor` job to start or resume a run. An invocation is an input
+submitted through `world.invoke()` and stored in `workflow_invocations`. One
+workflow execution request can process several invocations.
+
+Before processing pending inputs, the HTTP receiver verifies the execution
+request against Graphile's `jobs` view. The worker supplies the job ID, worker ID,
+and attempt through private HTTP headers. The receiver requires a locked job
+with matching metadata, the executor task identifier, and the run's named queue.
+Application-supplied headers cannot replace this metadata. Step jobs and health
+checks process their own work without reading pending invocation rows.
+
+Updated workers move legacy orchestration jobs to the executor task before
+acknowledging them, preserving message identity and the remaining attempt budget.
+Updated HTTP receivers also reroute unmarked legacy requests. Older workers
+cannot enforce these checks, so upgrade participating workers together.
+
+Verification happens when the request enters the receiver. A handler that keeps
+running after Graphile reclaims its job can still write events; this
+implementation does not fence those writes.
+
+The Postgres World reads pending inputs in pages of 32. One dedicated
+`LISTEN/NOTIFY` connection per World instance signals new inputs and responses.
+The connection opens when needed. Notifications contain hashed identifiers;
+readers fetch payloads and results from the table.
+
+Notifications commit with their associated writes. Readers track changes across
+each query and reread after subscribing or reconnecting, covering writes that
+arrived before the subscription became active.
+
+Use a database connection that supports sessions for `LISTEN`. Transaction
+pooling alone cannot maintain that subscription. When notifications are
+unavailable, readers poll at 1s intervals and connection retries use a 1s backoff.
+The World logs notification failure and recovery once per transition, excluding
+payloads and connection details.
+
+| Setting or limit | Value |
+| --- | --- |
+| Default response-wait timeout | 30s, configurable with `timeoutMs` |
+| Maximum encoded input size | 1 MiB |
+| Maximum encoded outcome size | 1 MiB |
+| Pending-input page size | 32 rows |
+
+A timeout ends the caller's wait without canceling processing or establishing
+its outcome. Closing the World aborts local response waits and closes input
+readers and the notification connection.
+
+Postgres implements `hookResumeDedup` with a durable resume ID and payload digest.
+Retrying the same identity reuses the committed hook event, including after hook
+disposal or run completion. Reusing the identity with a different payload is
+rejected.
+
+The hook event and response are written in separate operations. If storing the
+response fails, deduplication lets a retry recover the event's result. Step code
+remains responsible for making its external side effects safe to retry.
+
+`$retention: 0` purges invocation inputs, results, and fingerprints with the run's
+other user data. An expiry marker lets waiting callers and retries receive a 410
+error with code `INVOCATION_DATA_EXPIRED`. Writers lock and recheck the run so
+late writes cannot restore purged data. A caller can receive this expiry error
+after its hook event committed if the result expires before the caller reads it.
+The migration also clears invocation data for runs that already expired or ended
+with zero retention.
+
+The experimental implementation has these remaining limitations:
+
+- Results outside zero-retention purging have no automatic cleanup.
+- A handler can continue writing after Graphile aborts or reclaims its job.
+- Requests are not routed to a compatible deployment when workers run different code versions.
+
+The database integration tests use the built core runtime. Build core before
+running `pnpm exec vitest run test/invoke.test.ts` from `packages/world-postgres`.
 
 ## Development
 

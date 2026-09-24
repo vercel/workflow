@@ -64,7 +64,9 @@
 
 import {
   EntityConflictError,
+  HookForceClaimedError,
   RunExpiredError,
+  StreamError,
   ThrottleError,
   TooEarlyError,
   WorkflowWorldError,
@@ -270,6 +272,9 @@ export function isRetryableEventPostError(err: unknown): boolean {
   // rather than this transient classification.)
   if (
     EntityConflictError.is(err) ||
+    // A takeover redirect is definitive for THIS target; the runtime's
+    // resume path follows the token instead of re-issuing the write here.
+    HookForceClaimedError.is(err) ||
     RunExpiredError.is(err) ||
     TooEarlyError.is(err) ||
     ThrottleError.is(err)
@@ -277,7 +282,7 @@ export function isRetryableEventPostError(err: unknown): boolean {
     return false;
   }
 
-  if (WorkflowWorldError.is(err)) {
+  if (WorkflowWorldError.is(err) || StreamError.is(err)) {
     // Body parsed past the response but the write may have landed: safe to
     // retry for eligible events (a landed original re-surfaces as 409).
     if (err.code === 'PARSE_ERROR') return true;
@@ -300,6 +305,20 @@ export function isRetryableEventPostError(err: unknown): boolean {
     if (typeof err.status === 'number') {
       // Transient server errors; 4xx are definitive and not retried.
       return err.status >= 500 && err.status <= 599;
+    }
+    if (err.code === 'STREAM_ERROR') {
+      // V4 classifies both pre-header and response-body transport failures
+      // this way, including failures without a recognized low-level code.
+      // It also wraps cancellation, which must never re-issue the write.
+      // Keep TimeoutError retryable: that is our own request deadline.
+      return !collectErrorMarkers(err).some((marker) =>
+        [
+          'AbortError',
+          'ABORT_ERR',
+          'UND_ERR_ABORTED',
+          'ERR_HTTP2_STREAM_CANCEL',
+        ].includes(marker)
+      );
     }
     // No status (e.g. a timeout wrapped by makeRequest): fall through to the
     // transport-marker check on the error/cause chain.

@@ -565,6 +565,25 @@ export async function stepVsStepForkWorkflow(documentId: string) {
     : await afterSlow(documentId);
 }
 
+async function heldRaceStep(documentId: string) {
+  'use step';
+  return `step:${documentId}`;
+}
+
+/**
+ * A step and a timer race, with no work after the decision. A scenario holds
+ * the step result outside the log and fires the timer from another delivery,
+ * proving that the run settles without waiting for the losing step.
+ */
+export async function stepVsTimerEarlySettlementWorkflow(documentId: string) {
+  'use workflow';
+
+  return await Promise.race([
+    heldRaceStep(documentId),
+    sleep('1h').then(() => `timer:${documentId}`),
+  ]);
+}
+
 // ---------------------------------------------------------------------------
 // 8. Unclaimed payload — a hook nobody reads, sitting under the fork
 // ---------------------------------------------------------------------------

@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createFlushableState,
+  drainFlushableSnapshot,
   flushablePipe,
   LOCK_POLL_INTERVAL_MS,
   pollReadableLock,
   pollWritableLock,
+  trackFlushableWritable,
 } from './flushable-stream.js';
 import { STREAM_DRAIN_SYMBOL } from './symbols.js';
 
@@ -444,6 +446,130 @@ describe('flushablePipe drain barrier (group-commit sinks)', () => {
     delete process.env.WORKFLOW_STREAM_MAX_INFLIGHT_CHUNKS;
     delete process.env.WORKFLOW_STREAM_MAX_CHUNKS_PER_BATCH;
     delete process.env.WORKFLOW_STREAM_MAX_BYTES_PER_BATCH;
+  });
+
+  it('waits for a produced frame to reach the sink before draining', async () => {
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    let drained = false;
+    const sink = new WritableStream<Uint8Array>({
+      async write() {
+        await writeGate;
+      },
+    });
+    Object.defineProperty(sink, STREAM_DRAIN_SYMBOL, {
+      value: async () => {
+        drained = true;
+      },
+    });
+    const transform = new TransformStream<Uint8Array, Uint8Array>();
+    const state = createFlushableState();
+    const pipe = flushablePipe(transform.readable, sink, state).catch(() => {});
+    const writable = trackFlushableWritable(transform.writable, state);
+    const writer = writable.getWriter();
+
+    await writer.write(new Uint8Array([1]));
+    const snapshot = drainFlushableSnapshot(state);
+    await tick();
+    expect(drained).toBe(false);
+
+    releaseWrite();
+    await snapshot;
+    expect(drained).toBe(true);
+
+    await writer.close();
+    await pipe;
+  });
+
+  it('propagates an idle downstream failure through the tracked writable', async () => {
+    const downstreamError = new Error('downstream failed while producer idle');
+    const transform = new TransformStream<Uint8Array, Uint8Array>();
+    const state = createFlushableState();
+    const sink = new WritableStream<Uint8Array>({
+      write() {
+        throw downstreamError;
+      },
+    });
+    const pipe = flushablePipe(transform.readable, sink, state).catch(() => {});
+    const writable = trackFlushableWritable(transform.writable, state);
+    let sourceCancelled = false;
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1]));
+      },
+      cancel() {
+        sourceCancelled = true;
+      },
+    });
+
+    await expect(source.pipeTo(writable)).rejects.toThrow(
+      'downstream failed while producer idle'
+    );
+    expect(sourceCancelled).toBe(true);
+    await pipe;
+  });
+
+  it('drains an accepted prefix before rejecting its snapshot', async () => {
+    let releaseDrain!: () => void;
+    const drainGate = new Promise<void>((resolve) => {
+      releaseDrain = resolve;
+    });
+    const { sink } = makeDrainSink(() => drainGate);
+    const { source, controller } = makeControlledSource();
+    const state = createFlushableState();
+    state.producedFrames = 2;
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+
+    controller().enqueue(new Uint8Array([1]));
+    await tick();
+    controller().error(new Error('second frame failed'));
+    await tick();
+
+    let settled = false;
+    const snapshot = drainFlushableSnapshot(state).finally(() => {
+      settled = true;
+    });
+    await tick();
+    expect(settled).toBe(false);
+
+    releaseDrain();
+    await expect(snapshot).rejects.toThrow('second frame failed');
+    await pipe;
+  });
+
+  it('rejects snapshot waiters with the upstream pipe error', async () => {
+    const { sink } = makeDrainSink(async () => {});
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error('producer failed before acceptance'));
+      },
+    });
+    const state = createFlushableState();
+    state.producedFrames = 1;
+    const pipe = flushablePipe(source, sink, state).catch(() => {});
+
+    const snapshot = drainFlushableSnapshot(state);
+
+    await expect(snapshot).rejects.toThrow('producer failed before acceptance');
+    await pipe;
+  });
+
+  it('reports a pipe error to a snapshot registered after failure', async () => {
+    const { sink } = makeDrainSink(async () => {});
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error('producer already failed'));
+      },
+    });
+    const state = createFlushableState();
+    state.producedFrames = 1;
+    await flushablePipe(source, sink, state).catch(() => {});
+
+    await expect(drainFlushableSnapshot(state)).rejects.toThrow(
+      'producer already failed'
+    );
   });
 
   it('adopts the sink drain barrier onto the flushable state', async () => {

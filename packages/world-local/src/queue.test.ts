@@ -123,6 +123,32 @@ describe('queue timeout re-enqueue', () => {
     expect(body).toEqual({ ok: true });
   });
 
+  it('treats invocation return values containing timeoutSeconds as data', async () => {
+    const result = { timeoutSeconds: 123, value: 'data' };
+    const handler = localQueue.createQueueHandler(
+      '__wkf_workflow_',
+      async () => result
+    );
+    const response = await handler(
+      new Request('http://localhost/flow', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-vqs-queue-name': '__wkf_workflow_test',
+          'x-vqs-message-id': 'msg_input',
+          'x-vqs-message-attempt': '1',
+        },
+        body: JSON.stringify({
+          ...workflowPayload,
+          invoke: true,
+          requestId: 'input',
+          input: {},
+        }),
+      })
+    );
+    expect(await response.json()).toEqual({ result });
+  });
+
   it('createQueueHandler returns 200 with timeoutSeconds: 0', async () => {
     const handler = localQueue.createQueueHandler(
       '__wkf_workflow_',
@@ -532,18 +558,26 @@ describe('queue transport timeouts', () => {
     vi.restoreAllMocks();
   });
 
-  it('bounds queue requests by default', () => {
-    expect(getQueueAgentOptions()).toMatchObject({
+  it('places no deadline on queue requests by default', () => {
+    const defaults = getQueueAgentOptions();
+    expect(defaults).toMatchObject({
       bodyTimeout: DEFAULT_BODY_TIMEOUT_MS,
       headersTimeout: DEFAULT_HEADERS_TIMEOUT_MS,
     });
+
+    // `0` is the documented value that disables a deadline.
+    process.env.WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS = '0';
+    process.env.WORKFLOW_LOCAL_BODY_TIMEOUT_MS = '0';
+    const unbounded = getQueueAgentOptions();
+    expect(defaults.headersTimeout).toBe(unbounded.headersTimeout);
+    expect(defaults.bodyTimeout).toBe(unbounded.bodyTimeout);
   });
 
-  it('honors environment overrides, including 0', () => {
+  it('honors environment overrides', () => {
     process.env.WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS = '1234';
-    process.env.WORKFLOW_LOCAL_BODY_TIMEOUT_MS = '0';
+    process.env.WORKFLOW_LOCAL_BODY_TIMEOUT_MS = '5678';
     expect(getQueueAgentOptions()).toMatchObject({
-      bodyTimeout: 0,
+      bodyTimeout: 5678,
       headersTimeout: 1234,
     });
   });
@@ -591,7 +625,7 @@ describe('queue transport timeouts', () => {
     expect(outcome).toBe('closed');
   });
 
-  it('redelivers when a handler accepts a request but never responds', async () => {
+  it('redelivers when a handler exceeds an opt-in headers deadline', async () => {
     let requests = 0;
     server = createServer((_request, response) => {
       requests++;
@@ -625,7 +659,7 @@ describe('queue transport timeouts', () => {
     }
   });
 
-  it('redelivers when a handler response body stalls', async () => {
+  it('redelivers when a handler response body exceeds an opt-in body deadline', async () => {
     let requests = 0;
     server = createServer((_request, response) => {
       requests++;

@@ -6,6 +6,46 @@ This package defines the `World` interface that abstracts workflow storage, queu
 
 Used internally by `@workflow/core` and world implementations. Should not be used directly in application code.
 
+## Optional invocation delivery
+
+`world.invoke(runId, payload, options?)` sends an input to a workflow runner and
+returns its response. Invoke returns after the runner has processed the payload
+and may fail if the runner rejects it. The World must route the payload to the
+active runner, or start or resume the runner if none is active.
+
+Invocation support is optional. A World that implements `invoke` and enables
+`WorldCapabilities.invoke` must guarantee **at most one active workflow runner
+per `runId`, across all worker processes**. Different runs may execute
+concurrently. A replacement runner may take over after the previous runner stops,
+so a run can use different processes over its lifetime.
+
+A World that implements `invoke` calls the existing `createQueueHandler` callback
+with `{ runId, invoke: true, requestId, input }`. The runner validates the input,
+waits for required event writes, and returns a value. The World delivers that
+value to the caller. The callback must be able to process inputs while the run
+awaits step work, without starting a second runner for that run. Worlds without
+invocation support must leave the capability unset.
+
+`InvokeOptions` accepts an `idempotencyKey` for retries and a `timeoutMs`
+response-wait limit. In invocation mode, the callback's return value is response
+data, including any `timeoutSeconds` property. Ordinary workflow wake results
+use `timeoutSeconds` to schedule another execution.
+
+World transports can use `InvocationOutcome` to carry returned values or
+serialized handler errors. The `@workflow/errors/invocation` helpers restore
+known Workflow error classes for the caller. A transport failure leaves the
+processing outcome unknown. A handler error can occur after event writes have
+committed.
+
+## Step dispatch context
+
+`WorkflowInvokePayload.runContext` carries the run's deployment ID, spec version,
+start time, and lineage root. Consumers use this identity to start queued steps
+without first fetching the run. Run status is not carried on the message: World
+implementations must reject `step_started` on terminal runs, including redelivery
+for a step that still has `running` status. In-flight steps may still record
+`step_completed` or `step_failed` after the run ends.
+
 ## Implementation constraint: no mutable module state
 
 A World implementation must not keep mutable state at module scope. Hold it on

@@ -6,7 +6,7 @@ import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
 var Bash = function(__wf_cls) {
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//Bash", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//Bash",
         writable: false,
         enumerable: false,
@@ -30,7 +30,7 @@ var Bash = function(__wf_cls) {
 var Shell = function(__wf_cls) {
     var __wf_cls_sym = Symbol.for("workflow-class-registry"), __wf_cls_reg = globalThis[__wf_cls_sym] || (globalThis[__wf_cls_sym] = new Map());
     __wf_cls_reg.set("class//./input//Shell", __wf_cls);
-    Object.defineProperty(__wf_cls, "classId", {
+    if (!Object.prototype.hasOwnProperty.call(__wf_cls, "classId")) Object.defineProperty(__wf_cls, "classId", {
         value: "class//./input//Shell",
         writable: false,
         enumerable: false,

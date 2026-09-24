@@ -31,6 +31,7 @@ const PAYLOAD_COLUMNS = {
   ],
   events: ['payload_cbor', 'payload'],
   hooks: ['metadata_cbor', 'metadata', 'resume_context'],
+  invocations: ['payload', 'result', 'fingerprint'],
 } as const;
 
 describe('Retention ($retention: 0)', () => {
@@ -69,7 +70,7 @@ describe('Retention ($retention: 0)', () => {
     await pool.query(
       'TRUNCATE TABLE workflow.workflow_events, workflow.workflow_event_slots, ' +
         'workflow.workflow_steps, workflow.workflow_hooks, workflow.workflow_waits, ' +
-        'workflow.workflow_stream_chunks, workflow.workflow_runs ' +
+        'workflow.workflow_stream_chunks, workflow.workflow_invocations, workflow.workflow_runs ' +
         'RESTART IDENTITY CASCADE'
     );
   });
@@ -117,7 +118,7 @@ describe('Retention ($retention: 0)', () => {
     await events.create(runId, {
       eventType: 'step_completed',
       correlationId: stepId,
-      eventData: { output: new Uint8Array([6, 7]) },
+      eventData: { result: new Uint8Array([6, 7]) },
     });
 
     const hookId = `hook_${ulid()}`;
@@ -165,6 +166,11 @@ describe('Retention ($retention: 0)', () => {
         WHERE run_id = $1`,
       [runId]
     );
+    await pool.query(
+      `INSERT INTO workflow.workflow_invocations(run_id, request_id, payload, result, fingerprint, responded_at)
+       VALUES ($1, 'retention-fixture', $2, $3, 'fingerprint', now())`,
+      [runId, Buffer.from([12]), Buffer.from([13])]
+    );
 
     return { runId, stepId, hookId, streamId };
   }
@@ -176,6 +182,7 @@ describe('Retention ($retention: 0)', () => {
       ['workflow_steps', PAYLOAD_COLUMNS.steps, 'run_id'],
       ['workflow_events', PAYLOAD_COLUMNS.events, 'run_id'],
       ['workflow_hooks', PAYLOAD_COLUMNS.hooks, 'run_id'],
+      ['workflow_invocations', PAYLOAD_COLUMNS.invocations, 'run_id'],
     ];
     let total = 0;
     for (const [table, columns, key] of tables) {

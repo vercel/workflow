@@ -188,7 +188,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 | `hook_created` | Creates a new hook in `active` state. Contains the hook token and optional metadata. |
 | `hook_conflict` | Records that hook creation failed because another run owns the token. Contains the token and, for current worlds, the owner's run ID. The hook is not created: `hook.getConflict()` resolves with the conflicting run, and awaiting the hook payload rejects with a `HookConflictError`. |
 | `hook_received` | Records that a payload was delivered to the hook. The hook remains `active` and can receive more payloads. |
-| `hook_disposed` | Deletes the hook from storage (conceptually transitioning to `disposed` state). The token is released for reuse by future workflows. |
+| `hook_disposed` | Deletes the hook from storage (conceptually transitioning to `disposed` state). The token is released for reuse by future workflows. When another run takes the token over with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds), the event names the new owner in `forceClaimedBy`, and the token moves to that run instead of being released. |
 
 ### Wait events
 
@@ -202,6 +202,12 @@ Events are categorized by the entity type they affect. Each event contains metad
 | Event | Description |
 |-------|-------------|
 | `noop` | Seals an abandoned log position (`specVersion` 7 and above). Only the backend writes this event; the create endpoints reject it. See [Sealed positions](#sealed-positions-noop-events). |
+
+### How fast a log grows
+
+Counting the events above is how you size a run. A step that succeeds on the first attempt contributes three events; a retry adds another `step_started`, preceded by a `step_retrying` when the World emits one; a sleep contributes two, and a hook at least two.
+
+A run's log is capped — the [Vercel World](/worlds/vercel#per-run-limits) fails anything past its ceiling with `MAX_EVENTS_EXCEEDED`. Replay reads the whole log, so a run gets slower as it grows and is worth splitting well before it fails: split into [child workflows](/cookbook/advanced/child-workflows) once a run would grow past a few thousand events.
 
 ## Terminal states
 
@@ -266,6 +272,33 @@ The remaining event types belong to no class and are never skipped:
 Both kinds of skip are logged at `debug`, so neither reaches the console unless you run with `DEBUG=workflow:runtime:*`. A duplicate is a permanent part of the log. Every later replay reads it and reaches the same check, so an unconditional message would print once per replay for the life of the run without requiring action. A repeat that decides a class differently, such as a `step_failed` after a `step_completed` or the reverse, gets its own message. Unlike a recommit of the same outcome, both writers cannot be correct.
 
 The observability UI grays out events it can identify this way and shows the reason on hover. Its set is narrower than the runtime's because it reads the log without consumer state. A consumer for an entity that is still open can legitimately claim a repeat because each step retry writes another `step_started`. The UI marks a repeat only when no consumer can remain for it: after a terminal event for the same entity or at a second `run_started`, of which the log records one per run. The UI marks nothing on a partial log view, such as one page of a paginated list or search results, because identifying the first copy requires the entire log.
+
+## Events returned on a write
+
+Concurrent invocations of one run write to a shared log, and a write is decided against the log the writer had loaded. When the write lands above other events the writer had not seen, the World can hand those events back on the write's own success response, so the writer merges them and continues rather than discovering the gap on its next read. Two parameters of `events.create()` ask for this:
+
+- **`eventCount`** says how many events the writer held. When the write commits at a higher position than `eventCount + 1`, the World returns the events on the positions in between (the *skipped-slot report*).
+- **`sinceCursor`** is the `events.list()` cursor the writer had read to. The World returns everything after it, the write itself included (the *inline delta*), in the same `events` / `cursor` / `hasMore` shape as a list page.
+
+Both save a reload, so the rule for which writes send them is not about the event type. It is about whether the process that writes **holds a loaded log it will keep deciding from**: its own next writes, or the replay it resumes after the write. A writer with no log has nothing to merge a page into, and whoever decides next is a fresh replay that loads the log anyway. Three things must hold for a page to come back: the writer named a position, the World reads a page for that event type (a backend may decline for types whose writer never holds a log), and there is something to return (the report only when positions were skipped; the delta always).
+
+| Event | Writer | Sends | Why |
+|-------|--------|-------|-----|
+| `run_created` | `start()` | Nothing | No log exists yet. |
+| `run_started` | Replay, first write of a delivery | `eventCount` when a log is loaded; no cursor | The `run_started` response already carries the full log as a preload. |
+| `step_created`, `wait_created`, `hook_disposed`, `attr_set` | Suspension handler | `eventCount` | The handler keeps writing from this log and the replay resumes from it. |
+| `hook_created` | Suspension handler | `eventCount` and `sinceCursor` (only when the suspension creates exactly one hook) | The delta is how a hook whose payload already arrived resolves without another invocation. Two creates diffing against one cursor would give two deltas of which only the first could be taken. |
+| `hook_received` | Replay resuming a hook | `eventCount` | The replay continues from the log right after. |
+| `hook_received` | Webhook or `resumeHook()` | Nothing | Out-of-band. It enqueues a delivery that loads the log. |
+| `wait_completed` | Replay completing an elapsed wait | `eventCount` | The replay continues from the log right after. |
+| `step_started`, `step_retrying` | Step executor | Nothing | The executor holds no log. The next decision is a replay that reloads, or receives the delta on the step's terminal write. |
+| `step_completed`, `step_failed` | Step executor | `sinceCursor` when a single step runs inline; nothing from a queued delivery | Inline, this is where the invocation gets its log back without a list. From a queue, a fresh replay loads the log anyway. |
+| `attr_set` | `setAttributes()` outside a workflow | Nothing | Out-of-band. |
+| `run_completed`, `run_failed`, `run_cancelled` | Replay, or `cancel()` | Never `sinceCursor` | Terminal. Nothing replays the log afterwards, so a page would be read by no one. |
+
+Batched writes (`events.createBatch()`) carry no position and get no page. Both runtime engines follow this table: the `node:vm` engine merges a returned page into the log it replays from, and the QuickJS engine queues it for delivery to its live VM, in position order, ahead of its next `events.list()`.
+
+A World that supports this returns the page in `events`, `cursor`, and `hasMore` on the `EventResult`. A World that does not simply returns the created event, and the runtime lists. See [Building a World](/worlds/building-a-world#event-id-allocation) for the World-side contract.
 
 ## Sealed positions (noop events)
 

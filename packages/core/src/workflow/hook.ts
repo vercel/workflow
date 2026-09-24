@@ -1,6 +1,7 @@
 import {
   FatalError,
   HookConflictError,
+  HookForceClaimedError,
   ReplayDivergenceError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE } from '@workflow/serde';
@@ -94,6 +95,27 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       );
     }
 
+    if (options.experimental_force === true) {
+      // A generated token is unique by construction and can never be held by
+      // another run, so forcing one is a mistake worth surfacing rather than
+      // a no-op worth allowing.
+      if (options.token === undefined || options.token === null) {
+        throw new Error(
+          '`createHook()` was called with `experimental_force: true` but no `token`. Force-claiming only applies to an explicit token another run may hold.'
+        );
+      }
+      if (options.isWebhook === true) {
+        throw new Error(
+          'Webhook hooks do not support `experimental_force`. Use a non-webhook `createHook()` with an explicit token.'
+        );
+      }
+      if (ctx.worldCapabilities?.hookForceClaim !== true) {
+        throw new FatalError(
+          'The configured World does not support `experimental_force` for Hooks.'
+        );
+      }
+    }
+
     // Generate hook ID and token
     const correlationId = `hook_${ctx.generateUlid()}`;
     const token = options.token ?? ctx.generateNanoid();
@@ -110,6 +132,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       correlationId,
       token,
       tokenRetentionUntil,
+      ...(options.experimental_force === true && { force: true }),
       metadata: options.metadata,
       isWebhook,
     });
@@ -139,10 +162,51 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     // Track if we have a conflict so we can reject future awaits
     let hasConflict = false;
-    let conflictErrorRef: HookConflictError | null = null;
+    let conflictErrorRef: Error | null = null;
+    // Set when another run took this hook's token (`experimental_force`):
+    // the log's `hook_disposed` names it. Payloads received before the
+    // takeover are still delivered; every await after them rejects with this.
+    let forceClaimedErrorRef: HookForceClaimedError | null = null;
     // The conflicting run handle, shared by every `getConflict` await so
     // repeated awaits observe the same instance deterministically.
     let conflictRunRef: Run<unknown> | null = null;
+
+    // Consuming a registration event is synchronous, but delivering its
+    // outcome must wait for earlier branch-deciding deliveries. Keep the
+    // gate for calls made after hasCreated/hasConflict becomes true as well.
+    let registrationDelivered = Promise.resolve();
+
+    // `deliveredAt` is the registration event's `createdAt`: the outcome is a
+    // delivery the code after `await hook.getConflict()` (or a payload
+    // awaiter rejected by a conflict) runs off, so the clock it reads is this
+    // event's time.
+    function deliverRegistration(
+      deliveredAt: number,
+      settle: () => void
+    ): void {
+      const eventIndex = ctx.eventsConsumer.eventIndex;
+      // Always deliver, even without an awaiter yet: unlike a buffered
+      // payload, registration does not need a future claim to make progress.
+      const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook', {
+        deliveredAt,
+      });
+      const earlierDelivered = awaitEarlierDeliveries(ctx, eventIndex, 'hook');
+      // Never await the gate inside promiseQueue: earlier deliveries and
+      // their quiescence checks need that queue to drain in order to finish.
+      registrationDelivered = ctx.promiseQueue
+        .then(() => earlierDelivered)
+        .then(() => {
+          barrier.markDelivered();
+          settle();
+        });
+    }
+
+    function afterRegistration(settle: () => void): void {
+      const delivered = registrationDelivered;
+      ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        void delivered.then(settle);
+      });
+    }
 
     // Lazy-resume dedup: `resumeHook()` mints a `resumeId` per resume
     // attempt and stamps it on the `hook_received` event. When the direct
@@ -215,7 +279,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
         const pendingGetConflictPromises = getConflictPromises.slice();
         getConflictPromises.length = 0;
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        deliverRegistration(+event.createdAt, () => {
           for (const resolver of pendingGetConflictPromises) {
             resolver.resolve(null);
           }
@@ -230,25 +294,37 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         ctx.invocationsQueue.delete(correlationId);
 
         // Store the conflict event so we can reject any awaited promises.
-        // Chain through promiseQueue to ensure deterministic ordering.
         const conflictEvent = event as HookConflictEvent;
-        const conflictError = new HookConflictError(
-          conflictEvent.eventData.token,
-          conflictEvent.eventData.conflictingRunId
-        );
+        // A forced hook asked for a guarantee — this run owns the token — that
+        // a `hook_conflict` says the World could not give. Two very different
+        // reasons: the World declined on purpose because the run holding the
+        // token predates involuntary disposal (`forceRefusedReason`), which is
+        // the ordinary conflict the caller can handle like any other; or the
+        // World does not implement forcing at all (an older server, or its
+        // kill switch), which is a misconfiguration worth failing loudly on.
+        const forced =
+          options.experimental_force === true &&
+          conflictEvent.eventData.forceRefusedReason === undefined;
+        const conflictError: Error = forced
+          ? new FatalError(
+              `createHook({ experimental_force: true }) for token "${conflictEvent.eventData.token}" was answered with a hook_conflict: the configured World does not support force-claiming hook tokens${conflictEvent.eventData.conflictingRunId ? ` (run "${conflictEvent.eventData.conflictingRunId}" holds it)` : ''}.`
+            )
+          : new HookConflictError(
+              conflictEvent.eventData.token,
+              conflictEvent.eventData.conflictingRunId
+            );
 
         // Mark that we have a conflict so future awaits also reject
         hasConflict = true;
         conflictErrorRef = conflictError;
-        conflictRunRef = createConflictingRun(
-          ctx,
-          conflictEvent.eventData.conflictingRunId
-        );
+        conflictRunRef = forced
+          ? null
+          : createConflictingRun(ctx, conflictEvent.eventData.conflictingRunId);
 
         // Capture and drain pending promises synchronously so the null event
         // handler won't see them and trigger a spurious WorkflowSuspension.
-        // The actual settlements are deferred through promiseQueue for
-        // ordering. Payload awaiters reject with HookConflictError, while
+        // The actual settlements use the registration delivery barrier.
+        // Payload awaiters reject with HookConflictError, while
         // `getConflict` awaiters resolve with the conflicting run so the
         // workflow can branch on the conflict without throwing. When no
         // real `Run` can be constructed (see `createConflictingRun`),
@@ -259,7 +335,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const pendingGetConflictPromises = getConflictPromises.slice();
         getConflictPromises.length = 0;
 
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        deliverRegistration(+event.createdAt, () => {
           for (const resolver of pendingPromises) {
             resolver.reject(conflictError);
           }
@@ -312,6 +388,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const hasWaitingConsumer = promises.length > 0;
         const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook', {
           armed: hasWaitingConsumer,
+          deliveredAt: +event.createdAt,
         });
 
         if (hasWaitingConsumer) {
@@ -452,6 +529,42 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         ctx.invocationsQueue.delete(correlationId);
         // Mark that the event log confirms disposal happened
         hasDisposedEvent = true;
+
+        const claimedBy = event.eventData?.forceClaimedBy;
+        if (claimedBy) {
+          // Not this run's disposal: another run took the token
+          // (`experimental_force`). Deliveries that landed before this row are
+          // already buffered or delivered and stay valid — the takeover is
+          // ordered after them — so only the awaiters that would otherwise
+          // wait for a payload that now goes elsewhere are rejected, here and
+          // for every later `await`. `hook_created` may be missing from the
+          // log when the takeover beat a cross-region creation's journal, so
+          // `getConflict` awaiters are settled too: the hook was registered,
+          // it just no longer holds the token.
+          const error = new HookForceClaimedError(
+            token,
+            claimedBy.runId,
+            claimedBy.hookId
+          );
+          forceClaimedErrorRef = error;
+          const pendingPromises = promises.slice();
+          promises.length = 0;
+          const pendingGetConflictPromises = getConflictPromises.slice();
+          getConflictPromises.length = 0;
+          ctx.promiseQueue = ctx.promiseQueue.then(() => {
+            for (const resolver of pendingPromises) {
+              resolver.reject(error);
+            }
+            for (const resolver of pendingGetConflictPromises) {
+              resolver.resolve(null);
+            }
+          });
+          webhookLogger.debug('Hook force-claimed by another run', {
+            correlationId,
+            token,
+            claimedByRunId: claimedBy.runId,
+          });
+        }
         // We're done processing any more events for this hook
         return EventConsumerResult.Finished;
       }
@@ -475,10 +588,9 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     function createHookPromise(): Promise<T> {
       const resolvers = withResolvers<T>();
 
-      // If we have a conflict, reject through the promiseQueue to maintain
-      // deterministic ordering with any prior queued resolutions.
+      // A consumed conflict may still be waiting on earlier deliveries.
       if (hasConflict && conflictErrorRef) {
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        afterRegistration(() => {
           resolvers.reject(conflictErrorRef);
         });
         return resolvers.promise;
@@ -497,6 +609,16 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         }
       }
 
+      // Buffered payloads above are drained first: they landed before the
+      // takeover. With none left, nothing can ever arrive for this hook again.
+      if (forceClaimedErrorRef) {
+        const error = forceClaimedErrorRef;
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          resolvers.reject(error);
+        });
+        return resolvers.promise;
+      }
+
       if (eventLogEmpty) {
         scheduleWorkflowSuspension(ctx);
       }
@@ -509,20 +631,20 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     // Helper function to create a promise that resolves with the hook's
     // registration outcome: the conflicting `Run` when the token is owned
     // by another active hook, `null` once this hook's registration is
-    // committed. Both fast-paths settle through `ctx.promiseQueue` so
-    // resolution order always matches event-log order.
+    // committed. Fast paths share the event's delivery gate so they cannot
+    // overtake earlier deliveries while registration is still pending.
     function createGetConflictPromise(): Promise<Run<unknown> | null> {
       const resolvers = withResolvers<Run<unknown> | null>();
 
       if (hasCreated) {
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        afterRegistration(() => {
           resolvers.resolve(null);
         });
         return resolvers.promise;
       }
 
       if (hasConflict) {
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        afterRegistration(() => {
           if (conflictRunRef) {
             resolvers.resolve(conflictRunRef);
           } else {

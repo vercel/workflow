@@ -11,7 +11,7 @@ import {
 import { isSpanDimmedBySearch, type SpanSearchResult } from '../search';
 import type { Span } from '../types';
 import { formatDurationPrecise } from '../util/timing';
-import { getSpanDurationMs, isSpanErrored } from '../utils';
+import { getSpanDurationMs, isSpanCancelled, isSpanErrored } from '../utils';
 import { MiddleTruncate } from './middle-truncate/middle-truncate';
 import { ROW_HEIGHT_PX, useRowWindow } from './use-row-window';
 
@@ -36,11 +36,21 @@ const defaultStyle: EventStyle = {
 
 const ROW_HEIGHT_CLASS = 'h-10';
 
-function getEventStyle(resource: string, isErrored: boolean): EventStyle {
+function getEventStyle(
+  resource: string,
+  isErrored: boolean,
+  isCancelled: boolean
+): EventStyle {
   const style = eventStyles[resource] ?? defaultStyle;
   return {
     icon: style.icon,
-    className: cn(isErrored ? 'text-red-900' : style.className),
+    className: cn(
+      isErrored
+        ? 'text-red-900'
+        : isCancelled
+          ? 'text-gray-900'
+          : style.className
+    ),
     label: style.label,
   };
 }
@@ -58,11 +68,12 @@ const EventRow = ({
 }) => {
   const durationMs = getSpanDurationMs(span);
   const isErrored = isSpanErrored(span);
+  const isCancelled = isSpanCancelled(span);
   const {
     icon: Icon,
     className: tagClassName,
     label: iconLabel,
-  } = getEventStyle(span.resource, isErrored);
+  } = getEventStyle(span.resource, isErrored, isCancelled);
 
   return (
     <li

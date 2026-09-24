@@ -1,5 +1,11 @@
 # @workflow/swc-plugin
 
+## 5.0.0-beta.7
+
+### Patch Changes
+
+- [#3891](https://github.com/vercel/workflow/pull/3891) [`c29200f`](https://github.com/vercel/workflow/commit/c29200fac5848fb8e40bf77351b5b69d10a31357) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Fix a crash ("Cannot redefine property: classId") when a bundler pipeline re-runs the transform over its own output for a dependency that ships custom serialization methods, such as `@ai-sdk/gateway`.
+
 ## 5.0.0-beta.6
 
 ### Patch Changes

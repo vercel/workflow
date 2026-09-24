@@ -5,6 +5,7 @@ import {
   __peekBaselineEntryForTests,
   BASELINE_BUNDLE_FILENAME,
   runQuickJSWorkflow,
+  startQuickJSWorkflow,
 } from './quickjs-runtime.js';
 
 /** Helper to deserialize the format-prefixed result bytes */
@@ -424,6 +425,202 @@ describe('runQuickJSWorkflow', () => {
       ],
     });
     expect(unwrapResult(r2.completed!.result)).toBe('caught: boom');
+  });
+});
+
+describe('fresh attribute validation', () => {
+  it.each([
+    false,
+    true,
+  ])('keeps validation ahead of step results on replay (async wrapper: %s)', async (asyncWrapper) => {
+    const run = makeRun();
+    const options = {
+      workflowCode: `
+        var step = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//test//race");
+        var dispatcher = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
+        async function setAttributes(changes) { await dispatcher(changes); }
+        async function workflow() {
+          var pendingStep = step();
+          var changes = Array.from({ length: 32 }, function(_, i) {
+            return { key: "key" + i, value: "x".repeat(256) };
+          });
+          var attributePromise = ${asyncWrapper ? 'setAttributes' : 'dispatcher'}(changes);
+          var winner;
+          try { winner = await Promise.race([pendingStep, attributePromise]); }
+          catch (error) { winner = { name: error.name, fatal: error.fatal }; }
+          await pendingStep;
+          return winner;
+        }
+        globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+      `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+    };
+    const input = runCreatedEvent(run);
+    const fresh = await startQuickJSWorkflow({ ...options, events: [input] });
+    try {
+      assert(fresh.result.suspended);
+      expect(fresh.result.suspended.pendingOperations).toHaveLength(1);
+      expect(fresh.result.suspended.pendingOperations[0].type).toBe('step');
+      const stepCompleted = {
+        eventId: 'evnt_race_step',
+        runId: run.runId,
+        eventType: 'step_completed' as const,
+        correlationId:
+          fresh.result.suspended.pendingOperations[0].correlationId,
+        eventData: { result: serialize('step won') },
+        createdAt: run.createdAt,
+      };
+      const continued = await fresh.continueWithEvents([stepCompleted]);
+      const replayed = await runQuickJSWorkflow({
+        ...options,
+        events: [input, stepCompleted],
+      });
+      for (const result of [continued, replayed]) {
+        assert(result.completed);
+        expect(unwrapResult(result.completed.result)).toEqual({
+          name: 'FatalError',
+          fatal: true,
+        });
+        expect(result.completed.drainOperations).toBeUndefined();
+      }
+    } finally {
+      fresh.dispose();
+    }
+  });
+
+  it.each([
+    false,
+    true,
+  ])('checks the exact UTF-8 eventData boundary (reserved flag: %s)', async (allowReservedAttributes) => {
+    const changes = Array.from({ length: 29 }, (_, i) => ({
+      key: `key${i}`,
+      value: i === 28 ? '' : '\u00e9'.repeat(128),
+    }));
+    const eventData = {
+      changes,
+      writer: { type: 'workflow' },
+      ...(allowReservedAttributes ? { allowReservedAttributes: true } : {}),
+    };
+    changes[28].value = 'x'.repeat(
+      8192 - new TextEncoder().encode(JSON.stringify(eventData)).length
+    );
+    const run = makeRun();
+    const options = {
+      workflowCode: `
+          async function workflow(changes) {
+            try {
+              await globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")](changes, {
+                allowReservedAttributes: ${allowReservedAttributes},
+              });
+            } catch (error) {
+              return { name: error.name, message: error.message, isError: error instanceof Error };
+            }
+          }
+          globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+        `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+    };
+    const accepted = await runQuickJSWorkflow({
+      ...options,
+      events: [runCreatedEvent(run, [changes])],
+    });
+    expect(accepted.suspended?.pendingOperations).toHaveLength(1);
+    expect(accepted.suspended?.pendingOperations[0]).toMatchObject({
+      type: 'attribute',
+      changes,
+    });
+
+    changes[28].value += 'x';
+    const rejected = await runQuickJSWorkflow({
+      ...options,
+      events: [runCreatedEvent(run, [changes])],
+    });
+    assert(rejected.completed);
+    expect(unwrapResult(rejected.completed.result)).toEqual({
+      name: 'FatalError',
+      message: expect.stringContaining('received 8193 bytes'),
+      isError: true,
+    });
+    expect(rejected.completed.drainOperations).toBeUndefined();
+  });
+
+  it('preserves oversized history and IDs while rejecting fresh writes on replay and live continuation', async () => {
+    const run = makeRun();
+    const oversized = Array.from({ length: 32 }, (_, i) => ({
+      key: `key${i}`,
+      value: 'x'.repeat(256),
+    }));
+    const small = [{ key: 'status', value: 'ok' }];
+    const options = {
+      workflowCode: `
+        var setAttributes = globalThis[Symbol.for("WORKFLOW_SET_ATTRIBUTES")];
+        async function workflow(first, oversized) {
+          var caught = 0;
+          try { await setAttributes(first); } catch (error) { caught++; }
+          await setAttributes([{ key: 'status', value: 'ok' }]);
+          try { await setAttributes(oversized); } catch (error) { caught++; }
+          return caught;
+        }
+        globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+      `,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+    };
+    const control = await runQuickJSWorkflow({
+      ...options,
+      events: [runCreatedEvent(run, [small, oversized])],
+    });
+    assert(control.suspended);
+    const historical = {
+      eventId: 'evnt_old_attr',
+      runId: run.runId,
+      eventType: 'attr_set' as const,
+      correlationId: control.suspended.pendingOperations[0].correlationId,
+      eventData: { changes: oversized, writer: { type: 'workflow' as const } },
+      createdAt: run.createdAt,
+    };
+    const input = runCreatedEvent(run, [oversized, oversized]);
+    const replayed = await runQuickJSWorkflow({
+      ...options,
+      events: [input, historical],
+    });
+    const fresh = await startQuickJSWorkflow({ ...options, events: [input] });
+    try {
+      assert(fresh.result.suspended);
+      expect(fresh.result.suspended.pendingOperations).toHaveLength(1);
+      expect(fresh.result.suspended).toEqual(replayed.suspended);
+      const nextEvent = {
+        ...historical,
+        eventId: 'evnt_next_attr',
+        correlationId:
+          fresh.result.suspended.pendingOperations[0].correlationId,
+        eventData: { changes: small, writer: { type: 'workflow' as const } },
+      };
+      expect(nextEvent.correlationId).not.toBe(historical.correlationId);
+      const continued = await fresh.continueWithEvents([nextEvent]);
+      assert(continued.completed);
+      expect(unwrapResult(continued.completed.result)).toBe(2);
+      expect(continued.completed.drainOperations).toBeUndefined();
+
+      for (const history of [
+        [input, nextEvent],
+        [input, historical, nextEvent],
+      ]) {
+        const result = await runQuickJSWorkflow({
+          ...options,
+          events: history,
+        });
+        assert(result.completed);
+        expect(unwrapResult(result.completed.result)).toBe(
+          history.length === 2 ? 2 : 1
+        );
+        expect(result.completed.drainOperations).toBeUndefined();
+      }
+    } finally {
+      fresh.dispose();
+    }
   });
 });
 
@@ -1064,6 +1261,105 @@ describe('hook payload buffering', () => {
 
     expect(r2.completed).toBeDefined();
     expect(unwrapResult(r2.completed!.result)).toEqual(trickyPayload);
+  });
+});
+
+describe('hook_conflict on a forced hook', () => {
+  // The workflow forces a token and reports how its awaiter and getConflict()
+  // settle. What the hook_conflict carries decides between a catchable
+  // conflict and a fatal misconfiguration; mirrors the node:vm test in
+  // workflow/hook.test.ts.
+  const code = `
+    async function workflow() {
+      var hook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")]({
+        token: "shared",
+        experimental_force: true,
+      });
+      var awaited;
+      try {
+        await hook;
+        awaited = "resolved";
+      } catch (error) {
+        awaited = { name: error.name, fatal: !!error.fatal, conflictingRunId: error.conflictingRunId };
+      }
+      var conflict;
+      try {
+        var run = await hook.getConflict();
+        conflict = run ? { runId: run.runId } : null;
+      } catch (error) {
+        // Without the workflow class registry (not loaded in this bare VM)
+        // there is no Run handle to resolve with, so getConflict() rejects
+        // with the same error the awaiter got.
+        conflict = { name: error.name, fatal: !!error.fatal };
+      }
+      return { awaited: awaited, conflict: conflict };
+    }
+    workflow.workflowId = "workflow//test//workflow";
+    globalThis.__private_workflows.set("workflow//test//workflow", workflow);
+  `;
+
+  async function runWithConflict(eventData: Record<string, unknown>) {
+    const run = makeRun();
+    const first = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      worldCapabilities: { hookForceClaim: true },
+      events: [],
+    });
+    const hookOp = first.suspended!.pendingOperations.find(
+      (o) => o.type === 'hook'
+    )!;
+    expect(hookOp).toMatchObject({ token: 'shared', force: true });
+    const second = await runQuickJSWorkflow({
+      workflowCode: code,
+      workflowId: 'workflow//test//workflow',
+      workflowRun: run,
+      worldCapabilities: { hookForceClaim: true },
+      events: [
+        runCreatedEvent(run),
+        {
+          eventId: 'evnt_001',
+          runId: run.runId,
+          eventType: 'hook_conflict',
+          correlationId: hookOp.correlationId,
+          eventData: { token: 'shared', ...eventData },
+          createdAt: new Date('2025-01-01T00:00:01Z'),
+        },
+      ],
+    });
+    expect(second.completed).toBeDefined();
+    return unwrapResult(second.completed!.result) as {
+      awaited: unknown;
+      conflict: unknown;
+    };
+  }
+
+  it('is a FatalError when unmarked: the World does not implement forcing', async () => {
+    const out = await runWithConflict({ conflictingRunId: 'wrun_victim' });
+    expect(out.awaited).toEqual({
+      name: 'FatalError',
+      fatal: true,
+      conflictingRunId: undefined,
+    });
+    expect(out.conflict).toEqual({ name: 'FatalError', fatal: true });
+  });
+
+  it('stays an ordinary HookConflictError when the World declined on purpose (forceRefusedReason)', async () => {
+    // The run holding the token predates involuntary disposal, so the World
+    // would not take it: the caller gets
+    // the everyday conflict and the owning run's handle, exactly as without
+    // `experimental_force`.
+    const out = await runWithConflict({
+      conflictingRunId: 'wrun_legacy_victim',
+      forceRefusedReason: 'victim-spec-version',
+    });
+    expect(out.awaited).toEqual({
+      name: 'HookConflictError',
+      fatal: false,
+      conflictingRunId: 'wrun_legacy_victim',
+    });
+    expect(out.conflict).toEqual({ name: 'HookConflictError', fatal: false });
   });
 });
 

@@ -60,9 +60,15 @@ import {
   type LoadedEventLog,
   maxEventSlot,
   queueMessage,
+  queueMessages,
+  runDispatchContext,
   slotSnapshotParams,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
+import {
+  publishForceClaimVictimWake,
+  republishOwedForceClaimVictimWake,
+} from './hook-wake.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import type { PreclaimedInlineStart } from './step-executor.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
@@ -232,28 +238,6 @@ export interface SuspensionHandlerResult {
    */
   inlineClaims: Map<string, PreclaimedInlineStart>;
   /**
-   * The highest slot the batched fan-out committed, when it ran. The batch's
-   * own events are not in the caller's loaded log (the next reload picks
-   * them up), so the caller folds this ceiling into the slot snapshot it
-   * hands the inline executions; otherwise every inline terminal write
-   * would name a pre-batch position and be answered with a skipped-slot
-   * report echoing the events this suspension just wrote. Under
-   * {@link SuspensionHandlerParams.allowDeferredBatchWork} this covers the
-   * chunks that had committed by the handler's return (always the pair
-   * chunk); a trailing chunk that commits later is echoed back on the
-   * terminal writes like any foreign event: reports the executor reads for
-   * position and discards.
-   *
-   * So the echo is only fully suppressed for a SINGLE-chunk fold. On a
-   * multi-chunk fan-out the bodies start off the pair chunk while trailing
-   * chunks are still in flight, and an inline terminal write issued in that
-   * window still names a position below them and still draws a report for
-   * their events. Bounded (trailing chunks only, large fan-outs only) and
-   * self-correcting on the next reload, and recorded so a report seen there
-   * reads as expected rather than as a bug.
-   */
-  batchCommittedSlotCeiling?: number;
-  /**
    * The batched fan-out's deferred work, present only when the caller opted
    * in via {@link SuspensionHandlerParams.allowDeferredBatchWork} and
    * trailing work exists: the commits of every chunk except the pair chunk,
@@ -270,9 +254,15 @@ export interface SuspensionHandlerResult {
    * correlationId of the wait that produced that timeout. The
    * correlationId seeds the idempotency key for the wait-continuation
    * queue message so that repeated suspension passes over the same
-   * pending wait collapse into a single delayed continuation.
+   * pending wait collapse into a single delayed continuation. `resumeAtMs`
+   * is that wait's absolute deadline, for gates that ask whether it can fire
+   * within some window rather than how long until it does.
+   *
+   * Covers every wait still in the workflow's queue, not only ones this
+   * suspension created: a `sleep()` that lost a `Promise.race` stays queued
+   * (and reported here) until its `wait_completed` lands.
    */
-  waitTimeout?: { seconds: number; correlationId: string };
+  waitTimeout?: { seconds: number; correlationId: string; resumeAtMs: number };
   /**
    * Whether a hook create committed a `hook_conflict` — the token was already
    * claimed, so this run's hook was never created and the workflow must
@@ -360,11 +350,17 @@ async function createHookEvent({
   requestId,
   sinceCursor,
   createEvent,
+  world,
 }: {
   runId: string;
   hookEvent: CreateEventRequest;
   queueItem: HookInvocationQueueItem;
   requestId?: string;
+  /**
+   * Needed only to wake the run a forced creation took its token from; see
+   * `publishForceClaimVictimWake`.
+   */
+  world: World;
   /**
    * Cursor to ask the World for the event-log delta against, or undefined to
    * not ask. See `hookDeltaCursor` in {@link handleSuspension} for when it is
@@ -396,6 +392,28 @@ async function createHookEvent({
         hasHookConflict: true,
         hasAwaitedHookCreation: false,
       };
+    }
+
+    // A forced creation that took the token over: the World journaled the
+    // victim's `hook_disposed{forceClaimedBy}` and recorded the victim on the
+    // hook. The victim only reads that row when something invokes it, and the
+    // World has no queue, so the wake is ours to publish — before the hook
+    // phase is considered done, so a claimer that dies here re-posts and
+    // republishes (the World answers a completed takeover with the same
+    // `claimedFrom`, on the adoption path). See `publishForceClaimVictimWake`
+    // for why a wake that still fails does not fail the claimer.
+    if (result.hook?.claimedFrom) {
+      const outcome = await publishForceClaimVictimWake(
+        world,
+        runId,
+        result.hook
+      );
+      runtimeLogger.info('Hook token force-claimed from another run', {
+        workflowRunId: runId,
+        hookId: queueItem.correlationId,
+        victimRunId: result.hook.claimedFrom.runId,
+        victimWake: outcome,
+      });
     }
 
     return {
@@ -462,6 +480,12 @@ export async function handleSuspension({
   allowDeferredBatchWork,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
+
+  // A forced creation whose victim wake this run still owes (the invocation
+  // that created it died before publishing) is repaid before anything else;
+  // see `forcedCreationOwingWake` for the rule and why it reads the log as
+  // loaded, before this suspension's writes.
+  await republishOwedForceClaimVictimWake(world, runId, eventLog?.events);
 
   // Turbo mode: hold every world write below until the backgrounded
   // `run_started` has *settled*, so we never write a step/hook/wait event for a
@@ -743,56 +767,77 @@ export async function handleSuspension({
   if (hookItemsByToken.size > 0) {
     const hookPhaseStart = Date.now();
     await ensureRunReady();
-    await settlePhase(
-      [...hookItemsByToken.values()].map(async (items) => {
-        for (const queueItem of items) {
-          let creationConflicted = false;
+    const processHookGroup = async (
+      items: HookInvocationQueueItem[]
+    ): Promise<void> => {
+      for (const queueItem of items) {
+        let creationConflicted = false;
 
-          if (!queueItem.hasCreatedEvent) {
-            const hookMetadata =
-              typeof queueItem.metadata === 'undefined'
-                ? undefined
-                : await dehydrateInput(queueItem.metadata, {
-                    source: 'hook_metadata',
-                    correlationId: queueItem.correlationId,
-                  });
-            const hookEvent: CreateEventRequest = {
-              eventType: 'hook_created' as const,
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: queueItem.correlationId,
-              eventData: {
-                token: queueItem.token,
-                tokenRetentionUntil: queueItem.tokenRetentionUntil,
-                metadata: hookMetadata,
-                isWebhook: queueItem.isWebhook ?? false,
-                ...(queueItem.isSystem && { isSystem: true }),
-              },
-            };
-            const result = await createHookEvent({
-              runId,
-              hookEvent,
-              queueItem,
-              requestId,
-              sinceCursor: hookDeltaCursor,
-              createEvent: createGuarded,
-            });
-            if (result.hasHookConflict) {
-              hookConflictCorrelationIds.push(queueItem.correlationId);
-            }
-            if (result.hasAwaitedHookCreation) {
-              awaitedHookCorrelationIds.push(queueItem.correlationId);
-            }
-            creationConflicted = result.hasHookConflict;
+        if (!queueItem.hasCreatedEvent) {
+          const hookMetadata =
+            typeof queueItem.metadata === 'undefined'
+              ? undefined
+              : await dehydrateInput(queueItem.metadata, {
+                  source: 'hook_metadata',
+                  correlationId: queueItem.correlationId,
+                });
+          const hookEvent: CreateEventRequest = {
+            eventType: 'hook_created' as const,
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: queueItem.correlationId,
+            eventData: {
+              token: queueItem.token,
+              tokenRetentionUntil: queueItem.tokenRetentionUntil,
+              metadata: hookMetadata,
+              isWebhook: queueItem.isWebhook ?? false,
+              ...(queueItem.isSystem && { isSystem: true }),
+              ...(queueItem.force && { force: true }),
+            },
+          };
+          const result = await createHookEvent({
+            runId,
+            hookEvent,
+            queueItem,
+            requestId,
+            sinceCursor: hookDeltaCursor,
+            createEvent: createGuarded,
+            world,
+          });
+          if (result.hasHookConflict) {
+            hookConflictCorrelationIds.push(queueItem.correlationId);
           }
-
-          // Dispose after creation for hooks born and disposed within this
-          // batch. A hook whose creation conflicted was never created, so
-          // there is nothing to dispose.
-          if (queueItem.disposed && !creationConflicted) {
-            await disposeHook(queueItem);
+          if (result.hasAwaitedHookCreation) {
+            awaitedHookCorrelationIds.push(queueItem.correlationId);
           }
+          creationConflicted = result.hasHookConflict;
         }
-      })
+
+        // Dispose after creation for hooks born and disposed within this
+        // batch. A hook whose creation conflicted was never created, so
+        // there is nothing to dispose.
+        if (queueItem.disposed && !creationConflicted) {
+          await disposeHook(queueItem);
+        }
+      }
+    };
+    // A forced creation owes its victim a wake, and a replay can only tell
+    // that debt is still open while the forced `hook_created` is the last
+    // event this run wrote (`forcedCreationOwingWake`). So nothing else this
+    // suspension writes may land between that row and the wake: token groups
+    // holding a forced creation run first, one at a time (their wake is
+    // published inside the group, before its next write), and every other
+    // group only starts once they have all settled. Suspensions without a
+    // forced hook take the concurrent path below unchanged.
+    const groups = [...hookItemsByToken.values()];
+    const holdsForcedCreation = (items: HookInvocationQueueItem[]) =>
+      items.some((item) => item.force === true && !item.hasCreatedEvent);
+    for (const items of groups.filter(holdsForcedCreation)) {
+      await settlePhase([processHookGroup(items)]);
+    }
+    await settlePhase(
+      groups
+        .filter((items) => !holdsForcedCreation(items))
+        .map(processHookGroup)
     );
     hookCreationMs = Date.now() - hookPhaseStart;
   }
@@ -1011,7 +1056,7 @@ export async function handleSuspension({
     failedStepCorrelationIds.add(queueItem.correlationId);
     // Release the inline slot bookkeeping: the step never runs, so it must
     // not appear in the rebuilt `lazyInlineSteps`. (Its slot in the first-N
-    // selection and in `inlinePairFoldEligible`'s arithmetic was consumed
+    // selection and in `inlinePairFoldEligible`'s count was consumed
     // before dehydration could reveal the failure, inherent to selecting
     // before serializing, and bounded to one wasted slot on a pass that
     // ends in a forced replay anyway.)
@@ -1109,30 +1154,28 @@ export async function handleSuspension({
 
   // Pre-claimed inline pairs: fold each lazy-inline step's deferred
   // `step_created` (carrying its input) AND its `step_started` claim (bare,
-  // ownership-stamped) into the batch, so the whole fan-out (the inline
-  // steps' claims included) commits in the one durable write and the caller
+  // ownership-stamped) into the batch, so the inline steps' claims commit in
+  // one durable write (the pair chunk, see the flush below) and the caller
   // starts the bodies straight off that commit instead of posting one claim
-  // per inline step. The lone-inline case (nothing else to batch with) is
-  // excluded: a pair-only batch costs the same round trip as the single lazy
-  // claim while giving up the optimistic claim/body overlap and the
-  // bump-and-report that `createGuarded` provides, so it stays on the lazy
-  // path. Requires the caller's `ownerMessageId`: the started row must
-  // stamp ownership exactly like the lazy claim it replaces (and a caller
-  // that does not inline-execute never provides one).
-  const uncreatedWaitCount = waitItems.filter(
-    (item) => !item.hasCreatedEvent
-  ).length;
+  // per inline step. Requires TWO or more inline steps, and nothing else:
+  // the pairs commit in a chunk of their own, so plain creates alongside
+  // them share no round trip with the pairs and cannot make a lone pair
+  // worth folding. A lone inline step is better served by the lazy
+  // `step_started`: one row instead of two, optimistic-start capable (the
+  // claim overlaps the body), with the slot-snapshot params and
+  // bump-and-report `createGuarded` provides, all of which a pair-only
+  // batch of one pair gives up for the same round trip. Two or more inline
+  // steps become ONE pair chunk instead of N parallel lazy claims, which is
+  // the saving. A lone inline step alongside eager creates therefore takes
+  // the lazy path while the creates still batch. Also requires the caller's
+  // `ownerMessageId`: the started row must stamp ownership exactly like the
+  // lazy claim it replaces (and a caller that does not inline-execute never
+  // provides one).
   const inlinePairFoldEligible =
     batchFanoutEligible &&
     ownerMessageId !== undefined &&
-    lazyInlineCorrelationIds.size > 0 &&
-    (lazyInlineCorrelationIds.size >= 2 ||
-      stepsNeedingCreation.size -
-        lazyInlineCorrelationIds.size +
-        uncreatedWaitCount >=
-        1);
+    lazyInlineCorrelationIds.size >= 2;
   const inlineClaims: SuspensionHandlerResult['inlineClaims'] = new Map();
-  let batchCommittedSlotCeiling: number | undefined;
 
   // The trace carrier for resilient step dispatches, resolved at most once per
   // suspension (the per-step ops run concurrently and share it).
@@ -1156,8 +1199,9 @@ export async function handleSuspension({
       // Deterministic position in the batched fold (assigned in stepItems
       // order, before the concurrent dehydration runs). A pair-folded inline
       // step occupies two consecutive positions (created row then started
-      // row), which the flush keeps adjacent and never splits across chunks,
-      // so a World can fold them into one born-running create.
+      // row), which the flush keeps adjacent, never splits across chunks,
+      // and commits in a pair-only chunk ahead of the plain creates, so a
+      // World can fold them into one born-running create.
       const pairFolded =
         inlinePairFoldEligible &&
         lazyInlineCorrelationIds.has(queueItem.correlationId);
@@ -1288,6 +1332,7 @@ export async function handleSuspension({
                 traceCarrier,
                 requestedAt: new Date(),
                 stepInput: { input: dehydratedInput },
+                runContext: runDispatchContext(run),
               },
               // Same key as the caller's dispatch pass and any concurrent
               // handler's, so redundant publishes for this step dedupe. The
@@ -1446,7 +1491,9 @@ export async function handleSuspension({
   // delivery the way a single-path rejection would.
   //
   // Latency shape: only the chunk carrying the pre-claimed inline pairs
-  // gates the handler's return (the caller starts bodies off its claims).
+  // gates the handler's return (the caller starts bodies off its claims),
+  // and that chunk carries NOTHING else, so its commit is as small as the
+  // inline slice (see the chunking below).
   // Every other chunk's commit (and every chunk's step-message publishes,
   // which fire the moment ITS creates are durable) rides
   // `deferredBatchWork` when the caller opted in, joined before ack. A slow
@@ -1467,13 +1514,20 @@ export async function handleSuspension({
         }
         const entries = [...batchQueue].sort((a, b) => a.order - b.order);
         await ensureRunReady();
-        // A batch of ONE gains nothing over the single write (same round
-        // trip) and loses the slot-snapshot params + bump-and-report that
-        // createGuarded provides, so a lone eager event takes the ordinary
-        // single path, with the same conflict tolerance and ownership
-        // bookkeeping it would have had without the fold.
-        if (entries.length === 1) {
-          const [entry] = entries;
+        // The ordinary single path for a lone plain entry: a batch of ONE
+        // gains nothing over the single write (same round trip) and loses
+        // the slot-snapshot params + bump-and-report that createGuarded
+        // provides, so a lone eager event is written the way it would have
+        // been without the fold, with the same conflict tolerance and
+        // ownership bookkeeping. Used when the whole fold is one entry
+        // (below) and when the plain partition beside the pairs is one
+        // entry (the chunking further down). Beside a pair chunk it commits
+        // concurrently with the handler's return, like a trailing chunk; the
+        // inline bodies do not depend on it (executor writes carry no slot
+        // snapshot, so there is no position for it to move).
+        const commitSingle = async (
+          entry: (typeof entries)[number]
+        ): Promise<void> => {
           try {
             await createGuarded(entry.event, { requestId });
             if (entry.kind === 'step') {
@@ -1495,6 +1549,9 @@ export async function handleSuspension({
               throw err;
             }
           }
+        };
+        if (entries.length === 1) {
+          await commitSingle(entries[0]);
           return;
         }
         // Seed for the foreign-interleaving diagnostic below. With chunks
@@ -1507,17 +1564,32 @@ export async function handleSuspension({
         const expectedFirstSlot = eventLog
           ? (maxEventSlot(eventLog.events) ?? 0) + 1
           : undefined;
-        // Pair-aware chunking: a pre-claimed pair's two rows must land in
-        // the same createBatch call (adjacent, so a World can fold them
-        // into one born-running create) and never straddle a chunk
-        // boundary, which would turn the started row into a standalone
-        // claim racing its own create's commit.
-        const chunks: (typeof entries)[] = [];
-        {
+        // Pair-aware chunking. Two rules:
+        //
+        // 1. A pre-claimed pair's two rows must land in the same createBatch
+        //    call (adjacent, so a World can fold them into one born-running
+        //    create) and never straddle a chunk boundary, which would turn
+        //    the started row into a standalone claim racing its own
+        //    create's commit.
+        // 2. The pairs commit in chunk(s) of THEIR OWN, ahead of the plain
+        //    `step`/`wait` creates, which fill the subsequent chunks. The
+        //    pair chunk is the one commit the inline bodies wait for (see
+        //    `pairCommits` below), and on the Vercel backend its latency
+        //    scales with the transaction's item count: measured on 32-branch
+        //    fan-outs, batches of <=8 events commit in ~56 ms p50 server-side
+        //    where batches of 24-32 events take ~110 ms. Padding the pair
+        //    chunk with plain creates up to the cap therefore held the
+        //    bodies for the plain creates' commit, which nothing else
+        //    needed: a plain create gates only its own queue publish, and
+        //    that fires off whichever sibling chunk carries it. Splitting
+        //    them keeps the pair chunk small (two rows per inline step) and
+        //    lets the plain creates commit concurrently beside it.
+        const chunkEntries = (list: typeof entries): (typeof entries)[] => {
+          const out: (typeof entries)[] = [];
           let current: typeof entries = [];
-          for (let index = 0; index < entries.length; index++) {
-            const entry = entries[index];
-            const next = entries[index + 1];
+          for (let index = 0; index < list.length; index++) {
+            const entry = list[index];
+            const next = list[index + 1];
             const pairLead =
               entry.kind === 'inline-created' &&
               next?.kind === 'inline-started' &&
@@ -1527,7 +1599,7 @@ export async function handleSuspension({
               current.length > 0 &&
               current.length + take > MAX_BATCH_FANOUT_EVENTS
             ) {
-              chunks.push(current);
+              out.push(current);
               current = [];
             }
             current.push(entry);
@@ -1536,8 +1608,32 @@ export async function handleSuspension({
               index++;
             }
           }
-          if (current.length > 0) chunks.push(current);
-        }
+          if (current.length > 0) out.push(current);
+          return out;
+        };
+        // Both partitions keep `entries`' order, so a pair's two rows
+        // (consecutive `order` values, enqueued together) stay adjacent in
+        // the pair partition.
+        const isPairRow = (entry: (typeof entries)[number]): boolean =>
+          entry.kind === 'inline-created' || entry.kind === 'inline-started';
+        const pairChunks = chunkEntries(
+          entries.filter((entry) => isPairRow(entry))
+        );
+        const plainEntries = entries.filter((entry) => !isPairRow(entry));
+        // A plain partition of exactly ONE entry is the batch-of-one case
+        // again, now that the pairs no longer share its chunk: it takes the
+        // single path (`commitSingle`) rather than a one-row createBatch,
+        // and is carried as a one-entry chunk so the per-chunk publish and
+        // settle machinery below treats it like any sibling. (A one-row
+        // remainder of a LARGER plain partition still batches: it is the
+        // pre-split behavior, unchanged here.)
+        const plainChunks =
+          plainEntries.length === 1
+            ? [plainEntries]
+            : chunkEntries(plainEntries);
+        const singleChunk =
+          plainEntries.length === 1 ? plainChunks[0] : undefined;
+        const chunks: (typeof entries)[] = [...pairChunks, ...plainChunks];
         // Steps whose queue messages THIS FLUSH will publish (the eager
         // creates), recorded before any chunk settles so the caller's
         // dispatch pass (which runs off the handler's return) skips them.
@@ -1685,22 +1781,13 @@ export async function handleSuspension({
               { status: item.status }
             );
           }
-          // Highest slot this chunk committed: the ceiling the caller folds
-          // into the inline executions' slot snapshot (see
-          // SuspensionHandlerResult.batchCommittedSlotCeiling) and one input
-          // of the interleaving diagnostic.
+          // Highest slot this chunk committed: one input of the interleaving
+          // diagnostic.
           const chunkMaxSlot = maxEventSlot(
             results.flatMap((item) =>
               item.error === undefined && item.event ? [item.event] : []
             )
           );
-          if (
-            chunkMaxSlot !== undefined &&
-            (batchCommittedSlotCeiling === undefined ||
-              chunkMaxSlot > batchCommittedSlotCeiling)
-          ) {
-            batchCommittedSlotCeiling = chunkMaxSlot;
-          }
           committedCount += results.filter(
             (item) => item.error === undefined
           ).length;
@@ -1723,37 +1810,47 @@ export async function handleSuspension({
           const stepEntries = chunk.filter((entry) => entry.kind === 'step');
           if (stepEntries.length === 0) return;
           const traceCarrier = await getStepDispatchTraceCarrier();
-          await Promise.all(
-            stepEntries.map((entry) =>
-              queueMessage(
-                world,
-                // biome-ignore lint/style/noNonNullAssertion: publishEagerSteps implies presence
-                stepDispatch!.queueName,
-                {
-                  runId,
-                  stepId: entry.correlationId,
+          // One batched publish per chunk instead of one round trip per step.
+          // The publishes are the fan-out's serialization point: they ride the
+          // shared 8-connection HTTP/1.1 agent (see `getQueueDispatcher` in
+          // world-vercel), and the caller awaits all of them before running
+          // the first inline step body, so N round trips land directly on
+          // time-to-first-step. `queueMessages` falls back to concurrent
+          // single sends on a World with no batch support.
+          await queueMessages(
+            world,
+            // biome-ignore lint/style/noNonNullAssertion: publishEagerSteps implies presence
+            stepDispatch!.queueName,
+            stepEntries.map((entry) => ({
+              message: {
+                runId,
+                stepId: entry.correlationId,
+                // biome-ignore lint/style/noNonNullAssertion: set on every 'step' entry at enqueue
+                stepName: entry.stepName!,
+                traceCarrier,
+                requestedAt: new Date(),
+                runContext: runDispatchContext(run),
+              },
+              opts: {
+                idempotencyKey: stepDispatchIdempotencyKey(
+                  entry.correlationId,
                   // biome-ignore lint/style/noNonNullAssertion: set on every 'step' entry at enqueue
-                  stepName: entry.stepName!,
-                  traceCarrier,
-                  requestedAt: new Date(),
-                },
-                {
-                  idempotencyKey: stepDispatchIdempotencyKey(
-                    entry.correlationId,
-                    // biome-ignore lint/style/noNonNullAssertion: set on every 'step' entry at enqueue
-                    entry.stepName!
-                  ),
-                }
-              )
-            )
+                  entry.stepName!
+                ),
+              },
+            }))
           );
         };
 
-        // Launch every chunk's POST now; chain each chunk's publishes on its
-        // OWN commit. A chunk whose commit rejected keeps its messages
-        // unsent (the rejection fails the delivery; redelivery re-creates
-        // and re-dispatches, deduped by the idempotency keys).
-        const commits = chunks.map((chunk) => commitChunk(chunk));
+        // Launch every chunk's POST now (the lone plain entry's guarded
+        // single create included); chain each chunk's publishes on its OWN
+        // commit, so publish-after-create holds for the single too. A chunk
+        // whose commit rejected keeps its messages unsent (the rejection
+        // fails the delivery; redelivery re-creates and re-dispatches,
+        // deduped by the idempotency keys).
+        const commits = chunks.map((chunk) =>
+          chunk === singleChunk ? commitSingle(chunk[0]) : commitChunk(chunk)
+        );
         const publishes = chunks.map(async (chunk, index) => {
           await commits[index];
           await publishChunkSteps(chunk);
@@ -1799,11 +1896,11 @@ export async function handleSuspension({
         // a pair whose commit the caller has not seen yields no
         // `inlineClaims` entry, so the caller falls back to a lazy
         // `step_started` that would race this same fold's still-in-flight
-        // pair for the same step. Today pairs always land in one chunk
-        // (they sort first, and two rows per inline step fit inside one
-        // chunk, pinned by constants.test.ts), so this is at most one
-        // commit; the filter is what keeps the property true if either cap
-        // moves.
+        // pair for the same step. The pairs occupy their own leading
+        // chunk(s), and today that is exactly ONE chunk (two rows per
+        // inline step fit inside one chunk, pinned by constants.test.ts),
+        // so this is at most one commit; the filter is what keeps the
+        // property true if either cap moves.
         const pairCommits = chunks.flatMap((chunk, index) =>
           chunk.some((entry) => entry.kind === 'inline-started')
             ? [commits[index]]
@@ -1922,7 +2019,9 @@ export async function handleSuspension({
 
   // Find the soonest pending wait (minimum timeout)
   const now = Date.now();
-  let soonestWait: { seconds: number; correlationId: string } | undefined;
+  let soonestWait:
+    | { seconds: number; correlationId: string; resumeAtMs: number }
+    | undefined;
   for (const queueItem of waitItems) {
     const resumeAtMs = queueItem.resumeAt.getTime();
     const delayMs = Math.max(1000, resumeAtMs - now);
@@ -1931,6 +2030,7 @@ export async function handleSuspension({
       soonestWait = {
         seconds: timeoutSeconds,
         correlationId: queueItem.correlationId,
+        resumeAtMs,
       };
     }
   }
@@ -1957,7 +2057,6 @@ export async function handleSuspension({
     queuedStepCorrelationIds,
     lazyInlineSteps,
     inlineClaims,
-    batchCommittedSlotCeiling,
     deferredBatchWork,
     // On hook conflict the caller advances the workflow over the conflict
     // before scheduling anything and never reads the wait timeout, so don't

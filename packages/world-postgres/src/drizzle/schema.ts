@@ -11,6 +11,7 @@ import {
 } from '@workflow/world';
 import { sql } from 'drizzle-orm';
 import {
+  bigserial,
   boolean,
   customType,
   index,
@@ -142,13 +143,14 @@ export const events = schema.table(
     eventDataJson: jsonb('payload'),
     eventData: Cbor<unknown>()('payload_cbor'),
     specVersion: integer('spec_version'),
-    // `resumeId` is omitted deliberately: world-postgres does not advertise
-    // lazy hook-resume dedup and stays on the sequential single-writer path,
-    // so it never needs to persist the resume idempotency key (no column, no
-    // migration).
+    resumeId: varchar('resume_id'),
+    resumePayloadDigest: varchar('resume_payload_digest'),
   } satisfies DrizzlishOfType<
     Cborized<
-      Omit<Event, 'occurredAt' | 'resumeId'> & { eventData?: undefined },
+      Omit<Event, 'occurredAt'> & {
+        eventData?: undefined;
+        resumePayloadDigest?: string;
+      },
       'eventData'
     >
   >,
@@ -162,6 +164,11 @@ export const events = schema.table(
     // by-run lookup and range scan is served by that index already. Keeping one
     // would cost a second write per event on the table's hottest path.
     index().on(tb.correlationId),
+    uniqueIndex('workflow_events_hook_resume_unique')
+      .on(tb.runId, tb.resumeId)
+      .where(
+        sql`${tb.eventType} = 'hook_received' AND ${tb.resumeId} IS NOT NULL`
+      ),
     // Runtime-correlated one-shot events must be unique per (run, correlation).
     // Without
     // this, two concurrent invocations producing identical correlationIds
@@ -257,6 +264,11 @@ export const hooks = schema.table(
     // Server-synthesized resume slice. Not carried by the hook_created event,
     // so this backend leaves it null; reads fall back to runs.get.
     resumeContext: Cbor<NonNullable<Hook['resumeContext']>>()('resume_context'),
+    // Set when this hook took its token from another run
+    // (`createHook({ experimental_force })`); see the hook_created branch of
+    // storage.ts. Carries the victim run's queue coordinates so the claimer's
+    // runtime can wake it.
+    claimedFrom: Cbor<NonNullable<Hook['claimedFrom']>>()('claimed_from'),
     // `resumeCapabilities` is deliberately response-only (attested fresh on
     // each by-token lookup, never persisted), so it must not become a column.
   } satisfies DrizzlishOfType<
@@ -288,6 +300,29 @@ const bytea = customType<{ data: Buffer; notNull: false; default: false }>({
     return 'bytea';
   },
 });
+
+/** Store invocation inputs and outcomes separately from workflow events. */
+export const invocations = schema.table(
+  'workflow_invocations',
+  {
+    sequence: bigserial('sequence', { mode: 'number' }).notNull(),
+    runId: varchar('run_id').notNull(),
+    requestId: varchar('request_id').notNull(),
+    payload: bytea('payload'),
+    fingerprint: varchar('fingerprint'),
+    result: bytea('result'),
+    resultVersion: integer('result_version').notNull().default(0),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    respondedAt: timestamp('responded_at'),
+    expiredAt: timestamp('expired_at'),
+  },
+  (tb) => [
+    primaryKey({ columns: [tb.runId, tb.requestId] }),
+    index('workflow_invocations_pending')
+      .on(tb.runId, tb.sequence)
+      .where(sql`${tb.respondedAt} IS NULL`),
+  ]
+);
 
 export const streams = schema.table(
   'workflow_stream_chunks',

@@ -370,6 +370,225 @@ describe('handleSuspension', () => {
     expect(result.timeoutSeconds).toBeUndefined();
   });
 
+  describe('force-claim victim wake', () => {
+    const claimedFrom = {
+      runId: 'wrun_victim',
+      hookId: 'hook_victim',
+      workflowName: 'victim-workflow',
+      deploymentId: 'dpl_victim',
+      runSpecVersion: SPEC_VERSION_CURRENT,
+    };
+    const forcedCreation = (slot: number): Event =>
+      ({
+        eventType: 'hook_created',
+        eventId: slotToEventId(slot),
+        runId: run.runId,
+        correlationId: 'hook_claimer',
+        createdAt: new Date(),
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          token: 'channel:1',
+          force: true,
+          forceClaimedFrom: claimedFrom,
+        },
+      }) as Event;
+    const stepCreated = (slot: number): Event =>
+      ({
+        eventType: 'step_created',
+        eventId: slotToEventId(slot),
+        runId: run.runId,
+        correlationId: 'step_after',
+        createdAt: new Date(),
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { stepName: 'after', input: [] },
+      }) as Event;
+    const worldWithQueue = (queue: ReturnType<typeof vi.fn>): World =>
+      ({
+        events: { create: vi.fn() },
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+        queue,
+      }) as unknown as World;
+
+    it('republishes the victim wake while the forced creation is the last event in the log', async () => {
+      // The invocation that created the hook died before waking the victim:
+      // its replay finds the creation as the log's tail and republishes,
+      // under the hook's idempotency key, so a wake that did go out is not
+      // duplicated.
+      const queue = vi.fn().mockResolvedValue({ messageId: 'msg_wake' });
+      await handleSuspension({
+        suspension: new WorkflowSuspension(new Map(), globalThis),
+        world: worldWithQueue(queue),
+        run,
+        eventLog: { events: [forcedCreation(3)], cursor: null },
+      });
+      expect(queue).toHaveBeenCalledTimes(1);
+      const [queueName, message, options] = queue.mock.calls[0];
+      expect(queueName).toContain('victim-workflow');
+      expect(message).toEqual({ runId: 'wrun_victim' });
+      expect(options).toMatchObject({
+        deploymentId: 'dpl_victim',
+        idempotencyKey: 'hook-force-claim-hook_claimer',
+      });
+    });
+
+    it("republishes past rows other actors appended: a delivery's hook_received is not this run's progress", async () => {
+      // The trace TLC found: the claimer dies after journaling, a delivery
+      // lands `hook_received` in its log before it comes back. The bare tail
+      // is no longer the creation, but the run itself has written nothing
+      // since, so the wake is still owed.
+      const queue = vi.fn().mockResolvedValue({ messageId: 'msg_wake' });
+      const received: Event = {
+        eventType: 'hook_received',
+        eventId: slotToEventId(4),
+        runId: run.runId,
+        correlationId: 'hook_claimer',
+        createdAt: new Date(),
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { token: 'channel:1', payload: { n: 1 } as never },
+      } as Event;
+      await handleSuspension({
+        suspension: new WorkflowSuspension(new Map(), globalThis),
+        world: worldWithQueue(queue),
+        run,
+        eventLog: { events: [forcedCreation(3), received], cursor: null },
+      });
+      expect(queue).toHaveBeenCalledTimes(1);
+    });
+
+    it("republishes past a later claimer's hook_disposed{forceClaimedBy}: being taken from is not this run's progress", async () => {
+      // The chain: this run took the token from the victim, died before
+      // waking it, and a third run then took the token from THIS run —
+      // appending `hook_disposed{forceClaimedBy}` to this log and waking it.
+      // That wake is the invocation that must repay the victim's; the foreign
+      // row must not read as "moved on" or the victim is never invoked.
+      const queue = vi.fn().mockResolvedValue({ messageId: 'msg_wake' });
+      const takenFrom: Event = {
+        eventType: 'hook_disposed',
+        eventId: slotToEventId(4),
+        runId: run.runId,
+        correlationId: 'hook_claimer',
+        createdAt: new Date(),
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          forceClaimedBy: { runId: 'wrun_third', hookId: 'hook_third' },
+        },
+      } as Event;
+      await handleSuspension({
+        suspension: new WorkflowSuspension(new Map(), globalThis),
+        world: worldWithQueue(queue),
+        run,
+        eventLog: { events: [forcedCreation(3), takenFrom], cursor: null },
+      });
+      expect(queue).toHaveBeenCalledTimes(1);
+      expect(queue.mock.calls[0][1]).toEqual({ runId: 'wrun_victim' });
+    });
+
+    it("stops republishing after the run's OWN hook_disposed: a dispose() in its code is its progress", async () => {
+      const queue = vi.fn().mockResolvedValue({ messageId: 'msg_wake' });
+      const ownDisposal: Event = {
+        eventType: 'hook_disposed',
+        eventId: slotToEventId(4),
+        runId: run.runId,
+        correlationId: 'hook_claimer',
+        createdAt: new Date(),
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {},
+      } as Event;
+      await handleSuspension({
+        suspension: new WorkflowSuspension(new Map(), globalThis),
+        world: worldWithQueue(queue),
+        run,
+        eventLog: { events: [forcedCreation(3), ownDisposal], cursor: null },
+      });
+      expect(queue).not.toHaveBeenCalled();
+    });
+
+    it('stops republishing once the run has appended anything after the creation', async () => {
+      // Progress after the creation means the invocation that made it
+      // finished, wake included. Republishing on every later replay would be
+      // a wasted wake of the victim for the rest of this run's life.
+      const queue = vi.fn().mockResolvedValue({ messageId: 'msg_wake' });
+      await handleSuspension({
+        suspension: new WorkflowSuspension(new Map(), globalThis),
+        world: worldWithQueue(queue),
+        run,
+        eventLog: {
+          events: [forcedCreation(3), stepCreated(4)],
+          cursor: null,
+        },
+      });
+      expect(queue).not.toHaveBeenCalled();
+    });
+  });
+
+  it('lands no other hook write between a forced creation and its victim wake', async () => {
+    // The replay repays an owed wake only while the forced `hook_created` is
+    // the last event the run wrote. A sibling hook created concurrently
+    // (another token, same suspension) could otherwise land after it while
+    // the wake is in flight, and a crash then would leave that sibling as
+    // the tail and the victim never woken.
+    const order: string[] = [];
+    const eventsCreate = vi.fn(async (_runId, event) => {
+      order.push(`${event.eventType}:${event.correlationId}`);
+      if (event.correlationId === 'hook_forced') {
+        return {
+          event,
+          hook: {
+            hookId: 'hook_forced',
+            claimedFrom: {
+              runId: 'wrun_victim',
+              hookId: 'hook_victim',
+              workflowName: 'victim-workflow',
+            },
+          },
+        };
+      }
+      return { event };
+    });
+    const queue = vi.fn(async () => {
+      // Give a concurrently started sibling every chance to write first.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      order.push('wake:wrun_victim');
+      return { messageId: 'msg_wake' };
+    });
+    const world = {
+      events: { create: eventsCreate },
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      queue,
+    } as unknown as World;
+    const pending = new Map([
+      [
+        'hook_plain',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_plain',
+          token: 'plain-token',
+        },
+      ],
+      [
+        'hook_forced',
+        {
+          type: 'hook' as const,
+          correlationId: 'hook_forced',
+          token: 'forced-token',
+          force: true,
+        },
+      ],
+    ]);
+
+    await handleSuspension({
+      suspension: new WorkflowSuspension(pending, globalThis),
+      world,
+      run,
+    });
+
+    expect(order).toEqual([
+      'hook_created:hook_forced',
+      'wake:wrun_victim',
+      'hook_created:hook_plain',
+    ]);
+  });
+
   // Regression test for #2777: a dispose() of an earlier hook must be
   // flushed before a later same-token hook's creation is validated, or the
   // new hook records a spurious hook_conflict against the run's own
@@ -1117,6 +1336,14 @@ describe('resilient step dispatch', () => {
       stepId: 's4',
       stepName: 's4',
       traceCarrier: { traceparent: '00-abc' },
+      // Immutable run identity so the consumer can start the step without a
+      // blocking runs.get (vercel/workflow#3456).
+      runContext: {
+        deploymentId: run.deploymentId,
+        specVersion: cborRun.specVersion,
+        startedAt: Number(cborRun.startedAt),
+        rootRunId: run.runId,
+      },
     });
     // The message carries the same serialized input as the direct write.
     expect(payload.stepInput.input).toBeInstanceOf(Uint8Array);
@@ -1124,6 +1351,9 @@ describe('resilient step dispatch', () => {
       ([, event]) => event.correlationId === 's4'
     )?.[1].eventData.input;
     expect(payload.stepInput.input).toBe(createdInput);
+    expect(eventsCreate.mock.calls[0][1].eventData).not.toHaveProperty(
+      'runContext'
+    );
     // Step-identity-scoped key — matches the dispatch key runtime.ts uses for
     // the same step, so redundant publishes dedupe.
     expect(opts).toMatchObject({
@@ -1584,7 +1814,6 @@ describe('handleSuspension batched fan-out', () => {
 
     expect(result.inlineClaims.size).toBe(0);
     expect(result.deferredBatchWork).toBeUndefined();
-    expect(result.batchCommittedSlotCeiling).toBeUndefined();
     // The deferred inline step still carries its input for the lazy start.
     expect(result.lazyInlineSteps).toHaveLength(1);
     expect(result.lazyInlineSteps[0].correlationId).toBe('s1');
@@ -1737,10 +1966,11 @@ describe('handleSuspension batched fan-out', () => {
         ownerMessageId: 'msg_owner_1',
       });
 
-      expect(createBatch).toHaveBeenCalledTimes(1);
+      // s1/s2 are inline: their pairs form a chunk of their own, adjacent;
+      // s3's eager create and the wait ride a second chunk — scheduling
+      // order preserved within each.
+      expect(createBatch).toHaveBeenCalledTimes(2);
       const events = createBatch.mock.calls[0][1];
-      // s1/s2 are inline: their pairs lead, adjacent; then s3's eager create
-      // and the wait — scheduling order preserved.
       expect(
         events.map((e: { event: { eventType: string } }) => e.event.eventType)
       ).toEqual([
@@ -1748,14 +1978,18 @@ describe('handleSuspension batched fan-out', () => {
         'step_started',
         'step_created',
         'step_started',
-        'step_created',
-        'wait_created',
       ]);
       expect(
         events.map(
           (e: { event: { correlationId: string } }) => e.event.correlationId
         )
-      ).toEqual(['s1', 's1', 's2', 's2', 's3', 'wait_1']);
+      ).toEqual(['s1', 's1', 's2', 's2']);
+      expect(
+        createBatch.mock.calls[1][1].map(
+          (e: { event: { eventType: string; correlationId: string } }) =>
+            `${e.event.eventType}:${e.event.correlationId}`
+        )
+      ).toEqual(['step_created:s3', 'wait_created:wait_1']);
       // The created rows carry the input; the started rows are bare claims
       // stamped with this invocation's ownership and compute instance.
       const s1Created = events[0].event;
@@ -1788,8 +2022,6 @@ describe('handleSuspension batched fan-out', () => {
         's1',
         's2',
       ]);
-      // 6 events at slots 10..15.
-      expect(result.batchCommittedSlotCeiling).toBe(15);
       expect(eventsCreate).not.toHaveBeenCalled();
     });
 
@@ -1869,9 +2101,10 @@ describe('handleSuspension batched fan-out', () => {
         ownerMessageId: 'msg_owner_1',
       });
 
-      // A pair-only batch is the same round trip as the single lazy claim
-      // but gives up the optimistic claim/body overlap — so nothing is
-      // written at all here; the deferral stands.
+      // A pair-only batch of one pair is the same round trip as the single
+      // lazy claim but gives up the optimistic claim/body overlap and the
+      // guarded write's bump-and-report — so nothing is written at all
+      // here; the deferral stands.
       expect(createBatch).not.toHaveBeenCalled();
       expect(eventsCreate).not.toHaveBeenCalled();
       expect(result.inlineClaims.size).toBe(0);
@@ -1880,13 +2113,14 @@ describe('handleSuspension batched fan-out', () => {
       ]);
     });
 
-    it('folds a lone inline pair when an eager sibling already batches', async () => {
+    it('keeps a lone inline step on the lazy path beside eager creates, which still batch', async () => {
+      const eventsCreate = vi.fn();
       const createBatch = successfulCreateBatch();
-      const world = createBatchWorld(vi.fn(), createBatch);
+      const world = createBatchWorld(eventsCreate, createBatch);
 
       const result = await handleSuspension({
         suspension: new WorkflowSuspension(
-          stepsAndWait(['s1', 's2']),
+          stepsAndWait(['s1', 's2', 's3']),
           globalThis
         ),
         world,
@@ -1894,25 +2128,38 @@ describe('handleSuspension batched fan-out', () => {
         ownerMessageId: 'msg_owner_1',
       });
 
+      // Eager company shares no round trip with a pair (the pairs commit in
+      // a chunk of their own), so it cannot make a lone pair worth folding:
+      // s1 keeps the lazy `step_started` while s2/s3 batch as before.
       expect(
-        createBatch.mock.calls[0][1].map(
-          (e: { event: { eventType: string; correlationId: string } }) =>
-            `${e.event.eventType}:${e.event.correlationId}`
+        createBatch.mock.calls.map((call) =>
+          call[1].map(
+            (e: { event: { eventType: string; correlationId: string } }) =>
+              `${e.event.eventType}:${e.event.correlationId}`
+          )
         )
-      ).toEqual(['step_created:s1', 'step_started:s1', 'step_created:s2']);
-      expect(result.inlineClaims.get('s1')?.owned).toBe(true);
-      expect([...result.createdStepCorrelationIds]).toEqual(['s2']);
+      ).toEqual([['step_created:s2', 'step_created:s3']]);
+      expect(eventsCreate).not.toHaveBeenCalled();
+      expect(result.inlineClaims.size).toBe(0);
+      expect(result.lazyInlineSteps.map((s) => s.correlationId)).toEqual([
+        's1',
+      ]);
+      expect([...result.createdStepCorrelationIds]).toEqual(['s2', 's3']);
     });
 
     it('keeps pairs whole at the chunk boundary (max inline cap)', async () => {
       // The inline cap clamps at 16, so 16 pairs = exactly 32 rows — one full
-      // chunk, pairs adjacent throughout — and the eager overflow spills into
-      // the next call. (Pairs always occupy the head rows, so with cap*2 ==
-      // MAX_BATCH_FANOUT_EVENTS a straddle is structurally unreachable; the
-      // chunker still refuses to split one should those constants diverge.)
+      // pair-only chunk, pairs adjacent throughout — and the lone eager
+      // create takes the guarded single path. (Pairs never share a chunk
+      // with plain creates, and with cap*2 == MAX_BATCH_FANOUT_EVENTS a
+      // straddle is structurally unreachable; the chunker still refuses to
+      // split one should those constants diverge.)
       vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '16');
       const createBatch = successfulCreateBatch();
-      const world = createBatchWorld(vi.fn(), createBatch);
+      const eventsCreate = vi
+        .fn()
+        .mockImplementation(async (_runId, event) => ({ event }));
+      const world = createBatchWorld(eventsCreate, createBatch);
       const stepIds = Array.from({ length: 17 }, (_, i) => `s${i + 1}`);
 
       const result = await handleSuspension({
@@ -1922,7 +2169,7 @@ describe('handleSuspension batched fan-out', () => {
         ownerMessageId: 'msg_owner_1',
       });
 
-      expect(createBatch).toHaveBeenCalledTimes(2);
+      expect(createBatch).toHaveBeenCalledTimes(1);
       const head = createBatch.mock.calls[0][1];
       expect(head).toHaveLength(32);
       // 16 adjacent created+started pairs, in step order.
@@ -1933,13 +2180,15 @@ describe('handleSuspension batched fan-out', () => {
           head[2 * pair].event.correlationId
         );
       }
-      const tail = createBatch.mock.calls[1][1];
-      expect(
-        tail.map(
-          (e: { event: { eventType: string; correlationId: string } }) =>
-            `${e.event.eventType}:${e.event.correlationId}`
-        )
-      ).toEqual(['step_created:s17']);
+      expect(eventsCreate).toHaveBeenCalledTimes(1);
+      expect(eventsCreate).toHaveBeenCalledWith(
+        slotRun.runId,
+        expect.objectContaining({
+          eventType: 'step_created',
+          correlationId: 's17',
+        }),
+        expect.anything()
+      );
       expect(result.inlineClaims.size).toBe(16);
       for (const claim of result.inlineClaims.values()) {
         expect(claim.owned).toBe(true);
@@ -1947,8 +2196,136 @@ describe('handleSuspension batched fan-out', () => {
       expect([...result.createdStepCorrelationIds]).toEqual(['s17']);
     });
 
+    describe('pairs commit in their own leading chunk', () => {
+      const shape = (call: unknown[]) =>
+        (
+          call[1] as { event: { eventType: string; correlationId: string } }[]
+        ).map((e) => `${e.event.eventType}:${e.event.correlationId}`);
+      const ids = (from: number, to: number) =>
+        Array.from({ length: to - from + 1 }, (_, i) => `s${from + i}`);
+
+      it('3 inline + 26 queued: [6 pair rows] then [26 creates]', async () => {
+        // The pair chunk carries nothing but the pairs, so the inline bodies
+        // gate on a 6-row commit; the 26 plain creates (which would have
+        // fit beside them under the 32-row cap) commit in a sibling chunk.
+        vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
+        const createBatch = successfulCreateBatch();
+        const world = createBatchWorld(vi.fn(), createBatch);
+
+        const result = await handleSuspension({
+          suspension: new WorkflowSuspension(
+            stepsAndWait(ids(1, 29)),
+            globalThis
+          ),
+          world,
+          run: slotRun,
+          ownerMessageId: 'msg_owner_1',
+        });
+
+        expect(createBatch).toHaveBeenCalledTimes(2);
+        expect(shape(createBatch.mock.calls[0])).toEqual([
+          'step_created:s1',
+          'step_started:s1',
+          'step_created:s2',
+          'step_started:s2',
+          'step_created:s3',
+          'step_started:s3',
+        ]);
+        expect(shape(createBatch.mock.calls[1])).toEqual(
+          ids(4, 29).map((id) => `step_created:${id}`)
+        );
+        expect(result.inlineClaims.size).toBe(3);
+        for (const claim of result.inlineClaims.values()) {
+          expect(claim.owned).toBe(true);
+        }
+        expect([...result.createdStepCorrelationIds]).toEqual(ids(4, 29));
+      });
+
+      it('3 inline + 40 queued: [6], [32], [8]', async () => {
+        // Plain creates fill their own chunks to the cap, after the pairs.
+        vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
+        const createBatch = successfulCreateBatch();
+        const world = createBatchWorld(vi.fn(), createBatch);
+
+        const result = await handleSuspension({
+          suspension: new WorkflowSuspension(
+            stepsAndWait(ids(1, 43)),
+            globalThis
+          ),
+          world,
+          run: slotRun,
+          ownerMessageId: 'msg_owner_1',
+        });
+
+        expect(createBatch).toHaveBeenCalledTimes(3);
+        expect(shape(createBatch.mock.calls[0])).toEqual([
+          'step_created:s1',
+          'step_started:s1',
+          'step_created:s2',
+          'step_started:s2',
+          'step_created:s3',
+          'step_started:s3',
+        ]);
+        expect(shape(createBatch.mock.calls[1])).toEqual(
+          ids(4, 35).map((id) => `step_created:${id}`)
+        );
+        expect(shape(createBatch.mock.calls[2])).toEqual(
+          ids(36, 43).map((id) => `step_created:${id}`)
+        );
+        expect(result.inlineClaims.size).toBe(3);
+        expect([...result.createdStepCorrelationIds]).toEqual(ids(4, 43));
+      });
+
+      it('3 inline + 1 wait, no queued steps: pairs chunk, wait takes the single path', async () => {
+        // No eager steps at all: the pairs still fold (three inline steps)
+        // and the wait, the only plain create, is a plain partition of one,
+        // so it takes the guarded single write rather than padding the pair
+        // chunk or going out as a one-row batch.
+        vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '3');
+        const createBatch = successfulCreateBatch();
+        const eventsCreate = vi
+          .fn()
+          .mockImplementation(async (_runId, event) => ({ event }));
+        const world = createBatchWorld(eventsCreate, createBatch);
+
+        const result = await handleSuspension({
+          suspension: new WorkflowSuspension(
+            stepsAndWait(['s1', 's2', 's3'], 'wait_1'),
+            globalThis
+          ),
+          world,
+          run: slotRun,
+          ownerMessageId: 'msg_owner_1',
+        });
+
+        expect(createBatch).toHaveBeenCalledTimes(1);
+        expect(shape(createBatch.mock.calls[0])).toEqual([
+          'step_created:s1',
+          'step_started:s1',
+          'step_created:s2',
+          'step_started:s2',
+          'step_created:s3',
+          'step_started:s3',
+        ]);
+        expect(eventsCreate).toHaveBeenCalledTimes(1);
+        expect(eventsCreate).toHaveBeenCalledWith(
+          slotRun.runId,
+          expect.objectContaining({
+            eventType: 'wait_created',
+            correlationId: 'wait_1',
+          }),
+          expect.anything()
+        );
+        expect(result.inlineClaims.size).toBe(3);
+        for (const claim of result.inlineClaims.values()) {
+          expect(claim.owned).toBe(true);
+        }
+        expect(result.createdStepCorrelationIds.size).toBe(0);
+      });
+    });
+
     it('prefers the readback step entity when the World returns one', async () => {
-      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '1');
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const serverStartedAt = new Date('2026-08-14T01:02:03.000Z');
       let slot = 30;
       const createBatch = vi
@@ -2083,12 +2460,14 @@ describe('handleSuspension batched fan-out', () => {
     });
 
     it('returns off the pair chunk; trailing chunks ride deferredBatchWork', async () => {
-      // 34 steps with a pair: chunk 1 = pair + 30 eager (32 rows), chunk 2 =
-      // 3 eager. Releasing only chunk 1 must resolve the handler with the
-      // claims; chunk 2 settles deferredBatchWork later.
+      // 35 steps with two pairs: chunk 1 = the pairs alone (4 rows), chunk
+      // 2 = 32 eager, chunk 3 = 1 eager. Releasing only chunk 1 must
+      // resolve the handler with the claims; chunks 2 and 3 settle
+      // deferredBatchWork later.
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const { createBatch, releases } = gatedCreateBatch();
       const { world, queue } = queueWorld(createBatch);
-      const stepIds = Array.from({ length: 34 }, (_, i) => `s${i + 1}`);
+      const stepIds = Array.from({ length: 35 }, (_, i) => `s${i + 1}`);
 
       const pending = handleSuspension({
         suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
@@ -2099,28 +2478,38 @@ describe('handleSuspension batched fan-out', () => {
         allowDeferredBatchWork: true,
       });
       await vi.waitFor(() => {
-        expect(createBatch).toHaveBeenCalledTimes(2);
+        expect(createBatch).toHaveBeenCalledTimes(3);
       });
+      expect(createBatch.mock.calls.map((call) => call[1].length)).toEqual([
+        4, 32, 1,
+      ]);
       releases[0]();
       const result = await pending;
 
-      // The handler returned with chunk 2 still uncommitted.
+      // The handler returned with chunks 2 and 3 still uncommitted.
       expect(result.inlineClaims.get('s1')?.owned).toBe(true);
+      expect(result.inlineClaims.get('s2')?.owned).toBe(true);
       expect(result.deferredBatchWork).toBeDefined();
       expect(await probe(result.deferredBatchWork)).toBe('pending');
       // Every eager step is claimed for in-flush publishing up front, so
       // the caller's dispatch pass skips them all.
       expect(result.queuedStepCorrelationIds.size).toBe(33);
+      // The pair chunk carries no eager step, so nothing has published yet:
+      // each plain chunk's messages wait for THAT chunk's commit.
+      await tick();
+      expect(queue).not.toHaveBeenCalled();
 
-      // Chunk 1's publishes fire off its own commit — 30 messages — while
-      // chunk 2's three wait for theirs.
+      // Chunk 2's publishes fire off its own commit — 32 messages — while
+      // chunk 3's one waits for its own.
+      releases[1]();
       await vi.waitFor(() => {
-        expect(queue).toHaveBeenCalledTimes(30);
+        expect(queue).toHaveBeenCalledTimes(32);
       });
       const publishedNow = queue.mock.calls.map((call) => call[1].stepId);
-      expect(publishedNow).not.toContain('s33');
+      expect(publishedNow).not.toContain('s35');
+      expect(await probe(result.deferredBatchWork)).toBe('pending');
 
-      releases[1]();
+      releases[2]();
       // biome-ignore lint/style/noNonNullAssertion: asserted defined above
       await result.deferredBatchWork!;
       expect(queue).toHaveBeenCalledTimes(33);
@@ -2131,10 +2520,153 @@ describe('handleSuspension batched fan-out', () => {
         runId: slotRun.runId,
         stepName: payload.stepId,
         traceCarrier: { traceparent: '00-abc' },
+        runContext: {
+          deploymentId: slotRun.deploymentId,
+          specVersion: slotRun.specVersion,
+          startedAt: Number(slotRun.startedAt),
+          rootRunId: slotRun.runId,
+        },
       });
       expect(opts.idempotencyKey).toBe(
         stepDispatchIdempotencyKey(payload.stepId, payload.stepName)
       );
+    });
+
+    it('stamps run context on batch messages, not persisted event data', async () => {
+      const createBatch = successfulCreateBatch();
+      const { world, queue } = queueWorld(createBatch);
+      const queueBatch = vi
+        .fn()
+        .mockResolvedValue([{ messageId: 'msg_s2' }, { messageId: 'msg_s3' }]);
+      world.queueBatch = queueBatch;
+      const childRun: WorkflowRun = {
+        ...slotRun,
+        attributes: { $rootRunId: 'wrun_root' },
+      };
+
+      const result = await handleSuspension({
+        suspension: new WorkflowSuspension(
+          stepsAndWait(['s1', 's2', 's3']),
+          globalThis
+        ),
+        world,
+        run: childRun,
+        ownerMessageId: 'msg_owner_1',
+        stepDispatch: stepDispatch(),
+      });
+
+      expect(queue).not.toHaveBeenCalled();
+      expect(queueBatch).toHaveBeenCalledTimes(1);
+      expect(queueBatch).toHaveBeenCalledWith(
+        queueName,
+        ['s2', 's3'].map((stepId) => ({
+          message: {
+            runId: childRun.runId,
+            stepId,
+            stepName: stepId,
+            traceCarrier: { traceparent: '00-abc' },
+            requestedAt: expect.any(Date),
+            runContext: {
+              deploymentId: childRun.deploymentId,
+              specVersion: childRun.specVersion,
+              startedAt: Number(childRun.startedAt),
+              rootRunId: 'wrun_root',
+            },
+          },
+          opts: { idempotencyKey: stepDispatchIdempotencyKey(stepId, stepId) },
+        }))
+      );
+      expect([...result.queuedStepCorrelationIds]).toEqual(['s2', 's3']);
+      for (const { event } of createBatch.mock.calls[0][1]) {
+        expect(event.eventData).not.toHaveProperty('runContext');
+      }
+    });
+
+    it('2 inline + 1 eager: pair chunk via createBatch, the eager create guarded, its publish after it', async () => {
+      // The plain partition is exactly one entry, so it takes the guarded
+      // single write (`events.create` with the slot-snapshot params) rather
+      // than a one-row createBatch, and its queue message still waits for
+      // THAT create: publish-after-create holds for the single too.
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
+      const { createBatch, releases } = gatedCreateBatch();
+      let releaseSingle: (() => void) | undefined;
+      const eventsCreate = vi.fn().mockImplementation(
+        (_runId, event) =>
+          new Promise((resolve) => {
+            releaseSingle = () => resolve({ event });
+          })
+      );
+      const queue = vi.fn().mockResolvedValue({ messageId: 'msg_q' });
+      const world = {
+        events: { create: eventsCreate, createBatch },
+        queue,
+        getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+      } as unknown as World;
+
+      const pending = handleSuspension({
+        suspension: new WorkflowSuspension(
+          stepsAndWait(['s1', 's2', 's3']),
+          globalThis
+        ),
+        world,
+        run: slotRun,
+        ownerMessageId: 'msg_owner_1',
+        stepDispatch: stepDispatch(),
+        allowDeferredBatchWork: true,
+      });
+      // Both writes are in flight together: one createBatch carrying the
+      // two pairs and nothing else, one guarded single for s3.
+      await vi.waitFor(() => {
+        expect(createBatch).toHaveBeenCalledTimes(1);
+        expect(eventsCreate).toHaveBeenCalledTimes(1);
+      });
+      expect(
+        createBatch.mock.calls[0][1].map(
+          (e: { event: { eventType: string; correlationId: string } }) =>
+            `${e.event.eventType}:${e.event.correlationId}`
+        )
+      ).toEqual([
+        'step_created:s1',
+        'step_started:s1',
+        'step_created:s2',
+        'step_started:s2',
+      ]);
+      expect(eventsCreate).toHaveBeenCalledWith(
+        slotRun.runId,
+        expect.objectContaining({
+          eventType: 'step_created',
+          correlationId: 's3',
+        }),
+        expect.anything()
+      );
+
+      // The pair chunk alone releases the handler; s3's create is trailing.
+      releases[0]();
+      const result = await pending;
+      expect(result.inlineClaims.get('s1')?.owned).toBe(true);
+      expect(result.inlineClaims.get('s2')?.owned).toBe(true);
+      expect([...result.queuedStepCorrelationIds]).toEqual(['s3']);
+      expect(result.createdStepCorrelationIds.size).toBe(0);
+      expect(await probe(result.deferredBatchWork)).toBe('pending');
+      await tick();
+      expect(queue).not.toHaveBeenCalled();
+
+      // s3's message goes out only once its own create is durable.
+      // biome-ignore lint/style/noNonNullAssertion: set by the single create
+      releaseSingle!();
+      // biome-ignore lint/style/noNonNullAssertion: asserted defined above
+      await result.deferredBatchWork!;
+      expect(queue).toHaveBeenCalledTimes(1);
+      expect(queue.mock.calls[0][1]).toMatchObject({
+        stepId: 's3',
+        runContext: {
+          deploymentId: slotRun.deploymentId,
+          specVersion: slotRun.specVersion,
+          startedAt: Number(slotRun.startedAt),
+          rootRunId: slotRun.runId,
+        },
+      });
+      expect([...result.createdStepCorrelationIds]).toEqual(['s3']);
     });
 
     it('surfaces a trailing-chunk failure through deferredBatchWork, not the return', async () => {
@@ -2160,9 +2692,12 @@ describe('handleSuspension batched fan-out', () => {
           })),
         });
       });
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const { world } = queueWorld(createBatch);
-      const stepIds = Array.from({ length: 34 }, (_, i) => `s${i + 1}`);
+      const stepIds = Array.from({ length: 35 }, (_, i) => `s${i + 1}`);
 
+      // Chunk 1 = the two pairs alone (commits at once); chunk 2 = 32
+      // eager creates, the one that fails; chunk 3 = the last eager create.
       const result = await handleSuspension({
         suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
         world,
@@ -2220,8 +2755,11 @@ describe('handleSuspension batched fan-out', () => {
         getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
       } as unknown as World;
 
+      // s1/s2 pair-fold (cap 2); s5 is finalized sequentially; the 32
+      // healthy eager creates fill the second call, the one that fails.
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const pending = stepsAndWait(
-        Array.from({ length: 34 }, (_, i) => `s${i + 1}`)
+        Array.from({ length: 35 }, (_, i) => `s${i + 1}`)
       ) as Map<string, { args: unknown[] }>;
       // biome-ignore lint/style/noNonNullAssertion: seeded above
       pending.get('s5')!.args = [new Unserializable()];
@@ -2270,8 +2808,8 @@ describe('handleSuspension batched fan-out', () => {
       // handleSuspension throws, so the pair-chunk failure path has to join
       // the trailing work itself.
       let rejectPairChunk: ((err: unknown) => void) | undefined;
-      let releaseTrailing: (() => void) | undefined;
-      let trailingSettled = false;
+      const releaseTrailing: (() => void)[] = [];
+      let trailingSettled = 0;
       let call = 0;
       const createBatch = vi.fn().mockImplementation((_runId, events) => {
         call += 1;
@@ -2281,8 +2819,8 @@ describe('handleSuspension batched fan-out', () => {
           });
         }
         return new Promise((resolve) => {
-          releaseTrailing = () => {
-            trailingSettled = true;
+          releaseTrailing.push(() => {
+            trailingSettled += 1;
             let slot = 100;
             resolve({
               results: events.map(({ event }: { event: object }) => ({
@@ -2290,11 +2828,12 @@ describe('handleSuspension batched fan-out', () => {
                 event: { ...event, eventId: slotToEventId(slot++) },
               })),
             });
-          };
+          });
         });
       });
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const { world } = queueWorld(createBatch);
-      const stepIds = Array.from({ length: 34 }, (_, i) => `s${i + 1}`);
+      const stepIds = Array.from({ length: 35 }, (_, i) => `s${i + 1}`);
 
       const pending = handleSuspension({
         suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
@@ -2304,29 +2843,34 @@ describe('handleSuspension batched fan-out', () => {
         stepDispatch: stepDispatch(),
         allowDeferredBatchWork: true,
       });
+      // Chunk 1 = the two pairs alone; chunks 2 and 3 = the 33 eager
+      // creates.
       await vi.waitFor(() => {
-        expect(createBatch).toHaveBeenCalledTimes(2);
+        expect(createBatch).toHaveBeenCalledTimes(3);
       });
       // biome-ignore lint/style/noNonNullAssertion: set by the first call
       rejectPairChunk!(
         new WorkflowWorldError('pair chunk exploded', { status: 500 })
       );
-      // The rejection must NOT escape while chunk 2 is outstanding.
+      // The rejection must NOT escape while any trailing chunk is
+      // outstanding.
       expect(await probe(pending)).toBe('pending');
-      expect(trailingSettled).toBe(false);
+      expect(trailingSettled).toBe(0);
+      releaseTrailing[0]();
+      expect(await probe(pending)).toBe('pending');
 
-      // biome-ignore lint/style/noNonNullAssertion: set by the second call
-      releaseTrailing!();
+      releaseTrailing[1]();
       await expect(pending).rejects.toMatchObject({
         message: expect.stringContaining('pair chunk exploded'),
       });
-      expect(trailingSettled).toBe(true);
+      expect(trailingSettled).toBe(2);
     });
 
     it('awaits everything at return without the opt-in', async () => {
+      vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '2');
       const { createBatch, releases } = gatedCreateBatch();
       const { world } = queueWorld(createBatch);
-      const stepIds = Array.from({ length: 34 }, (_, i) => `s${i + 1}`);
+      const stepIds = Array.from({ length: 35 }, (_, i) => `s${i + 1}`);
 
       const pending = handleSuspension({
         suspension: new WorkflowSuspension(stepsAndWait(stepIds), globalThis),
@@ -2336,12 +2880,15 @@ describe('handleSuspension batched fan-out', () => {
         stepDispatch: stepDispatch(),
       });
       await vi.waitFor(() => {
-        expect(createBatch).toHaveBeenCalledTimes(2);
+        expect(createBatch).toHaveBeenCalledTimes(3);
       });
       releases[0]();
-      // Chunk 2 unreleased: the handler must still be pending.
+      // The pair chunk committed but chunks 2 and 3 are unreleased: the
+      // handler must still be pending.
       expect(await probe(pending)).toBe('pending');
       releases[1]();
+      expect(await probe(pending)).toBe('pending');
+      releases[2]();
       const result = await pending;
       expect(result.deferredBatchWork).toBeUndefined();
       expect(result.inlineClaims.get('s1')?.owned).toBe(true);

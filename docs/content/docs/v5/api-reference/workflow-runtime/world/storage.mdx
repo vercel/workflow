@@ -189,12 +189,15 @@ a normal return, not an error, and a missing run throws
 
 ```typescript lineNumbers
 const result = await world.runs.list({ // [!code highlight]
+  status: "running", // [!code highlight]
   pagination: { cursor },
 }); // [!code highlight]
 ```
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
+| `params.workflowName` | `string` | Only return runs of this workflow |
+| `params.status` | `WorkflowRunStatus \| WorkflowRunStatus[]` | Only return runs in this status. Pass an array to match any of the listed statuses; an empty array matches no runs. `@workflow/world-vercel` accepts a single status only and throws `WorkflowWorldError` (`INVALID_ARGUMENT`) for an array |
 | `params.pagination.cursor` | `string` | Cursor for the next page |
 | `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data |
 
@@ -219,7 +222,7 @@ To cancel a batch in one call, a world may implement the optional `runs.cancelMa
 | Field | Type | Description |
 |-------|------|-------------|
 | `runId` | `string` | Unique run identifier |
-| `status` | `string` | `'running'`, `'completed'`, `'failed'`, `'cancelled'` |
+| `status` | `string` | `'pending'`, `'running'`, `'completed'`, `'failed'`, `'cancelled'` |
 | `workflowName` | `string` | Machine-readable workflow identifier |
 | `input` | `any` | Workflow input data (when `resolveData: 'all'`) |
 | `output` | `any` | Workflow output data (when `resolveData: 'all'`) |
@@ -356,6 +359,7 @@ const result = await world.hooks.list({ // [!code highlight]
 | `environment` | `string` | Deployment environment |
 | `metadata` | `object` | Custom metadata attached to the hook |
 | `isWebhook` | `boolean` | Whether this is a webhook-style hook |
+| `claimedFrom` | `{ runId: string; hookId: string } \| undefined` | Set when this hook took its token from another run with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). Names that run and its hook |
 
 ---
 

@@ -5,6 +5,18 @@ description: Vitest plugin and test helpers for integration testing workflows in
 
 The `@workflow/vitest` package provides a Vitest plugin and test helpers for running full workflow integration tests in-process, no server required.
 
+## Installation
+
+```package-install
+npm i -D @workflow/vitest@beta
+```
+
+<Callout type="warn">
+`@workflow/vitest@latest` is still the 4.x line, so a Workflow 5 app has to install the `beta` tag (or pin the matching beta, for example `@workflow/vitest@5.0.0-beta.53`). The package carries its own copy of `@workflow/core` and runs your workflows against it, so it has to move with `workflow`.
+
+`globalSetup` compares the two copies once per run: a different major fails the run with the install command that fixes it, and any other difference logs a warning. Set [`WORKFLOW_VITEST_VERSION_CHECK=off`](/docs/configuration/build-and-diagnostics#workflow_vitest_version_check) to skip the check.
+</Callout>
+
 ## Plugin
 
 ### `workflow()`
@@ -107,6 +119,53 @@ Tears down the workflow test world. Clears the global world and closes the Local
 | `rootDir` | `string` | same as `cwd` | Root directory used for default test artifacts. When set, `dataDir` and `outDir` default to `<rootDir>/.workflow-data` and `<rootDir>/.workflow-vitest`. Relative paths resolve against `cwd`. |
 | `dataDir` | `string` | `<rootDir>/.workflow-data` | Directory for workflow runtime data written by the test world. Relative paths resolve against `cwd`. |
 | `outDir` | `string` | `<rootDir>/.workflow-vitest` | Directory for generated workflow and step bundles. Relative paths resolve against `cwd`. |
+
+## Workflow references
+
+The test build writes the same `manifest.json` the other Workflow builders write into `outDir`. These helpers read it, so a test can name a workflow instead of hand-writing the generated `workflow//...` id. Importing the workflow function is still preferable when a test can do it, because it keeps the argument and return types.
+
+### `getWorkflowRef()`
+
+Looks up one workflow in the test build and returns it in the shape [`start()`](/docs/api-reference/workflow-api/start) accepts.
+
+```typescript
+import { getWorkflowRef } from "@workflow/vitest"; // [!code highlight]
+import { start } from "workflow/api";
+
+const run = await start(getWorkflowRef("approvalWorkflow"), ["doc-1"]); // [!code highlight]
+```
+
+`query` is an exported workflow name, or a file-qualified name when the same name appears in more than one file: `getWorkflowRef("workflows/approval.ts#approvalWorkflow")`. The file part also matches by path suffix, so `"approval.ts#approvalWorkflow"` resolves the same entry.
+
+**Parameters:**
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `query` | `string` | Workflow name, or `<file>#<name>` |
+
+**Returns:** [`WorkflowRef`](#workflowref).
+
+**Throws** when the manifest is missing (the plugin or `buildWorkflowTests()` has not run), when nothing matches, or when the name is ambiguous. The message lists the workflows the build contains.
+
+### `listWorkflowRefs()`
+
+Returns every workflow in the test build, sorted by file and then name.
+
+```typescript
+import { listWorkflowRefs } from "@workflow/vitest"; // [!code highlight]
+
+const names = listWorkflowRefs().map((ref) => ref.name); // [!code highlight]
+```
+
+**Returns:** [`WorkflowRef`](#workflowref)`[]`.
+
+### `WorkflowRef`
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `name` | `string` | Exported name of the workflow function |
+| `file` | `string` | Project-relative path of the file it was compiled from |
+| `workflowId` | `string` | Generated workflow id, the field `start()` reads |
 
 ## Test helpers
 

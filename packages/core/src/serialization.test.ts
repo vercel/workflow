@@ -7,11 +7,16 @@ import {
   RUN_ERROR_CODES,
   RuntimeDecryptionError,
   StreamError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { decrypt, encrypt, importKey } from './encryption.js';
+import {
+  drainFlushableSnapshot,
+  type FlushableStreamState,
+} from './flushable-stream.js';
 import { getStepFunction, registerStepFunction } from './private.js';
 import { bytesToBase64, deriveRunKeyPair } from './sealed-box.js';
 import {
@@ -592,6 +597,7 @@ describe('workflow arguments', () => {
         noEncryptionKey
       );
       const ops: Promise<void>[] = [];
+      const streamStates: FlushableStreamState[] = [];
       const hydrated = (await hydrateStepArguments(
         serialized,
         'wrun_child',
@@ -599,11 +605,14 @@ describe('workflow arguments', () => {
         ops,
         globalThis,
         {},
-        'dpl_child'
+        'dpl_child',
+        streamStates
       )) as WritableStream<string>;
 
       const writer = hydrated.getWriter();
       await writer.write('cross-deployment');
+      expect(streamStates).toHaveLength(1);
+      await Promise.all(streamStates.map(drainFlushableSnapshot));
       await writer.close();
       await Promise.all(ops);
 
@@ -1002,6 +1011,194 @@ describe('workflow arguments', () => {
     } finally {
       vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
     }
+  });
+
+  describe('forwarded writable key lookup is deferred to the first write', () => {
+    /**
+     * A descriptor from a deployment that predates deployment ids and public
+     * keys on the wire, so the reviver has to fall back to reading the owning
+     * run — the request that timed out in #3935.
+     */
+    const dehydrateLegacyForwardedWritable = (
+      dehydrate:
+        | typeof dehydrateStepArguments
+        | typeof dehydrateWorkflowReturnValue
+    ) => {
+      const ownerWritable = new WritableStream();
+      Object.defineProperty(ownerWritable, STREAM_NAME_SYMBOL, {
+        value: 'strm_ownerstream',
+        writable: false,
+      });
+      Object.defineProperty(ownerWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: 'wrun_owner',
+        writable: false,
+      });
+      return dehydrate(ownerWritable, 'wrun_local', noEncryptionKey);
+    };
+
+    const installTimingOutWorld = async () => {
+      const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+      // The shape `makeRequest` raises on a timed-out read in world-vercel.
+      const runsGet = vi
+        .fn()
+        .mockRejectedValue(
+          new WorkflowWorldError(
+            'GET /v2/runs/wrun_owner?remoteRefBehavior=resolve timed out after 71779ms',
+            { code: 'TIMEOUT' }
+          )
+        );
+      const getEncryptionKeyForRun = vi
+        .fn()
+        .mockResolvedValue(new Uint8Array(32).fill(5));
+      vi.mocked(getWorldLazy).mockReturnValue({
+        ...makeMockWorld(),
+        runs: { get: runsGet },
+        getEncryptionKeyForRun,
+      } as any);
+      return { runsGet };
+    };
+
+    const captureUnhandledRejections = () => {
+      const seen: unknown[] = [];
+      const onUnhandled = (reason: unknown) => seen.push(reason);
+      process.on('unhandledRejection', onUnhandled);
+      return {
+        messages: () => seen.map((r) => (r as Error)?.message),
+        stop: () => process.off('unhandledRejection', onUnhandled),
+      };
+    };
+
+    /** Give Node a macrotask boundary to run its unhandled-rejection check. */
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+
+    afterEach(async () => {
+      const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+      vi.mocked(getWorldLazy).mockImplementation(() => makeMockWorld() as any);
+    });
+
+    // Regression test for #3935. Hydrating a payload that merely *contains* a
+    // forwarded writable used to start the owner-run read immediately and hand
+    // the reviver the unobserved promise. Nothing awaits it until the first
+    // write, so a failing lookup crashed the process with an unhandled
+    // rejection — even for a caller that never touched the stream.
+    it('makes no request and leaves no unhandled rejection when a client hydrates a return value it never writes to', async () => {
+      const { runsGet } = await installTimingOutWorld();
+      const serialized = await dehydrateLegacyForwardedWritable(
+        dehydrateWorkflowReturnValue
+      );
+      const capture = captureUnhandledRejections();
+
+      try {
+        const hydrated = (await hydrateWorkflowReturnValue(
+          serialized,
+          'wrun_local',
+          noEncryptionKey,
+          []
+        )) as WritableStream<string>;
+        await settle();
+
+        expect(hydrated).toBeInstanceOf(WritableStream);
+        // The crash in #3935: the lookup's rejection had no handler.
+        expect(capture.messages()).toEqual([]);
+        // And a stream nobody writes to should make no request at all.
+        expect(runsGet).not.toHaveBeenCalled();
+      } finally {
+        capture.stop();
+      }
+    });
+
+    it('makes no request and leaves no unhandled rejection when a step hydrates arguments it never writes to', async () => {
+      const { runsGet } = await installTimingOutWorld();
+      const serialized = await dehydrateLegacyForwardedWritable(
+        dehydrateStepArguments
+      );
+      const capture = captureUnhandledRejections();
+
+      try {
+        const hydrated = (await hydrateStepArguments(
+          serialized,
+          'wrun_local',
+          noEncryptionKey,
+          []
+        )) as WritableStream<string>;
+        await settle();
+
+        expect(hydrated).toBeInstanceOf(WritableStream);
+        // The crash in #3935: the lookup's rejection had no handler.
+        expect(capture.messages()).toEqual([]);
+        // And a stream nobody writes to should make no request at all.
+        expect(runsGet).not.toHaveBeenCalled();
+      } finally {
+        capture.stop();
+      }
+    });
+
+    it('surfaces a failed lookup on the writer that needed the key', async () => {
+      const { runsGet } = await installTimingOutWorld();
+      const serialized = await dehydrateLegacyForwardedWritable(
+        dehydrateStepArguments
+      );
+      const capture = captureUnhandledRejections();
+
+      try {
+        const hydrated = (await hydrateStepArguments(
+          serialized,
+          'wrun_local',
+          noEncryptionKey,
+          []
+        )) as WritableStream<string>;
+
+        const writer = hydrated.getWriter();
+        // `write()` early-acks, so the failure lands on `closed` — catchable,
+        // with the world error preserved as the cause.
+        await writer.write('payload').catch(() => {});
+        await expect(writer.closed).rejects.toMatchObject({
+          cause: { code: 'TIMEOUT' },
+        });
+        expect(runsGet).toHaveBeenCalledTimes(1);
+
+        await settle();
+        expect(capture.messages()).toEqual([]);
+      } finally {
+        capture.stop();
+      }
+    });
+
+    it('resolves the owner key at most once across many writes', async () => {
+      const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+      const runsGet = vi
+        .fn()
+        .mockResolvedValue({ runId: 'wrun_owner', deploymentId: 'dpl_owner' });
+      const getEncryptionKeyForRun = vi
+        .fn()
+        .mockResolvedValue(new Uint8Array(32).fill(3));
+      vi.mocked(getWorldLazy).mockReturnValue({
+        ...makeMockWorld(),
+        runs: { get: runsGet },
+        getEncryptionKeyForRun,
+      } as any);
+
+      const serialized = await dehydrateLegacyForwardedWritable(
+        dehydrateStepArguments
+      );
+      const ops: Promise<void>[] = [];
+      const hydrated = (await hydrateStepArguments(
+        serialized,
+        'wrun_local',
+        noEncryptionKey,
+        ops
+      )) as WritableStream<string>;
+
+      const writer = hydrated.getWriter();
+      await writer.write('one');
+      await writer.write('two');
+      await writer.write('three');
+      await writer.close();
+      await Promise.all(ops);
+
+      expect(runsGet).toHaveBeenCalledTimes(1);
+      expect(getEncryptionKeyForRun).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('should work with ReadableStream', async () => {

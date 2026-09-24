@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
   EntityConflictError,
+  HookForceClaimedError,
   HookNotFoundError,
   RunExpiredError,
   RunNotSupportedError,
@@ -29,7 +30,6 @@ import type {
 } from '@workflow/world';
 import {
   applyAttributeChanges,
-  EventSchema,
   eventIdToSlot,
   FIRST_EVENT_SLOT,
   getMaxEventsPerRun,
@@ -45,6 +45,8 @@ import {
   isTerminalWorkflowRunStatus,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   StepSchema,
   slotToEventId,
   ulidToDate,
@@ -86,6 +88,7 @@ import {
   mintRunDominantEventKey,
   monotonicUlid,
   pendingHookEventPath,
+  readHookDisposeLock,
   readHookTokenClaim,
   reapPendingHookEvents,
   releaseHookTokenClaimIfOwnedBy,
@@ -107,6 +110,7 @@ import { handleLegacyEvent } from './legacy.js';
 import {
   purgeRunEntityData,
   purgesUserDataOnFinish,
+  ReadEventSchema,
   withRunPayloadsPurged,
 } from './run-retention.js';
 import { signalRunTerminal } from './run-status-signal.js';
@@ -169,9 +173,11 @@ function getHookRetentionLimitMs(): number {
  * lifetimes can never share one marker (see
  * `hookRecoveryMarkerPath`).
  */
-const HookRecoveryMarkerSchema = z.object({
-  eventId: z.string(),
-});
+const HookRecoveryMarkerSchema = z.compile(
+  z.object({
+    eventId: z.string(),
+  })
+);
 
 /**
  * Durable `(runId, resumeId)` claim for a lazy hook resume. Written via
@@ -182,13 +188,15 @@ const HookRecoveryMarkerSchema = z.object({
  * records the content hash so a reused `resumeId` carrying a different payload
  * can be rejected as a conflict, matching the server's constraint.
  */
-const HookResumeClaimSchema = z.object({
-  runId: z.string(),
-  resumeId: z.string(),
-  hookId: z.string(),
-  eventId: z.string(),
-  payloadDigest: z.string().optional(),
-});
+const HookResumeClaimSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    resumeId: z.string(),
+    hookId: z.string(),
+    eventId: z.string(),
+    payloadDigest: z.string().optional(),
+  })
+);
 
 /**
  * Whether `event` is the `hook_received` a resume claim stands for.
@@ -237,7 +245,7 @@ async function findCommittedResumeEvent(
       basedir,
       'events',
       `${runId}-${eventId}`,
-      EventSchema,
+      ReadEventSchema,
       tag
     );
     if (
@@ -361,7 +369,7 @@ async function findExistingHookCreatedEventId(
 ): Promise<string | null> {
   const result = await paginatedFileSystemQuery({
     directory: path.join(basedir, 'events'),
-    schema: EventSchema,
+    schema: ReadEventSchema,
     filePrefix: `${runId}-`,
     filter: (event) =>
       event.eventType === 'hook_created' &&
@@ -405,7 +413,7 @@ async function repairHookEntityFromPersistedEvent(
     basedir,
     'events',
     compositeKey,
-    EventSchema,
+    ReadEventSchema,
     tag
   );
   if (
@@ -851,7 +859,7 @@ export function createEventsStorage(
       return;
     }
 
-    const cachedEvent = EventSchema.safeParse(
+    const cachedEvent = ReadEventSchema.safeParse(
       JSON.parse(serializedEvent, jsonReviver)
     );
     if (cachedEvent.success) {
@@ -902,10 +910,33 @@ export function createEventsStorage(
     }
   }
 
+  /**
+   * Refuse a `hook_received` to a hook whose disposal is committed. The
+   * run's own disposal is the final `HookNotFoundError`; a takeover
+   * (`experimental_force`, the lock names the claimer) is a redirect —
+   * `HookForceClaimedError` — because the token now resolves to another live
+   * hook and `resumeHook()` retries there with the same `resumeId`.
+   */
+  async function refuseDisposedHookDelivery(
+    hookId: string,
+    token: unknown
+  ): Promise<void> {
+    const lock = await readHookDisposeLock(basedir, hookId, tag);
+    if (!lock.committed) return;
+    if (lock.forceClaimedBy) {
+      throw new HookForceClaimedError(
+        typeof token === 'string' ? token : '',
+        lock.forceClaimedBy.runId,
+        lock.forceClaimedBy.hookId
+      );
+    }
+    throw new HookNotFoundError(hookId);
+  }
+
   const queryRunEvents = (runId: string, pagination: PaginationOptions) =>
     paginatedFileSystemQuery({
       directory: path.join(basedir, 'events'),
-      schema: EventSchema,
+      schema: ReadEventSchema,
       cachedItems: eventCache,
       filePrefix: `${runId}-`,
       sortOrder: pagination.sortOrder ?? 'asc',
@@ -1344,11 +1375,21 @@ export function createEventsStorage(
               );
             }
 
-            // On terminal runs: only allow completing/failing in-progress steps
+            // On terminal runs: only allow completing/failing in-progress
+            // steps. A step_started is never that — it begins work, and no
+            // work should begin on a finished run — so it is rejected even
+            // when the step row still reads `running` (a redelivery of a
+            // start a previous delivery already claimed). Without this, a
+            // redelivered start on a cancelled/completed run passes the
+            // claim and executes the step body whose outcome nothing will
+            // ever consume.
             if (currentRun && isTerminalWorkflowRunStatus(currentRun.status)) {
-              if (validatedStep.status !== 'running') {
+              if (
+                validatedStep.status !== 'running' ||
+                data.eventType === 'step_started'
+              ) {
                 throw new RunExpiredError(
-                  `Cannot modify non-running step on run in terminal state "${currentRun.status}"`
+                  `Cannot ${data.eventType === 'step_started' ? 'start' : 'modify non-running'} step on run in terminal state "${currentRun.status}"`
                 );
               }
             }
@@ -1389,7 +1430,7 @@ export function createEventsStorage(
                 basedir,
                 'events',
                 `${effectiveRunId}-${committedClaim.eventId}`,
-                EventSchema,
+                ReadEventSchema,
                 tag
               );
               const committedEvent =
@@ -1415,11 +1456,11 @@ export function createEventsStorage(
           // acceptance observes the same order replay will: once disposal
           // has committed, the resume is rejected exactly like one that
           // arrived after teardown finished.
-          if (
-            data.eventType === 'hook_received' &&
-            (await isHookDisposalCommitted(basedir, data.correlationId, tag))
-          ) {
-            throw new HookNotFoundError(data.correlationId);
+          if (data.eventType === 'hook_received') {
+            await refuseDisposedHookDelivery(
+              data.correlationId,
+              (data.eventData as { token?: unknown } | undefined)?.token
+            );
           }
           const existingHook = await readJSONWithFallback(
             basedir,
@@ -1482,7 +1523,7 @@ export function createEventsStorage(
                 basedir,
                 'events',
                 `${effectiveRunId}-${claim.eventId}`,
-                EventSchema,
+                ReadEventSchema,
                 tag
               );
               if (atClaimedId && isResumeEvent(atClaimedId, claim)) {
@@ -1576,6 +1617,10 @@ export function createEventsStorage(
         // createdAt persisted in the durable token claim so
         // concurrent / cross-process workers converge on a single
         // event in the log.
+        // A hook takeover journals this hook's `hook_created` inside the
+        // token claim lock (see the hook_created branch); the generic publish
+        // below then has nothing left to write.
+        let prePublishedEvent: Event | undefined;
         let event: Event = {
           ...data,
           runId: effectiveRunId,
@@ -2267,13 +2312,21 @@ export function createEventsStorage(
           // process retries can converge on a single canonical
           // `hook_created` event path. See the recovery comment
           // below.
-          const claimContent = JSON.stringify({
-            token: hookData.token,
-            hookId: data.correlationId,
-            runId: effectiveRunId,
-            eventId,
-            tokenRetentionUntil: hookData.tokenRetentionUntil,
-          });
+          // Who a forced creation took the token from, decided inside the
+          // claim lock below and carried onto the claim, the hook entity
+          // (`claimedFrom`) and the journaled row (`forceClaimedFrom`).
+          let claimedFrom:
+            | NonNullable<HookTokenClaim['claimedFrom']>
+            | undefined;
+          const claimContent = () =>
+            JSON.stringify({
+              token: hookData.token,
+              hookId: data.correlationId,
+              runId: effectiveRunId,
+              eventId,
+              tokenRetentionUntil: hookData.tokenRetentionUntil,
+              ...(claimedFrom && { claimedFrom }),
+            });
 
           // Serialize claim replacement so a committed disposal or terminal
           // run cannot race its successor and create a spurious conflict
@@ -2298,7 +2351,7 @@ export function createEventsStorage(
 
               if (!existingClaim) {
                 signal.throwIfAborted();
-                assert(await writeExclusive(constraintPath, claimContent));
+                assert(await writeExclusive(constraintPath, claimContent()));
                 return { status: 'claimed' as const };
               }
               if (
@@ -2310,13 +2363,182 @@ export function createEventsStorage(
               if (
                 !(await isHookTokenClaimReleasable(basedir, existingClaim, tag))
               ) {
-                return { status: 'conflict' as const, claim: existingClaim };
+                if (hookData.force !== true || !existingClaim.hookId) {
+                  return { status: 'conflict' as const, claim: existingClaim };
+                }
+                // `createHook({ experimental_force: true })`: take the token
+                // over. Same order as workflow-server (docs/hook-force-claim.md,
+                // specs/HookForceClaim.tla): tell the victim FIRST — its
+                // dispose lock, naming us, then its `hook_disposed` row — so a
+                // delivery that already resolved the victim is refused (and
+                // redirected, see `refuseDisposedHookDelivery`) rather than
+                // landing in a run that no longer holds the token; only then
+                // release its claim and take it. The claim lock we hold
+                // serializes this against other creators; the dispose lock
+                // serializes it against the victim's own disposal.
+                signal.throwIfAborted();
+                // The victim's claim is written before its `hook_created` is
+                // published (see the entity-write ordering below), so a
+                // takeover can meet a creation still in flight. That is fine:
+                // the creator's publish is refused by the journal guard (its
+                // own disposal is committed by then) and its replay reads the
+                // disposal with no creation — the runtime handles exactly
+                // that. Nothing waits here: while this lock is held the token
+                // resolves to nothing, and every millisecond of that is a
+                // `getHookByToken` that misses.
+                const victimRun = await readJSONWithFallback(
+                  basedir,
+                  'runs',
+                  existingClaim.runId,
+                  WorkflowRunSchema,
+                  tag
+                );
+                const victimRunning =
+                  victimRun !== null &&
+                  !isTerminalWorkflowRunStatus(victimRun.status);
+                // Wake-targeting fields only for a victim that is still
+                // running: a finished one has no row to read and nothing to
+                // wake, and an invoke of a completed run can race its own
+                // terminal write. Without them the runtime skips the wake.
+                claimedFrom = {
+                  runId: existingClaim.runId,
+                  hookId: existingClaim.hookId,
+                  ...(victimRunning && {
+                    workflowName: victimRun.workflowName,
+                    deploymentId: victimRun.deploymentId,
+                    runSpecVersion: victimRun.specVersion,
+                  }),
+                };
+                // A running victim must be able to READ the disposal about to
+                // land in its log. A runtime below
+                // SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM takes
+                // `hook_disposed{forceClaimedBy}` for its own `dispose()` and
+                // leaves `await hook` pending forever, so it is not taken
+                // from: the claimer gets the ordinary conflict, marked so its
+                // runtime knows the World declined on purpose. Decided from
+                // the victim's persisted version, never this request's.
+                if (
+                  victimRunning &&
+                  (victimRun.specVersion ?? SPEC_VERSION_LEGACY) <
+                    SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM
+                ) {
+                  return {
+                    status: 'conflict' as const,
+                    claim: existingClaim,
+                    forceRefusedReason: 'victim-spec-version' as const,
+                  };
+                }
+                // The token must resolve to SOME live hook at every instant of
+                // the takeover (a resume that resolves nothing is a lost
+                // payload, not a redirect), and a hook it resolves to must
+                // already have its `hook_created` in its log (a delivery
+                // landing before the creation is a row the QuickJS engine
+                // cannot park). So, before the victim is told: journal this
+                // hook's creation, then write its entity — `findHookByToken`
+                // falls through a force-disposed owner to the entity holding
+                // the token now — and only then lock the victim and re-point
+                // the claim. A crash anywhere in between is repaired by the
+                // retry: the creation is found rather than written twice, and
+                // the token has not moved until the last step.
+                const journaledEventId = await findExistingHookCreatedEventId(
+                  basedir,
+                  effectiveRunId,
+                  data.correlationId
+                );
+                if (journaledEventId) {
+                  eventId = journaledEventId;
+                  prePublishedEvent = { ...event, eventId } as Event;
+                } else {
+                  prePublishedEvent = await storeEvent({
+                    ...event,
+                    eventData: {
+                      ...(event.eventData as Record<string, unknown>),
+                      forceClaimedFrom: claimedFrom,
+                    },
+                  } as Event);
+                  eventId = prePublishedEvent.eventId;
+                }
+                await writeHookByRunMarker(
+                  basedir,
+                  effectiveRunId,
+                  data.correlationId,
+                  tag
+                );
+                await writeJSON(
+                  taggedPath(basedir, 'hooks', data.correlationId, tag),
+                  {
+                    runId: effectiveRunId,
+                    hookId: data.correlationId,
+                    token: hookData.token,
+                    metadata: hookData.metadata,
+                    ownerId: 'local-owner',
+                    projectId: 'local-project',
+                    environment: 'local',
+                    createdAt: now,
+                    specVersion: effectiveSpecVersion,
+                    isWebhook: hookData.isWebhook ?? false,
+                    isSystem: hookData.isSystem ?? false,
+                    tokenRetentionUntil: hookData.tokenRetentionUntil,
+                    claimedFrom,
+                  } satisfies Hook,
+                  { overwrite: true }
+                );
+                // The victim's dispose lock, naming us, is written for a
+                // finished victim too (with no row: nothing reads its log).
+                // It is what marks the victim's hook closed for good: a
+                // finished victim's retained token would otherwise still
+                // look live to a cache rebuild from the token index
+                // (`findAvailableHookCreatedEvent`), which could then hand
+                // the token back to the victim instead of to us.
+                const lockWritten = await writeExclusive(
+                  hookDisposeLockPath(basedir, existingClaim.hookId, tag),
+                  JSON.stringify({
+                    forceClaimedBy: {
+                      runId: effectiveRunId,
+                      hookId: data.correlationId,
+                    },
+                  })
+                );
+                if (victimRunning) {
+                  if (lockWritten) {
+                    // The victim's row. Its own id in its own log: the
+                    // takeover is the one writer of another run's log.
+                    const disposedEvent: Event = {
+                      eventType: 'hook_disposed',
+                      correlationId: existingClaim.hookId,
+                      eventData: {
+                        token: hookData.token,
+                        forceClaimedBy: {
+                          runId: effectiveRunId,
+                          hookId: data.correlationId,
+                        },
+                      },
+                      runId: existingClaim.runId,
+                      eventId: await mintEventId(existingClaim.runId),
+                      createdAt: new Date(),
+                      specVersion: victimRun.specVersion,
+                    };
+                    await storeEvent(disposedEvent);
+                  }
+                  // Not written: the victim disposed the hook itself in the
+                  // meantime, which released the token below all the same.
+                }
+                // Fall through to the release below with the victim told.
               }
 
               // The previous owner committed its release but did not finish
               // cleanup. Remove that lifetime before admitting a successor.
+              // A takeover re-points the claim in place (one atomic rename)
+              // rather than deleting and re-creating it, so the token never
+              // resolves to nothing in between.
               signal.throwIfAborted();
-              await deleteJSON(constraintPath);
+              if (claimedFrom) {
+                await write(constraintPath, claimContent(), {
+                  overwrite: true,
+                });
+              } else {
+                await deleteJSON(constraintPath);
+              }
               if (existingClaim.hookId) {
                 await deleteJSON(
                   taggedPath(basedir, 'hooks', existingClaim.hookId, tag)
@@ -2337,10 +2559,17 @@ export function createEventsStorage(
                 );
               }
               signal.throwIfAborted();
-              assert(await writeExclusive(constraintPath, claimContent));
+              if (!claimedFrom) {
+                assert(await writeExclusive(constraintPath, claimContent()));
+              }
               return { status: 'claimed' as const };
             }
           );
+          if (claimResult.status === 'owned' && claimResult.claim.claimedFrom) {
+            // A retry adopting a forced claim still names the victim, so the
+            // runtime still wakes it.
+            claimedFrom = claimResult.claim.claimedFrom;
+          }
 
           // The claim and Hook entity are written before `hook_created`, so a
           // crash can leave either cache without the durable event. A retry by
@@ -2422,6 +2651,9 @@ export function createEventsStorage(
               eventData: {
                 token: hookData.token,
                 conflictingRunId: existingClaim.runId,
+                ...(claimResult.forceRefusedReason !== undefined && {
+                  forceRefusedReason: claimResult.forceRefusedReason,
+                }),
               },
               runId: effectiveRunId,
               eventId,
@@ -2470,6 +2702,18 @@ export function createEventsStorage(
           // Defer the Hook entity write until the event publish succeeds. A
           // retry may carry different metadata, so writing it first could make
           // the entity disagree with the already-committed event (PR #2295).
+          if (claimedFrom) {
+            event = {
+              ...event,
+              eventData: {
+                ...(event.eventData as Record<string, unknown>),
+                // Wake-targeting fields included: a replay of this run
+                // republishes the victim's wake from this row alone when the
+                // invocation that created the hook died before waking it.
+                forceClaimedFrom: claimedFrom,
+              },
+            } as Event;
+          }
           const persistedHookData =
             event.eventData as HookCreatedEventRequest['eventData'];
           hook = {
@@ -2486,9 +2730,12 @@ export function createEventsStorage(
             isWebhook: persistedHookData.isWebhook ?? false,
             isSystem: persistedHookData.isSystem ?? false,
             tokenRetentionUntil: persistedHookData.tokenRetentionUntil,
+            ...(claimedFrom && { claimedFrom }),
           };
           hookEntityWriteOptions =
-            claimResult.status === 'owned' ? { overwrite: true } : undefined;
+            claimResult.status === 'owned' || claimedFrom
+              ? { overwrite: true }
+              : undefined;
 
           // Index entries before the event publish (see hook-index.ts
           // crash-ordering invariant). `eventId` is final here: the
@@ -2684,12 +2931,32 @@ export function createEventsStorage(
         // filesystem) to the single event write below, matching the
         // module's convention that the on-disk lock file (not the
         // in-process mutex) is the durable source of truth.
-        if (
-          data.eventType === 'hook_received' &&
-          data.correlationId &&
-          (await isHookDisposalCommitted(basedir, data.correlationId, tag))
-        ) {
-          throw new HookNotFoundError(data.correlationId);
+        if (data.eventType === 'hook_received' && data.correlationId) {
+          await refuseDisposedHookDelivery(
+            data.correlationId,
+            (data.eventData as { token?: unknown } | undefined)?.token
+          );
+        }
+
+        // The journal guard for a creation (workflow-server's ConditionCheck
+        // on the run's own marker, `ForceUnguardedJournal.cfg`): between this
+        // hook's claim above and its `hook_created` publish here, another run
+        // may have force-claimed the token and written THIS hook's
+        // `hook_disposed`. Appending the creation now would put a
+        // non-parkable row behind a retired consumer, so nothing is written
+        // and the request is refused with the 409 the runtime swallows; its
+        // replay reads the disposal and rejects the hook's awaiters.
+        if (data.eventType === 'hook_created' && data.correlationId) {
+          const own = await readHookDisposeLock(
+            basedir,
+            data.correlationId,
+            tag
+          );
+          if (own.committed && own.forceClaimedBy) {
+            throw new EntityConflictError(
+              `Hook "${data.correlationId}" was force-claimed by another run before its creation was journaled`
+            );
+          }
         }
 
         let eventPath = taggedPath(
@@ -2787,7 +3054,20 @@ export function createEventsStorage(
         // committed, so step 3 rejects it. Rejections before step 4 unlink
         // a file no reader can see.
         let eventPublished = false;
-        for (let attempt = 0; ; attempt++) {
+        if (prePublishedEvent) {
+          // Journaled inside the takeover's claim lock, at the id the claim
+          // now records. Nothing to write; carry on as after a publish.
+          event = prePublishedEvent;
+          eventPath = taggedPath(
+            basedir,
+            'events',
+            `${effectiveRunId}-${eventId}`,
+            tag
+          );
+          serializedEvent = JSON.stringify(event, jsonReplacer, 2);
+          eventPublished = true;
+        }
+        for (let attempt = 0; !eventPublished; attempt++) {
           if (data.eventType === 'hook_received') {
             // Step 1: fast path. The marker is the authoritative durable
             // signal; the run-state read additionally rejects runs whose
@@ -2895,7 +3175,7 @@ export function createEventsStorage(
               basedir,
               'events',
               `${effectiveRunId}-${eventId}`,
-              EventSchema,
+              ReadEventSchema,
               tag
             );
             if (
@@ -3108,7 +3388,7 @@ export function createEventsStorage(
         basedir,
         'events',
         compositeKey,
-        EventSchema,
+        ReadEventSchema,
         tag
       );
       if (!event) {
@@ -3147,7 +3427,7 @@ export function createEventsStorage(
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'events'),
-        schema: EventSchema,
+        schema: ReadEventSchema,
         cachedItems: eventCache,
         // Scoped to the run's own event files, since a correlation id
         // identifies a step or wait only within its run: a slot-numbered

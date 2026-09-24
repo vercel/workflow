@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.11'
+  version: '1.17'
 ---
 
 ## *Critical*: Always use correct `workflow` documentation
@@ -28,10 +28,12 @@ Documentation structure in `node_modules/workflow/docs/`:
 - `api-reference/workflow-observability/` - Hydration and name parsing utilities (hydrate-resource-io.mdx, parse-workflow-name.mdx, etc.)
 - `ai/`: AI SDK integration docs
 - `errors/` - Error code documentation
+- `worlds/` - Per-World behavior and limits (vercel.mdx, local.mdx, postgres.mdx). Other pages link these as `/worlds/<name>`.
 
 Related packages also include bundled docs:
 
-- `@workflow/ai`: `node_modules/@workflow/ai/docs/` - DurableAgent and AI integration
+- `@ai-sdk/workflow`: `node_modules/ai/docs/` - WorkflowAgent and AI SDK integration
+- `@workflow/ai`: `node_modules/@workflow/ai/docs/` - deprecated DurableAgent APIs for existing applications
 - `@workflow/core`: `node_modules/@workflow/core/docs/` - Core runtime (foundations, how-it-works)
 - `@workflow/next`: `node_modules/@workflow/next/docs/` - Next.js integration
 
@@ -71,8 +73,8 @@ import { workflow } from "workflow/vite";
 import { workflow } from "workflow/astro";
 // Or use modules: ["workflow/nitro"] for Nitro/Nuxt
 
-// AI agent
-import { DurableAgent } from "@workflow/ai/agent";
+// AI agent (Workflow 5)
+import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
 ```
 
 ## Prefer step functions to avoid sandbox errors
@@ -91,7 +93,7 @@ async function processWithAI(data: any) {
   "use step";
   // AI SDK works in steps without workarounds
   return await generateText({
-    model: openai("gpt-4"),
+    model: "spacexai/grok-4.6",
     prompt: `Process: ${JSON.stringify(data)}`,
   });
 }
@@ -129,17 +131,17 @@ export async function myWorkflow() {
 }
 ```
 
-**Note:** `DurableAgent` from `@workflow/ai` handles the fetch assignment automatically.
+**Note:** Plain `"provider/model"` strings use Vercel AI Gateway. Do not construct a direct provider instance unless the user explicitly needs a provider-only feature.
 
-## DurableAgent: AI agents in workflows
+## WorkflowAgent: AI agents in Workflow 5
 
-Use `DurableAgent` to build AI agents that maintain state and survive interruptions. It handles the workflow sandbox automatically (no manual `globalThis.fetch` needed).
+Use AI SDK's `WorkflowAgent` for durable agents on Workflow 5. It replaces the deprecated `DurableAgent` API from `@workflow/ai` and checkpoints model calls and step-backed tools.
 
 ```typescript
-import { DurableAgent } from "@workflow/ai/agent";
+import { WorkflowAgent, type ModelCallStreamPart } from "@ai-sdk/workflow";
+import { isStepCount, tool } from "ai";
 import { getWritable } from "workflow";
 import { z } from "zod";
-import type { UIMessageChunk } from "ai";
 
 async function lookupData({ query }: { query: string }) {
   "use step";
@@ -150,22 +152,22 @@ async function lookupData({ query }: { query: string }) {
 export async function myAgentWorkflow(userMessage: string) {
   "use workflow";
 
-  const agent = new DurableAgent({
-    model: "anthropic/claude-sonnet-4-5",
-    system: "You are a helpful assistant.",
+  const agent = new WorkflowAgent({
+    model: "spacexai/grok-4.6",
+    instructions: "You are a helpful assistant.",
     tools: {
-      lookupData: {
+      lookupData: tool({
         description: "Search for information",
         inputSchema: z.object({ query: z.string() }),
         execute: lookupData,
-      },
+      }),
     },
   });
 
   const result = await agent.stream({
     messages: [{ role: "user", content: userMessage }],
-    writable: getWritable<UIMessageChunk>(),
-    maxSteps: 10,
+    writable: getWritable<ModelCallStreamPart>(),
+    stopWhen: isStepCount(10),
   });
 
   return result.messages;
@@ -173,17 +175,18 @@ export async function myAgentWorkflow(userMessage: string) {
 ```
 
 **Key points:**
-- `getWritable<UIMessageChunk>()` streams output to the workflow run's default stream
+- A plain `"provider/model"` string routes through Vercel AI Gateway; `spacexai/grok-4.6` is the default model in Workflow examples
+- `getWritable<ModelCallStreamPart>()` streams durable model-call output; convert it with `createModelCallToUIChunkTransform()` in an HTTP route
 - Tool `execute` functions that need Node.js/npm access should use `"use step"`
 - Tool `execute` functions that use workflow primitives (`sleep()`, `createHook()`) should **NOT** use `"use step"` because they run at the workflow level
-- `maxSteps` limits the number of LLM calls (default is unlimited)
+- `stopWhen` limits the number of model calls; the default is to stop when the model stops calling tools
 - Multi-turn: pass `result.messages` plus new user messages to subsequent `agent.stream()` calls
 
-**For more details on `DurableAgent`, check the AI docs in `node_modules/@workflow/ai/docs/`.**
+**For more details, check the WorkflowAgent docs in the installed AI SDK package or at https://ai-sdk.dev/v7/docs/agents/workflow-agent.**
 
 ## Starting workflows & child workflows
 
-Use `start()` to launch workflows from API routes. **`start()` cannot be called directly in workflow context**, so wrap it in a step function.
+Use `start()` to launch workflows from API routes. In Workflow 5, `start()` can also be called directly from a workflow function to spawn a child run; it is step-backed and records a deterministic boundary in the parent's event log.
 
 ```typescript
 import { start } from "workflow/api";
@@ -198,26 +201,70 @@ export async function POST() {
 const run = await start(noArgWorkflow);
 ```
 
-**Starting child workflows from inside a workflow requires a step:**
+**Starting child workflows from inside a Workflow 5 workflow:**
 
 ```typescript
 import { start } from "workflow/api";
 
-// Wrap start() in a step function
-async function triggerChild(data: string) {
-  "use step";
-  const run = await start(childWorkflow, [data]);
-  return run.runId;
-}
-
 export async function parentWorkflow() {
   "use workflow";
-  const childRunId = await triggerChild("some data");  // Fire-and-forget via step
+  const childRun = await start(childWorkflow, ["some data"]);
   await sleep("1h");
+  return { childRunId: childRun.runId };
 }
 ```
 
-`start()` returns immediately and doesn't wait for the workflow to complete. Use `run.returnValue` to await completion.
+`start()` returns after creating the child run and doesn't wait for it to complete. Use `childRun.returnValue` only when the parent should wait for the child; each `Run` property access or method call inside a workflow is a step.
+
+## Run size & concurrency: know when to split
+
+Three things to size, and all three are capped. Do NOT treat any number you remember as authoritative — the current values are published under [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits), which is the only source to quote.
+
+**Events per run.** A run's event log is capped, and the run fails with `MAX_EVENTS_EXCEEDED` past the ceiling. Events are not steps: a step that succeeds on the first try records three (`step_created`, `step_started`, `step_completed`), a retry records one or two more, and hooks, sleeps, and webhooks each record their own. Split into child workflows well before the ceiling — the pricing page recommends that past **a few thousand events**, because replay slows down long before the run fails.
+
+**Steps per run.** Capped separately from events, so a long sequential chain *is* bounded even though it stays narrow. Bundle several items into one step when a chain would otherwise reach five figures.
+
+**Concurrency.** A wide fan-out is throttled rather than rejected: event creation is rate-limited per run per second, so a flat `Promise.all` over a few thousand items spends much of its time backing off. Batch or bundle instead — process the list in chunks, or handle several items per step, so fewer and larger units run concurrently. Spawning one child run per item does not by itself narrow the fan-out; it bounds each child's log and isolates failures, which is worth doing for those reasons, but it is not a substitute for chunking.
+
+You cannot raise any of these yourself — `WORKFLOW_MAX_EVENTS_OVERRIDE` only clamps *down*, and on the Vercel World the ceilings are service-owned — but Vercel raises the per-run event and step limits on request, so a genuinely large run is a support question as well as a design one.
+
+```typescript
+const BATCH = 100;
+
+async function processItem(item: string) {
+  "use step";
+  return item.toUpperCase();
+}
+
+// One step per item, all in flight at once, all in one log
+export async function processAll(items: string[]) {
+  "use workflow";
+  await Promise.all(items.map((item) => processItem(item)));
+}
+
+// Chunked, so only BATCH steps are in flight at a time
+export async function processBatched(items: string[]) {
+  "use workflow";
+  for (let i = 0; i < items.length; i += BATCH) {
+    await Promise.allSettled(items.slice(i, i + BATCH).map((item) => processItem(item)));
+  }
+}
+
+// Bundled, so one step covers many items and the log stays short
+async function processChunk(chunk: string[]) {
+  "use step";
+  return chunk.map((item) => item.toUpperCase());
+}
+
+export async function processBundled(items: string[]) {
+  "use workflow";
+  for (let i = 0; i < items.length; i += BATCH) {
+    await processChunk(items.slice(i, i + BATCH));
+  }
+}
+```
+
+`processAll` is the shape to avoid at scale. `processBatched` bounds concurrency but still records events for every item. `processBundled` bounds both, because one step covers `BATCH` items — that is the only one of the three whose event count shrinks as `BATCH` grows.
 
 ## Hooks: pause & resume with external events
 
@@ -282,11 +329,11 @@ Use `FatalError` for permanent failures (no retry), `RetryableError` for transie
 ```typescript
 import { FatalError, RetryableError } from "workflow";
 
-if (res.status >= 400 && res.status < 500) {
-  throw new FatalError(`Client error: ${res.status}`);
-}
 if (res.status === 429) {
   throw new RetryableError("Rate limited", { retryAfter: "5m" });
+}
+if (res.status >= 400 && res.status < 500) {
+  throw new FatalError(`Client error: ${res.status}`);
 }
 ```
 
@@ -578,7 +625,7 @@ describe("createUser step", () => {
 });
 ```
 
-**Integration testing:** Use `@workflow/vitest` for workflows using `sleep()`, hooks, webhooks, or retries:
+**Integration testing:** Use `@workflow/vitest` for workflows using `sleep()`, hooks, webhooks, or retries. Install it on the same npm dist-tag as `workflow`: `npm i -D @workflow/vitest@beta` for Workflow 5, because `@workflow/vitest@latest` is still the 4.x line. The plugin fails the run when its `@workflow/core` major differs from the app's.
 
 ```typescript
 // vitest.integration.config.ts
@@ -639,12 +686,14 @@ await resumeWebhook(hook.token, new Request("https://example.com/webhook", {
 - `waitForHook(run, { token? })` / `waitForSleep(run)`: Wait for workflow to reach a pause point
 - `resumeHook(token, data)` / `resumeWebhook(token, request)`: Resume paused workflows
 - `getRun(runId).wakeUp({ correlationIds })`: Skip `sleep()` calls
+- `getWorkflowRef(name)` / `listWorkflowRefs()`: Look a workflow up in the test build's manifest when the test cannot import the function (never hand-write `workflow//...` ids)
 
 **Best practices:**
 - Keep unit tests (no plugin) and integration tests (`workflow()` plugin) in separate configs
+- Install `@workflow/vitest` on the same dist-tag as `workflow` and upgrade them together
 - Use deterministic hook tokens based on test data for easier resumption
 - Set generous `testTimeout` values because workflows may run longer than typical unit tests
-- `vi.mock()` does **not** work in integration tests because step dependencies are bundled by esbuild
+- `vi.mock()` never reaches workflow bodies (they run in a VM), and reaches step code only when the generated bundles load through Vitest's module runner; project-local modules are bundled into the step bundle, so mock the npm leaf, inject the dependency, or unit test the step
 
 ## Observability & World SDK
 

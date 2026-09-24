@@ -143,9 +143,12 @@ type EventConsumerCallback = (event: Event | null) => EventConsumerResult;
 
 export interface EventsConsumerOptions {
   /**
-   * Callback invoked after an event has been consumed. Consumers such as the
-   * deterministic workflow clock must not observe events that are merely
-   * inspected while waiting for user code to subscribe to the next operation.
+   * Observation callback invoked after an event has been consumed (not for one
+   * the walk merely inspected, parked, or skipped). Diagnostics and tests read
+   * it. Do NOT anchor the workflow's deterministic clock here: consumption runs
+   * ahead of delivery, so a later event's time would leak into an earlier
+   * delivery's cascade; the clock advances from `registerDeliveryBarrier`
+   * when a delivery is handed to the workflow.
    */
   onConsumedEvent?: (event: Event) => void;
   /**
@@ -188,6 +191,14 @@ export interface EventsConsumerOptions {
   isDeliveryIdle: () => boolean;
 }
 
+/** See {@link EventsConsumer.describe}. */
+export interface EventsConsumerSnapshot {
+  index: number;
+  length: number;
+  parked: number;
+  lastConsumedEventId: string | undefined;
+}
+
 export class EventsConsumer {
   eventIndex: number;
   readonly events: Event[];
@@ -228,6 +239,13 @@ export class EventsConsumer {
   private pendingUnconsumedCheck: Promise<void> | null = null;
   private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
   private unconsumedCheckVersion = 0;
+  /**
+   * The event a callback most recently claimed, for {@link describe}. Tracked
+   * separately from {@link eventIndex} because the walk also steps over events
+   * (parked, sealed no-ops, duplicates) without anyone consuming them, so
+   * `events[eventIndex - 1]` does not say what replay last acted on.
+   */
+  private lastConsumed: Event | undefined;
 
   constructor(events: Event[], options: EventsConsumerOptions) {
     // Own copy: the runtime mutates its event array in place, and a retained
@@ -274,6 +292,26 @@ export class EventsConsumer {
       count: this.parked.length,
       eventId: oldest.eventId,
       eventType: oldest.eventType,
+    };
+  }
+
+  /**
+   * Where the walk stands, for a divergence message. Everything here is
+   * already known to the consumer; the point of the method is that the
+   * orchestrator can print it without reaching into private state.
+   *
+   * `index` is the ordered walk's position (the offset of the event it is
+   * stuck on, when it is stuck), `length` the log as this consumer holds it,
+   * `parked` how many events the walk stepped over and still holds, and
+   * `lastConsumedEventId` the id of the event a callback most recently
+   * claimed, `undefined` before the first claim.
+   */
+  describe(): EventsConsumerSnapshot {
+    return {
+      index: this.eventIndex,
+      length: this.events.length,
+      parked: this.parked.length,
+      lastConsumedEventId: this.lastConsumed?.eventId,
     };
   }
 
@@ -409,6 +447,7 @@ export class EventsConsumer {
           );
         }
         this.recordEventClass(currentEvent);
+        this.lastConsumed = currentEvent;
         this.notifyConsumedEvent(currentEvent);
       }
       // remove the callback if it has finished
@@ -627,10 +666,9 @@ export class EventsConsumer {
   /** Steps the walk over a repeat of an already-consumed class. */
   private skipDuplicateEvent(event: Event, firstType: Event['eventType']) {
     this.eventIndex++;
-    // Deliberately not routed through `notifyConsumedEvent`: the deterministic
-    // clock advances only on events the workflow actually observed. A skipped
-    // event is invisible to the workflow body, and a log that happens to
-    // contain one must produce the same timestamps as a log that does not.
+    // Deliberately not routed through `notifyConsumedEvent`: a skipped event
+    // is invisible to the workflow body, and observers of consumption must not
+    // see it either.
     eventsLogger.debug(
       'Skipping event that repeats a class already in the log',
       {

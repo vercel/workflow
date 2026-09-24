@@ -20,7 +20,7 @@ A **World** is the abstraction that allows workflows to run on any infrastructur
 </Callout>
 
 <Callout type="info">
-  **Reference implementation:** The [Postgres World source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres) is a production-ready example of implementing the World interface with a database backend and Graphile Worker for queuing.
+  **Reference implementation:** The [Postgres World source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres) is a complete example of how to implement the World interface with a database backend and graphile-worker for queuing. It is not optimized for scale, speed, or security and should be used as a reference to fill in those gaps in a custom World. Please see the [Postgres World docs](/worlds/postgres) for what a self-hosted World has to gate itself.
 </Callout>
 
 <Callout type="info">
@@ -42,6 +42,7 @@ interface WorldCapabilities {
     active: boolean;
   };
   maxConcurrency?: boolean;
+  hookForceClaim?: boolean;
 }
 
 interface World extends Storage, Queue, Streamer {
@@ -60,7 +61,7 @@ interface World extends Storage, Queue, Streamer {
 
 `specVersion` is required. See [Declaring the spec version](#declaring-the-spec-version).
 
-The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses.
+The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook.
 
 [Slot-numbered event IDs](#event-id-allocation) are a contract requirement rather than a capability, so there is no flag or fallback path.
 
@@ -151,6 +152,8 @@ interface Storage {
 
 **Run creation:** For `run_created` events, the `runId` parameter may be a client-provided string or `null`. When `null`, your World generates and returns a new `runId`.
 
+**Run listing:** `runs.list({ status })` accepts a single status or an array. With an array, return runs whose status matches any listed value, and return no runs for an empty array (the same semantics as SQL `IN ()`). Treat an omitted `status` as no filter.
+
 **Hook tokens:** Hook tokens must be unique. If a `hook_created` event conflicts with an active hook or a token still reserved after its run ended, return a `hook_conflict` event and include the owner's run ID as `eventData.conflictingRunId`.
 
 Keep the owning run available for at least as long as its token remains unavailable because conflicts return that run.
@@ -193,9 +196,11 @@ Spec version 7 supports one alternative to allocate-at-commit for Worlds whose s
 
 The runtime skips `noop` events during replay. It never delivers them to a consumer or uses them to advance the deterministic clock, so a sealed log replays identically to one whose writers filled the holes. `noop` isn't user-creatable and is never sent to `events.create()`. Only your read path may write one. Worlds that allocate at the commit, through a synchronous counter or unique-constraint append, maintain perfect density and don't need sealing. `world-local` and `world-postgres` never seal, and a World that allocates at the commit is spec 7 compliant without additional work.
 
-The version a World stamps comes from `mintedSpecVersion()`: 7 by default or the slot-identity version when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) disables it. Declare `mintedSpecVersion()` instead of a literal so your World moves with the fleet. A runtime other than the one that created a spec 7 run may read it, so readers must understand `noop` before anything stamps 7 in that environment.
+The version a World stamps comes from `mintedSpecVersion()`: 8 by default or the slot-identity version (6) when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) disables it. Declare `mintedSpecVersion()` instead of a literal so your World moves with the fleet. A runtime other than the one that created a spec 7 run may read it, so readers must understand `noop` before anything stamps 7 in that environment.
 
 `events.create()` params carry `eventCount`: how many events the writer held in the log it replayed from, which is the position it expects to land on minus one. Attempt `eventCount + 1`. When that position is taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped over on the success response, in `events` with a matching `cursor` and `hasMore`. The writer merges them into its own log and replays once, rather than paying a second round trip to discover it was behind. A caller with a stale count is the normal case for a fan-out, and rejecting it would serialize writes the runtime issues in parallel.
+
+Not every write carries `eventCount`, and a World is free to skip the report read for event types whose writer never holds a log to merge it into (the step executor's `step_started`, `step_retrying`, `step_completed`, and `step_failed`, and the run-terminal `run_completed`, `run_failed`, and `run_cancelled`). Which writes send `eventCount` or `sinceCursor`, and why, is tabulated in [Events returned on a write](/docs/how-it-works/event-sourcing#events-returned-on-a-write). When a write carries both, the `sinceCursor` delta is a superset of the report, so return the delta and skip the report.
 
 ### Optional: rejecting a stale write
 
@@ -229,12 +234,76 @@ interface Queue {
     opts?: QueueOptions
   ): Promise<{ messageId: MessageId | null }>;
 
+  // Optional. Omit it and the runtime publishes one message at a time.
+  queueBatch?(
+    queueName: ValidQueueName,
+    messages: readonly { message: QueuePayload; opts?: QueueOptions }[]
+  ): Promise<QueueBatchResult[]>;
+
+  // Optional request/response delivery, enabled with capabilities.invoke.
+  invoke?(runId: string, payload: unknown, options?: InvokeOptions): Promise<unknown>;
+
   createQueueHandler(
     queueNamePrefix: QueuePrefix,
-    handler: (message: unknown, meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }) => Promise<void | { timeoutSeconds: number }>
+    handler: (message: unknown, meta: { attempt: number; queueName: ValidQueueName; messageId: MessageId }) => Promise<unknown>
   ): (req: Request) => Promise<Response>;
 }
 ```
+
+### Invocation delivery
+
+Implement the optional `invoke` method to send an input to a workflow runner and
+return the runner's response. Enable `capabilities.invoke` only when your World
+supports this operation.
+
+Your World must guarantee at most one active workflow runner per `runId` across
+all worker processes. Different runs may execute concurrently. A replacement
+runner can take over after the previous runner stops.
+
+Route inputs to the active runner, or start or resume the runner when none is
+active. Call the existing `createQueueHandler` callback with
+`{ runId, invoke: true, requestId, input }`. The callback validates the input,
+waits for required event writes, and returns a result. Deliver that result to the
+original caller. Support input processing while the runner awaits step work,
+without starting a second runner for the same run.
+
+`requestId` identifies the logical input across retries and is separate from a
+queue delivery ID. `InvokeOptions` accepts an `idempotencyKey` and a `timeoutMs`
+response-wait limit.
+
+Treat invocation return values as response data, including any `timeoutSeconds`
+property. Ordinary workflow wake results use `timeoutSeconds` to schedule another
+execution.
+
+You can transport results with `InvocationOutcome`, using `{ ok: true, value }`
+for success or `{ ok: false, error: SerializedWorkflowError }` for an error. The
+helpers in `@workflow/errors/invocation` capture handler results and restore
+errors with their known Workflow classes and diagnostic fields. Return the value
+or throw the restored error from `invoke()`.
+
+Keep failures to store or deliver a response distinct from handler errors. A
+transport failure leaves processing unknown, and a handler error may follow
+committed event writes. If your World advertises `hookResumeDedup`, enforce that
+capability when retrying a hook event whose response was lost.
+
+### Batched publishing
+
+`queueBatch` is optional. Implement it when your transport can accept several messages in one round trip, and the runtime will use it to dispatch a wide `Promise.all` fan-out. A fan-out otherwise costs one round trip per branch, paid before the first branch's step body runs, so it lands directly on time-to-first-step.
+
+Its contract differs from `queue` in one important way: **a message that fails is reported, not thrown.** Return one result per input message, in input order, where `error` is set on the entries that were rejected and `retryable` says whether republishing might succeed. Reject the promise only for a request-level failure, where you cannot say what happened to any individual message.
+
+The count must match: return exactly as many results as you were given messages. The runtime rejects the whole batch if it does not, because an omitted result is indistinguishable from a message that was never published, and treating it as success would strand that step with nothing reporting an error.
+
+{/* @skip-typecheck - interface definition, not runnable code */}
+```typescript
+type QueueBatchResult =
+  | { messageId: MessageId | null; error?: undefined }
+  | { messageId: null; error: string; retryable: boolean };
+```
+
+`messageId: null` with no `error` means accepted without an ID yet, exactly as for `queue`, so callers test `error === undefined` for success rather than a non-null `messageId`.
+
+Every message targets one logical `queueName`, but you may split the batch internally — by a transport cap, or by any per-message routing dimension you derive from the payload — as long as the returned order still matches the input. The runtime passes a distinct `idempotencyKey` per message, because its recovery for both a request-level failure and a retryable entry is to republish the whole batch.
 
 ### Queue names
 

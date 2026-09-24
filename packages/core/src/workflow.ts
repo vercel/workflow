@@ -22,6 +22,7 @@ import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { isDeliveryIdle } from './private.js';
+import { describeDivergenceContext } from './replay-divergence.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
 import { getPortLazy } from './runtime/get-port-lazy.js';
 import { runIdCreatedAt } from './runtime/run-id-time.js';
@@ -382,8 +383,8 @@ async function createWorkflowSessionInner(
   }
 
   // Seed and initial clock must be available before I/O and remain stable on
-  // replay. After the first event, EventsConsumer advances the VM clock from
-  // each event's `createdAt`.
+  // replay. The clock then advances as deliveries reach the workflow (see
+  // `advanceClock` below).
   const fixedTimestamp =
     runIdCreatedAt(workflowRun.runId) ?? +workflowRun.createdAt;
 
@@ -476,25 +477,32 @@ async function createWorkflowSessionInner(
   // is before any delivery can be registered against it.
   const deliveryIdleHolder = { current: (): boolean => true };
 
-  // The VM clock only ever moves forward. Consumption order is log order for
-  // everything whose order the replay decides, but an event the consumer
-  // parked is delivered after the walk has already passed events written after
-  // it, and letting its `createdAt` set the clock would make `Date.now()` go
-  // backwards inside a single replay.
+  // The VM clock only ever moves forward, and it moves when a branch-deciding
+  // delivery (a step result, a hook payload, a wait completion, an abort, a
+  // hook's registration outcome) is handed to the workflow, not when the
+  // consumer walk reads an event. See `WorkflowOrchestratorContext.advanceClock` for
+  // why consumption is the wrong anchor: the walk runs ahead of delivery, so
+  // a later event's time would leak into an earlier delivery's cascade and
+  // `Date.now()` would depend on how much log this replay loaded. Deliveries
+  // reach the workflow in log order (the barrier registry), so the clock a
+  // cascade observes is a function of the log prefix alone.
   let clock = fixedTimestamp;
+  const advanceClock = (at: number) => {
+    if (at > clock) {
+      clock = at;
+      updateTimestamp(at);
+    }
+  };
 
   const eventsConsumer = new EventsConsumer(events, {
-    onConsumedEvent: (event) => {
-      const at = +event.createdAt;
-      if (at > clock) {
-        clock = at;
-        updateTimestamp(at);
-      }
-    },
     onUnconsumedEvent: (event) => {
+      // `workflowContext` is assigned below, before any event can be offered,
+      // so it is always populated by the time this fires. The appended detail
+      // names the pending invocation that holds this event's ordinal (the
+      // usual reason nobody can consume it) and where the walk stands.
       onWorkflowError(
         new ReplayDivergenceError(
-          `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}.`,
+          `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. ${describeDivergenceContext(event, workflowContext.invocationsQueue, eventsConsumer)}`,
           { eventId: event.eventId }
         )
       );
@@ -565,6 +573,7 @@ async function createWorkflowSessionInner(
     pendingDeliveries: 0,
     suspensionGeneration: 0,
     pendingDeliveryBarriers: new Map(),
+    advanceClock,
     replayPayloadCache,
   };
 
@@ -1228,7 +1237,7 @@ async function createWorkflowSessionInner(
     if (stranded) {
       return failWorkflow(
         new ReplayDivergenceError(
-          `Replay finished without consuming event: eventType=${stranded.eventType}, correlationId=${stranded.correlationId}, eventId=${stranded.eventId}.`,
+          `Replay finished without consuming event: eventType=${stranded.eventType}, correlationId=${stranded.correlationId}, eventId=${stranded.eventId}. ${describeDivergenceContext(stranded, workflowContext.invocationsQueue, eventsConsumer)}`,
           { eventId: stranded.eventId }
         )
       );

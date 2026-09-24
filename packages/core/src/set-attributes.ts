@@ -29,7 +29,12 @@ export async function setAttributes(
     );
   }
 
-  const changes = normalizeAttributeChanges(attrs, options);
+  const writer = {
+    type: 'step' as const,
+    stepId: store.stepMetadata.stepId,
+    attempt: store.stepMetadata.attempt,
+  };
+  const changes = normalizeAttributeChanges(attrs, options, writer);
   if (changes.length === 0) return;
 
   // Turbo optimistic start runs the step body before the backgrounded
@@ -56,11 +61,7 @@ export async function setAttributes(
     specVersion: SPEC_VERSION_CURRENT,
     eventData: {
       changes,
-      writer: {
-        type: 'step',
-        stepId: store.stepMetadata.stepId,
-        attempt: store.stepMetadata.attempt,
-      },
+      writer,
       ...(options.allowReservedAttributes === true
         ? { allowReservedAttributes: true }
         : {}),

@@ -497,6 +497,17 @@ export interface Storage {
  */
 export interface WorldCapabilities {
   /**
+   * Enables invoke() and request/response processing through createQueueHandler.
+   * Requires at most one active workflow runner per runId across all worker
+   * processes. Different runs may execute concurrently.
+   *
+   * The active runner must process inputs while it awaits step work. A replacement
+   * runner may take over after the previous runner stops, so process identity can
+   * change over the run's lifetime.
+   */
+  invoke?: boolean;
+
+  /**
    * Supports `experimental_minRetention` for Hooks. Missing or inactive means
    * the runtime rejects retained Hooks before registration.
    */
@@ -547,13 +558,39 @@ export interface WorldCapabilities {
    * server-computed, response-only `Hook.resumeCapabilities.hookResumeDedupVersion`
    * (see `HookResumeCapabilitiesSchema`), so a server rollback or kill switch
    * degrades new resumes to plain writes immediately without redeploying
-   * the adapter. `world-postgres` leaves it unset for now.
+   * the adapter. `world-postgres` enforces resume identities transactionally
+   * and declares the capability statically.
    *
    * The resume gate treats EITHER signal as backend support (see
    * `resume-hook.ts`): this static capability OR a current
    * `resumeCapabilities.hookResumeDedupVersion` on the by-token hook.
    */
   hookResumeDedup?: boolean;
+
+  /**
+   * Supports `createHook({ experimental_force: true })`: a `hook_created`
+   * carrying `eventData.force` whose token is held by another live run takes
+   * the token over instead of returning `hook_conflict`. The World must:
+   *
+   *   1. append `hook_disposed{forceClaimedBy: { runId, hookId }}` to the
+   *      current owner's log — atomically with whatever that World uses to
+   *      refuse later `hook_received` writes to it — BEFORE re-pointing the
+   *      token, so a delivery that already resolved the old owner is refused
+   *      rather than landing in a run that no longer holds the token;
+   *   2. re-point the token to the claimer atomically, recording
+   *      `Hook.claimedFrom` on the claimer's hook;
+   *   3. journal the claimer's `hook_created{force, forceClaimedFrom}`,
+   *      refusing it if the claimer's own hook was taken over in between;
+   *   4. answer a `hook_received` refused by a takeover with
+   *      `HookForceClaimedError` (not `HookNotFoundError`), after completing
+   *      the re-pointing if the claimer had not, so `resumeHook()` can follow
+   *      the token to its new owner and retry with the same `resumeId`.
+   *
+   * Formalised in `workflow-server/specs/HookForceClaim.tla`. A World that
+   * cannot give these guarantees must leave this unset; the runtime then
+   * rejects `experimental_force` at `createHook()` time.
+   */
+  hookForceClaim?: boolean;
 
   /**
    * Deployments are atomic and immutable: a deployment id names one fixed

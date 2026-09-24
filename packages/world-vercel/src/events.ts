@@ -31,7 +31,11 @@
  * the v3 path.
  */
 
-import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
+import {
+  HookForceClaimedError,
+  HookNotFoundError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   type AnyEventRequest,
   applyAttributeChanges,
@@ -43,7 +47,6 @@ import {
   type EventBatchResult,
   type EventDataPayloadField,
   type EventResult,
-  EventSchema,
   type GetEventParams,
   getEventDataPayloadField,
   isHookEventRequiringExistence,
@@ -53,6 +56,10 @@ import {
   validateUlidTimestamp,
   type WorkflowRun,
 } from '@workflow/world';
+import {
+  AttributeValidationError,
+  validateAttributeEventDataSize,
+} from '@workflow/world/attributes-validation';
 import { ReplayEventObserverError, withEventPostRetry } from './event-retry.js';
 import {
   createHookReceivedPreloadEventV4,
@@ -63,6 +70,7 @@ import {
   getEventV4,
   getWorkflowRunEventsV4,
   type ListEventsV4Params,
+  VercelEventWireSchema,
 } from './events-v4.js';
 import { decode as decodeRunId } from './run-id/index.js';
 import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
@@ -126,6 +134,8 @@ interface SplitEventData {
     hookTokenRetentionUntil?: Date;
     hookIsWebhook?: boolean;
     hookIsSystem?: boolean;
+    /** `createHook({ experimental_force })`: take the token over if held. */
+    hookForce?: boolean;
     errorCode?: string;
     cancelReason?: string;
     /** Inline-ownership stamp on step_started (owning queue message ID). */
@@ -185,6 +195,13 @@ type MetaSourceField =
   | 'tokenRetentionUntil'
   | 'isWebhook'
   | 'isSystem'
+  | 'force'
+  // World-written on persisted rows (never sent by the SDK): the claimer's
+  // hook_created carries `forceClaimedFrom`, the victim's hook_disposed
+  // `forceClaimedBy`. Listed so the exhaustiveness guard knows they are
+  // accounted for; `splitEventDataForV4` never puts either on the wire.
+  | 'forceClaimedFrom'
+  | 'forceClaimedBy'
   | 'errorCode'
   | 'cancelReason'
   | 'ownerMessageId'
@@ -237,6 +254,14 @@ assertEventDataWireContractExhaustive<[Unhandled, Stale]>();
  * contract and must remain exhaustive with the @workflow/world event schemas.
  */
 export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
+  if (data.eventType === 'attr_set') {
+    try {
+      validateAttributeEventDataSize(data.eventData);
+    } catch (error) {
+      if (!(error instanceof AttributeValidationError)) throw error;
+      throw new WorkflowWorldError(error.message, { status: 400 });
+    }
+  }
   // Some event types in the AnyEventRequest discriminated union (e.g.
   // run_cancelled) have no eventData. Cast through unknown so this
   // helper can read it defensively without TS narrowing per branch.
@@ -295,6 +320,11 @@ export function splitEventDataForV4(data: AnyEventRequest): SplitEventData {
   }
   if (typeof eventData.isSystem === 'boolean') {
     meta.hookIsSystem = eventData.isSystem;
+  }
+  // hook_created only. `forceClaimedFrom` is the server's own annotation on
+  // the persisted row and is never part of a request.
+  if (eventData.force === true) {
+    meta.hookForce = true;
   }
   if (typeof eventData.errorCode === 'string') {
     meta.errorCode = eventData.errorCode;
@@ -638,6 +668,17 @@ export async function createWorkflowRunEvent<T extends AnyEventRequest>(
     return result as EventResult<T['eventType']>;
   } catch (err) {
     if (err instanceof ReplayEventObserverError) throw err.error;
+    // 409 hook-force-claimed on hook_received: the hook's token was taken
+    // over by another run and the server has already re-pointed it. Re-key
+    // with the token this write carried so `resumeHook()` can follow it.
+    if (HookForceClaimedError.is(err) && data.eventType === 'hook_received') {
+      const token = (data.eventData as { token?: unknown } | undefined)?.token;
+      throw new HookForceClaimedError(
+        typeof token === 'string' ? token : err.token,
+        err.claimedByRunId,
+        err.claimedByHookId
+      );
+    }
     // 404 on hook_disposed / hook_received → already-disposed hook.
     if (
       isHookEventRequiringExistence(data.eventType) &&
@@ -684,7 +725,12 @@ async function createWorkflowRunEventInner(
       options: { method: 'POST' },
       data,
       config,
-      schema: EventSchema,
+      // Match the v4 sites: parse legacy event responses with the
+      // omitted-payload-tolerant wire schema. A `hook_received` response can
+      // omit the required `payload` key (e.g. a resume with an `undefined`
+      // payload the server never echoes back), which bare `EventSchema.parse`
+      // now rejects under Zod 4.5.
+      schema: VercelEventWireSchema,
     });
     return { event: wireResult };
   }

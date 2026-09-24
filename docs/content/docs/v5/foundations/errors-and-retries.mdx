@@ -164,6 +164,16 @@ export async function myWorkflow(input: unknown) {
 
 Uncaught, the run fails immediately with the `USER_ERROR` code, without retrying. See [serialization-failed](/docs/errors/serialization-failed) for common causes and fixes.
 
+## Backend connection failures
+
+On Vercel, backend connection failures and interrupted event streams use the existing retry policies, even when their error codes are unrecognized. This lets workflows recover from network failures instead of immediately failing with `USER_ERROR`. Persistent failures can still exhaust the retry budget.
+
+The SDK also replaces its shared events connection pool after repeated HTTP/2 session failures. Invalid backend URLs, including unsupported protocols and embedded credentials, fail immediately. Fetch requests to blocked ports or with unsupported headers (such as `Expect`) also fail without retrying. Interrupted event writes retain their existing retries; caller cancellations do not trigger another write.
+
+A connection failure does not prove that the backend rejected a write: it may have accepted it before the response was lost. Continue to make step side effects [idempotent](/docs/foundations/idempotency).
+
+Failed-run logs include the underlying error causes and their codes, exposing socket, DNS, or TLS errors behind messages such as `TypeError: fetch failed`. If a cause cannot be read, the log includes `[unavailable cause]` and the run can still be recorded as failed.
+
 ## Error codes
 
 When a workflow run fails, the error includes an `errorCode` that classifies the failure, alongside the original thrown value (preserved as `cause`):
@@ -191,7 +201,7 @@ try {
 | Code | Meaning |
 | --- | --- |
 | `USER_ERROR` | An error thrown in your workflow or step code (including propagated step failures like `FatalError`) |
-| `MAX_EVENTS_EXCEEDED` | The run reached the World's per-run event ceiling (25,000 on the Local and Vercel Worlds). Split unbounded loops into [child workflows](/cookbook/advanced/child-workflows); see [Limits](/docs/configuration/runtime-tuning#limits) |
+| `MAX_EVENTS_EXCEEDED` | The run reached the World's per-run event ceiling (for the Vercel World, see [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits)). Split unbounded loops into [child workflows](/cookbook/advanced/child-workflows) well before the ceiling; see [Vercel World limits](/worlds/vercel#per-run-limits) and [Limits](/docs/configuration/runtime-tuning#limits) |
 | `MAX_DELIVERIES_EXCEEDED` | The run exceeded the maximum number of queue deliveries |
 | `REPLAY_TIMEOUT` | A workflow replay exceeded the maximum allowed duration |
 | `REPLAY_DIVERGENCE` | A replay could not consume the event log deterministically, usually because of non-deterministic workflow code. |

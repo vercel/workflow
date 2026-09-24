@@ -925,8 +925,10 @@ describe('runWorkflow', () => {
     }
   );
 
-  // TODO: Date.now determinism is currently broken in the workflow!!
-  it.fails('should maintain determinism of `Date` across executions', async () => {
+  // The clock advances when a delivery reaches the workflow, not when the
+  // consumer walk reads an event, so the second sleep's completion (later in
+  // the log, never delivered before the return) cannot leak into `Date.now()`.
+  it('should maintain determinism of `Date` across executions', async () => {
     const ops: Promise<any>[] = [];
     const workflowRunId = 'test-run-123';
     const workflowRun: WorkflowRun = {

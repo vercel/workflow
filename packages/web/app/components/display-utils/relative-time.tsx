@@ -1,10 +1,6 @@
+import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
 import { formatDistanceToNowStrict, formatRelative } from 'date-fns';
 import { useEffect, useState } from 'react';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '~/components/ui/tooltip';
 
 interface RelativeTimeProps {
   date: Date | string;

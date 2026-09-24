@@ -106,6 +106,31 @@ describe('replay verification', () => {
     ]);
   });
 
+  it('replays the terminal prefix without seeding later step results', async () => {
+    const events = [
+      ...committedLog(),
+      event({
+        eventType: 'step_completed',
+        correlationId: 'step_late',
+        eventData: { result: new Uint8Array() },
+      }),
+    ];
+    const result = await check(
+      handlerWriting(async (world) => {
+        await world.events.create(RUN, {
+          eventType: 'run_completed',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: { output: OUTPUT },
+        });
+      }),
+      events
+    );
+    expect(result.violations).toEqual([]);
+    expect(result.regenerated.map((e) => e.eventType)).toEqual([
+      'run_completed',
+    ]);
+  });
+
   it('catches a replay that derives a different output', async () => {
     const result = await check(
       handlerWriting(async (world) => {

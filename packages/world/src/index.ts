@@ -13,6 +13,7 @@ export {
 } from './analytics.js';
 export type * from './attributes.js';
 export {
+  ATTRIBUTE_EVENT_DATA_MAX_BYTES,
   ATTRIBUTE_KEY_MAX_LENGTH,
   ATTRIBUTE_MAX_PER_RUN,
   ATTRIBUTE_VALUE_MAX_BYTES,
@@ -33,6 +34,7 @@ export {
   type RunRetention,
   readRunRetention,
   validateAttributeChanges,
+  validateAttributeEventDataSize,
 } from './attributes.js';
 export {
   _resetEnvWarnCacheForTests,
@@ -79,10 +81,15 @@ export type * from './hooks.js';
 export {
   HOOK_RESUME_DEDUP_VERSION,
   HOOK_RESUME_INPUT_VERSION,
+  HookClaimedFromSchema,
   HookResumeCapabilitiesSchema,
   HookSchema,
 } from './hooks.js';
 export type * from './interfaces.js';
+export type {
+  InvocationOutcome,
+  SerializedWorkflowError,
+} from './invocation.js';
 // The client this flag selects lives in `./node-http.js`, which is reachable
 // only by subpath: it imports node builtins statically, and this index is also
 // pulled into browser bundles.
@@ -158,6 +165,7 @@ export {
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   SPEC_VERSION_SUPPORTS_SEALED_LOG,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from './spec-version.js';

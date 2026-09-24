@@ -5,6 +5,7 @@ import { globalSingleton } from '@workflow/utils';
 import {
   MessageId,
   type Queue,
+  type QueueBatchResult,
   type QueueOptions,
   type QueuePayload,
   QueuePayloadSchema,
@@ -18,8 +19,59 @@ import { missingDeploymentIdMessage } from './deployment-id.js';
 import { getQueueDispatcher } from './http-client.js';
 import { decode as decodeTaggedRunId } from './run-id/index.js';
 import { isKnownRegionCode, REGION_IDS } from './run-id/regions.js';
+import { getTraceContextHeaders } from './telemetry.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 import { isWsEventsTransportEnabled } from './ws-transport-enabled.js';
+
+/**
+ * Messages per `experimental_sendBatch` request. VQS caps a batch at 100 and
+ * rejects the whole request above it, so this is the API's ceiling rather
+ * than a tuning knob; `queueBatch` splits anything larger.
+ */
+const MAX_QUEUE_SEND_BATCH = 100;
+
+/**
+ * Mirrors `@vercel/queue`'s own kill switch. `queueBatch` injects trace
+ * context itself (see below), so without this check `off` would still
+ * disable it on the single send and not on the batched one.
+ */
+function isQueueTracePropagationDisabled(): boolean {
+  const value = process.env.VERCEL_QUEUE_TRACE_PROPAGATION?.toLowerCase();
+  return value === 'off' || value === '0' || value === 'false';
+}
+
+/**
+ * Maps one `experimental_sendBatch` outcome onto the World's
+ * {@link QueueBatchResult}.
+ *
+ * `undefined` means the server returned fewer results than the batch carried.
+ * That is reported as a retryable failure rather than left as a hole the
+ * caller would read as success: republishing under the same idempotency keys
+ * is safe, silently dropping a step's message is not.
+ */
+function toBatchResult(
+  outcome:
+    | Awaited<ReturnType<QueueClient['experimental_sendBatch']>>[number]
+    | undefined
+): QueueBatchResult {
+  if (outcome === undefined) {
+    return {
+      messageId: null,
+      error: 'Queue batch returned no result for this message',
+      retryable: true,
+    };
+  }
+  if (outcome.status === 'failed') {
+    return {
+      messageId: null,
+      error: outcome.error,
+      retryable: outcome.retryable,
+    };
+  }
+  return {
+    messageId: outcome.messageId ? MessageId.parse(outcome.messageId) : null,
+  };
+}
 
 /**
  * CBOR-based queue transport. Encodes values with cbor-x on send and
@@ -105,15 +157,17 @@ class DualTransport implements Transport<unknown> {
 // same module copy, so the context never has to cross a copy boundary.
 const requestIdStorage = new AsyncLocalStorage<string | undefined>();
 
-const MessageWrapper = z.object({
-  payload: QueuePayloadSchema,
-  queueName: ValidQueueName,
-  /**
-   * The deployment ID to use when re-enqueueing the message.
-   * This ensures the message is processed by the same deployment.
-   */
-  deploymentId: z.string().optional(),
-});
+const MessageWrapper = z.compile(
+  z.object({
+    payload: QueuePayloadSchema,
+    queueName: ValidQueueName,
+    /**
+     * The deployment ID to use when re-enqueueing the message.
+     * This ensures the message is processed by the same deployment.
+     */
+    deploymentId: z.string().optional(),
+  })
+);
 
 /**
  * Sleep Implementation via Message Delays
@@ -158,7 +212,31 @@ const HANDLER_ERROR_RETRY_AFTER_SECONDS = 1;
 const HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS = 900;
 const HANDLER_ERROR_RETRY_JITTER_RATIO = 0.25;
 
-function getHandlerErrorRetryAfterSeconds(deliveryCount: number): number {
+function getErrorRetryAfterSeconds(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+
+  // Read structurally rather than with instanceof: errors can cross VM and
+  // bundled-module realms before they reach the queue callback. This covers
+  // ThrottleError, TooEarlyError, and retryable WorkflowWorldError variants
+  // without coupling the final retry boundary to their constructors.
+  const retryAfter = (error as { retryAfter?: unknown }).retryAfter;
+  if (
+    typeof retryAfter !== 'number' ||
+    !Number.isFinite(retryAfter) ||
+    retryAfter <= 0
+  ) {
+    return undefined;
+  }
+
+  // VQS ultimately schedules through SQS, whose per-hop delay ceiling is 900s.
+  // Round upward so a fractional server delay is never retried early.
+  return Math.min(Math.ceil(retryAfter), HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS);
+}
+
+function getHandlerErrorRetryAfterSeconds(
+  error: unknown,
+  deliveryCount: number
+): number {
   const backoffSeconds = Math.min(
     Math.max(HANDLER_ERROR_RETRY_AFTER_SECONDS, 2 ** (deliveryCount - 1)),
     HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS
@@ -167,9 +245,16 @@ function getHandlerErrorRetryAfterSeconds(deliveryCount: number): number {
     Math.random() *
       (Math.ceil(backoffSeconds * HANDLER_ERROR_RETRY_JITTER_RATIO) + 1)
   );
-  return Math.max(
+  const jitteredBackoffSeconds = Math.max(
     HANDLER_ERROR_RETRY_AFTER_SECONDS,
     backoffSeconds - jitterSeconds
+  );
+
+  // Jitter only the delivery-count backoff. Applying it after this max could
+  // turn Retry-After: 120 into an earlier retry, defeating server load shed.
+  return Math.max(
+    jitteredBackoffSeconds,
+    getErrorRetryAfterSeconds(error) ?? HANDLER_ERROR_RETRY_AFTER_SECONDS
   );
 }
 
@@ -429,9 +514,16 @@ export function createQueue(config?: APIConfig): Queue {
     headers: Object.fromEntries(headers.entries()),
   };
 
-  const queue: QueueFunction = async (
-    queueName,
-    payload,
+  /**
+   * Resolves everything a send needs from one (payload, opts) pair: the
+   * routing dimensions that decide WHICH client the message goes through
+   * (region / deploymentId / transport / physical topic) and the per-message
+   * arguments. Shared by `queue` and `queueBatch` so a batched send routes
+   * byte-for-byte the same way the single send would have.
+   */
+  const prepareSend = (
+    queueName: ValidQueueName,
+    payload: QueuePayload,
     opts?: QueueOptions
   ) => {
     // Check if we have a deployment ID either from options or environment
@@ -448,7 +540,6 @@ export function createQueue(config?: APIConfig): Queue {
     const useCbor =
       (opts?.specVersion ?? SPEC_VERSION_CURRENT) >=
       SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
-    const transport = useCbor ? cborTransport : jsonTransport;
 
     // Resolve the destination region. Explicit `opts.region` wins, otherwise
     // we decode it from the payload's tagged run ID so messages produced by
@@ -457,7 +548,43 @@ export function createQueue(config?: APIConfig): Queue {
     // behavior for legacy / untagged run IDs.
     const region = resolveTargetRegion(payload, opts);
 
-    const client = new QueueClient({
+    const topic = getPhysicalQueueName(queueName, payload).replace(
+      /[^A-Za-z0-9-_]/g,
+      '-'
+    );
+
+    return {
+      deploymentId,
+      useCbor,
+      region,
+      topic,
+      // The CborTransport handles CBOR encoding inside serialize(),
+      // preserving Uint8Array values (workflow input in specVersion >= 2).
+      wrapper: {
+        payload,
+        // Keep the logical queue name so the handler and re-enqueue path
+        // resolve the same per-run physical topic on the next invocation.
+        queueName,
+        // Store deploymentId in the message so it can be preserved when re-enqueueing
+        deploymentId: opts?.deploymentId,
+      },
+      sendOptions: {
+        idempotencyKey: opts?.idempotencyKey,
+        delaySeconds: opts?.delaySeconds,
+        headers: {
+          ...getHeadersFromPayload(payload),
+          ...opts?.headers,
+        },
+      },
+    };
+  };
+
+  const clientFor = (route: {
+    region: string;
+    deploymentId: string;
+    useCbor: boolean;
+  }) =>
+    new QueueClient({
       ...clientOptions,
       // When sending through the api.vercel.com proxy, the fixed
       // `resolveBaseUrl` above replaces the queue SDK's own
@@ -468,44 +595,129 @@ export function createQueue(config?: APIConfig): Queue {
       ...(usingProxy && {
         headers: {
           ...clientOptions.headers,
-          'x-vercel-queue-region': region,
+          'x-vercel-queue-region': route.region,
         },
       }),
-      region,
-      deploymentId,
-      transport,
+      region: route.region,
+      deploymentId: route.deploymentId,
+      transport: route.useCbor ? cborTransport : jsonTransport,
     });
 
-    // The CborTransport handles CBOR encoding inside serialize(),
-    // preserving Uint8Array values (workflow input in specVersion >= 2).
-    const wrapper = {
-      payload,
-      // Keep the logical queue name so the handler and re-enqueue path
-      // resolve the same per-run physical topic on the next invocation.
-      queueName,
-      // Store deploymentId in the message so it can be preserved when re-enqueueing
-      deploymentId: opts?.deploymentId,
-    };
-    const sanitizedQueueName = getPhysicalQueueName(queueName, payload).replace(
-      /[^A-Za-z0-9-_]/g,
-      '-'
-    );
+  const queue: QueueFunction = async (
+    queueName,
+    payload,
+    opts?: QueueOptions
+  ) => {
+    const prepared = prepareSend(queueName, payload, opts);
+    const client = clientFor(prepared);
     // A repeated `idempotencyKey` is accepted rather than rejected: the send
     // returns a fresh message ID and only one of the messages is delivered, so
     // there is no conflict for the caller to handle here.
-    const { messageId } = await client.send(sanitizedQueueName, wrapper, {
-      idempotencyKey: opts?.idempotencyKey,
-      delaySeconds: opts?.delaySeconds,
-      headers: {
-        ...getHeadersFromPayload(payload),
-        ...opts?.headers,
-      },
-    });
+    const { messageId } = await client.send(
+      prepared.topic,
+      prepared.wrapper,
+      prepared.sendOptions
+    );
     return {
       // messageId may be null when the queue fails over to a different region:
       // the event is ingested but the responding region cannot return an ID.
       messageId: messageId ? MessageId.parse(messageId) : null,
     };
+  };
+
+  const queueBatch: NonNullable<Queue['queueBatch']> = async (
+    queueName,
+    messages
+  ) => {
+    const results = new Array<QueueBatchResult>(messages.length);
+    if (messages.length === 0) return results;
+
+    // Trace context has to be attached per MESSAGE here, not per request.
+    //
+    // `send()` gets this for free: the SDK injects into the headers it is
+    // about to send, and for a single message those headers ARE the message's
+    // headers, so VQS stores the `traceparent` and re-emits it at delivery as
+    // `x-vercel-queue-traceparent` — which is what lets a consumer attach a
+    // span link back to this producer. `experimental_sendBatch` injects into
+    // the multipart REQUEST headers instead, and the per-part headers it
+    // builds never see it, so a batched message would arrive with no producer
+    // context and the consumer's `vqs.process` span would have no link.
+    //
+    // One injection for the whole call: every message in a batch is published
+    // under the same active span, which is exactly what the single send would
+    // have recorded on each of them.
+    const traceHeaders = isQueueTracePropagationDisabled()
+      ? {}
+      : await getTraceContextHeaders();
+
+    // Group by the routing dimensions a single VQS request cannot span. In
+    // the case this exists for — one run's fan-out to one logical queue —
+    // every message lands in one group, so this is one request per
+    // MAX_QUEUE_SEND_BATCH messages. Mixed input still works, it just costs
+    // one request per distinct route.
+    //
+    // `topic` is one of those dimensions, which makes this a no-op under
+    // WORKFLOW_SEQUENTIAL_REPLAYS=1: step dispatches ride the flow topic,
+    // `getPhysicalQueueName` gives each one a per-step physical topic, and
+    // every message therefore lands in a group of its own. The fan-out still
+    // publishes correctly, just at one request per step as before, and each
+    // goes through the batch endpoint rather than `send()` — which does not
+    // map 502 `consumer_discovery_failed` to ConsumerDiscoveryError (only
+    // 503). No caller on this path classifies that error today, so nothing
+    // changes behaviorally; worth knowing before one starts.
+    const groups = new Map<
+      string,
+      {
+        route: { region: string; deploymentId: string; useCbor: boolean };
+        entries: {
+          index: number;
+          topic: string;
+          message: Parameters<QueueClient['experimental_sendBatch']>[1][number];
+        }[];
+      }
+    >();
+    for (const [index, entry] of messages.entries()) {
+      const prepared = prepareSend(queueName, entry.message, entry.opts);
+      const key = `${prepared.region} ${prepared.deploymentId} ${prepared.useCbor} ${prepared.topic}`;
+      const group = groups.get(key) ?? {
+        route: prepared,
+        entries: [],
+      };
+      group.entries.push({
+        index,
+        topic: prepared.topic,
+        message: {
+          payload: prepared.wrapper,
+          ...prepared.sendOptions,
+          // Trace headers last, matching the single send: the SDK injects
+          // after it has applied the caller's `opts.headers`.
+          headers: { ...prepared.sendOptions.headers, ...traceHeaders },
+        },
+      });
+      groups.set(key, group);
+    }
+
+    await Promise.all(
+      [...groups.values()].map(async ({ route, entries }) => {
+        const client = clientFor(route);
+        for (
+          let offset = 0;
+          offset < entries.length;
+          offset += MAX_QUEUE_SEND_BATCH
+        ) {
+          const chunk = entries.slice(offset, offset + MAX_QUEUE_SEND_BATCH);
+          const sent = await client.experimental_sendBatch(
+            // biome-ignore lint/style/noNonNullAssertion: chunks are non-empty
+            chunk[0]!.topic,
+            chunk.map((entry) => entry.message)
+          );
+          for (const [position, entry] of chunk.entries()) {
+            results[entry.index] = toBatchResult(sent[position]);
+          }
+        }
+      })
+    );
+    return results;
   };
 
   const createQueueHandler: Queue['createQueueHandler'] = (
@@ -543,7 +755,13 @@ export function createQueue(config?: APIConfig): Queue {
             requestId,
           });
 
-          if (typeof result?.timeoutSeconds === 'number') {
+          if (
+            !('invoke' in payload && payload.invoke === true) &&
+            typeof result === 'object' &&
+            result !== null &&
+            'timeoutSeconds' in result &&
+            typeof result.timeoutSeconds === 'number'
+          ) {
             // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
             // Otherwise, clamp to one continuation hop (23h by default). Longer
             // sleeps chain delayed messages until the full duration has elapsed.
@@ -572,7 +790,10 @@ export function createQueue(config?: APIConfig): Queue {
         // redrive in lockstep. Workflow handlers are event-sourced and must
         // remain idempotent because queue retries can happen close together.
         retry: (error, { messageId, deliveryCount }) => {
-          const afterSeconds = getHandlerErrorRetryAfterSeconds(deliveryCount);
+          const afterSeconds = getHandlerErrorRetryAfterSeconds(
+            error,
+            deliveryCount
+          );
           console.error(
             `[workflow] Queue handler failed for message "${messageId}" on delivery attempt ${deliveryCount}; retrying in ${afterSeconds}s:`,
             error
@@ -606,6 +827,7 @@ export function createQueue(config?: APIConfig): Queue {
 
   return {
     queue,
+    queueBatch,
     createQueueHandler,
     getDeploymentId,
     isDeploymentUnavailableError,

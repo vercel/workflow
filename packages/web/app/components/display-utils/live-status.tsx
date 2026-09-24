@@ -1,5 +1,5 @@
+import { Tooltip, TooltipContent, TooltipTrigger } from '@workflow/web-shared';
 import { LIVE_UPDATE_INTERVAL_MS } from '~/lib/utils';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
 interface LiveStatusProps {
   hasError: boolean;

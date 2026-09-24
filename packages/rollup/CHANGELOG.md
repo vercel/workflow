@@ -1,5 +1,49 @@
 # @workflow/rollup
 
+## 5.0.0-beta.56
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.56
+
+## 5.0.0-beta.55
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.55
+
+## 5.0.0-beta.54
+
+### Patch Changes
+
+- Updated dependencies [[`5a05f40`](https://github.com/vercel/workflow/commit/5a05f409aa23f528f214640295f389cabdcb5a9d)]:
+  - @workflow/builders@5.0.0-beta.54
+
+## 5.0.0-beta.53
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.53
+
+## 5.0.0-beta.52
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.52
+
+## 5.0.0-beta.51
+
+### Patch Changes
+
+- [#3891](https://github.com/vercel/workflow/pull/3891) [`c29200f`](https://github.com/vercel/workflow/commit/c29200fac5848fb8e40bf77351b5b69d10a31357) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Disable implicit input source map loading during workflow transforms to avoid false missing-map build errors for dependencies.
+- Updated dependencies [[`c29200f`](https://github.com/vercel/workflow/commit/c29200fac5848fb8e40bf77351b5b69d10a31357)]:
+  - @workflow/swc-plugin@5.0.0-beta.7
+  - @workflow/builders@5.0.0-beta.51
+
 ## 5.0.0-beta.50
 
 ### Patch Changes

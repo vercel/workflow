@@ -176,6 +176,33 @@ const openWaitRaceWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEE
   }
   globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
 
+// A long sleep is created alongside s1 and awaited after it. s1 runs inline
+// and its terminal write returns an inline delta (the sleep is due far outside
+// this invocation's window); the replay then reaches the sleep and parks. The
+// shape `run.wakeUp()` meets: a completion that lands after the step's write
+// is above the delta, and only a read before parking can see it.
+const sleepAfterStepWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  async function workflow() {
+    const nap = sleep("1h");
+    const a = await s1();
+    await nap;
+    return a + 7;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
+// The common polling shape: the sleep is created only after the step, so it
+// did not exist when the step's delta was taken and nothing can sit above that
+// delta for it. Parking on it must not pay a read.
+const stepThenSleepWorkflow = `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+  const s1 = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("r_s1");
+  async function workflow() {
+    const a = await s1();
+    await sleep("5s");
+    return a + 7;
+  }
+  globalThis.__private_workflows = new Map([["workflow", workflow]]);`;
+
 // The payload arrives while the workflow is waiting on s1, before any hook
 // consumer exists. The next pass buffers it, advances through s1, and suspends
 // on s2; delivery idle retires the payload's unarmed barrier at that boundary.
@@ -425,7 +452,11 @@ type DriveMode =
   | { type: 'normal' }
   | { type: 'fail-event'; eventType: Event['eventType'] }
   | { type: 'inject-hook' }
-  | { type: 'inject-wait' };
+  | { type: 'inject-wait' }
+  // `run.wakeUp()`'s shape: the wait's completion is appended right AFTER the
+  // step's terminal write, so it sits above the inline delta that write
+  // returns and only a later read can observe it.
+  | { type: 'inject-wait-after-step-completed' };
 
 type NormalizedDurableEvent = {
   eventType: Event['eventType'];
@@ -643,6 +674,27 @@ async function drive(
               hasMore: false,
             }
           : undefined;
+      if (
+        data.eventType === 'step_completed' &&
+        mode.type === 'inject-wait-after-step-completed'
+      ) {
+        mode = { type: 'normal' };
+        const waitCreated = events.find(
+          (candidate) => candidate.eventType === 'wait_created'
+        );
+        assert(waitCreated, 'expected wait_created before step_completed');
+        // Pushed after `delta` was sliced, so the delta ends at the
+        // step_completed and this completion is only reachable by a read.
+        events.push({
+          eventId: slotToEventId(++seq),
+          runId,
+          eventType: 'wait_completed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: waitCreated.correlationId,
+          eventData: { resumeAt: waitCreated.eventData.resumeAt },
+          createdAt: new Date(),
+        });
+      }
       // step_started returns a running step entity so executeStep proceeds to
       // run the body and write step_completed.
       return {
@@ -1002,6 +1054,99 @@ describe('retained VM through the inline replay loop', () => {
     );
     expect(result).toBe(30);
     expect(vmBuilds).toBe(1);
+  });
+
+  /**
+   * A pending wait gates the per-step inline delta only if it can fire within
+   * this invocation's inline window. The fake World reports no runtime
+   * deadline, so the window is the runtime's 2-minute fallback plus the skew
+   * allowance, and a 1h sleep sits far outside it. Both the log scan and the
+   * suspension's own queue name the losing sleep; either one gating would put
+   * the run back on the fetch path.
+   */
+  describe('far-future open wait and the inline delta', () => {
+    it('a sleep that lost a race does not cost an events.list per step boundary', async () => {
+      const { result, listCalls, createParams } = await drive(
+        'wrun_far_wait_delta',
+        openWaitRaceWorkflow
+      );
+      expect(result).toBe(30);
+      // Both steps' terminal writes asked for the delta, so neither boundary
+      // read: one list, the invocation's initial load, exactly as for two
+      // plain steps with no sleep in the picture.
+      expect(
+        createParams.filter(
+          (p) => p.eventType === 'step_completed' && p.sinceCursor !== undefined
+        )
+      ).toHaveLength(2);
+      expect(listCalls).toBe(1);
+    });
+
+    it('the same sleep gates when the skew allowance pulls it into the window', async () => {
+      vi.stubEnv(
+        'WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS',
+        String(365 * 24 * 3600_000)
+      );
+      const { result, listCalls } = await drive(
+        'wrun_far_wait_delta_gated',
+        openWaitRaceWorkflow
+      );
+      expect(result).toBe(30);
+      expect(listCalls).toBeGreaterThan(1);
+    });
+
+    it('re-reads before parking on the sleep, so a wakeUp completion above the delta is not missed', async () => {
+      const { result, listCalls, queueSends, committedTypes } = await drive(
+        'wrun_wakeup_above_delta',
+        sleepAfterStepWorkflow,
+        { type: 'inject-wait-after-step-completed' }
+      );
+      // The completion landed after s1's terminal write, above the delta that
+      // write returned. Parking on that view would have armed a continuation
+      // for the original 1h `resumeAt`; the re-read saw the completion and the
+      // run finished in this invocation instead.
+      expect(result).toBe(17);
+      expect(committedTypes.filter((t) => t === 'wait_completed')).toHaveLength(
+        1
+      );
+      // Initial load plus the one pre-park read.
+      expect(listCalls).toBe(2);
+      // The first suspension (sleep and s1 together) armed the wait's
+      // continuation, as every suspension holding a pending wait does. The
+      // park pass that would have re-armed it for the original 1h never ran.
+      expect(queueSends).toBe(1);
+    });
+
+    it('does not re-read when the wait was created by the parking suspension itself', async () => {
+      const { result, listCalls, queueSends, committedTypes } = await drive(
+        'wrun_step_then_sleep',
+        stepThenSleepWorkflow
+      );
+      expect(result).toBeUndefined();
+      expect(committedTypes).not.toContain('run_completed');
+      // s1's terminal write carried the delta; the sleep came after it, so
+      // the park reads nothing: the initial load is the only list.
+      expect(listCalls).toBe(1);
+      // The wait continuation, armed once at the park.
+      expect(queueSends).toBe(1);
+    });
+
+    it('parks on an unchanged log after the pre-park read, arming the continuation once', async () => {
+      const { result, listCalls, queueSends, committedTypes } = await drive(
+        'wrun_park_after_reread',
+        sleepAfterStepWorkflow
+      );
+      // Nothing completed the wait, so the run is parked, not finished.
+      expect(result).toBeUndefined();
+      expect(committedTypes).not.toContain('wait_completed');
+      expect(committedTypes).not.toContain('run_completed');
+      // Initial load, then one read before parking; the second pass over the
+      // same log parks without reading again.
+      expect(listCalls).toBe(2);
+      // The wait continuation: once from the first suspension, once from the
+      // park (the World dedupes the two on the wait's idempotency key).
+      expect(queueSends).toBe(2);
+    });
   });
 
   it('retains one VM while an open sleep loses to inline steps', async () => {
