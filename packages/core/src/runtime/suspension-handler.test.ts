@@ -521,74 +521,6 @@ describe('handleSuspension', () => {
     });
   });
 
-  it('lands no other hook write between a forced creation and its victim wake', async () => {
-    // The replay repays an owed wake only while the forced `hook_created` is
-    // the last event the run wrote. A sibling hook created concurrently
-    // (another token, same suspension) could otherwise land after it while
-    // the wake is in flight, and a crash then would leave that sibling as
-    // the tail and the victim never woken.
-    const order: string[] = [];
-    const eventsCreate = vi.fn(async (_runId, event) => {
-      order.push(`${event.eventType}:${event.correlationId}`);
-      if (event.correlationId === 'hook_forced') {
-        return {
-          event,
-          hook: {
-            hookId: 'hook_forced',
-            claimedFrom: {
-              runId: 'wrun_victim',
-              hookId: 'hook_victim',
-              workflowName: 'victim-workflow',
-            },
-          },
-        };
-      }
-      return { event };
-    });
-    const queue = vi.fn(async () => {
-      // Give a concurrently started sibling every chance to write first.
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      order.push('wake:wrun_victim');
-      return { messageId: 'msg_wake' };
-    });
-    const world = {
-      events: { create: eventsCreate },
-      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
-      queue,
-    } as unknown as World;
-    const pending = new Map([
-      [
-        'hook_plain',
-        {
-          type: 'hook' as const,
-          correlationId: 'hook_plain',
-          token: 'plain-token',
-        },
-      ],
-      [
-        'hook_forced',
-        {
-          type: 'hook' as const,
-          correlationId: 'hook_forced',
-          token: 'forced-token',
-          force: true,
-        },
-      ],
-    ]);
-
-    await handleSuspension({
-      suspension: new WorkflowSuspension(pending, globalThis),
-      world,
-      run,
-    });
-
-    expect(order).toEqual([
-      'hook_created:hook_forced',
-      'wake:wrun_victim',
-      'hook_created:hook_plain',
-    ]);
-  });
-
   describe('hook writes alongside the rest of the suspension', () => {
     // With an inline cap of 1 the first uncreated step defers to the caller's
     // lazy claim and writes nothing here, so every test pairs it with an
@@ -671,7 +603,11 @@ describe('handleSuspension', () => {
       expect(result.hasHookEvents).toBe(true);
     });
 
-    it('still lands a forced creation and its victim wake before any step write', async () => {
+    it("does not hold other writes for a forced creation's victim wake", async () => {
+      // The wake still goes out, once, but the sibling hook and the step are
+      // written while it is in flight rather than after it
+      // (vercel/workflow#4393 tracks the recovery gap that leaves after a
+      // crash).
       const order: string[] = [];
       const eventsCreate = vi.fn(async (_runId, event) => {
         order.push(`${event.eventType}:${event.correlationId}`);
@@ -706,6 +642,7 @@ describe('handleSuspension', () => {
           new Map<string, QueueItem>([
             step('s_lazy'),
             step('s_eager'),
+            hook('hook_plain'),
             hook('hook_forced', { force: true }),
           ]),
           globalThis
@@ -714,11 +651,14 @@ describe('handleSuspension', () => {
         run,
       });
 
-      expect(order).toEqual([
-        'hook_created:hook_forced',
-        'wake:wrun_victim',
-        'step_created:s_eager',
-      ]);
+      const wakeAt = order.indexOf('wake:wrun_victim');
+      expect(wakeAt).toBeGreaterThan(order.indexOf('hook_created:hook_forced'));
+      expect(order.indexOf('hook_created:hook_plain')).toBeLessThan(wakeAt);
+      expect(order.indexOf('step_created:s_eager')).toBeLessThan(wakeAt);
+      expect(queue).toHaveBeenCalledTimes(1);
+      expect(queue.mock.calls[0][2]).toMatchObject({
+        idempotencyKey: 'hook-force-claim-hook_forced',
+      });
     });
 
     it('creates a hook before delivering its abort within one suspension', async () => {

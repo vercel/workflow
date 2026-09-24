@@ -332,12 +332,11 @@ export interface SuspensionHandlerResult {
   hasHookEvents: boolean;
   /**
    * Wall-clock ms this suspension spent blocked on nothing but committing its
-   * `hook_created` events (0 when it created none): all of a forced creation's
-   * phase, which runs ahead of every other write, and of the concurrent hook
-   * writes only the stretch they outlasted every other write. The caller
-   * accumulates this across iterations and subtracts it from the TTFS latency
-   * measurement, so time spent durably creating the user's hooks doesn't
-   * count as runtime overhead.
+   * `hook_created` events (0 when it created none): the stretch the hook
+   * writes outlasted every other write, since until then the suspension was
+   * waiting on those too. The caller accumulates this across iterations and
+   * subtracts it from the TTFS latency measurement, so time spent durably
+   * creating the user's hooks doesn't count as runtime overhead.
    */
   hookCreationMs: number;
   /** Exact number of workflow-code executions observed during serialization. */
@@ -470,12 +469,9 @@ async function createHookEvent({
  * Creates events for all operations but does NOT queue step messages; returns the pending
  * steps so the caller can decide which to execute inline vs queue to background.
  *
- * Processing order:
- * 1. Forced hook creations (`experimental_force`) commit first, one at a time,
- *    each followed by its victim wake (see `holdsForcedCreation` below).
- * 2. Everything else is written concurrently: hook creations and disposals
- *    (in code order per token, then abort deliveries), step and wait events
- *    (batched where the World supports it), and attribute events.
+ * Every write is issued concurrently: hook creations and disposals (in code
+ * order per token, then abort deliveries), step and wait events (batched where
+ * the World supports it), and attribute events.
  *
  * Hooks are not written ahead of the steps created alongside them. A step
  * started in the same suspension as a hook can therefore run before that hook
@@ -908,54 +904,35 @@ export async function handleSuspension({
     }
   };
 
-  // A forced creation owes its victim a wake, and a replay can only tell that
-  // debt is still open while the forced `hook_created` is the last event this
-  // run wrote (`forcedCreationOwingWake`). So nothing else this suspension
-  // writes may land between that row and the wake: token groups holding a
-  // forced creation run first, one at a time (their wake is published inside
-  // the group, before its next write), and nothing else starts until they
-  // have all settled. Suspensions without a forced hook skip this barrier.
+  // Hook writes go out alongside this suspension's step, wait, and attribute
+  // writes rather than ahead of them: they are one more op in the set settled
+  // below. Within the hook writes themselves, token groups apply in code order
+  // (see `hookItemsByToken`) and aborts follow the creations, so a hook created
+  // and aborted in one suspension is created first.
+  //
+  // That includes forced creations. A forced creation publishes its victim's
+  // wake before its token group's next write, but other groups and the step
+  // writes are not held for it, so a crash before the wake can leave one of
+  // them as the log's last row and hide the owed wake from the replay's
+  // `forcedCreationOwingWake`. That check was never airtight (an earlier
+  // suspension's step can finish in the same window), and making the recovery
+  // independent of the log's tail is tracked in vercel/workflow#4393.
   const hookGroups = [...hookItemsByToken.values()];
-  const holdsForcedCreation = (items: HookInvocationQueueItem[]) =>
-    items.some((item) => item.force === true && !item.hasCreatedEvent);
-  const forcedHookGroups = hookGroups.filter(holdsForcedCreation);
-  if (forcedHookGroups.length > 0) {
-    const forcedPhaseStart = Date.now();
-    await ensureRunReady();
-    for (const items of forcedHookGroups) {
-      await settlePhase([processHookGroup(items)]);
-    }
-    hookCreationMs += Date.now() - forcedPhaseStart;
-  }
-
-  // Every other hook write goes out alongside this suspension's step, wait,
-  // and attribute writes rather than ahead of them: it is one more op in the
-  // set settled below. Within the hook writes themselves, token groups apply
-  // in code order (see `hookItemsByToken`) and aborts follow the creations, so
-  // a hook created and aborted in one suspension is created first.
-  const concurrentHookGroups = hookGroups.filter(
-    (items) => !holdsForcedCreation(items)
-  );
   const hooksNeedingAbort = allHookItems.filter(
     (item) => item.abortRequested && !item.disposed
   );
-  // Whether a hook create is in flight while the steps below are written: a
-  // lone inline step's claim then waits on it (see `inlinePairFoldEligible`).
-  const hookCreationsConcurrent = concurrentHookGroups.some((items) =>
-    items.some((item) => !item.hasCreatedEvent)
-  );
-  // When the concurrent hook groups started and settled, for `hookCreationMs`.
+  // When the hook groups started and settled, for `hookCreationMs`.
   let hookGroupsWindow: { startMs: number; endMs?: number } | undefined;
   const hookOp =
-    concurrentHookGroups.length > 0 || hooksNeedingAbort.length > 0
+    hookGroups.length > 0 || hooksNeedingAbort.length > 0
       ? (async () => {
           await ensureRunReady();
-          if (concurrentHookGroups.length > 0) {
+          if (hookGroups.length > 0) {
             const window: { startMs: number; endMs?: number } = {
               startMs: Date.now(),
             };
             hookGroupsWindow = window;
-            await settlePhase(concurrentHookGroups.map(processHookGroup));
+            await settlePhase(hookGroups.map(processHookGroup));
             window.endMs = Date.now();
           }
           if (hooksNeedingAbort.length > 0) {
@@ -1235,7 +1212,7 @@ export async function handleSuspension({
     batchFanoutEligible &&
     ownerMessageId !== undefined &&
     (lazyInlineCorrelationIds.size >= 2 ||
-      (lazyInlineCorrelationIds.size === 1 && hookCreationsConcurrent));
+      (lazyInlineCorrelationIds.size === 1 && hooksNeedingCreation.length > 0));
   const inlineClaims: SuspensionHandlerResult['inlineClaims'] = new Map();
 
   // The trace carrier for resilient step dispatches, resolved at most once per

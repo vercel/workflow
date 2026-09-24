@@ -153,17 +153,19 @@ describe('QuickJS force-claim victim wake on replay', () => {
     expect(queue).not.toHaveBeenCalled();
   });
 
-  it('writes nothing else between a forced creation and its victim wake', async () => {
-    // Every pending op is dispatched in parallel in this engine, so a step,
-    // wait or other hook row could land after the forced `hook_created`
-    // while the wake is in flight; a crash then would leave that row as the
-    // tail and the replay above would never repay the wake.
+  it("does not hold the other writes for a forced creation's victim wake", async () => {
+    // The wake still goes out, but the sibling hook and the wait are written
+    // while it is in flight rather than after it (vercel/workflow#4393 tracks
+    // the recovery gap that leaves after a crash).
     const order: string[] = [];
-    const queue = vi.fn(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      order.push('wake:wrun_victim');
-      return { messageId: 'msg_wake' };
-    });
+    const queue = vi.fn(
+      async (_queueName: string, message: { runId: string }) => {
+        if (message.runId === runId) return { messageId: 'msg_continuation' };
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        order.push(`wake:${message.runId}`);
+        return { messageId: 'msg_wake' };
+      }
+    );
     setWorld({
       specVersion: SPEC_VERSION_CURRENT,
       capabilities: { hookForceClaim: true },
@@ -230,11 +232,12 @@ describe('QuickJS force-claim victim wake on replay', () => {
       preloadedEvents: [],
     });
 
-    expect(order.slice(0, 2)).toEqual([
-      'hook_created:hook_forced',
-      'wake:wrun_victim',
-    ]);
-    expect(order).toContain('hook_created:hook_plain');
-    expect(order).toContain('wait_created:wait_1');
+    const wakeAt = order.indexOf('wake:wrun_victim');
+    expect(wakeAt).toBeGreaterThan(order.indexOf('hook_created:hook_forced'));
+    expect(order.indexOf('hook_created:hook_plain')).toBeLessThan(wakeAt);
+    expect(order.indexOf('wait_created:wait_1')).toBeLessThan(wakeAt);
+    expect(order.filter((entry) => entry === 'wake:wrun_victim')).toHaveLength(
+      1
+    );
   });
 });
