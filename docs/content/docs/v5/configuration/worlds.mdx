@@ -91,14 +91,14 @@ The Local World is the default outside Vercel and is intended for development.
 ### `WORKFLOW_LOCAL_HEADERS_TIMEOUT_MS`
 
 - Factory option: none
-- Default: `30000`
-- Maximum milliseconds to wait for a local queue handler to begin responding before the durable message is redelivered. Set to `0` to disable.
+- Default: `0` (no deadline)
+- Maximum milliseconds to wait for a local queue handler to begin responding before the durable message is redelivered. A value below your longest inline step re-executes that step while it is still running.
 
 ### `WORKFLOW_LOCAL_BODY_TIMEOUT_MS`
 
 - Factory option: none
-- Default: `30000`
-- Maximum gap in milliseconds between response body chunks from a local queue handler before the durable message is redelivered. Set to `0` to disable.
+- Default: `0` (no deadline)
+- Maximum gap in milliseconds between response body chunks from a local queue handler before the durable message is redelivered.
 
 ### `recoverActiveRuns`
 
