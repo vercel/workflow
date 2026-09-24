@@ -95,7 +95,10 @@ export const startRun = async (
       timeout: 10_000,
     });
     if (hc.healthy && hc.specVersion != null) {
-      specVersion = hc.specVersion;
+      // Capped at this CLI's World: it writes `run_created` and the
+      // arguments, so it must not claim a version it cannot produce.
+      // Matches what `start()` does for its own cross-deployment probe.
+      specVersion = Math.min(hc.specVersion, world.specVersion);
     }
   } catch {
     // Health check failed, so use run's specVersion as fallback

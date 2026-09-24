@@ -457,6 +457,31 @@ export const WorkflowDeploymentMismatchRecovered = SemanticConvention<boolean>(
   'workflow.deployment_mismatch.recovered'
 );
 
+/** The spec version `start()` stamped on the new run. */
+export const WorkflowRunSpecVersion = SemanticConvention<number>(
+  'workflow.run.spec_version'
+);
+
+/**
+ * Where the stamped spec version came from: the caller's own World
+ * (`same-deployment`), the caller (`explicit`), or, for a cross-deployment
+ * start, the target's capability probe (`probe`, `probe-unversioned`) or a
+ * fallback when it did not answer (`probe-miss`, `no-probe-channel`).
+ */
+export const WorkflowRunSpecVersionSource = SemanticConvention<string>(
+  'workflow.run.spec_version_source'
+);
+
+/** Round-trip time of a cross-deployment capability probe that answered. */
+export const WorkflowCapabilityProbeLatencyMs = SemanticConvention<number>(
+  'workflow.capability_probe.latency_ms'
+);
+
+/** Why a cross-deployment capability probe failed (e.g. a timeout). */
+export const WorkflowCapabilityProbeError = SemanticConvention<string>(
+  'workflow.capability_probe.error'
+);
+
 // Hook attributes
 
 /** Token identifying a specific hook */

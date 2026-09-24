@@ -171,7 +171,7 @@ To upgrade a fleet of runs after a deployment, list active runs from a tracking 
 
 ## How it works
 
-1. **`deploymentId: "latest"` is the upgrade knob.** Without it, the spawn pins to the current deployment. With it, the new run resolves to whatever deployment is current when the runtime picks it up, so any shipped fix applies starting from that respawn. Both methods rely on this.
+1. **`deploymentId: "latest"` is the upgrade knob.** Without it, the spawn pins to the current deployment. With it, the new run resolves to whatever deployment is current when the runtime picks it up, so any shipped fix applies starting from that respawn. The respawned run is also stamped with the spec version of the deployment it lands on, capped at the spawning deployment's own, so it never claims runtime features the spawning SDK could not write. Both methods rely on this.
 2. **`start()` runs directly from the workflow body.** In v5, [`start()`](/docs/api-reference/workflow-api/start) is step-backed, so it can be called from a workflow function and still records a deterministic step boundary in the event log, so no manual `"use step"` wrapper is required.
 3. **State carries through the function argument.** The accumulating context flows from run N to run N+1 as a serialized argument. No external store is required for the state itself.
 4. **Per-run hook tokens.** Using `workflowRunId` as the hook token scopes each iteration's wait to its own run, so multiple chains can run concurrently without interfering.

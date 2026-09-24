@@ -8,16 +8,36 @@ import {
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resolveCrossDeploymentSpecVersion, start } from './start.js';
+import { runtimeLogger } from '../logger.js';
+import { dehydrateWorkflowArguments } from '../serialization.js';
+import {
+  _resetProbeMissWarnForTests,
+  resolveCrossDeploymentSpecVersion,
+  start,
+} from './start.js';
 import { setWorld } from './world.js';
+
+vi.mock('../serialization.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../serialization.js')>();
+  return {
+    ...actual,
+    dehydrateWorkflowArguments: vi.fn(actual.dehydrateWorkflowArguments),
+  };
+});
 
 vi.mock('@vercel/functions', () => ({
   waitUntil: vi.fn(),
 }));
 
+const spanAttributes: Record<string, unknown> = {};
 vi.mock('../telemetry.js', () => ({
   serializeTraceCarrier: vi.fn().mockResolvedValue({}),
-  trace: vi.fn((_name, fn) => fn(undefined)),
+  trace: vi.fn((_name, fn) =>
+    fn({
+      setAttributes: (attrs: Record<string, unknown>) =>
+        Object.assign(spanAttributes, attrs),
+    })
+  ),
   getActiveSpan: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -46,6 +66,9 @@ describe('cross-deployment start() spec version', () => {
   afterEach(() => {
     setWorld(undefined);
     vi.clearAllMocks();
+    vi.useRealTimers();
+    _resetProbeMissWarnForTests();
+    for (const key of Object.keys(spanAttributes)) delete spanAttributes[key];
   });
 
   /**
@@ -55,8 +78,17 @@ describe('cross-deployment start() spec version', () => {
    */
   function callerWorld(
     callerSpecVersion: number,
-    probeResponse: Record<string, unknown> | string
+    probeResponse: Record<string, unknown> | string | null,
+    {
+      answerAfterMs = 0,
+      resolveLatestDeploymentId,
+    }: {
+      /** Leave the probe unanswered until this much time has passed. */
+      answerAfterMs?: number;
+      resolveLatestDeploymentId?: () => Promise<string>;
+    } = {}
   ) {
+    const startedAt = Date.now();
     const body =
       typeof probeResponse === 'string'
         ? probeResponse
@@ -71,16 +103,23 @@ describe('cross-deployment start() spec version', () => {
       getDeploymentId: vi.fn().mockResolvedValue('dpl_caller'),
       events: { create: mockEventsCreate },
       queue: mockQueue,
+      resolveLatestDeploymentId,
       streams: {
-        get: vi.fn(
-          async () =>
-            new ReadableStream<Uint8Array>({
-              start(controller) {
-                controller.enqueue(new TextEncoder().encode(body));
-                controller.close();
-              },
-            })
-        ),
+        get: vi.fn(async () => {
+          // `null`: a target that never answers (probe timeout).
+          if (
+            probeResponse === null ||
+            Date.now() - startedAt < answerAfterMs
+          ) {
+            throw new Error('stream not found');
+          }
+          return new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(body));
+              controller.close();
+            },
+          });
+        }),
       },
     });
   }
@@ -227,6 +266,140 @@ describe('cross-deployment start() spec version', () => {
     );
     expect(mockEventsCreate).not.toHaveBeenCalled();
   });
+
+  it('rejects retention the target deployment cannot store, naming the target', async () => {
+    callerWorld(SPEC_VERSION_CURRENT, {
+      specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES - 1,
+    });
+
+    await expect(
+      start(workflow, [], {
+        deploymentId: 'dpl_target',
+        experimental_retention: 0,
+      })
+    ).rejects.toThrow(
+      /experimental_retention.*spec version 4 or later, but the target deployment \(dpl_target\) runs spec version 3/
+    );
+    expect(mockEventsCreate).not.toHaveBeenCalled();
+  });
+
+  it('a cold but healthy older-major target is stamped with its own version', async () => {
+    // A `stable` (spec 3) target that takes a few seconds to wake up must
+    // still be read from the probe, not fall through to the spec-6 guess
+    // it would reject.
+    vi.useFakeTimers();
+    callerWorld(
+      SPEC_VERSION_CURRENT,
+      { specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT },
+      { answerAfterMs: 5_000 }
+    );
+
+    const started = start(workflow, [], { deploymentId: 'dpl_target' });
+    await vi.advanceTimersByTimeAsync(6_000);
+    await started;
+
+    expect(stamped().runCreated).toBe(
+      SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+    );
+    expect(spanAttributes).toMatchObject({
+      'workflow.run.spec_version': SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+      'workflow.run.spec_version_source': 'probe',
+    });
+  });
+
+  it('a probe miss falls back to slot identity, warns once and records why', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    callerWorld(SPEC_VERSION_CURRENT, null);
+
+    for (let i = 0; i < 2; i++) {
+      mockEventsCreate.mockClear();
+      mockQueue.mockClear();
+      const started = start(workflow, [], { deploymentId: 'dpl_target' });
+      await vi.advanceTimersByTimeAsync(11_000);
+      await started;
+
+      expect(stamped()).toEqual({
+        runCreated: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+        runInput: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+        queueOption: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+      });
+    }
+
+    expect(spanAttributes).toMatchObject({
+      'workflow.run.spec_version': SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+      'workflow.run.spec_version_source': 'probe-miss',
+      'workflow.capability_probe.error': expect.stringMatching(/timed out/),
+    });
+    const probeMissWarnings = warn.mock.calls.filter(([message]) =>
+      String(message).includes('did not answer the capability probe')
+    );
+    expect(probeMissWarnings).toHaveLength(1);
+    expect(probeMissWarnings[0][1]).toMatchObject({
+      deploymentId: 'dpl_target',
+      specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+    });
+  });
+
+  it("deploymentId 'latest' resolving to another deployment probes it", async () => {
+    callerWorld(
+      SPEC_VERSION_SUPPORTS_SEALED_LOG,
+      { specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY },
+      { resolveLatestDeploymentId: async () => 'dpl_newer' }
+    );
+
+    await start(workflow, [], { deploymentId: 'latest' });
+
+    expect(probeSent()).toBe(true);
+    expect(stamped().runCreated).toBe(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY);
+  });
+
+  it("deploymentId 'latest' resolving to the caller takes the same-deployment path", async () => {
+    callerWorld(
+      SPEC_VERSION_SUPPORTS_SEALED_LOG,
+      { specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY },
+      { resolveLatestDeploymentId: async () => 'dpl_caller' }
+    );
+
+    await start(workflow, [], { deploymentId: 'latest' });
+
+    expect(probeSent()).toBe(false);
+    expect(stamped().runCreated).toBe(SPEC_VERSION_SUPPORTS_SEALED_LOG);
+    expect(spanAttributes).toMatchObject({
+      'workflow.run.spec_version_source': 'same-deployment',
+    });
+  });
+
+  it('does not compress arguments when the probed version predates compression', async () => {
+    // The core version alone says the target decodes gzip, but the run is
+    // stamped below spec 5, so its payloads must stay uncompressed.
+    callerWorld(SPEC_VERSION_CURRENT, {
+      specVersion: SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+      workflowCoreVersion: '99.0.0',
+    });
+
+    await start(workflow, [], { deploymentId: 'dpl_target' });
+
+    expect(stamped().runCreated).toBe(SPEC_VERSION_SUPPORTS_ATTRIBUTES);
+    const compression = vi.mocked(dehydrateWorkflowArguments).mock.calls[0][7];
+    expect(compression).toBe(false);
+  });
+
+  it('records an explicit specVersion as such', async () => {
+    callerWorld(SPEC_VERSION_CURRENT, {
+      specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+    });
+
+    await start(workflow, [], {
+      deploymentId: 'dpl_target',
+      specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+    });
+
+    expect(spanAttributes).toMatchObject({
+      'workflow.run.spec_version': SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+      'workflow.run.spec_version_source': 'explicit',
+    });
+  });
 });
 
 describe('resolveCrossDeploymentSpecVersion', () => {
@@ -236,35 +409,51 @@ describe('resolveCrossDeploymentSpecVersion', () => {
         { healthy: true, specVersion: 6 },
         SPEC_VERSION_SUPPORTS_SEALED_LOG
       )
-    ).toBe(6);
+    ).toEqual({ specVersion: 6, source: 'probe' });
   });
 
   it('caps the probed version at the caller', () => {
     expect(
       resolveCrossDeploymentSpecVersion({ healthy: true, specVersion: 12 }, 7)
-    ).toBe(7);
+    ).toEqual({ specVersion: 7, source: 'probe' });
+  });
+
+  it('stamps an unversioned (plain-text) reply as event-sourced', () => {
+    expect(resolveCrossDeploymentSpecVersion({ healthy: true }, 7)).toEqual({
+      specVersion: SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+      source: 'probe-unversioned',
+    });
   });
 
   it('floors a probe miss at slot identity, not the caller version', () => {
     // What `healthCheck()` resolves with on a timeout.
-    expect(resolveCrossDeploymentSpecVersion({ healthy: false }, 7)).toBe(
-      SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
-    );
-    expect(resolveCrossDeploymentSpecVersion(undefined, 7)).toBe(
-      SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
-    );
+    expect(resolveCrossDeploymentSpecVersion({ healthy: false }, 7)).toEqual({
+      specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+      source: 'probe-miss',
+    });
+    expect(resolveCrossDeploymentSpecVersion(undefined, 7)).toEqual({
+      specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+      source: 'no-probe-channel',
+    });
   });
 
   it('never exceeds the caller, even on the fallbacks', () => {
-    expect(resolveCrossDeploymentSpecVersion(undefined, 2)).toBe(2);
-    expect(resolveCrossDeploymentSpecVersion({ healthy: true }, 1)).toBe(1);
+    expect(resolveCrossDeploymentSpecVersion(undefined, 2).specVersion).toBe(2);
+    expect(
+      resolveCrossDeploymentSpecVersion({ healthy: true }, 1).specVersion
+    ).toBe(1);
   });
 
-  it('ignores a malformed probed version', () => {
+  it('ignores a malformed probed version, erring low', () => {
     for (const specVersion of [0, -1, 6.5, Number.NaN]) {
       expect(
         resolveCrossDeploymentSpecVersion({ healthy: false, specVersion }, 7)
+          .specVersion
       ).toBe(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY);
+      expect(
+        resolveCrossDeploymentSpecVersion({ healthy: true, specVersion }, 7)
+          .specVersion
+      ).toBe(SPEC_VERSION_SUPPORTS_EVENT_SOURCING);
     }
   });
 });
