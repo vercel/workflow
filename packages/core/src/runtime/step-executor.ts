@@ -393,8 +393,13 @@ export async function executeStep(
     data: T,
     eventParams?: CreateEventParams
   ) =>
-    replayRecoveryReporter.withEventCreate(eventParams, (p) =>
-      world.events.create(workflowRunId, data, p)
+    replayRecoveryReporter.withEventCreate(
+      // An inline delta this write asks for is folded into the caller's
+      // replay log, which never reads recorded step inputs.
+      eventParams?.sinceCursor === undefined
+        ? eventParams
+        : { omitStepInputs: true, ...eventParams },
+      (p) => world.events.create(workflowRunId, data, p)
     );
 
   // `step_started` identifies the invocation that performed this attempt.

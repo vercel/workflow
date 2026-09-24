@@ -797,6 +797,14 @@ export interface CreateEventParams {
   v1Compat?: boolean;
   resolveData?: ResolveData;
   /**
+   * Advisory, as {@link ListEventsParams.omitStepInputs}: the World MAY omit
+   * `eventData.input` from `step_created` and `step_started` events among
+   * the replay events this create returns (the `sinceCursor` delta or a
+   * replay preload). It never affects the created `event` or the returned
+   * `step` entity, whose `input` is what step execution reads.
+   */
+  omitStepInputs?: boolean;
+  /**
    * Lazy hook resume idempotency key. Set only by `resumeHook()` when it
    * persists a `hook_received` event whose creation must be deduplicated
    * against a concurrent re-ensure from the queue consumer. The World routes
@@ -1189,6 +1197,20 @@ export interface ListEventsParams {
   /** Omit `limit` to return every remaining event. */
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
+  /**
+   * Advisory: the caller will not read step input payloads from the returned
+   * replay events, so the World MAY omit `eventData.input` from
+   * `step_created` and `step_started` events it returns. All other fields of those events, and
+   * every other event, are unchanged. A World that ignores it is fully
+   * supported.
+   *
+   * Workflow replay recomputes step arguments by re-running workflow code and
+   * never reads the recorded ones; only step execution reads a step's input,
+   * from the step entity. For a workflow that passes growing state into its
+   * steps, the recorded inputs are the part of the log that grows
+   * quadratically.
+   */
+  omitStepInputs?: boolean;
 }
 
 export interface ListEventsByCorrelationIdParams {

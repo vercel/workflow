@@ -634,6 +634,9 @@ export async function loadWorkflowRunEvents(
             sortOrder: 'asc',
             cursor: requestedCursor ?? undefined,
           },
+          // Replay recomputes step arguments and never reads the recorded
+          // ones; steps read their input from the step entity.
+          omitStepInputs: true,
         });
       } catch (error) {
         if (

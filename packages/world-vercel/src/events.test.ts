@@ -71,7 +71,10 @@ function decodePostedMeta(rawBody: unknown): Record<string, unknown> {
   return decode(bytes.subarray(4, 4 + metaLen)) as Record<string, unknown>;
 }
 
-function runStartedResponse(events: Uint8Array[] = []): Buffer {
+function runStartedResponse(
+  events: Uint8Array[] = [],
+  hasMore = false
+): Buffer {
   return Buffer.concat([
     encodeFrame(
       {
@@ -100,10 +103,7 @@ function runStartedResponse(events: Uint8Array[] = []): Buffer {
       new Uint8Array()
     ),
     ...events,
-    encodeFrame(
-      { _end: 1, next: 'eid:evnt_1', hasMore: false },
-      new Uint8Array()
-    ),
+    encodeFrame({ _end: 1, next: 'eid:evnt_1', hasMore }, new Uint8Array()),
   ]);
 }
 
@@ -2190,6 +2190,161 @@ describe('createWorkflowRunEvent hook_received replay preload', () => {
     // never opts into the frame response.
     expect(capturedAccept ?? '').not.toContain(V4_FRAME_CONTENT_TYPE);
     expect(result.event?.eventType).toBe('hook_received');
+    agent.assertNoPendingInterceptors();
+  });
+});
+
+describe('omitStepInputs', () => {
+  const headers = {
+    'content-type': V4_FRAME_CONTENT_TYPE,
+    'x-wf-event-id': 'evnt_1',
+    'x-wf-run-id': 'wrun_1',
+    'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+    'x-wf-max-events': '10000',
+  };
+
+  // A server honoring the parameter sends step_created with an empty body and
+  // no `input` in the frame meta; everything else about the event is intact.
+  const stepCreatedWithoutInput = encodeFrame(
+    {
+      eventId: 'evnt_2',
+      runId: 'wrun_1',
+      eventType: 'step_created',
+      correlationId: 'step_1',
+      createdAt: '2026-06-10T00:00:01.000Z',
+      specVersion: 2,
+      eventData: { stepName: 'step//add', workflowName: 'workflow' },
+    },
+    new Uint8Array()
+  );
+
+  it('asks the list endpoint to omit step inputs and accepts events without them', async () => {
+    const agent = mockAgent();
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: {
+          returnAll: 'true',
+          remoteRefBehavior: 'resolve',
+          omitStepInputs: 'true',
+        },
+      })
+      .reply(
+        200,
+        Buffer.concat([
+          stepCreatedWithoutInput,
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_2', hasMore: false },
+            new Uint8Array()
+          ),
+        ]),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    const result = await getWorkflowRunEvents(
+      { runId: 'wrun_1', omitStepInputs: true },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(result.data).toHaveLength(1);
+    const event = result.data[0] as {
+      eventType: string;
+      correlationId?: string;
+      eventData: Record<string, unknown>;
+    };
+    expect(event.eventType).toBe('step_created');
+    expect(event.correlationId).toBe('step_1');
+    expect(event.eventData.stepName).toBe('step//add');
+    expect('input' in event.eventData).toBe(false);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('flags a create in its frame meta and carries the flag to the replay suffix', async () => {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+    const pool = agent.get(ORIGIN);
+    pool
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          // A partial replay log: the rest is fetched with a GET from its
+          // cursor, which must ask for the same omission.
+          return runStartedResponse([], true);
+        },
+        { headers }
+      );
+    pool
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events',
+        method: 'GET',
+        query: {
+          returnAll: 'true',
+          cursor: 'eid:evnt_1',
+          remoteRefBehavior: 'resolve',
+          omitStepInputs: 'true',
+        },
+      })
+      .reply(
+        200,
+        Buffer.concat([
+          stepCreatedWithoutInput,
+          encodeFrame(
+            { _end: 1, next: 'eid:evnt_2', hasMore: false },
+            new Uint8Array()
+          ),
+        ]),
+        { headers: { 'content-type': V4_FRAME_CONTENT_TYPE } }
+      );
+
+    const result = await createWorkflowRunEvent(
+      'wrun_1',
+      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
+      { omitStepInputs: true },
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect(capturedMeta?.omitStepInputs).toBe(true);
+    expect(result.events?.map((e) => e.eventType)).toEqual([
+      'run_created',
+      'run_started',
+      'step_created',
+    ]);
+    agent.assertNoPendingInterceptors();
+  });
+
+  it('leaves the frame meta unflagged when the caller does not ask', async () => {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return runStartedResponse();
+        },
+        { headers }
+      );
+
+    await createWorkflowRunEvent(
+      'wrun_1',
+      { eventType: 'run_started', specVersion: 2 } as AnyEventRequest,
+      undefined,
+      { token: 'test-token', dispatcher: agent }
+    );
+
+    expect('omitStepInputs' in (capturedMeta ?? {})).toBe(false);
     agent.assertNoPendingInterceptors();
   });
 });

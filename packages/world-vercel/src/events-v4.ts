@@ -224,6 +224,9 @@ interface CreateEventV4InputBase {
   /** Client-side time at which the event occurred. */
   occurredAt?: Date;
   remoteRefBehavior?: 'resolve' | 'lazy';
+  /** Ask the server to omit step inputs from the replay events this POST
+   *  returns (a replay preload or a `sinceCursor` delta). */
+  omitStepInputs?: boolean;
   deploymentId?: string;
   workflowName?: string;
   stepName?: string;
@@ -591,6 +594,7 @@ function buildPostFrameMeta(
   if (input.remoteRefBehavior !== undefined) {
     meta.remoteRefBehavior = input.remoteRefBehavior;
   }
+  if (input.omitStepInputs) meta.omitStepInputs = true;
   if (input.deploymentId !== undefined) meta.deploymentId = input.deploymentId;
   if (input.workflowName !== undefined) meta.workflowName = input.workflowName;
   if (input.stepName !== undefined) meta.stepName = input.stepName;
@@ -1039,7 +1043,7 @@ export async function createWorkflowRunStartedEventV4(
   );
   const page = await consumeReplayLogResponse(
     response,
-    input.runId,
+    input,
     config,
     replayEventObserver
   );
@@ -1534,7 +1538,7 @@ export async function createHookReceivedPreloadEventV4(
 
   const page = await consumeReplayLogResponse(
     response,
-    input.runId,
+    input,
     config,
     replayEventObserver
   );
@@ -1626,6 +1630,12 @@ export interface ListEventsV4Params extends PaginationOptions {
    * listings that would otherwise download and discard every payload.
    */
   remoteRefBehavior?: 'resolve' | 'lazy';
+  /**
+   * Ask the backend to send `step_created` / `step_started` frames without
+   * their `input` payload (see `ListEventsParams.omitStepInputs`). A backend
+   * that predates the parameter ignores it and sends the inputs.
+   */
+  omitStepInputs?: boolean;
 }
 
 export interface ListEventsV4Result {
@@ -1793,7 +1803,10 @@ async function consumeEventFrameStream(
  */
 async function consumeReplayLogResponse(
   response: Response,
-  runId: string,
+  {
+    runId,
+    omitStepInputs,
+  }: Pick<CreateEventV4InputBase, 'runId' | 'omitStepInputs'>,
   config?: APIConfig,
   replayEventObserver?: (event: Event) => void
 ): Promise<ListEventsV4Result> {
@@ -1818,7 +1831,7 @@ async function consumeReplayLogResponse(
 
   const suffix = await getWorkflowRunEventsV4(
     runId,
-    { cursor: page.cursor, remoteRefBehavior: 'resolve' },
+    { cursor: page.cursor, remoteRefBehavior: 'resolve', omitStepInputs },
     config,
     replayEventObserver
   );
@@ -1866,6 +1879,7 @@ function appendListParams(sp: URLSearchParams, params: ListEventsV4Params) {
   if (params.remoteRefBehavior) {
     sp.set('remoteRefBehavior', params.remoteRefBehavior);
   }
+  if (params.omitStepInputs) sp.set('omitStepInputs', 'true');
 }
 
 function paginationToQuery(params: ListEventsV4Params): string {

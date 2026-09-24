@@ -1121,6 +1121,8 @@ export async function runWorkflowWithQuickJS(params: {
           cursor: cursor ?? undefined,
           limit: 1000,
         },
+        // Replay never reads recorded step inputs (see loadWorkflowRunEvents).
+        omitStepInputs: true,
       });
       eventsFetchedPages++;
       allEvents.push(...response.data);
@@ -1151,6 +1153,9 @@ export async function runWorkflowWithQuickJS(params: {
   const logView = new QuickJSLogView(events, loadedCursor);
   const createEvent: EventCreator = async (data, eventParams) => {
     const result = await world.events.create(runId, data, {
+      // Returned replay events only feed the log, and replay never reads
+      // recorded step inputs.
+      omitStepInputs: true,
       ...eventParams,
       ...logView.snapshotParams(),
     });
@@ -1446,6 +1451,8 @@ export async function runWorkflowWithQuickJS(params: {
           cursor: cursor ?? undefined,
           limit: 1000,
         },
+        // Replay never reads recorded step inputs (see loadWorkflowRunEvents).
+        omitStepInputs: true,
       });
       for (const e of response.data) {
         if (e.eventId && seenEventIds.has(e.eventId)) continue;

@@ -475,6 +475,9 @@ export async function getWorkflowRunEvents(
   const listParams: ListEventsV4Params = {
     ...pagination,
     remoteRefBehavior: resolveData === 'none' ? 'lazy' : 'resolve',
+    ...('omitStepInputs' in params && params.omitStepInputs
+      ? { omitStepInputs: true }
+      : {}),
   };
 
   const result = await ('correlationId' in params
@@ -792,6 +795,9 @@ async function createWorkflowRunEventInner(
     // defense-in-depth when it recorded a 412 rejection for this correlation
     // id and no step entity exists.
     ...(params?.viaStepDispatch ? { viaStepDispatch: true } : {}),
+    // Replay events this POST returns (a preload or a `sinceCursor` delta)
+    // may leave out step inputs; the created event and step entity never do.
+    ...(params?.omitStepInputs ? { omitStepInputs: true } : {}),
     remoteRefBehavior,
     payload,
     ...meta,
