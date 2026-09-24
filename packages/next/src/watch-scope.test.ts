@@ -138,6 +138,12 @@ describe('createWatchScope', () => {
  * never opens an OS watch on a regular file. On macOS libuv routes a directory
  * watch through FSEvents but falls back to kqueue for a file, holding one
  * descriptor per watched file, which is what exhausted the per-process limit.
+ *
+ * These drive a live watcher over a temp tree. Windows does not deliver
+ * `fs.watch` events for files tracked through their parent directory the way
+ * this harness expects, which is a property of that platform's watcher rather
+ * than of the scope; `dev.test.ts` skips its dev HMR coverage there for the
+ * same reason. The scope itself is pure, and its tests above run everywhere.
  */
 // Watchpack is CommonJS and calls `require('fs').watch`, so the recording hook
 // goes on the CJS module object rather than through `vi.spyOn`, which cannot
@@ -146,7 +152,7 @@ const nodeFs = createRequire(import.meta.url)('node:fs') as {
   watch: typeof import('node:fs').watch;
 };
 
-describe('watching a scope', () => {
+describe.skipIf(process.platform === 'win32')('watching a scope', () => {
   let root: string;
   let watcher: Watchpack | undefined;
   let restoreWatch: (() => void) | undefined;
