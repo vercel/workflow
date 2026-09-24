@@ -3835,22 +3835,44 @@ export function workflowEntrypoint(
                         // `hook_conflict` this suspension committed is what
                         // settles its awaiters — rejecting a payload await,
                         // resolving a `hook.getConflict()` with the
-                        // conflicting run. The workflow must observe that
-                        // before anything else this suspension scheduled runs,
-                        // which is why this branch comes ahead of the attr
-                        // detour and all step dispatch: a `Promise.race`
-                        // between the hook and a step must let the durable
-                        // conflict win without executing the losing step.
-                        // Continue in this process when the boundary allows
-                        // it; otherwise hand the run back for a fresh replay
-                        // over the conflict.
+                        // conflicting run. The workflow observes that before
+                        // this invocation dispatches or runs anything this
+                        // suspension scheduled, which is why this branch comes
+                        // ahead of the attr detour and all step dispatch.
+                        // (Steps written alongside the hook create are not
+                        // held back by it: a batched fan-out has already
+                        // published their messages. A workflow that must not
+                        // start a step on a conflict awaits
+                        // `hook.getConflict()` first.) Continue in this
+                        // process when the boundary allows it; otherwise hand
+                        // the run back for a fresh replay over the conflict.
                         if (suspensionResult.hasHookConflict) {
+                          // Every create and publish this suspension launched
+                          // is durable before the run moves on, exactly like
+                          // the joins on the dispatch paths below.
+                          await suspensionResult.deferredBatchWork;
                           if (
                             continueOverHookWrite(
                               suspensionResult.hookConflictCorrelationIds,
                               'hook_conflict'
                             )
                           ) {
+                            continue;
+                          }
+                          // Inline steps whose pair-folded claim committed
+                          // alongside the hook create are started and owned
+                          // by THIS message. A fresh delivery would find them
+                          // owned by a live lease and park on a backstop wake
+                          // for the lease's length, so replay here instead:
+                          // the next pass observes the conflict and
+                          // re-executes them through owned recovery, as the
+                          // unserializable-step path below does.
+                          if (
+                            [...suspensionResult.inlineClaims.values()].some(
+                              (claim) => claim.owned
+                            )
+                          ) {
+                            eventLog = nextEventLogLoad(eventLog);
                             continue;
                           }
                           return await reinvoke(0);

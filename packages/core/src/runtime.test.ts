@@ -3829,3 +3829,179 @@ describe('workflowEntrypoint run-failure logging', () => {
     );
   });
 });
+
+describe('workflowEntrypoint hook conflict beside a pre-claimed inline step', () => {
+  afterEach(() => {
+    setWorld(undefined);
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  const conflictBodySpy = vi.fn(async () => 'ran');
+  registerStepFunction('conflictStep', conflictBodySpy);
+
+  // With a retained VM the run continues over the conflict; without one it
+  // must still replay here rather than hand the run to a fresh delivery.
+  it.each([
+    { retainedVm: '1' },
+    { retainedVm: '0' },
+  ])('runs the step it claimed alongside the conflicting hook in this invocation (WORKFLOW_RETAINED_VM=$retainedVm)', async ({
+    retainedVm,
+  }) => {
+    vi.stubEnv('WORKFLOW_RETAINED_VM', retainedVm);
+    // The suspension creates a hook and starts a lone inline step. The step's
+    // claim is folded into a batch beside the hook create, and the create
+    // comes back as a conflict. The claimed step is owned by this delivery,
+    // so the run must go on here and execute it through owned recovery: a
+    // fresh delivery would find a live lease and park behind a backstop wake.
+    const runId = `wrun_conflict_preclaimed_${retainedVm}`;
+    const workflowRun: WorkflowRun = {
+      runId,
+      workflowName: 'workflow',
+      status: 'running',
+      specVersion: SPEC_VERSION_CURRENT,
+      input: await dehydrateWorkflowArguments([], runId, undefined, []),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    let eventSeq = 1;
+    const durableEvents: Event[] = [
+      {
+        eventId: slotToEventId(eventSeq),
+        runId,
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'test-deployment',
+          workflowName: 'workflow',
+          input: workflowRun.input,
+        },
+      } as unknown as Event,
+    ];
+    const recordEvent = (data: any): Event => {
+      eventSeq += 1;
+      const created = {
+        eventId: slotToEventId(eventSeq),
+        runId,
+        createdAt: new Date(),
+        ...data,
+      } as Event;
+      durableEvents.push(created);
+      return created;
+    };
+    const stepInputs = new Map<string, unknown>();
+    const startedStep = (correlationId: string, stepName?: string) => ({
+      runId,
+      stepId: correlationId,
+      stepName,
+      status: 'running' as const,
+      attempt: 1,
+      input: stepInputs.get(correlationId),
+      startedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      if (data.eventType === 'run_started') {
+        return { run: workflowRun, events: [...durableEvents] };
+      }
+      if (data.eventType === 'hook_created') {
+        return {
+          event: recordEvent({
+            ...data,
+            eventType: 'hook_conflict',
+            eventData: {
+              token: data.eventData.token,
+              conflictingRunId: 'wrun_token_owner',
+            },
+          }),
+        };
+      }
+      if (data.eventType === 'step_started') {
+        return {
+          event: recordEvent(data),
+          step: startedStep(data.correlationId, data.eventData?.stepName),
+        };
+      }
+      return { event: recordEvent(data) };
+    });
+    const createBatch = vi.fn(async (_runId: string, events: any[]) => ({
+      results: events.map(({ event }) => {
+        if (event.eventType === 'step_created') {
+          stepInputs.set(event.correlationId, event.eventData?.input);
+        }
+        return {
+          status: 200,
+          event: recordEvent(event),
+          ...(event.eventType === 'step_started'
+            ? {
+                step: startedStep(
+                  event.correlationId,
+                  event.eventData?.stepName
+                ),
+              }
+            : {}),
+        };
+      }),
+    }));
+    const queuedMessages: any[] = [];
+    let handler!: (message: unknown, metadata: unknown) => Promise<unknown>;
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn((_prefix: string, h: typeof handler) => {
+        handler = h;
+        return async () => new Response(null, { status: 204 });
+      }),
+      events: {
+        create: eventsCreate,
+        createBatch,
+        list: vi.fn(async () => ({
+          data: [...durableEvents],
+          hasMore: false,
+          cursor: 'cursor_test',
+        })),
+      },
+      runs: { get: vi.fn(async () => workflowRun) },
+      queue: vi.fn(async (_queueName: string, message: any) => {
+        queuedMessages.push(message);
+        return { messageId: null };
+      }),
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const entry = workflowEntrypoint(`
+      const conflictStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("conflictStep");
+      const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+      async function workflow() {
+        const hook = createHook({ token: 'taken-token' });
+        const result = await conflictStep();
+        return result + ':' + typeof hook.token;
+      };globalThis.__private_workflows = new Map();
+      globalThis.__private_workflows.set("workflow", workflow);`);
+    await entry(new Request('https://example.test'));
+    await handler(
+      { runId, requestedAt: new Date() },
+      {
+        requestId: 'req_1',
+        attempt: 1,
+        queueName: '__wkf_workflow_workflow',
+        messageId: 'msg_flow_1',
+      }
+    );
+
+    // The claim rode the batch beside the hook create.
+    expect(
+      createBatch.mock.calls[0][1].map(({ event }: any) => event.eventType)
+    ).toEqual(['step_created', 'step_started']);
+    expect(durableEvents.map((e) => e.eventType)).toContain('hook_conflict');
+    // The body ran once, here, and the run finished without a hand-off.
+    expect(conflictBodySpy).toHaveBeenCalledTimes(1);
+    expect(durableEvents.map((e) => e.eventType)).toContain('step_completed');
+    expect(durableEvents.map((e) => e.eventType)).toContain('run_completed');
+    expect(queuedMessages).toEqual([]);
+  });
+});

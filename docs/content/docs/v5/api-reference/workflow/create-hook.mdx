@@ -143,6 +143,30 @@ async function processOrder(orderId: string) {
 
 Because `createHook()` alone does not suspend the workflow, awaiting `hook.getConflict()` is what actually suspends the run and commits the hook registration. It only waits for registration. To receive payload data from a future `resumeHook()` call, await the hook itself or iterate it with `for await...of`.
 
+### Registering a hook before a step uses it
+
+A hook's registration is committed alongside everything else the workflow started before it suspended, not ahead of it. When a workflow creates a hook and calls a step without awaiting anything in between, the step can start running before the hook is registered. That only matters when the step hands the token to something that may call `resumeHook()` right away, which throws `HookNotFoundError` until the hook exists. In that case, await `hook.getConflict()` before calling the step:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+declare function requestApproval(token: string): Promise<void>; // @setup
+
+async function approvalWorkflow() {
+  "use workflow";
+
+  using hook = createHook<{ approved: boolean }>();
+  await hook.getConflict(); // [!code highlight]
+
+  // The hook is registered, so an approver that resumes it immediately
+  // finds it.
+  await requestApproval(hook.token);
+
+  const { approved } = await hook;
+  return approved;
+}
+```
+
 On a conflict, the resolved value is a `Run` handle for the run that owns the token, with durable step-backed accessors. The duplicate run can decide in code how to handle it: return or log `conflict.runId`, inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()` and continue in the current run. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies in context.
 
 <Callout type="info">
