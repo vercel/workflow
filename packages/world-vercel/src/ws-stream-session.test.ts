@@ -1036,6 +1036,62 @@ describe('v1 stream WebSocket throttling', () => {
     expect(sockets).toHaveLength(1);
   });
 
+  it('fails queued work when a throttled write then fails over HTTP', async () => {
+    const { session, socket, writeHttp } = await openSession();
+    const error = new Error('HTTP outcome unknown');
+    writeHttp.mockRejectedValueOnce(error);
+    const writing = session.write(0, ['one']);
+    const queued = session.write(1, ['two']);
+    const failed = Promise.all([
+      expect(writing).rejects.toBe(error),
+      expect(queued).rejects.toBe(error),
+    ]);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    vi.useFakeTimers();
+    reply(socket, { type: 'error', reqId: 1, status: 429, retryAfter: '1' });
+    socket.emit('close', 1011);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await failed;
+
+    expect(writeHttp.mock.calls).toEqual([[['one']]]);
+    expect(socket.sent).toHaveLength(1);
+  });
+
+  it('settles a throttled write promptly when disposed during the wait', async () => {
+    const { session, socket } = await openSession();
+    const writing = session.write(0, ['one']);
+    const queued = session.write(1, ['two']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    vi.useFakeTimers();
+    reply(socket, { type: 'error', reqId: 1, status: 429, retryAfter: '30' });
+    await vi.advanceTimersByTimeAsync(0);
+    session.dispose?.();
+
+    await expect(writing).rejects.toThrow('stream writer is closed');
+    await expect(queued).rejects.toThrow('stream writer is closed');
+    expect(vi.getTimerCount()).toBe(0);
+    expect(socket.sent).toHaveLength(1);
+  });
+
+  it('fails a throttled write promptly when the connection fails during the wait', async () => {
+    const { session, socket } = await openSession();
+    const writing = session.write(0, ['one']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    vi.useFakeTimers();
+    reply(socket, { type: 'error', reqId: 1, status: 429, retryAfter: '30' });
+    await vi.advanceTimersByTimeAsync(0);
+    reply(socket, { type: 'error', status: 401, message: 'token expired' });
+
+    await expect(writing).rejects.toThrow(
+      'stream WebSocket connection failed (401): token expired'
+    );
+    expect(vi.getTimerCount()).toBe(0);
+    expect(socket.sent).toHaveLength(1);
+  });
+
   it('fails the writer once throttling outlasts the retry budget', async () => {
     const { session, socket, writeHttp } = await openSession();
     const writing = session.write(0, ['one']);
