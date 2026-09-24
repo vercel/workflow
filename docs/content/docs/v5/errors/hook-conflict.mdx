@@ -156,6 +156,26 @@ export async function POST(request: Request) {
 
 If the caller needs live output instead of the final result, return `activeRun.getReadable()` from the same branch. If the duplicate request should replace the active work, call `await activeRun.cancel()` after inspecting the run.
 
+### Take the token over
+
+If the newest run should always own the token, create the hook with [`experimental_force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). The new run takes the token instead of getting `HookConflictError`, and the previous owner's `await hook` rejects with [`HookForceClaimedError`](/docs/errors/hook-force-claimed):
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+export async function processPayment(orderId: string) {
+  "use workflow";
+
+  const hook = createHook({
+    token: `payment-${orderId}`,
+    experimental_force: true, // [!code highlight]
+  });
+  const payment = await hook;
+}
+```
+
+A run started at a Workflow spec version below 8, including runs started by older SDK releases, can't be taken from, so the forced hook still gets `HookConflictError` in that case.
+
 ## When hook tokens are released
 
 Hook tokens are automatically released when:
@@ -172,6 +192,7 @@ After a workflow completes, its hook tokens become available for reuse by other 
 2. **Include unique identifiers** if you need custom tokens (order ID, user ID, etc.)
 3. **Avoid reusing the same token** across multiple concurrent workflow runs
 4. **Consider using webhooks** (`createWebhook`) if you need a fixed, predictable URL that can receive multiple payloads
+5. **Use `experimental_force`** when a newer run should replace the run holding the token
 
 ## Related
 

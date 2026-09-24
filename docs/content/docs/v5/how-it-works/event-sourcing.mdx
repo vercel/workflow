@@ -188,7 +188,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 | `hook_created` | Creates a new hook in `active` state. Contains the hook token and optional metadata. |
 | `hook_conflict` | Records that hook creation failed because another run owns the token. Contains the token and, for current worlds, the owner's run ID. The hook is not created: `hook.getConflict()` resolves with the conflicting run, and awaiting the hook payload rejects with a `HookConflictError`. |
 | `hook_received` | Records that a payload was delivered to the hook. The hook remains `active` and can receive more payloads. |
-| `hook_disposed` | Deletes the hook from storage (conceptually transitioning to `disposed` state). The token is released for reuse by future workflows. |
+| `hook_disposed` | Deletes the hook from storage (conceptually transitioning to `disposed` state). The token is released for reuse by future workflows. When another run takes the token over with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds), the event names the new owner in `forceClaimedBy`, and the token moves to that run instead of being released. |
 
 ### Wait events
 

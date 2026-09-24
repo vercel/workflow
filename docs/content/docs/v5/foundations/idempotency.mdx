@@ -279,6 +279,8 @@ export async function processOrderNewestWins(orderId: string) {
 This pattern does not work with `experimental_minRetention`: canceling the old run does not make its token available early.
 </Callout>
 
+**Take the token over.** Set [`experimental_force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) on `createHook()` to make the new run the owner in one step, without a cancel-and-retry loop. The previous owner's `await request` rejects with [`HookForceClaimedError`](/docs/api-reference/workflow-errors/hook-force-claimed-error) and can wrap up, and `getConflict()` on the forced Hook resolves with `null`. This also works for a finished run holding a token under `experimental_minRetention`.
+
 If duplicate requests should only reuse the active run without sending data, use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) as an advisory pre-check before calling `start()`. The workflow should still check `hook.getConflict()`, because the lookup and `start()` are not atomic.
 
 Because this pattern uses hooks for idempotency, duplicate requests can also inject additional data and steer the existing run. The route example above uses `resumeHook()` for that: if the hook already exists, the duplicate request resumes the active workflow; if the hook is not registered yet, the route starts the workflow and retries `resumeHook()` so the payload is not dropped.
