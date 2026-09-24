@@ -245,8 +245,8 @@ describe('createWorkflowRunEvent with v1Compat', () => {
 /**
  * `run_started` attests the spec version this SDK runs, separately from the
  * `specVersion` it repeats from the queue message (the stamp of whoever called
- * `start()`, possibly an older deployment). The backend moves a run stamped
- * below slot identity onto slots off this value, before any event is numbered.
+ * `start()`, possibly an older deployment). The backend raises a run stamped
+ * lower to this value.
  */
 describe('createWorkflowRunEvent executorSpecVersion', () => {
   async function postRunStartedAndCaptureMeta(): Promise<

@@ -221,8 +221,7 @@ interface CreateEventV4InputBase {
    * `run_started` only: the spec version this SDK runs. `specVersion` on
    * `run_started` repeats the version the caller of `start()` stamped, which
    * can be older when the run was started from another deployment. The server
-   * uses this to move such a run onto the event-id scheme this runtime reads
-   * before any event is numbered.
+   * uses this to raise such a run to the version this runtime runs.
    */
   executorSpecVersion?: number;
   correlationId?: string;
