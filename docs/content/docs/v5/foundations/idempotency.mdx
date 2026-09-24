@@ -242,7 +242,7 @@ export async function processOrder(orderId: string, confirmed: boolean) {
 }
 ```
 
-**Supersede the owner.** Without minimum retention, cancel the active run, then claim the released token. The retry loop covers the window where cancellation cleanup has not propagated yet:
+**Supersede the owner.** Create the Hook with [`experimental_force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) so the newest run takes the token over from the active owner. The previous owner's `await request` rejects with [`HookForceClaimedError`](/docs/api-reference/workflow-errors/hook-force-claimed-error) so it can wrap up, and every `resumeHook()` for the token reaches the new run from then on. This also works for a finished run holding the token under `experimental_minRetention`:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -253,33 +253,21 @@ declare function chargeOrder(orderId: string): Promise<void>; // @setup
 export async function processOrderNewestWins(orderId: string) {
   "use workflow";
 
-  const token = `order:${orderId}`;
+  using request = createHook<OrderRequest>({
+    token: `order:${orderId}`,
+    experimental_force: true, // [!code highlight]
+  });
 
-  for (let attempt = 0; attempt < 3; attempt++) {
-    using request = createHook<OrderRequest>({ token });
-
-    const conflict = await request.getConflict();
-    if (!conflict) {
-      // Token claimed: this run is now the owner.
-      const { confirmed } = await request;
-      if (confirmed) {
-        await chargeOrder(orderId);
-      }
-      return { status: "processed" as const };
-    }
-
-    await conflict.cancel(); // [!code highlight]
+  // This run now owns the token.
+  const { confirmed } = await request;
+  if (confirmed) {
+    await chargeOrder(orderId);
   }
-
-  throw new Error(`Could not claim ${token} after canceling the owner`);
+  return { status: "processed" as const };
 }
 ```
 
-<Callout type="warn">
-This pattern does not work with `experimental_minRetention`: canceling the old run does not make its token available early.
-</Callout>
-
-**Take the token over.** Set [`experimental_force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) on `createHook()` to make the new run the owner in one step, without a cancel-and-retry loop. The previous owner's `await request` rejects with [`HookForceClaimedError`](/docs/api-reference/workflow-errors/hook-force-claimed-error) and can wrap up, and `getConflict()` on the forced Hook resolves with `null`. This also works for a finished run holding a token under `experimental_minRetention`.
+A run started at a Workflow spec version below 8, including runs started by older SDK releases, can't be taken from. In that case the forced Hook rejects with `HookConflictError`, as it would without `experimental_force`.
 
 If duplicate requests should only reuse the active run without sending data, use [`getHookByToken()`](/docs/api-reference/workflow-api/get-hook-by-token) as an advisory pre-check before calling `start()`. The workflow should still check `hook.getConflict()`, because the lookup and `start()` are not atomic.
 

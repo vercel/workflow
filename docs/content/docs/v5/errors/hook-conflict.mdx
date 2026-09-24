@@ -158,7 +158,9 @@ If the caller needs live output instead of the final result, return `activeRun.g
 
 ### Take the token over
 
-If the newest run should always own the token, create the hook with [`experimental_force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). The new run takes the token instead of getting `HookConflictError`, and the previous owner's `await hook` rejects with [`HookForceClaimedError`](/docs/errors/hook-force-claimed):
+If the newest run should always own the token, create the hook with [`experimental_force: true`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). The new run takes the token instead of getting `HookConflictError`, and the previous owner's `await hook` rejects with [`HookForceClaimedError`](/docs/errors/hook-force-claimed).
+
+This enables zero-downtime transfers for hooks so one run can hand off a hook to another without dropping messages.
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
