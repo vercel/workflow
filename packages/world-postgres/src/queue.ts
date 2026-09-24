@@ -976,7 +976,11 @@ export function createQueue(
       ...(config.applicationManagedShutdown === true && {
         noHandleSignals: true,
       }),
-      pollInterval: 500, // 500ms = 0.5s (graphile-worker uses LISTEN/NOTIFY when available)
+      // Each of the `concurrency` workers polls independently at this
+      // interval when idle, so idle load scales with concurrency, not just
+      // pollInterval. LISTEN/NOTIFY wakes a worker sooner for a newly
+      // enqueued job but does not replace this polling.
+      pollInterval: config.pollInterval ?? 500,
       taskList,
     });
   }

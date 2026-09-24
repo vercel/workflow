@@ -45,6 +45,15 @@ function getDefaultConnectionString(): string {
   );
 }
 
+function getDefaultPollInterval(): number | undefined {
+  const parsed = parseInt(
+    process.env.WORKFLOW_POSTGRES_POLL_INTERVAL_MS || '',
+    10
+  );
+
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 export function createWorld(
   config: PostgresWorldConfig = {
     connectionString: getDefaultConnectionString(),
@@ -52,6 +61,7 @@ export function createWorld(
     queueConcurrency:
       parseInt(process.env.WORKFLOW_POSTGRES_WORKER_CONCURRENCY || '50', 10) ||
       50,
+    pollInterval: getDefaultPollInterval(),
     applicationManagedShutdown:
       process.env.WORKFLOW_POSTGRES_APPLICATION_MANAGED_SHUTDOWN === '1',
     enableInvoke: process.env.WORKFLOW_POSTGRES_INVOKE === '1',
