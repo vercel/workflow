@@ -38,6 +38,9 @@ export type WorkflowCode =
 // generated workflow object. Bundle keys are deterministic (`bundle-0`, ...),
 // so keying the cache by bundle name alone could otherwise return a shard from
 // the previous successful build after a failed/then-successful rebuild.
+// per-copy-ok: keyed by each builder/watch process's decoded bundle map, this
+// prevents stale ownership across deterministic bundle generations; module-local
+// state is intentional.
 const decodedBundleOwners = new WeakMap<Map<string, string>, object>();
 
 function isShardedWorkflowCode(
