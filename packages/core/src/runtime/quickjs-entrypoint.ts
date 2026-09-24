@@ -61,6 +61,7 @@ import { getPortLazy } from './get-port-lazy.js';
 import {
   getWorkflowQueueName,
   queueMessage,
+  REPLAY_RESOLVE_DATA,
   runDispatchContext,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
@@ -1121,6 +1122,7 @@ export async function runWorkflowWithQuickJS(params: {
           cursor: cursor ?? undefined,
           limit: 1000,
         },
+        resolveData: REPLAY_RESOLVE_DATA,
       });
       eventsFetchedPages++;
       allEvents.push(...response.data);
@@ -1151,6 +1153,9 @@ export async function runWorkflowWithQuickJS(params: {
   const logView = new QuickJSLogView(events, loadedCursor);
   const createEvent: EventCreator = async (data, eventParams) => {
     const result = await world.events.create(runId, data, {
+      // Returned replay events only feed the log; read them the way replay
+      // reads the log.
+      resolveData: REPLAY_RESOLVE_DATA,
       ...eventParams,
       ...logView.snapshotParams(),
     });
@@ -1446,6 +1451,7 @@ export async function runWorkflowWithQuickJS(params: {
           cursor: cursor ?? undefined,
           limit: 1000,
         },
+        resolveData: REPLAY_RESOLVE_DATA,
       });
       for (const e of response.data) {
         if (e.eventId && seenEventIds.has(e.eventId)) continue;

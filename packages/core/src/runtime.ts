@@ -83,6 +83,7 @@ import {
   parseHealthCheckPayload,
   preconditionEventDelta,
   queueMessage,
+  REPLAY_RESOLVE_DATA,
   resolveRunEncryptionKey,
   rootRunIdFrom,
   runDispatchContext,
@@ -1030,7 +1031,14 @@ export function workflowEntrypoint(
                     params?: CreateEventParams
                   ) => {
                     const sinceCursor = deltaRequestCursor(data, params);
-                    const withSnapshot = { ...slotSnapshot(), ...params };
+                    // Replay events a write hands back (an inline delta or a
+                    // preload) only feed this log; read them the way replay
+                    // reads the log.
+                    const withSnapshot: CreateEventParams = {
+                      ...slotSnapshot(),
+                      resolveData: REPLAY_RESOLVE_DATA,
+                      ...params,
+                    };
                     const result = await replayRecoveryReporter.withEventCreate(
                       sinceCursor === undefined
                         ? withSnapshot

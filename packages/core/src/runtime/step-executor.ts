@@ -56,7 +56,7 @@ import {
   isOptimisticInlineStartExplicitlyDisabled,
 } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
-import { memoizeEncryptionKey } from './helpers.js';
+import { memoizeEncryptionKey, withReplayDelta } from './helpers.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import {
   computeResumeTtrAttributes,
@@ -393,7 +393,7 @@ export async function executeStep(
     data: T,
     eventParams?: CreateEventParams
   ) =>
-    replayRecoveryReporter.withEventCreate(eventParams, (p) =>
+    replayRecoveryReporter.withEventCreate(withReplayDelta(eventParams), (p) =>
       world.events.create(workflowRunId, data, p)
     );
 
