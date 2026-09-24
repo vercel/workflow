@@ -49,10 +49,10 @@ describe('workflow-stream-ws/v1 contract', () => {
     const fixtureBytes = await readFile(
       new URL('./__fixtures__/workflow-stream-ws-v1.json', import.meta.url)
     );
-    // Canonical source: workflow-server#876
+    // Canonical source: workflow-server#876, #1051
     // test/fixtures/workflow-stream-ws-v1.json
     expect(createHash('sha256').update(fixtureBytes).digest('hex')).toBe(
-      '908d0be8ca85661d6b0b666d7e6fc36c581cb70f9561def37c3c93c61bada009'
+      '485d36a30bac6dfee3f3d4f62dc23cd2ac866ee8d1826bce9cdca2c2394c0001'
     );
 
     expect(fixture.protocol).toBe(STREAM_WS_PROTOCOL_V1);

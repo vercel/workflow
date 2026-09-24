@@ -626,7 +626,9 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(closeHttp).not.toHaveBeenCalled();
   });
 
-  it('poisons a correlated server error and prevents queued work', async () => {
+  it.each([
+    400, 503,
+  ])('poisons a correlated %i write error and prevents queued work', async (status) => {
     process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
     const { session, writeHttp, closeHttp } = makeSession();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
@@ -638,15 +640,22 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
     socket.reply(
       encodeFrame(
-        { type: 'error', reqId: 1, status: 429, message: 'try later' },
+        {
+          type: 'error',
+          reqId: 1,
+          status,
+          message: 'rejected',
+          retryAfter: '1',
+        },
         new Uint8Array()
       )
     );
 
-    await expect(writing).rejects.toThrow('try later');
-    await expect(queued).rejects.toThrow('try later');
+    await expect(writing).rejects.toThrow(`(${status}): rejected`);
+    await expect(queued).rejects.toThrow(`(${status}): rejected`);
     expect(socket.sent).toHaveLength(1);
     expect(sockets).toHaveLength(1);
+    expect(socket.closed).toContainEqual([1011, 'stream request failed']);
     expect(writeHttp).not.toHaveBeenCalled();
     expect(closeHttp).not.toHaveBeenCalled();
     expect(writeSpans[0]).toMatchObject({
@@ -923,5 +932,204 @@ describe('v1 stream WebSocket writer lifecycle', () => {
     expect(sockets[0].sent).toHaveLength(0);
     expect(sockets[0].closed).toContainEqual([1000, 'stream writer disposed']);
     expect(closeHttp).not.toHaveBeenCalled();
+  });
+});
+
+describe('v1 stream WebSocket throttling', () => {
+  async function openSession() {
+    process.env.WORKFLOW_STREAMS_TRANSPORT = 'ws';
+    const session = makeSession();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    socket.open();
+    return { ...session, socket };
+  }
+
+  function reply(
+    socket: InstanceType<typeof FakeWebSocket>,
+    meta: Record<string, unknown>
+  ): void {
+    socket.reply(encodeFrame(meta, new Uint8Array()));
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  it('resends a throttled write on the same socket after retryAfter', async () => {
+    const { session, socket, writeHttp } = await openSession();
+    const writing = session.write(3, ['one']);
+    const queued = session.write(4, ['two']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    vi.useFakeTimers();
+    reply(socket, {
+      type: 'error',
+      reqId: 1,
+      status: 429,
+      message: 'Too many requests',
+      retryAfter: '2',
+    });
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(socket.sent).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(socket.sent).toHaveLength(2);
+    const original = await decodeOne(socket.sent[0]);
+    const resent = await decodeOne(socket.sent[1]);
+    expect(resent.meta).toEqual({
+      type: 'write',
+      reqId: 2,
+      chunkSeq: 3,
+      numChunks: 1,
+    });
+    expect(resent.body).toEqual(original.body);
+
+    reply(socket, { type: 'write_ack', reqId: 2 });
+    await writing;
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(3));
+    expect((await decodeOne(socket.sent[2])).meta).toMatchObject({
+      reqId: 3,
+      chunkSeq: 4,
+    });
+    reply(socket, { type: 'write_ack', reqId: 3 });
+    await queued;
+
+    expect(writeHttp).not.toHaveBeenCalled();
+    expect(socket.closed).toEqual([]);
+    expect(sockets).toHaveLength(1);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Throttled (429) writing stream chunks')
+    );
+  });
+
+  it('backs off when a throttled write carries no retryAfter', async () => {
+    const { session, socket } = await openSession();
+    const writing = session.write(0, ['one']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    vi.useFakeTimers();
+    reply(socket, { type: 'error', reqId: 1, status: 429 });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(socket.sent).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(socket.sent).toHaveLength(2);
+    reply(socket, { type: 'write_ack', reqId: 2 });
+    await writing;
+  });
+
+  it('completes a throttled write over HTTP when the server then closes', async () => {
+    const { session, socket, writeHttp } = await openSession();
+    const writing = session.write(0, ['one']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    vi.useFakeTimers();
+    // Servers before the retryable-rejection contract end the connection
+    // after every correlated error.
+    reply(socket, { type: 'error', reqId: 1, status: 429, retryAfter: '1' });
+    socket.emit('close', 1011);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await writing;
+    await session.write(1, ['two']);
+
+    expect(socket.sent).toHaveLength(1);
+    expect(writeHttp.mock.calls).toEqual([[['one']], [['two']]]);
+    expect(sockets).toHaveLength(1);
+  });
+
+  it('fails the writer once throttling outlasts the retry budget', async () => {
+    const { session, socket, writeHttp } = await openSession();
+    const writing = session.write(0, ['one']);
+    const failed = expect(writing).rejects.toThrow(
+      'stream WebSocket write throttled (429): slow down (retry budget exhausted'
+    );
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    vi.useFakeTimers();
+    reply(socket, {
+      type: 'error',
+      reqId: 1,
+      status: 429,
+      message: 'slow down',
+      retryAfter: '20',
+    });
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(socket.sent).toHaveLength(2);
+    reply(socket, {
+      type: 'error',
+      reqId: 2,
+      status: 429,
+      message: 'slow down',
+      retryAfter: '20',
+    });
+    await failed;
+
+    await expect(session.write(1, ['two'])).rejects.toThrow('throttled (429)');
+    expect(socket.sent).toHaveLength(2);
+    expect(socket.closed).toContainEqual([1000, 'stream request throttled']);
+    expect(writeHttp).not.toHaveBeenCalled();
+  });
+
+  it('resends a throttled close', async () => {
+    const { session, socket, closeHttp } = await openSession();
+    const closing = session.close();
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    vi.useFakeTimers();
+    reply(socket, { type: 'error', reqId: 1, status: 429, retryAfter: '1' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect((await decodeOne(socket.sent[1])).meta).toEqual({
+      type: 'close',
+      reqId: 2,
+    });
+    reply(socket, { type: 'close_ack', reqId: 2 });
+    await closing;
+    expect(closeHttp).not.toHaveBeenCalled();
+  });
+
+  it('retries a close 5xx over HTTP', async () => {
+    const { session, socket, closeHttp } = await openSession();
+    const closing = session.close();
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    reply(socket, {
+      type: 'error',
+      reqId: 1,
+      status: 503,
+      message: 'close barrier pending',
+    });
+    socket.emit('close', 1011);
+    await closing;
+
+    expect(closeHttp).toHaveBeenCalledTimes(1);
+    expect(socket.closed).toContainEqual([
+      1000,
+      'stream close retried over HTTP',
+    ]);
+    expect(sockets).toHaveLength(1);
+    await expect(session.write(0, ['late'])).rejects.toThrow(
+      'stream writer is closed'
+    );
+  });
+
+  it('keeps a close 4xx terminal', async () => {
+    const { session, socket, closeHttp } = await openSession();
+    const closing = session.close();
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    reply(socket, { type: 'error', reqId: 1, status: 409, message: 'nope' });
+    await expect(closing).rejects.toThrow('(409): nope');
+    expect(closeHttp).not.toHaveBeenCalled();
+  });
+
+  it('keeps a connection-level 429 fatal', async () => {
+    const { session, socket, writeHttp } = await openSession();
+    const writing = session.write(0, ['one']);
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(1));
+
+    reply(socket, { type: 'error', status: 429, message: 'too many pending' });
+    await expect(writing).rejects.toThrow(
+      'stream WebSocket connection failed (429): too many pending'
+    );
+    expect(writeHttp).not.toHaveBeenCalled();
   });
 });

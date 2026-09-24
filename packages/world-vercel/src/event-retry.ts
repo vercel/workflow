@@ -389,15 +389,16 @@ export interface EventPostRetryOptions {
 }
 
 /**
- * Per-POST throttle-wait accounting. The returned function waits out a 429's
- * `retryAfter` in-process (so the caller can re-attempt), or rethrows the
- * ThrottleError once the cumulative wait would exceed
- * THROTTLE_RETRY_BUDGET_MS, at which point the queue's delivery-counted
- * redelivery takes over.
+ * Cumulative 429 wait accounting for one logical write: an event POST, or a
+ * stream WebSocket write/close (`ws-stream-session.ts`). Both share this so a
+ * throttled write waits the same way whichever path it takes. Each call waits
+ * out one 429's `retryAfter` (seconds; DEFAULT_THROTTLE_RETRY_AFTER_SECONDS
+ * when absent) so the caller can re-attempt, or rethrows the 429 without
+ * waiting once the cumulative wait would exceed THROTTLE_RETRY_BUDGET_MS.
  */
-function createThrottleWaiter(
-  eventType: WorkflowEventType
-): (err: ThrottleError) => Promise<void> {
+export function createThrottleWaiter(
+  target: string
+): (err: { retryAfter?: number }) => Promise<void> {
   let waitedMs = 0;
   return async (err) => {
     const waitMs =
@@ -408,8 +409,8 @@ function createThrottleWaiter(
           : DEFAULT_THROTTLE_RETRY_AFTER_SECONDS
       ) * 1000;
     if (waitedMs + waitMs > THROTTLE_RETRY_BUDGET_MS) {
-      logRetry('throttle retry budget exhausted; surfacing to the queue', {
-        eventType,
+      logRetry('throttle retry budget exhausted', {
+        target,
         waitedMs,
         retryAfter: err.retryAfter,
       });
@@ -419,7 +420,7 @@ function createThrottleWaiter(
     // Visible (not debug-gated): this stalls the invocation for whole
     // seconds, which would otherwise read as unexplained latency.
     console.warn(
-      `[workflow] Throttled (429) writing ${eventType} event; retrying in-process in ${waitMs / 1000}s`
+      `[workflow] Throttled (429) writing ${target}; retrying in-process in ${waitMs / 1000}s`
     );
     await sleep(waitMs);
   };
@@ -460,7 +461,9 @@ export async function withEventPostRetry<T>(
   // Throttle waits draw on a shared per-POST budget instead of the transient
   // attempt counter, so a throttled write keeps its full transient-blip
   // allowance (and vice versa).
-  const waitOutThrottle = createThrottleWaiter(eventType);
+  // Beyond the budget the ThrottleError surfaces and the queue's
+  // (delivery-counted, backed-off) redelivery takes over.
+  const waitOutThrottle = createThrottleWaiter(`${eventType} event`);
   for (let attempt = 0; ; ) {
     try {
       return await fn();
