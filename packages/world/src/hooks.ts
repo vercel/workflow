@@ -98,6 +98,29 @@ export type HookResumeCapabilities = z.infer<
  * - specVersion >= 2: Uint8Array (binary devalue format)
  * - specVersion 1: any (legacy JSON format)
  */
+/**
+ * Who a force-claimed hook took its token from. Written by the World in the
+ * same transaction that re-points the token, and returned on the
+ * `hook_created` response and on every later read of the hook.
+ *
+ * `workflowName`, `deploymentId` and `runSpecVersion` are the VICTIM run's:
+ * the claimer's runtime publishes the victim's wake from them (the victim's
+ * replay has to read the `hook_disposed{forceClaimedBy}` row the takeover
+ * left in its log). They are optional only because a World may not have them
+ * for a legacy victim; when absent the runtime skips the wake and the victim
+ * reads the row on its next invocation.
+ */
+export const HookClaimedFromSchema = z.compile(
+  z.object({
+    runId: z.string(),
+    hookId: z.string(),
+    workflowName: z.string().optional(),
+    deploymentId: z.string().optional(),
+    runSpecVersion: z.number().optional(),
+  })
+);
+export type HookClaimedFrom = z.infer<typeof HookClaimedFromSchema>;
+
 // Hook schemas
 export const HookSchema = z.compile(
   z.object({
@@ -128,6 +151,11 @@ export const HookSchema = z.compile(
     // current. Absent against an older/rolled-back server or when the kill switch
     // is active.
     resumeCapabilities: HookResumeCapabilitiesSchema.optional(),
+    // Set when this hook took its token from another run
+    // (`experimental_force`). The wake-targeting fields are the victim run's,
+    // so the claimer's runtime can publish the victim's wake without reading
+    // a run it may not be able to reach; see `HookClaimedFromSchema`.
+    claimedFrom: HookClaimedFromSchema.optional(),
   })
 );
 

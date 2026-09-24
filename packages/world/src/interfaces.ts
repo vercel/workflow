@@ -568,6 +568,31 @@ export interface WorldCapabilities {
   hookResumeDedup?: boolean;
 
   /**
+   * Supports `createHook({ experimental_force: true })`: a `hook_created`
+   * carrying `eventData.force` whose token is held by another live run takes
+   * the token over instead of returning `hook_conflict`. The World must:
+   *
+   *   1. append `hook_disposed{forceClaimedBy: { runId, hookId }}` to the
+   *      current owner's log — atomically with whatever that World uses to
+   *      refuse later `hook_received` writes to it — BEFORE re-pointing the
+   *      token, so a delivery that already resolved the old owner is refused
+   *      rather than landing in a run that no longer holds the token;
+   *   2. re-point the token to the claimer atomically, recording
+   *      `Hook.claimedFrom` on the claimer's hook;
+   *   3. journal the claimer's `hook_created{force, forceClaimedFrom}`,
+   *      refusing it if the claimer's own hook was taken over in between;
+   *   4. answer a `hook_received` refused by a takeover with
+   *      `HookForceClaimedError` (not `HookNotFoundError`), after completing
+   *      the re-pointing if the claimer had not, so `resumeHook()` can follow
+   *      the token to its new owner and retry with the same `resumeId`.
+   *
+   * Formalised in `workflow-server/specs/HookForceClaim.tla`. A World that
+   * cannot give these guarantees must leave this unset; the runtime then
+   * rejects `experimental_force` at `createHook()` time.
+   */
+  hookForceClaim?: boolean;
+
+  /**
    * Deployments are atomic and immutable: a deployment id names one fixed
    * build for its whole lifetime, so a run pinned to one may only execute
    * there. Worlds that declare this get the runtime's deployment-affinity

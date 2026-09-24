@@ -65,6 +65,10 @@ import {
   stepDispatchIdempotencyKey,
 } from './helpers.js';
 import {
+  publishForceClaimVictimWake,
+  republishOwedForceClaimVictimWake,
+} from './hook-wake.js';
+import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './lifecycle-hooks.js';
@@ -413,12 +417,31 @@ async function dispatchPendingOps(params: {
               // System hooks (AbortController) are exempt from user
               // token namespace conflict checks.
               ...(hook.isSystem ? { isSystem: true } : {}),
+              ...(hook.force ? { force: true } : {}),
             } as any,
           },
           hookDeltaCursor !== undefined
             ? { sinceCursor: hookDeltaCursor }
             : undefined
         );
+
+        // A forced creation that took the token over: wake the run it was
+        // taken from so its replay reads the hook_disposed the World
+        // journaled there. Same contract as the node:vm suspension handler;
+        // see `publishForceClaimVictimWake`.
+        if (result.hook?.claimedFrom) {
+          const outcome = await publishForceClaimVictimWake(
+            world,
+            runId,
+            result.hook
+          );
+          runtimeLogger.info('Hook token force-claimed from another run', {
+            workflowRunId: runId,
+            hookId: hook.correlationId,
+            victimRunId: result.hook.claimedFrom.runId,
+            victimWake: outcome,
+          });
+        }
 
         // If storage detected a real token conflict with another
         // workflow's hook, re-queue so the workflow handler can
@@ -557,18 +580,39 @@ async function dispatchPendingOps(params: {
       hookOpsByToken.set(key, [op as PendingHook | PendingHookDispose]);
     }
   }
-  for (const group of hookOpsByToken.values()) {
-    opsPromises.push(
-      (async () => {
-        for (const op of group) {
-          if (op.type === 'hook') {
-            await processHookOp(op);
-          } else {
-            await processHookDisposeOp(op);
-          }
-        }
-      })()
+  const runHookGroup = async (
+    group: (PendingHook | PendingHookDispose)[]
+  ): Promise<void> => {
+    for (const op of group) {
+      if (op.type === 'hook') {
+        await processHookOp(op);
+      } else {
+        await processHookDisposeOp(op);
+      }
+    }
+  };
+  // A forced creation owes its victim a wake, and a replay can only tell that
+  // debt is still open while the forced `hook_created` is the last event this
+  // run wrote (`forcedCreationOwingWake`). Every op below runs in parallel, so
+  // a step, wait, attribute or other hook row could otherwise land between
+  // that row and the wake and hide the debt from the replay after a crash.
+  // Token groups holding a forced creation therefore run first, one at a time
+  // (the wake is published inside `processHookOp`, before the group's next
+  // write), and nothing else is dispatched until they have all settled.
+  // Invocations without a forced hook take the parallel path unchanged.
+  const hookGroups = [...hookOpsByToken.values()];
+  const holdsForcedCreation = (group: (PendingHook | PendingHookDispose)[]) =>
+    group.some(
+      (op) =>
+        op.type === 'hook' &&
+        (op as PendingHook).force === true &&
+        !op.hasCreatedEvent
     );
+  for (const group of hookGroups.filter(holdsForcedCreation)) {
+    await runHookGroup(group);
+  }
+  for (const group of hookGroups) {
+    if (!holdsForcedCreation(group)) opsPromises.push(runHookGroup(group));
   }
 
   for (const op of pendingOperations) {
@@ -1097,6 +1141,13 @@ export async function runWorkflowWithQuickJS(params: {
   // handed back on a write that the VM has not been given yet. Every write
   // made from this view goes through `createEvent` below so it names the
   // position it was decided against and its response is queued here.
+  // Same durability contract as the node:vm suspension handler: a forced
+  // hook creation that is still the last event this run wrote owes its
+  // victim a wake, because the invocation that created it died before
+  // publishing one. Repaid here, on the log as loaded, before this
+  // invocation writes anything.
+  await republishOwedForceClaimVictimWake(world, runId, events);
+
   const logView = new QuickJSLogView(events, loadedCursor);
   const createEvent: EventCreator = async (data, eventParams) => {
     const result = await world.events.create(runId, data, {

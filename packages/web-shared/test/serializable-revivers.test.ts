@@ -100,6 +100,14 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
     'approval-token',
     'wrun_conflicting',
   ],
+  HookForceClaimedError: [
+    ['HookForceClaimedError', 1],
+    { message: 2, token: 3, claimedByRunId: 4, claimedByHookId: 5 },
+    'Hook token "channel:general" was force-claimed by another workflow (run "wrun_claimer")',
+    'channel:general',
+    'wrun_claimer',
+    'hook_claimer',
+  ],
   Instance: [
     ['Instance', 1],
     { classId: 2, data: 3 },
