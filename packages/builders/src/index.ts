@@ -24,14 +24,10 @@ export {
 } from './discover-entries-esbuild-plugin.js';
 export {
   ALLOW_UNSAFE_FLOW_BUNDLE_ENV,
-  analyzeFlowBundleSafety,
   assertFlowBundleIsSandboxSafe,
-  collectExternalImports,
   type DynamicRequireViolation,
   type ExternalImportViolation,
   type FlowBundleSafetyReport,
-  formatFlowBundleSafetyReport,
-  isFlowBundleSafetyReportEmpty,
 } from './flow-bundle-safety.js';
 export {
   clearModuleSpecifierCache,

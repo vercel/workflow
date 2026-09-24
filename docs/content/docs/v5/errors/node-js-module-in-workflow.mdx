@@ -45,7 +45,7 @@ Unresolved require() calls (1):
 
 The workflow sandbox has no `require`, so both would throw `ReferenceError: require is not defined` when the bundle loads. Follow the import chain to the first file you own and move that work into a step function, or replace a dynamic `require()` with a static import so the bundler can inline it.
 
-A `require()` wrapped in `try`/`catch` is not reported — that is how packages probe for an optional dependency, and the sandbox's error is caught:
+A `require()` wrapped in `try`/`catch`, or behind a `typeof require` check, is not reported — that is how packages probe for an optional dependency or for a CommonJS environment, and in the sandbox the error is caught or the call never runs:
 
 ```js
 try {
@@ -53,7 +53,13 @@ try {
 } catch {
   // optional dependency, fall back
 }
+
+if (typeof require !== "undefined") {
+  crypto = require("crypto");
+}
 ```
+
+These checks are lexical: a `try` with only a `finally`, or a `catch` that rethrows the error, still fails at runtime if the code is reached.
 
 As a last resort — for example a `require()` that can never run — set `WORKFLOW_ALLOW_UNSAFE_FLOW_BUNDLE=1` to downgrade the build failure to a warning. The bundle still fails at runtime if the code is reached.
 

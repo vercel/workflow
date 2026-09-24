@@ -145,6 +145,41 @@ describe('flow bundle sandbox safety (esbuild)', () => {
     expect(interimBundleText).toContain('@emotion/is-prop-valid');
   });
 
+  it('builds a workflow whose dependency only requires a builtin behind a typeof check', async () => {
+    // tweetnacl's shape: `require("crypto")` is external in the bundle, but it
+    // only runs when `require` exists, which it never does in the sandbox.
+    const outputDir = createFixture({
+      ...packageFiles(
+        'guarded-pkg',
+        [
+          'var crypto;',
+          "if (typeof self !== 'undefined' && self.crypto) {",
+          '  crypto = self.crypto;',
+          "} else if (typeof require !== 'undefined') {",
+          "  crypto = require('crypto');",
+          '}',
+          'module.exports.hasCrypto = () => Boolean(crypto);',
+        ].join('\n')
+      ),
+      ...packageFiles(
+        'wrapper-pkg',
+        "module.exports = require('guarded-pkg');"
+      ),
+      'workflow.ts': [
+        "import { hasCrypto } from 'wrapper-pkg';",
+        'export async function wf() { "use workflow"; return hasCrypto(); }',
+      ].join('\n'),
+    });
+
+    const { interimBundleText } = await buildWorkflow(outputDir);
+
+    expect(interimBundleText).toContain('require("crypto")');
+    const context = createContext({ module: { exports: {} }, exports: {} });
+    expect(() =>
+      runInContext(interimBundleText as string, context)
+    ).not.toThrow();
+  });
+
   it('fails when a transitive dependency pulls in a Node.js builtin', async () => {
     const outputDir = createFixture({
       ...packageFiles(

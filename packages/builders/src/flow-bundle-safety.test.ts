@@ -40,6 +40,14 @@ describe('maskNonCodeRegions', () => {
     expect(masked).toBe(code);
   });
 
+  it('treats a slash after an if/while/for head as a regex literal', () => {
+    // esbuild prints `if (s)\n  /{/.test(s);` — the `/` does not divide here.
+    const code = 'if (s) /{/.test(s); while (x) /}/g.exec(y); var r = (a) / b;';
+    const { masked } = maskNonCodeRegions(code);
+    expect(masked).not.toMatch(/[{}]/);
+    expect(masked).toContain('var r = (a) / b;');
+  });
+
   it('blanks regex literals that contain quotes', () => {
     const code = `const re = /require("x")/g; const y = 1;`;
     const { masked } = maskNonCodeRegions(code);
@@ -100,6 +108,75 @@ describe('findDynamicRequireCandidates', () => {
 
   it('still flags a require inside a catch block', () => {
     const code = 'try { a(); } catch { fallback = require("node:fs"); }';
+    expect(findDynamicRequireCandidates(code)).toHaveLength(1);
+  });
+
+  it('does not treat try/finally as a guard', () => {
+    // Without a `catch`, the ReferenceError still escapes the `try`.
+    const code = 'try { optional = require(name); } finally { done(); }';
+    expect(findDynamicRequireCandidates(code)).toHaveLength(1);
+  });
+
+  it('keeps try ranges in sync across a regex after an if head', () => {
+    // An unmasked `/{/` would open a phantom block and stretch the try range
+    // over the unguarded `require` below it.
+    const code = [
+      'function load(s) {',
+      '  try {',
+      '    if (s)',
+      '      /{/.test(s);',
+      '  } catch (e) {',
+      '  }',
+      '  return require(s);',
+      '}',
+    ].join('\n');
+    const found = findDynamicRequireCandidates(code);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ line: 7 });
+  });
+
+  it('ignores requires behind a typeof require check', () => {
+    // tweetnacl, UMD wrappers and esbuild's ESM `__require` shim only call
+    // `require` after checking it exists, which it never does in the sandbox.
+    const code = [
+      'if (typeof require !== "undefined") {',
+      '  crypto = require("crypto");',
+      '} else if (x) {',
+      '}',
+      'if (typeof self !== "undefined" && "function" === typeof require) {',
+      '  a = require(name);',
+      '}',
+      'var b = typeof require === "function" && require("b");',
+      'var c = typeof require !== "undefined" ? require("c") : null;',
+      'var d = (typeof require < "u" ? require : fallback)[key];',
+      'function e() {',
+      '  if (typeof require !== "undefined") return require.apply(this, arguments);',
+      '}',
+    ].join('\n');
+    expect(findDynamicRequireCandidates(code)).toEqual([]);
+  });
+
+  it('still flags requires a typeof check does not cover', () => {
+    const code = [
+      'if (typeof require !== "undefined") {',
+      '}',
+      'var a = require("a");',
+      'if (typeof require !== "undefined" || force) {',
+      '  b = require("b");',
+      '}',
+      'if (typeof require === "undefined") {',
+      '  c = require("c");',
+      '}',
+      'var d = typeof require !== "undefined" ? load() : require("d");',
+      'var e = typeof require === "function", f = require("f");',
+    ].join('\n');
+    expect(
+      findDynamicRequireCandidates(code).map((site) => site.specifier)
+    ).toEqual(['a', 'b', 'c', 'd', 'f']);
+  });
+
+  it('flags require used as a ternary operand', () => {
+    const code = 'var load = isNode ? require : noop;';
     expect(findDynamicRequireCandidates(code)).toHaveLength(1);
   });
 
@@ -346,6 +423,50 @@ describe('analyzeFlowBundleSafety', () => {
       ),
     });
     expect(report.externalImports).toHaveLength(1);
+  });
+
+  it("passes esbuild's ESM __require shim", async () => {
+    // Emitted by esbuild (and tsup) for ESM builds that keep a CJS `require`,
+    // and carried into the flow bundle when such a package is bundled. The
+    // shadowed candidate below must not be confirmed by the shim's guarded
+    // references to the real global.
+    const report = await analyzeFlowBundleSafety({
+      bundleText: [
+        'var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {',
+        '  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]',
+        '}) : x)(function(x) {',
+        '  if (typeof require !== "undefined") return require.apply(this, arguments);',
+        "  throw Error('Dynamic require of \"' + x + '\" is not supported');",
+        '});',
+        'var ci = ((e) => typeof require < "u" ? require : e)(function(e) {',
+        '  if (typeof require < "u") return require.apply(this, arguments);',
+        '});',
+        'umd(function (require, exports) { exports.load = (n) => require(n); });',
+      ].join('\n'),
+    });
+    expect(report.dynamicRequires).toEqual([]);
+  });
+
+  it('does not report an external only required behind a typeof check', async () => {
+    const report = await analyzeFlowBundleSafety({
+      bundleText: [
+        'if (typeof require !== "undefined") {',
+        '  crypto = require("crypto");',
+        '}',
+      ].join('\n'),
+      metafile: metafileWith(
+        {
+          'virtual-entry.js': {
+            bytes: 0,
+            format: 'esm',
+            imports: [{ path: 'crypto', kind: 'require-call', external: true }],
+          },
+        },
+        [{ path: 'crypto', kind: 'require-call', external: true }]
+      ),
+    });
+    expect(report.externalImports).toEqual([]);
+    expect(report.dynamicRequires).toEqual([]);
   });
 
   it('reports a free dynamic require', async () => {
