@@ -92,7 +92,7 @@ describe('workflow bundle sharding', () => {
     const workflows = join(outputDir, 'workflows.mjs');
     writeFileSync(
       first,
-      `export async function first(value: number) { 'use workflow'; return value + 1; }\n`
+      `export async function first(value: number) { 'use workflow'; return { generation: 'generation-one', value }; }\n`
     );
     writeFileSync(
       second,
@@ -128,6 +128,37 @@ describe('workflow bundle sharding', () => {
     expect(generated).toContain('gzip-base64');
     expect(generated).toContain('bundle-0');
     expect(generated).toContain('bundle-1');
+
+    // A failed rebuild must not publish a partial generation or leave the
+    // previous output in a state that can be mixed with a later deterministic
+    // bundle key. The next successful rebuild must publish the new generation
+    // atomically from the caller's point of view.
+    writeFileSync(
+      first,
+      `export async function first(value: number) { 'use workflow'; return value + ; }\n`
+    );
+    await expect(
+      new TestBuilder(config).createShardedBundle(
+        [first, second],
+        steps,
+        workflows,
+        discoveredEntries
+      )
+    ).rejects.toThrow();
+    expect(readFileSync(workflows, 'utf8')).toBe(generated);
+
+    writeFileSync(
+      first,
+      `export async function first(value: number) { 'use workflow'; return { generation: 'generation-two', value }; }\n`
+    );
+    await new TestBuilder(config).createShardedBundle(
+      [first, second],
+      steps,
+      workflows,
+      discoveredEntries
+    );
+    const rebuilt = readFileSync(workflows, 'utf8');
+    expect(rebuilt).not.toBe(generated);
   });
 
   it('keeps shared imports, serde classes, hooks, manifests, and sourcemaps in every shard', async () => {

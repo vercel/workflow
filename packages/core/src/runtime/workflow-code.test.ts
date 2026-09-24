@@ -41,6 +41,27 @@ describe('selectWorkflowCode', () => {
     expect(cache).toEqual(new Map([['bundle-0', 'workflow shard']]));
     expect(selectWorkflowCode(shards, 'missing', cache)).toBeUndefined();
   });
+
+  it('does not reuse a deterministic bundle key across generated builds', () => {
+    const cache = new Map<string, string>();
+    const firstBuild: WorkflowCode = {
+      bundles: { 'bundle-0': gzipSync('first build').toString('base64') },
+      workflowBundles: { 'workflow-a': 'bundle-0' },
+      encoding: 'gzip-base64',
+    };
+    const secondBuild: WorkflowCode = {
+      bundles: { 'bundle-0': gzipSync('second build').toString('base64') },
+      workflowBundles: { 'workflow-a': 'bundle-0' },
+      encoding: 'gzip-base64',
+    };
+
+    expect(selectWorkflowCode(firstBuild, 'workflow-a', cache)).toBe(
+      'first build'
+    );
+    expect(selectWorkflowCode(secondBuild, 'workflow-a', cache)).toBe(
+      'second build'
+    );
+  });
 });
 
 describe('splitLines and applyBundlePatch', () => {

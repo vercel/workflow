@@ -34,6 +34,12 @@ export type WorkflowCode =
   | Readonly<Record<string, string>>
   | ShardedWorkflowCode;
 
+// A builder/watch process may reuse the decoded-bundle map while replacing the
+// generated workflow object. Bundle keys are deterministic (`bundle-0`, ...),
+// so keying the cache by bundle name alone could otherwise return a shard from
+// the previous successful build after a failed/then-successful rebuild.
+const decodedBundleOwners = new WeakMap<Map<string, string>, object>();
+
 function isShardedWorkflowCode(
   workflowCode: Readonly<Record<string, string>> | ShardedWorkflowCode
 ): workflowCode is ShardedWorkflowCode {
@@ -90,6 +96,12 @@ export function selectWorkflowCode(
   if (typeof workflowCode === 'string') return workflowCode;
 
   if (isShardedWorkflowCode(workflowCode)) {
+    const previousOwner = decodedBundleOwners.get(decodedBundles);
+    if (previousOwner !== workflowCode) {
+      decodedBundles.clear();
+      decodedBundleOwners.set(decodedBundles, workflowCode);
+    }
+
     const bundleKey = workflowCode.workflowBundles[workflowName];
     if (bundleKey === undefined) return undefined;
 
