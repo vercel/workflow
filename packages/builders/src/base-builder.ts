@@ -46,7 +46,11 @@ import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import { detectWorkflowPatterns } from './transform-utils.js';
-import type { SourcemapMode, WorkflowConfig } from './types.js';
+import type {
+  SourcemapMode,
+  WorkflowBundleArtifacts,
+  WorkflowConfig,
+} from './types.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
 import { hasSameContent, writeFileIfChanged } from './write-if-changed.js';
 
@@ -202,6 +206,11 @@ type CachedManifestTransform = {
   contentHash: string;
 };
 
+type CompletedBundleArtifacts = readonly [
+  WorkflowBundleArtifacts[0],
+  WorkflowBundleArtifacts[1],
+];
+
 /**
  * Base class for workflow builders. Provides common build logic for transforming
  * workflow source files into deployable bundles using esbuild and SWC.
@@ -218,6 +227,10 @@ export abstract class BaseBuilder {
   private warnedExternalPackages = new Set<string>();
   private workflowBuildStartTime: number | undefined;
   private manifestTransformCache = new Map<string, CachedManifestTransform>();
+  private completedBundleArtifacts = new Map<
+    string,
+    CompletedBundleArtifacts
+  >();
 
   constructor(config: WorkflowConfig) {
     this.config = config;
@@ -399,6 +412,29 @@ export abstract class BaseBuilder {
 
   public clearManifestTransformCache(): void {
     this.manifestTransformCache.clear();
+  }
+
+  private recordCompletedBundleArtifacts({
+    stepsPath,
+    workflowsPath,
+  }: {
+    stepsPath: string;
+    workflowsPath: string;
+  }): void {
+    const resolvedWorkflowsPath = resolve(
+      this.config.workingDir,
+      workflowsPath
+    );
+    this.completedBundleArtifacts.set(
+      resolvedWorkflowsPath,
+      Object.freeze([
+        Object.freeze({
+          kind: 'steps',
+          path: resolve(this.config.workingDir, stepsPath),
+        }),
+        Object.freeze({ kind: 'workflows', path: resolvedWorkflowsPath }),
+      ])
+    );
   }
 
   /**
@@ -1675,12 +1711,18 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
     stepsManifest: WorkflowManifest;
     workflowsManifest: WorkflowManifest;
   }> {
+    const resolvedStepsOutfile = resolve(this.config.workingDir, stepsOutfile);
+    const resolvedFlowOutfile = resolve(this.config.workingDir, flowOutfile);
+
+    // A new build attempt invalidates any prior completion for this output.
+    // The entry is restored only after both bundle artifacts have been written.
+    this.completedBundleArtifacts.delete(resolvedFlowOutfile);
     this.startWorkflowBuildTimer();
     const effectiveDiscoveredEntries =
       discoveredEntries ??
       (await this.discoverEntries(
         inputFiles,
-        dirname(flowOutfile),
+        dirname(resolvedFlowOutfile),
         tsconfigPath
       ));
 
@@ -1689,7 +1731,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
     const { context: stepsContext, manifest: stepsManifest } =
       await this.createStepsBundle({
         inputFiles,
-        outfile: stepsOutfile,
+        outfile: resolvedStepsOutfile,
         // When bundleFinalOutput is true, use ESM for the steps bundle
         // regardless of the final output format. The final esbuild pass
         // converts everything to the target format. Using CJS here causes
@@ -1709,7 +1751,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       });
 
     // 2. Build workflow VM code
-    const tempWorkflowOutfile = `${flowOutfile}.__wf_tmp.js`;
+    const tempWorkflowOutfile = `${resolvedFlowOutfile}.__wf_tmp.js`;
     const workflowsResult = await this.createWorkflowsBundle({
       inputFiles,
       outfile: tempWorkflowOutfile,
@@ -1733,7 +1775,7 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
     }
 
     // 3. Generate combined route file
-    const stepsRelativePath = `./${basename(stepsOutfile).replace(/\\/g, '/')}`;
+    const stepsRelativePath = `./${basename(resolvedStepsOutfile).replace(/\\/g, '/')}`;
     const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
     const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode({
       basePath: this.config.basePath,
@@ -1755,7 +1797,7 @@ const workflowCode = \`${escapedVMCode}\`;
 ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
 
     if (!bundleFinalOutput) {
-      await this.writeGeneratedFile(flowOutfile, combinedFunctionCode);
+      await this.writeGeneratedFile(resolvedFlowOutfile, combinedFunctionCode);
     } else {
       // Bundle the combined code for standalone use
       const bundleStartTime = Date.now();
@@ -1771,11 +1813,11 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
         },
         stdin: {
           contents: combinedFunctionCode,
-          resolveDir: dirname(flowOutfile),
+          resolveDir: dirname(resolvedFlowOutfile),
           sourcefile: 'virtual-entry.js',
           loader: 'js',
         },
-        outfile: flowOutfile,
+        outfile: resolvedFlowOutfile,
         absWorkingDir: this.config.workingDir,
         bundle: true,
         format,
@@ -1810,8 +1852,16 @@ ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntr
       },
     };
 
+    this.recordCompletedBundleArtifacts({
+      stepsPath: resolvedStepsOutfile,
+      workflowsPath: resolvedFlowOutfile,
+    });
+
     // Create a custom bundleFinal for watch mode that uses workflowEntrypoint
     const combinedBundleFinal = async (interimBundleText: string) => {
+      // A failed rebuild must not leave the previous successful bundle marked
+      // as complete.
+      this.completedBundleArtifacts.delete(resolvedFlowOutfile);
       const escaped = interimBundleText.replace(/[\\`$]/g, '\\$&');
       const workflowEntrypointOptionsCode = createWorkflowEntrypointOptionsCode(
         {
@@ -1832,9 +1882,13 @@ const workflowCode = \`${escaped}\`;
 
 ${createWorkflowRouteHandlersCode(`workflowEntrypoint(workflowCode${workflowEntrypointOptionsCode})`)}`;
 
-      const outputDir = dirname(flowOutfile);
+      const outputDir = dirname(resolvedFlowOutfile);
       await mkdir(outputDir, { recursive: true });
-      await this.writeGeneratedFile(flowOutfile, code);
+      await this.writeGeneratedFile(resolvedFlowOutfile, code);
+      this.recordCompletedBundleArtifacts({
+        stepsPath: resolvedStepsOutfile,
+        workflowsPath: resolvedFlowOutfile,
+      });
     };
 
     if (this.config.watch) {
@@ -2325,10 +2379,28 @@ export const OPTIONS = handler;`;
     manifest: WorkflowManifest;
   }): Promise<string | undefined> {
     const buildStart = Date.now();
+    const resolvedWorkflowBundlePath = resolve(
+      this.config.workingDir,
+      workflowBundlePath
+    );
+    const manifestPath = resolve(
+      this.config.workingDir,
+      manifestDir,
+      'manifest.json'
+    );
+    const bundleArtifacts = this.completedBundleArtifacts.get(
+      resolvedWorkflowBundlePath
+    );
+    // One successful bundle write authorizes at most one manifest hook call,
+    // even when manifest creation or the hook itself fails.
+    this.completedBundleArtifacts.delete(resolvedWorkflowBundlePath);
     this.logCreateManifestInfo('Creating manifest...');
 
+    let manifestJson: string;
     try {
-      const workflowGraphs = await extractWorkflowGraphs(workflowBundlePath);
+      const workflowGraphs = await extractWorkflowGraphs(
+        resolvedWorkflowBundlePath
+      );
 
       const steps = this.convertStepsManifest(manifest.steps);
       const workflows = this.convertWorkflowsManifest(
@@ -2343,13 +2415,10 @@ export const OPTIONS = handler;`;
         workflows: sortManifestEntries(workflows),
         classes: sortManifestEntries(classes),
       };
-      const manifestJson = JSON.stringify(output, null, 2);
+      manifestJson = JSON.stringify(output, null, 2);
 
-      await mkdir(manifestDir, { recursive: true });
-      await writeFileIfChanged(
-        join(manifestDir, 'manifest.json'),
-        manifestJson
-      );
+      await mkdir(dirname(manifestPath), { recursive: true });
+      await writeFileIfChanged(manifestPath, manifestJson);
 
       const diagnosticsManifestPath = this.getDiagnosticsManifestPath();
       if (diagnosticsManifestPath) {
@@ -2384,8 +2453,6 @@ export const OPTIONS = handler;`;
         );
       }
       this.resetWorkflowBuildTimer();
-
-      return manifestJson;
     } catch (error) {
       console.warn(
         'Failed to create manifest:',
@@ -2394,6 +2461,38 @@ export const OPTIONS = handler;`;
       this.resetWorkflowBuildTimer();
       return undefined;
     }
+
+    if (bundleArtifacts) {
+      const onAfterBundle = this.config.onAfterBundle;
+      if (onAfterBundle) {
+        const artifacts = Object.freeze([
+          ...bundleArtifacts,
+          Object.freeze({
+            kind: 'manifest',
+            path: manifestPath,
+          }),
+        ]) as WorkflowBundleArtifacts;
+        const result = Object.freeze({
+          buildTarget: this.config.buildTarget,
+          workingDir: resolve(this.config.workingDir),
+          artifacts,
+        });
+        const hookStart = Date.now();
+        this.logCreateManifestInfo('Running onAfterBundle hook...');
+        try {
+          await onAfterBundle(result);
+        } catch (cause) {
+          throw new Error('onAfterBundle hook failed', { cause });
+        } finally {
+          this.logCreateManifestInfo(
+            'Finished onAfterBundle hook',
+            `${Date.now() - hookStart}ms`
+          );
+        }
+      }
+    }
+
+    return manifestJson;
   }
 
   private convertStepsManifest(
