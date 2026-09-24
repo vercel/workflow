@@ -145,7 +145,12 @@ Because `createHook()` alone does not suspend the workflow, awaiting `hook.getCo
 
 ### Registering a hook before a step uses it
 
-A hook's registration is committed alongside everything else the workflow started before it suspended, not ahead of it. When a workflow creates a hook and calls a step without awaiting anything in between, the step can start running before the hook is registered. That only matters when the step hands the token to something that may call `resumeHook()` right away, which throws `HookNotFoundError` until the hook exists. In that case, await `hook.getConflict()` before calling the step:
+A hook's registration is committed alongside everything else the workflow started before it suspended, not ahead of it. When a workflow creates a hook and calls a step without awaiting anything in between, the step can start running before the hook is registered, and it can run even if the registration turns out to conflict. That matters in two cases:
+
+- The step hands the token to something that may call `resumeHook()` right away, which throws `HookNotFoundError` until the hook exists.
+- The hook guards against duplicate runs. A run that only learns of the conflict after calling the step, for example by awaiting the hook and letting `HookConflictError` end the run, may already have started that step.
+
+In either case, await `hook.getConflict()` before calling the step:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";

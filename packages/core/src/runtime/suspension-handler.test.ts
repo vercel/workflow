@@ -2172,6 +2172,44 @@ describe('handleSuspension batched fan-out', () => {
     );
   });
 
+  it('pre-claims nothing beside a hook with a getConflict() awaiter', async () => {
+    // The caller continues the workflow to resolve the awaiter instead of
+    // running anything inline, so the steps are created eagerly (batched
+    // beside the hook create) and none is claimed for this invocation.
+    const eventsCreate = vi.fn().mockImplementation(async (_runId, event) => ({
+      event,
+    }));
+    const createBatch = successfulCreateBatch();
+    const world = createBatchWorld(eventsCreate, createBatch);
+    const pending = stepsAndWait(['s1', 's2']) as Map<string, unknown>;
+    pending.set('hook_awaited', {
+      type: 'hook' as const,
+      correlationId: 'hook_awaited',
+      token: 'order:789',
+      hasConflictAwaiter: true,
+    });
+
+    const result = await handleSuspension({
+      suspension: new WorkflowSuspension(
+        pending as ConstructorParameters<typeof WorkflowSuspension>[0],
+        globalThis
+      ),
+      world,
+      run: slotRun,
+      ownerMessageId: 'msg_owner_1',
+    });
+
+    expect(
+      createBatch.mock.calls[0][1].map(
+        (e: { event: { eventType: string; correlationId: string } }) =>
+          `${e.event.eventType}:${e.event.correlationId}`
+      )
+    ).toEqual(['step_created:s1', 'step_created:s2']);
+    expect(result.inlineClaims.size).toBe(0);
+    expect(result.lazyInlineSteps).toEqual([]);
+    expect(result.hasAwaitedHookCreation).toBe(true);
+  });
+
   it('keeps a lone inline step lazy beside a hook that already exists', async () => {
     // Nothing is being created, so the lazy claim waits on no hook write.
     const eventsCreate = vi.fn();

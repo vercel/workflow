@@ -1219,12 +1219,14 @@ export function workflowEntrypoint(
                   // invocation over-counts by the abandoned pass's hook time,
                   // the same slight over-count either restart has always had.
                   let preStepBlockingMs = 0;
-                  // Snapshot of the accumulator as of the suspension that
-                  // wrote the run's first attr_set (whose hook phase ran
-                  // before its attr writes). When a pre-step setAttributes
-                  // ends the TTFS measurement at the attr write, only hook
-                  // time from BEFORE that point may be subtracted, since later
-                  // hook writes fall outside the measured window.
+                  // Snapshot of the accumulator as of the start of the
+                  // suspension that wrote the run's first attr_set (that
+                  // suspension's hook writes run alongside its attr writes,
+                  // and the hook time it reports is what outlasted them).
+                  // When a pre-step setAttributes ends the TTFS measurement at
+                  // the attr write, only hook time from BEFORE that point may
+                  // be subtracted, since later hook writes fall outside the
+                  // measured window.
                   let preStepBlockingBeforeAttrMs: number | undefined;
 
                   // Turbo mode fast-paths the first delivery of the first
@@ -3717,13 +3719,19 @@ export function workflowEntrypoint(
                         if (retentionDecision?.retain === false) {
                           retainedSession = null;
                         }
-                        preStepBlockingMs += suspensionResult.hookCreationMs;
+                        // Snapshot before adding this suspension's hook time:
+                        // its hook writes ran alongside its attr writes, and
+                        // `hookCreationMs` only counts the stretch after every
+                        // other write (the attr write included) had settled,
+                        // so none of it precedes the attr commit that ends the
+                        // measured window.
                         if (
                           suspensionResult.hasAttributeEvents &&
                           preStepBlockingBeforeAttrMs === undefined
                         ) {
                           preStepBlockingBeforeAttrMs = preStepBlockingMs;
                         }
+                        preStepBlockingMs += suspensionResult.hookCreationMs;
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
                           suspensionMs: Date.now() - suspensionStart,
@@ -3866,7 +3874,11 @@ export function workflowEntrypoint(
                           // for the lease's length, so replay here instead:
                           // the next pass observes the conflict and
                           // re-executes them through owned recovery, as the
-                          // unserializable-step path below does.
+                          // unserializable-step path below does. (A workflow
+                          // that ends over the conflict, say an uncaught
+                          // HookConflictError, finishes before owned recovery
+                          // runs them, so such a step stays started with its
+                          // body never run.)
                           if (
                             [...suspensionResult.inlineClaims.values()].some(
                               (claim) => claim.owned

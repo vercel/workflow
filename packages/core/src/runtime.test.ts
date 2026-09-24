@@ -3839,22 +3839,21 @@ describe('workflowEntrypoint hook conflict beside a pre-claimed inline step', ()
 
   const conflictBodySpy = vi.fn(async () => 'ran');
   registerStepFunction('conflictStep', conflictBodySpy);
+  const eagerBodySpy = vi.fn(async () => 'eager');
+  registerStepFunction('conflictEagerStep', eagerBodySpy);
 
-  // With a retained VM the run continues over the conflict; without one it
-  // must still replay here rather than hand the run to a fresh delivery.
-  it.each([
-    { retainedVm: '1' },
-    { retainedVm: '0' },
-  ])('runs the step it claimed alongside the conflicting hook in this invocation (WORKFLOW_RETAINED_VM=$retainedVm)', async ({
-    retainedVm,
-  }) => {
-    vi.stubEnv('WORKFLOW_RETAINED_VM', retainedVm);
-    // The suspension creates a hook and starts a lone inline step. The step's
-    // claim is folded into a batch beside the hook create, and the create
-    // comes back as a conflict. The claimed step is owned by this delivery,
-    // so the run must go on here and execute it through owned recovery: a
-    // fresh delivery would find a live lease and park behind a backstop wake.
-    const runId = `wrun_conflict_preclaimed_${retainedVm}`;
+  /**
+   * A World whose every `hook_created` comes back as a `hook_conflict`, with
+   * a `createBatch` that can lose the pre-claimed pairs (409) and hold the
+   * plain chunks for a while.
+   */
+  async function setupConflictRun(
+    runId: string,
+    {
+      pairsLost = false,
+      plainBatchDelayMs = 0,
+    }: { pairsLost?: boolean; plainBatchDelayMs?: number } = {}
+  ) {
     const workflowRun: WorkflowRun = {
       runId,
       workflowName: 'workflow',
@@ -3921,33 +3920,53 @@ describe('workflowEntrypoint hook conflict beside a pre-claimed inline step', ()
           }),
         };
       }
+      if (data.eventType === 'step_created') {
+        stepInputs.set(data.correlationId, data.eventData?.input);
+      }
       if (data.eventType === 'step_started') {
         return {
           event: recordEvent(data),
           step: startedStep(data.correlationId, data.eventData?.stepName),
         };
       }
+      if (data.eventType === 'run_completed') workflowRun.status = 'completed';
+      if (data.eventType === 'run_failed') workflowRun.status = 'failed';
       return { event: recordEvent(data) };
     });
-    const createBatch = vi.fn(async (_runId: string, events: any[]) => ({
-      results: events.map(({ event }) => {
-        if (event.eventType === 'step_created') {
-          stepInputs.set(event.correlationId, event.eventData?.input);
-        }
-        return {
-          status: 200,
-          event: recordEvent(event),
-          ...(event.eventType === 'step_started'
-            ? {
-                step: startedStep(
-                  event.correlationId,
-                  event.eventData?.stepName
-                ),
-              }
-            : {}),
-        };
-      }),
-    }));
+    const createBatch = vi.fn(async (_runId: string, events: any[]) => {
+      const isPairChunk = events.some(
+        ({ event }) => event.eventType === 'step_started'
+      );
+      if (!isPairChunk && plainBatchDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, plainBatchDelayMs));
+      }
+      return {
+        results: events.map(({ event }) => {
+          if (isPairChunk && pairsLost) {
+            return {
+              status: 409,
+              error: 'conflict',
+              message: 'step already exists',
+            };
+          }
+          if (event.eventType === 'step_created') {
+            stepInputs.set(event.correlationId, event.eventData?.input);
+          }
+          return {
+            status: 200,
+            event: recordEvent(event),
+            ...(event.eventType === 'step_started'
+              ? {
+                  step: startedStep(
+                    event.correlationId,
+                    event.eventData?.stepName
+                  ),
+                }
+              : {}),
+          };
+        }),
+      };
+    });
     const queuedMessages: any[] = [];
     let handler!: (message: unknown, metadata: unknown) => Promise<unknown>;
     setWorld({
@@ -3973,25 +3992,51 @@ describe('workflowEntrypoint hook conflict beside a pre-claimed inline step', ()
       getEncryptionKeyForRun: vi.fn(async () => undefined),
     } as any);
 
-    const entry = workflowEntrypoint(`
-      const conflictStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("conflictStep");
-      const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
-      async function workflow() {
-        const hook = createHook({ token: 'taken-token' });
-        const result = await conflictStep();
-        return result + ':' + typeof hook.token;
-      };globalThis.__private_workflows = new Map();
-      globalThis.__private_workflows.set("workflow", workflow);`);
-    await entry(new Request('https://example.test'));
-    await handler(
-      { runId, requestedAt: new Date() },
-      {
-        requestId: 'req_1',
-        attempt: 1,
-        queueName: '__wkf_workflow_workflow',
-        messageId: 'msg_flow_1',
-      }
-    );
+    const invoke = async (workflowBody: string) => {
+      const entry = workflowEntrypoint(`
+        const conflictStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("conflictStep");
+        const conflictEagerStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("conflictEagerStep");
+        const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+        async function workflow() {
+          ${workflowBody}
+        };globalThis.__private_workflows = new Map();
+        globalThis.__private_workflows.set("workflow", workflow);`);
+      await entry(new Request('https://example.test'));
+      return handler(
+        { runId, requestedAt: new Date() },
+        {
+          requestId: 'req_1',
+          attempt: 1,
+          queueName: '__wkf_workflow_workflow',
+          messageId: 'msg_flow_1',
+        }
+      );
+    };
+
+    return { durableEvents, createBatch, queuedMessages, invoke };
+  }
+
+  // With a retained VM the run continues over the conflict; without one it
+  // must still replay here rather than hand the run to a fresh delivery.
+  it.each([
+    { retainedVm: '1' },
+    { retainedVm: '0' },
+  ])('runs the step it claimed alongside the conflicting hook in this invocation (WORKFLOW_RETAINED_VM=$retainedVm)', async ({
+    retainedVm,
+  }) => {
+    vi.stubEnv('WORKFLOW_RETAINED_VM', retainedVm);
+    // The suspension creates a hook and starts a lone inline step. The step's
+    // claim is folded into a batch beside the hook create, and the create
+    // comes back as a conflict. The claimed step is owned by this delivery,
+    // so the run must go on here and execute it through owned recovery: a
+    // fresh delivery would find a live lease and park behind a backstop wake.
+    const { durableEvents, createBatch, queuedMessages, invoke } =
+      await setupConflictRun(`wrun_conflict_preclaimed_${retainedVm}`);
+
+    await invoke(`
+      const hook = createHook({ token: 'taken-token' });
+      const result = await conflictStep();
+      return result + ':' + typeof hook.token;`);
 
     // The claim rode the batch beside the hook create.
     expect(
@@ -4003,5 +4048,69 @@ describe('workflowEntrypoint hook conflict beside a pre-claimed inline step', ()
     expect(durableEvents.map((e) => e.eventType)).toContain('step_completed');
     expect(durableEvents.map((e) => e.eventType)).toContain('run_completed');
     expect(queuedMessages).toEqual([]);
+  });
+
+  it('leaves a claimed step unrun when the run ends over the conflict', async () => {
+    vi.stubEnv('WORKFLOW_RETAINED_VM', '0');
+    // The workflow awaits the hook, so the conflict rejects with
+    // HookConflictError and fails the run on the replay that observes it,
+    // before owned recovery gets to the step claimed beside the hook create.
+    // The claim stays behind as a started step whose body never ran.
+    const { durableEvents, invoke } = await setupConflictRun(
+      'wrun_conflict_ends_run'
+    );
+
+    await invoke(`
+      const hook = createHook({ token: 'taken-token' });
+      const pending = conflictStep();
+      await hook;
+      return await pending;`);
+
+    const types = durableEvents.map((e) => e.eventType);
+    expect(types).toContain('step_started');
+    expect(types).toContain('run_failed');
+    expect(types).not.toContain('step_completed');
+    expect(conflictBodySpy).not.toHaveBeenCalled();
+  });
+
+  it('joins the batch and hands the run off when the pair lost its claim', async () => {
+    vi.stubEnv('WORKFLOW_RETAINED_VM', '0');
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '1');
+    // The pre-claimed pair loses to a concurrent writer, so nothing here is
+    // owned by this delivery and the run goes back to the queue. The eager
+    // steps' chunk is still in flight when the conflict comes back; its
+    // commit and step-message publishes must land before the hand-off.
+    const { createBatch, queuedMessages, invoke } = await setupConflictRun(
+      'wrun_conflict_pair_lost',
+      { pairsLost: true, plainBatchDelayMs: 50 }
+    );
+
+    const result = await invoke(`
+      const hook = createHook({ token: 'taken-token' });
+      const results = await Promise.all([
+        conflictStep(),
+        conflictEagerStep(),
+        conflictEagerStep(),
+      ]);
+      return results.join(',') + ':' + typeof hook.token;`);
+
+    expect(
+      createBatch.mock.calls.map(([, events]) =>
+        events.map(({ event }: any) => event.eventType)
+      )
+    ).toEqual([
+      ['step_created', 'step_started'],
+      ['step_created', 'step_created'],
+    ]);
+    // A fresh replay over the conflict, not an in-process one.
+    expect(result).toEqual({ timeoutSeconds: 0 });
+    expect(conflictBodySpy).not.toHaveBeenCalled();
+    // The eager steps' messages went out (off their own chunk's commit)
+    // before the invocation handed the run back.
+    expect(
+      queuedMessages
+        .filter((message) => message.stepId !== undefined)
+        .map((message) => message.stepName)
+    ).toEqual(['conflictEagerStep', 'conflictEagerStep']);
   });
 });

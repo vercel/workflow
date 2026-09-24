@@ -594,10 +594,10 @@ async function dispatchPendingOps(params: {
   };
   // Token groups run in parallel with every other op, forced creations
   // included. A forced creation publishes its victim's wake before its group's
-  // next write, but nothing else waits for it, so a crash before the wake can leave another row as the log's
-  // last and hide the owed wake from the replay's `forcedCreationOwingWake`.
-  // Making that recovery independent of the log's tail is tracked in
-  // vercel/workflow#4393.
+  // next write, but nothing else waits for it, so a crash before the wake can
+  // leave another row as the log's last and hide the owed wake from the
+  // replay's `forcedCreationOwingWake`. Making that recovery independent of
+  // the log's tail is tracked in vercel/workflow#4393.
   for (const group of hookOpsByToken.values()) {
     opsPromises.push(runHookGroup(group));
   }
