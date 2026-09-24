@@ -586,6 +586,29 @@ function shouldRetryWithoutEventCursor(
 }
 
 /**
+ * How replay reads the event log. Replay recomputes every step's arguments by
+ * re-running workflow code and never reads the recorded ones (a step reads its
+ * input from the step entity), so replay reads let the World leave them out.
+ * For a workflow passing growing state into its steps, they are the part of
+ * the log that grows quadratically.
+ */
+export const REPLAY_RESOLVE_DATA = 'skip-step-inputs' as const;
+
+/**
+ * Params for a write whose inline delta (`sinceCursor`) is folded into a
+ * replay log: that delta is read the way replay reads the log. The created
+ * event and `step` entity are unaffected, so a write that asks for no delta
+ * is left exactly as it was.
+ */
+export function withReplayDelta(
+  params: CreateEventParams | undefined
+): CreateEventParams | undefined {
+  return params?.sinceCursor === undefined
+    ? params
+    : { resolveData: REPLAY_RESOLVE_DATA, ...params };
+}
+
+/**
  * Loads workflow run events by iterating through all pages of paginated
  * results. Events are returned in chronological (ascending) order for
  * deterministic workflow replay.
@@ -634,9 +657,7 @@ export async function loadWorkflowRunEvents(
             sortOrder: 'asc',
             cursor: requestedCursor ?? undefined,
           },
-          // Replay recomputes step arguments and never reads the recorded
-          // ones; steps read their input from the step entity.
-          resolveData: 'skip-step-inputs',
+          resolveData: REPLAY_RESOLVE_DATA,
         });
       } catch (error) {
         if (

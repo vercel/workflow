@@ -1903,18 +1903,26 @@ export function resetSkipStepInputsSupportForTests(): void {
   skipStepInputsSupport.unsupportedBackends.clear();
 }
 
-function rejectsSkipStepInputs(error: unknown): boolean {
+/**
+ * The shape of an older backend's rejection of the value: a 400 whose body is
+ * `{ error: 'validation-error', details: [{ path: ['remoteRefBehavior'], … }] }`
+ * (surfaced as `code`). Other validation failures share the code, which is why
+ * a backend is only remembered once the `resolve` retry succeeds.
+ */
+function mayRejectSkipStepInputs(error: unknown): boolean {
   return (
     error instanceof WorkflowWorldError &&
     error.status === 400 &&
-    error.message.includes('remoteRefBehavior')
+    error.code === 'validation-error'
   );
 }
 
 /**
  * Run a list request, degrading `skip-step-inputs` to `resolve` against a
  * backend that does not accept it. The 400 arrives before any frame, so
- * nothing has reached `replayEventObserver` when the request is retried.
+ * nothing has reached `replayEventObserver` when the request is retried. A
+ * 400 that was about something else fails the `resolve` retry the same way,
+ * and that error is what the caller sees.
  */
 async function consumeListWithSkipFallback(
   baseUrl: string,
@@ -1938,9 +1946,17 @@ async function consumeListWithSkipFallback(
         replayEventObserver
       );
     } catch (error) {
-      if (!rejectsSkipStepInputs(error)) throw error;
-      skipStepInputsSupport.unsupportedBackends.add(baseUrl);
+      if (!mayRejectSkipStepInputs(error)) throw error;
     }
+    const result = await consumeListFrameStream(
+      buildUrl('resolve'),
+      headers,
+      config,
+      opName,
+      replayEventObserver
+    );
+    skipStepInputsSupport.unsupportedBackends.add(baseUrl);
+    return result;
   }
   return consumeListFrameStream(
     buildUrl(requested === 'skip-step-inputs' ? 'resolve' : requested),

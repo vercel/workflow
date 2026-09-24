@@ -2271,10 +2271,18 @@ describe("resolveData 'skip-step-inputs'", () => {
       })
       .reply(
         400,
+        // Verbatim what workflow-server main (cf26719) answers.
         {
-          error: 'validation_error',
-          message:
-            "Invalid query: remoteRefBehavior: Invalid enum value. Expected 'resolve' | 'lazy'",
+          success: false,
+          error: 'validation-error',
+          details: [
+            {
+              code: 'invalid_value',
+              values: ['resolve', 'lazy'],
+              path: ['remoteRefBehavior'],
+              message: 'Invalid option: expected one of "resolve"|"lazy"',
+            },
+          ],
         },
         { headers: { 'content-type': 'application/json' } }
       );
@@ -2305,27 +2313,49 @@ describe("resolveData 'skip-step-inputs'", () => {
     agent.assertNoPendingInterceptors();
   });
 
-  it('does not swallow an unrelated 400', async () => {
+  it('surfaces a 400 that was about something else, without remembering the backend', async () => {
     const agent = mockAgent();
-    agent
-      .get(ORIGIN)
+    const pool = agent.get(ORIGIN);
+    const badCursor = {
+      success: false,
+      error: 'validation-error',
+      details: [{ path: ['cursor'], message: 'Invalid cursor' }],
+    };
+    for (const remoteRefBehavior of ['skip-step-inputs', 'resolve']) {
+      pool
+        .intercept({
+          path: '/api/v4/runs/wrun_1/events',
+          method: 'GET',
+          query: { returnAll: 'true', remoteRefBehavior },
+        })
+        .reply(400, badCursor, {
+          headers: { 'content-type': 'application/json' },
+        });
+    }
+    // Not remembered: the next read still asks for skip-step-inputs.
+    pool
       .intercept({
         path: '/api/v4/runs/wrun_1/events',
         method: 'GET',
         query: { returnAll: 'true', remoteRefBehavior: 'skip-step-inputs' },
       })
-      .reply(
-        400,
-        { error: 'validation_error', message: 'Invalid query: cursor' },
-        { headers: { 'content-type': 'application/json' } }
-      );
+      .reply(200, listBody, {
+        headers: { 'content-type': V4_FRAME_CONTENT_TYPE },
+      });
+    const config = { token: 'test-token', dispatcher: agent };
 
     await expect(
       getWorkflowRunEvents(
         { runId: 'wrun_1', resolveData: 'skip-step-inputs' },
-        { token: 'test-token', dispatcher: agent }
+        config
       )
-    ).rejects.toThrow('Invalid query: cursor');
+    ).rejects.toMatchObject({ status: 400, code: 'validation-error' });
+    const next = await getWorkflowRunEvents(
+      { runId: 'wrun_1', resolveData: 'skip-step-inputs' },
+      config
+    );
+
+    expect(next.data).toHaveLength(1);
     agent.assertNoPendingInterceptors();
   });
 
