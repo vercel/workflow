@@ -405,6 +405,23 @@
         }
       ],
       "setup": "pnpm exec workflow-world-setup && node --input-type=module -e 'import { createRequire } from \"node:module\"; import { ensureTenantPartitions } from \"@evelandhq/workflow-world\"; const { Pool } = createRequire(import.meta.resolve(\"@evelandhq/workflow-world\"))(\"pg\"); const pool = new Pool({ connectionString: process.env.WORKFLOW_WORLD_URL }); try { await ensureTenantPartitions(pool, process.env.WORKFLOW_WORLD_TENANT_ID); } finally { await pool.end(); }'"
+    },
+    {
+      "id": "easybits",
+      "type": "community",
+      "package": "@easybits.cloud/eve-world",
+      "name": "EasyBits",
+      "description": "libSQL/sqld World hosted on EasyBits DB (multi-tenant namespaces); a port of world-postgres with a lease-based delivery queue in a table. Made for self-hosted eve servers running in EasyBits boxes, where the database URL is provisioned without credentials.",
+      "repository": "https://github.com/blissito/easybits/tree/main/packages/eve-world",
+      "docs": "https://www.easybits.cloud/en/docs/eve.md",
+      "features": [],
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@easybits.cloud/eve-world",
+        "WORKFLOW_LIBSQL_URL": "file:workflow.db"
+      },
+      "services": [],
+      "requiresCredentials": true,
+      "credentialsNote": "Hosted mode needs an EasyBits box (the DB URL is injected by the platform). Outside EasyBits, point WORKFLOW_LIBSQL_URL (+ WORKFLOW_LIBSQL_AUTH_TOKEN) at any libSQL/Turso database."
     }
   ]
 }
