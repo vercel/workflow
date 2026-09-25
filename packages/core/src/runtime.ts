@@ -967,6 +967,11 @@ export function workflowEntrypoint(
                   // than when the wait's own timer would have fired.
                   let eventLogFromInlineDelta = false;
                   let loopIteration = 0;
+                  // Hooks whose force-claim victim wake this invocation has
+                  // already sent (its own forced creations, and the replay's
+                  // republishes), so each suspension of the loop below does
+                  // not send them again. See `forcedCreationsOwingWake`.
+                  const forceClaimVictimWakes = new Set<string>();
                   const replayRecoveryReporter = replayDivergence
                     ? new ReplayRecoveryReporter(replayDivergence.count)
                     : ReplayRecoveryReporter.inert();
@@ -3544,6 +3549,7 @@ export function workflowEntrypoint(
                             eventLog,
                             runReadyBarrier,
                             replayRecoveryReporter,
+                            forceClaimVictimWakes,
                             // Resilient step dispatch: lets eligible newly
                             // created steps publish their step-execution
                             // message (carrying `stepInput`) in parallel with

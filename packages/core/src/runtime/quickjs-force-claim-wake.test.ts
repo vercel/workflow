@@ -4,11 +4,11 @@
  *
  * A forced `hook_created` is followed by a wake of the run it took the token
  * from. If the invocation dies between the two, the creation is in the log and
- * the victim was never told. On the next invocation the row is still the last
- * event this run wrote, so the entrypoint republishes the wake — before the VM
- * runs and before anything is written — under the hook's idempotency key.
- * `forcedCreationOwingWake` is the shared rule; this test drives the QuickJS
- * entrypoint through it from a committed log, with the VM mocked.
+ * the victim was never told. Every later invocation inside the republish
+ * window republishes the wake under the hook's idempotency key, whatever the
+ * run wrote after the creation. `forcedCreationsOwingWake` is the shared rule;
+ * this test drives the QuickJS entrypoint through it from a committed log,
+ * with the VM mocked.
  */
 import {
   type CreateEventRequest,
@@ -19,6 +19,7 @@ import {
   type World,
 } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
+import { FORCE_CLAIM_WAKE_REPUBLISH_WINDOW_MS } from './hook-wake.js';
 import { setWorld } from './world.js';
 
 vi.mock('@vercel/functions', () => ({ waitUntil: vi.fn() }));
@@ -49,19 +50,20 @@ const event = (
   slot: number,
   eventType: Event['eventType'],
   eventData?: unknown,
-  correlationId?: string
+  correlationId?: string,
+  createdAt: Date = new Date()
 ): Event =>
   ({
     eventType,
     eventId: slotToEventId(slot),
     runId,
     correlationId,
-    createdAt: startedAt,
+    createdAt,
     specVersion: SPEC_VERSION_CURRENT,
     eventData,
   }) as Event;
 
-const forcedCreation = (slot: number) =>
+const forcedCreation = (slot: number, createdAt: Date = new Date()) =>
   event(
     slot,
     'hook_created',
@@ -76,7 +78,8 @@ const forcedCreation = (slot: number) =>
         runSpecVersion: SPEC_VERSION_CURRENT,
       },
     },
-    'hook_claimer'
+    'hook_claimer',
+    createdAt
   );
 
 /** Replay the entrypoint over a committed log; the VM suspends with nothing pending. */
@@ -112,7 +115,7 @@ async function replayWith(events: Event[]) {
 }
 
 describe('QuickJS force-claim victim wake on replay', () => {
-  it('republishes the wake when the forced creation is the last event this run wrote', async () => {
+  it('republishes the wake for a recent forced creation', async () => {
     const queue = await replayWith([
       event(1, 'run_created', { workflowName: 'workflow', input: [] }),
       event(2, 'run_started'),
@@ -128,7 +131,7 @@ describe('QuickJS force-claim victim wake on replay', () => {
     });
   });
 
-  it("still republishes past a delivery's hook_received, which is not this run's progress", async () => {
+  it("republishes past a delivery's hook_received", async () => {
     const queue = await replayWith([
       event(1, 'run_created', { workflowName: 'workflow', input: [] }),
       event(2, 'run_started'),
@@ -143,20 +146,138 @@ describe('QuickJS force-claim victim wake on replay', () => {
     expect(queue).toHaveBeenCalledTimes(1);
   });
 
-  it('stops once this run has written anything after the creation', async () => {
+  it("repays the wake even when the run's own step and wait rows landed after the forced creation", async () => {
+    // vercel/workflow#4393: rows this run wrote after the creation (a step or
+    // wait terminal from another invocation, or a row written alongside the
+    // creation) do not say the wake was published.
     const queue = await replayWith([
       event(1, 'run_created', { workflowName: 'workflow', input: [] }),
       event(2, 'run_started'),
       forcedCreation(3),
       event(4, 'step_created', { stepName: 'after', input: [] }, 'step_after'),
+      event(5, 'step_completed', { result: [] }, 'step_after'),
+      event(6, 'wait_completed', {}, 'wait_1'),
+    ]);
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(queue.mock.calls[0][2]).toMatchObject({
+      idempotencyKey: 'hook-force-claim-hook_claimer',
+    });
+  });
+
+  it("repays the victim's wake when a later claimer took the token from this run (the chain)", async () => {
+    const queue = await replayWith([
+      event(1, 'run_created', { workflowName: 'workflow', input: [] }),
+      event(2, 'run_started'),
+      forcedCreation(3),
+      event(
+        4,
+        'hook_disposed',
+        { forceClaimedBy: { runId: 'wrun_third', hookId: 'hook_third' } },
+        'hook_claimer'
+      ),
+    ]);
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(queue.mock.calls[0][1]).toEqual({ runId: 'wrun_victim' });
+  });
+
+  it('stops republishing once the forced creation is outside the window', async () => {
+    const queue = await replayWith([
+      event(1, 'run_created', { workflowName: 'workflow', input: [] }),
+      event(2, 'run_started'),
+      forcedCreation(
+        3,
+        new Date(Date.now() - FORCE_CLAIM_WAKE_REPUBLISH_WINDOW_MS - 1_000)
+      ),
     ]);
     expect(queue).not.toHaveBeenCalled();
   });
 
+  it('creates forced hooks on different tokens concurrently', async () => {
+    // The first forced create is held until the second has been issued, so
+    // creating one token at a time would deadlock here.
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const wakes: string[] = [];
+    const queue = vi.fn(
+      async (
+        _queueName: string,
+        message: { runId: string },
+        opts?: { idempotencyKey?: string }
+      ) => {
+        if (message.runId !== runId) {
+          wakes.push(`${message.runId}:${opts?.idempotencyKey}`);
+        }
+        return { messageId: 'msg' };
+      }
+    );
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      capabilities: { hookForceClaim: true },
+      events: {
+        list: vi.fn(async () => ({ data: [], cursor: null, hasMore: false })),
+        create: vi.fn(async (_runId: string, request: CreateEventRequest) => {
+          const correlationId = request.correlationId as string;
+          if (correlationId === 'hook_forced_a') {
+            await firstHeld;
+          } else if (correlationId === 'hook_forced_b') {
+            releaseFirst();
+          }
+          const letter = correlationId.slice(-1);
+          return {
+            event: { ...request, runId, eventId: `evnt_${correlationId}` },
+            hook: {
+              hookId: correlationId,
+              claimedFrom: {
+                runId: `wrun_victim_${letter}`,
+                hookId: `hook_victim_${letter}`,
+                workflowName: 'victim-workflow',
+              },
+            },
+          };
+        }),
+      },
+      runs: { get: vi.fn(async () => workflowRun) },
+      queue,
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+    } as unknown as World);
+    startQuickJSWorkflow.mockResolvedValue({
+      result: {
+        suspended: {
+          pendingOperations: ['a', 'b'].map((letter) => ({
+            type: 'hook',
+            correlationId: `hook_forced_${letter}`,
+            token: `forced-token-${letter}`,
+            isWebhook: false,
+            force: true,
+            hasCreatedEvent: false,
+          })),
+        },
+      },
+      continueWithEvents: vi.fn(),
+      dispose: vi.fn(),
+    });
+
+    const { runWorkflowWithQuickJS } = await import('./quickjs-entrypoint.js');
+    await runWorkflowWithQuickJS({
+      workflowCode: '// not evaluated: the VM is mocked',
+      workflowName: 'workflow',
+      workflowRun,
+      preloadedEvents: [],
+    });
+
+    // Each victim is still woken once, under its own claimer hook's key.
+    expect(wakes.sort()).toEqual([
+      'wrun_victim_a:hook-force-claim-hook_forced_a',
+      'wrun_victim_b:hook-force-claim-hook_forced_b',
+    ]);
+  });
+
   it("does not hold the other writes for a forced creation's victim wake", async () => {
     // The wake still goes out, but the sibling hook and the wait are written
-    // while it is in flight rather than after it (vercel/workflow#4393 tracks
-    // the recovery gap that leaves after a crash).
+    // while it is in flight rather than after it. A crash before it goes out
+    // is repaid by the next replay from the forced creation itself.
     const order: string[] = [];
     const queue = vi.fn(
       async (_queueName: string, message: { runId: string }) => {

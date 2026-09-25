@@ -67,7 +67,7 @@ import {
 } from './helpers.js';
 import {
   publishForceClaimVictimWake,
-  republishOwedForceClaimVictimWake,
+  republishOwedForceClaimVictimWakes,
 } from './hook-wake.js';
 import {
   dispatchRunCompletedHooks,
@@ -594,10 +594,10 @@ async function dispatchPendingOps(params: {
   };
   // Token groups run in parallel with every other op, forced creations
   // included. A forced creation publishes its victim's wake before its group's
-  // next write, but nothing else waits for it, so a crash before the wake can
-  // leave another row as the log's last and hide the owed wake from the
-  // replay's `forcedCreationOwingWake`. Making that recovery independent of
-  // the log's tail is tracked in vercel/workflow#4393.
+  // next write, but nothing else waits for it, and nothing needs to: a crash
+  // before the wake is repaid by the next replay from the forced
+  // `hook_created` itself, which `forcedCreationsOwingWake` finds wherever it
+  // sits in the log, so no row written after it can hide the debt.
   for (const group of hookOpsByToken.values()) {
     opsPromises.push(runHookGroup(group));
   }
@@ -1129,12 +1129,13 @@ export async function runWorkflowWithQuickJS(params: {
   // handed back on a write that the VM has not been given yet. Every write
   // made from this view goes through `createEvent` below so it names the
   // position it was decided against and its response is queued here.
-  // Same durability contract as the node:vm suspension handler: a forced
-  // hook creation that is still the last event this run wrote owes its
-  // victim a wake, because the invocation that created it died before
-  // publishing one. Repaid here, on the log as loaded, before this
-  // invocation writes anything.
-  await republishOwedForceClaimVictimWake(world, runId, events);
+  // Same durability contract as the node:vm suspension handler: every
+  // recent forced hook creation in the log may still owe its victim a wake,
+  // because the invocation that created it may have died before publishing
+  // one, so it is republished under the hook's idempotency key (see
+  // `forcedCreationsOwingWake`). Once per invocation, on the log as loaded;
+  // the forced creations this invocation makes publish their own.
+  await republishOwedForceClaimVictimWakes(world, runId, events);
 
   const logView = new QuickJSLogView(events, loadedCursor);
   const createEvent: EventCreator = async (data, eventParams) => {
