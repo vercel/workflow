@@ -63,6 +63,12 @@ Choose your framework in the
 > The `workflow` package includes its full documentation, so coding agents can
 > read version-matched guides locally from `node_modules/workflow/docs`.
 
+For centralized completion and failure reporting, use
+[`registerLifecycleHooks`](https://workflow-sdk.dev/v5/docs/observability/lifecycle-hooks)
+from `workflow/api` at host startup in a supported framework. Registration
+inside workflow or step functions throws; it must run before the workflow
+route records a terminal transition.
+
 ## Run anywhere
 
 Local development uses the bundled backend with no configuration. Deploy to
