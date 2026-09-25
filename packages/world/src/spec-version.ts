@@ -189,6 +189,49 @@ export const SPEC_VERSION_MAX_SUPPORTED =
   SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM as SpecVersion;
 
 /**
+ * Spec versions whose only effect is to switch on capabilities of a run's
+ * reader and writer, which is the runtime executing it. A backend may raise
+ * a running run across these (to its executor's attested version, see
+ * `executorSpecVersion` on `run_started`), because nothing already in the
+ * run's log changes meaning.
+ *
+ * Every other version is STRUCTURAL: it changes how the log is laid out or
+ * read (event sourcing itself, slot-numbered event ids, sealed-log
+ * sequencing), so a run may only be moved across it before any event past
+ * `run_created` exists. That includes versions not listed here yet: an
+ * unclassified future version is structural by default, and adding a
+ * version constant without classifying it fails this package's tests.
+ */
+export const CAPABILITY_ONLY_SPEC_VERSIONS: ReadonlySet<number> = new Set([
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+]);
+
+/** The structural spec versions; see {@link CAPABILITY_ONLY_SPEC_VERSIONS}. */
+export const STRUCTURAL_SPEC_VERSIONS: ReadonlySet<number> = new Set([
+  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+  SPEC_VERSION_SUPPORTS_SEALED_LOG,
+]);
+
+/**
+ * Whether moving a run from spec version `from` up to `to` crosses a
+ * structural version, and so is only allowed while the run's log holds
+ * nothing but `run_created`. See {@link CAPABILITY_ONLY_SPEC_VERSIONS}.
+ */
+export function crossesStructuralSpecVersion(
+  from: number,
+  to: number
+): boolean {
+  for (let v = from + 1; v <= to; v++) {
+    if (!CAPABILITY_ONLY_SPEC_VERSIONS.has(v)) return true;
+  }
+  return false;
+}
+
+/**
  * Check if a spec version is legacy (<= SPEC_VERSION_LEGACY or undefined).
  * Legacy runs require different handling - they use direct entity mutation
  * instead of the event-sourced model.

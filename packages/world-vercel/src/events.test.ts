@@ -236,13 +236,6 @@ describe('createWorkflowRunEvent with v1Compat', () => {
 });
 
 /**
- * A replay-context create names the position its decisions were made at:
- * `eventCount`, the highest event slot the runtime had loaded. Locks in that it
- * reaches the v4 frame meta under the wire name the backend reads, and that it
- * is omitted when the caller has no loaded snapshot — an unsent field leaves
- * the backend with no position to report a skipped span against.
- */
-/**
  * `run_started` attests the spec version this SDK runs, separately from the
  * `specVersion` it repeats from the queue message (the stamp of whoever called
  * `start()`, possibly an older deployment). The backend raises a run stamped
@@ -309,6 +302,13 @@ describe('createWorkflowRunEvent executorSpecVersion', () => {
   });
 });
 
+/**
+ * A replay-context create names the position its decisions were made at:
+ * `eventCount`, the highest event slot the runtime had loaded. Locks in that it
+ * reaches the v4 frame meta under the wire name the backend reads, and that it
+ * is omitted when the caller has no loaded snapshot — an unsent field leaves
+ * the backend with no position to report a skipped span against.
+ */
 describe('createWorkflowRunEvent slot snapshot wire fields', () => {
   it('omits maxSlot from the v4 frame meta when no snapshot is provided', async () => {
     const agent = mockAgent();
