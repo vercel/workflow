@@ -258,6 +258,9 @@ export class RetainedRunner {
     { event: Event; digest: string; attempt: number }
   >();
   private recoveryWakeAt = 0;
+  /** Executions whose remote delivery failed without evidence the body ran:
+   * supersede them at this time instead of waiting for the attempt timeout. */
+  private undelivered = new Map<string, number>();
 
   private get queuedSteps() {
     const value = this.runState?.executionContext?.stepExecution;
@@ -1454,12 +1457,17 @@ export class RetainedRunner {
     const policy = this.queuedSteps!;
     for (const step of this.steps.values()) {
       const start = this.stepStarts.get(step.stepId);
+      const undeliveredAt = start
+        ? this.undelivered.get(start.event.eventId)
+        : undefined;
       if (
         step.status !== 'running' ||
         !start ||
-        +start.event.createdAt + policy.attemptTimeoutMs > Date.now()
+        (+start.event.createdAt + policy.attemptTimeoutMs > Date.now() &&
+          !(undeliveredAt !== undefined && undeliveredAt <= Date.now()))
       )
         continue;
+      this.undelivered.delete(start.event.eventId);
       const maxRetries =
         getStepFunction(step.stepName)?.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
       const exhausted = start.attempt >= maxRetries + 1;
@@ -1583,8 +1591,18 @@ export class RetainedRunner {
                 )
                   throw cause;
                 // No outcome is not evidence of a failed body. Keep the
-                // admitted attempt running; the existing timeout will durably
-                // supersede it if its result never arrives.
+                // admitted attempt running until recovery supersedes it. A
+                // platform refusal before any worker received the invocation
+                // (e.g. INTERNAL_FUNCTION_INVOCATION_FAILED) retries soon as a
+                // new attempt; other unknown outcomes wait for the timeout. A
+                // late result from the superseded attempt is ignored.
+                const status = (cause as { status?: unknown })?.status;
+                const refused = status === 500 || status === 502;
+                const retryAt = refused
+                  ? Date.now() + 1000
+                  : message.input.deadline;
+                if (refused)
+                  this.undelivered.set(message.input.executionId, retryAt);
                 this.observe('step_delivery', 'end', randomUUID(), {
                   parentSpanId,
                   stepId: message.stepId,
@@ -1592,12 +1610,10 @@ export class RetainedRunner {
                   outcome: 'uncertain',
                   status: 'error',
                   errorCode: (cause as { code?: unknown })?.code,
-                  httpStatus: (cause as { status?: unknown })?.status,
-                  // The attempt timeout supersedes this execution if no
-                  // result arrives by then.
-                  recoveryAt: message.input.deadline,
+                  httpStatus: status,
+                  recoveryAt: retryAt,
                 });
-                await this.armStepRecovery(message.input.deadline);
+                await this.armStepRecovery(retryAt);
               }
             }).catch(() => {});
           } finally {

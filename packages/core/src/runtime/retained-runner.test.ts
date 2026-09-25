@@ -676,6 +676,64 @@ it('recovers an uncertain remote dispatch by timing out its admitted attempt, wi
   expect(body).toHaveBeenCalledTimes(4);
 });
 
+it('retries a dispatch the platform refused before any worker received it, well before the attempt timeout', async () => {
+  const body = vi.fn(async (n) => n);
+  registerStepFunction('queuedWork', body);
+  const f = await setup(
+    parallelCode.replace(
+      '[work(0), work(1)]',
+      'Array.from({length: 4}, (_, i) => work(i))'
+    ),
+    false,
+    'hybrid'
+  );
+  f.world.capabilities = { ...f.world.capabilities, invoke: true };
+  f.world.invoke = (runId, input, opts) =>
+    f.owner.submit(
+      { runId, input, invoke: true, requestId: opts?.idempotencyKey },
+      f.metadata
+    );
+  let uncertain: OwnedStepExecution | undefined;
+  const queue = vi
+    .spyOn(f.world, 'queue')
+    .mockImplementation(async (_name, message) => {
+      if ('stepId' in message) {
+        if (!uncertain) {
+          uncertain = message.input as OwnedStepExecution;
+          throw new WorkflowWorldError('Direct step HTTP delivery failed', {
+            status: 500,
+          });
+        }
+        await executeOwnedStep(f.world, message, f.metadata);
+      }
+      return { messageId: null };
+    });
+  await f.owner.submit({ runId: f.runId }, f.metadata);
+  await f.send('fanout', 'start');
+  await vi.waitFor(() => expect(uncertain).toBeDefined());
+  await vi.waitFor(() =>
+    expect(
+      f.owner.events.filter((e) => e.eventType === 'step_completed')
+    ).toHaveLength(3)
+  );
+  // Drain the serialized delivery-failed notification after local completions.
+  await f.owner.enqueue('settle-dispatch', async () => {});
+  expect((await f.world.runs.get(f.runId)).status).toBe('running');
+  expect(queue.mock.calls.some(([, , opts]) => opts?.delaySeconds)).toBe(true);
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(Date.now() + 1100);
+  expect(Date.now()).toBeLessThan(uncertain!.deadline - 50_000);
+  await f.owner.submit({ runId: f.runId }, f.metadata);
+  expect(f.owner.events.some((e) => e.eventType === 'step_retrying')).toBe(
+    true
+  );
+  vi.setSystemTime(Date.now() + 1100);
+  await f.owner.submit({ runId: f.runId }, f.metadata);
+  await f.finished;
+  expect((await f.world.runs.get(f.runId)).status).toBe('completed');
+  expect(body).toHaveBeenCalledTimes(4);
+});
+
 it('does not publish queued bodies before the start prefix is durable', async () => {
   registerStepFunction('queuedWork', async (n) => n);
   const fixture = await setup(parallelCode, false, true);
