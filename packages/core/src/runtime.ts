@@ -83,6 +83,7 @@ import {
   parseHealthCheckPayload,
   preconditionEventDelta,
   queueMessage,
+  REPLAY_RESOLVE_DATA,
   resolveRunEncryptionKey,
   rootRunIdFrom,
   runDispatchContext,
@@ -966,6 +967,11 @@ export function workflowEntrypoint(
                   // than when the wait's own timer would have fired.
                   let eventLogFromInlineDelta = false;
                   let loopIteration = 0;
+                  // Hooks whose force-claim victim wake this invocation has
+                  // already sent (its own forced creations, and the replay's
+                  // republishes), so each suspension of the loop below does
+                  // not send them again. See `forcedCreationsOwingWake`.
+                  const forceClaimVictimWakes = new Set<string>();
                   const replayRecoveryReporter = replayDivergence
                     ? new ReplayRecoveryReporter(replayDivergence.count)
                     : ReplayRecoveryReporter.inert();
@@ -1030,7 +1036,14 @@ export function workflowEntrypoint(
                     params?: CreateEventParams
                   ) => {
                     const sinceCursor = deltaRequestCursor(data, params);
-                    const withSnapshot = { ...slotSnapshot(), ...params };
+                    // Replay events a write hands back (an inline delta or a
+                    // preload) only feed this log; read them the way replay
+                    // reads the log.
+                    const withSnapshot: CreateEventParams = {
+                      ...slotSnapshot(),
+                      resolveData: REPLAY_RESOLVE_DATA,
+                      ...params,
+                    };
                     const result = await replayRecoveryReporter.withEventCreate(
                       sinceCursor === undefined
                         ? withSnapshot
@@ -1211,12 +1224,14 @@ export function workflowEntrypoint(
                   // invocation over-counts by the abandoned pass's hook time,
                   // the same slight over-count either restart has always had.
                   let preStepBlockingMs = 0;
-                  // Snapshot of the accumulator as of the suspension that
-                  // wrote the run's first attr_set (whose hook phase ran
-                  // before its attr writes). When a pre-step setAttributes
-                  // ends the TTFS measurement at the attr write, only hook
-                  // time from BEFORE that point may be subtracted, since later
-                  // hook writes fall outside the measured window.
+                  // Snapshot of the accumulator as of the start of the
+                  // suspension that wrote the run's first attr_set (that
+                  // suspension's hook writes run alongside its attr writes,
+                  // and the hook time it reports is what outlasted them).
+                  // When a pre-step setAttributes ends the TTFS measurement at
+                  // the attr write, only hook time from BEFORE that point may
+                  // be subtracted, since later hook writes fall outside the
+                  // measured window.
                   let preStepBlockingBeforeAttrMs: number | undefined;
 
                   // Turbo mode fast-paths the first delivery of the first
@@ -3534,6 +3549,7 @@ export function workflowEntrypoint(
                             eventLog,
                             runReadyBarrier,
                             replayRecoveryReporter,
+                            forceClaimVictimWakes,
                             // Resilient step dispatch: lets eligible newly
                             // created steps publish their step-execution
                             // message (carrying `stepInput`) in parallel with
@@ -3709,13 +3725,19 @@ export function workflowEntrypoint(
                         if (retentionDecision?.retain === false) {
                           retainedSession = null;
                         }
-                        preStepBlockingMs += suspensionResult.hookCreationMs;
+                        // Snapshot before adding this suspension's hook time:
+                        // its hook writes ran alongside its attr writes, and
+                        // `hookCreationMs` only counts the stretch after every
+                        // other write (the attr write included) had settled,
+                        // so none of it precedes the attr commit that ends the
+                        // measured window.
                         if (
                           suspensionResult.hasAttributeEvents &&
                           preStepBlockingBeforeAttrMs === undefined
                         ) {
                           preStepBlockingBeforeAttrMs = preStepBlockingMs;
                         }
+                        preStepBlockingMs += suspensionResult.hookCreationMs;
                         runtimeLogger.debug('Suspension handled', {
                           workflowRunId: runId,
                           suspensionMs: Date.now() - suspensionStart,
@@ -3827,22 +3849,48 @@ export function workflowEntrypoint(
                         // `hook_conflict` this suspension committed is what
                         // settles its awaiters — rejecting a payload await,
                         // resolving a `hook.getConflict()` with the
-                        // conflicting run. The workflow must observe that
-                        // before anything else this suspension scheduled runs,
-                        // which is why this branch comes ahead of the attr
-                        // detour and all step dispatch: a `Promise.race`
-                        // between the hook and a step must let the durable
-                        // conflict win without executing the losing step.
-                        // Continue in this process when the boundary allows
-                        // it; otherwise hand the run back for a fresh replay
-                        // over the conflict.
+                        // conflicting run. The workflow observes that before
+                        // this invocation dispatches or runs anything this
+                        // suspension scheduled, which is why this branch comes
+                        // ahead of the attr detour and all step dispatch.
+                        // (Steps written alongside the hook create are not
+                        // held back by it: a batched fan-out has already
+                        // published their messages. A workflow that must not
+                        // start a step on a conflict awaits
+                        // `hook.getConflict()` first.) Continue in this
+                        // process when the boundary allows it; otherwise hand
+                        // the run back for a fresh replay over the conflict.
                         if (suspensionResult.hasHookConflict) {
+                          // Every create and publish this suspension launched
+                          // is durable before the run moves on, exactly like
+                          // the joins on the dispatch paths below.
+                          await suspensionResult.deferredBatchWork;
                           if (
                             continueOverHookWrite(
                               suspensionResult.hookConflictCorrelationIds,
                               'hook_conflict'
                             )
                           ) {
+                            continue;
+                          }
+                          // Inline steps whose pair-folded claim committed
+                          // alongside the hook create are started and owned
+                          // by THIS message. A fresh delivery would find them
+                          // owned by a live lease and park on a backstop wake
+                          // for the lease's length, so replay here instead:
+                          // the next pass observes the conflict and
+                          // re-executes them through owned recovery, as the
+                          // unserializable-step path below does. (A workflow
+                          // that ends over the conflict, say an uncaught
+                          // HookConflictError, finishes before owned recovery
+                          // runs them, so such a step stays started with its
+                          // body never run.)
+                          if (
+                            [...suspensionResult.inlineClaims.values()].some(
+                              (claim) => claim.owned
+                            )
+                          ) {
+                            eventLog = nextEventLogLoad(eventLog);
                             continue;
                           }
                           return await reinvoke(0);
