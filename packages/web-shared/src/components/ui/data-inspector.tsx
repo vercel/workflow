@@ -167,8 +167,8 @@ function EncryptedInlineLabel() {
   if (ctx) {
     return (
       <Button
-        size="xs"
-        className="align-baseline gap-x-1"
+        size="tiny"
+        className="align-baseline"
         disabled={ctx.isDecrypting || ctx.isDecryptDisabled}
         title={ctx.isDecryptDisabled ? ctx.decryptDisabledReason : undefined}
         onClick={(e) => {
