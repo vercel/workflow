@@ -1,3 +1,4 @@
+import { channel } from 'node:diagnostics_channel';
 import { createServer } from 'node:http';
 import { EntityConflictError } from '@workflow/errors';
 import { unwrapInvocationOutcome } from '@workflow/errors/invocation';
@@ -148,6 +149,125 @@ afterEach(() => {
 });
 
 describe('direct Vercel invocation', () => {
+  it('reuses native hook routing context without fetching the run again', async () => {
+    const fetch = vi.fn(async (_url: unknown, init: RequestInit) => {
+      expect(new Headers(init.headers).get(DEPLOYMENT_HEADER)).toBe('dpl_hook');
+      expect(decode(Buffer.from(init.body as Uint8Array))).toMatchObject({
+        deploymentId: 'dpl_hook',
+        queueName: '__wkf_workflow_from_hook',
+      });
+      return new Response(encode({ ok: true, value: 'ok' }), {
+        headers: { [INVOCATION_HEADER]: '1' },
+      });
+    });
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      createInvoker(config)!(runId, payload, {
+        target: { deploymentId: 'dpl_hook', workflowName: 'from_hook' },
+      })
+    ).resolves.toBe('ok');
+    expect(mocks.run).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it('separates metadata lookup from the exact POST boundary and excludes observer work before sending', async () => {
+    const events: Record<string, unknown>[] = [];
+    const order: string[] = [];
+    const observer = (event: unknown) => {
+      const value = event as Record<string, unknown>;
+      events.push(value);
+      order.push(`${value.phase}.${value.event}`);
+    };
+    const observations = channel('workflow.invocation');
+    observations.subscribe(observer);
+    let now = 1000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    let releaseRun!: (value: unknown) => void;
+    mocks.run.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseRun = resolve;
+        })
+    );
+    mocks.inject.mockImplementationOnce(async () => {
+      now = 1250;
+    });
+    let releaseResponse!: (value: Response) => void;
+    const fetch = vi.fn(() => {
+      order.push('fetch');
+      now = 1260;
+      return new Promise<Response>((resolve) => {
+        releaseResponse = resolve;
+      });
+    });
+    vi.stubGlobal('fetch', fetch);
+    try {
+      const work = createInvoker({
+        invoke: {
+          endpoint,
+          getToken: async () => {
+            now = 1200;
+            return 'private-token';
+          },
+        },
+      })!(runId, payload, { idempotencyKey: 'request-timing' });
+      expect(events.map((e) => `${e.phase}.${e.event}`)).toEqual([
+        'lookup.begin',
+      ]);
+      expect(fetch).not.toHaveBeenCalled();
+      now = 1100;
+      releaseRun({
+        runId,
+        deploymentId: 'dpl_pinned',
+        workflowName: 'example',
+        status: 'running',
+      });
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+      now = 1350;
+      releaseResponse(
+        new Response(encode({ ok: true, value: 'ok' }), {
+          headers: { [INVOCATION_HEADER]: '1' },
+        })
+      );
+      await expect(work).resolves.toBe('ok');
+      expect(events.map((e) => [e.phase, e.event, e.at])).toEqual([
+        ['lookup', 'begin', 1000],
+        ['lookup', 'end', 1100],
+        ['http', 'begin', 1250],
+        ['http', 'end', 1350],
+      ]);
+      expect(order.indexOf('fetch')).toBeLessThan(order.indexOf('http.begin'));
+      expect(events.every((e) => e.requestId === 'request-timing')).toBe(true);
+      expect(JSON.stringify(events)).not.toContain('private-token');
+      expect(events.every((e) => !('input' in e) && !('payload' in e))).toBe(
+        true
+      );
+    } finally {
+      observations.unsubscribe(observer);
+    }
+  });
+
+  it('reports a failed metadata lookup without inventing an HTTP request', async () => {
+    const events: Record<string, unknown>[] = [];
+    const observer = (event: unknown) =>
+      events.push(event as Record<string, unknown>);
+    const observations = channel('workflow.invocation');
+    observations.subscribe(observer);
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    mocks.run.mockRejectedValue(new Error('lookup failed'));
+    try {
+      await expect(createInvoker(config)!(runId, payload)).rejects.toThrow(
+        'lookup failed'
+      );
+      expect(fetch).not.toHaveBeenCalled();
+      expect(events.map((e) => [e.phase, e.event, e.status])).toEqual([
+        ['lookup', 'begin', undefined],
+        ['lookup', 'end', 'error'],
+      ]);
+    } finally {
+      observations.unsubscribe(observer);
+    }
+  });
   it('uses the raw run ID as the affinity selector without a metadata opt-in', async () => {
     expect(invocationAffinity(runId)).toBe(runId);
     mocks.run.mockResolvedValue({

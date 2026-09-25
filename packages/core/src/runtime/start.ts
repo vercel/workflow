@@ -41,6 +41,7 @@ import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName, healthCheck } from './helpers.js';
+import { QueuedStepPolicySchema } from './owned-step.js';
 import { Run } from './run.js';
 import { getWorkflowVmFromEnv } from './vm-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
@@ -187,6 +188,14 @@ export interface StartOptionsBase {
    * recognize the value keeps the data.
    */
   experimental_retention?: RunRetention;
+
+  /** Owner-managed steps. Hybrid keeps three bodies local and uses the existing
+   * Queue delivery primitive for direct-execution overflow; the backend must
+   * support that transport. Remote outcomes return through invoke. */
+  experimental_stepExecution?: {
+    mode: 'queued' | 'hybrid';
+    attemptTimeoutMs?: number;
+  };
 
   /**
    * The ID of an existing run this run is being replayed from, if any.
@@ -638,11 +647,31 @@ export async function start<TArgs extends unknown[], TResult>(
       // getWorkflowVmFromEnv().
       const workflowVm = getWorkflowVmFromEnv();
 
+      const stepExecution = opts.experimental_stepExecution
+        ? QueuedStepPolicySchema.parse(opts.experimental_stepExecution)
+        : undefined;
+      if (
+        stepExecution &&
+        (process.env.WORKFLOW_RETAINED_RUNNER !== '1' ||
+          !world.capabilities?.invoke ||
+          !world.invoke ||
+          deploymentId !== currentDeploymentId)
+      )
+        throw new WorkflowRuntimeError(
+          'Queued step execution requires a local-target retained owner with invoke'
+        );
+
       const executionContext = {
+        ...(stepExecution ? { stepExecution } : {}),
         ...(process.env.WORKFLOW_RETAINED_RUNNER === '1' &&
         world.capabilities?.invoke &&
         deploymentId === currentDeploymentId
-          ? { retainedRunnerVersion: 1 }
+          ? {
+              retainedRunnerVersion: 1,
+              ...(process.env.WORKFLOW_OWNER_JOURNAL === '1'
+                ? { ownerJournalVersion: 1 }
+                : {}),
+            }
           : {}),
         traceCarrier,
         workflowCoreVersion,
@@ -718,10 +747,36 @@ export async function start<TArgs extends unknown[], TResult>(
             ...(opts.region !== undefined ? { region: opts.region } : {}),
           }
         );
+      // Retained runs start on their owner through invoke, so the first turn
+      // runs where later inputs are routed. An unknown or failed invoke
+      // outcome falls back to the queue wake: a duplicate start only
+      // re-advances the owner, while no fallback could orphan the run.
+      const startOwner = async () => {
+        try {
+          if (!world.invoke) throw new Error('World invoke is unavailable');
+          await world.invoke(
+            runId,
+            { type: 'run_start', version: 1 },
+            {
+              idempotencyKey: `run-start:${runId}`,
+              target: { deploymentId, workflowName },
+            }
+          );
+        } catch (error) {
+          runtimeLogger.warn(
+            'Direct run start did not confirm; falling back to the queue.',
+            {
+              workflowRunId: runId,
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+          await enqueue();
+        }
+      };
       const [runCreatedResult, queueResult] = await Promise.allSettled([
         creation,
         executionContext.retainedRunnerVersion === 1
-          ? creation.then(enqueue)
+          ? creation.then(startOwner)
           : enqueue(),
       ]);
 

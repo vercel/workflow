@@ -13,6 +13,7 @@
  * backoff is deterministic and a microtask flush is a single `tick()`.
  */
 
+import { channel } from 'node:diagnostics_channel';
 import type { CreateEventRequest } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import {
@@ -24,7 +25,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import { encodeFrame } from './frames.js';
+import { encodeFrame, V4_FRAME_CONTENT_TYPE } from './frames.js';
 import { REQUEST_TIMEOUT_MS } from './http-core.js';
 import { createStorage } from './storage.js';
 import { injectTraceContextIntoHeaders } from './telemetry.js';
@@ -38,6 +39,30 @@ import {
 } from './ws-transport.js';
 
 type Listener = (...args: unknown[]) => void;
+
+it('selects canonical eventsync only on explicit opt-in', () => {
+  vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'eventsync');
+  expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
+    'wss://example.test/api/websockets/v1/runs/wrun_test/eventsync'
+  );
+  vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'ws');
+  expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
+    'wss://example.test/api/websockets/v1/runs/wrun_test'
+  );
+});
+
+it.each([
+  '1',
+  '',
+])('uses one wire contract regardless of new-run storage opt-in %s', (mode) => {
+  vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'eventsync');
+  vi.stubEnv('WORKFLOW_OWNER_JOURNAL', mode);
+  expect(toEventsWsUrl('https://example.test/api', 'wrun_test')).toBe(
+    'wss://example.test/api/websockets/v1/runs/wrun_test/eventsync'
+  );
+  vi.stubEnv('WORKFLOW_OWNER_JOURNAL', '');
+  vi.stubEnv('WORKFLOW_EVENTS_TRANSPORT', 'ws');
+});
 
 const { FakeWebSocket, sockets } = vi.hoisted(() => {
   const sockets: FakeSocket[] = [];
@@ -251,6 +276,404 @@ describe('toEventsWsUrl', () => {
 });
 
 describe('owner event writer', () => {
+  const slotId = (slot: number) => `evnt_${String(slot).padStart(26, '0')}`;
+  const created = new Date('2026-01-01T00:00:00.000Z');
+  /** v4 event frames for slots after..head, as a `history` push body. */
+  const history = (from: number, to: number) =>
+    new Uint8Array(
+      Buffer.concat(
+        Array.from({ length: to - from + 1 }, (_, i) =>
+          from + i === 1
+            ? encodeFrame(
+                {
+                  eventId: slotId(1),
+                  runId: 'wrun_test',
+                  eventType: 'run_created',
+                  createdAt: created,
+                  specVersion: 6,
+                  eventData: { deploymentId: 'dpl', workflowName: 'wf' },
+                },
+                Uint8Array.of(9)
+              )
+            : encodeFrame(
+                {
+                  eventId: slotId(from + i),
+                  runId: 'wrun_test',
+                  eventType: 'run_started',
+                  createdAt: created,
+                  specVersion: 6,
+                },
+                EMPTY
+              )
+        )
+      )
+    );
+  const catchUp = (
+    socket: ReturnType<typeof latest>,
+    after: number,
+    head: number
+  ) => {
+    if (head > after)
+      socket.deliver(
+        encodeFrame(
+          { reqId: -1, type: 'history', eventCount: head - after },
+          history(after + 1, head)
+        )
+      );
+    socket.deliver(encodeFrame({ reqId: -1, type: 'synced', head }, EMPTY));
+  };
+  const withEventsync = async (run: () => Promise<void>) => {
+    const previous = process.env.WORKFLOW_EVENTS_TRANSPORT;
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'eventsync';
+    try {
+      await run();
+    } finally {
+      if (previous === undefined) delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+      else process.env.WORKFLOW_EVENTS_TRANSPORT = previous;
+    }
+  };
+
+  it('streams catch-up from the owner position before admitting writes, without HTTP', () =>
+    withEventsync(async () => {
+      const fetch = vi
+        .spyOn(globalThis, 'fetch')
+        .mockRejectedValue(new Error('Unexpected HTTP read'));
+      const writer = createStorage({ token: 'test-token' }).events
+        .createWriteSession!('wrun_test');
+      try {
+        const socket = await nextSocket();
+        expect(new URL(socket.url).searchParams.get('after')).toBe('0');
+        socket.open();
+        const loaded = writer.catchUp!();
+        await tick();
+        catchUp(socket, 0, 2);
+        const result = await loaded;
+        expect(result.head).toBe(2);
+        expect(result.events.map((event) => event.eventType)).toEqual([
+          'run_created',
+          'run_started',
+        ]);
+        expect(
+          (result.events[0].eventData as { input: Uint8Array }).input
+        ).toEqual(Uint8Array.of(9));
+        expect(writer.heads).toEqual({ queued: 2, committed: 2 });
+        expect(socket.sent).toHaveLength(0);
+        expect(fetch).not.toHaveBeenCalled();
+      } finally {
+        await writer.dispose();
+      }
+    }));
+
+  it('fails the catch-up on a server error frame instead of writing', () =>
+    withEventsync(async () => {
+      const writer = createStorage({ token: 'test-token' }).events
+        .createWriteSession!('wrun_test');
+      try {
+        const socket = await nextSocket();
+        socket.open();
+        const loaded = writer.catchUp!();
+        void loaded.catch(() => {});
+        await tick();
+        socket.deliver(
+          encodeFrame(
+            { reqId: -1, type: 'error', status: 409 },
+            new TextEncoder().encode(
+              JSON.stringify({ message: 'after-ahead-of-log' })
+            )
+          )
+        );
+        await expect(loaded).rejects.toThrow('after-ahead-of-log');
+      } finally {
+        await writer.dispose();
+      }
+    }));
+
+  it('reconnects from the committed head, confirms the committed outbox prefix and resends the rest', () =>
+    withEventsync(async () => {
+      const writer = createStorage({ token: 'test-token' }).events
+        .createWriteSession!('wrun_test');
+      try {
+        const first = await nextSocket();
+        first.open();
+        const loaded = writer.catchUp!();
+        await tick();
+        catchUp(first, 0, 2);
+        await loaded;
+        const hook: CreateEventRequest = {
+          eventType: 'hook_received',
+          specVersion: 6,
+          correlationId: 'hook_test',
+          eventData: { token: 'test', payload: Uint8Array.of(1) },
+        };
+        const step: CreateEventRequest = {
+          eventType: 'step_created',
+          specVersion: 6,
+          correlationId: 'step_test',
+          eventData: { stepName: 'step', input: Uint8Array.of(2) },
+        };
+        const staged = [
+          await writer.stage!(hook, { eventCount: 2, resolveData: 'none' }),
+          await writer.stage!(step, { eventCount: 3, resolveData: 'none' }),
+        ];
+        expect(first.sent).toHaveLength(2);
+        const flushed = writer.flush!();
+        await tick();
+        // The socket breaks with both writes unacknowledged; slot 3 committed.
+        first.close(1006);
+        const second = await nextSocket();
+        expect(new URL(second.url).searchParams.get('after')).toBe('2');
+        second.open();
+        await tick();
+        second.deliver(
+          encodeFrame(
+            { reqId: -1, type: 'history', eventCount: 1 },
+            encodeFrame(
+              {
+                eventId: slotId(3),
+                runId: 'wrun_test',
+                eventType: 'hook_received',
+                correlationId: 'hook_test',
+                createdAt: staged[0].event!.createdAt,
+                specVersion: 6,
+                eventData: { token: 'test' },
+              },
+              Uint8Array.of(1)
+            )
+          )
+        );
+        second.deliver(
+          encodeFrame({ reqId: -1, type: 'synced', head: 3 }, EMPTY)
+        );
+        await vi.advanceTimersByTimeAsync(200);
+        // Only the uncommitted entry is resent, at its original slot.
+        const resent = second.sent.map((raw) => {
+          const length = new DataView(
+            raw.buffer,
+            raw.byteOffset,
+            raw.byteLength
+          ).getUint32(0, false);
+          return decode(raw.subarray(4, 4 + length)) as Record<string, any>;
+        });
+        expect(resent[0]).toMatchObject({
+          type: 'event',
+          event: { eventType: 'step_created', maxSlot: 3 },
+        });
+        second.deliver(
+          encodeFrame(
+            { reqId: resent[0].reqId, type: 'event_ack', status: 200 },
+            encode(staged[1])
+          )
+        );
+        await tick();
+        const flush = resent.find((meta) => meta.type === 'flush');
+        expect(flush).toMatchObject({ through: 4 });
+        second.deliver(
+          encodeFrame(
+            {
+              reqId: flush!.reqId,
+              type: 'flush_ack',
+              status: 200,
+              committedTo: 4,
+            },
+            EMPTY
+          )
+        );
+        expect((await flushed).map((result) => result.event!.eventId)).toEqual([
+          slotId(3),
+          slotId(4),
+        ]);
+        expect(writer.heads).toEqual({ queued: 4, committed: 4 });
+      } finally {
+        await writer.dispose();
+      }
+    }));
+
+  it('fail-stops when the log after its committed head holds another write', () =>
+    withEventsync(async () => {
+      const writer = createStorage({ token: 'test-token' }).events
+        .createWriteSession!('wrun_test');
+      try {
+        const first = await nextSocket();
+        first.open();
+        const loaded = writer.catchUp!();
+        await tick();
+        catchUp(first, 0, 2);
+        await loaded;
+        await writer.stage!(
+          {
+            eventType: 'hook_received',
+            specVersion: 6,
+            correlationId: 'hook_test',
+            eventData: { token: 'test', payload: Uint8Array.of(1) },
+          },
+          { eventCount: 2, resolveData: 'none' }
+        );
+        const flushed = writer.flush!();
+        void flushed.catch(() => {});
+        await tick();
+        first.close(1006);
+        const second = await nextSocket();
+        second.open();
+        await tick();
+        catchUp(second, 2, 3); // slot 3 is someone else's run_started
+        await expect(flushed).rejects.toThrow('Owner superseded');
+        await expect(
+          writer.stage!(
+            {
+              eventType: 'step_created',
+              specVersion: 6,
+              correlationId: 'step_test',
+              eventData: { stepName: 'step', input: Uint8Array.of(2) },
+            },
+            { eventCount: 3, resolveData: 'none' }
+          )
+        ).rejects.toThrow('Owner superseded');
+      } finally {
+        await writer.dispose();
+      }
+    }));
+
+  it('fails every unfinished write when reconnect does not finish in 30 s', () =>
+    withEventsync(async () => {
+      const writer = createStorage({ token: 'test-token' }).events
+        .createWriteSession!('wrun_test');
+      try {
+        const first = await nextSocket();
+        first.open();
+        const loaded = writer.catchUp!();
+        await tick();
+        catchUp(first, 0, 2);
+        await loaded;
+        await writer.stage!(
+          {
+            eventType: 'hook_received',
+            specVersion: 6,
+            correlationId: 'hook_test',
+            eventData: { token: 'test', payload: Uint8Array.of(1) },
+          },
+          { eventCount: 2, resolveData: 'none' }
+        );
+        const flushed = writer.flush!();
+        void flushed.catch(() => {});
+        await tick();
+        first.close(1006);
+        // Every reconnect handshake fails.
+        for (let i = 0; i < 400 && sockets.length < 100; i++) {
+          await vi.advanceTimersByTimeAsync(250);
+          const socket = latest();
+          if (socket.readyState === 0) socket.failHandshake();
+        }
+        await vi.advanceTimersByTimeAsync(31_000);
+        await expect(flushed).rejects.toThrow('reconnect timeout');
+      } finally {
+        await writer.dispose();
+      }
+    }));
+
+  it('pipelines the canonical resume prefix over one socket before receiving ACKs', async () => {
+    const observations: unknown[] = [];
+    const observe = (message: unknown) => {
+      observations.push(message);
+    };
+    channel('workflow.eventsync').subscribe(observe);
+    const previous = process.env.WORKFLOW_EVENTS_TRANSPORT;
+    process.env.WORKFLOW_EVENTS_TRANSPORT = 'eventsync';
+    const writer = createStorage({ token: 'test-token' }).events
+      .createWriteSession!('wrun_test');
+    try {
+      const socket = await nextSocket();
+      socket.open();
+      const loaded = writer.catchUp!();
+      await tick();
+      catchUp(socket, 0, 3);
+      await loaded;
+      const events: CreateEventRequest[] = [
+        {
+          eventType: 'hook_received',
+          specVersion: 6,
+          correlationId: 'hook_test',
+          eventData: { token: 'test', payload: Uint8Array.of(1) },
+        },
+        {
+          eventType: 'step_created',
+          specVersion: 6,
+          correlationId: 'step_test',
+          eventData: { stepName: 'step', input: Uint8Array.of(2) },
+        },
+        {
+          eventType: 'step_started',
+          specVersion: 6,
+          correlationId: 'step_test',
+          eventData: { stepName: 'step' },
+        },
+      ];
+      const staged = [];
+      for (const [i, event] of events.entries())
+        staged.push(
+          await writer.stage!(event, { eventCount: 3 + i, resolveData: 'none' })
+        );
+      expect(socket.url).toContain('/eventsync');
+      expect(new URL(socket.url).searchParams.has('protocol')).toBe(false);
+      expect(socket.sent).toHaveLength(3);
+      let durable = false;
+      const flushed = writer.flush!().then((results) => {
+        durable = true;
+        return results;
+      });
+      expect(durable).toBe(false);
+      await tick();
+      expect(socket.sent).toHaveLength(4);
+      for (const [i, result] of staged.entries())
+        socket.deliver(
+          encodeFrame(
+            {
+              reqId: Number(sentReqIds(socket)[i]),
+              type: 'event_ack',
+              status: 200,
+              ...(i === 0
+                ? {
+                    eventsyncCommit: {
+                      eventCount: 3,
+                      eventTypes: 'hook_received,step_created,step_started',
+                      committedTo: 6,
+                      kind: 'journal_batch',
+                      serverTiming: 'parse;dur=2, commit;dur=8',
+                      serverCommittedAt: '1234',
+                    },
+                  }
+                : {}),
+            },
+            encode(result)
+          )
+        );
+      socket.deliver(
+        encodeFrame(
+          {
+            reqId: sentReqIds(socket)[3],
+            type: 'flush_ack',
+            status: 200,
+            committedTo: 6,
+          },
+          EMPTY
+        )
+      );
+      expect(await flushed).toHaveLength(3);
+      expect(durable).toBe(true);
+      expect(observations).toContainEqual(
+        expect.objectContaining({
+          event: 'committed',
+          serverTiming: 'parse;dur=2, commit;dur=8',
+          serverCommittedAt: '1234',
+        })
+      );
+    } finally {
+      channel('workflow.eventsync').unsubscribe(observe);
+      await writer.dispose();
+      if (previous === undefined) delete process.env.WORKFLOW_EVENTS_TRANSPORT;
+      else process.env.WORKFLOW_EVENTS_TRANSPORT = previous;
+    }
+  });
+
   it('joins an opening channel, reuses it for hook/step writes, and releases it exactly once', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
