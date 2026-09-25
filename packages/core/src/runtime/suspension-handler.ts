@@ -30,6 +30,7 @@ import {
   queueMessage,
   withPreconditionRetry,
 } from './helpers.js';
+import { verifyDuplicateStepCreate } from './step-create-conflict.js';
 import { unserializableStepInputPlaceholder } from './unserializable-step.js';
 
 /**
@@ -472,10 +473,17 @@ export async function handleSuspension({
             await createGuarded(stepEvent, { requestId });
           } catch (err) {
             if (EntityConflictError.is(err)) {
-              runtimeLogger.info('Step already exists, continuing', {
-                workflowRunId: runId,
+              // A concurrent handler wrote this step first. Benign when it
+              // wrote the same invocation; a different name or input under
+              // this id is a non-deterministic replay and fails the run.
+              await verifyDuplicateStepCreate({
+                world,
+                runId,
                 correlationId: queueItem.correlationId,
-                message: err.message,
+                stepName: queueItem.stepName,
+                dehydratedInput,
+                encryptionKey,
+                conflictMessage: err.message,
               });
             } else {
               throw err;
