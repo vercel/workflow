@@ -42,6 +42,51 @@ describe('ReplayRecoveryReporter', () => {
     expect(create).toHaveBeenCalledWith({ replayDivergenceCount: 2 });
   });
 
+  describe('nextDivergenceCount()', () => {
+    it('continues the incoming episode until a natural write has reported', async () => {
+      const reporter = new ReplayRecoveryReporter(2);
+      expect(reporter.nextDivergenceCount()).toBe(3);
+
+      // A dormant write (no clean replay yet) does not end the episode.
+      await reporter.withEventCreate({}, async () => 'created');
+      expect(reporter.nextDivergenceCount()).toBe(3);
+
+      // Armed but not yet written: still the same episode.
+      reporter.activate();
+      expect(reporter.nextDivergenceCount()).toBe(3);
+    });
+
+    it('starts a new episode at 1 once a reported write succeeds', async () => {
+      const reporter = new ReplayRecoveryReporter(2);
+      reporter.activate();
+
+      await reporter.withEventCreate({}, async () => 'created');
+
+      expect(reporter.nextDivergenceCount()).toBe(1);
+    });
+
+    it('does not end the episode on a failed reported write', async () => {
+      const reporter = new ReplayRecoveryReporter(2);
+      reporter.activate();
+
+      await expect(
+        reporter.withEventCreate({}, async () => {
+          throw new Error('write failed');
+        })
+      ).rejects.toThrow('write failed');
+
+      expect(reporter.nextDivergenceCount()).toBe(3);
+    });
+
+    it('is 1 for an inert reporter, so a first divergence counts from zero', async () => {
+      const reporter = ReplayRecoveryReporter.inert();
+      reporter.activate();
+      await reporter.withEventCreate({}, async () => 'created');
+
+      expect(reporter.nextDivergenceCount()).toBe(1);
+    });
+  });
+
   describe('inert()', () => {
     it('cannot be armed, so it never stamps a count', async () => {
       const create = vi.fn(async (_params: CreateEventParams) => 'created');
