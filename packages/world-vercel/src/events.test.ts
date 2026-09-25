@@ -5,6 +5,10 @@ import {
   type AnyEventRequest,
   type CreateEventParams,
   EventSchema,
+  mintedSpecVersion,
+  SEALED_LOG_ENV_VAR,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import { ulid } from 'ulid';
@@ -232,6 +236,90 @@ describe('createWorkflowRunEvent with v1Compat', () => {
         { token: 'test-token' }
       )
     ).rejects.toThrow(/requires a runId/);
+  });
+});
+
+/**
+ * `run_started` attests the spec version this SDK runs, separately from the
+ * `specVersion` it repeats from the queue message (the stamp of whoever called
+ * `start()`, possibly an older deployment). The backend raises a run stamped
+ * lower to this value.
+ */
+describe('createWorkflowRunEvent executorSpecVersion', () => {
+  async function postRunStartedAndCaptureMeta(
+    extraConfig: { mintedSpecVersion?: number } = {}
+  ): Promise<Record<string, unknown> | undefined> {
+    const agent = mockAgent();
+    let capturedMeta: Record<string, unknown> | undefined;
+    agent
+      .get(ORIGIN)
+      .intercept({
+        path: '/api/v4/runs/wrun_1/events/run_started',
+        method: 'POST',
+      })
+      .reply(
+        200,
+        (opts: { body?: unknown }) => {
+          capturedMeta = decodePostedMeta(opts.body);
+          return runStartedResponse();
+        },
+        {
+          headers: {
+            'content-type': V4_FRAME_CONTENT_TYPE,
+            'x-wf-event-id': 'evnt_1',
+            'x-wf-run-id': 'wrun_1',
+            'x-wf-created-at': '2026-06-10T00:00:00.000Z',
+            'x-wf-max-events': '10000',
+          },
+        }
+      );
+    await createWorkflowRunEvent(
+      'wrun_1',
+      {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+      } as AnyEventRequest,
+      undefined,
+      { token: 'test-token', dispatcher: agent, ...extraConfig }
+    );
+    agent.assertNoPendingInterceptors();
+    return capturedMeta;
+  }
+
+  it("sends the version this SDK mints next to the caller's stamp", async () => {
+    const meta = await postRunStartedAndCaptureMeta();
+    expect(meta?.specVersion).toBe(SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT);
+    expect(meta?.executorSpecVersion).toBe(mintedSpecVersion());
+  });
+
+  it('attests the version the World declared at creation, not a later env read', async () => {
+    // `createWorld` records what it declared; flipping the kill switch
+    // in-process afterwards must not make run_started claim more than the
+    // runtime validated.
+    vi.stubEnv(SEALED_LOG_ENV_VAR, '1');
+    try {
+      const meta = await postRunStartedAndCaptureMeta({
+        mintedSpecVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+      });
+      expect(meta?.executorSpecVersion).toBe(
+        SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('follows the sealed-log kill switch', async () => {
+    vi.stubEnv(SEALED_LOG_ENV_VAR, '0');
+    try {
+      const meta = await postRunStartedAndCaptureMeta();
+      expect(meta?.executorSpecVersion).toBe(mintedSpecVersion());
+      expect(meta?.executorSpecVersion).toBe(
+        SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
