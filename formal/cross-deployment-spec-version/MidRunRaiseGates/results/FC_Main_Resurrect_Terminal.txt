@@ -1,0 +1,80 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 91 and seed 8589785673463976950 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 112340] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/MidRunRaiseGates/ForceClaimGate.tla
+Parsing file /tmp/Integers.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module ForceClaimGate
+Starting... (2026-09-25 01:42:30)
+Computing initial states...
+Computed 2 initial states...
+Finished computing initial states: 3 distinct states generated at 2026-09-25 01:42:31.
+Error: Action property TerminalAbsorbing is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ raisedLive = FALSE
+/\ disposed = FALSE
+/\ outcome = "none"
+/\ snap = [status |-> "none", spec |-> 0]
+/\ sPc = "idle"
+/\ sM = 0
+/\ sSnap = [status |-> "none", spec |-> 0]
+/\ token = "none"
+/\ claim = "idle"
+/\ vSpec = 6
+/\ vStatus = "pending"
+/\ stamp = 6
+
+State 2: <SRead line 145, col 3 to line 150, col 39 of module ForceClaimGate>
+/\ raisedLive = FALSE
+/\ disposed = FALSE
+/\ outcome = "none"
+/\ snap = [status |-> "none", spec |-> 0]
+/\ sPc = "read"
+/\ sM = 6
+/\ sSnap = [status |-> "pending", spec |-> 6]
+/\ token = "none"
+/\ claim = "idle"
+/\ vSpec = 6
+/\ vStatus = "pending"
+/\ stamp = 6
+
+State 3: <VictimTerminate line 178, col 3 to line 181, col 20 of module ForceClaimGate>
+/\ raisedLive = FALSE
+/\ disposed = FALSE
+/\ outcome = "none"
+/\ snap = [status |-> "none", spec |-> 0]
+/\ sPc = "read"
+/\ sM = 6
+/\ sSnap = [status |-> "pending", spec |-> 6]
+/\ token = "none"
+/\ claim = "idle"
+/\ vSpec = 6
+/\ vStatus = "terminal"
+/\ stamp = 6
+
+State 4: <SApply line 156, col 3 to line 168, col 74 of module ForceClaimGate>
+/\ raisedLive = FALSE
+/\ disposed = FALSE
+/\ outcome = "none"
+/\ snap = [status |-> "none", spec |-> 0]
+/\ sPc = "done"
+/\ sM = 6
+/\ sSnap = [status |-> "pending", spec |-> 6]
+/\ token = "none"
+/\ claim = "idle"
+/\ vSpec = 6
+/\ vStatus = "running"
+/\ stamp = 6
+
+172 states generated, 93 distinct states found, 61 states left on queue.
+The depth of the complete state graph search is 4.
+The average outdegree of the complete state graph is 3 (minimum is 1, the maximum 5 and the 95th percentile is 5).
+Finished in 00s at (2026-09-25 01:42:31)

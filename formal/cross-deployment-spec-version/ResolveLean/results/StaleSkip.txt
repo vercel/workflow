@@ -1,0 +1,136 @@
+Explicit-state exploration (BFS, visited set, starters in canonical order).
+Per check: total states / quiescent states over the family, violated properties, and one
+shortest witness trace per violated property (first scenario of the family that violates it).
+
+=== [pairs, run_created late] asIs(#1044): scenarios=24 states=3503 quiescent=236 violated=[noMixed, oneStarted, noAlloc500, idsMatchSpec, raised]
+  noMixed @ stamp=3 executors=[6, 6] c0=1 terminalWriter=false crashes=0:
+    C:rc event ULID → S6:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:readHead [rc:slot] → S6:tx skip log-not-fresh → S6:patch-running(id ULID) → S6:insert rs ULID
+  oneStarted @ stamp=3 executors=[6, 6] c0=1 terminalWriter=false crashes=0:
+    C:rc event ULID → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:readRun pending@6 → S6:upgrade-preread-skip → S6:patch-running(id probe) → S6:patch-running(id probe) → S6:insert rs slot2(probe) → S6:insert rs slot3(probe)
+  noAlloc500 @ stamp=3 executors=[6, 6] c0=1 terminalWriter=false crashes=0:
+    C:rc event ULID → S6:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:readHead [rc:slot] → S6:tx skip log-not-fresh → S6:patch-running(id ULID) → S6:patch-running(id probe) → S6:insert rs ULID → S6:probe-500-mixed
+  idsMatchSpec @ stamp=3 executors=[6, 6] c0=1 terminalWriter=false crashes=0:
+    C:rc event ULID → S6:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:readHead [rc:slot] → S6:tx skip log-not-fresh → S6:patch-running(id ULID) → S6:patch-running(id probe) → S6:insert rs slot2(probe) → S6:insert rs ULID
+  raised @ stamp=3 executors=[6, 6] c0=1 terminalWriter=false crashes=0:
+    S6:readRun pending@3 → S6:readHead [] → C:rc event ULID → S6:tx skip run-created-not-committed → S6:patch-running(id ULID) → S6:readRun running@3 → S6:upgrade-preread-skip → S6:insert rs ULID → S6:alreadyRunning
+
+=== [pairs, fresh] asIs(#1044): scenarios=24 states=1520 quiescent=110 violated=[noMixed, oneStarted, noAlloc500, idsMatchSpec]
+  noMixed @ stamp=3 executors=[6, 6] c0=2 terminalWriter=false crashes=0:
+    S6:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:readHead [rc:slot] → S6:tx skip log-not-fresh → S6:patch-running(id ULID) → S6:insert rs ULID
+  oneStarted @ stamp=3 executors=[6, 6] c0=2 terminalWriter=false crashes=0:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:readRun pending@6 → S6:upgrade-preread-skip → S6:patch-running(id probe) → S6:patch-running(id probe) → S6:insert rs slot2(probe) → S6:insert rs slot3(probe)
+  noAlloc500 @ stamp=3 executors=[6, 6] c0=2 terminalWriter=false crashes=0:
+    S6:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:readHead [rc:slot] → S6:tx skip log-not-fresh → S6:patch-running(id ULID) → S6:patch-running(id probe) → S6:insert rs ULID → S6:probe-500-mixed
+  idsMatchSpec @ stamp=3 executors=[6, 6] c0=2 terminalWriter=false crashes=0:
+    S6:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:readHead [rc:slot] → S6:tx skip log-not-fresh → S6:patch-running(id ULID) → S6:patch-running(id probe) → S6:insert rs slot2(probe) → S6:insert rs ULID
+
+=== [pairs, fresh] rereadOnSkip: scenarios=24 states=1385 quiescent=86 violated=[oneStarted]
+  oneStarted @ stamp=3 executors=[6, 6] c0=2 terminalWriter=false crashes=0:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:readRun pending@6 → S6:upgrade-preread-skip → S6:patch-running(id probe) → S6:patch-running(id probe) → S6:insert rs slot2(probe) → S6:insert rs slot3(probe)
+
+=== [pairs, run_created late] cas-patch-only(stale id): scenarios=24 states=2978 quiescent=86 violated=[noMixed, idsMatchSpec, raised]
+  noMixed @ stamp=3 executors=[6, 6] c0=1 terminalWriter=false crashes=0:
+    C:rc event ULID → S6:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:readHead [rc:slot] → S6:tx skip log-not-fresh → S6:cas-fail-spec-moved→6 → S6:patch-running(id ULID) → S6:insert rs ULID
+  idsMatchSpec @ stamp=3 executors=[6, 6] c0=1 terminalWriter=false crashes=0:
+    C:rc event ULID → S6:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:readHead [rc:slot] → S6:tx skip log-not-fresh → S6:cas-fail-spec-moved→6 → S6:patch-running(id ULID) → S6:insert rs ULID → S6:alreadyRunning
+  raised @ stamp=3 executors=[6, 6] c0=1 terminalWriter=false crashes=0:
+    S6:readRun pending@3 → S6:readHead [] → C:rc event ULID → S6:tx skip run-created-not-committed → S6:patch-running(id ULID) → S6:readRun running@3 → S6:upgrade-preread-skip → S6:insert rs ULID → S6:alreadyRunning
+
+=== [pairs, run_created late] cas+reresolve: scenarios=24 states=2760 quiescent=69 violated=[raised]
+  raised @ stamp=3 executors=[6, 6] c0=1 terminalWriter=false crashes=0:
+    S6:readRun pending@3 → S6:readHead [] → C:rc event ULID → S6:tx skip run-created-not-committed → S6:patch-running(id ULID) → S6:readRun running@3 → S6:upgrade-preread-skip → S6:insert rs ULID → S6:alreadyRunning
+
+=== [pairs, row missing] cas+reresolve+wait: scenarios=24 states=4857 quiescent=69 violated=[raised]
+  raised @ stamp=3 executors=[6, 6] c0=0 terminalWriter=false crashes=0:
+    S6:readRun-missing→resilient → C:run_created row@3 → C:rc event ULID → S6:resilient-conflict-refetch → S6:patch-running(id ULID) → S6:readRun running@3 → S6:upgrade-preread-skip → S6:insert rs ULID → S6:alreadyRunning
+
+=== [pairs, row missing] …+resilientUpgrade: scenarios=24 states=3974 quiescent=46 violated=[]
+
+=== [pairs + terminal writer] asIs(#1044): scenarios=8 states=14946 quiescent=952 violated=[noMixed, oneStarted, terminalAbsorbing, noAlloc500, idsMatchSpec, raised, canFinish]
+  noMixed @ stamp=3 executors=[6, 8] c0=1 terminalWriter=true crashes=0:
+    C:rc event ULID → T:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → T:patch-terminal(ULID mode) → T:insert term ULID
+  oneStarted @ stamp=3 executors=[6, 8] c0=1 terminalWriter=true crashes=0:
+    S6:readRun pending@3 → S6:readHead [] → S6:tx skip run-created-not-committed → S8:readRun pending@3 → S6:patch-running(id ULID) → S6:insert rs ULID → S8:readHead [other,…] → S8:tx skip run-created-not-first → S8:patch-running(id ULID) → S8:insert rs ULID
+  terminalAbsorbing @ stamp=3 executors=[6, 8] c0=1 terminalWriter=true crashes=0:
+    T:readRun pending@3 → S6:readRun pending@3 → T:patch-terminal(ULID mode) → S6:readHead [] → S6:tx skip run-created-not-committed → S6:patch-running(id ULID)
+  noAlloc500 @ stamp=3 executors=[6, 8] c0=1 terminalWriter=true crashes=0:
+    C:rc event ULID → T:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → T:patch-terminal(ULID mode) → T:insert term ULID → S6:patch-running(id probe) → S6:probe-500-mixed
+  idsMatchSpec @ stamp=3 executors=[6, 8] c0=1 terminalWriter=true crashes=0:
+    C:rc event ULID → T:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → T:patch-terminal(ULID mode) → S8:readRun-410 → S6:patch-running(id probe) → S6:insert rs slot2(probe) → T:insert term ULID
+  raised @ stamp=3 executors=[6, 8] c0=1 terminalWriter=true crashes=0:
+    C:rc event ULID → T:readRun pending@3 → S6:readRun pending@3 → T:patch-terminal(ULID mode) → T:insert term ULID → S6:readHead [rc:ULID,…] → S6:tx skip log-not-fresh → S8:readRun-410 → S6:patch-running(id ULID) → S6:insert rs ULID
+  canFinish @ stamp=3 executors=[6, 8] c0=1 terminalWriter=true crashes=0:
+    C:rc event ULID → T:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → T:patch-terminal(ULID mode) → T:insert term ULID
+
+=== [pairs + terminal writer] …+resilientUpgrade: scenarios=8 states=5793 quiescent=108 violated=[noMixed, noAlloc500, idsMatchSpec]
+  noMixed @ stamp=3 executors=[6, 8] c0=1 terminalWriter=true crashes=0:
+    C:rc event ULID → T:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → T:patch-terminal(ULID mode) → T:insert term ULID
+  noAlloc500 @ stamp=3 executors=[6, 8] c0=1 terminalWriter=true crashes=0:
+    C:rc event ULID → T:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:patch-running(id probe) → T:patch-terminal(ULID mode) → T:insert term ULID → S6:probe-500-mixed
+  idsMatchSpec @ stamp=3 executors=[6, 8] c0=1 terminalWriter=true crashes=0:
+    C:rc event ULID → T:readRun pending@3 → S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → T:patch-terminal(ULID mode) → T:insert term ULID → S6:cas-fail-terminal → S8:readRun-410
+
+=== [pairs + terminal writer] …+casTerminal: scenarios=8 states=5889 quiescent=108 violated=[]
+
+=== [pairs + crash/recovery, fresh] asIs(#1044): scenarios=8 states=4302 quiescent=189 violated=[noMixed, oneStarted, oneCreated, monotone, noAlloc500, rcAgrees, idsMatchSpec, raised, holesOk]
+  noMixed @ stamp=3 executors=[6, 8] c0=2 terminalWriter=false crashes=1:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S8:readRun pending@3 → S6:tx-upgraded→6 (rekey) → S8:readHead [rc:slot] → S8:tx skip log-not-fresh → S8:patch-running(id ULID) → S8:insert rs ULID
+  oneStarted @ stamp=3 executors=[6, 8] c0=2 terminalWriter=false crashes=1:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S8:readRun pending@6 → S6:patch-running(id probe) → S6:insert rs slot2(probe) → S8:readHead [rc:slot,…] → S8:tx skip log-not-fresh → S8:patch-running(id probe) → S8:insert rs slot3(probe)
+  oneCreated @ stamp=3 executors=[6, 8] c0=2 terminalWriter=false crashes=1:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:patch-running-then-CRASH → S6:readRun running@6 → S6:upgrade-preread-skip → S6:recovery-delete-row → S6:readRun-missing→resilient → S6:resilient-create@3 → S6:resilient-rc ULID
+  monotone @ stamp=3 executors=[6, 8] c0=2 terminalWriter=false crashes=1:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:patch-running-then-CRASH → S6:readRun running@6 → S6:upgrade-preread-skip → S6:recovery-delete-row → S6:readRun-missing→resilient → S6:resilient-create@3
+  noAlloc500 @ stamp=3 executors=[6, 8] c0=2 terminalWriter=false crashes=1:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S8:readRun pending@3 → S6:tx-upgraded→6 (rekey) → S6:patch-running(id probe) → S8:readHead [rc:slot] → S8:tx skip log-not-fresh → S8:patch-running(id ULID) → S8:insert rs ULID → S6:probe-500-mixed
+  rcAgrees @ stamp=3 executors=[6, 8] c0=2 terminalWriter=false crashes=1:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:patch-running-then-CRASH → S6:readRun running@6 → S6:upgrade-preread-skip → S6:recovery-delete-row → S6:readRun-missing→resilient → S6:resilient-create@3
+  idsMatchSpec @ stamp=3 executors=[6, 8] c0=2 terminalWriter=false crashes=1:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S8:readRun pending@3 → S6:tx-upgraded→6 (rekey) → S6:patch-running(id probe) → S6:insert rs slot2(probe) → S8:readHead [rc:slot,…] → S8:tx skip log-not-fresh → S8:patch-running(id ULID) → S8:insert rs ULID
+  raised @ stamp=3 executors=[6, 8] c0=2 terminalWriter=false crashes=1:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:patch-running-then-CRASH → S6:readRun running@6 → S6:upgrade-preread-skip → S6:recovery-delete-row → S6:readRun-missing→resilient → S6:resilient-create@3 → S6:resilient-rc ULID → S6:patch-running(id ULID) → S6:insert rs ULID → S8:readRun running@3 → S8:upgrade-preread-skip → S8:alreadyRunning
+  holesOk @ stamp=6 executors=[6, 8] c0=2 terminalWriter=false crashes=1:
+    S8:readRun pending@6 → S8:readHead [rc:slot] → S8:tx-upgraded→8 → S6:readRun pending@8 → S6:upgrade-preread-skip → S6:patch-running(id seq) → S6:seqTake 2-then-CRASH → S6:readRun running@8 → S6:upgrade-preread-skip → S6:recovery-delete-row → S6:readRun-missing→resilient → S6:resilient-create@6 → S6:resilient-rc-adopt-slot1 → S6:patch-running(id probe) → S8:patch-running(id seq) → S8:seqTake 3 → S8:insert rs slot3(seq) → S6:insert rs slot4(probe)
+
+=== [pairs + crash/recovery, fresh] …+casTerminal: scenarios=8 states=3295 quiescent=44 violated=[oneCreated, monotone, rcAgrees, raised]
+  oneCreated @ stamp=3 executors=[6, 8] c0=2 terminalWriter=false crashes=1:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:patch-running-then-CRASH → S6:readRun running@6 → S6:upgrade-preread-skip → S6:recovery-delete-row → S6:readRun-missing→resilient → S6:resilient-create@3 → S6:resilient-rc ULID
+  monotone @ stamp=3 executors=[6, 8] c0=2 terminalWriter=false crashes=1:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:patch-running-then-CRASH → S6:readRun running@6 → S6:upgrade-preread-skip → S6:recovery-delete-row → S6:readRun-missing→resilient → S6:resilient-create@3
+  rcAgrees @ stamp=3 executors=[6, 8] c0=2 terminalWriter=false crashes=1:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:patch-running-then-CRASH → S6:readRun running@6 → S6:upgrade-preread-skip → S6:recovery-delete-row → S6:readRun-missing→resilient → S6:resilient-create@3
+  raised @ stamp=3 executors=[6, 8] c0=2 terminalWriter=false crashes=1:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:patch-running-then-CRASH → S6:readRun running@6 → S6:upgrade-preread-skip → S6:recovery-delete-row → S6:readRun-missing→resilient → S6:resilient-create@3 → S6:resilient-rc ULID → S6:readHead [rc:slot,…] → S6:tx skip log-not-fresh → S6:patch-running(id ULID) → S6:insert rs ULID → S8:readRun running@3 → S8:upgrade-preread-skip → S8:alreadyRunning
+
+=== [pairs + crash/recovery, row missing] allFixesAdopt(delete+adopt orphan): scenarios=8 states=10288 quiescent=66 violated=[oneCreated, monotone, rcAgrees, raised]
+  oneCreated @ stamp=3 executors=[6, 8] c0=0 terminalWriter=false crashes=1:
+    S6:readRun-missing→resilient → S6:resilient-create@3 → S6:resilient-rc ULID → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:patch-running-then-CRASH → S6:readRun running@6 → S6:upgrade-preread-skip → S6:recovery-delete-row → C:run_created row@3 → C:rc event ULID
+  monotone @ stamp=3 executors=[6, 8] c0=0 terminalWriter=false crashes=1:
+    S6:readRun-missing→resilient → S6:resilient-create@3 → S6:resilient-rc ULID → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:patch-running-then-CRASH → S6:readRun running@6 → S6:upgrade-preread-skip → S6:recovery-delete-row → C:run_created row@3
+  rcAgrees @ stamp=3 executors=[6, 8] c0=0 terminalWriter=false crashes=1:
+    S6:readRun-missing→resilient → S6:resilient-create@3 → S6:resilient-rc ULID → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:patch-running-then-CRASH → S6:readRun running@6 → S6:upgrade-preread-skip → S6:recovery-delete-row → C:run_created row@3
+  raised @ stamp=3 executors=[6, 8] c0=0 terminalWriter=false crashes=1:
+    S6:readRun-missing→resilient → S6:resilient-create@3 → S6:resilient-rc ULID → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:patch-running-then-CRASH → S6:readRun running@6 → S6:upgrade-preread-skip → S6:recovery-delete-row → C:run_created row@3 → C:rc event ULID → S6:readRun pending@3 → S6:readHead [rc:slot,…] → S6:tx skip log-not-fresh → S6:patch-running(id ULID) → S6:insert rs ULID → S8:readRun running@3 → S8:upgrade-preread-skip → S8:alreadyRunning
+
+=== [pairs + crash/recovery, row missing] allFixes(reset to pending): scenarios=8 states=5404 quiescent=42 violated=[]
+
+=== [pairs + crash, no recovery] allFixes: scenarios=8 states=837 quiescent=10 violated=[canFinish]
+  canFinish @ stamp=3 executors=[6, 8] c0=2 terminalWriter=false crashes=1:
+    S6:readRun pending@3 → S6:readHead [rc:ULID] → S6:tx-upgraded→6 (rekey) → S6:patch-running-then-CRASH
+
+=== [triples, run_created late] asIs(#1044): scenarios=9 states=10624 quiescent=286 violated=[noMixed, oneStarted, noAlloc500, idsMatchSpec, raised]
+  noMixed @ stamp=3 executors=[6, 8, 8] c0=1 terminalWriter=false crashes=0:
+    C:rc event ULID → S6:readRun pending@3 → S6:readHead [rc:ULID] → S8:readRun pending@3 → S6:tx-upgraded→6 (rekey) → S8:readHead [rc:slot] → S8:tx skip log-not-fresh → S8:patch-running(id ULID) → S8:insert rs ULID
+  oneStarted @ stamp=3 executors=[6, 8, 8] c0=1 terminalWriter=false crashes=0:
+    S6:readRun pending@3 → S6:readHead [] → S6:tx skip run-created-not-committed → S8:readRun pending@3 → S6:patch-running(id ULID) → S6:insert rs ULID → S8:readHead [other,…] → S8:tx skip run-created-not-first → S8:patch-running(id ULID) → S8:insert rs ULID
+  noAlloc500 @ stamp=3 executors=[6, 8, 8] c0=1 terminalWriter=false crashes=0:
+    C:rc event ULID → S6:readRun pending@3 → S6:readHead [rc:ULID] → S8:readRun pending@3 → S6:tx-upgraded→6 (rekey) → S6:patch-running(id probe) → S8:readHead [rc:slot] → S8:tx skip log-not-fresh → S8:patch-running(id ULID) → S8:insert rs ULID → S6:probe-500-mixed
+  idsMatchSpec @ stamp=3 executors=[6, 8, 8] c0=1 terminalWriter=false crashes=0:
+    C:rc event ULID → S6:readRun pending@3 → S6:readHead [rc:ULID] → S8:readRun pending@3 → S6:tx-upgraded→6 (rekey) → S6:patch-running(id probe) → S6:insert rs slot2(probe) → S8:readRun running@6 → S8:readHead [rc:slot,…] → S8:upgrade-preread-skip → S8:tx skip log-not-fresh → S8:patch-running(id ULID) → S8:alreadyRunning → S8:insert rs ULID
+  raised @ stamp=3 executors=[6, 8, 8] c0=1 terminalWriter=false crashes=0:
+    S6:readRun pending@3 → S6:readHead [] → C:rc event ULID → S6:tx skip run-created-not-committed → S6:patch-running(id ULID) → S6:insert rs ULID → S8:readRun running@3 → S8:readRun running@3 → S8:upgrade-preread-skip → S8:upgrade-preread-skip → S8:alreadyRunning → S8:alreadyRunning
+
+=== [triples, row missing] allFixes: scenarios=9 states=9274 quiescent=18 violated=[]
+
+=== [full (2 starters+terminal+crash, row missing)] allFixes: scenarios=6 states=40086 quiescent=230 violated=[]
+exit=0 elapsed=93s

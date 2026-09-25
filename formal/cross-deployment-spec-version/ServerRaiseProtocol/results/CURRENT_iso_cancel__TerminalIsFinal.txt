@@ -1,0 +1,166 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 84 and seed -4847120996093957368 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 109845] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/tmp.QI97WbwlcJ/ServerRaiseProtocol.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module ServerRaiseProtocol
+Starting... (2026-09-25 01:39:39)
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Computed 8 initial states...
+Finished computing initial states: 12 distinct states generated at 2026-09-25 01:39:39.
+Error: Action property TerminalIsFinal is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ eid = <<"U">>
+/\ eatt = <<1>>
+/\ log = {}
+/\ peak = 0
+/\ row = [st |-> "none", sp |-> 0, ex |-> FALSE]
+/\ eheld = <<[st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ sawUlid = FALSE
+/\ hist = {}
+/\ exec = 6
+/\ crashes = 0
+/\ cpc = "row"
+/\ epc = <<"fetch">>
+/\ ersp = <<0>>
+/\ stamp = 6
+/\ kpc = "read"
+/\ erc = <<[sp |-> 0, k |-> "U", n |-> 0, t |-> "none"]>>
+
+State 2: <CallerRow line 320, col 3 to line 339, col 47 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ eid = <<"U">>
+/\ eatt = <<1>>
+/\ log = {[sp |-> 6, k |-> "S", n |-> 1, t |-> "run_created"]}
+/\ peak = 6
+/\ row = [st |-> "pending", sp |-> 6, ex |-> TRUE]
+/\ eheld = <<[st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "pending", sp |-> 6]}
+/\ exec = 6
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"fetch">>
+/\ ersp = <<0>>
+/\ stamp = 6
+/\ kpc = "read"
+/\ erc = <<[sp |-> 0, k |-> "U", n |-> 0, t |-> "none"]>>
+
+State 3: <ExFetch line 379, col 3 to line 392, col 21 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ eid = <<"U">>
+/\ eatt = <<1>>
+/\ log = {[sp |-> 6, k |-> "S", n |-> 1, t |-> "run_created"]}
+/\ peak = 6
+/\ row = [st |-> "pending", sp |-> 6, ex |-> TRUE]
+/\ eheld = <<[st |-> "pending", sp |-> 6]>>
+/\ clk = 100
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "pending", sp |-> 6]}
+/\ exec = 6
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"upg_check">>
+/\ ersp = <<0>>
+/\ stamp = 6
+/\ kpc = "read"
+/\ erc = <<[sp |-> 0, k |-> "U", n |-> 0, t |-> "none"]>>
+
+State 4: <ExUpgCheck line 441, col 3 to line 450, col 21 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ eid = <<"U">>
+/\ eatt = <<1>>
+/\ log = {[sp |-> 6, k |-> "S", n |-> 1, t |-> "run_created"]}
+/\ peak = 6
+/\ row = [st |-> "pending", sp |-> 6, ex |-> TRUE]
+/\ eheld = <<[st |-> "pending", sp |-> 6]>>
+/\ clk = 100
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "pending", sp |-> 6]}
+/\ exec = 6
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"trans">>
+/\ ersp = <<0>>
+/\ stamp = 6
+/\ kpc = "read"
+/\ erc = <<[sp |-> 0, k |-> "U", n |-> 0, t |-> "none"]>>
+
+State 5: <KRead line 661, col 3 to line 669, col 20 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "pending", sp |-> 6]
+/\ eid = <<"U">>
+/\ eatt = <<1>>
+/\ log = {[sp |-> 6, k |-> "S", n |-> 1, t |-> "run_created"]}
+/\ peak = 6
+/\ row = [st |-> "pending", sp |-> 6, ex |-> TRUE]
+/\ eheld = <<[st |-> "pending", sp |-> 6]>>
+/\ clk = 100
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "pending", sp |-> 6]}
+/\ exec = 6
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"trans">>
+/\ ersp = <<0>>
+/\ stamp = 6
+/\ kpc = "patch"
+/\ erc = <<[sp |-> 0, k |-> "U", n |-> 0, t |-> "none"]>>
+
+State 6: <KPatch line 672, col 3 to line 693, col 20 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "pending", sp |-> 6]
+/\ eid = <<"U">>
+/\ eatt = <<1>>
+/\ log = { [sp |-> 0, k |-> "S", n |-> 2, t |-> "run_cancelled"],
+  [sp |-> 6, k |-> "S", n |-> 1, t |-> "run_created"] }
+/\ peak = 6
+/\ row = [st |-> "cancelled", sp |-> 6, ex |-> TRUE]
+/\ eheld = <<[st |-> "pending", sp |-> 6]>>
+/\ clk = 100
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "cancelled", sp |-> 6], [st |-> "pending", sp |-> 6]}
+/\ exec = 6
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"trans">>
+/\ ersp = <<0>>
+/\ stamp = 6
+/\ kpc = "done"
+/\ erc = <<[sp |-> 0, k |-> "U", n |-> 0, t |-> "none"]>>
+
+State 7: <ExTrans line 518, col 3 to line 546, col 21 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "pending", sp |-> 6]
+/\ eid = <<"S">>
+/\ eatt = <<1>>
+/\ log = { [sp |-> 0, k |-> "S", n |-> 2, t |-> "run_cancelled"],
+  [sp |-> 6, k |-> "S", n |-> 1, t |-> "run_created"] }
+/\ peak = 6
+/\ row = [st |-> "running", sp |-> 6, ex |-> TRUE]
+/\ eheld = <<[st |-> "pending", sp |-> 6]>>
+/\ clk = 100
+/\ sawUlid = FALSE
+/\ hist = { [st |-> "cancelled", sp |-> 6],
+  [st |-> "pending", sp |-> 6],
+  [st |-> "running", sp |-> 6] }
+/\ exec = 6
+/\ crashes = 0
+/\ cpc = "done"
+/\ epc = <<"rs_insert">>
+/\ ersp = <<0>>
+/\ stamp = 6
+/\ kpc = "done"
+/\ erc = <<[sp |-> 0, k |-> "U", n |-> 0, t |-> "none"]>>
+
+434 states generated, 333 distinct states found, 66 states left on queue.
+The depth of the complete state graph search is 7.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 3 and the 95th percentile is 2).
+Finished in 00s at (2026-09-25 01:39:39)

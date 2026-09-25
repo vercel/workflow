@@ -1,0 +1,197 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 9 and seed -1165470447583949204 with 3 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 82232] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/ProbeCache.tla
+Parsing file /tmp/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module ProbeCache
+Starting... (2026-09-25 19:46:58)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-25 19:46:58.
+Progress(33) at 2026-09-25 19:46:58: 6,040 states generated, 1,942 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 1942 total distinct states at (2026-09-25 19:46:58)
+Error: Temporal properties were violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+/\ afb = 0
+/\ age = 0
+/\ glitches = 0
+/\ last = "init"
+/\ ent = "none"
+
+State 2: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 0
+/\ age = 61
+/\ glitches = 1
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 3: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 0
+/\ age = 1
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 4: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 1
+/\ age = 30
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 5: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 2
+/\ age = 1
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 6: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 3
+/\ age = 1
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 7: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 4
+/\ age = 30
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 8: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 5
+/\ age = 30
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 9: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 6
+/\ age = 1
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 10: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 7
+/\ age = 1
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 11: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 8
+/\ age = 30
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 12: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 9
+/\ age = 30
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 13: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 10
+/\ age = 1
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 14: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 11
+/\ age = 1
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 15: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 12
+/\ age = 30
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 16: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 13
+/\ age = 30
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 17: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 14
+/\ age = 1
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 18: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 15
+/\ age = 1
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 19: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 16
+/\ age = 30
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 20: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 17
+/\ age = 30
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 21: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 18
+/\ age = 1
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 22: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 19
+/\ age = 1
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 23: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 20
+/\ age = 30
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 24: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 21
+/\ age = 1
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+State 25: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+/\ afb = 21
+/\ age = 30
+/\ glitches = 2
+/\ last = "fallback"
+/\ ent = "miss"
+
+Back to state 24: <Start line 86, col 7 to line 106, col 42 of module ProbeCache>
+
+Finished checking temporal properties in 00s at 2026-09-25 19:46:59
+6040 states generated, 1942 distinct states found, 0 states left on queue.
+Finished in 00s at (2026-09-25 19:46:59)
+exit=13

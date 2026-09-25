@@ -1,0 +1,180 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 41 and seed 7594425373817086606 with 3 workers on 8 cores with 2731MB heap and 64MB offheap memory [pid: 79182] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /tmp/tmp.1JqH5DOGVb/ServerRaiseProtocol.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module ServerRaiseProtocol
+Starting... (2026-09-25 19:44:56)
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Computed 8 initial states...
+Finished computing initial states: 12 distinct states generated at 2026-09-25 19:44:56.
+Error: Invariant ReplayNeverFails is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"U", "U">>
+/\ eatt = <<1, 1>>
+/\ log = {}
+/\ peak = 0
+/\ row = [st |-> "none", sp |-> 0, ex |-> FALSE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "none", sp |-> 0], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ sawUlid = FALSE
+/\ hist = {}
+/\ eturbo = <<FALSE, FALSE>>
+/\ exec = 6
+/\ crashes = 0
+/\ cpc = "row"
+/\ epc = <<"fetch", "fetch">>
+/\ ersp = <<0, 0>>
+/\ rraised = FALSE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 2: <ExFetch line 492, col 3 to line 509, col 21 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"U", "U">>
+/\ eatt = <<1, 1>>
+/\ log = {}
+/\ peak = 0
+/\ row = [st |-> "none", sp |-> 0, ex |-> FALSE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "none", sp |-> 0], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ sawUlid = FALSE
+/\ hist = {}
+/\ eturbo = <<FALSE, FALSE>>
+/\ exec = 6
+/\ crashes = 0
+/\ cpc = "row"
+/\ epc = <<"fetch", "rs_create">>
+/\ ersp = <<0, 0>>
+/\ rraised = FALSE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 3: <ExRsCreate line 512, col 3 to line 538, col 22 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"U", "U">>
+/\ eatt = <<1, 1>>
+/\ log = {[sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"]}
+/\ peak = 3
+/\ row = [st |-> "pending", sp |-> 3, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "none", sp |-> 0], [st |-> "pending", sp |-> 3]>>
+/\ clk = 101
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "pending", sp |-> 3]}
+/\ eturbo = <<FALSE, FALSE>>
+/\ exec = 6
+/\ crashes = 0
+/\ cpc = "row"
+/\ epc = <<"fetch", "trans">>
+/\ ersp = <<0, 3>>
+/\ rraised = FALSE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 4: <ExTrans line 676, col 3 to line 728, col 41 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"U", "U">>
+/\ eatt = <<1, 1>>
+/\ log = {[sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"]}
+/\ peak = 3
+/\ row = [st |-> "running", sp |-> 3, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "none", sp |-> 0], [st |-> "pending", sp |-> 3]>>
+/\ clk = 101
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "pending", sp |-> 3], [st |-> "running", sp |-> 3]}
+/\ eturbo = <<FALSE, FALSE>>
+/\ exec = 6
+/\ crashes = 0
+/\ cpc = "row"
+/\ epc = <<"fetch", "rs_insert">>
+/\ ersp = <<0, 3>>
+/\ rraised = FALSE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 5: <ExRsInsert line 731, col 3 to line 739, col 40 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"U", "U">>
+/\ eatt = <<1, 1>>
+/\ log = { [sp |-> 0, k |-> "U", n |-> 101, t |-> "run_started"],
+  [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] }
+/\ peak = 3
+/\ row = [st |-> "running", sp |-> 3, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "none", sp |-> 0], [st |-> "pending", sp |-> 3]>>
+/\ clk = 102
+/\ sawUlid = FALSE
+/\ hist = {[st |-> "pending", sp |-> 3], [st |-> "running", sp |-> 3]}
+/\ eturbo = <<FALSE, FALSE>>
+/\ exec = 6
+/\ crashes = 0
+/\ cpc = "row"
+/\ epc = <<"fetch", "replay">>
+/\ ersp = <<0, 3>>
+/\ rraised = FALSE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
+/\ erf = <<FALSE, FALSE>>
+
+State 6: <ExReplay line 777, col 3 to line 787, col 40 of module ServerRaiseProtocol>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ wleft = 2
+/\ eid = <<"U", "U">>
+/\ eatt = <<1, 1>>
+/\ log = { [sp |-> 0, k |-> "U", n |-> 101, t |-> "run_started"],
+  [sp |-> 3, k |-> "U", n |-> 100, t |-> "run_created"] }
+/\ peak = 3
+/\ row = [st |-> "running", sp |-> 3, ex |-> TRUE]
+/\ ewr = <<FALSE, FALSE>>
+/\ eheld = <<[st |-> "none", sp |-> 0], [st |-> "pending", sp |-> 3]>>
+/\ clk = 102
+/\ sawUlid = TRUE
+/\ hist = {[st |-> "pending", sp |-> 3], [st |-> "running", sp |-> 3]}
+/\ eturbo = <<FALSE, FALSE>>
+/\ exec = 6
+/\ crashes = 0
+/\ cpc = "row"
+/\ epc = <<"fetch", "rf_read">>
+/\ ersp = <<0, 3>>
+/\ rraised = FALSE
+/\ stamp = 3
+/\ kpc = "read"
+/\ erc = << [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"],
+   [sp |-> 0, k |-> "U", n |-> 0, t |-> "none"] >>
+/\ erf = <<FALSE, FALSE>>
+
+2718 states generated, 1764 distinct states found, 1008 states left on queue.
+The depth of the complete state graph search is 6.
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 5 and the 95th percentile is 4).
+Finished in 00s at (2026-09-25 19:44:57)

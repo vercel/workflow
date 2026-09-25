@@ -1,0 +1,238 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 49 and seed 8633323116149903054 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 106994] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/MidRunRaiseGates/MidRunRaiseGates.tla
+Parsing file /tmp/Integers.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module MidRunRaiseGates
+Starting... (2026-09-25 01:37:12)
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Computed 8 initial states...
+Computed 16 initial states...
+Computed 32 initial states...
+Finished computing initial states: 64 distinct states generated at 2026-09-25 01:37:13.
+Progress(9) at 2026-09-25 01:37:16: 273,031 states generated (273,031 s/min), 80,066 distinct states found (80,066 ds/min), 34,293 states left on queue.
+Error: Invariant ReplayConsistent is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ kheld = [v |-> 0, st |-> "none"]
+/\ att = <<1, 1>>
+/\ outComp = FALSE
+/\ log = <<>>
+/\ hfresh = <<FALSE, FALSE>>
+/\ gvv = <<0, 0>>
+/\ pc = <<"fetch", "fetch">>
+/\ hidx = <<0, 0>>
+/\ exe = <<6, 8>>
+/\ hist = {}
+/\ rv = 0
+/\ rowEx = FALSE
+/\ st = "none"
+/\ turbo = <<FALSE, TRUE>>
+/\ replayFail = FALSE
+/\ cpc = "row"
+/\ stamp = 6
+/\ kpc = "read"
+/\ held = <<[v |-> 0, st |-> "none"], [v |-> 0, st |-> "none"]>>
+/\ refused = {}
+/\ recovered = FALSE
+
+State 2: <CallerRow line 233, col 3 to line 243, col 20 of module MidRunRaiseGates>
+/\ kheld = [v |-> 0, st |-> "none"]
+/\ att = <<1, 1>>
+/\ outComp = FALSE
+/\ log = <<>>
+/\ hfresh = <<FALSE, FALSE>>
+/\ gvv = <<0, 0>>
+/\ pc = <<"fetch", "fetch">>
+/\ hidx = <<0, 0>>
+/\ exe = <<6, 8>>
+/\ hist = {[v |-> 6, st |-> "pending"]}
+/\ rv = 6
+/\ rowEx = TRUE
+/\ st = "pending"
+/\ turbo = <<FALSE, TRUE>>
+/\ replayFail = FALSE
+/\ cpc = "evt"
+/\ stamp = 6
+/\ kpc = "read"
+/\ held = <<[v |-> 0, st |-> "none"], [v |-> 0, st |-> "none"]>>
+/\ refused = {}
+/\ recovered = FALSE
+
+State 3: <CallerEvt line 246, col 3 to line 250, col 20 of module MidRunRaiseGates>
+/\ kheld = [v |-> 0, st |-> "none"]
+/\ att = <<1, 1>>
+/\ outComp = FALSE
+/\ log = <<[g |-> {6}, t |-> "rc"]>>
+/\ hfresh = <<FALSE, FALSE>>
+/\ gvv = <<0, 0>>
+/\ pc = <<"fetch", "fetch">>
+/\ hidx = <<0, 0>>
+/\ exe = <<6, 8>>
+/\ hist = {[v |-> 6, st |-> "pending"]}
+/\ rv = 6
+/\ rowEx = TRUE
+/\ st = "pending"
+/\ turbo = <<FALSE, TRUE>>
+/\ replayFail = FALSE
+/\ cpc = "done"
+/\ stamp = 6
+/\ kpc = "read"
+/\ held = <<[v |-> 0, st |-> "none"], [v |-> 0, st |-> "none"]>>
+/\ refused = {}
+/\ recovered = FALSE
+
+State 4: <SFetch line 272, col 3 to line 284, col 20 of module MidRunRaiseGates>
+/\ kheld = [v |-> 0, st |-> "none"]
+/\ att = <<1, 1>>
+/\ outComp = FALSE
+/\ log = <<[g |-> {6}, t |-> "rc"]>>
+/\ hfresh = <<FALSE, FALSE>>
+/\ gvv = <<0, 0>>
+/\ pc = <<"fetch", "check">>
+/\ hidx = <<0, 0>>
+/\ exe = <<6, 8>>
+/\ hist = {[v |-> 6, st |-> "pending"]}
+/\ rv = 6
+/\ rowEx = TRUE
+/\ st = "pending"
+/\ turbo = <<FALSE, TRUE>>
+/\ replayFail = FALSE
+/\ cpc = "done"
+/\ stamp = 6
+/\ kpc = "read"
+/\ held = <<[v |-> 0, st |-> "none"], [v |-> 6, st |-> "pending"]>>
+/\ refused = {}
+/\ recovered = FALSE
+
+State 5: <KRead line 487, col 3 to line 493, col 20 of module MidRunRaiseGates>
+/\ kheld = [v |-> 6, st |-> "pending"]
+/\ att = <<1, 1>>
+/\ outComp = FALSE
+/\ log = <<[g |-> {6}, t |-> "rc"]>>
+/\ hfresh = <<FALSE, FALSE>>
+/\ gvv = <<0, 0>>
+/\ pc = <<"fetch", "check">>
+/\ hidx = <<0, 0>>
+/\ exe = <<6, 8>>
+/\ hist = {[v |-> 6, st |-> "pending"]}
+/\ rv = 6
+/\ rowEx = TRUE
+/\ st = "pending"
+/\ turbo = <<FALSE, TRUE>>
+/\ replayFail = FALSE
+/\ cpc = "done"
+/\ stamp = 6
+/\ kpc = "patch"
+/\ held = <<[v |-> 0, st |-> "none"], [v |-> 6, st |-> "pending"]>>
+/\ refused = {}
+/\ recovered = FALSE
+
+State 6: <SCheck line 316, col 3 to line 326, col 20 of module MidRunRaiseGates>
+/\ kheld = [v |-> 6, st |-> "pending"]
+/\ att = <<1, 1>>
+/\ outComp = FALSE
+/\ log = <<[g |-> {6}, t |-> "rc"]>>
+/\ hfresh = <<FALSE, FALSE>>
+/\ gvv = <<0, 0>>
+/\ pc = <<"fetch", "head">>
+/\ hidx = <<0, 0>>
+/\ exe = <<6, 8>>
+/\ hist = {[v |-> 6, st |-> "pending"]}
+/\ rv = 6
+/\ rowEx = TRUE
+/\ st = "pending"
+/\ turbo = <<FALSE, TRUE>>
+/\ replayFail = FALSE
+/\ cpc = "done"
+/\ stamp = 6
+/\ kpc = "patch"
+/\ held = <<[v |-> 0, st |-> "none"], [v |-> 6, st |-> "pending"]>>
+/\ refused = {}
+/\ recovered = FALSE
+
+State 7: <SHead line 329, col 3 to line 350, col 20 of module MidRunRaiseGates>
+/\ kheld = [v |-> 6, st |-> "pending"]
+/\ att = <<1, 1>>
+/\ outComp = FALSE
+/\ log = <<[g |-> {6}, t |-> "rc"]>>
+/\ hfresh = <<FALSE, TRUE>>
+/\ gvv = <<0, 0>>
+/\ pc = <<"fetch", "tx">>
+/\ hidx = <<0, 1>>
+/\ exe = <<6, 8>>
+/\ hist = {[v |-> 6, st |-> "pending"]}
+/\ rv = 6
+/\ rowEx = TRUE
+/\ st = "pending"
+/\ turbo = <<FALSE, TRUE>>
+/\ replayFail = FALSE
+/\ cpc = "done"
+/\ stamp = 6
+/\ kpc = "patch"
+/\ held = <<[v |-> 0, st |-> "none"], [v |-> 6, st |-> "pending"]>>
+/\ refused = {}
+/\ recovered = FALSE
+
+State 8: <STx line 353, col 3 to line 373, col 20 of module MidRunRaiseGates>
+/\ kheld = [v |-> 6, st |-> "pending"]
+/\ att = <<1, 1>>
+/\ outComp = FALSE
+/\ log = <<[g |-> {6, 7}, t |-> "rc"]>>
+/\ hfresh = <<FALSE, TRUE>>
+/\ gvv = <<0, 0>>
+/\ pc = <<"fetch", "reread">>
+/\ hidx = <<0, 1>>
+/\ exe = <<6, 8>>
+/\ hist = {[v |-> 6, st |-> "pending"], [v |-> 8, st |-> "pending"]}
+/\ rv = 8
+/\ rowEx = TRUE
+/\ st = "pending"
+/\ turbo = <<FALSE, TRUE>>
+/\ replayFail = FALSE
+/\ cpc = "done"
+/\ stamp = 6
+/\ kpc = "patch"
+/\ held = <<[v |-> 0, st |-> "none"], [v |-> 6, st |-> "pending"]>>
+/\ refused = {}
+/\ recovered = FALSE
+
+State 9: <KPatch line 496, col 3 to line 510, col 20 of module MidRunRaiseGates>
+/\ kheld = [v |-> 6, st |-> "pending"]
+/\ att = <<1, 1>>
+/\ outComp = FALSE
+/\ log = <<[g |-> {6, 7}, t |-> "rc"], [g |-> {6}, t |-> "tm"]>>
+/\ hfresh = <<FALSE, TRUE>>
+/\ gvv = <<0, 0>>
+/\ pc = <<"fetch", "reread">>
+/\ hidx = <<0, 1>>
+/\ exe = <<6, 8>>
+/\ hist = { [v |-> 6, st |-> "pending"],
+  [v |-> 8, st |-> "pending"],
+  [v |-> 8, st |-> "terminal"] }
+/\ rv = 8
+/\ rowEx = TRUE
+/\ st = "terminal"
+/\ turbo = <<FALSE, TRUE>>
+/\ replayFail = FALSE
+/\ cpc = "done"
+/\ stamp = 6
+/\ kpc = "done"
+/\ held = <<[v |-> 0, st |-> "none"], [v |-> 6, st |-> "pending"]>>
+/\ refused = {}
+/\ recovered = FALSE
+
+300757 states generated, 87736 distinct states found, 37624 states left on queue.
+The depth of the complete state graph search is 9.
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 7 and the 95th percentile is 4).
+Finished in 04s at (2026-09-25 01:37:16)
