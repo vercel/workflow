@@ -1,3 +1,4 @@
+import { ReplayDivergenceError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -34,12 +35,20 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   const promiseQueueHolder = { current: Promise.resolve() };
+  const ctxRef: { current?: WorkflowOrchestratorContext } = {};
   const ctx: WorkflowOrchestratorContext = {
     runId: 'wrun_test',
     encryptionKey: undefined,
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
-      onUnconsumedEvent: () => {},
+      onUnconsumedEvent: (event) => {
+        ctxRef.current?.onWorkflowError(
+          new ReplayDivergenceError(
+            `Replay could not consume event: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}.`,
+            { eventId: event.eventId }
+          )
+        );
+      },
       getPromiseQueue: () => promiseQueueHolder.current,
     }),
     invocationsQueue: new Map(),
@@ -57,6 +66,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     pendingDeliveries: 0,
     pendingDeliveryBarriers: new Map(),
   };
+  ctxRef.current = ctx;
   return ctx;
 }
 
@@ -542,6 +552,120 @@ function defineTests(mode: 'sync' | 'async') {
       await expectRawRaceToChooseQueuedHook(true);
     });
 
+    it('should consume a losing wait created after a buffered hook resolves during an awaited step', async () => {
+      await setupHydrateMock();
+      const ops: Promise<any>[] = [];
+      const [payload, progressResult] = await Promise.all([
+        dehydrateStepReturnValue(
+          { value: 'hook-wins' },
+          'wrun_test',
+          undefined,
+          ops
+        ),
+        dehydrateStepReturnValue(undefined, 'wrun_test', undefined, ops),
+      ]);
+      const resumeAt = new Date('2026-06-02T14:05:10.229Z');
+
+      // Shape from wrun_01KT4A9M0Q2W39YKWQG4J8G48J: a read that was
+      // pending during the previous step receives its payload before the next
+      // losing sleep is registered, yet both the wait and hook-winning step
+      // were committed in the durable history.
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_created',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', isWebhook: false },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'progressStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_test',
+          eventType: 'step_started',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'progressStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_3',
+          runId: 'wrun_test',
+          eventType: 'step_completed',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'progressStep', result: progressResult },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_4',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', payload },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_5',
+          runId: 'wrun_test',
+          eventType: 'wait_created',
+          correlationId: `wait_${CORR_IDS[2]}`,
+          eventData: { resumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_6',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[3]}`,
+          eventData: { stepName: 'drainStep' },
+          createdAt: new Date(),
+        },
+      ]);
+
+      const createHook = createCreateHook(ctx);
+      const sleep = createSleep(ctx);
+      const useStep = createUseStep(ctx);
+
+      const { error } = await runWithDiscontinuation(ctx, async () => {
+        const hook = createHook<{ value: string }>({ token: 'test-token' });
+        const iterator = hook[Symbol.asyncIterator]();
+        const progressStep = useStep('progressStep');
+        const drainStep = useStep('drainStep');
+
+        const pendingRead = iterator.next();
+        await progressStep();
+        const pendingSleep = sleep(resumeAt);
+        const result = await Promise.race([
+          pendingRead.then((value) => ({ kind: 'hook' as const, value })),
+          pendingSleep.then(() => ({ kind: 'sleep' as const })),
+        ]);
+
+        if (result.kind === 'hook') {
+          await drainStep();
+        }
+      });
+
+      expect(error).toBeDefined();
+      if (!WorkflowSuspension.is(error)) {
+        throw error;
+      }
+
+      const pendingSteps = [...ctx.invocationsQueue.values()].filter(
+        (i) => i.type === 'step'
+      );
+      expect(pendingSteps).toHaveLength(1);
+      expect(pendingSteps[0].type === 'step' && pendingSteps[0].stepName).toBe(
+        'drainStep'
+      );
+    });
+
     async function replayEarlyWaiterAcrossDrain(options: {
       winner: 'hook' | 'sleep';
     }) {
@@ -759,6 +883,379 @@ function defineTests(mode: 'sync' | 'async') {
       expect(pendingSteps[0].type === 'step' && pendingSteps[0].stepName).toBe(
         'drainStep'
       );
+    });
+
+    it('should preserve a ready reused-sleep branch when a hook is appended before its queued output', async () => {
+      await setupHydrateMock();
+      const ops: Promise<any>[] = [];
+      const [
+        payload0,
+        payload1,
+        progress0Result,
+        drain0Result,
+        progress1Result,
+      ] = await Promise.all([
+        dehydrateStepReturnValue(
+          { value: 'first-wake' },
+          'wrun_test',
+          undefined,
+          ops
+        ),
+        dehydrateStepReturnValue(
+          { value: 'second-wake' },
+          'wrun_test',
+          undefined,
+          ops
+        ),
+        dehydrateStepReturnValue(undefined, 'wrun_test', undefined, ops),
+        dehydrateStepReturnValue(undefined, 'wrun_test', undefined, ops),
+        dehydrateStepReturnValue(undefined, 'wrun_test', undefined, ops),
+      ]);
+      const resumeAt = new Date('2026-06-02T14:04:34.864Z');
+
+      const prefix: Event[] = [
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_created',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', isWebhook: false },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'progressStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_test',
+          eventType: 'step_started',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'progressStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_3',
+          runId: 'wrun_test',
+          eventType: 'step_completed',
+          correlationId: `step_${CORR_IDS[1]}`,
+          eventData: { stepName: 'progressStep', result: progress0Result },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_4',
+          runId: 'wrun_test',
+          eventType: 'wait_created',
+          correlationId: `wait_${CORR_IDS[2]}`,
+          eventData: { resumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_5',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', payload: payload0 },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_6',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[3]}`,
+          eventData: { stepName: 'drainStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_7',
+          runId: 'wrun_test',
+          eventType: 'step_started',
+          correlationId: `step_${CORR_IDS[3]}`,
+          eventData: { stepName: 'drainStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_8',
+          runId: 'wrun_test',
+          eventType: 'wait_completed',
+          correlationId: `wait_${CORR_IDS[2]}`,
+          eventData: { resumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_9',
+          runId: 'wrun_test',
+          eventType: 'step_completed',
+          correlationId: `step_${CORR_IDS[3]}`,
+          eventData: { stepName: 'drainStep', result: drain0Result },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_10',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[4]}`,
+          eventData: { stepName: 'progressStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_11',
+          runId: 'wrun_test',
+          eventType: 'step_started',
+          correlationId: `step_${CORR_IDS[4]}`,
+          eventData: { stepName: 'progressStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_12',
+          runId: 'wrun_test',
+          eventType: 'step_completed',
+          correlationId: `step_${CORR_IDS[4]}`,
+          eventData: { stepName: 'progressStep', result: progress1Result },
+          createdAt: new Date(),
+        },
+      ];
+      const lateHookEvent: Event = {
+        eventId: 'evnt_13',
+        runId: 'wrun_test',
+        eventType: 'hook_received',
+        correlationId: `hook_${CORR_IDS[0]}`,
+        eventData: { token: 'test-token', payload: payload1 },
+        createdAt: new Date(),
+      };
+      const staleOutputEvent: Event = {
+        eventId: 'evnt_14',
+        runId: 'wrun_test',
+        eventType: 'step_created',
+        correlationId: `step_${CORR_IDS[5]}`,
+        eventData: { stepName: 'progressStep' },
+        createdAt: new Date(),
+      };
+
+      async function replay(events: Event[]) {
+        const ctx = setupWorkflowContext(events);
+        const createHook = createCreateHook(ctx);
+        const sleep = createSleep(ctx);
+        const useStep = createUseStep(ctx);
+        const { error } = await runWithDiscontinuation(ctx, async () => {
+          const hook = createHook<{ value: string }>({ token: 'test-token' });
+          const iterator = hook[Symbol.asyncIterator]();
+          const progressStep = useStep('progressStep');
+          const drainStep = useStep('drainStep');
+          const firstRead = iterator.next();
+          await progressStep();
+          const pendingSleep = sleep(resumeAt);
+          const firstResult = await Promise.race([
+            firstRead.then((value) => ({ kind: 'hook' as const, value })),
+            pendingSleep.then(() => ({ kind: 'sleep' as const })),
+          ]);
+          if (firstResult.kind === 'hook') {
+            await drainStep();
+          }
+
+          const secondRead = iterator.next();
+          await progressStep();
+          const secondResult = await Promise.race([
+            secondRead.then((value) => ({ kind: 'hook' as const, value })),
+            pendingSleep.then(() => ({ kind: 'sleep' as const })),
+          ]);
+          if (secondResult.kind === 'hook') {
+            await drainStep();
+          } else {
+            await progressStep();
+          }
+        });
+        return { ctx, error };
+      }
+
+      // A replay that read the prefix before the second hook arrived takes
+      // the already-completed sleep branch and queues progressStep.
+      const beforeHook = await replay(prefix);
+      expect(beforeHook.error).toBeDefined();
+      if (!WorkflowSuspension.is(beforeHook.error)) {
+        throw beforeHook.error;
+      }
+      const beforeHookSteps = [...beforeHook.ctx.invocationsQueue.values()]
+        .filter((item) => item.type === 'step')
+        .map((item) => item.type === 'step' && item.stepName);
+      expect(beforeHookSteps).toEqual(['progressStep']);
+
+      // The server can durably append a hook before committing output from
+      // that prefix replay. Replaying this append-only history must retain the
+      // earlier sleep decision; otherwise the recorded progressStep diverges.
+      const afterHook = await replay([
+        ...prefix,
+        lateHookEvent,
+        staleOutputEvent,
+      ]);
+      expect(afterHook.error).toBeDefined();
+      if (!WorkflowSuspension.is(afterHook.error)) {
+        throw afterHook.error;
+      }
+      const afterHookSteps = [...afterHook.ctx.invocationsQueue.values()]
+        .filter((item) => item.type === 'step')
+        .map((item) => item.type === 'step' && item.stepName);
+      expect(afterHookSteps).toEqual(['progressStep']);
+    });
+
+    it('should preserve a reused-sleep branch if a late hook is inserted before its observed completion', async () => {
+      await setupHydrateMock();
+      const ops: Promise<any>[] = [];
+      const [payload0, payload1, drainResult] = await Promise.all([
+        dehydrateStepReturnValue(
+          { value: 'first-wake' },
+          'wrun_test',
+          undefined,
+          ops
+        ),
+        dehydrateStepReturnValue(
+          { value: 'second-wake' },
+          'wrun_test',
+          undefined,
+          ops
+        ),
+        dehydrateStepReturnValue(undefined, 'wrun_test', undefined, ops),
+      ]);
+      const reusedResumeAt = new Date('2026-06-02T14:04:34.864Z');
+      const nextResumeAt = new Date('2026-06-02T14:05:10.229Z');
+
+      const prefix: Event[] = [
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_created',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', isWebhook: false },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_test',
+          eventType: 'wait_created',
+          correlationId: `wait_${CORR_IDS[1]}`,
+          eventData: { resumeAt: reusedResumeAt },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: `hook_${CORR_IDS[0]}`,
+          eventData: { token: 'test-token', payload: payload0 },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_3',
+          runId: 'wrun_test',
+          eventType: 'step_created',
+          correlationId: `step_${CORR_IDS[2]}`,
+          eventData: { stepName: 'drainStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_4',
+          runId: 'wrun_test',
+          eventType: 'step_started',
+          correlationId: `step_${CORR_IDS[2]}`,
+          eventData: { stepName: 'drainStep' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_5',
+          runId: 'wrun_test',
+          eventType: 'step_completed',
+          correlationId: `step_${CORR_IDS[2]}`,
+          eventData: { stepName: 'drainStep', result: drainResult },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_6',
+          runId: 'wrun_test',
+          eventType: 'wait_completed',
+          correlationId: `wait_${CORR_IDS[1]}`,
+          eventData: { resumeAt: reusedResumeAt },
+          createdAt: new Date(),
+        },
+      ];
+      const lateHookEvent: Event = {
+        eventId: 'evnt_inserted_before_6',
+        runId: 'wrun_test',
+        eventType: 'hook_received',
+        correlationId: `hook_${CORR_IDS[0]}`,
+        eventData: { token: 'test-token', payload: payload1 },
+        createdAt: new Date(),
+      };
+      const staleWaitEvent: Event = {
+        eventId: 'evnt_7',
+        runId: 'wrun_test',
+        eventType: 'wait_created',
+        correlationId: `wait_${CORR_IDS[3]}`,
+        eventData: { resumeAt: nextResumeAt },
+        createdAt: new Date(),
+      };
+
+      async function replay(events: Event[]) {
+        const ctx = setupWorkflowContext(events);
+        const createHook = createCreateHook(ctx);
+        const sleep = createSleep(ctx);
+        const useStep = createUseStep(ctx);
+        const { error } = await runWithDiscontinuation(ctx, async () => {
+          const hook = createHook<{ value: string }>({ token: 'test-token' });
+          const iterator = hook[Symbol.asyncIterator]();
+          const drainStep = useStep('drainStep');
+          const firstRead = iterator.next();
+          const pendingSleep = sleep(reusedResumeAt);
+          const firstResult = await Promise.race([
+            firstRead.then((value) => ({ kind: 'hook' as const, value })),
+            pendingSleep.then(() => ({ kind: 'sleep' as const })),
+          ]);
+          if (firstResult.kind === 'hook') {
+            await drainStep();
+          }
+
+          const secondRead = iterator.next();
+          const secondResult = await Promise.race([
+            secondRead.then((value) => ({ kind: 'hook' as const, value })),
+            pendingSleep.then(() => ({ kind: 'sleep' as const })),
+          ]);
+          if (secondResult.kind === 'hook') {
+            await drainStep();
+          } else {
+            await sleep(nextResumeAt);
+          }
+        });
+        return { ctx, error };
+      }
+
+      // This replay has observed wait_completed without a second hook. It
+      // legitimately takes the sleep branch and queues the next wait.
+      const beforeLateHook = await replay(prefix);
+      expect(beforeLateHook.error).toBeDefined();
+      if (!WorkflowSuspension.is(beforeLateHook.error)) {
+        throw beforeLateHook.error;
+      }
+      const pendingWaits = [...beforeLateHook.ctx.invocationsQueue.values()]
+        .filter((item) => item.type === 'wait')
+        .map((item) => item.type === 'wait' && item.correlationId);
+      expect(pendingWaits).toContain(`wait_${CORR_IDS[3]}`);
+
+      // If a subsequently committed hook is sorted before a wait completion
+      // that the first replay already observed, the resulting history contains
+      // the next wait from the sleep branch but replays down the hook branch.
+      const afterLateHook = await replay([
+        ...prefix.slice(0, 6),
+        lateHookEvent,
+        prefix[6],
+        staleWaitEvent,
+      ]);
+      expect(afterLateHook.error).toBeDefined();
+      if (!WorkflowSuspension.is(afterLateHook.error)) {
+        throw afterLateHook.error;
+      }
     });
 
     // KNOWN-INVALID (kept as `it.fails`): this scenario is not reproducible by
