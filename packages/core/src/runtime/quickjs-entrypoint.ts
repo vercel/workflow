@@ -166,8 +166,10 @@ async function queueStepMessage(params: {
    * Resilient step dispatch: the serialized (possibly encrypted) step input
    * to carry on the message as `stepInput`, so the consumer can idempotently
    * re-ensure the `step_created` event if the producer's parallel direct
-   * write failed transiently. Only set on `dispatch` publishes that
-   * dispatchPendingOps parallelizes with the step_created write.
+   * write failed transiently. Set on `dispatch` publishes that
+   * dispatchPendingOps parallelizes with the step_created write, and on the
+   * `retry` publish of a throttled lazy inline claim, whose step was never
+   * created.
    */
   stepInput?: Uint8Array;
   wfdiag: (checkpoint: string, fields: Record<string, unknown>) => void;
@@ -1860,11 +1862,18 @@ export async function runWorkflowWithQuickJS(params: {
         typeof logView.logCursor === 'string'
           ? logView.logCursor
           : undefined;
+      // Encrypted once per candidate: the lazy claim carries these bytes, and
+      // a throttled claim hands the same bytes to the queue (see below).
+      const lazyInputs = await Promise.all(
+        inlineCandidates.map((step) =>
+          encryptSerializedData(step.input, encryptionKey)
+        )
+      );
       budget.pause();
       let outcomes: StepExecutionResult[];
       try {
         outcomes = await Promise.all(
-          inlineCandidates.map((step) =>
+          inlineCandidates.map((step, i) =>
             runStepSingleFlight(
               runId,
               step.correlationId,
@@ -1888,10 +1897,7 @@ export async function runWorkflowWithQuickJS(params: {
                     // exactly-one-owner. A concurrent claimant gets
                     // EntityConflictError → { type: 'skipped' } and never
                     // runs the body. Mirrors the node engine's inline path.
-                    lazyStepInput: await encryptSerializedData(
-                      step.input,
-                      encryptionKey
-                    ),
+                    lazyStepInput: lazyInputs[i],
                     // Ownership stamp: wake replays see the body as in
                     // flight in this invocation and arm a delayed backstop
                     // instead of immediately requeueing the step.
@@ -1934,6 +1940,40 @@ export async function runWorkflowWithQuickJS(params: {
           });
         }
         if (outcome.type === 'retry' || outcome.type === 'throttled') {
+          // A `throttled` outcome means the lazy `step_started` (the write
+          // that would have created the step from its input) was rejected,
+          // so the step does not exist. A bare queued start would then fail
+          // with "step not found" on every delivery until the delivery
+          // ceiling, with nothing left to recover the input from. Give the
+          // consumer the input: on the message when it fits (the consumer
+          // materializes `step_created` from it in-band), otherwise by
+          // writing `step_created` here before queueing. A `retry` outcome
+          // comes from a step whose start succeeded, so it already exists.
+          let stepInput: Uint8Array | undefined;
+          if (outcome.type === 'throttled') {
+            const lazyInput = lazyInputs[i];
+            if (
+              lazyInput instanceof Uint8Array &&
+              lazyInput.byteLength <= MAX_RESILIENT_STEP_INPUT_BYTES
+            ) {
+              stepInput = lazyInput;
+            } else {
+              try {
+                await createEvent({
+                  eventType: 'step_created',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  correlationId: step.correlationId,
+                  eventData: { stepName: step.stepId, input: lazyInput },
+                });
+              } catch (err) {
+                // Already created (the throttled start landed after all, or
+                // a concurrent invocation won): nothing to materialize. Any
+                // other failure redelivers this orchestrator message, whose
+                // replay re-attempts the step inline with its input.
+                if (!EntityConflictError.is(err)) throw err;
+              }
+            }
+          }
           // Hand the step to the queue with the requested backoff:
           // background delivery drives the retry from here.
           queuedStepIds.add(step.correlationId);
@@ -1950,6 +1990,7 @@ export async function runWorkflowWithQuickJS(params: {
             // keeps the retry enqueueable even if a world retired a
             // historical key for this step (see the purpose docs above).
             purpose: 'retry:1',
+            ...(stepInput !== undefined ? { stepInput } : {}),
             wfdiag,
           });
         } else if (outcome.type === 'gone') {
