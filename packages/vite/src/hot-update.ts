@@ -19,6 +19,13 @@ interface WorkflowHotUpdatePluginOptions {
 }
 
 /**
+ * Changes remembered for per-environment deduplication. Only a change still
+ * being delivered to its remaining environments needs remembering, so this
+ * only has to outlast a burst of concurrent edits.
+ */
+const MAX_REMEMBERED_CHANGES = 256;
+
+/**
  * Vite plugin that watches for workflow/step file changes and triggers rebuilds.
  *
  * This plugin detects changes to files containing `"use workflow"` or `"use step"`
@@ -32,6 +39,29 @@ export function workflowHotUpdatePlugin(
 
   // Default enqueue just runs the function directly
   const runBuild = enqueue ?? ((fn: () => Promise<void>) => fn());
+
+  // Vite calls `hotUpdate` once per environment (`client`, `ssr`, and any a
+  // framework adds, such as Nitro's `nitro`) for the same file change, awaiting
+  // each call before the next and before sending any HMR update. The calls
+  // share `timestamp`. The builder output does not depend on the environment,
+  // so one change needs one rebuild; rebuilding per environment multiplies
+  // every edit's rebuild time by the environment count. Changes are handled
+  // concurrently, so the environment calls for one change can interleave with
+  // those for another change to the same or a different file: remember each
+  // change, not just the latest one.
+  const handledChanges = new Set<string>();
+  const isRepeatDelivery = ({ file, timestamp }: HotUpdateOptions) => {
+    const change = `${timestamp}:${file}`;
+    if (handledChanges.has(change)) {
+      return true;
+    }
+    handledChanges.add(change);
+    if (handledChanges.size > MAX_REMEMBERED_CHANGES) {
+      // Sets iterate in insertion order, so this evicts the oldest change.
+      handledChanges.delete(handledChanges.values().next().value as string);
+    }
+    return false;
+  };
 
   return {
     name: 'workflow:hot-update',
@@ -55,6 +85,10 @@ export function workflowHotUpdatePlugin(
 
       // Skip generated workflow route files to avoid infinite rebuild loops
       if (isGeneratedWorkflowFile(file)) {
+        return;
+      }
+
+      if (isRepeatDelivery(ctx)) {
         return;
       }
 
