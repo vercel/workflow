@@ -1,0 +1,267 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 30 and seed 2491383694969593743 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 105366] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/RolloutSkew.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/TLC.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module RolloutSkew
+Starting... (2026-09-25 01:36:33)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-25 01:36:33.
+Error: Invariant NoMixedIdentityLog is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ phase = "old"
+/\ flag = FALSE
+/\ log = <<[t |-> "rc", k |-> "U"]>>
+/\ row = [sp |-> 3, st |-> "pending"]
+/\ req = [ k |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s1 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s2 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ] ]
+/\ hist = {[sp |-> 3, st |-> "pending"]}
+
+State 2: <Forward line 74, col 3 to line 76, col 44 of module RolloutSkew>
+/\ phase = "mixed"
+/\ flag = FALSE
+/\ log = <<[t |-> "rc", k |-> "U"]>>
+/\ row = [sp |-> 3, st |-> "pending"]
+/\ req = [ k |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s1 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s2 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ] ]
+/\ hist = {[sp |-> 3, st |-> "pending"]}
+
+State 3: <Forward line 74, col 3 to line 76, col 44 of module RolloutSkew>
+/\ phase = "new"
+/\ flag = FALSE
+/\ log = <<[t |-> "rc", k |-> "U"]>>
+/\ row = [sp |-> 3, st |-> "pending"]
+/\ req = [ k |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s1 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s2 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ] ]
+/\ hist = {[sp |-> 3, st |-> "pending"]}
+
+State 4: <FlagOn line 87, col 3 to line 89, col 45 of module RolloutSkew>
+/\ phase = "new"
+/\ flag = TRUE
+/\ log = <<[t |-> "rc", k |-> "U"]>>
+/\ row = [sp |-> 3, st |-> "pending"]
+/\ req = [ k |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s1 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s2 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ] ]
+/\ hist = {[sp |-> 3, st |-> "pending"]}
+
+State 5: <Begin line 103, col 3 to line 111, col 46 of module RolloutSkew>
+/\ phase = "new"
+/\ flag = TRUE
+/\ log = <<[t |-> "rc", k |-> "U"]>>
+/\ row = [sp |-> 3, st |-> "pending"]
+/\ req = [ k |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s1 |->
+      [ pc |-> "upg",
+        ver |-> "new",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s2 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ] ]
+/\ hist = {[sp |-> 3, st |-> "pending"]}
+
+State 6: <Upg line 119, col 3 to line 130, col 30 of module RolloutSkew>
+/\ phase = "new"
+/\ flag = TRUE
+/\ log = <<[t |-> "rc", k |-> "S"]>>
+/\ row = [sp |-> 8, st |-> "pending"]
+/\ req = [ k |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s1 |->
+      [ pc |-> "patch",
+        ver |-> "new",
+        held |-> [sp |-> 8, st |-> "pending"],
+        kind |-> "U" ],
+  s2 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ] ]
+/\ hist = {[sp |-> 3, st |-> "pending"], [sp |-> 8, st |-> "pending"]}
+
+State 7: <FlagOff line 92, col 3 to line 93, col 45 of module RolloutSkew>
+/\ phase = "new"
+/\ flag = FALSE
+/\ log = <<[t |-> "rc", k |-> "S"]>>
+/\ row = [sp |-> 8, st |-> "pending"]
+/\ req = [ k |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s1 |->
+      [ pc |-> "patch",
+        ver |-> "new",
+        held |-> [sp |-> 8, st |-> "pending"],
+        kind |-> "U" ],
+  s2 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ] ]
+/\ hist = {[sp |-> 3, st |-> "pending"], [sp |-> 8, st |-> "pending"]}
+
+State 8: <Rollback line 79, col 3 to line 84, col 44 of module RolloutSkew>
+/\ phase = "mixed"
+/\ flag = FALSE
+/\ log = <<[t |-> "rc", k |-> "S"]>>
+/\ row = [sp |-> 8, st |-> "pending"]
+/\ req = [ k |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s1 |->
+      [ pc |-> "patch",
+        ver |-> "new",
+        held |-> [sp |-> 8, st |-> "pending"],
+        kind |-> "U" ],
+  s2 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ] ]
+/\ hist = {[sp |-> 3, st |-> "pending"], [sp |-> 8, st |-> "pending"]}
+
+State 9: <Begin line 103, col 3 to line 111, col 46 of module RolloutSkew>
+/\ phase = "mixed"
+/\ flag = FALSE
+/\ log = <<[t |-> "rc", k |-> "S"]>>
+/\ row = [sp |-> 8, st |-> "pending"]
+/\ req = [ k |->
+      [ pc |-> "kpatch",
+        ver |-> "old",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s1 |->
+      [ pc |-> "patch",
+        ver |-> "new",
+        held |-> [sp |-> 8, st |-> "pending"],
+        kind |-> "U" ],
+  s2 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ] ]
+/\ hist = {[sp |-> 3, st |-> "pending"], [sp |-> 8, st |-> "pending"]}
+
+State 10: <KPatch line 162, col 3 to line 173, col 30 of module RolloutSkew>
+/\ phase = "mixed"
+/\ flag = FALSE
+/\ log = <<[t |-> "rc", k |-> "S"]>>
+/\ row = [sp |-> 8, st |-> "cancelled"]
+/\ req = [ k |->
+      [ pc |-> "ins",
+        ver |-> "old",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s1 |->
+      [ pc |-> "patch",
+        ver |-> "new",
+        held |-> [sp |-> 8, st |-> "pending"],
+        kind |-> "U" ],
+  s2 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ] ]
+/\ hist = { [sp |-> 3, st |-> "pending"],
+  [sp |-> 8, st |-> "cancelled"],
+  [sp |-> 8, st |-> "pending"] }
+
+State 11: <Ins line 153, col 3 to line 156, col 41 of module RolloutSkew>
+/\ phase = "mixed"
+/\ flag = FALSE
+/\ log = <<[t |-> "rc", k |-> "S"], [t |-> "rx", k |-> "U"]>>
+/\ row = [sp |-> 8, st |-> "cancelled"]
+/\ req = [ k |->
+      [ pc |-> "done",
+        ver |-> "old",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ],
+  s1 |->
+      [ pc |-> "patch",
+        ver |-> "new",
+        held |-> [sp |-> 8, st |-> "pending"],
+        kind |-> "U" ],
+  s2 |->
+      [ pc |-> "idle",
+        ver |-> "none",
+        held |-> [sp |-> 3, st |-> "pending"],
+        kind |-> "U" ] ]
+/\ hist = { [sp |-> 3, st |-> "pending"],
+  [sp |-> 8, st |-> "cancelled"],
+  [sp |-> 8, st |-> "pending"] }
+
+34452 states generated, 11773 distinct states found, 4590 states left on queue.
+The depth of the complete state graph search is 11.
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 11 and the 95th percentile is 4).
+Finished in 01s at (2026-09-25 01:36:34)

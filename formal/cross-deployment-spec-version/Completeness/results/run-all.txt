@@ -1,0 +1,23 @@
+AttestSound                                   proved (6 theorems)
+RS_Witness_Raised                             expected=violation got=violation 157 distinct states found
+RS_AllNew_AsIs                                expected=violation got=violation 146 distinct states found
+RS_AllNew_Fixed                               expected=pass      got=pass      1020 distinct states found
+RS_AllNew_Fixed_Terminal                      expected=pass      got=pass      1020 distinct states found
+RS_Skew_Fixed_NoGate                          expected=violation got=violation 598 distinct states found
+RS_Skew_Fixed_NoGate_Consistent               expected=violation got=violation 730 distinct states found
+RS_Skew_Fixed_Flag                            expected=pass      got=pass      18050 distinct states found
+RS_Skew_Fixed_Flag_Rollback                   expected=pass      got=pass      30994 distinct states found
+RS_Skew_Fixed_Flag_RollbackNoSettle           expected=violation got=violation 11773 distinct states found
+RS_Rollback_Fixed_Flag_Consistent             expected=pass      got=pass      35259 distinct states found
+RS_Skew_Fixed_Flag_Terminal                   expected=violation got=violation 466 distinct states found
+SP_Rolling_Same_Fast                          expected=pass      got=pass      20 distinct states found
+SP_Rolling_Same_Slow                          expected=violation got=violation 30 distinct states found
+SP_Rollback_Same                              expected=violation got=violation 36 distinct states found
+SP_Rollback_Same_Final                        expected=pass      got=pass      36 distinct states found
+SP_Rollback_Cross_Pre4327                     expected=violation got=violation 36 distinct states found
+SP_Rollback_Cross_4327                        expected=violation got=violation 54 distinct states found
+SP_Rollback_Cross_4327_LowStamp               expected=pass      got=pass      54 distinct states found
+SP_PkgSkew_KillSwitch                         expected=violation got=violation 9 distinct states found
+SP_PkgSkew_NoKillSwitch                       expected=pass      got=pass      10 distinct states found
+SP_PkgSkew_KillSwitch_Cross4327               expected=violation got=violation 14 distinct states found
+SP_KillSwitchNew_Rolling                      expected=pass      got=pass      12 distinct states found

@@ -1,0 +1,100 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 100 and seed -5921274139278137819 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 105914] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/SharedPool.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module SharedPool
+Starting... (2026-09-25 01:36:44)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Computed 2 initial states...
+Finished computing initial states: 3 distinct states generated at 2026-09-25 01:36:44.
+Progress(8) at 2026-09-25 01:36:45: 92 states generated, 36 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 36 total distinct states at (2026-09-25 01:36:45)
+Error: Temporal properties were violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+/\ bad = FALSE
+/\ att = 0
+/\ seg = 0
+/\ status = "init"
+/\ phase = "mixed"
+/\ stamp = 0
+
+State 2: <Start line 62, col 10 to line 65, col 41 of module SharedPool>
+/\ bad = FALSE
+/\ att = 1
+/\ seg = 0
+/\ status = "running"
+/\ phase = "mixed"
+/\ stamp = 8
+
+State 3: <Deliver line 68, col 3 to line 79, col 20 of module SharedPool>
+/\ bad = FALSE
+/\ att = 1
+/\ seg = 1
+/\ status = "running"
+/\ phase = "mixed"
+/\ stamp = 8
+
+State 4: <Rollback line 84, col 13 to line 87, col 57 of module SharedPool>
+/\ bad = FALSE
+/\ att = 1
+/\ seg = 1
+/\ status = "running"
+/\ phase = "old"
+/\ stamp = 8
+
+State 5: <Deliver line 68, col 3 to line 79, col 20 of module SharedPool>
+/\ bad = FALSE
+/\ att = 2
+/\ seg = 1
+/\ status = "running"
+/\ phase = "old"
+/\ stamp = 8
+
+State 6: <Deliver line 68, col 3 to line 79, col 20 of module SharedPool>
+/\ bad = FALSE
+/\ att = 3
+/\ seg = 1
+/\ status = "running"
+/\ phase = "old"
+/\ stamp = 8
+
+State 7: <Deliver line 68, col 3 to line 79, col 20 of module SharedPool>
+/\ bad = FALSE
+/\ att = 4
+/\ seg = 1
+/\ status = "running"
+/\ phase = "old"
+/\ stamp = 8
+
+State 8: <Deliver line 68, col 3 to line 79, col 20 of module SharedPool>
+/\ bad = FALSE
+/\ att = 4
+/\ seg = 1
+/\ status = "failed"
+/\ phase = "old"
+/\ stamp = 8
+
+State 9: <Forward line 81, col 13 to line 83, col 57 of module SharedPool>
+/\ bad = FALSE
+/\ att = 4
+/\ seg = 1
+/\ status = "failed"
+/\ phase = "mixed"
+/\ stamp = 8
+
+Back to state 8: <Rollback line 84, col 13 to line 87, col 57 of module SharedPool>
+
+Finished checking temporal properties in 00s at 2026-09-25 01:36:45
+92 states generated, 36 distinct states found, 0 states left on queue.
+Finished in 00s at (2026-09-25 01:36:45)

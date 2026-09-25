@@ -1,0 +1,136 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 97 and seed 6876852088907183443 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 112304] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/MidRunRaiseGates/ForceClaimGate.tla
+Parsing file /tmp/Integers.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/Sequences.tla
+Parsing file /tmp/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Integers
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module ForceClaimGate
+Starting... (2026-09-25 01:42:29)
+Computing initial states...
+Computed 2 initial states...
+Finished computing initial states: 3 distinct states generated at 2026-09-25 01:42:30.
+Error: Invariant NoStrandedVictim is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ raisedLive = FALSE
+/\ disposed = FALSE
+/\ outcome = "none"
+/\ snap = [status |-> "none", spec |-> 0]
+/\ sPc = "idle"
+/\ sM = 0
+/\ sSnap = [status |-> "none", spec |-> 0]
+/\ token = "none"
+/\ claim = "idle"
+/\ vSpec = 6
+/\ vStatus = "pending"
+/\ stamp = 6
+
+State 2: <SRead line 145, col 3 to line 150, col 39 of module ForceClaimGate>
+/\ raisedLive = FALSE
+/\ disposed = FALSE
+/\ outcome = "none"
+/\ snap = [status |-> "none", spec |-> 0]
+/\ sPc = "read"
+/\ sM = 6
+/\ sSnap = [status |-> "pending", spec |-> 6]
+/\ token = "none"
+/\ claim = "idle"
+/\ vSpec = 6
+/\ vStatus = "pending"
+/\ stamp = 6
+
+State 3: <RunStarted line 133, col 3 to line 141, col 20 of module ForceClaimGate>
+/\ raisedLive = FALSE
+/\ disposed = FALSE
+/\ outcome = "none"
+/\ snap = [status |-> "none", spec |-> 0]
+/\ sPc = "read"
+/\ sM = 6
+/\ sSnap = [status |-> "pending", spec |-> 6]
+/\ token = "none"
+/\ claim = "idle"
+/\ vSpec = 6
+/\ vStatus = "running"
+/\ stamp = 6
+
+State 4: <CreateHook line 171, col 3 to line 175, col 20 of module ForceClaimGate>
+/\ raisedLive = FALSE
+/\ disposed = FALSE
+/\ outcome = "none"
+/\ snap = [status |-> "none", spec |-> 0]
+/\ sPc = "read"
+/\ sM = 6
+/\ sSnap = [status |-> "pending", spec |-> 6]
+/\ token = "victim"
+/\ claim = "idle"
+/\ vSpec = 6
+/\ vStatus = "running"
+/\ stamp = 6
+
+State 5: <VictimTerminate line 178, col 3 to line 181, col 20 of module ForceClaimGate>
+/\ raisedLive = FALSE
+/\ disposed = FALSE
+/\ outcome = "none"
+/\ snap = [status |-> "none", spec |-> 0]
+/\ sPc = "read"
+/\ sM = 6
+/\ sSnap = [status |-> "pending", spec |-> 6]
+/\ token = "victim"
+/\ claim = "idle"
+/\ vSpec = 6
+/\ vStatus = "terminal"
+/\ stamp = 6
+
+State 6: <ClaimRead line 184, col 3 to line 189, col 20 of module ForceClaimGate>
+/\ raisedLive = FALSE
+/\ disposed = FALSE
+/\ outcome = "none"
+/\ snap = [status |-> "terminal", spec |-> 6]
+/\ sPc = "read"
+/\ sM = 6
+/\ sSnap = [status |-> "pending", spec |-> 6]
+/\ token = "victim"
+/\ claim = "read"
+/\ vSpec = 6
+/\ vStatus = "terminal"
+/\ stamp = 6
+
+State 7: <SApply line 156, col 3 to line 168, col 74 of module ForceClaimGate>
+/\ raisedLive = FALSE
+/\ disposed = FALSE
+/\ outcome = "none"
+/\ snap = [status |-> "terminal", spec |-> 6]
+/\ sPc = "done"
+/\ sM = 6
+/\ sSnap = [status |-> "pending", spec |-> 6]
+/\ token = "victim"
+/\ claim = "read"
+/\ vSpec = 6
+/\ vStatus = "running"
+/\ stamp = 6
+
+State 8: <ClaimDecide line 192, col 3 to line 201, col 74 of module ForceClaimGate>
+/\ raisedLive = FALSE
+/\ disposed = FALSE
+/\ outcome = "taken"
+/\ snap = [status |-> "terminal", spec |-> 6]
+/\ sPc = "done"
+/\ sM = 6
+/\ sSnap = [status |-> "pending", spec |-> 6]
+/\ token = "claimer"
+/\ claim = "done"
+/\ vSpec = 6
+/\ vStatus = "running"
+/\ stamp = 6
+
+2014 states generated, 726 distinct states found, 200 states left on queue.
+The depth of the complete state graph search is 8.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 5 and the 95th percentile is 3).
+Finished in 00s at (2026-09-25 01:42:30)

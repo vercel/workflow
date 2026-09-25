@@ -1,0 +1,267 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 80 and seed -8289685721981600602 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 112847] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module StartStamping
+Starting... (2026-09-25 01:43:20)
+<< "VARIANT",
+   "CallerHas4327",
+   TRUE,
+   "MissFloor",
+   6,
+   "ProbeBudgetSec",
+   10,
+   "ServerRaise",
+   TRUE,
+   "RaiseOnResilient",
+   FALSE,
+   "RaiseOnNotCommitted",
+   FALSE,
+   "FixLateRunCreated",
+   FALSE,
+   "FixSkipReread",
+   FALSE,
+   "FixGuardStart",
+   FALSE,
+   "FixRecoveryAdopt",
+   FALSE,
+   "FixConsistentIdMode",
+   FALSE,
+   "FixAtomicCreate",
+   FALSE,
+   "FixCompressOnStamp",
+   FALSE,
+   "EnvDrift",
+   FALSE,
+   "MutAttestAboveMax",
+   FALSE,
+   "ScenarioFilter",
+   "all",
+   "RaceScope",
+   "all",
+   "FocusInv",
+   "LB",
+   "scenarios",
+   19420,
+   "layerB classes",
+   384 >>
+Computing initial states...
+Computed 2 initial states...
+Computed 4 initial states...
+Computed 8 initial states...
+Computed 16 initial states...
+Computed 32 initial states...
+Computed 64 initial states...
+Computed 128 initial states...
+Computed 256 initial states...
+Computed 512 initial states...
+Computed 1024 initial states...
+Computed 2048 initial states...
+Computed 4096 initial states...
+Computed 8192 initial states...
+Computed 16384 initial states...
+Finished computing initial states: 19420 states generated, with 384 of them distinct at 2026-09-25 01:43:21.
+Error: Invariant NoStuck is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ xpc = <<"fetch", "fetch">>
+/\ scn = [ a |-> FALSE,
+  c |-> "C_V4",
+  t |-> "T_P2",
+  k |-> "cross",
+  w |-> "local",
+  p |-> "fast",
+  ex |-> 0 ]
+/\ upg = << [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ],
+   [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ] >>
+/\ att = <<1, 1>>
+/\ row = [ex |-> FALSE, st |-> "none", sp |-> 0]
+/\ held = <<[st |-> "none", sp |-> 0], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ crashes = 0
+/\ rdone = 0
+/\ rsp = <<0, 0>>
+/\ cpc = "row"
+/\ kpc = "idle"
+/\ outc = <<FALSE, "none">>
+/\ resur = FALSE
+/\ peak = 0
+/\ hist = {}
+/\ mint = <<2, 2>>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ log = {}
+
+State 2: <CRow line 462, col 5 to line 472, col 41 of module StartStamping>
+/\ xpc = <<"fetch", "fetch">>
+/\ scn = [ a |-> FALSE,
+  c |-> "C_V4",
+  t |-> "T_P2",
+  k |-> "cross",
+  w |-> "local",
+  p |-> "fast",
+  ex |-> 0 ]
+/\ upg = << [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ],
+   [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ] >>
+/\ att = <<1, 1>>
+/\ row = [ex |-> TRUE, st |-> "pending", sp |-> 3]
+/\ held = <<[st |-> "none", sp |-> 0], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ crashes = 0
+/\ rdone = 0
+/\ rsp = <<0, 0>>
+/\ cpc = "evt"
+/\ kpc = "idle"
+/\ outc = <<FALSE, "none">>
+/\ resur = FALSE
+/\ peak = 3
+/\ hist = {[st |-> "pending", sp |-> 3]}
+/\ mint = <<2, 2>>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ log = {}
+
+State 3: <CEvt line 481, col 5 to line 488, col 53 of module StartStamping>
+/\ xpc = <<"fetch", "fetch">>
+/\ scn = [ a |-> FALSE,
+  c |-> "C_V4",
+  t |-> "T_P2",
+  k |-> "cross",
+  w |-> "local",
+  p |-> "fast",
+  ex |-> 0 ]
+/\ upg = << [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ],
+   [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ] >>
+/\ att = <<1, 1>>
+/\ row = [ex |-> TRUE, st |-> "pending", sp |-> 3]
+/\ held = <<[st |-> "none", sp |-> 0], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ crashes = 0
+/\ rdone = 0
+/\ rsp = <<0, 0>>
+/\ cpc = "done"
+/\ kpc = "idle"
+/\ outc = <<FALSE, "none">>
+/\ resur = FALSE
+/\ peak = 3
+/\ hist = {[st |-> "pending", sp |-> 3]}
+/\ mint = <<2, 2>>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ log = {[t |-> "RC", k |-> "S", sp |-> 3, n |-> 1]}
+
+State 4: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
+/\ xpc = <<"overmax", "fetch">>
+/\ scn = [ a |-> FALSE,
+  c |-> "C_V4",
+  t |-> "T_P2",
+  k |-> "cross",
+  w |-> "local",
+  p |-> "fast",
+  ex |-> 0 ]
+/\ upg = << [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ],
+   [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ] >>
+/\ att = <<1, 1>>
+/\ row = [ex |-> TRUE, st |-> "pending", sp |-> 3]
+/\ held = <<[st |-> "pending", sp |-> 3], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ crashes = 0
+/\ rdone = 0
+/\ rsp = <<0, 0>>
+/\ cpc = "done"
+/\ kpc = "idle"
+/\ outc = <<FALSE, "none">>
+/\ resur = FALSE
+/\ peak = 3
+/\ hist = {[st |-> "pending", sp |-> 3]}
+/\ mint = <<2, 2>>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ log = {[t |-> "RC", k |-> "S", sp |-> 3, n |-> 1]}
+
+State 5: <XFetch line 503, col 5 to line 528, col 25 of module StartStamping>
+/\ xpc = <<"overmax", "overmax">>
+/\ scn = [ a |-> FALSE,
+  c |-> "C_V4",
+  t |-> "T_P2",
+  k |-> "cross",
+  w |-> "local",
+  p |-> "fast",
+  ex |-> 0 ]
+/\ upg = << [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ],
+   [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ] >>
+/\ att = <<1, 1>>
+/\ row = [ex |-> TRUE, st |-> "pending", sp |-> 3]
+/\ held = <<[st |-> "pending", sp |-> 3], [st |-> "pending", sp |-> 3]>>
+/\ clk = 100
+/\ crashes = 0
+/\ rdone = 0
+/\ rsp = <<0, 0>>
+/\ cpc = "done"
+/\ kpc = "idle"
+/\ outc = <<FALSE, "none">>
+/\ resur = FALSE
+/\ peak = 3
+/\ hist = {[st |-> "pending", sp |-> 3]}
+/\ mint = <<2, 2>>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ log = {[t |-> "RC", k |-> "S", sp |-> 3, n |-> 1]}
+
+33331 states generated, 10682 distinct states found, 6041 states left on queue.
+The depth of the complete state graph search is 5.
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 4 and the 95th percentile is 4).
+Finished in 02s at (2026-09-25 01:43:22)
+exit=12

@@ -1,0 +1,47 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 86 and seed -3109939038691922659 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 106166] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/Completeness/SharedPool.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module SharedPool
+Starting... (2026-09-25 01:36:48)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Computed 2 initial states...
+Finished computing initial states: 3 distinct states generated at 2026-09-25 01:36:49.
+Error: Invariant SafeExec is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ bad = FALSE
+/\ att = 0
+/\ seg = 0
+/\ status = "init"
+/\ phase = "old"
+/\ stamp = 0
+
+State 2: <Start line 62, col 10 to line 65, col 41 of module SharedPool>
+/\ bad = FALSE
+/\ att = 1
+/\ seg = 0
+/\ status = "running"
+/\ phase = "old"
+/\ stamp = 8
+
+State 3: <Deliver line 68, col 3 to line 79, col 20 of module SharedPool>
+/\ bad = TRUE
+/\ att = 1
+/\ seg = 1
+/\ status = "running"
+/\ phase = "old"
+/\ stamp = 8
+
+11 states generated, 9 distinct states found, 1 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
+Finished in 00s at (2026-09-25 01:36:49)

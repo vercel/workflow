@@ -1,0 +1,4 @@
+["UNSOUND recompute: worldCURRENT=7 coreMAX=6 sealedAtCreate=false sealedAtCall=true attests 7",
+ "UNSOUND recompute: worldCURRENT=8 coreMAX=6 sealedAtCreate=false sealedAtCall=true attests 8",
+ "UNSOUND recompute: worldCURRENT=8 coreMAX=7 sealedAtCreate=false sealedAtCall=true attests 8"]
+exit=0

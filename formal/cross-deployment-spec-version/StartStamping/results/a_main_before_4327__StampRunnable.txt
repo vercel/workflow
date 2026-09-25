@@ -1,0 +1,95 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 99 and seed 7311684117385926178 with 2 workers on 8 cores with 1820MB heap and 64MB offheap memory [pid: 107312] (Linux 6.18.49 amd64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /home/vercel-sandbox/workflow/formal/cross-deployment-spec-version/StartStamping/StartStamping.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module StartStamping
+Starting... (2026-09-25 01:37:31)
+<< "VARIANT",
+   "CallerHas4327",
+   FALSE,
+   "MissFloor",
+   6,
+   "ProbeBudgetSec",
+   2,
+   "ServerRaise",
+   FALSE,
+   "RaiseOnResilient",
+   FALSE,
+   "RaiseOnNotCommitted",
+   FALSE,
+   "FixLateRunCreated",
+   FALSE,
+   "FixSkipReread",
+   FALSE,
+   "FixGuardStart",
+   FALSE,
+   "FixRecoveryAdopt",
+   FALSE,
+   "FixConsistentIdMode",
+   FALSE,
+   "FixAtomicCreate",
+   FALSE,
+   "FixCompressOnStamp",
+   FALSE,
+   "EnvDrift",
+   FALSE,
+   "MutAttestAboveMax",
+   FALSE,
+   "ScenarioFilter",
+   "all",
+   "RaceScope",
+   "all",
+   "FocusInv",
+   "StampRunnable",
+   "scenarios",
+   19420,
+   "layerB classes",
+   384 >>
+Computing initial states...
+Error: Invariant StampRunnable is violated by the initial state:
+/\ xpc = <<"fetch", "fetch">>
+/\ scn = [ a |-> FALSE,
+  c |-> "C_H7",
+  t |-> "T_P2",
+  k |-> "cross",
+  w |-> "vercel",
+  p |-> "fast",
+  ex |-> 0 ]
+/\ upg = << [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ],
+   [ from |-> 0,
+     to |-> 0,
+     fresh |-> FALSE,
+     rekey |-> FALSE,
+     rk |-> "none",
+     rn |-> 0 ] >>
+/\ att = <<1, 1>>
+/\ row = [ex |-> FALSE, st |-> "none", sp |-> 0]
+/\ held = <<[st |-> "none", sp |-> 0], [st |-> "none", sp |-> 0]>>
+/\ clk = 100
+/\ crashes = 0
+/\ rdone = 0
+/\ rsp = <<0, 0>>
+/\ cpc = "row"
+/\ kpc = "idle"
+/\ outc = <<FALSE, "none">>
+/\ resur = FALSE
+/\ peak = 0
+/\ hist = {}
+/\ mint = <<2, 2>>
+/\ kheld = [st |-> "none", sp |-> 0]
+/\ log = {}
+
+Finished in 01s at (2026-09-25 01:37:32)
+exit=12
