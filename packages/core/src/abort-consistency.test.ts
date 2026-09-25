@@ -8,13 +8,13 @@
  */
 
 import type { Event, WorkflowRun } from '@workflow/world';
-import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { ReplayPayloadCache } from './replay-payload-cache.js';
+import { createSeededNanoid } from './seeded-nanoid.js';
 import {
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
@@ -47,9 +47,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),
-    generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
-      new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
-    ),
+    generateNanoid: createSeededNanoid(() => context.globalThis.Math.random()),
     onWorkflowError: () => {},
     promiseQueue: Promise.resolve(),
     pendingDeliveries: 0,

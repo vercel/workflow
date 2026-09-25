@@ -43,7 +43,6 @@ import {
   AttributeValidationError,
   validateAttributeEventDataSize,
 } from '@workflow/world/attributes-validation';
-import * as nanoid from 'nanoid';
 import {
   type ExtensionDescriptor,
   JSException,
@@ -54,6 +53,7 @@ import {
 import seedrandom from 'seedrandom';
 import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
+import { createSeededNanoid } from '../seeded-nanoid.js';
 import { decompress } from '../serialization/compression.js';
 import type { DecryptionKey } from '../serialization/encryption.js';
 import { decrypt } from '../serialization/encryption.js';
@@ -1453,11 +1453,9 @@ export async function startQuickJSWorkflow(
   ].join(':');
   const rng = seedrandom(seed);
 
-  // Seeded nanoid generator: uses the same nanoid package and seeded PRNG
+  // Seeded nanoid generator: uses the same generator and seeded PRNG
   // as the node:vm engine for consistent token generation.
-  const generateNanoid = nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
-    new Uint8Array(size).map(() => 256 * rng())
-  );
+  const generateNanoid = createSeededNanoid(rng);
 
   // Deterministic replay clock, mirroring the node:vm engine (see
   // workflow.ts): the initial value is the run's creation time recovered
