@@ -1,5 +1,36 @@
 # @workflow/core
 
+## 5.0.0-beta.57
+
+### Patch Changes
+
+- [#4327](https://github.com/vercel/workflow/pull/4327) [`c0aad6d`](https://github.com/vercel/workflow/commit/c0aad6d01b65921a089174ded374bd6a2b515c78) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - When running `start({ deploymentId })` cross-deploy, stamp the new run with the spec version that the target deployment reports on its capability probe, instead of the caller's own
+
+- [#4398](https://github.com/vercel/workflow/pull/4398) [`ff80d62`](https://github.com/vercel/workflow/commit/ff80d62a59c7bf0f45c4552d7b0cde82beb2ebc4) Thanks [@pranaygp](https://github.com/pranaygp)! - Republish a force-claimed hook's victim wake on every replay within 24 hours of the takeover instead of only while the forced `hook_created` is the claimer's last own event, ensuring resilience against crashes
+
+- [#4415](https://github.com/vercel/workflow/pull/4415) [`20aa656`](https://github.com/vercel/workflow/commit/20aa6562f1f70917013ddad5716eb40661435fdc) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Stamp events written to another runtime's run (`hook_received` from `resumeHook`, `run_cancelled` from `Run.cancel()`, and the deployment-mismatch `run_failed`) with the run's spec version when it is older than the SDK's.
+
+- [#4392](https://github.com/vercel/workflow/pull/4392) [`35ebeb4`](https://github.com/vercel/workflow/commit/35ebeb4c5afa263bb37cd870a79c608fa237510a) Thanks [@pranaygp](https://github.com/pranaygp)! - Parallelize a suspension's hook event writes alongside its step, wait, and attribute events, so a step no longer waits for the hooks created with it to be registered before it can start
+
+- [#4216](https://github.com/vercel/workflow/pull/4216) [`25ec4ba`](https://github.com/vercel/workflow/commit/25ec4ba7edb2cb96d792cab7e9f74c88bf86c472) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Isolate lifecycle hook getters and reporting failures from terminal writes, and keep background stream operations alive until they settle.
+
+- [#4421](https://github.com/vercel/workflow/pull/4421) [`6ac572c`](https://github.com/vercel/workflow/commit/6ac572ca8893ef60843018f8404dbf25b3637b04) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Retry the max-deliveries `run_failed` write through queue redelivery when it fails transiently (429, 5xx, transport) instead of acking and leaving the run stuck `running`.
+
+- [#4348](https://github.com/vercel/workflow/pull/4348) [`f2daf40`](https://github.com/vercel/workflow/commit/f2daf4023a6a9ddaf91e42aa6409c7e09206f9c6) Thanks [@pranaygp](https://github.com/pranaygp)! - Added a `resolveData: 'skip-step-inputs'` option, which directs the World to leave out `input` from `step_created` and `step_started` events. Replay recomputes step arguments by re-running workflow code, and steps take their input from the `step_started` response or from memory, never from the replay log, so replay now reads the event log with this option and no longer downloads recorded step inputs. For workflows that pass growing state into their steps, this removes the part of the replay transfer that grows quadratically. A World that doesn't implement the option must treat it as `'all'`.
+
+- [#4421](https://github.com/vercel/workflow/pull/4421) [`6ac572c`](https://github.com/vercel/workflow/commit/6ac572ca8893ef60843018f8404dbf25b3637b04) Thanks [@TooTallNate](https://github.com/TooTallNate)! - QuickJS VM: defer a replay after a throttled lazy inline step's backoff, like the node engine, instead of queueing the never-created step as a background step that fails "step not found" until the delivery ceiling.
+
+- [#4408](https://github.com/vercel/workflow/pull/4408) [`bc18326`](https://github.com/vercel/workflow/commit/bc18326bb68974b00e71abac7d39673152d09099) Thanks [@pranaygp](https://github.com/pranaygp)! - `start()` with an explicit `deploymentId` (and so `recreateRunFromExisting`, i.e. Replay Run) no longer fails in a process that is not itself a deployment; it takes the cross-deployment path instead.
+
+- [#4326](https://github.com/vercel/workflow/pull/4326) [`2694663`](https://github.com/vercel/workflow/commit/2694663aef5742a012cbfed30a021d67877bb82b) Thanks [@pranaygp](https://github.com/pranaygp)! - Mark `WorkflowRunFailedError` and `WorkflowRunCancelledError` as non-retryable, so a step that reads a terminal run's `returnValue` fails on its first attempt with the error intact instead of exhausting its retry budget first.
+
+- [#4387](https://github.com/vercel/workflow/pull/4387) [`548147a`](https://github.com/vercel/workflow/commit/548147ac691a6f6c8114b2b1282208691a7d7e8a) Thanks [@alangenfeld](https://github.com/alangenfeld)! - Avoid unnecessary queued continuations when released step streams finish draining after the inline wait budget expires.
+- Updated dependencies [[`54b48ef`](https://github.com/vercel/workflow/commit/54b48ef4deffb8333de5d8c1dff8e8ad8a791efd), [`f2daf40`](https://github.com/vercel/workflow/commit/f2daf4023a6a9ddaf91e42aa6409c7e09206f9c6), [`54b48ef`](https://github.com/vercel/workflow/commit/54b48ef4deffb8333de5d8c1dff8e8ad8a791efd), [`2694663`](https://github.com/vercel/workflow/commit/2694663aef5742a012cbfed30a021d67877bb82b), [`12fcca0`](https://github.com/vercel/workflow/commit/12fcca0bcd187269654bcb921a1aa63d91e71ac9)]:
+  - @workflow/world-vercel@5.0.0-beta.52
+  - @workflow/world@5.0.0-beta.39
+  - @workflow/world-local@5.0.0-beta.48
+  - @workflow/errors@5.0.0-beta.24
+
 ## 5.0.0-beta.56
 
 ### Minor Changes
