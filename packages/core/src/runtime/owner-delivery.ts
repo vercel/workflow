@@ -2,16 +2,16 @@ import { WorkflowWorldError } from '@workflow/errors';
 
 /** Delivery failures do not establish whether the owner processed the input. */
 export function isRetryableOwnerDelivery(error: unknown): boolean {
-  if (!WorkflowWorldError.is(error)) return false;
-  const status = error.status ?? 0;
+  // Subclasses (for example a rehydrated conflict) carry the same fields.
+  if (!(error instanceof Error) || !('status' in error || 'code' in error))
+    return false;
+  const { status = 0, code } = error as { status?: number; code?: string };
   // Any platform or transport 5xx (including affinity backoff 503 and a worker
   // invocation that failed before running) leaves the outcome unknown.
   return (
     status >= 500 ||
     [408, 429].includes(status) ||
-    ['TRANSPORT', 'TIMEOUT', 'INVOCATION_OUTCOME_UNKNOWN'].includes(
-      error.code ?? ''
-    )
+    ['TRANSPORT', 'TIMEOUT', 'INVOCATION_OUTCOME_UNKNOWN'].includes(code ?? '')
   );
 }
 

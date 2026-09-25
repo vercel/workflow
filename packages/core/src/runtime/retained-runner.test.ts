@@ -2,7 +2,7 @@ import { channel } from 'node:diagnostics_channel';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { WorkflowWorldError } from '@workflow/errors';
+import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
 import {
   type Event,
   type EventResult,
@@ -545,6 +545,46 @@ it('rejects the whole unfinished completion prefix when its durability barrier f
   f.bodies.resolve();
   await f.finished;
   expect((await f.world.runs.get(f.runId)).status).toBe('failed');
+});
+
+it('stops without failing the run when another writer supersedes the owner', async () => {
+  const values: unknown[] = [];
+  registerStepFunction('retainedWrite', async (value) => {
+    values.push(value);
+  });
+  const fixture = await setup();
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  let conflict = false;
+  fixture.world.events.createWriteSession = () => ({
+    create: (event, params) => create(fixture.runId, event, params),
+    stage: async (event, params) => {
+      if (conflict && event.eventType === 'hook_received') {
+        const error = new EntityConflictError('Event slot is already taken.');
+        Object.defineProperty(error, 'code', { value: 'slot-conflict' });
+        throw error;
+      }
+      return create(fixture.runId, event, params);
+    },
+    flush: async () => {},
+    dispose() {},
+  });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  conflict = true;
+  await expect(fixture.send('a', 'one')).rejects.toMatchObject({
+    status: 503,
+    code: 'OWNER_SUPERSEDED',
+  });
+  await fixture.finished;
+  expect(fixture.retired).toHaveBeenCalled();
+  const events = await fixture.world.events.list({ runId: fixture.runId });
+  expect(events.data.some((event) => event.eventType === 'run_failed')).toBe(
+    false
+  );
+  expect((await fixture.world.runs.get(fixture.runId)).status).toBe('running');
+  // Later deliveries are also retryable, never a terminal runner failure.
+  await expect(fixture.send('b', 'two')).rejects.toMatchObject({
+    code: 'OWNER_SUPERSEDED',
+  });
 });
 
 it('recovers an uncertain remote dispatch by timing out its admitted attempt, without failing the run', async () => {

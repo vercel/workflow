@@ -293,7 +293,7 @@ export class BufferedEventWriter implements EventWriteSession {
       this.fail(
         new WorkflowWorldError(
           `Owner superseded: the committed log diverged from this owner (${reason})`,
-          { status: 409 }
+          { status: 409, code: 'OWNER_SUPERSEDED' }
         )
       );
     if (catchUp.after !== committed) throw forked('catch-up position');

@@ -69,6 +69,9 @@ export function retainedRunnerEnabled() {
 class RunnerFault extends WorkflowRuntimeError {
   readonly code = 'RETAINED_RUNNER_FAILED';
   terminalPersisted?: boolean;
+  /** Another writer committed this run's next position. This owner stops,
+   * but the run is not failed: a later input re-initializes from the log. */
+  superseded = false;
   constructor(
     readonly kind: 'persistence' | 'conflict' | 'execution',
     cause: unknown,
@@ -81,6 +84,30 @@ class RunnerFault extends WorkflowRuntimeError {
   }
 }
 class InputRejected extends WorkflowWorldError {}
+
+/** Persistence proved that another writer advanced the log past this owner. */
+function isOwnerSuperseded(cause: unknown): boolean {
+  for (let error = cause, depth = 0; error && depth < 5; depth++) {
+    const code = (error as { code?: unknown }).code;
+    if (
+      typeof code === 'string' &&
+      ['slot-conflict', 'OWNER_SUPERSEDED'].includes(code)
+    )
+      return true;
+    error = (error as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+function supersededError(cause: unknown) {
+  // Retryable for callers: the input was not processed by this owner, and the
+  // next delivery reaches an owner initialized from the committed log.
+  return new WorkflowWorldError('Run owner was superseded', {
+    status: 503,
+    code: 'OWNER_SUPERSEDED',
+    cause,
+  });
+}
 
 interface MailboxBatch {
   /** Only adjacent inputs with the same policy may share a durability barrier. */
@@ -346,7 +373,10 @@ export class RetainedRunner {
     operation: () => Promise<unknown>,
     batch?: MailboxBatch
   ): Promise<unknown> {
-    if (this.fault) return Promise.reject(this.fault);
+    if (this.fault)
+      return Promise.reject(
+        this.fault.superseded ? supersededError(this.fault) : this.fault
+      );
     if (this.closing)
       return Promise.reject(
         new WorkflowWorldError('Runner is retiring', { status: 409 })
@@ -951,8 +981,10 @@ export class RetainedRunner {
                   PreconditionFailedError.is(cause)
                   ? 'conflict'
                   : 'persistence',
-                cause
+                cause,
+                isOwnerSuperseded(cause) ? 'owner_superseded' : undefined
               );
+        if (isOwnerSuperseded(cause)) this.fault.superseded = true;
         this.observe(phase, 'end', spanId, {
           eventType: event.eventType,
           status: 'error',
@@ -1150,7 +1182,12 @@ export class RetainedRunner {
       this.fault ??=
         cause instanceof RunnerFault
           ? cause
-          : new RunnerFault('persistence', cause);
+          : new RunnerFault(
+              'persistence',
+              cause,
+              isOwnerSuperseded(cause) ? 'owner_superseded' : undefined
+            );
+      if (isOwnerSuperseded(cause)) this.fault.superseded = true;
       this.observe('flush', 'end', spanId, {
         status: 'error',
         errorCode: 'persistence',
@@ -1506,7 +1543,16 @@ export class RetainedRunner {
                 !this.stepOutcomes.has(message.input.executionId) &&
                 !isTerminalWorkflowRunStatus(this.run.status)
               ) {
-                if (!isRetryableOwnerDelivery(cause)) throw cause;
+                // Only a definite rejection of the delivery itself is a bug.
+                // Anything else (platform/transport failure, a worker whose
+                // result reached a superseded owner) leaves the body's
+                // outcome unknown.
+                if (
+                  !isRetryableOwnerDelivery(cause) &&
+                  WorkflowWorldError.is(cause) &&
+                  [400, 401, 403].includes(cause.status ?? 0)
+                )
+                  throw cause;
                 // No outcome is not evidence of a failed body. Keep the
                 // admitted attempt running; the existing timeout will durably
                 // supersede it if its result never arrives.
@@ -1718,9 +1764,10 @@ export class RetainedRunner {
       await this.fail(
         new Error('Runner deadline reached with unfinished step work')
       );
-    const error =
-      this.fault ??
-      new WorkflowWorldError('Runner lifetime ended', { status: 503 });
+    const error = this.fault?.superseded
+      ? supersededError(this.fault)
+      : (this.fault ??
+        new WorkflowWorldError('Runner lifetime ended', { status: 503 }));
     for (const item of this.pending.splice(0)) item.reject(error);
     this.session = undefined;
     try {
@@ -1732,7 +1779,12 @@ export class RetainedRunner {
       });
     }
     this.eventWriter = undefined;
-    if (!this.fault || this.runState?.status === 'failed') this.retire();
+    if (
+      !this.fault ||
+      this.fault.superseded ||
+      this.runState?.status === 'failed'
+    )
+      this.retire();
   }
 
   private fail(cause: unknown): Promise<void> {
@@ -1748,6 +1800,23 @@ export class RetainedRunner {
         let durable =
           this.runState?.status === 'failed' &&
           (!this.eventWriter?.stage || this.failureCommitted);
+        if (fault.superseded) {
+          // Never write a terminal failure over another writer's progress.
+          try {
+            await this.eventWriter?.dispose();
+          } catch {}
+          this.eventWriter = undefined;
+          this.observe('failure', 'end', spanId, {
+            status: 'error',
+            errorCode: fault.kind,
+            conflictReason: fault.conflictReason,
+            terminalPersisted: false,
+          });
+          const error = supersededError(fault);
+          for (const item of this.pending.splice(0)) item.reject(error);
+          this.signal?.();
+          return;
+        }
         const ownerJournal =
           this.runState?.executionContext?.ownerJournalVersion === 1;
         // Preserve the legacy terminal-write path for older runs. Journal owners
@@ -1841,6 +1910,7 @@ export class RetainedRunner {
             status: 'error',
             errorCode: this.fault?.kind ?? 'input_rejected',
           });
+          if (this.fault?.superseded) throw supersededError(this.fault);
           throw this.fault ?? cause;
         } finally {
           this.currentTurnId = undefined;
