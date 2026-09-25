@@ -4,7 +4,8 @@
     "index",
     "nitro-web-ui",
     "nitro-native-build",
-    "serializable-abort-controller"
+    "serializable-abort-controller",
+    "multi-region-blog-post"
   ],
   "defaultOpen": false
 }
