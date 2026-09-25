@@ -114,8 +114,6 @@ jobs:
     # `event-log-race-repro-comment` below.
     permissions:
       contents: read
-      deployments: read
-      statuses: read
       id-token: write
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -136,14 +134,12 @@ jobs:
       - name: Build CLI
         run: pnpm turbo run build --filter='@workflow/cli'
 
-      - name: Wait for Vercel deployment
-        id: waitForDeployment
-        uses: vercel/wait-for-deployment-action@0e2b0c5c5cce31f1648108aeec56467187aca037
+      - name: Resolve Vercel deployment
+        id: deployment
+        uses: ./.github/actions/resolve-vercel-deployment
         with:
-          project-slug: example-nextjs-workflow-turbopack
-          timeout: 1000
-          check-interval: 15
-          environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          project-id: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
+          token: ${{ secrets.VERCEL_LABS_TOKEN }}
 
       - name: Run event log race repro
         id: repro
@@ -151,15 +147,15 @@ jobs:
         run: pnpm run test:e2e:event-log-race-repro --reporter=default
         env:
           NODE_OPTIONS: "--enable-source-maps"
-          DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
-          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
+          DEPLOYMENT_URL: ${{ steps.deployment.outputs.deployment-url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.deployment.outputs.deployment-id }}
           APP_NAME: nextjs-turbopack
-          WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+          WORKFLOW_VERCEL_ENV: ${{ steps.deployment.outputs.environment }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: "prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi"
           WORKFLOW_VERCEL_PROJECT_SLUG: example-nextjs-workflow-turbopack
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ steps.deployment.outputs.environment == 'preview' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
           # Deliberately unguarded pass-through: on a `pull_request` event every
           # `inputs.*` is empty, and the harness reads an empty variable as unset
           # and falls back to its own default. See the note on the inputs above.

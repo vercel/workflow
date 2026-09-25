@@ -359,6 +359,7 @@ const result = await world.hooks.list({ // [!code highlight]
 | `environment` | `string` | Deployment environment |
 | `metadata` | `object` | Custom metadata attached to the hook |
 | `isWebhook` | `boolean` | Whether this is a webhook-style hook |
+| `claimedFrom` | `{ runId: string; hookId: string } \| undefined` | Set when this hook took its token from another run with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). Names that run and its hook |
 
 ---
 

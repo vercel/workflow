@@ -4,7 +4,11 @@ import { getEventDataRefFields } from './event-metadata.js';
 import type { Hook } from './hooks.js';
 import type { StartedWorkflowRun, WorkflowRun } from './runs.js';
 import { SerializedDataSchema } from './serialization.js';
-import type { PaginationOptions, ResolveData } from './shared.js';
+import type {
+  EventsResolveData,
+  PaginationOptions,
+  ResolveData,
+} from './shared.js';
 import type { StartedStep, Step } from './steps.js';
 import type { Wait } from './waits.js';
 
@@ -178,7 +182,7 @@ export function isChildEntityCreationEventType(
  */
 export function stripEventDataRefs(
   event: Event,
-  resolveData: ResolveData
+  resolveData: EventsResolveData
 ): Event {
   if (resolveData !== 'none') return event;
   if (!('eventData' in event)) return event;
@@ -384,6 +388,31 @@ export const HookCreatedEventSchema = z.compile(
       metadata: SerializedDataSchema.optional(),
       isWebhook: z.boolean().optional(),
       isSystem: z.boolean().optional(),
+      /**
+       * `createHook({ experimental_force: true })`: when the token belongs to
+       * another live run, the World takes it over — journaling
+       * `hook_disposed{forceClaimedBy}` in that run's log and re-pointing the
+       * token — instead of answering `hook_conflict`. Requires the
+       * `hookForceClaim` capability.
+       */
+      force: z.boolean().optional(),
+      /**
+       * World-written on a forced creation that did take a token over: the
+       * run and hook it was taken from, plus what a queue message to that run
+       * needs (`workflowName`, `deploymentId`, `runSpecVersion`). Absent when
+       * the token was free. The wake-targeting fields are in the LOG, not only
+       * on the hook entity, so a replay can republish the victim's wake from
+       * the row alone; see `publishForceClaimVictimWake` in @workflow/core.
+       */
+      forceClaimedFrom: z
+        .object({
+          runId: z.string(),
+          hookId: z.string(),
+          workflowName: z.string().optional(),
+          deploymentId: z.string().optional(),
+          runSpecVersion: z.number().optional(),
+        })
+        .optional(),
     }),
   })
 );
@@ -406,6 +435,15 @@ const HookDisposedEventSchema = z.compile(
     eventData: z
       .object({
         token: z.string().optional(),
+        /**
+         * World-written: this disposal was not the run's own. Another run
+         * took the hook's token with `experimental_force`, and this names
+         * it. The hook consumer rejects the hook's awaiters with
+         * `HookForceClaimedError` when it reads this row.
+         */
+        forceClaimedBy: z
+          .object({ runId: z.string(), hookId: z.string() })
+          .optional(),
       })
       .optional(),
   })
@@ -428,6 +466,17 @@ const HookConflictEventSchema = z.compile(
       // TODO: Make this required once all persisted hook_conflict events and
       // remote World implementations always include the active hook owner's run ID.
       conflictingRunId: z.string().optional(),
+      /**
+       * Set when the creation asked for `force` and the World declined to take
+       * the token over. `victim-spec-version`: the run holding the token was
+       * started at a spec version below
+       * `SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM`, so its runtime would not
+       * understand the involuntary disposal — the forced hook gets the
+       * ordinary `HookConflictError` it opted out of instead of stranding
+       * that run. Absent on a conflict answered by a World that does not
+       * implement forcing at all.
+       */
+      forceRefusedReason: z.literal('victim-spec-version').optional(),
     }),
   })
 );
@@ -750,7 +799,17 @@ export type CreateEventRequest = Exclude<
 
 export interface CreateEventParams {
   v1Compat?: boolean;
-  resolveData?: ResolveData;
+  /**
+   * `'skip-step-inputs'` applies only to the event-log page this create
+   * returns (the `sinceCursor` delta or a replay preload), never to the
+   * created `event` or the returned `step` entity, whose `input` is what step
+   * execution reads. See {@link EventsResolveData}.
+   *
+   * Code that forwards these params to an entity read (runs, steps, hooks,
+   * whose `resolveData` is a plain {@link ResolveData}) must map them with
+   * `entityResolveData()` first.
+   */
+  resolveData?: EventsResolveData;
   /**
    * Lazy hook resume idempotency key. Set only by `resumeHook()` when it
    * persists a `hook_received` event whose creation must be deduplicated
@@ -1143,7 +1202,7 @@ export interface ListEventsParams {
   runId: string;
   /** Omit `limit` to return every remaining event. */
   pagination?: PaginationOptions;
-  resolveData?: ResolveData;
+  resolveData?: EventsResolveData;
 }
 
 export interface ListEventsByCorrelationIdParams {

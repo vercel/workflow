@@ -85,6 +85,7 @@ export const ERROR_SLUGS = {
   FETCH_IN_WORKFLOW_FUNCTION: 'fetch-in-workflow',
   TIMEOUT_FUNCTIONS_IN_WORKFLOW: 'timeout-in-workflow',
   HOOK_CONFLICT: 'hook-conflict',
+  HOOK_FORCE_CLAIMED: 'hook-force-claimed',
   CORRUPTED_EVENT_LOG: 'corrupted-event-log',
   REPLAY_DIVERGENCE: 'replay-divergence',
   STEP_NOT_REGISTERED: 'step-not-registered',
@@ -222,6 +223,17 @@ export class WorkflowWorldError extends WorkflowError {
  * ```
  */
 export class WorkflowRunFailedError extends WorkflowError {
+  /**
+   * `failed` is terminal, and a run's terminal state is immutable. This error
+   * is only ever thrown after a *successful* read of such a run, so re-running
+   * the read returns the same record and throws the same error. Marking it
+   * non-retryable is what stops the step executor from spending a retry budget
+   * on that when the read happens inside a step — a parent awaiting a child's
+   * `returnValue` — and then replacing this error with its retry-exhaustion
+   * wrapper. A read that *fails* throws something else and stays retryable.
+   * See `FatalError.is()`.
+   */
+  fatal = true;
   runId: string;
   /**
    * The high-level error category (e.g. USER_ERROR, RUNTIME_ERROR) for the
@@ -719,6 +731,44 @@ export class HookConflictError extends WorkflowError {
 }
 
 /**
+ * Thrown from `await hook` (or the hook's async iterator) when another run
+ * took this hook's token with `createHook({ token, experimental_force: true })`.
+ *
+ * The hook is disposed: payloads it received before the takeover were still
+ * delivered, everything after goes to the new owner, and this run's log holds
+ * a `hook_disposed` naming the run that took it. Whether that ends the run is
+ * the workflow's call — catch it to hand over gracefully, or let it fail.
+ *
+ * Use the static `HookForceClaimedError.is()` method for type-safe checking
+ * in catch blocks; the class identity differs between the workflow VM and the
+ * host, so `instanceof` is not reliable across that boundary.
+ */
+export class HookForceClaimedError extends WorkflowError {
+  token: string;
+  /** The run that took the token. */
+  claimedByRunId: string;
+  /** The hook (in `claimedByRunId`) the token now belongs to. */
+  claimedByHookId?: string;
+
+  constructor(token: string, claimedByRunId: string, claimedByHookId?: string) {
+    super(
+      `Hook token "${token}" was force-claimed by another workflow (run "${claimedByRunId}")`,
+      { slug: ERROR_SLUGS.HOOK_FORCE_CLAIMED }
+    );
+    this.name = 'HookForceClaimedError';
+    this.token = token;
+    this.claimedByRunId = claimedByRunId;
+    if (claimedByHookId !== undefined) {
+      this.claimedByHookId = claimedByHookId;
+    }
+  }
+
+  static is(value: unknown): value is HookForceClaimedError {
+    return isError(value) && value.name === 'HookForceClaimedError';
+  }
+}
+
+/**
  * Thrown when calling `resumeHook()` or `resumeWebhook()` with a token that
  * does not match any active hook.
  *
@@ -973,6 +1023,8 @@ export class PreconditionFailedError extends WorkflowWorldError {
  * ```
  */
 export class WorkflowRunCancelledError extends WorkflowError {
+  /** Terminal and immutable, for the same reason as {@link WorkflowRunFailedError.fatal}. */
+  fatal = true;
   runId: string;
 
   constructor(runId: string) {
@@ -1122,6 +1174,9 @@ const RETRYABLE_ERROR_KEY = Symbol.for('@workflow/errors//RetryableError');
 const HOOK_CONFLICT_ERROR_KEY = Symbol.for(
   '@workflow/errors//HookConflictError'
 );
+const HOOK_FORCE_CLAIMED_ERROR_KEY = Symbol.for(
+  '@workflow/errors//HookForceClaimedError'
+);
 const RUNTIME_DECRYPTION_ERROR_KEY = Symbol.for(
   '@workflow/errors//RuntimeDecryptionError'
 );
@@ -1147,6 +1202,14 @@ if (typeof globalThis !== 'undefined') {
   if (!Object.hasOwn(globalThis, HOOK_CONFLICT_ERROR_KEY)) {
     Object.defineProperty(globalThis, HOOK_CONFLICT_ERROR_KEY, {
       value: HookConflictError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, HOOK_FORCE_CLAIMED_ERROR_KEY)) {
+    Object.defineProperty(globalThis, HOOK_FORCE_CLAIMED_ERROR_KEY, {
+      value: HookForceClaimedError,
       writable: false,
       enumerable: false,
       configurable: false,

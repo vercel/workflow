@@ -465,7 +465,8 @@ export const WorkflowRunSpecVersion = SemanticConvention<number>(
 /**
  * Where the stamped spec version came from: the caller's own World
  * (`same-deployment`), the caller (`explicit`), or, for a cross-deployment
- * start, the target's capability probe (`probe`, `probe-unversioned`) or a
+ * start, the target's capability probe (`probe`, `probe-unversioned`,
+ * `probe-malformed`) or a
  * fallback when it did not answer (`probe-miss`, `no-probe-channel`).
  */
 export const WorkflowRunSpecVersionSource = SemanticConvention<string>(
@@ -475,6 +476,14 @@ export const WorkflowRunSpecVersionSource = SemanticConvention<string>(
 /** Round-trip time of a cross-deployment capability probe that answered. */
 export const WorkflowCapabilityProbeLatencyMs = SemanticConvention<number>(
   'workflow.capability_probe.latency_ms'
+);
+
+/**
+ * Whether a cross-deployment start reused an earlier answer from the same
+ * target deployment instead of probing it again.
+ */
+export const WorkflowCapabilityProbeCached = SemanticConvention<boolean>(
+  'workflow.capability_probe.cached'
 );
 
 /** Why a cross-deployment capability probe failed (e.g. a timeout). */

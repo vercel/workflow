@@ -88,16 +88,24 @@ export const startRun = async (
   // correct queue transport (JSON for old deployments, CBOR for new).
   // Falls back to the run's specVersion if the health check fails
   // (e.g. old deployment without health check support).
-  let specVersion = run.specVersion;
+  // Capped at this CLI's World, on both paths: it writes `run_created` and
+  // the arguments, so it must not claim a version it cannot produce.
+  // Matches what `start()` does for its own cross-deployment probe.
+  let specVersion =
+    run.specVersion === undefined
+      ? undefined
+      : Math.min(run.specVersion, world.specVersion);
   try {
     const hc = await healthCheck(world, {
       deploymentId,
       timeout: 10_000,
     });
-    if (hc.healthy && hc.specVersion != null) {
-      // Capped at this CLI's World: it writes `run_created` and the
-      // arguments, so it must not claim a version it cannot produce.
-      // Matches what `start()` does for its own cross-deployment probe.
+    if (
+      hc.healthy &&
+      typeof hc.specVersion === 'number' &&
+      Number.isInteger(hc.specVersion) &&
+      hc.specVersion >= 1
+    ) {
       specVersion = Math.min(hc.specVersion, world.specVersion);
     }
   } catch {
