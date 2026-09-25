@@ -486,7 +486,7 @@ describe('postgres queue http execution', () => {
         }),
         expect.objectContaining({
           jobKey: 'step_01ABC',
-          maxAttempts: 49,
+          maxAttempts: 73,
           runAt: new Date('2024-01-01T00:00:05.000Z'),
         })
       );
@@ -843,9 +843,22 @@ describe('postgres queue http execution', () => {
       }),
       expect.objectContaining({
         jobKey: 'step_01ABC',
-        maxAttempts: 49,
+        maxAttempts: 73,
       })
     );
+  });
+
+  it('leaves job attempts for redeliveries past core max deliveries', async () => {
+    // Core records MAX_DELIVERIES_EXCEEDED on delivery 49 and throws when that
+    // terminal write fails transiently. The job must still have attempts left
+    // for the redelivery, or the run is stranded `running`.
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+
+    await queue.queue('__wkf_workflow_example', { runId: 'run_01ABC' });
+
+    const [, , options] = vi.mocked(workerUtilsMock.addJob).mock.calls[0];
+    expect(options?.maxAttempts).toBeGreaterThan(49);
   });
 });
 
