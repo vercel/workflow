@@ -1,0 +1,549 @@
+import type * as esbuild from 'esbuild';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  ALLOW_UNSAFE_FLOW_BUNDLE_ENV,
+  analyzeFlowBundleSafety,
+  assertFlowBundleIsSandboxSafe,
+  collectExternalImports,
+  findDynamicRequireCandidates,
+  maskNonCodeRegions,
+} from './flow-bundle-safety.js';
+
+describe('maskNonCodeRegions', () => {
+  it('preserves offsets and line breaks', () => {
+    const code = [
+      'const a = "str";',
+      '// comment',
+      '/* block',
+      ' */ const b;',
+    ].join('\n');
+    const { masked } = maskNonCodeRegions(code);
+    expect(masked).toHaveLength(code.length);
+    expect(masked.split('\n')).toHaveLength(code.split('\n').length);
+    expect(masked).not.toContain('str');
+    expect(masked).not.toContain('comment');
+    expect(masked).toContain('const b;');
+  });
+
+  it('blanks strings, comments and regexes but keeps template substitutions', () => {
+    const code = 'const x = `a require b ${require("fs")} c`;';
+    const { masked } = maskNonCodeRegions(code);
+    // The literal chunks are blanked...
+    expect(masked).not.toContain('a require b');
+    // ...but the substitution is real code and must survive.
+    expect(masked).toContain('require(');
+  });
+
+  it('does not treat division as a regex literal', () => {
+    const code = 'const ratio = total / count; const other = require;';
+    const { masked } = maskNonCodeRegions(code);
+    expect(masked).toBe(code);
+  });
+
+  it('treats a slash after an if/while/for head as a regex literal', () => {
+    // esbuild prints `if (s)\n  /{/.test(s);` — the `/` does not divide here.
+    const code = 'if (s) /{/.test(s); while (x) /}/g.exec(y); var r = (a) / b;';
+    const { masked } = maskNonCodeRegions(code);
+    expect(masked).not.toMatch(/[{}]/);
+    expect(masked).toContain('var r = (a) / b;');
+  });
+
+  it('blanks regex literals that contain quotes', () => {
+    const code = `const re = /require("x")/g; const y = 1;`;
+    const { masked } = maskNonCodeRegions(code);
+    expect(masked).not.toContain('require');
+    expect(masked).toContain('const y = 1;');
+  });
+
+  it('records column-zero banner comments', () => {
+    const code = [
+      '// node_modules/pkg/index.js',
+      'var a = 1;',
+      '  // indented',
+    ].join('\n');
+    const { banners } = maskNonCodeRegions(code);
+    expect(banners.map((banner) => banner.text)).toEqual([
+      'node_modules/pkg/index.js',
+    ]);
+  });
+});
+
+describe('findDynamicRequireCandidates', () => {
+  it('ignores esbuild helper wrappers and feature probes', () => {
+    const code = [
+      'var __commonJS = (cb, mod) => function __require() { return mod; };',
+      'var require_inner = __commonJS({ "inner.js"(exports) {} });',
+      'var inner = require_inner();',
+      'var probe = typeof require === "function";',
+      'var other = typeof require !== "undefined" ? 1 : 2;',
+      'module.exports.require = 1;',
+      'var cfg = { require: true };',
+      'loader.require("x");',
+    ].join('\n');
+    expect(findDynamicRequireCandidates(code)).toEqual([]);
+  });
+
+  it('ignores an optional-dependency probe guarded by try/catch', () => {
+    // framer-motion ships exactly this: the ReferenceError the sandbox raises
+    // is caught, so the bundle still loads.
+    const code = [
+      'try {',
+      '  loadExternalIsValidProp(require("@emotion/is-prop-valid").default);',
+      '} catch {',
+      '}',
+      'try { load(require(emotionPkg).default); } catch {}',
+    ].join('\n');
+    expect(findDynamicRequireCandidates(code)).toEqual([]);
+  });
+
+  it('still flags a require after the try block closes', () => {
+    const code = [
+      'try { optional = require("opt"); } catch {}',
+      'var fs = require("node:fs");',
+    ].join('\n');
+    const found = findDynamicRequireCandidates(code);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ line: 2, specifier: 'node:fs' });
+  });
+
+  it('still flags a require inside a catch block', () => {
+    const code = 'try { a(); } catch { fallback = require("node:fs"); }';
+    expect(findDynamicRequireCandidates(code)).toHaveLength(1);
+  });
+
+  it('does not treat try/finally as a guard', () => {
+    // Without a `catch`, the ReferenceError still escapes the `try`.
+    const code = 'try { optional = require(name); } finally { done(); }';
+    expect(findDynamicRequireCandidates(code)).toHaveLength(1);
+  });
+
+  it('keeps try ranges in sync across a regex after an if head', () => {
+    // An unmasked `/{/` would open a phantom block and stretch the try range
+    // over the unguarded `require` below it.
+    const code = [
+      'function load(s) {',
+      '  try {',
+      '    if (s)',
+      '      /{/.test(s);',
+      '  } catch (e) {',
+      '  }',
+      '  return require(s);',
+      '}',
+    ].join('\n');
+    const found = findDynamicRequireCandidates(code);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ line: 7 });
+  });
+
+  it('ignores requires behind a typeof require check', () => {
+    // tweetnacl, UMD wrappers and esbuild's ESM `__require` shim only call
+    // `require` after checking it exists, which it never does in the sandbox.
+    const code = [
+      'if (typeof require !== "undefined") {',
+      '  crypto = require("crypto");',
+      '} else if (x) {',
+      '}',
+      'if (typeof self !== "undefined" && "function" === typeof require) {',
+      '  a = require(name);',
+      '}',
+      'var b = typeof require === "function" && require("b");',
+      'var c = typeof require !== "undefined" ? require("c") : null;',
+      'var d = (typeof require < "u" ? require : fallback)[key];',
+      'function e() {',
+      '  if (typeof require !== "undefined") return require.apply(this, arguments);',
+      '}',
+    ].join('\n');
+    expect(findDynamicRequireCandidates(code)).toEqual([]);
+  });
+
+  it('still flags requires a typeof check does not cover', () => {
+    const code = [
+      'if (typeof require !== "undefined") {',
+      '}',
+      'var a = require("a");',
+      'if (typeof require !== "undefined" || force) {',
+      '  b = require("b");',
+      '}',
+      'if (typeof require === "undefined") {',
+      '  c = require("c");',
+      '}',
+      'var d = typeof require !== "undefined" ? load() : require("d");',
+      'var e = typeof require === "function", f = require("f");',
+    ].join('\n');
+    expect(
+      findDynamicRequireCandidates(code).map((site) => site.specifier)
+    ).toEqual(['a', 'b', 'c', 'd', 'f']);
+  });
+
+  it('flags require used as a ternary operand', () => {
+    const code = 'var load = isNode ? require : noop;';
+    expect(findDynamicRequireCandidates(code)).toHaveLength(1);
+  });
+
+  it('ignores require mentions inside comments and strings', () => {
+    const code = [
+      '// we used to require("node:fs") here',
+      '/* require("node:path") */',
+      'var message = "call require(name) at runtime";',
+    ].join('\n');
+    expect(findDynamicRequireCandidates(code)).toEqual([]);
+  });
+
+  it('finds literal and dynamic require calls with locations', () => {
+    const code = [
+      '// node_modules/pkg/index.js',
+      'var fs = require("node:fs");',
+      'function lazy(name) { return require(name); }',
+    ].join('\n');
+    const found = findDynamicRequireCandidates(
+      code,
+      new Set(['node_modules/pkg/index.js'])
+    );
+    expect(found).toHaveLength(2);
+    expect(found[0]).toMatchObject({
+      module: 'node_modules/pkg/index.js',
+      line: 2,
+      specifier: 'node:fs',
+    });
+    expect(found[1]).toMatchObject({
+      module: 'node_modules/pkg/index.js',
+      line: 3,
+      specifier: undefined,
+    });
+    expect(found[1].snippet).toContain('require(name)');
+  });
+
+  it('only attributes modules esbuild actually emitted', () => {
+    const code = [
+      '// not a module banner',
+      'var fs = require("node:fs");',
+    ].join('\n');
+    const [violation] = findDynamicRequireCandidates(
+      code,
+      new Set(['real.js'])
+    );
+    expect(violation.module).toBeUndefined();
+  });
+});
+
+function metafileWith(
+  inputs: esbuild.Metafile['inputs'],
+  outputImports: esbuild.Metafile['outputs'][string]['imports'],
+  entryPoint = 'virtual-entry.js'
+): esbuild.Metafile {
+  return {
+    inputs,
+    outputs: {
+      'stdin.js': {
+        imports: outputImports,
+        exports: [],
+        entryPoint,
+        inputs: {},
+        bytes: 0,
+      },
+    },
+  };
+}
+
+describe('collectExternalImports', () => {
+  const metafile = metafileWith(
+    {
+      'virtual-entry.js': {
+        bytes: 0,
+        format: 'esm',
+        imports: [{ path: 'workflow.ts', kind: 'import-statement' }],
+      },
+      'workflow.ts': {
+        bytes: 0,
+        format: 'esm',
+        imports: [
+          {
+            path: 'node_modules/wrapper/index.js',
+            kind: 'import-statement',
+            original: 'wrapper',
+          },
+        ],
+      },
+      'node_modules/wrapper/index.js': {
+        bytes: 0,
+        format: 'cjs',
+        imports: [
+          {
+            path: 'node_modules/leaky/index.js',
+            kind: 'require-call',
+            original: 'leaky',
+          },
+        ],
+      },
+      'node_modules/leaky/index.js': {
+        bytes: 0,
+        format: 'cjs',
+        imports: [{ path: 'node:fs', kind: 'require-call', external: true }],
+      },
+    },
+    [{ path: 'node:fs', kind: 'require-call', external: true }]
+  );
+
+  it('reports the importer and the chain back to user code', () => {
+    const [violation] = collectExternalImports(metafile);
+    expect(violation).toMatchObject({
+      specifier: 'node:fs',
+      importers: ['node_modules/leaky/index.js'],
+      isRuntimeBuiltin: true,
+    });
+    // The synthetic virtual entry is dropped; user code leads the chain.
+    expect(violation.importChain).toEqual([
+      'workflow.ts',
+      'node_modules/wrapper/index.js',
+      'node_modules/leaky/index.js',
+    ]);
+  });
+
+  it('ignores synthetic esbuild inputs such as <runtime>', () => {
+    const synthetic = metafileWith(
+      {
+        'virtual-entry.js': {
+          bytes: 0,
+          format: 'esm',
+          imports: [
+            { path: '<runtime>', kind: 'import-statement', external: true },
+          ],
+        },
+      },
+      [{ path: '<runtime>', kind: 'import-statement', external: true }]
+    );
+    expect(collectExternalImports(synthetic)).toEqual([]);
+  });
+
+  it('flags non-builtin externals too', () => {
+    const external = metafileWith(
+      {
+        'virtual-entry.js': {
+          bytes: 0,
+          format: 'esm',
+          imports: [
+            { path: 'some-pkg', kind: 'import-statement', external: true },
+          ],
+        },
+      },
+      [{ path: 'some-pkg', kind: 'require-call', external: true }]
+    );
+    const [violation] = collectExternalImports(external);
+    expect(violation).toMatchObject({
+      specifier: 'some-pkg',
+      isRuntimeBuiltin: false,
+    });
+  });
+});
+
+describe('analyzeFlowBundleSafety', () => {
+  it('passes a clean bundle', async () => {
+    const report = await analyzeFlowBundleSafety({
+      bundleText: [
+        'var __commonJS = (cb, mod) => function __require() { return mod; };',
+        'var require_inner = __commonJS({ "inner.js"(exports) { exports.a = 1; } });',
+        'var inner = require_inner();',
+        'var hasRequire = typeof require !== "undefined";',
+      ].join('\n'),
+      metafile: metafileWith(
+        {
+          'virtual-entry.js': { bytes: 0, format: 'esm', imports: [] },
+        },
+        []
+      ),
+    });
+    expect(report.externalImports).toEqual([]);
+    expect(report.dynamicRequires).toEqual([]);
+  });
+
+  it('does not report a shadowed require binding', async () => {
+    // esbuild renames shadowed bindings in bundle output, but a hand-written
+    // scan cannot rely on that, so the scope-aware probe has the last word.
+    const report = await analyzeFlowBundleSafety({
+      bundleText: [
+        'function umd(factory) {',
+        '  factory(function require(id) { return {}; }, {});',
+        '}',
+        'umd(function (require, exports) { exports.fs = require("node:fs"); });',
+      ].join('\n'),
+    });
+    expect(report.dynamicRequires).toEqual([]);
+  });
+
+  it('does not report an external whose only require is inside a try block', async () => {
+    // esbuild externalizes an unresolvable `require()` when it is wrapped in
+    // try/catch, so the metafile reports an import for code that is meant to
+    // fail at runtime.
+    const report = await analyzeFlowBundleSafety({
+      bundleText: 'try { load(require("@emotion/is-prop-valid")); } catch {}',
+      metafile: metafileWith(
+        {
+          'virtual-entry.js': {
+            bytes: 0,
+            format: 'esm',
+            imports: [
+              {
+                path: '@emotion/is-prop-valid',
+                kind: 'require-call',
+                external: true,
+              },
+            ],
+          },
+        },
+        [
+          {
+            path: '@emotion/is-prop-valid',
+            kind: 'require-call',
+            external: true,
+          },
+        ]
+      ),
+    });
+    expect(report.externalImports).toEqual([]);
+    expect(report.dynamicRequires).toEqual([]);
+  });
+
+  it('still reports an external that is also required outside a try block', async () => {
+    const report = await analyzeFlowBundleSafety({
+      bundleText: [
+        'try { load(require("opt-pkg")); } catch {}',
+        'var eager = require("opt-pkg");',
+      ].join('\n'),
+      metafile: metafileWith(
+        {
+          'virtual-entry.js': {
+            bytes: 0,
+            format: 'esm',
+            imports: [
+              { path: 'opt-pkg', kind: 'require-call', external: true },
+            ],
+          },
+        },
+        [{ path: 'opt-pkg', kind: 'require-call', external: true }]
+      ),
+    });
+    expect(report.externalImports).toHaveLength(1);
+  });
+
+  it("passes esbuild's ESM __require shim", async () => {
+    // Emitted by esbuild (and tsup) for ESM builds that keep a CJS `require`,
+    // and carried into the flow bundle when such a package is bundled. The
+    // shadowed candidate below must not be confirmed by the shim's guarded
+    // references to the real global.
+    const report = await analyzeFlowBundleSafety({
+      bundleText: [
+        'var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {',
+        '  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]',
+        '}) : x)(function(x) {',
+        '  if (typeof require !== "undefined") return require.apply(this, arguments);',
+        "  throw Error('Dynamic require of \"' + x + '\" is not supported');",
+        '});',
+        'var ci = ((e) => typeof require < "u" ? require : e)(function(e) {',
+        '  if (typeof require < "u") return require.apply(this, arguments);',
+        '});',
+        'umd(function (require, exports) { exports.load = (n) => require(n); });',
+      ].join('\n'),
+    });
+    expect(report.dynamicRequires).toEqual([]);
+  });
+
+  it('does not report an external only required behind a typeof check', async () => {
+    const report = await analyzeFlowBundleSafety({
+      bundleText: [
+        'if (typeof require !== "undefined") {',
+        '  crypto = require("crypto");',
+        '}',
+      ].join('\n'),
+      metafile: metafileWith(
+        {
+          'virtual-entry.js': {
+            bytes: 0,
+            format: 'esm',
+            imports: [{ path: 'crypto', kind: 'require-call', external: true }],
+          },
+        },
+        [{ path: 'crypto', kind: 'require-call', external: true }]
+      ),
+    });
+    expect(report.externalImports).toEqual([]);
+    expect(report.dynamicRequires).toEqual([]);
+  });
+
+  it('reports a free dynamic require', async () => {
+    const report = await analyzeFlowBundleSafety({
+      bundleText: 'function lazy(name) { return require(name); }',
+    });
+    expect(report.dynamicRequires).toHaveLength(1);
+    expect(report.dynamicRequires[0].snippet).toContain('require(name)');
+  });
+
+  it('does not double-report requires that came from an external import', async () => {
+    const report = await analyzeFlowBundleSafety({
+      bundleText: 'var fs = require("node:fs");',
+      metafile: metafileWith(
+        {
+          'virtual-entry.js': {
+            bytes: 0,
+            format: 'esm',
+            imports: [
+              { path: 'node:fs', kind: 'require-call', external: true },
+            ],
+          },
+        },
+        [{ path: 'node:fs', kind: 'require-call', external: true }]
+      ),
+    });
+    expect(report.externalImports).toHaveLength(1);
+    expect(report.dynamicRequires).toEqual([]);
+  });
+});
+
+describe('assertFlowBundleIsSandboxSafe', () => {
+  afterEach(() => {
+    delete process.env[ALLOW_UNSAFE_FLOW_BUNDLE_ENV];
+  });
+
+  it('resolves for a safe bundle', async () => {
+    await expect(
+      assertFlowBundleIsSandboxSafe({ bundleText: 'var a = 1;' })
+    ).resolves.toBeDefined();
+  });
+
+  it('throws a build error naming the module and the chain', async () => {
+    const promise = assertFlowBundleIsSandboxSafe({
+      bundleText: 'var fs = require("node:fs");',
+      metafile: metafileWith(
+        {
+          'virtual-entry.js': {
+            bytes: 0,
+            format: 'esm',
+            imports: [{ path: 'workflow.ts', kind: 'import-statement' }],
+          },
+          'workflow.ts': {
+            bytes: 0,
+            format: 'esm',
+            imports: [
+              { path: 'node:fs', kind: 'require-call', external: true },
+            ],
+          },
+        },
+        [{ path: 'node:fs', kind: 'require-call', external: true }]
+      ),
+    });
+    await expect(promise).rejects.toThrow(/node:fs/);
+    await expect(promise).rejects.toThrow(/workflow\.ts/);
+    await expect(promise).rejects.toThrow(/use step/);
+  });
+
+  it('downgrades to a warning behind the escape hatch', async () => {
+    process.env[ALLOW_UNSAFE_FLOW_BUNDLE_ENV] = '1';
+    const warnings: string[] = [];
+    const report = await assertFlowBundleIsSandboxSafe({
+      bundleText: 'function lazy(name) { return require(name); }',
+      warn: (message) => warnings.push(message),
+    });
+    expect(report.dynamicRequires).toHaveLength(1);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('require');
+  });
+});

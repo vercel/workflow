@@ -23,6 +23,13 @@ export {
   parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
 export {
+  ALLOW_UNSAFE_FLOW_BUNDLE_ENV,
+  assertFlowBundleIsSandboxSafe,
+  type DynamicRequireViolation,
+  type ExternalImportViolation,
+  type FlowBundleSafetyReport,
+} from './flow-bundle-safety.js';
+export {
   clearModuleSpecifierCache,
   getImportPath,
   type ImportPathResult,
