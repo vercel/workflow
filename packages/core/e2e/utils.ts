@@ -10,12 +10,7 @@ import { createWorld as createVercelTestWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
-import {
-  getWorld,
-  healthCheck,
-  start as runtimeStart,
-  setWorld,
-} from '../src/runtime';
+import { getWorld, start as runtimeStart, setWorld } from '../src/runtime';
 import { hydrateRunError } from '../src/serialization';
 import { getWorkbenchAppPath } from './workbench-path';
 
@@ -166,6 +161,17 @@ export interface ConformanceConfig {
    * test cannot leave a stale exemption behind that silently covers nothing.
    */
   unsupported?: Record<string, string>;
+  /**
+   * The highest spec version the app's runtime accepts (for the Python SDK,
+   * `SPEC_VERSION_MAX_SUPPORTED` at the commit the app's lockfile pins).
+   *
+   * The harness starts runs as the deployment under test, so `start()` takes
+   * them for same-deployment starts and stamps this SDK's version. A runtime
+   * that accepts less rejects every such run, and it stays `pending`. Runs are
+   * stamped with the lower of the two instead (see
+   * {@link startAtTargetSpecVersion}). Raise it together with the SDK pin.
+   */
+  maxSpecVersion?: number;
 }
 
 export const CONFORMANCE_CONFIG_FILENAME = 'e2e-conformance.json';
@@ -200,7 +206,7 @@ export function getConformanceConfig(): ConformanceConfig | null {
     );
   }
 
-  const { language, fixtures, unsupported } = (parsed ??
+  const { language, fixtures, unsupported, maxSpecVersion } = (parsed ??
     {}) as Partial<ConformanceConfig>;
   if (typeof language !== 'string' || !Array.isArray(fixtures)) {
     throw new Error(
@@ -219,7 +225,16 @@ export function getConformanceConfig(): ConformanceConfig | null {
     );
   }
 
-  conformanceConfigCache = { language, fixtures, unsupported };
+  if (
+    maxSpecVersion !== undefined &&
+    !(Number.isInteger(maxSpecVersion) && maxSpecVersion >= 1)
+  ) {
+    throw new Error(
+      `${configPath}: "maxSpecVersion" must be a positive integer`
+    );
+  }
+
+  conformanceConfigCache = { language, fixtures, unsupported, maxSpecVersion };
   return conformanceConfigCache;
 }
 
@@ -1073,64 +1088,15 @@ export async function waitForRunPickup(
 }
 
 /**
- * How long a failed spec-version probe is trusted before the next start asks
- * again. Only a failure is retried: a probe that lands before the deployment
- * is warm should not pin every later run to this process's version.
- */
-const TARGET_SPEC_VERSION_RETRY_MS = 30_000;
-const TARGET_SPEC_VERSION_PROBE_TIMEOUT_MS = 15_000;
-
-let targetSpecVersion: number | undefined;
-let targetSpecVersionProbe: Promise<number | undefined> | undefined;
-let targetSpecVersionFailedAt = 0;
-
-/**
- * The spec version the deployment under test executes, for apps whose runtime
- * is not this SDK.
- *
- * The harness starts runs as the deployment under test (`VERCEL_DEPLOYMENT_ID`
- * is the target), so `start()` takes every run for a same-deployment start and
- * stamps this process's spec version. That is right only when the target runs
- * this same SDK. An app that declares an `e2e-conformance.json` runs another
- * one (`workbench/python` runs the Python SDK), which rejects a run stamped
- * above the version it supports, so the run stays `pending` forever. Ask the
- * target once, with the health check a cross-deployment `start()` probes, and
- * stamp what it answers.
- */
-async function getTargetSpecVersion(): Promise<number | undefined> {
-  if (!getConformanceConfig()) return undefined;
-  if (targetSpecVersion !== undefined) return targetSpecVersion;
-  if (Date.now() - targetSpecVersionFailedAt < TARGET_SPEC_VERSION_RETRY_MS) {
-    return undefined;
-  }
-  targetSpecVersionProbe ??= (async () => {
-    try {
-      const result = await healthCheck(await getWorld(), {
-        timeout: TARGET_SPEC_VERSION_PROBE_TIMEOUT_MS,
-      });
-      if (result.healthy && Number.isInteger(result.specVersion)) {
-        targetSpecVersion = result.specVersion;
-        return targetSpecVersion;
-      }
-    } catch {}
-    targetSpecVersionFailedAt = Date.now();
-    return undefined;
-  })().finally(() => {
-    targetSpecVersionProbe = undefined;
-  });
-  return targetSpecVersionProbe;
-}
-
-/**
- * `start()` stamped with the deployment under test's spec version when it is
- * lower than this process's (see {@link getTargetSpecVersion}). An explicit
- * `specVersion` still wins. Use it wherever the suite would call `start()`
- * directly.
+ * `start()` stamped with the highest spec version the app's runtime accepts
+ * when that is lower than this process's (see
+ * {@link ConformanceConfig.maxSpecVersion}). An explicit `specVersion` still
+ * wins. Use it wherever the suite would call `start()` directly.
  */
 export async function startAtTargetSpecVersion<T>(
   ...args: Parameters<typeof runtimeStart<T>>
 ): Promise<Run<T>> {
-  const target = await getTargetSpecVersion();
+  const target = getConformanceConfig()?.maxSpecVersion;
   if (target === undefined) return runtimeStart<T>(...args);
   const [workflow, argsOrOptions, maybeOptions] = args as unknown as [
     Parameters<typeof runtimeStart<T>>[0],
