@@ -62,8 +62,9 @@ import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
  * Matches the budget `wf inspect` replay uses for the same probe.
  *
  * Only the first start to a deployment can pay it (see
- * `crossDeploymentProbeCache`): an answer is reused, and after a miss later
- * probes to that deployment get `CROSS_DEPLOYMENT_PROBE_RETRY_TIMEOUT_MS`.
+ * `crossDeploymentProbeCache`): an answer is reused, and for
+ * `CROSS_DEPLOYMENT_PROBE_MISS_TTL_MS` after a miss later probes to that
+ * deployment get `CROSS_DEPLOYMENT_PROBE_RETRY_TIMEOUT_MS`.
  */
 const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 10_000;
 
@@ -81,6 +82,15 @@ const CROSS_DEPLOYMENT_PROBE_RETRY_TIMEOUT_MS = 2_000;
  * can be reused by a restarted process with different code.
  */
 const CROSS_DEPLOYMENT_PROBE_CACHE_TTL_MS = 10 * 60_000;
+
+/**
+ * How long a miss keeps a deployment on the short retry budget, counted from
+ * the first miss. Repeated misses do not extend it, so a target that is only
+ * slow to answer when cold (longer than the retry budget) gets the full
+ * first-probe budget again once this passes, instead of being stamped with
+ * the fallback version for as long as starts keep arriving.
+ */
+const CROSS_DEPLOYMENT_PROBE_MISS_TTL_MS = 60_000;
 
 /** Upper bound on cached deployments, oldest evicted first. */
 const CROSS_DEPLOYMENT_PROBE_CACHE_MAX_ENTRIES = 256;
@@ -273,16 +283,21 @@ async function probeCrossDeployment(
   const key = `${options.namespace ?? ''}\0${options.deploymentId}`;
   const now = Date.now();
   const entry = byDeployment.get(key);
-  const fresh =
-    entry !== undefined && now - entry.at < CROSS_DEPLOYMENT_PROBE_CACHE_TTL_MS;
-  if (fresh && entry.probe) {
+  if (
+    entry?.probe !== undefined &&
+    now - entry.at < CROSS_DEPLOYMENT_PROBE_CACHE_TTL_MS
+  ) {
     return { probe: entry.probe, cached: true };
   }
+  const recentMiss =
+    entry !== undefined &&
+    entry.probe === undefined &&
+    now - entry.at < CROSS_DEPLOYMENT_PROBE_MISS_TTL_MS;
 
   const probe = await healthCheck(world, {
     deploymentId: options.deploymentId,
     runId: options.runId,
-    timeout: fresh
+    timeout: recentMiss
       ? CROSS_DEPLOYMENT_PROBE_RETRY_TIMEOUT_MS
       : CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
     namespace: options.namespace,
@@ -291,7 +306,9 @@ async function probeCrossDeployment(
   const answered = probe?.format !== undefined;
   byDeployment.delete(key);
   byDeployment.set(key, {
-    at: Date.now(),
+    // A repeated miss keeps the first miss's time, so the short budget ends
+    // `CROSS_DEPLOYMENT_PROBE_MISS_TTL_MS` after it.
+    at: !answered && recentMiss ? entry.at : Date.now(),
     // The run public key is per run, so it is never reused.
     probe: answered ? { ...probe, encryptionPublicKey: undefined } : undefined,
   });

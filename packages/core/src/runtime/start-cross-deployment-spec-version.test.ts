@@ -16,7 +16,7 @@ import {
   resolveCrossDeploymentSpecVersion,
   start,
 } from './start.js';
-import { setWorld } from './world.js';
+import { getWorld, setWorld } from './world.js';
 
 vi.mock('../serialization.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../serialization.js')>();
@@ -406,6 +406,88 @@ describe('cross-deployment start() spec version', () => {
     mockQueue.mockClear();
     await start(workflow, [], { deploymentId: 'dpl_other' });
     expect(probeSent()).toBe(true);
+  });
+
+  it('repeated misses do not extend the short retry budget', async () => {
+    // A target that answers, but only after more than the retry budget
+    // (a cold older-major target), must get the full budget again once the
+    // miss window passes, however often starts keep arriving.
+    vi.useFakeTimers();
+    vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    callerWorld(
+      SPEC_VERSION_CURRENT,
+      { specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT },
+      { answerAfterMs: 1_000_000 }
+    );
+    const startAndWait = async (waitMs: number) => {
+      mockEventsCreate.mockClear();
+      const started = start(workflow, [], { deploymentId: 'dpl_target' });
+      await vi.advanceTimersByTimeAsync(waitMs);
+      await started;
+      return stamped().runCreated;
+    };
+
+    // First miss at ~10 s, then short-budget misses every ~10 s.
+    expect(await startAndWait(10_500)).toBe(
+      SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+    );
+    for (let i = 0; i < 5; i++) {
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(await startAndWait(2_500)).toBe(
+        SPEC_VERSION_SUPPORTS_SLOT_IDENTITY
+      );
+    }
+
+    // 60 s after the first miss the next probe gets the full budget: a
+    // target that starts answering 3 s into the probe is read, which the
+    // 2 s budget would miss. Same World, so the same cache.
+    // (~10 s + 5 × ~10.5 s so far.)
+    await vi.advanceTimersByTimeAsync(8_000);
+    const world = await getWorld();
+    const probeStartedAt = Date.now();
+    world.streams.get = vi.fn(async () => {
+      if (Date.now() - probeStartedAt < 3_000) {
+        throw new Error('stream not found');
+      }
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              JSON.stringify({
+                healthy: true,
+                specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+              })
+            )
+          );
+          controller.close();
+        },
+      });
+    }) as typeof world.streams.get;
+    expect(await startAndWait(3_500)).toBe(
+      SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+    );
+  });
+
+  it('looks the run key up on a cached answer instead of reusing the probed one', async () => {
+    // The probe's public key belongs to the run it was sent for, so a later
+    // start served from the cache must fetch its own run's key.
+    callerWorld(SPEC_VERSION_CURRENT, {
+      specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+    });
+    const world = await getWorld();
+    const getEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
+    world.getEncryptionKeyForRun = getEncryptionKeyForRun;
+
+    await start(workflow, [], { deploymentId: 'dpl_target' });
+    getEncryptionKeyForRun.mockClear();
+    mockQueue.mockClear();
+    await start(workflow, [], { deploymentId: 'dpl_target' });
+
+    expect(probeSent()).toBe(false);
+    expect(getEncryptionKeyForRun).toHaveBeenCalledTimes(1);
+    expect(getEncryptionKeyForRun.mock.calls[0][0]).toBe(
+      mockEventsCreate.mock.calls.at(-1)?.[0]
+    );
   });
 
   it('caches an answer that follows a miss', async () => {
