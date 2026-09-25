@@ -95,6 +95,10 @@ import {
 } from './runtime/helpers.js';
 import { withRunInputs } from './runtime/invocations.js';
 import {
+  attachInvocationStepIds,
+  withInvocationStepIds,
+} from './runtime/invocation-step-ids.js';
+import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
 } from './runtime/lifecycle-hooks.js';
@@ -5508,59 +5512,61 @@ export function workflowEntrypoint(
       ? entrypointCreatedAt - options.routeModuleBodyStartedAt
       : undefined;
 
-  return withHealthCheck(async (req) => {
-    invocationCount += 1;
-    const handlerCached = cachedHandler !== undefined;
-    const spanKind = await getSpanKind('SERVER');
+  return withHealthCheck((req) =>
+    withInvocationStepIds(async () => {
+      invocationCount += 1;
+      const handlerCached = cachedHandler !== undefined;
+      const spanKind = await getSpanKind('SERVER');
 
-    return trace(
-      'workflow.route.flow',
-      {
-        kind: spanKind,
-        attributes: {
-          ...Attribute.WorkflowRouteType('flow'),
-          ...Attribute.FaasInstance(COMPUTE_INSTANCE_ID),
-          ...Attribute.WorkflowRouteHandlerCached(handlerCached),
-          ...Attribute.WorkflowRouteInvocationCount(invocationCount),
-          ...Attribute.WorkflowRouteEntrypointAgeMs(
-            Date.now() - entrypointCreatedAt
-          ),
-          ...(routeModuleBodyInitMs === undefined
-            ? {}
-            : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
-          ...Attribute.HttpRequestMethod(req.method),
-          ...Attribute.HttpRoute('/.well-known/workflow/v1/flow'),
+      return trace(
+        'workflow.route.flow',
+        {
+          kind: spanKind,
+          attributes: {
+            ...Attribute.WorkflowRouteType('flow'),
+            ...Attribute.FaasInstance(COMPUTE_INSTANCE_ID),
+            ...Attribute.WorkflowRouteHandlerCached(handlerCached),
+            ...Attribute.WorkflowRouteInvocationCount(invocationCount),
+            ...Attribute.WorkflowRouteEntrypointAgeMs(
+              Date.now() - entrypointCreatedAt
+            ),
+            ...(routeModuleBodyInitMs === undefined
+              ? {}
+              : Attribute.WorkflowRouteModuleBodyInitMs(routeModuleBodyInitMs)),
+            ...Attribute.HttpRequestMethod(req.method),
+            ...Attribute.HttpRoute('/.well-known/workflow/v1/flow'),
+          },
         },
-      },
-      async (span) => {
-        if (!cachedHandler) {
-          cachedHandler = await trace('workflow.route.init', async () => {
-            // The full runtime World, not `getWorldHandlers()`. That accessor
-            // owns a second, build-time-safe cache, so calling it here built a
-            // second World in the same process: duplicate connection pools and
-            // queue workers for a stateful World, plus a second copy of that
-            // world package's modules once it is bundled, which is what
-            // silently demoted the events WebSocket transport to HTTP. #3665.
-            //
-            // The span keeps its original name. It is a distinct span from the
-            // per-request `workflow.route.get_world` at the top of the flow
-            // route, and renaming it would collide with that one.
-            const worldHandlers = await trace(
-              'workflow.route.get_world_handlers',
-              async () => getWorld()
-            );
-            return handler(worldHandlers);
-          });
-        }
+        async (span) => {
+          if (!cachedHandler) {
+            cachedHandler = await trace('workflow.route.init', async () => {
+              // The full runtime World, not `getWorldHandlers()`. That accessor
+              // owns a second, build-time-safe cache, so calling it here built a
+              // second World in the same process: duplicate connection pools and
+              // queue workers for a stateful World, plus a second copy of that
+              // world package's modules once it is bundled, which is what
+              // silently demoted the events WebSocket transport to HTTP. #3665.
+              //
+              // The span keeps its original name. It is a distinct span from the
+              // per-request `workflow.route.get_world` at the top of the flow
+              // route, and renaming it would collide with that one.
+              const worldHandlers = await trace(
+                'workflow.route.get_world_handlers',
+                async () => getWorld()
+              );
+              return handler(worldHandlers);
+            });
+          }
 
-        const response = await cachedHandler(req);
-        if (response instanceof Response) {
-          span?.setAttributes(
-            Attribute.HttpResponseStatusCode(response.status)
-          );
+          const response = await cachedHandler!(req);
+          if (response instanceof Response) {
+            span?.setAttributes(
+              Attribute.HttpResponseStatusCode(response.status)
+            );
+          }
+          return attachInvocationStepIds(response);
         }
-        return response;
-      }
-    );
-  });
+      );
+    })
+  );
 }

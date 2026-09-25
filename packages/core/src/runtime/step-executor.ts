@@ -57,6 +57,7 @@ import {
 } from './constants.js';
 import { getPortLazy } from './get-port-lazy.js';
 import { memoizeEncryptionKey, withReplayDelta } from './helpers.js';
+import { recordInvocationStepId } from './invocation-step-ids.js';
 import { ReplayRecoveryReporter } from './replay-recovery-reporter.js';
 import {
   computeResumeTtrAttributes,
@@ -1147,6 +1148,7 @@ export async function executeStep(
             () => {
               // The last instant before user code: T7 of the resume window.
               reportResumeTtr();
+              recordInvocationStepId(stepId);
               return stepFn.apply(thisVal, args);
             }
           );

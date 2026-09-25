@@ -1682,6 +1682,7 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       handlerPromise,
       order,
       queue,
+      durableEvents,
       eventsList,
       stepIdSends,
       createdEventParams,
@@ -1711,6 +1712,24 @@ describe('workflowEntrypoint step-dispatch ack ordering', () => {
       order.indexOf('queue_dispatch_start')
     );
     expect(queue).toHaveBeenCalled();
+  });
+
+  it('reports every step whose user code ran during the invocation', async () => {
+    const { handlerPromise, durableEvents } = await driveHandler({
+      runId: 'wrun_invocation_step_ids',
+      queueImpl: async () => ({ messageId: null }),
+    });
+
+    const res = (await handlerPromise) as Response;
+    const startedStepIds = durableEvents
+      .filter((event) => event.eventType === 'step_started')
+      .map((event) => event.correlationId);
+
+    expect(
+      JSON.parse(
+        res.headers.get('x-vercel-internal-workflow-step-ids') ?? 'null'
+      )
+    ).toEqual(startedStepIds);
   });
 
   it('does not ack while the step-dispatch send is still in flight', async () => {
