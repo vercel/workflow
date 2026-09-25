@@ -270,7 +270,17 @@ describe('watching a scope', () => {
     }
     watcher.watch({ ...scope, startTime });
 
-    return { changes, removals, scope };
+    // The watcher gets the scope as-is (native paths); assertions compare in
+    // the canonical form the rest of the suite uses.
+    return {
+      changes,
+      removals,
+      scope: {
+        files: scope.files.map(canonical),
+        directories: scope.directories.map(canonical),
+        missing: scope.missing.map(canonical),
+      },
+    };
   };
 
   const waitFor = async (predicate: () => boolean) => {
