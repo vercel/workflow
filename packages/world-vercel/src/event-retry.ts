@@ -64,6 +64,7 @@
 
 import {
   EntityConflictError,
+  HookForceClaimedError,
   RunExpiredError,
   StreamError,
   ThrottleError,
@@ -271,6 +272,9 @@ export function isRetryableEventPostError(err: unknown): boolean {
   // rather than this transient classification.)
   if (
     EntityConflictError.is(err) ||
+    // A takeover redirect is definitive for THIS target; the runtime's
+    // resume path follows the token instead of re-issuing the write here.
+    HookForceClaimedError.is(err) ||
     RunExpiredError.is(err) ||
     TooEarlyError.is(err) ||
     ThrottleError.is(err)

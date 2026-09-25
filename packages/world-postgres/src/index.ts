@@ -79,6 +79,10 @@ export function createWorld(
       hookRetention: { active: true },
       hookResumeDedup: true,
       ...(config.enableInvoke ? { invoke: true } : {}),
+      // One transaction re-points the token, journals the victim's
+      // `hook_disposed{forceClaimedBy}` and creates the claimer's hook; see
+      // the hook_created branch of storage.ts.
+      hookForceClaim: true,
     },
     ...storage,
     ...streamer,

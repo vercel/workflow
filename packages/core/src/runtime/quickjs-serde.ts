@@ -254,6 +254,7 @@ const SYMBOL_NAMES = [
   'workflow-class-registry',
   '@workflow/errors//FatalError',
   '@workflow/errors//HookConflictError',
+  '@workflow/errors//HookForceClaimedError',
   '@workflow/errors//RetryableError',
   '@workflow/errors//RuntimeDecryptionError',
   '@workflow/errors//StreamError',
@@ -1117,6 +1118,26 @@ export function createQuickJSSerde(
       if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
       return reduced;
     },
+    HookForceClaimedError: (value) => {
+      if (!isHandle(value) || !value.isError) return false;
+      if (chainedString(value, 'name') !== 'HookForceClaimedError')
+        return false;
+      const shape = reduceErrorShape(value) as Record<string, unknown>;
+      const reduced: Record<string, unknown> = {
+        message: shape.message,
+        stack: shape.stack,
+        token: own(value, 'token'),
+        claimedByRunId: own(value, 'claimedByRunId'),
+      };
+      const claimedByHookId = own(value, 'claimedByHookId');
+      if (claimedByHookId && !claimedByHookId.isUndefined) {
+        reduced.claimedByHookId = claimedByHookId;
+      } else {
+        claimedByHookId?.dispose();
+      }
+      if (Object.hasOwn(shape, 'cause')) reduced.cause = shape.cause;
+      return reduced;
+    },
     RangeError: namedErrorSubclassReducer('RangeError'),
     ReferenceError: namedErrorSubclassReducer('ReferenceError'),
     RetryableError: (value) => {
@@ -1792,6 +1813,39 @@ export function createQuickJSSerde(
           define(error, 'conflictingRunId', conflictingRunId);
         }
         conflictingRunId?.dispose();
+      }
+      return error;
+    },
+    HookForceClaimedError: (value: JSValueHandle) => {
+      const cls = registeredErrorClass(
+        '@workflow/errors//HookForceClaimedError'
+      );
+      let error: JSValueHandle;
+      if (cls) {
+        // Constructor takes (token, claimedByRunId, claimedByHookId).
+        const token = own(value, 'token') ?? vm.undefined;
+        const claimedByRunId = own(value, 'claimedByRunId') ?? vm.undefined;
+        const claimedByHookId = own(value, 'claimedByHookId') ?? vm.undefined;
+        error = vm.construct(cls, token, claimedByRunId, claimedByHookId);
+        if (token !== vm.undefined) token.dispose();
+        if (claimedByRunId !== vm.undefined) claimedByRunId.dispose();
+        if (claimedByHookId !== vm.undefined) claimedByHookId.dispose();
+        const stack = own(value, 'stack');
+        if (stack && !stack.isUndefined) define(error, 'stack', stack);
+        stack?.dispose();
+        if (guestHasOwn(value, 'cause')) {
+          const cause = own(value, 'cause') ?? vm.undefined;
+          define(error, 'cause', cause);
+          if (cause !== vm.undefined) cause.dispose();
+        }
+        cls.dispose();
+      } else {
+        error = buildError(i.Error, value, { name: 'HookForceClaimedError' });
+        for (const field of ['token', 'claimedByRunId', 'claimedByHookId']) {
+          const handle = own(value, field);
+          if (handle && !handle.isUndefined) define(error, field, handle);
+          handle?.dispose();
+        }
       }
       return error;
     },

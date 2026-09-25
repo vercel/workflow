@@ -80,6 +80,10 @@ export function createWorld(args?: Partial<Config>): LocalWorld {
       // events-storage.ts `claimHookResume`), so resumeHook()'s parallel fast
       // path converges on one event in dev exactly as it does on Vercel.
       hookResumeDedup: true,
+      // The token claim lock serializes the takeover behind
+      // `createHook({ experimental_force: true })`; see the hook_created
+      // branch of storage/events-storage.ts.
+      hookForceClaim: true,
     },
     ...queue,
     ...storage,

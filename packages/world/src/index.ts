@@ -81,6 +81,7 @@ export type * from './hooks.js';
 export {
   HOOK_RESUME_DEDUP_VERSION,
   HOOK_RESUME_INPUT_VERSION,
+  HookClaimedFromSchema,
   HookResumeCapabilitiesSchema,
   HookSchema,
 } from './hooks.js';
@@ -137,6 +138,7 @@ export type {
   StreamInfoResponse,
 } from './shared.js';
 export {
+  entityResolveData,
   PaginatedResponseSchema,
   StructuredErrorSchema,
 } from './shared.js';
@@ -164,6 +166,7 @@ export {
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   SPEC_VERSION_SUPPORTS_SEALED_LOG,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from './spec-version.js';

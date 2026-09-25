@@ -162,6 +162,13 @@
       "when": 1789603200000,
       "tag": "0022_invocation_outcomes",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1789689600000,
+      "tag": "0023_add_hook_claimed_from",
+      "breakpoints": true
     }
   ]
 }
