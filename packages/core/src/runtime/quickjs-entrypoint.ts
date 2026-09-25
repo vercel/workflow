@@ -61,9 +61,14 @@ import { getPortLazy } from './get-port-lazy.js';
 import {
   getWorkflowQueueName,
   queueMessage,
+  REPLAY_RESOLVE_DATA,
   runDispatchContext,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
+import {
+  publishForceClaimVictimWake,
+  republishOwedForceClaimVictimWakes,
+} from './hook-wake.js';
 import {
   dispatchRunCompletedHooks,
   dispatchRunFailedHooks,
@@ -413,12 +418,31 @@ async function dispatchPendingOps(params: {
               // System hooks (AbortController) are exempt from user
               // token namespace conflict checks.
               ...(hook.isSystem ? { isSystem: true } : {}),
+              ...(hook.force ? { force: true } : {}),
             } as any,
           },
           hookDeltaCursor !== undefined
             ? { sinceCursor: hookDeltaCursor }
             : undefined
         );
+
+        // A forced creation that took the token over: wake the run it was
+        // taken from so its replay reads the hook_disposed the World
+        // journaled there. Same contract as the node:vm suspension handler;
+        // see `publishForceClaimVictimWake`.
+        if (result.hook?.claimedFrom) {
+          const outcome = await publishForceClaimVictimWake(
+            world,
+            runId,
+            result.hook
+          );
+          runtimeLogger.info('Hook token force-claimed from another run', {
+            workflowRunId: runId,
+            hookId: hook.correlationId,
+            victimRunId: result.hook.claimedFrom.runId,
+            victimWake: outcome,
+          });
+        }
 
         // If storage detected a real token conflict with another
         // workflow's hook, re-queue so the workflow handler can
@@ -557,18 +581,25 @@ async function dispatchPendingOps(params: {
       hookOpsByToken.set(key, [op as PendingHook | PendingHookDispose]);
     }
   }
+  const runHookGroup = async (
+    group: (PendingHook | PendingHookDispose)[]
+  ): Promise<void> => {
+    for (const op of group) {
+      if (op.type === 'hook') {
+        await processHookOp(op);
+      } else {
+        await processHookDisposeOp(op);
+      }
+    }
+  };
+  // Token groups run in parallel with every other op, forced creations
+  // included. A forced creation publishes its victim's wake before its group's
+  // next write, but nothing else waits for it, and nothing needs to: a crash
+  // before the wake is repaid by the next replay from the forced
+  // `hook_created` itself, which `forcedCreationsOwingWake` finds wherever it
+  // sits in the log, so no row written after it can hide the debt.
   for (const group of hookOpsByToken.values()) {
-    opsPromises.push(
-      (async () => {
-        for (const op of group) {
-          if (op.type === 'hook') {
-            await processHookOp(op);
-          } else {
-            await processHookDisposeOp(op);
-          }
-        }
-      })()
-    );
+    opsPromises.push(runHookGroup(group));
   }
 
   for (const op of pendingOperations) {
@@ -1077,6 +1108,7 @@ export async function runWorkflowWithQuickJS(params: {
           cursor: cursor ?? undefined,
           limit: 1000,
         },
+        resolveData: REPLAY_RESOLVE_DATA,
       });
       eventsFetchedPages++;
       allEvents.push(...response.data);
@@ -1097,9 +1129,20 @@ export async function runWorkflowWithQuickJS(params: {
   // handed back on a write that the VM has not been given yet. Every write
   // made from this view goes through `createEvent` below so it names the
   // position it was decided against and its response is queued here.
+  // Same durability contract as the node:vm suspension handler: every
+  // recent forced hook creation in the log may still owe its victim a wake,
+  // because the invocation that created it may have died before publishing
+  // one, so it is republished under the hook's idempotency key (see
+  // `forcedCreationsOwingWake`). Once per invocation, on the log as loaded;
+  // the forced creations this invocation makes publish their own.
+  await republishOwedForceClaimVictimWakes(world, runId, events);
+
   const logView = new QuickJSLogView(events, loadedCursor);
   const createEvent: EventCreator = async (data, eventParams) => {
     const result = await world.events.create(runId, data, {
+      // Returned replay events only feed the log; read them the way replay
+      // reads the log.
+      resolveData: REPLAY_RESOLVE_DATA,
       ...eventParams,
       ...logView.snapshotParams(),
     });
@@ -1374,6 +1417,10 @@ export async function runWorkflowWithQuickJS(params: {
   // exiting awaiting_external with the unblocking event already written
   // and nothing scheduled to read it.
   let pendingRequeueSignal = false;
+  // Set when an inline step's lazy claim came back `throttled`: the exit
+  // defers a fresh orchestrator invocation by this many seconds (the longest
+  // backoff in the batch) instead of handing the step to the queue.
+  let throttledReplaySeconds: number | undefined;
 
   /**
    * Fetch all events not yet processed by the live VM (log order), reading
@@ -1395,6 +1442,7 @@ export async function runWorkflowWithQuickJS(params: {
           cursor: cursor ?? undefined,
           limit: 1000,
         },
+        resolveData: REPLAY_RESOLVE_DATA,
       });
       for (const e of response.data) {
         if (e.eventId && seenEventIds.has(e.eventId)) continue;
@@ -1821,41 +1869,45 @@ export async function runWorkflowWithQuickJS(params: {
       try {
         outcomes = await Promise.all(
           inlineCandidates.map((step) =>
-            runStepSingleFlight(runId, step.correlationId, () =>
-              (async () =>
-                executeStep({
-                  world,
-                  workflowRunId: runId,
-                  workflowDeploymentId: workflowRun.deploymentId,
-                  workflowName: workflowRun.workflowName,
-                  workflowStartedAt,
-                  requestId,
-                  rootRunId,
-                  stepId: step.correlationId,
-                  stepName: step.stepId,
-                  encryptionKey,
-                  runSpecVersion: workflowRun.specVersion,
-                  // Lazy inline claim: step_created is deferred (dispatch
-                  // skipped it) and this step_started carries the input,
-                  // so the world creates the step atomically:
-                  // exactly-one-owner. A concurrent claimant gets
-                  // EntityConflictError → { type: 'skipped' } and never
-                  // runs the body. Mirrors the node engine's inline path.
-                  lazyStepInput: await encryptSerializedData(
-                    step.input,
-                    encryptionKey
-                  ),
-                  // Ownership stamp: wake replays see the body as in
-                  // flight in this invocation and arm a delayed backstop
-                  // instead of immediately requeueing the step.
-                  ownerMessageId,
-                  // A lazy step is brand-new by construction: first
-                  // attempt.
-                  authoritativeAttempt: 1,
-                  ...(inlineDeltaSinceCursor !== undefined
-                    ? { inlineDeltaSinceCursor }
-                    : {}),
-                }))()
+            runStepSingleFlight(
+              runId,
+              step.correlationId,
+              () =>
+                (async () =>
+                  executeStep({
+                    world,
+                    workflowRunId: runId,
+                    workflowDeploymentId: workflowRun.deploymentId,
+                    workflowName: workflowRun.workflowName,
+                    workflowStartedAt,
+                    requestId,
+                    rootRunId,
+                    stepId: step.correlationId,
+                    stepName: step.stepId,
+                    encryptionKey,
+                    runSpecVersion: workflowRun.specVersion,
+                    // Lazy inline claim: step_created is deferred (dispatch
+                    // skipped it) and this step_started carries the input,
+                    // so the world creates the step atomically:
+                    // exactly-one-owner. A concurrent claimant gets
+                    // EntityConflictError → { type: 'skipped' } and never
+                    // runs the body. Mirrors the node engine's inline path.
+                    lazyStepInput: await encryptSerializedData(
+                      step.input,
+                      encryptionKey
+                    ),
+                    // Ownership stamp: wake replays see the body as in
+                    // flight in this invocation and arm a delayed backstop
+                    // instead of immediately requeueing the step.
+                    ownerMessageId,
+                    // A lazy step is brand-new by construction: first
+                    // attempt.
+                    authoritativeAttempt: 1,
+                    ...(inlineDeltaSinceCursor !== undefined
+                      ? { inlineDeltaSinceCursor }
+                      : {}),
+                  }))(),
+              'debug'
             )
           )
         );
@@ -1885,8 +1937,22 @@ export async function runWorkflowWithQuickJS(params: {
             cursorAdvanced: advanced,
           });
         }
-        if (outcome.type === 'retry' || outcome.type === 'throttled') {
-          // Hand the step to the queue with the requested backoff:
+        if (outcome.type === 'throttled') {
+          // The lazy `step_started` (the write that would have created the
+          // step from its input) was rejected, so the step does NOT exist.
+          // Handing it to the queue as a background step would send a bare
+          // `step_started` the world rejects with "step not found" on every
+          // delivery until the ceiling, with no input left to recover it
+          // from. Mirror the node engine instead: defer a fresh orchestrator
+          // invocation by the backoff, whose replay re-attempts the step
+          // inline WITH its input (its step_created is deferred anew).
+          throttledReplaySeconds = Math.max(
+            throttledReplaySeconds ?? 0,
+            outcome.timeoutSeconds
+          );
+        } else if (outcome.type === 'retry') {
+          // The step's start succeeded, so it exists: hand it to the queue
+          // with the requested backoff:
           // background delivery drives the retry from here.
           queuedStepIds.add(step.correlationId);
           await queueStepMessage({
@@ -1917,6 +1983,10 @@ export async function runWorkflowWithQuickJS(params: {
         count: inlineCandidates.length,
         outcomes: outcomes.map((o) => o.type),
       });
+      // A throttled claim ends this invocation: the deferred replay picks up
+      // the batch's other terminals along with the retried step, and the
+      // backoff is what the throttle asked for.
+      if (throttledReplaySeconds !== undefined) break;
 
       // Feed the inline batch's terminal events into the live VM. When
       // the eventually-consistent listing has not surfaced them yet,
@@ -1927,7 +1997,7 @@ export async function runWorkflowWithQuickJS(params: {
       // requeue signal so the suspended exit schedules a fresh immediate
       // invocation whose fresh read picks the terminals up. Outcomes that
       // wrote no terminal ('skipped': a concurrent claimant owns the
-      // body; 'gone', retry/throttled: a queue message exists) don't
+      // body; 'gone'; 'retry': a queue message exists) don't
       // need it, but signaling on them too only costs a no-op invocation
       // in an already-rare lag window.
       const queued = takeQueuedEvents();
@@ -2013,7 +2083,6 @@ export async function runWorkflowWithQuickJS(params: {
         },
       });
       wfdiag('exit_completed', { result: 'run_completed_written' });
-      dispatchRunCompletedHooks(runId, workflowName);
     } catch (err) {
       if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
         runtimeLogger.warn(
@@ -2029,6 +2098,7 @@ export async function runWorkflowWithQuickJS(params: {
       });
       throw err;
     }
+    dispatchRunCompletedHooks(runId, workflowName);
   } else if (result.suspended) {
     // Workflow still suspended after the inline loop. All durable side
     // effects for the final suspension state were already dispatched by
@@ -2056,6 +2126,30 @@ export async function runWorkflowWithQuickJS(params: {
     if (runGone) {
       // The run no longer exists (expired / deleted), so nothing to drive.
       wfdiag('exit_suspended', { action: 'run_gone' });
+      return;
+    }
+
+    if (throttledReplaySeconds !== undefined) {
+      // A throttled lazy inline claim: replay after the backoff (a
+      // fresh message, for the reasons given below) so the step
+      // re-runs inline with its input. Checked before the immediate-requeue
+      // exits, which would retry the throttled write with no backoff. Waits
+      // are covered: the loop armed the soonest wait's continuation before
+      // running the batch.
+      wfdiag('exit_suspended', {
+        action: 'throttled_step_deferred_replay',
+        timeoutSeconds: throttledReplaySeconds,
+      });
+      await queueMessage(
+        world,
+        getWorkflowQueueName(workflowRun.workflowName, namespace),
+        {
+          runId,
+          traceCarrier: await nextTraceCarrier(),
+          requestedAt: new Date(),
+        },
+        { delaySeconds: throttledReplaySeconds }
+      );
       return;
     }
 

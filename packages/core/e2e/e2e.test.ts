@@ -11,7 +11,11 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { createWorkflowUrl } from '@workflow/utils';
-import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+  type World,
+} from '@workflow/world';
 import {
   afterAll,
   assert,
@@ -29,7 +33,6 @@ import {
   getRun,
   getWorld,
   healthCheck,
-  start as rawStart,
   resumeHook,
 } from '../src/runtime';
 import {
@@ -51,6 +54,7 @@ import {
   isLocalDeployment,
   noteTestSettled,
   noteTestStarted,
+  startAtTargetSpecVersion as rawStart,
   requireFixture,
   requireSupported,
   runInTestState,
@@ -2564,6 +2568,480 @@ describe.concurrent('e2e', () => {
       });
     }
   );
+
+  describe('createHook({ experimental_force: true })', () => {
+    /** Every event of a run, in log order, across pages. */
+    async function allRunEvents(runId: string) {
+      const world = await getWorld();
+      const events: WorkflowEvent[] = [];
+      let cursor: string | undefined;
+      for (;;) {
+        const page = await world.events.list({
+          runId,
+          pagination: { limit: 100, cursor, sortOrder: 'asc' },
+        });
+        events.push(...(page.data as WorkflowEvent[]));
+        if (!page.cursor || page.cursor === cursor) break;
+        cursor = page.cursor;
+      }
+      return events;
+    }
+
+    const hookEventsOf = (events: WorkflowEvent[], hookId?: string) =>
+      events.filter(
+        (e) =>
+          e.eventType.startsWith('hook_') &&
+          (hookId === undefined || e.correlationId === hookId)
+      );
+
+    /**
+     * Whether the World behind this deployment implements the takeover. The
+     * runtime turns a `hook_conflict` answered to a forced creation into a
+     * fatal "does not support" failure, so one victim + one forced claimer on
+     * a fresh token tells the two apart. Memoized: one probe per lane.
+     *
+     * Needed because the Vercel lanes run against whichever workflow-server
+     * is deployed, and the server half of this feature ships separately (and
+     * first). Until it is deployed there, these tests are skipped rather than
+     * failed; the World-local and World-postgres lanes always run them.
+     */
+    let forceClaimSupport: Promise<boolean> | undefined;
+    const serverSupportsForceClaim = () =>
+      (forceClaimSupport ??= (async () => {
+        const token = `force-probe-${Math.random().toString(36).slice(2)}`;
+        const victim = await start(await e2e('hookForceClaimVictimWorkflow'), [
+          token,
+        ]);
+        await waitForHook(token, { runId: victim.runId });
+        const claimer = await start(
+          await e2e('hookForceClaimClaimerWorkflow'),
+          [token]
+        );
+        try {
+          await waitForHook(token, { runId: claimer.runId, timeoutMs: 60_000 });
+          return true;
+        } catch (error) {
+          const claimerRun = await getRun(claimer.runId);
+          const status = await claimerRun.status;
+          if (status !== 'failed') throw error;
+          const failure = await claimerRun.returnValue.catch((e) => e);
+          if (
+            failure instanceof Error &&
+            failure.message.includes('does not support force-claiming')
+          ) {
+            return false;
+          }
+          throw error;
+        } finally {
+          // Leave nothing waiting behind: the probe's runs are not the tests'.
+          await Promise.allSettled([
+            resumeHook(token, { message: 'probe-done' }).catch(() => {}),
+            victim.cancel().catch(() => {}),
+            claimer.cancel().catch(() => {}),
+          ]);
+        }
+      })());
+    const skipUnlessForceClaimSupported = async (ctx: TestContext) => {
+      if (!(await serverSupportsForceClaim())) {
+        ctx.skip();
+      }
+    };
+
+    test(
+      'takes the token over: the victim is woken and rejects with HookForceClaimedError, resumes reach the claimer',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
+        const token = `force-${Math.random().toString(36).slice(2)}`;
+
+        const victim = await start(await e2e('hookForceClaimVictimWorkflow'), [
+          token,
+        ]);
+        const victimHook = await waitForHook(token, { runId: victim.runId });
+
+        const claimer = await start(
+          await e2e('hookForceClaimClaimerWorkflow'),
+          [token]
+        );
+        const claimerHook = await waitForHook(token, {
+          runId: claimer.runId,
+          timeoutMs: 60_000,
+        });
+        expect(claimerHook.hookId).not.toBe(victimHook.hookId);
+        expect(claimerHook.claimedFrom).toMatchObject({
+          runId: victim.runId,
+          hookId: victimHook.hookId,
+        });
+
+        // The victim completes on its own: the takeover journaled its
+        // hook_disposed AND woke it, so its awaiter rejected and it returned.
+        // No resume ever reached it.
+        const victimResult = await victim.returnValue;
+        expect(victimResult).toMatchObject({
+          role: 'force_claimed',
+          claimedByRunId: claimer.runId,
+          claimedByHookId: claimerHook.hookId,
+          token,
+        });
+
+        // Resumes on the token now reach the claimer.
+        await resumeHook(token, { message: 'after-takeover' });
+        const claimerResult = await claimer.returnValue;
+        expect(claimerResult).toMatchObject({
+          role: 'claimer',
+          conflict: null,
+          received: 'after-takeover',
+        });
+
+        // Logs: the victim's holds exactly one hook_disposed naming the
+        // claimer and no hook_received; the claimer's holds one hook_created
+        // naming the victim, one hook_received, and no hook_conflict.
+        const victimEvents = hookEventsOf(await allRunEvents(victim.runId));
+        expect(victimEvents.map((e) => e.eventType)).toEqual([
+          'hook_created',
+          'hook_disposed',
+        ]);
+        expect((victimEvents[1] as any).eventData).toMatchObject({
+          forceClaimedBy: { runId: claimer.runId, hookId: claimerHook.hookId },
+        });
+        const claimerEvents = hookEventsOf(await allRunEvents(claimer.runId));
+        expect(claimerEvents.map((e) => e.eventType)).toEqual([
+          'hook_created',
+          'hook_received',
+          'hook_disposed',
+        ]);
+        expect((claimerEvents[0] as any).eventData).toMatchObject({
+          force: true,
+          forceClaimedFrom: { runId: victim.runId, hookId: victimHook.hookId },
+        });
+
+        const { json: victimData } = await cliInspectJson(
+          `runs ${victim.runId}`
+        );
+        expect(victimData.status).toBe('completed');
+        const { json: claimerData } = await cliInspectJson(
+          `runs ${claimer.runId}`
+        );
+        expect(claimerData.status).toBe('completed');
+      }
+    );
+
+    test(
+      'payloads delivered before the takeover stay with the victim; the iterator then throws',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
+        const token = `force-iter-${Math.random().toString(36).slice(2)}`;
+        const victim = await start(
+          await e2e('hookForceClaimIteratingVictimWorkflow'),
+          [token]
+        );
+        const victimHook = await waitForHook(token, { runId: victim.runId });
+        await resumeHook(token, { n: 1 });
+        await resumeHook(token, { n: 2 });
+        await waitForRunEvents(
+          victim.runId,
+          (e) => e.eventType === 'hook_received',
+          { minCount: 2, description: 'both pre-takeover payloads' }
+        );
+
+        const claimer = await start(
+          await e2e('hookForceClaimCollectorWorkflow'),
+          [token, 2]
+        );
+        await waitForHook(token, { runId: claimer.runId, timeoutMs: 60_000 });
+
+        const victimResult = await victim.returnValue;
+        expect(victimResult).toEqual({
+          received: [1, 2],
+          claimedByRunId: claimer.runId,
+        });
+
+        await resumeHook(token, { n: 3 });
+        await resumeHook(token, { n: 4 });
+        expect(await claimer.returnValue).toEqual({ received: [3, 4] });
+
+        // Nothing landed in the victim after its disposal.
+        const victimEvents = hookEventsOf(
+          await allRunEvents(victim.runId),
+          victimHook.hookId
+        ).map((e) => e.eventType);
+        expect(victimEvents.indexOf('hook_disposed')).toBe(
+          victimEvents.length - 1
+        );
+        expect(victimEvents.filter((t) => t === 'hook_received')).toHaveLength(
+          2
+        );
+      }
+    );
+
+    test(
+      'resumes in flight during the takeover are never lost: each lands in exactly one log',
+      { timeout: 120_000 },
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
+        const token = `force-race-${Math.random().toString(36).slice(2)}`;
+        const TOTAL = 24;
+        const victim = await start(
+          await e2e('hookForceClaimIteratingVictimWorkflow'),
+          [token]
+        );
+        const victimHook = await waitForHook(token, { runId: victim.runId });
+
+        // Fire resumes continuously while the claimer takes the token over.
+        // Every resume that resolves succeeded somewhere; the assertion is
+        // that "somewhere" is exactly one of the two logs, and that the
+        // victim's are all ordered before its disposal.
+        const resumes: Promise<unknown>[] = [];
+        let claimer: Run<unknown> | undefined;
+        for (let n = 1; n <= TOTAL; n++) {
+          resumes.push(resumeHook(token, { n }));
+          if (n === 6) {
+            claimer = await start(
+              await e2e('hookForceClaimCollectorWorkflow'),
+              [token, TOTAL]
+            );
+          }
+          await sleep(40);
+        }
+        assert(claimer);
+        const settled = await Promise.allSettled(resumes);
+        const succeeded = settled.filter(
+          (r) => r.status === 'fulfilled'
+        ).length;
+        // A resume can only fail here as a genuine HookNotFoundError if the
+        // token was momentarily unresolvable, which the protocol forbids.
+        for (const r of settled) {
+          if (r.status === 'rejected') throw r.reason;
+        }
+        expect(succeeded).toBe(TOTAL);
+        await waitForHook(token, { runId: claimer.runId, timeoutMs: 60_000 });
+
+        const victimResult = (await victim.returnValue) as {
+          received: number[];
+          claimedByRunId: string | null;
+        };
+        expect(victimResult.claimedByRunId).toBe(claimer.runId);
+
+        // Drain the claimer: it collects TOTAL payloads, but only the ones
+        // the victim did not get will arrive, so top it up.
+        const claimerHook = await getHookByToken(token);
+        const missing = TOTAL - victimResult.received.length;
+        // Every resume resolved, so the claimer's log holds exactly the ones
+        // the victim did not get — once its writes are listable.
+        await waitForRunEvents(
+          claimer.runId,
+          (e) =>
+            e.eventType === 'hook_received' &&
+            e.correlationId === claimerHook.hookId,
+          { minCount: missing, description: 'redirected deliveries' }
+        );
+        const claimerEventsSoFar = hookEventsOf(
+          await allRunEvents(claimer.runId),
+          claimerHook.hookId
+        ).filter((e) => e.eventType === 'hook_received').length;
+        expect(claimerEventsSoFar).toBe(missing);
+        for (let i = 0; i < TOTAL - missing; i++) {
+          await resumeHook(token, { n: 1000 + i });
+        }
+        const claimerResult = (await claimer.returnValue) as {
+          received: number[];
+        };
+        const original = claimerResult.received.filter((n) => n < 1000);
+        const union = [...victimResult.received, ...original].sort(
+          (a, b) => a - b
+        );
+        expect(union).toEqual(Array.from({ length: TOTAL }, (_, i) => i + 1));
+        // Victim log: every hook_received before its hook_disposed.
+        const victimTypes = hookEventsOf(
+          await allRunEvents(victim.runId),
+          victimHook.hookId
+        ).map((e) => e.eventType);
+        expect(victimTypes.lastIndexOf('hook_received')).toBeLessThan(
+          victimTypes.indexOf('hook_disposed')
+        );
+      }
+    );
+
+    test(
+      'a chain of takeovers: each victim ends with HookForceClaimedError, deliveries follow the current owner',
+      { timeout: 120_000 },
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
+        const token = `force-chain-${Math.random().toString(36).slice(2)}`;
+        const a = await start(await e2e('hookForceClaimVictimWorkflow'), [
+          token,
+        ]);
+        await waitForHook(token, { runId: a.runId });
+        const b = await start(await e2e('hookForceClaimVictimWorkflowForced'), [
+          token,
+        ]);
+        await waitForHook(token, { runId: b.runId, timeoutMs: 60_000 });
+        expect(await a.returnValue).toMatchObject({
+          role: 'force_claimed',
+          claimedByRunId: b.runId,
+        });
+        const c = await start(await e2e('hookForceClaimClaimerWorkflow'), [
+          token,
+        ]);
+        await waitForHook(token, { runId: c.runId, timeoutMs: 60_000 });
+        expect(await b.returnValue).toMatchObject({
+          role: 'force_claimed',
+          claimedByRunId: c.runId,
+        });
+        await resumeHook(token, { message: 'to-c' });
+        expect(await c.returnValue).toMatchObject({
+          role: 'claimer',
+          received: 'to-c',
+        });
+      }
+    );
+
+    test(
+      'takes a retained token from a finished run without touching its log',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
+        const token = `force-retained-${Math.random().toString(36).slice(2)}`;
+        const victim = await start(
+          await e2e('hookForceClaimRetainedVictimWorkflow'),
+          [token]
+        );
+        await waitForHook(token, { runId: victim.runId });
+        await resumeHook(token, { message: 'done' });
+        expect(await victim.returnValue).toEqual({ received: 'done' });
+        // `returnValue` can resolve a moment before the terminal row is
+        // listable; baseline the log only once it holds `run_completed`.
+        await waitForRunEvents(
+          victim.runId,
+          (e) => e.eventType === 'run_completed',
+          { description: 'run_completed' }
+        );
+        const victimEventsBeforeAll = await allRunEvents(victim.runId);
+        // The finished run still holds the token (minRetention).
+        expect((await getHookByToken(token)).runId).toBe(victim.runId);
+
+        const claimer = await start(
+          await e2e('hookForceClaimClaimerWorkflow'),
+          [token]
+        );
+        const claimerHook = await waitForHook(token, {
+          runId: claimer.runId,
+          timeoutMs: 60_000,
+        });
+        expect(claimerHook.claimedFrom?.runId).toBe(victim.runId);
+        // A finished victim gets no wake target from the local and postgres
+        // Worlds (nothing for it to read; an invoke of a completed run only
+        // races its own terminal write). Not asserted here: the deployed
+        // Vercel World gains the same behaviour with
+        // vercel/workflow-server#988, and until that is live it still hands
+        // the target back — harmlessly, as the server refuses a second
+        // terminal write.
+        await resumeHook(token, { message: 'after' });
+        expect(await claimer.returnValue).toMatchObject({ received: 'after' });
+        // The takeover journaled nothing in the finished run's log: its hook
+        // events are exactly what they were. (Compared on hook events rather
+        // than the whole log: on a slow dev server two concurrent invocations
+        // of a finishing run can both write `run_completed` on the local
+        // World, which is unrelated to the takeover and asserted elsewhere.)
+        expect(
+          hookEventsOf(await allRunEvents(victim.runId)).map((e) => e.eventId)
+        ).toEqual(hookEventsOf(victimEventsBeforeAll).map((e) => e.eventId));
+      }
+    );
+
+    test(
+      'a run can take over its own earlier hook',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
+        const token = `force-self-${Math.random().toString(36).slice(2)}`;
+        const run = await start(await e2e('hookForceClaimOwnHookWorkflow'), [
+          token,
+        ]);
+        // Both hooks belong to this run, so wait for the token to name the
+        // second one — the one that records where it took the token from.
+        let hook = await waitForHook(token, { runId: run.runId });
+        const deadline = Date.now() + 30_000;
+        while (!hook.claimedFrom && Date.now() < deadline) {
+          await sleep(250);
+          hook = await getHookByToken(token);
+        }
+        expect(hook.claimedFrom?.runId).toBe(run.runId);
+        await resumeHook(token, { message: 'second' });
+        expect(await run.returnValue).toEqual({
+          first: { ok: false, claimedByRunId: run.runId },
+          second: 'second',
+        });
+        const events = hookEventsOf(await allRunEvents(run.runId)).map(
+          (e) => e.eventType
+        );
+        expect(events.filter((t) => t === 'hook_conflict')).toEqual([]);
+        expect(events.filter((t) => t === 'hook_created')).toHaveLength(2);
+      }
+    );
+
+    test(
+      'declines to take a token from a run whose runtime predates involuntary disposal: the claimer gets an ordinary HookConflictError',
+      { timeout: 90_000 },
+      async (ctx) => {
+        await skipUnlessForceClaimSupported(ctx);
+        const token = `force-legacy-${Math.random().toString(36).slice(2)}`;
+        // A run stamped one spec version below the one that understands
+        // `hook_disposed{forceClaimedBy}`. Its runtime here is the current
+        // one, but the World decides from the persisted version alone.
+        const victim = await start(
+          await e2e('hookForceClaimVictimWorkflow'),
+          [token],
+          { specVersion: SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM - 1 }
+        );
+        const victimHook = await waitForHook(token, { runId: victim.runId });
+
+        const claimer = await start(
+          await e2e('hookForceClaimTolerantClaimerWorkflow'),
+          [token]
+        );
+        expect(await claimer.returnValue).toEqual({
+          role: 'refused',
+          conflictingRunId: victim.runId,
+        });
+        const claimerEvents = await allRunEvents(claimer.runId);
+        const conflict = claimerEvents.find(
+          (e) => e.eventType === 'hook_conflict'
+        );
+        expect(conflict?.eventData).toMatchObject({
+          token,
+          conflictingRunId: victim.runId,
+          forceRefusedReason: 'victim-spec-version',
+        });
+
+        // The victim was left exactly as it was, and still owns the token.
+        expect(hookEventsOf(await allRunEvents(victim.runId))).toHaveLength(1);
+        const stillOwner = await getHookByToken(token);
+        expect(stillOwner.hookId).toBe(victimHook.hookId);
+        await resumeHook(token, { message: 'still mine' });
+        expect(await victim.returnValue).toMatchObject({
+          role: 'owner',
+          received: 'still mine',
+        });
+      }
+    );
+
+    test('a forced create on an unowned token is an ordinary hook', async () => {
+      const token = `force-free-${Math.random().toString(36).slice(2)}`;
+      const run = await start(await e2e('hookForceClaimClaimerWorkflow'), [
+        token,
+      ]);
+      const hook = await waitForHook(token, { runId: run.runId });
+      expect(hook.claimedFrom).toBeUndefined();
+      await resumeHook(token, { message: 'plain' });
+      expect(await run.returnValue).toMatchObject({
+        role: 'claimer',
+        conflict: null,
+        received: 'plain',
+      });
+    });
+  });
 
   test(
     'resume-or-start route pattern - resumeHook retried after start() reaches the new run',

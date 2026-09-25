@@ -3829,3 +3829,409 @@ describe('workflowEntrypoint run-failure logging', () => {
     );
   });
 });
+
+describe('workflowEntrypoint hook conflict beside a pre-claimed inline step', () => {
+  afterEach(() => {
+    setWorld(undefined);
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  const conflictBodySpy = vi.fn(async () => 'ran');
+  registerStepFunction('conflictStep', conflictBodySpy);
+  const eagerBodySpy = vi.fn(async () => 'eager');
+  registerStepFunction('conflictEagerStep', eagerBodySpy);
+
+  /**
+   * A World whose every `hook_created` comes back as a `hook_conflict`, with
+   * a `createBatch` that can lose the pre-claimed pairs (409) and hold the
+   * plain chunks for a while.
+   */
+  async function setupConflictRun(
+    runId: string,
+    {
+      pairsLost = false,
+      plainBatchDelayMs = 0,
+    }: { pairsLost?: boolean; plainBatchDelayMs?: number } = {}
+  ) {
+    const workflowRun: WorkflowRun = {
+      runId,
+      workflowName: 'workflow',
+      status: 'running',
+      specVersion: SPEC_VERSION_CURRENT,
+      input: await dehydrateWorkflowArguments([], runId, undefined, []),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+    let eventSeq = 1;
+    const durableEvents: Event[] = [
+      {
+        eventId: slotToEventId(eventSeq),
+        runId,
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId: 'test-deployment',
+          workflowName: 'workflow',
+          input: workflowRun.input,
+        },
+      } as unknown as Event,
+    ];
+    const recordEvent = (data: any): Event => {
+      eventSeq += 1;
+      const created = {
+        eventId: slotToEventId(eventSeq),
+        runId,
+        createdAt: new Date(),
+        ...data,
+      } as Event;
+      durableEvents.push(created);
+      return created;
+    };
+    const stepInputs = new Map<string, unknown>();
+    const startedStep = (correlationId: string, stepName?: string) => ({
+      runId,
+      stepId: correlationId,
+      stepName,
+      status: 'running' as const,
+      attempt: 1,
+      input: stepInputs.get(correlationId),
+      startedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      if (data.eventType === 'run_started') {
+        return { run: workflowRun, events: [...durableEvents] };
+      }
+      if (data.eventType === 'hook_created') {
+        return {
+          event: recordEvent({
+            ...data,
+            eventType: 'hook_conflict',
+            eventData: {
+              token: data.eventData.token,
+              conflictingRunId: 'wrun_token_owner',
+            },
+          }),
+        };
+      }
+      if (data.eventType === 'step_created') {
+        stepInputs.set(data.correlationId, data.eventData?.input);
+      }
+      if (data.eventType === 'step_started') {
+        return {
+          event: recordEvent(data),
+          step: startedStep(data.correlationId, data.eventData?.stepName),
+        };
+      }
+      if (data.eventType === 'run_completed') workflowRun.status = 'completed';
+      if (data.eventType === 'run_failed') workflowRun.status = 'failed';
+      return { event: recordEvent(data) };
+    });
+    const createBatch = vi.fn(async (_runId: string, events: any[]) => {
+      const isPairChunk = events.some(
+        ({ event }) => event.eventType === 'step_started'
+      );
+      if (!isPairChunk && plainBatchDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, plainBatchDelayMs));
+      }
+      return {
+        results: events.map(({ event }) => {
+          if (isPairChunk && pairsLost) {
+            return {
+              status: 409,
+              error: 'conflict',
+              message: 'step already exists',
+            };
+          }
+          if (event.eventType === 'step_created') {
+            stepInputs.set(event.correlationId, event.eventData?.input);
+          }
+          return {
+            status: 200,
+            event: recordEvent(event),
+            ...(event.eventType === 'step_started'
+              ? {
+                  step: startedStep(
+                    event.correlationId,
+                    event.eventData?.stepName
+                  ),
+                }
+              : {}),
+          };
+        }),
+      };
+    });
+    const queuedMessages: any[] = [];
+    let handler!: (message: unknown, metadata: unknown) => Promise<unknown>;
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      createQueueHandler: vi.fn((_prefix: string, h: typeof handler) => {
+        handler = h;
+        return async () => new Response(null, { status: 204 });
+      }),
+      events: {
+        create: eventsCreate,
+        createBatch,
+        list: vi.fn(async () => ({
+          data: [...durableEvents],
+          hasMore: false,
+          cursor: 'cursor_test',
+        })),
+      },
+      runs: { get: vi.fn(async () => workflowRun) },
+      queue: vi.fn(async (_queueName: string, message: any) => {
+        queuedMessages.push(message);
+        return { messageId: null };
+      }),
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const invoke = async (workflowBody: string) => {
+      const entry = workflowEntrypoint(`
+        const conflictStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("conflictStep");
+        const conflictEagerStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("conflictEagerStep");
+        const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+        async function workflow() {
+          ${workflowBody}
+        };globalThis.__private_workflows = new Map();
+        globalThis.__private_workflows.set("workflow", workflow);`);
+      await entry(new Request('https://example.test'));
+      return handler(
+        { runId, requestedAt: new Date() },
+        {
+          requestId: 'req_1',
+          attempt: 1,
+          queueName: '__wkf_workflow_workflow',
+          messageId: 'msg_flow_1',
+        }
+      );
+    };
+
+    return { durableEvents, createBatch, queuedMessages, invoke };
+  }
+
+  // With a retained VM the run continues over the conflict; without one it
+  // must still replay here rather than hand the run to a fresh delivery.
+  it.each([
+    { retainedVm: '1' },
+    { retainedVm: '0' },
+  ])('runs the step it claimed alongside the conflicting hook in this invocation (WORKFLOW_RETAINED_VM=$retainedVm)', async ({
+    retainedVm,
+  }) => {
+    vi.stubEnv('WORKFLOW_RETAINED_VM', retainedVm);
+    // The suspension creates a hook and starts a lone inline step. The step's
+    // claim is folded into a batch beside the hook create, and the create
+    // comes back as a conflict. The claimed step is owned by this delivery,
+    // so the run must go on here and execute it through owned recovery: a
+    // fresh delivery would find a live lease and park behind a backstop wake.
+    const { durableEvents, createBatch, queuedMessages, invoke } =
+      await setupConflictRun(`wrun_conflict_preclaimed_${retainedVm}`);
+
+    await invoke(`
+      const hook = createHook({ token: 'taken-token' });
+      const result = await conflictStep();
+      return result + ':' + typeof hook.token;`);
+
+    // The claim rode the batch beside the hook create.
+    expect(
+      createBatch.mock.calls[0][1].map(({ event }: any) => event.eventType)
+    ).toEqual(['step_created', 'step_started']);
+    expect(durableEvents.map((e) => e.eventType)).toContain('hook_conflict');
+    // The body ran once, here, and the run finished without a hand-off.
+    expect(conflictBodySpy).toHaveBeenCalledTimes(1);
+    expect(durableEvents.map((e) => e.eventType)).toContain('step_completed');
+    expect(durableEvents.map((e) => e.eventType)).toContain('run_completed');
+    expect(queuedMessages).toEqual([]);
+  });
+
+  it('leaves a claimed step unrun when the run ends over the conflict', async () => {
+    vi.stubEnv('WORKFLOW_RETAINED_VM', '0');
+    // The workflow awaits the hook, so the conflict rejects with
+    // HookConflictError and fails the run on the replay that observes it,
+    // before owned recovery gets to the step claimed beside the hook create.
+    // The claim stays behind as a started step whose body never ran.
+    const { durableEvents, invoke } = await setupConflictRun(
+      'wrun_conflict_ends_run'
+    );
+
+    await invoke(`
+      const hook = createHook({ token: 'taken-token' });
+      const pending = conflictStep();
+      await hook;
+      return await pending;`);
+
+    const types = durableEvents.map((e) => e.eventType);
+    expect(types).toContain('step_started');
+    expect(types).toContain('run_failed');
+    expect(types).not.toContain('step_completed');
+    expect(conflictBodySpy).not.toHaveBeenCalled();
+  });
+
+  it('joins the batch and hands the run off when the pair lost its claim', async () => {
+    vi.stubEnv('WORKFLOW_RETAINED_VM', '0');
+    vi.stubEnv('WORKFLOW_MAX_INLINE_STEPS', '1');
+    // The pre-claimed pair loses to a concurrent writer, so nothing here is
+    // owned by this delivery and the run goes back to the queue. The eager
+    // steps' chunk is still in flight when the conflict comes back; its
+    // commit and step-message publishes must land before the hand-off.
+    const { createBatch, queuedMessages, invoke } = await setupConflictRun(
+      'wrun_conflict_pair_lost',
+      { pairsLost: true, plainBatchDelayMs: 50 }
+    );
+
+    const result = await invoke(`
+      const hook = createHook({ token: 'taken-token' });
+      const results = await Promise.all([
+        conflictStep(),
+        conflictEagerStep(),
+        conflictEagerStep(),
+      ]);
+      return results.join(',') + ':' + typeof hook.token;`);
+
+    expect(
+      createBatch.mock.calls.map(([, events]) =>
+        events.map(({ event }: any) => event.eventType)
+      )
+    ).toEqual([
+      ['step_created', 'step_started'],
+      ['step_created', 'step_created'],
+    ]);
+    // A fresh replay over the conflict, not an in-process one.
+    expect(result).toEqual({ timeoutSeconds: 0 });
+    expect(conflictBodySpy).not.toHaveBeenCalled();
+    // The eager steps' messages went out (off their own chunk's commit)
+    // before the invocation handed the run back.
+    expect(
+      queuedMessages
+        .filter((message) => message.stepId !== undefined)
+        .map((message) => message.stepName)
+    ).toEqual(['conflictEagerStep', 'conflictEagerStep']);
+  });
+});
+
+describe('workflowEntrypoint max-deliveries terminal write', () => {
+  afterEach(() => {
+    setWorld(undefined);
+    vi.clearAllMocks();
+  });
+
+  const workflowCode = `async function workflow() {
+      throw new Error('workflow code must not execute');
+    }
+    ;globalThis.__private_workflows = new Map();
+    globalThis.__private_workflows.set("workflow", workflow);`;
+
+  /**
+   * Deliver one message past the delivery ceiling, with `run_failed` writes
+   * answered by `runFailed` (resolve for success, throw for failure).
+   */
+  async function deliverPastCeiling(runFailed: () => Promise<unknown>) {
+    const runId = 'wrun_max_deliveries';
+    const created: string[] = [];
+    const eventsCreate = vi.fn(async (_runId: string, data: any) => {
+      created.push(data.eventType);
+      if (data.eventType === 'run_failed') return runFailed();
+      return { event: { ...data, eventId: 'evnt_1', runId } };
+    });
+    const queue = vi.fn(async () => ({ messageId: null }));
+    const runsGet = vi.fn();
+    const eventsList = vi.fn();
+    setWorld({
+      specVersion: SPEC_VERSION_CURRENT,
+      getDeploymentId: vi.fn(async () => 'dpl_test'),
+      createQueueHandler: vi.fn(
+        (_p: string, handler: (m: unknown, md: unknown) => Promise<unknown>) =>
+          async () => {
+            await handler(
+              { runId, requestedAt: new Date() },
+              {
+                requestId: 'req',
+                // One past the default MAX_QUEUE_DELIVERIES (48).
+                attempt: 49,
+                queueName: '__wkf_workflow_workflow',
+                messageId: 'msg',
+              }
+            );
+            return new Response(null, { status: 204 });
+          }
+      ),
+      events: { create: eventsCreate, list: eventsList },
+      runs: { get: runsGet },
+      queue,
+      getEncryptionKeyForRun: vi.fn(async () => undefined),
+    } as any);
+
+    const result = workflowEntrypoint(workflowCode)(
+      new Request('https://example.test')
+    );
+    return { result, created, queue, runsGet, eventsList };
+  }
+
+  it('fails the run and acks once the terminal write lands', async () => {
+    const { result, created, queue, runsGet, eventsList } =
+      await deliverPastCeiling(async () => ({ event: {} }));
+
+    await expect(result).resolves.toBeInstanceOf(Response);
+    expect(created).toEqual(['run_failed']);
+    // Nothing past the ceiling touches the replay path.
+    expect(runsGet).not.toHaveBeenCalled();
+    expect(eventsList).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'ThrottleError (429)',
+      new ThrottleError('rate limited', { retryAfter: 5 }),
+    ],
+    [
+      'WorkflowWorldError (5xx)',
+      new WorkflowWorldError('server error', { status: 503 }),
+    ],
+    [
+      'WorkflowWorldError (TRANSPORT)',
+      new WorkflowWorldError('socket hang up', { code: 'TRANSPORT' }),
+    ],
+  ])('does not ack (strand the run) when the terminal write hits a transient %s', async (_label, transientError) => {
+    // Regression: the give-up path used to log "the run will remain in its
+    // current state" and ack on ANY failure of this write. A 429 or 5xx here
+    // left the run `running` with no queue message left to drive it. The
+    // handler must throw so the queue redelivers; the redelivery is still past
+    // the ceiling, so it retries only this write.
+    const { result, created, runsGet, eventsList } = await deliverPastCeiling(
+      async () => {
+        throw transientError;
+      }
+    );
+
+    await expect(result).rejects.toBe(transientError);
+    expect(created).toEqual(['run_failed']);
+    expect(runsGet).not.toHaveBeenCalled();
+    expect(eventsList).not.toHaveBeenCalled();
+  });
+
+  it('acks when the run already reached a terminal state', async () => {
+    const { result } = await deliverPastCeiling(async () => {
+      throw new EntityConflictError('run already failed');
+    });
+
+    await expect(result).resolves.toBeInstanceOf(Response);
+  });
+
+  it('still acks on a non-transient terminal write failure', async () => {
+    // A definitive rejection gets the same verdict on every redelivery, so
+    // retrying it would only hot-loop the handler. Keep the logged give-up.
+    const { result, created } = await deliverPastCeiling(async () => {
+      throw new WorkflowWorldError('bad request', { status: 400 });
+    });
+
+    await expect(result).resolves.toBeInstanceOf(Response);
+    expect(created).toEqual(['run_failed']);
+  });
+});

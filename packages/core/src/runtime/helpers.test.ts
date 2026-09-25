@@ -449,6 +449,7 @@ describe('loadWorkflowRunEvents', () => {
     expect(eventsListMock).toHaveBeenCalledWith({
       runId: 'wrun_test',
       pagination: { sortOrder: 'asc', cursor: undefined },
+      resolveData: 'skip-step-inputs',
     });
   });
 
@@ -576,10 +577,12 @@ describe('loadWorkflowRunEvents', () => {
     expect(eventsListMock).toHaveBeenNthCalledWith(1, {
       runId: 'wrun_test',
       pagination: { sortOrder: 'asc', cursor: 'opaque-cursor' },
+      resolveData: 'skip-step-inputs',
     });
     expect(eventsListMock).toHaveBeenNthCalledWith(2, {
       runId: 'wrun_test',
       pagination: { sortOrder: 'asc', cursor: undefined },
+      resolveData: 'skip-step-inputs',
     });
   });
 

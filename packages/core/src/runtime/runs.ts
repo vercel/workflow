@@ -11,6 +11,7 @@ import {
 import { deriveRunPayloadKeys } from '../serialization/encryption.js';
 import { hydrateWorkflowArguments } from '../serialization.js';
 import { getWorkflowQueueName } from './helpers.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 import { start } from './start.js';
 
 export interface RecreateRunOptions {
@@ -99,9 +100,17 @@ export async function recreateRunFromExisting(
         globalThis
       )
     );
-    const specVersion =
-      options.specVersion ?? run.specVersion ?? SPEC_VERSION_LEGACY;
     const deploymentId = options.deploymentId ?? run.deploymentId;
+    // The source run's spec version describes the deployment that executed
+    // it, so it is only a valid default for a replay on that same
+    // deployment. When the replay is redirected elsewhere, leave it unset
+    // and let `start()` resolve the target's version from its capability
+    // probe, instead of pinning the replay to the old deployment's.
+    const specVersion =
+      options.specVersion ??
+      (deploymentId === run.deploymentId
+        ? (run.specVersion ?? SPEC_VERSION_LEGACY)
+        : undefined);
 
     const newRun = await start(
       { workflowId: run.workflowName },
@@ -136,7 +145,10 @@ export async function cancelRun(
 ): Promise<void> {
   try {
     const run = await world.runs.get(runId, { resolveData: 'none' });
-    const specVersion = run.specVersion ?? SPEC_VERSION_LEGACY;
+    const specVersion = specVersionForRunWrite(
+      run.specVersion,
+      SPEC_VERSION_LEGACY
+    );
     const compatMode = isLegacySpecVersion(specVersion);
     const eventRequest = {
       eventType: 'run_cancelled' as const,
@@ -277,7 +289,10 @@ export async function reenqueueRun(
       },
       {
         deploymentId: run.deploymentId,
-        specVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
+        specVersion: specVersionForRunWrite(
+          run.specVersion,
+          SPEC_VERSION_LEGACY
+        ),
       }
     );
   } catch (err) {
@@ -347,7 +362,7 @@ export async function wakeUpRun(
         : {
             eventType: 'wait_completed' as const,
             correlationId: waitEvent.correlationId,
-            specVersion: run.specVersion,
+            specVersion: specVersionForRunWrite(run.specVersion),
             eventData: {
               resumeAt: waitEvent.eventData.resumeAt,
             },
@@ -372,7 +387,10 @@ export async function wakeUpRun(
         },
         {
           deploymentId: run.deploymentId,
-          specVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
+          specVersion: specVersionForRunWrite(
+            run.specVersion,
+            SPEC_VERSION_LEGACY
+          ),
         }
       );
     }

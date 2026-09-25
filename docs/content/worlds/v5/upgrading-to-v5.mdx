@@ -84,6 +84,8 @@ These do not change any signature, so an implementation ported by types alone wi
 
 **A stale replay no longer has to be refused.** v5 shipped with a `preconditionGuard` capability for a World that rejected an event creation whose snapshot was behind the log. It is gone, and nothing replaced it: allocating positions at the commit means a reader's log is a prefix rather than a prefix with a hole, replay is deterministic on a prefix, and a write reports the events it was pushed past. As a result, a stale replay costs a merge instead of a rejection. If you implemented the guard, you can delete it. `PreconditionFailedError` and the runtime's handling of it remain for a World that allocates positions away from the commit (see [Event ID allocation](#event-id-allocation)); no World in the SDK throws it.
 
+**Replay reads the event log with `resolveData: 'skip-step-inputs'`.** A World may leave `input` out of `step_created` and `step_started` events for this value, and must otherwise treat it as `'all'`. A World that tests `resolveData === 'all'`, or validates against `['none', 'all']`, strips step results or rejects the read, and every replay fails. Test for `'none'` instead, or map with `entityResolveData()` from `@workflow/world`. `@workflow/world-testing` covers this case.
+
 **Event creation can return a delta.** `events.create()` may return events alongside the one it created, in `events` with a matching `cursor` and `hasMore`. The runtime uses this to skip a follow-up `events.list` round trip on `run_started`, on step-terminal writes that carried a `sinceCursor`, and on `hook_received` writes that carried `preloadEvents`. All three are advisory: a World that returns only the created event stays correct and pays one more round trip.
 
 ## Event ID allocation
@@ -115,7 +117,7 @@ None of this is required. Each entry is a hook the runtime uses if your World pr
 
 | Member | What it buys |
 | --- | --- |
-| `capabilities` | Advertises `hookRetention.active`, `hookResumeDedup`, `deploymentAffinity`, and `maxConcurrency`. See the contract note above about failing closed. Event ID allocation is *not* in here: it is a requirement, not a capability. |
+| `capabilities` | Advertises `hookRetention.active`, `hookResumeDedup`, `hookForceClaim`, `deploymentAffinity`, and `maxConcurrency`. See the contract note above about failing closed. Event ID allocation is *not* in here: it is a requirement, not a capability. |
 | `analytics` | A metadata-only read namespace for observability surfaces. Payload-bearing reads stay on `runs`, `steps`, `events`, and `hooks`. |
 | `runs.experimentalSetAttributes` | Backs `setAttributes()` from application code. Without it, run attributes are unavailable. |
 | `runs.cancelMany` | Bulk cancellation: up to 500 unique run IDs per request (`BULK_CANCEL_MAX_RUN_IDS`), an optional `cancelReason` of at most 512 characters, and a per-run outcome for every ID. Without it, the runtime falls back to bounded-concurrency individual cancels. |
@@ -129,6 +131,7 @@ None of this is required. Each entry is a hook the runtime uses if your World pr
 | `streams.streamFlushIntervalMs` | Sets the stream flush window. The v5 default is `0`, so the first chunk flushes immediately; set a value to coalesce writes again. |
 | Hook token retention | `Hook.tokenRetentionUntil` marks the earliest time a token may become available after its run ends. Keep the owning run readable at least that long, and honor `hook_disposed` as an immediate release. Declare `capabilities.hookRetention.active` only once this is implemented, since the runtime otherwise rejects retained hooks before registration. |
 | Hook resume dedup | `resumeHook()` writes `hook_received` and dispatches the queue message in parallel when the backend collapses concurrent writes carrying the same `(runId, resumeId)` onto one committed event. Declare `capabilities.hookResumeDedup` only if you enforce that constraint **and** `events.list()` returns the committed event's top-level `resumeId`. A World that omits either guarantee must leave the flag unset, which keeps the sequential path. See [Durable hook resume](/docs/changelog/lazy-hook-resume). |
+| Hook token takeover | Backs [`createHook({ experimental_force: true })`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). When a forced `hook_created` names a token another live run holds, append `hook_disposed` with `forceClaimedBy: { runId, hookId }` to the holder's log and refuse later `hook_received` writes to it, then re-point the token to the claimer and record `Hook.claimedFrom`. Refuse the takeover with an ordinary `hook_conflict` carrying `forceRefusedReason: 'victim-spec-version'` when the holder was stamped below spec version 8, and answer a `hook_received` refused by a takeover with `HookForceClaimedError` so `resumeHook()` can follow the token. Declare `capabilities.hookForceClaim` only once you give these guarantees. Without it, the runtime fails a forced `createHook()` at registration. |
 
 ## If you also maintain a build integration
 

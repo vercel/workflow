@@ -149,6 +149,23 @@ export function getCommonReducers(): Partial<Reducers> {
       if ('cause' in value) reduced.cause = (value as any).cause;
       return reduced;
     },
+    // HookForceClaimedError carries the token and who took it; mirror the
+    // host-side common.ts reducer.
+    HookForceClaimedError: (value) => {
+      if (!(value instanceof Error) || value.name !== 'HookForceClaimedError')
+        return false;
+      const reduced: SerializableSpecial['HookForceClaimedError'] = {
+        message: value.message,
+        stack: value.stack,
+        token: (value as any).token,
+        claimedByRunId: (value as any).claimedByRunId,
+      };
+      if ((value as any).claimedByHookId !== undefined) {
+        reduced.claimedByHookId = (value as any).claimedByHookId;
+      }
+      if ('cause' in value) reduced.cause = (value as any).cause;
+      return reduced;
+    },
     RangeError: makeNamedErrorSubclassReducer('RangeError'),
     ReferenceError: makeNamedErrorSubclassReducer('ReferenceError'),
     // RetryableError carries an extra retryAfter; serialize as numeric
@@ -421,6 +438,30 @@ export function getCommonRevivers(): Partial<Revivers> {
         (error as any).token = value.token;
         if (value.conflictingRunId !== undefined) {
           (error as any).conflictingRunId = value.conflictingRunId;
+        }
+      }
+      if (value.stack !== undefined) error.stack = value.stack;
+      if ('cause' in value) (error as any).cause = (value as any).cause;
+      return error;
+    },
+    HookForceClaimedError: (value) => {
+      const Cls = (globalThis as any)[
+        Symbol.for('@workflow/errors//HookForceClaimedError')
+      ];
+      let error: Error;
+      if (typeof Cls === 'function') {
+        error = new Cls(
+          value.token,
+          value.claimedByRunId,
+          value.claimedByHookId
+        );
+      } else {
+        error = new Error(value.message);
+        error.name = 'HookForceClaimedError';
+        (error as any).token = value.token;
+        (error as any).claimedByRunId = value.claimedByRunId;
+        if (value.claimedByHookId !== undefined) {
+          (error as any).claimedByHookId = value.claimedByHookId;
         }
       }
       if (value.stack !== undefined) error.stack = value.stack;

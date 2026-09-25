@@ -6,7 +6,12 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import { type Event, SPEC_VERSION_CURRENT, type World } from '@workflow/world';
+import {
+  type Event,
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
+  type World,
+} from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Mock version module to avoid missing generated file
@@ -35,6 +40,7 @@ import {
 } from '../serialization.js';
 import { getReturnValuePollIntervalMs, Run } from './run.js';
 import {
+  cancelRun,
   cancelRuns,
   recreateRunFromExisting,
   reenqueueRun,
@@ -181,6 +187,73 @@ describe('reenqueueRun', () => {
   });
 });
 
+// A run started by a newer SDK: this one cannot write that version's format,
+// so everything it writes to the run is capped at its own.
+const NEWER_THAN_THIS_SDK = SPEC_VERSION_CURRENT + 1;
+
+describe('writes to a run started by a newer SDK', () => {
+  const waitCreated: Event = {
+    eventId: 'evnt_0',
+    runId: 'wrun_123',
+    eventType: 'wait_created',
+    correlationId: 'wait_abc',
+    eventData: { resumeAt: new Date('2024-01-01T00:00:01.000Z') },
+    createdAt: new Date(),
+  };
+
+  it("caps cancelRun's run_cancelled at this SDK's version", async () => {
+    const world = createMockWorld({
+      run: { specVersion: NEWER_THAN_THIS_SDK },
+    });
+    await cancelRun(world, 'wrun_123');
+
+    expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
+      eventType: 'run_cancelled',
+      specVersion: SPEC_VERSION_CURRENT,
+    });
+  });
+
+  it("caps wakeUpRun's wait_completed and wake at this SDK's version", async () => {
+    const world = createMockWorld({
+      run: { specVersion: NEWER_THAN_THIS_SDK },
+      events: [waitCreated],
+    });
+    await wakeUpRun(world, 'wrun_123');
+
+    expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
+      eventType: 'wait_completed',
+      specVersion: SPEC_VERSION_CURRENT,
+    });
+    expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
+      specVersion: SPEC_VERSION_CURRENT,
+    });
+  });
+
+  it("caps reenqueueRun's queue spec version at this SDK's", async () => {
+    const world = createMockWorld({
+      run: { specVersion: NEWER_THAN_THIS_SDK },
+    });
+    await reenqueueRun(world, 'wrun_123');
+
+    expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
+      specVersion: SPEC_VERSION_CURRENT,
+    });
+  });
+
+  it('still treats a run with no recorded version as legacy', async () => {
+    const world = createMockWorld({ run: { specVersion: undefined } });
+    await reenqueueRun(world, 'wrun_123');
+    await cancelRun(world, 'wrun_123');
+
+    expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
+      specVersion: SPEC_VERSION_LEGACY,
+    });
+    expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
+      specVersion: SPEC_VERSION_LEGACY,
+    });
+  });
+});
+
 describe('recreateRunFromExisting', () => {
   afterEach(() => {
     vi.mocked(start).mockReset();
@@ -203,6 +276,53 @@ describe('recreateRunFromExisting', () => {
         deploymentId: 'deploy_source',
       })
     );
+  });
+
+  it('pins the source run spec version for a replay on its own deployment', async () => {
+    const world = createMockWorld({
+      run: { deploymentId: 'deploy_source', specVersion: 6 },
+    });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source', {
+      deploymentId: 'deploy_source',
+    });
+
+    expect(vi.mocked(start).mock.calls[0][2]).toMatchObject({
+      deploymentId: 'deploy_source',
+      specVersion: 6,
+    });
+  });
+
+  it('leaves the spec version to start() when the replay targets another deployment', async () => {
+    // The source run's version describes its own deployment, not the one
+    // the replay is redirected to; start() probes the target instead.
+    const world = createMockWorld({
+      run: { deploymentId: 'deploy_source', specVersion: 6 },
+    });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source', {
+      deploymentId: 'deploy_other',
+    });
+
+    const opts = vi.mocked(start).mock.calls[0][2];
+    expect(opts).toMatchObject({ deploymentId: 'deploy_other' });
+    expect(opts?.specVersion).toBeUndefined();
+  });
+
+  it('still honours an explicit specVersion on a redirected replay', async () => {
+    const world = createMockWorld({
+      run: { deploymentId: 'deploy_source', specVersion: 6 },
+    });
+    vi.mocked(start).mockResolvedValue({ runId: 'wrun_new' } as Run<unknown>);
+
+    await recreateRunFromExisting(world, 'wrun_source', {
+      deploymentId: 'deploy_other',
+      specVersion: 7,
+    });
+
+    expect(vi.mocked(start).mock.calls[0][2]?.specVersion).toBe(7);
   });
 });
 

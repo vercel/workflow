@@ -28,6 +28,10 @@ export function createWorld(config?: APIConfig): World {
   // Use config value first (set correctly by CLI/web), fall back to env var (runtime).
   const projectId =
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
+  // Read once: the runtime validates this declaration, and `run_started`
+  // attests the same value (see `APIConfig.mintedSpecVersion`).
+  const specVersion = mintedSpecVersion();
+  config = { ...config, mintedSpecVersion: specVersion };
 
   return {
     // The version is what tells the backend which id scheme a run uses: it is
@@ -39,7 +43,7 @@ export function createWorld(config?: APIConfig): World {
     // version that introduced slots: a bump has to move this declaration with
     // it, or the runtime's compatibility floor rises past the adapter shipped
     // alongside it and rejects it (see `assertWorldSupportsRuntimeProtocol`).
-    specVersion: mintedSpecVersion(),
+    specVersion,
     capabilities: {
       hookRetention: { active: true },
       // Vercel Queues supports maxConcurrency-limited consumers, which
@@ -49,6 +53,14 @@ export function createWorld(config?: APIConfig): World {
       // Vercel deployments are atomic and immutable, so a deployment id names
       // one fixed build for its whole lifetime.
       deploymentAffinity: true,
+      // The server implements the takeover protocol behind
+      // `createHook({ experimental_force: true })` (workflow-server
+      // docs/hook-force-claim.md). Static rather than attested per lookup,
+      // because the decision is made at `createHook()` time, before any
+      // lookup; against a server that has it switched off (or predates it)
+      // a forced creation is answered with `hook_conflict`, which the
+      // runtime reports as an unsupported-World failure rather than a win.
+      hookForceClaim: true,
       // NOTE: the backend half of resumeHook()'s lazy path (that
       // the server enforces the `(runId, resumeId)` dedup constraint) is
       // NO LONGER a static world capability here. It is attested per-lookup by

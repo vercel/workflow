@@ -23,6 +23,7 @@ keywords:
   - Event
   - cursor pagination
   - resolveData
+  - skip-step-inputs
   - run_cancelled
   - correlation ID
   - parseStepName
@@ -94,7 +95,7 @@ const result = await world.events.list({ runId, pagination: { cursor } }); // [!
 | `params.pagination.cursor` | `string` | Cursor for the next page |
 | `params.pagination.limit` | `number` | Maximum events to return. When omitted, returns every remaining event up to the World's event ceiling. |
 | `params.pagination.sortOrder` | `"asc" \| "desc"` | Event order |
-| `params.resolveData` | `"all" \| "none"` | Include or omit event payload data |
+| `params.resolveData` | `"all" \| "none" \| "skip-step-inputs"` | Include or omit event payload data. `"skip-step-inputs"` is `"all"` without the `input` of `step_created` and `step_started` events, which replay does not read. |
 
 **Returns:** `{ data: Event[], cursor: string | null, hasMore: boolean }`
 
@@ -359,6 +360,7 @@ const result = await world.hooks.list({ // [!code highlight]
 | `environment` | `string` | Deployment environment |
 | `metadata` | `object` | Custom metadata attached to the hook |
 | `isWebhook` | `boolean` | Whether this is a webhook-style hook |
+| `claimedFrom` | `{ runId: string; hookId: string } \| undefined` | Set when this hook took its token from another run with [`experimental_force`](/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds). Names that run and its hook |
 
 ---
 

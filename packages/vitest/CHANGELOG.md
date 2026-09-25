@@ -1,5 +1,40 @@
 # @workflow/vitest
 
+## 5.0.0-beta.56
+
+### Patch Changes
+
+- Updated dependencies [[`4f52438`](https://github.com/vercel/workflow/commit/4f524386756bcb2cf70499dbdc51bf982030b734), [`873b70b`](https://github.com/vercel/workflow/commit/873b70b5c7808bc48539df1d35b1fa97a0363826)]:
+  - @workflow/world@5.0.0-beta.38
+  - @workflow/core@5.0.0-beta.56
+  - @workflow/world-local@5.0.0-beta.47
+  - @workflow/builders@5.0.0-beta.56
+  - @workflow/rollup@5.0.0-beta.56
+
+## 5.0.0-beta.55
+
+### Patch Changes
+
+- Updated dependencies [[`101d347`](https://github.com/vercel/workflow/commit/101d3472f6f150f0900713b4340c95d422ed673c)]:
+  - @workflow/core@5.0.0-beta.55
+  - @workflow/builders@5.0.0-beta.55
+  - @workflow/rollup@5.0.0-beta.55
+
+## 5.0.0-beta.54
+
+### Minor Changes
+
+- [#4267](https://github.com/vercel/workflow/pull/4267) [`4fdbc43`](https://github.com/vercel/workflow/commit/4fdbc43c63222489a5e18debc93bb94256196bd7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Emit the workflow manifest next to the test bundles and add `getWorkflowRef()` / `listWorkflowRefs()` so tests can name a workflow instead of hand-writing its generated id. The test build also fails up front when `@workflow/vitest` and the app resolve incompatible `@workflow/core` versions.
+
+### Patch Changes
+
+- Updated dependencies [[`d3ea4a6`](https://github.com/vercel/workflow/commit/d3ea4a6275a7782df44ea92dac2da51aa064cb75), [`f75b184`](https://github.com/vercel/workflow/commit/f75b184a853b50a030659bc6d78ef461c2a82a4d), [`5a05f40`](https://github.com/vercel/workflow/commit/5a05f409aa23f528f214640295f389cabdcb5a9d), [`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050), [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6), [`20ad2b3`](https://github.com/vercel/workflow/commit/20ad2b358240819c6e590fd4752b97da1c64b390)]:
+  - @workflow/core@5.0.0-beta.54
+  - @workflow/builders@5.0.0-beta.54
+  - @workflow/world@5.0.0-beta.37
+  - @workflow/world-local@5.0.0-beta.46
+  - @workflow/rollup@5.0.0-beta.54
+
 ## 5.0.0-beta.53
 
 ### Patch Changes

@@ -101,7 +101,7 @@ describe('unconsumed-event check against in-flight deliveries', () => {
 
     // A step result committed to being delivered, sitting on the detached
     // continuation that `pendingDeliveries` deliberately does not cover.
-    const barrier = registerDeliveryBarrier(ctx, 0, 'step');
+    const barrier = registerDeliveryBarrier(ctx, 0, 'step', { deliveredAt: 0 });
 
     consumer.subscribe(
       vi.fn().mockReturnValue(EventConsumerResult.NotConsumed)

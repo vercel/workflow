@@ -74,8 +74,29 @@ export const SPEC_VERSION_SUPPORTS_SLOT_IDENTITY = 6 as SpecVersion;
 export const SPEC_VERSION_SUPPORTS_SEALED_LOG = 7 as SpecVersion;
 
 /**
+ * Runs at this spec version or later understand an INVOLUNTARY hook disposal:
+ * a `hook_disposed` carrying `forceClaimedBy`, written into the run's log by
+ * another run's `createHook({ experimental_force: true })`. A reader at this
+ * version rejects the hook's awaiters with `HookForceClaimedError` and settles
+ * `getConflict()`; a reader below it treats the row as its own `dispose()`
+ * and leaves every `await hook` pending forever — the run is not corrupted,
+ * but it is silently stranded. Like the sealed log, this is a READER contract,
+ * and the version is what lets a World tell the two readers apart: a World
+ * only takes a token from a running victim stamped at or above this version,
+ * and answers the forced creation with an ordinary `hook_conflict`
+ * (`forceRefusedReason: 'victim-spec-version'`) otherwise. A finished victim
+ * has no reader to strand, so a retained token is taken over at any version.
+ *
+ * The Python SDK stamps its own spec versions below this one, so a Python
+ * run's token can never be taken over — its runtime knows nothing of
+ * `forceClaimedBy` either.
+ */
+export const SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM = 8 as SpecVersion;
+
+/**
  * Current spec version: event-sourced architecture with native attributes,
- * compressed payloads, slot-numbered event ids, and sealed-log sequencing.
+ * compressed payloads, slot-numbered event ids, sealed-log sequencing, and
+ * involuntary hook disposal.
  *
  * This is both the version a World stamps on the runs it creates and the
  * *lowest* one this runtime accepts from a World (see
@@ -99,7 +120,7 @@ export const SPEC_VERSION_SUPPORTS_SEALED_LOG = 7 as SpecVersion;
  * run's identity scheme from what is stored rather than from this constant.
  */
 export const SPEC_VERSION_CURRENT =
-  SPEC_VERSION_SUPPORTS_SEALED_LOG as SpecVersion;
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM as SpecVersion;
 
 /**
  * Environment variable that opts new runs OUT of the sealed log.
@@ -110,9 +131,12 @@ export const SPEC_VERSION_CURRENT =
 export const SEALED_LOG_ENV_VAR = 'WORKFLOW_SEALED_LOG';
 
 /**
- * The spec version a World should stamp on the runs it creates: the sealed log
- * unless {@link SEALED_LOG_ENV_VAR} switches it off, in which case the
- * slot-identity version it supersedes.
+ * The spec version a World should stamp on the runs it creates: the current
+ * version (sealed log plus involuntary hook disposal) unless
+ * {@link SEALED_LOG_ENV_VAR} switches the sealed log off, in which case the
+ * slot-identity version it supersedes. Versions are linear, so switching the
+ * sealed log off also drops below {@link SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM}:
+ * runs minted that way can force-claim, but cannot be force-claimed from.
  *
  * Same shape, and the same reasoning, as the flag slot identity itself shipped
  * behind before going unconditional: default on, with one env var to put a
@@ -154,17 +178,58 @@ export function mintedSpecVersion(
 /**
  * The highest spec version this SDK can read.
  *
- * Kept distinct from `SPEC_VERSION_CURRENT`, and right now they genuinely
- * differ. They answer different questions, "what do we write?" versus "what
- * can we still read?", and they come apart in exactly the release order a spec
- * bump follows: a reader that can already handle the next version raises this
+ * Kept distinct from `SPEC_VERSION_CURRENT` even when they coincide. They
+ * answer different questions, "what do we write?" versus "what can we still
+ * read?", and they come apart in exactly the release order a spec bump
+ * follows: a reader that can already handle the next version raises this
  * ceiling first, and stamping follows only once the version is safe to mint
- * everywhere. Sealed-log support is at that first stage. Every build reads
- * spec 7 and skips `noop`, while {@link mintedSpecVersion} still has to be
- * turned on before anything creates a spec-7 run.
+ * everywhere.
  */
 export const SPEC_VERSION_MAX_SUPPORTED =
-  SPEC_VERSION_SUPPORTS_SEALED_LOG as SpecVersion;
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM as SpecVersion;
+
+/**
+ * Spec versions whose only effect is to switch on capabilities of a run's
+ * reader and writer, which is the runtime executing it. A backend may raise
+ * a running run across these (to its executor's attested version, see
+ * `executorSpecVersion` on `run_started`), because nothing already in the
+ * run's log changes meaning.
+ *
+ * Every other version is STRUCTURAL: it changes how the log is laid out or
+ * read (event sourcing itself, slot-numbered event ids, sealed-log
+ * sequencing), so a run may only be moved across it before any event past
+ * `run_created` exists. That includes versions not listed here yet: an
+ * unclassified future version is structural by default, and adding a
+ * version constant without classifying it fails this package's tests.
+ */
+export const CAPABILITY_ONLY_SPEC_VERSIONS: ReadonlySet<number> = new Set([
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_ATTRIBUTES,
+  SPEC_VERSION_SUPPORTS_COMPRESSION,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
+]);
+
+/** The structural spec versions; see {@link CAPABILITY_ONLY_SPEC_VERSIONS}. */
+export const STRUCTURAL_SPEC_VERSIONS: ReadonlySet<number> = new Set([
+  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+  SPEC_VERSION_SUPPORTS_SEALED_LOG,
+]);
+
+/**
+ * Whether moving a run from spec version `from` up to `to` crosses a
+ * structural version, and so is only allowed while the run's log holds
+ * nothing but `run_created`. See {@link CAPABILITY_ONLY_SPEC_VERSIONS}.
+ */
+export function crossesStructuralSpecVersion(
+  from: number,
+  to: number
+): boolean {
+  for (let v = from + 1; v <= to; v++) {
+    if (!CAPABILITY_ONLY_SPEC_VERSIONS.has(v)) return true;
+  }
+  return false;
+}
 
 /**
  * Check if a spec version is legacy (<= SPEC_VERSION_LEGACY or undefined).

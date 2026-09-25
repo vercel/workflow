@@ -63,6 +63,38 @@ export type PaginatedResponse<T> = z.infer<
 export type ResolveData = 'none' | 'all';
 
 /**
+ * {@link ResolveData} for event-log reads, plus one mode for replay:
+ * - "skip-step-inputs": as "all", except that the World MAY leave `input` out
+ *   of `step_created` and `step_started` events. Workflow replay recomputes
+ *   step arguments by re-running workflow code and never reads the recorded
+ *   ones (a step takes its input from the `step_started` response or from
+ *   memory, never from the replay log), and for a workflow that passes
+ *   growing state into its steps those inputs are the part of the log that
+ *   grows quadratically.
+ *
+ * **A World MUST treat any value other than "none" as "all"** for everything
+ * it does not specifically implement. The runtime replays with
+ * "skip-step-inputs", so a World that tests `resolveData === 'all'` (reading
+ * the new value as "none") strips step results and breaks every replay, and
+ * one that validates against `['none', 'all']` rejects the read. Test
+ * `resolveData === 'none'`, or map with {@link entityResolveData}. The
+ * `@workflow/world-testing` suite checks this.
+ */
+export type EventsResolveData = ResolveData | 'skip-step-inputs';
+
+/**
+ * The {@link ResolveData} an {@link EventsResolveData} asks for on everything
+ * other than an event-log page's step inputs: `'skip-step-inputs'` is `'all'`.
+ */
+export function entityResolveData<T extends EventsResolveData | undefined>(
+  resolveData: T
+): Exclude<T, 'skip-step-inputs'> | 'all' {
+  return (resolveData === 'skip-step-inputs' ? 'all' : resolveData) as
+    | Exclude<T, 'skip-step-inputs'>
+    | 'all';
+}
+
+/**
  * A standard error schema shape for propogating errors from runs and steps
  */
 export const StructuredErrorSchema = z.compile(

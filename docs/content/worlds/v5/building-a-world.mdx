@@ -20,7 +20,7 @@ A **World** is the abstraction that allows workflows to run on any infrastructur
 </Callout>
 
 <Callout type="info">
-  **Reference implementation:** The [Postgres World source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres) is a production-ready example of implementing the World interface with a database backend and Graphile Worker for queuing.
+  **Reference implementation:** The [Postgres World source code](https://github.com/vercel/workflow/tree/main/packages/world-postgres) is a complete example of how to implement the World interface with a database backend and graphile-worker for queuing. It is not optimized for scale, speed, or security and should be used as a reference to fill in those gaps in a custom World. Please see the [Postgres World docs](/worlds/postgres) for what a self-hosted World has to gate itself.
 </Callout>
 
 <Callout type="info">
@@ -42,6 +42,7 @@ interface WorldCapabilities {
     active: boolean;
   };
   maxConcurrency?: boolean;
+  hookForceClaim?: boolean;
 }
 
 interface World extends Storage, Queue, Streamer {
@@ -60,7 +61,7 @@ interface World extends Storage, Queue, Streamer {
 
 `specVersion` is required. See [Declaring the spec version](#declaring-the-spec-version).
 
-The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses.
+The optional `capabilities` object advertises additional behavior, and every capability **fails closed**. A missing member means "unsupported," and the runtime keeps its conservative behavior. Set `hookRetention.active` to `true` only when the World implements hook token retention. Set `maxConcurrency` only when the World's queue supports `maxConcurrency`-limited consumption, which `WORKFLOW_SEQUENTIAL_REPLAYS=1` uses. Set `hookForceClaim` only when the World implements [hook token takeover](/worlds/upgrading-to-v5#new-optional-surface). Without it, `createHook({ experimental_force: true })` fails the workflow when it registers the hook.
 
 [Slot-numbered event IDs](#event-id-allocation) are a contract requirement rather than a capability, so there is no flag or fallback path.
 
@@ -151,6 +152,8 @@ interface Storage {
 
 **Run creation:** For `run_created` events, the `runId` parameter may be a client-provided string or `null`. When `null`, your World generates and returns a new `runId`.
 
+**Event data resolution:** `events.list()` and `events.create()` accept `resolveData: 'skip-step-inputs'`, and the runtime replays with it. The World may leave `input` out of `step_created` and `step_started` events, and returns everything else as for `'all'`. Treat any value other than `'none'` as `'all'`, because a World that tests `resolveData === 'all'` strips step results and breaks every replay. Map the value with `entityResolveData()` from `@workflow/world` before passing it to an entity read.
+
 **Run listing:** `runs.list({ status })` accepts a single status or an array. With an array, return runs whose status matches any listed value, and return no runs for an empty array (the same semantics as SQL `IN ()`). Treat an omitted `status` as no filter.
 
 **Hook tokens:** Hook tokens must be unique. If a `hook_created` event conflicts with an active hook or a token still reserved after its run ended, return a `hook_conflict` event and include the owner's run ID as `eventData.conflictingRunId`.
@@ -195,7 +198,7 @@ Spec version 7 supports one alternative to allocate-at-commit for Worlds whose s
 
 The runtime skips `noop` events during replay. It never delivers them to a consumer or uses them to advance the deterministic clock, so a sealed log replays identically to one whose writers filled the holes. `noop` isn't user-creatable and is never sent to `events.create()`. Only your read path may write one. Worlds that allocate at the commit, through a synchronous counter or unique-constraint append, maintain perfect density and don't need sealing. `world-local` and `world-postgres` never seal, and a World that allocates at the commit is spec 7 compliant without additional work.
 
-The version a World stamps comes from `mintedSpecVersion()`: 7 by default or the slot-identity version when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) disables it. Declare `mintedSpecVersion()` instead of a literal so your World moves with the fleet. A runtime other than the one that created a spec 7 run may read it, so readers must understand `noop` before anything stamps 7 in that environment.
+The version a World stamps comes from `mintedSpecVersion()`: 8 by default or the slot-identity version (6) when [`WORKFLOW_SEALED_LOG=0`](/docs/configuration/runtime-tuning#workflow_sealed_log) disables it. Declare `mintedSpecVersion()` instead of a literal so your World moves with the fleet. A runtime other than the one that created a spec 7 run may read it, so readers must understand `noop` before anything stamps 7 in that environment.
 
 `events.create()` params carry `eventCount`: how many events the writer held in the log it replayed from, which is the position it expects to land on minus one. Attempt `eventCount + 1`. When that position is taken, **do not reject the write**. Advance to the next free position, commit there, and return the events occupying the positions you skipped over on the success response, in `events` with a matching `cursor` and `hasMore`. The writer merges them into its own log and replays once, rather than paying a second round trip to discover it was behind. A caller with a stale count is the normal case for a fan-out, and rejecting it would serialize writes the runtime issues in parallel.
 

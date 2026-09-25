@@ -136,6 +136,8 @@ export interface PendingHook {
   /** Earliest token reuse time, as milliseconds since the Unix epoch. */
   tokenRetentionUntil?: number;
   isWebhook: boolean;
+  /** `createHook({ experimental_force })`: take the token over if held. */
+  force?: boolean;
   metadata?: unknown;
   hasCreatedEvent: boolean;
   /**
@@ -665,6 +667,20 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     unsupportedRetentionError.fatal = true;
     throw unsupportedRetentionError;
   }
+  if (options.experimental_force === true) {
+    if (options.token === undefined || options.token === null) {
+      throw new Error('\`createHook()\` was called with \`experimental_force: true\` but no \`token\`. Force-claiming only applies to an explicit token another run may hold.');
+    }
+    if (options.isWebhook === true) {
+      throw new Error('Webhook hooks do not support \`experimental_force\`. Use a non-webhook \`createHook()\` with an explicit token.');
+    }
+    if (globalThis.__worldCapabilities?.hookForceClaim !== true) {
+      var unsupportedForceError = new Error('The configured World does not support \`experimental_force\` for Hooks.');
+      unsupportedForceError.name = "FatalError";
+      unsupportedForceError.fatal = true;
+      throw unsupportedForceError;
+    }
+  }
   var token = options.token || globalThis.__generateNanoid();
   var correlationId = "hook_" + globalThis.__generateUlid();
   var isDisposed = false;
@@ -701,6 +717,7 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     token: token,
     tokenRetentionUntil: tokenRetentionUntil,
     isWebhook: !!options.isWebhook,
+    force: options.experimental_force === true,
     metadata: options.metadata,
     hasCreatedEvent: false,
   };
@@ -716,6 +733,11 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     token: token,
     created: false,
     conflict: null,
+    // Set by the host on a hook_disposed{forceClaimedBy}: another run took
+    // the token. Buffered payloads (delivered before the takeover) are still
+    // drained; every await after them rejects with this error.
+    forceClaimed: null,
+    force: options.experimental_force === true,
     getConflictResolvers: [],
   };
 
@@ -728,6 +750,10 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     var buf = globalThis.__hookPayloadBuffer[correlationId];
     if (buf && buf.length > 0) {
       return Promise.resolve(buf.shift());
+    }
+    var claimedState = globalThis.__hooks[correlationId];
+    if (claimedState && claimedState.forceClaimed) {
+      return Promise.reject(claimedState.forceClaimed);
     }
     return new Promise(function(resolve, reject) {
       globalThis.__resolvers[correlationId] = { resolve: resolve, reject: reject };
@@ -744,7 +770,9 @@ globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")] = function(options) {
     // hook_disposed here would be rejected by the world's
     // hook-existence validation.
     var state = globalThis.__hooks[correlationId];
-    if (!state || !state.conflict) {
+    // A force-claimed hook is already disposed — the takeover journaled
+    // its hook_disposed — so there is nothing left to dispose either.
+    if (!state || (!state.conflict && !state.forceClaimed)) {
       // Signal to the entrypoint to create a hook_disposed event. The
       // token is carried so the entrypoint can order same-token hook
       // operations sequentially (a dispose must release the token before
@@ -1911,16 +1939,22 @@ async function processEvents(
     // schedule into replay. Because the clock is monotonic, every later
     // Date.now() in the run with it. That would make a log whose hole was
     // sealed replay differently from the same log whose hole its own writer
-    // filled, and differently from this log on the node:vm engine, which
-    // skips noops in `EventsConsumer` before `onConsumedEvent` feeds the
-    // clock. Same rule, both engines, one predicate.
+    // filled, and differently from this log on the node:vm engine, whose
+    // `EventsConsumer` skips noops without ever delivering them. Same rule,
+    // both engines, one predicate.
     if (isSealedNoopEvent(event)) continue;
 
     // Advance the VM's deterministic clock to this event's creation time
     // BEFORE resolving anything, so workflow code unblocked by this event
     // observes Date.now() at (or after, since the clock is monotonic) the time
-    // the event was recorded. Mirrors the node:vm engine's
-    // `onConsumedEvent → updateTimestamp(+event.createdAt)`.
+    // the event was recorded. This engine processes events strictly in log
+    // order and drains the VM to quiescence after each one, so advancing per
+    // event is prefix-stable here. It is not the node:vm rule: that engine's
+    // consumer walks ahead of delivery, so it advances the clock only when a
+    // delivery (step result, hook payload, wait completion, registration
+    // outcome, abort) reaches the workflow, and a non-delivering event such as
+    // a `step_created` or an unread `hook_received` moves this engine's clock
+    // but not that one's. Aligning the two is a follow-up.
     advanceClock(+event.createdAt);
 
     const cid = event.correlationId;
@@ -2407,15 +2441,39 @@ async function processEvents(
         const conflictingRunId = eventData?.conflictingRunId as
           | string
           | undefined;
+        // A World that declined a forced creation ON PURPOSE (the run holding
+        // the token predates involuntary disposal) marks the conflict; that
+        // is the ordinary, catchable conflict. Unmarked, a conflict on a
+        // forced hook means the World does not implement forcing at all.
+        // Mirrors hook.ts.
+        const forceRefusedReason = eventData?.forceRefusedReason as
+          | string
+          | undefined;
         const didSettle = vm.dump(
           vm.evalCode(
             `(function(){
               var cid = ${JSON.stringify(cid)};
               var token = ${JSON.stringify(conflictToken)};
               var conflictingRunId = ${JSON.stringify(conflictingRunId ?? null)};
+              var forceRefused = ${JSON.stringify(forceRefusedReason !== undefined)};
               var ErrCls = globalThis[Symbol.for('@workflow/errors//HookConflictError')];
               var err;
-              if (typeof ErrCls === 'function') {
+              var hookState = globalThis.__hooks && globalThis.__hooks[cid];
+              // A forced hook asked for a guarantee the World could not give
+              // (older server, kill switch): a misconfiguration, not the
+              // ordinary conflict the caller opted out of. Mirrors hook.ts.
+              var forced = !!(hookState && hookState.force) && !forceRefused;
+              if (forced) {
+                var FatalCls = globalThis[Symbol.for('@workflow/errors//FatalError')];
+                var forcedMessage = 'createHook({ experimental_force: true }) for token "' + token + '" was answered with a hook_conflict: the configured World does not support force-claiming hook tokens' + (conflictingRunId ? ' (run "' + conflictingRunId + '" holds it)' : '') + '.';
+                if (typeof FatalCls === 'function') {
+                  err = new FatalCls(forcedMessage);
+                } else {
+                  err = new Error(forcedMessage);
+                  err.name = 'FatalError';
+                  err.fatal = true;
+                }
+              } else if (typeof ErrCls === 'function') {
                 err = new ErrCls(token, conflictingRunId || undefined);
               } else {
                 err = new Error('Hook token "' + token + '" is already in use by another workflow');
@@ -2424,7 +2482,7 @@ async function processEvents(
                 if (conflictingRunId) err.conflictingRunId = conflictingRunId;
               }
               var run = null;
-              if (conflictingRunId) {
+              if (conflictingRunId && !forced) {
                 var reg = globalThis[Symbol.for('workflow-class-registry')];
                 var RunCls = reg && reg.get('class//workflow//Run');
                 var des = RunCls && RunCls[Symbol.for('workflow-deserialize')];
@@ -2496,6 +2554,63 @@ async function processEvents(
         break;
       }
       case 'hook_disposed': {
+        const claimedBy = eventData?.forceClaimedBy as
+          | { runId?: string; hookId?: string }
+          | undefined;
+        if (claimedBy && typeof claimedBy.runId === 'string') {
+          // Not this run's disposal: another run took the token
+          // (experimental_force). Reject the parked awaiter, settle any
+          // getConflict awaiters (the hook was registered; it just no longer
+          // holds the token), and remember the error so every later await
+          // rejects too — after the buffered payloads, which landed before
+          // the takeover. Mirrors hook.ts.
+          const hookState = vm.dump(
+            vm.evalCode(
+              `(function(){
+                var cid = ${JSON.stringify(cid)};
+                var state = globalThis.__hooks && globalThis.__hooks[cid];
+                var token = state ? state.token : ${JSON.stringify((eventData?.token as string) ?? '')};
+                var claimedByRunId = ${JSON.stringify(claimedBy.runId)};
+                var claimedByHookId = ${JSON.stringify(claimedBy.hookId ?? null)};
+                var ErrCls = globalThis[Symbol.for('@workflow/errors//HookForceClaimedError')];
+                var err;
+                if (typeof ErrCls === 'function') {
+                  err = new ErrCls(token, claimedByRunId, claimedByHookId || undefined);
+                } else {
+                  err = new Error('Hook token "' + token + '" was force-claimed by another workflow (run "' + claimedByRunId + '")');
+                  err.name = 'HookForceClaimedError';
+                  err.token = token;
+                  err.claimedByRunId = claimedByRunId;
+                  if (claimedByHookId) err.claimedByHookId = claimedByHookId;
+                }
+                var settled = false;
+                if (state) {
+                  state.forceClaimed = err;
+                  var gc = state.getConflictResolvers;
+                  state.getConflictResolvers = [];
+                  for (var i = 0; i < gc.length; i++) { gc[i].resolve(null); settled = true; }
+                }
+                if (globalThis.__resolvers[cid]) {
+                  globalThis.__resolvers[cid].reject(err);
+                  delete globalThis.__resolvers[cid];
+                  settled = true;
+                }
+                return settled;
+              })()`
+            )
+          );
+          if (hookState) {
+            resolved = true;
+            let b: number;
+            do {
+              b = vm.executePendingJobs();
+            } while (b > 0);
+          }
+          // The takeover may have beaten a cross-region creation's journal,
+          // so the `hook` op is marked created here too: a re-post would
+          // only be refused by the World (its own marker is set).
+          markCreated(vm, cidJs);
+        }
         // Disambiguate from the `hook` pending op with the same
         // correlationId: we want to mark the `hook_dispose` entry.
         markCreated(vm, cidJs, 'hook_dispose');

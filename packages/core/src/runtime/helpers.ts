@@ -119,6 +119,14 @@ export interface HealthCheckResult {
    * which fails that gate closed.
    */
   hookResumeInputVersion?: number;
+  /**
+   * The format the responding deployment answered in, set whenever it
+   * answered: `'text'` for the plain-text reply of deployments that predate
+   * the versioned JSON response (spec 3), `'json'` otherwise. A JSON reply
+   * proves the responder runs spec 3 or later even when its `specVersion`
+   * field is missing or malformed.
+   */
+  format?: 'json' | 'text';
 }
 
 /**
@@ -304,12 +312,9 @@ async function readStreamWithTimeout(
  * Parse and validate a health check response from stream chunks.
  * Returns the parsed response or null if invalid.
  */
-function parseHealthCheckResponse(chunks: Uint8Array[]): {
-  healthy: boolean;
-  specVersion?: number;
-  workflowCoreVersion?: string;
-  encryptionPublicKey?: string;
-} | null {
+function parseHealthCheckResponse(
+  chunks: Uint8Array[]
+): Omit<HealthCheckResult, 'latencyMs' | 'error'> | null {
   if (chunks.length === 0) return null;
 
   const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
@@ -329,7 +334,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
     // 'Workflow SDK "..." endpoint is healthy'. Treat any non-empty
     // text response as a healthy deployment with unknown specVersion.
     if (responseText.length > 0) {
-      return { healthy: true };
+      return { healthy: true, format: 'text' };
     }
     return null;
   }
@@ -344,14 +349,9 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   }
 
   const r = response as Record<string, unknown>;
-  const parsed: {
-    healthy: boolean;
-    specVersion?: number;
-    workflowCoreVersion?: string;
-    encryptionPublicKey?: string;
-    hookResumeInputVersion?: number;
-  } = {
+  const parsed: Omit<HealthCheckResult, 'latencyMs' | 'error'> = {
     healthy: r.healthy as boolean,
+    format: 'json',
   };
   if (typeof r.specVersion === 'number') {
     parsed.specVersion = r.specVersion;
@@ -586,6 +586,29 @@ function shouldRetryWithoutEventCursor(
 }
 
 /**
+ * How replay reads the event log. Replay recomputes every step's arguments by
+ * re-running workflow code and never reads the recorded ones (a step reads its
+ * input from the step entity), so replay reads let the World leave them out.
+ * For a workflow passing growing state into its steps, they are the part of
+ * the log that grows quadratically.
+ */
+export const REPLAY_RESOLVE_DATA = 'skip-step-inputs' as const;
+
+/**
+ * Params for a write whose inline delta (`sinceCursor`) is folded into a
+ * replay log: that delta is read the way replay reads the log. The created
+ * event and `step` entity are unaffected, so a write that asks for no delta
+ * is left exactly as it was.
+ */
+export function withReplayDelta(
+  params: CreateEventParams | undefined
+): CreateEventParams | undefined {
+  return params?.sinceCursor === undefined
+    ? params
+    : { resolveData: REPLAY_RESOLVE_DATA, ...params };
+}
+
+/**
  * Loads workflow run events by iterating through all pages of paginated
  * results. Events are returned in chronological (ascending) order for
  * deterministic workflow replay.
@@ -634,6 +657,7 @@ export async function loadWorkflowRunEvents(
             sortOrder: 'asc',
             cursor: requestedCursor ?? undefined,
           },
+          resolveData: REPLAY_RESOLVE_DATA,
         });
       } catch (error) {
         if (

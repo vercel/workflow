@@ -1,5 +1,49 @@
 # @workflow/core
 
+## 5.0.0-beta.56
+
+### Minor Changes
+
+- [#4193](https://github.com/vercel/workflow/pull/4193) [`4f52438`](https://github.com/vercel/workflow/commit/4f524386756bcb2cf70499dbdc51bf982030b734) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `createHook({ experimental_force: true })` option, which takes a hook token over from the run that currently holds it instead of rejecting with `HookConflictError`. Previous runs awaiting the hook are rejected with `HookForceClaimedError` naming the run that took the token. See [`experimental_force` docs](https://workflow-sdk.dev/v5/docs/api-reference/workflow/create-hook#take-over-a-token-another-run-holds) for details.
+
+### Patch Changes
+
+- [#4124](https://github.com/vercel/workflow/pull/4124) [`873b70b`](https://github.com/vercel/workflow/commit/873b70b5c7808bc48539df1d35b1fa97a0363826) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - A pending `sleep()` that cannot fire during the current invocation (for example one that lost a `Promise.race()` against a hook) no longer costs an extra event-log read per step boundary. The window follows the invocation's inline budget plus `WORKFLOW_OPEN_WAIT_CLOCK_SKEW_MS`; a wait completed early via `run.wakeUp()` is picked up by a read before the run parks on it.
+- Updated dependencies [[`4f52438`](https://github.com/vercel/workflow/commit/4f524386756bcb2cf70499dbdc51bf982030b734)]:
+  - @workflow/world@5.0.0-beta.38
+  - @workflow/world-vercel@5.0.0-beta.51
+  - @workflow/world-local@5.0.0-beta.47
+  - @workflow/errors@5.0.0-beta.23
+
+## 5.0.0-beta.55
+
+### Patch Changes
+
+- [#4266](https://github.com/vercel/workflow/pull/4266) [`101d347`](https://github.com/vercel/workflow/commit/101d3472f6f150f0900713b4340c95d422ed673c) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Stop warning about expected overlapping inline step executions in the QuickJS runtime, debug log instead
+- Updated dependencies [[`39f1d5c`](https://github.com/vercel/workflow/commit/39f1d5c0a17ad8912efc6a0cd329cf6c66173e50)]:
+  - @workflow/world-vercel@5.0.0-beta.50
+
+## 5.0.0-beta.54
+
+### Minor Changes
+
+- [#4168](https://github.com/vercel/workflow/pull/4168) [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6) Thanks [@shalabhc](https://github.com/shalabhc)! - Add an optional `invoke` method and capability to the World interface. It routes a payload to the runner handling the specified `runId` and returns a promise for its response. In world-postgres, this uses a regular queue roundtrip with a run-scoped queue. The runtime uses `invoke` when available, initially to resume hooks.
+
+- [#3678](https://github.com/vercel/workflow/pull/3678) [`20ad2b3`](https://github.com/vercel/workflow/commit/20ad2b358240819c6e590fd4752b97da1c64b390) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `registerLifecycleHooks` from `workflow/api` for best-effort completion and failure reporting with a read-free workflow name, lazy `Run` instance, and failure cause hydrated from the persisted payload. Run metadata getters avoid resolving input/output payloads.
+
+### Patch Changes
+
+- [#4213](https://github.com/vercel/workflow/pull/4213) [`d3ea4a6`](https://github.com/vercel/workflow/commit/d3ea4a6275a7782df44ea92dac2da51aa064cb75) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix an issue with the workflow's deterministic clock tracking advancement on consumption, not on write, which could lead to a determinism issue when concurrent replays called `Date.now` with different amounts of events read from the log
+
+- [#4215](https://github.com/vercel/workflow/pull/4215) [`f75b184`](https://github.com/vercel/workflow/commit/f75b184a853b50a030659bc6d78ef461c2a82a4d) Thanks [@gaojude](https://github.com/gaojude)! - Order hook registration and conflict settlements with earlier workflow deliveries so replay preserves concurrent step correlation IDs.
+
+- [#4082](https://github.com/vercel/workflow/pull/4082) [`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050) Thanks [@shalabhc](https://github.com/shalabhc)! - Validate complete attribute event data against the World's 8KiB UTF-8 JSON limit before new writes, with catchable SDK errors and unchanged replay of persisted events.
+- Updated dependencies [[`6c0d510`](https://github.com/vercel/workflow/commit/6c0d5100c37dc903f14040c9f479ce7a77a5b050), [`97dccc9`](https://github.com/vercel/workflow/commit/97dccc99cac308e88bf97368f3d5236061abdfb6)]:
+  - @workflow/world@5.0.0-beta.37
+  - @workflow/world-vercel@5.0.0-beta.49
+  - @workflow/errors@5.0.0-beta.22
+  - @workflow/world-local@5.0.0-beta.46
+
 ## 5.0.0-beta.53
 
 ### Patch Changes

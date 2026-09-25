@@ -201,12 +201,14 @@ try {
 | Code | Meaning |
 | --- | --- |
 | `USER_ERROR` | An error thrown in your workflow or step code (including propagated step failures like `FatalError`) |
-| `MAX_EVENTS_EXCEEDED` | The run reached the World's per-run event ceiling (25,000 on the Local and Vercel Worlds). Split unbounded loops into [child workflows](/cookbook/advanced/child-workflows); see [Limits](/docs/configuration/runtime-tuning#limits) |
+| `MAX_EVENTS_EXCEEDED` | The run reached the World's per-run event ceiling (for the Vercel World, see [Workflow run limits](https://vercel.com/docs/workflows/pricing#workflow-run-limits)). Split unbounded loops into [child workflows](/cookbook/advanced/child-workflows) well before the ceiling; see [Vercel World limits](/worlds/vercel#per-run-limits) and [Limits](/docs/configuration/runtime-tuning#limits) |
 | `MAX_DELIVERIES_EXCEEDED` | The run exceeded the maximum number of queue deliveries |
 | `REPLAY_TIMEOUT` | A workflow replay exceeded the maximum allowed duration |
 | `REPLAY_DIVERGENCE` | A replay could not consume the event log deterministically, usually because of non-deterministic workflow code. |
 | `CORRUPTED_EVENT_LOG` | The event log cannot be replayed: it contains orphaned or mismatched events, or one of its stored payloads is no longer readable from the World's storage. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
+| `STREAM_ERROR` | Workflow stream infrastructure failed while reading or writing data. This is an SDK or backend failure rather than an error in workflow code |
 | `WORLD_CONTRACT_ERROR` | A World response violated the SDK contract; points at a World implementation bug |
+| `DEPLOYMENT_MISMATCH` | The run was delivered to a deployment other than the one it is pinned to, and automatic re-routing did not recover it |
 | `RUNTIME_ERROR` | An internal runtime error. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
 
 <Callout type="info">

@@ -39,6 +39,8 @@ export interface HookInvocationQueueItem {
   token: string;
   /** Earliest time the token can be reused after the run ends. */
   tokenRetentionUntil?: Date;
+  /** `createHook({ experimental_force })`: take the token over if held. */
+  force?: boolean;
   metadata?: Serializable;
   hasCreatedEvent?: boolean;
   /** Whether the workflow is awaiting `hook.getConflict()` for this hook */

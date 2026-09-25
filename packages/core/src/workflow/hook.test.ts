@@ -1,5 +1,7 @@
 import {
+  FatalError,
   HookConflictError,
+  HookForceClaimedError,
   ReplayDivergenceError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
@@ -413,7 +415,9 @@ describe('createCreateHook', () => {
       // Hold an earlier delivery after the serial queue has drained. This
       // is the window in which hasCreated/hasConflict is already true but
       // the registration acknowledgement cannot yet reach workflow code.
-      const earlier = registerDeliveryBarrier(ctx, -1, 'step');
+      const earlier = registerDeliveryBarrier(ctx, -1, 'step', {
+        deliveredAt: 0,
+      });
       const hook = createCreateHook(ctx)({ token: 'config' });
       const settled: unknown[] = [];
       const observe = (promise: Promise<unknown>) =>
@@ -1449,5 +1453,252 @@ describe('createWebhook', () => {
     expect(() => (createWebhook as any)({ token: 'anything' })).toThrow(
       '`createWebhook()` does not accept a `token` option. Webhook tokens are always generated for you. Use `createHook()` with `resumeHook()` for deterministic token patterns.'
     );
+  });
+
+  describe('experimental_force', () => {
+    const HOOK_ID = 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV';
+    const forceCapable = {
+      hookRetention: { active: true },
+      hookForceClaim: true,
+    };
+
+    it('threads `force` onto the queue item', () => {
+      const ctx = setupWorkflowContext([]);
+      ctx.worldCapabilities = forceCapable;
+      const createHook = createCreateHook(ctx);
+      createHook({ token: 'shared', experimental_force: true });
+      const queueItem = ctx.invocationsQueue.values().next().value;
+      expect(queueItem?.type).toBe('hook');
+      if (queueItem?.type === 'hook') {
+        expect(queueItem.force).toBe(true);
+        expect(queueItem.token).toBe('shared');
+      }
+    });
+
+    it('does not put `force` on the queue item when not requested', () => {
+      const ctx = setupWorkflowContext([]);
+      const createHook = createCreateHook(ctx);
+      createHook({ token: 'shared' });
+      const queueItem = ctx.invocationsQueue.values().next().value;
+      expect(queueItem?.type).toBe('hook');
+      if (queueItem?.type === 'hook') {
+        expect(queueItem.force).toBeUndefined();
+      }
+    });
+
+    it('requires an explicit token', () => {
+      const ctx = setupWorkflowContext([]);
+      ctx.worldCapabilities = forceCapable;
+      const createHook = createCreateHook(ctx);
+      expect(() => createHook({ experimental_force: true })).toThrow(
+        /`experimental_force: true` but no `token`/
+      );
+      expect(ctx.invocationsQueue.size).toBe(0);
+    });
+
+    it('is not available on webhooks', () => {
+      const ctx = setupWorkflowContext([]);
+      ctx.worldCapabilities = forceCapable;
+      const createHook = createCreateHook(ctx);
+      expect(() =>
+        createHook({ token: 't', isWebhook: true, experimental_force: true })
+      ).toThrow(/Webhook hooks do not support `experimental_force`/);
+    });
+
+    it.each([
+      ['missing', { hookRetention: { active: true } }],
+      ['false', { hookRetention: { active: true }, hookForceClaim: false }],
+    ])('rejects when the capability is %s', (_state, capabilities) => {
+      const ctx = setupWorkflowContext([]);
+      ctx.worldCapabilities = capabilities;
+      const createHook = createCreateHook(ctx);
+      expect(() =>
+        createHook({ token: 'shared', experimental_force: true })
+      ).toThrow(
+        'The configured World does not support `experimental_force` for Hooks.'
+      );
+      expect(ctx.invocationsQueue.size).toBe(0);
+    });
+
+    it('rejects an awaiter with HookForceClaimedError on hook_disposed{forceClaimedBy}', async () => {
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_victim',
+          eventType: 'hook_created',
+          correlationId: HOOK_ID,
+          eventData: { token: 'shared' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_victim',
+          eventType: 'hook_disposed',
+          correlationId: HOOK_ID,
+          eventData: {
+            token: 'shared',
+            forceClaimedBy: { runId: 'wrun_claimer', hookId: 'hook_claimer' },
+          },
+          createdAt: new Date(),
+        },
+      ]);
+      const createHook = createCreateHook(ctx);
+      const hook = createHook({ token: 'shared' });
+      const error = await hook.then(
+        () => undefined,
+        (err: unknown) => err
+      );
+      expect(HookForceClaimedError.is(error)).toBe(true);
+      expect(error).toMatchObject({
+        token: 'shared',
+        claimedByRunId: 'wrun_claimer',
+        claimedByHookId: 'hook_claimer',
+      });
+      // Every later await rejects the same way; dispose() is a no-op (the
+      // disposal is already journaled) and never re-enters the queue.
+      await expect(hook).rejects.toSatisfy((e) => HookForceClaimedError.is(e));
+      expect(ctx.invocationsQueue.size).toBe(0);
+      hook.dispose();
+      expect(ctx.invocationsQueue.size).toBe(0);
+      expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+    });
+
+    it('delivers payloads received before the takeover, then rejects', async () => {
+      const ops: Promise<any>[] = [];
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_victim',
+          eventType: 'hook_created',
+          correlationId: HOOK_ID,
+          eventData: { token: 'shared' },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_victim',
+          eventType: 'hook_received',
+          correlationId: HOOK_ID,
+          eventData: {
+            token: 'shared',
+            payload: await dehydrateStepReturnValue(
+              { n: 1 },
+              'wrun_test',
+              undefined,
+              ops
+            ),
+          },
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_2',
+          runId: 'wrun_victim',
+          eventType: 'hook_disposed',
+          correlationId: HOOK_ID,
+          eventData: {
+            token: 'shared',
+            forceClaimedBy: { runId: 'wrun_claimer', hookId: 'hook_claimer' },
+          },
+          createdAt: new Date(),
+        },
+      ]);
+      const createHook = createCreateHook(ctx);
+      const hook = createHook<{ n: number }>({ token: 'shared' });
+      const received: unknown[] = [];
+      let thrown: unknown;
+      try {
+        for await (const payload of hook) {
+          received.push(payload);
+        }
+      } catch (err) {
+        thrown = err;
+      }
+      expect(received).toEqual([{ n: 1 }]);
+      expect(HookForceClaimedError.is(thrown)).toBe(true);
+      expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+    });
+
+    it('settles getConflict() with null when the takeover beat the creation into the log', async () => {
+      // A cross-region victim whose hook_created journal was refused by the
+      // takeover: the log holds only the disposal. The hook was registered
+      // — it just no longer holds the token.
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_victim',
+          eventType: 'hook_disposed',
+          correlationId: HOOK_ID,
+          eventData: {
+            token: 'shared',
+            forceClaimedBy: { runId: 'wrun_claimer', hookId: 'hook_claimer' },
+          },
+          createdAt: new Date(),
+        },
+      ]);
+      const createHook = createCreateHook(ctx);
+      const hook = createHook({ token: 'shared' });
+      await expect(hook.getConflict()).resolves.toBeNull();
+      await expect(hook).rejects.toSatisfy((e) => HookForceClaimedError.is(e));
+    });
+
+    it('turns a hook_conflict on a forced hook into a FatalError (unsupported World)', async () => {
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_claimer',
+          eventType: 'hook_conflict',
+          correlationId: HOOK_ID,
+          eventData: { token: 'shared', conflictingRunId: 'wrun_victim' },
+          createdAt: new Date(),
+        },
+      ]);
+      ctx.worldCapabilities = forceCapable;
+      const createHook = createCreateHook(ctx);
+      const hook = createHook({ token: 'shared', experimental_force: true });
+      const error = await hook.then(
+        () => undefined,
+        (err: unknown) => err
+      );
+      expect(error).toBeInstanceOf(FatalError);
+      expect((error as Error).message).toContain('experimental_force');
+      expect((error as Error).message).toContain('wrun_victim');
+      expect(HookConflictError.is(error)).toBe(false);
+      await expect(hook.getConflict()).rejects.toBeInstanceOf(FatalError);
+    });
+
+    it('keeps a hook_conflict the World marked as declined on purpose an ordinary HookConflictError', async () => {
+      // `forceRefusedReason` says the World implements forcing but would not
+      // take this token: the run holding it predates involuntary disposal.
+      // That is the everyday conflict the caller can catch and route, not a
+      // misconfiguration.
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_claimer',
+          eventType: 'hook_conflict',
+          correlationId: HOOK_ID,
+          eventData: {
+            token: 'shared',
+            conflictingRunId: 'wrun_legacy_victim',
+            forceRefusedReason: 'victim-spec-version',
+          },
+          createdAt: new Date(),
+        },
+      ]);
+      ctx.worldCapabilities = forceCapable;
+      const createHook = createCreateHook(ctx);
+      const hook = createHook({ token: 'shared', experimental_force: true });
+      const error = await hook.then(
+        () => undefined,
+        (err: unknown) => err
+      );
+      expect(HookConflictError.is(error)).toBe(true);
+      expect(error).not.toBeInstanceOf(FatalError);
+      expect((error as HookConflictError).conflictingRunId).toBe(
+        'wrun_legacy_victim'
+      );
+      const conflict = await hook.getConflict();
+      expect(conflict?.runId).toBe('wrun_legacy_victim');
+    });
   });
 });
