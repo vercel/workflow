@@ -206,7 +206,9 @@ try {
 | `REPLAY_TIMEOUT` | A workflow replay exceeded the maximum allowed duration |
 | `REPLAY_DIVERGENCE` | A replay could not consume the event log deterministically, usually because of non-deterministic workflow code. |
 | `CORRUPTED_EVENT_LOG` | The event log cannot be replayed: it contains orphaned or mismatched events, or one of its stored payloads is no longer readable from the World's storage. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
+| `STREAM_ERROR` | Workflow stream infrastructure failed while reading or writing data. This is an SDK or backend failure rather than an error in workflow code |
 | `WORLD_CONTRACT_ERROR` | A World response violated the SDK contract; points at a World implementation bug |
+| `DEPLOYMENT_MISMATCH` | The run was delivered to a deployment other than the one it is pinned to, and automatic re-routing did not recover it |
 | `RUNTIME_ERROR` | An internal runtime error. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
 
 <Callout type="info">
