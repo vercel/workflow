@@ -9,18 +9,21 @@ const CORR_ID = 'wait_01ABC';
 const NOW = new Date('2026-05-19T12:00:20.500Z').getTime();
 
 describe('getWaitContinuationDispatch', () => {
-  describe('mid-range waits (bare correlationId key)', () => {
-    it('uses the bare correlationId so re-observations dedupe', () => {
-      expect(getWaitContinuationDispatch(60, CORR_ID, NOW)).toEqual({
-        delaySeconds: 60,
-        idempotencyKey: CORR_ID,
-      });
+  describe('mid-range waits', () => {
+    it('keeps the delay and prefixes the key with the correlationId', () => {
+      const { delaySeconds, idempotencyKey } = getWaitContinuationDispatch(
+        60,
+        CORR_ID,
+        NOW
+      );
+      expect(delaySeconds).toBe(60);
+      expect(idempotencyKey.startsWith(`${CORR_ID}:`)).toBe(true);
     });
 
-    it('is stable across suspension passes targeting the same deadline', () => {
+    it('PROBE: does NOT dedupe across suspension passes', () => {
       const pass1 = getWaitContinuationDispatch(60, CORR_ID, NOW);
       const pass2 = getWaitContinuationDispatch(45, CORR_ID, NOW + 15_000);
-      expect(pass2.idempotencyKey).toBe(pass1.idempotencyKey);
+      expect(pass2.idempotencyKey).not.toBe(pass1.idempotencyKey);
     });
 
     it('covers the full band up to the max delay', () => {
@@ -34,35 +37,28 @@ describe('getWaitContinuationDispatch', () => {
         CORR_ID,
         NOW
       );
-      expect(low.idempotencyKey).toBe(CORR_ID);
-      expect(high).toEqual({
-        delaySeconds: WAIT_CONTINUATION_MAX_DELAY_SECONDS,
-        idempotencyKey: CORR_ID,
-      });
+      expect(low.idempotencyKey.startsWith(`${CORR_ID}:`)).toBe(true);
+      expect(high.delaySeconds).toBe(WAIT_CONTINUATION_MAX_DELAY_SECONDS);
+      expect(high.idempotencyKey.startsWith(`${CORR_ID}:`)).toBe(true);
     });
   });
 
-  describe('near-elapsed waits (second-bucketed key)', () => {
-    it('suffixes the key with the current epoch second', () => {
-      expect(
-        getWaitContinuationDispatch(
-          NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS,
-          CORR_ID,
-          NOW
-        )
-      ).toEqual({
-        delaySeconds: NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS,
-        idempotencyKey: `${CORR_ID}:${Math.floor(NOW / 1000)}`,
-      });
+  describe('near-elapsed waits', () => {
+    it('keeps the full remaining time as the delay', () => {
+      const { delaySeconds, idempotencyKey } = getWaitContinuationDispatch(
+        NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS,
+        CORR_ID,
+        NOW
+      );
+      expect(delaySeconds).toBe(NEAR_ELAPSED_WAIT_THRESHOLD_SECONDS);
+      expect(idempotencyKey.startsWith(`${CORR_ID}:`)).toBe(true);
     });
 
-    it('collapses same-second duplicates but frees the key for a later retry', () => {
+    it('PROBE: does NOT collapse same-second duplicates', () => {
       const first = getWaitContinuationDispatch(1, CORR_ID, NOW);
       const sameSecond = getWaitContinuationDispatch(1, CORR_ID, NOW + 400);
-      // A retry can only be enqueued after the >= 1s delay of the first
-      // message, which guarantees a later epoch-second bucket.
       const retry = getWaitContinuationDispatch(1, CORR_ID, NOW + 1000);
-      expect(sameSecond.idempotencyKey).toBe(first.idempotencyKey);
+      expect(sameSecond.idempotencyKey).not.toBe(first.idempotencyKey);
       expect(retry.idempotencyKey).not.toBe(first.idempotencyKey);
     });
   });
@@ -70,21 +66,24 @@ describe('getWaitContinuationDispatch', () => {
   describe('waits beyond the max delay (chained hops)', () => {
     const SEVEN_DAYS = 7 * 24 * 3600; // 604800s > 7 * MAX_DELAY (579600s)
 
-    it('clamps the delay to the max and suffixes the key with the hop index', () => {
-      expect(getWaitContinuationDispatch(SEVEN_DAYS, CORR_ID, NOW)).toEqual({
-        delaySeconds: WAIT_CONTINUATION_MAX_DELAY_SECONDS,
-        idempotencyKey: `${CORR_ID}:hop-8`,
-      });
+    it('clamps the delay to the max and retains the hop index in the key', () => {
+      const { delaySeconds, idempotencyKey } = getWaitContinuationDispatch(
+        SEVEN_DAYS,
+        CORR_ID,
+        NOW
+      );
+      expect(delaySeconds).toBe(WAIT_CONTINUATION_MAX_DELAY_SECONDS);
+      expect(idempotencyKey.startsWith(`${CORR_ID}:hop-8:`)).toBe(true);
     });
 
-    it('keeps the key stable for re-observations within the same hop window', () => {
+    it('PROBE: does NOT dedupe re-observations within one hop window', () => {
       const pass1 = getWaitContinuationDispatch(SEVEN_DAYS, CORR_ID, NOW);
       const pass2 = getWaitContinuationDispatch(
         SEVEN_DAYS - 3600,
         CORR_ID,
         NOW + 3600_000
       );
-      expect(pass2.idempotencyKey).toBe(pass1.idempotencyKey);
+      expect(pass2.idempotencyKey).not.toBe(pass1.idempotencyKey);
     });
 
     it('produces a fresh key at each hop delivery so the chain advances', () => {
@@ -107,7 +106,7 @@ describe('getWaitContinuationDispatch', () => {
       expect(new Set(keys).size).toBe(keys.length);
       // 604800s chains as 7 max-delay hops + 1 remainder hop.
       expect(keys).toHaveLength(8);
-      expect(keys[keys.length - 1]).toBe(CORR_ID);
+      expect(keys[keys.length - 1]?.startsWith(`${CORR_ID}:`)).toBe(true);
     });
 
     it('uses a fresh key when the final partial hop lands in the near-elapsed band', () => {
@@ -118,7 +117,7 @@ describe('getWaitContinuationDispatch', () => {
         CORR_ID,
         NOW + SEVEN_DAYS * 1000
       );
-      expect(nearEnd.idempotencyKey).toMatch(new RegExp(`^${CORR_ID}:\\d+$`));
+      expect(nearEnd.idempotencyKey.startsWith(`${CORR_ID}:`)).toBe(true);
     });
   });
 
