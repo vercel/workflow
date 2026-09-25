@@ -140,7 +140,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
         const pendingGetConflictPromises = getConflictPromises.slice();
         getConflictPromises.length = 0;
+        const createdAt = +event.createdAt;
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          // The registration outcome is a delivery: the code after
+          // `await hook.getConflict()` runs off it, so the clock it reads is
+          // this event's time (see `ctx.advanceClock`).
+          ctx.advanceClock?.(createdAt);
           for (const resolver of pendingGetConflictPromises) {
             resolver.resolve(null);
           }
@@ -183,7 +188,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const pendingGetConflictPromises = getConflictPromises.slice();
         getConflictPromises.length = 0;
 
+        const createdAt = +event.createdAt;
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          // The conflict is a delivery: the payload awaiters it rejects and
+          // the `getConflict()` awaiters it settles run off it, so the clock
+          // they read is this event's time (see `ctx.advanceClock`).
+          ctx.advanceClock?.(createdAt);
           for (const resolver of pendingPromises) {
             resolver.reject(conflictError);
           }
@@ -218,6 +228,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         const hasWaitingConsumer = promises.length > 0;
         const barrier = registerDeliveryBarrier(ctx, eventIndex, 'hook', {
           armed: hasWaitingConsumer,
+          deliveredAt: +event.createdAt,
         });
 
         if (hasWaitingConsumer) {

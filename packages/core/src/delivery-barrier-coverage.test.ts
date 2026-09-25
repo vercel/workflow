@@ -492,7 +492,9 @@ describe('delivery-barrier registry scan cost', () => {
 
     const BARRIERS = 40;
     for (let index = 0; index < BARRIERS; index++) {
-      registerDeliveryBarrier(ctx, index, index % 2 ? 'hook' : 'wait');
+      registerDeliveryBarrier(ctx, index, index % 2 ? 'hook' : 'wait', {
+        deliveredAt: 0,
+      });
     }
     expect(ctx.pendingDeliveryBarriers?.size).toBe(BARRIERS);
 
