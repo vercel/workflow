@@ -119,6 +119,14 @@ export interface HealthCheckResult {
    * which fails that gate closed.
    */
   hookResumeInputVersion?: number;
+  /**
+   * The format the responding deployment answered in, set whenever it
+   * answered: `'text'` for the plain-text reply of deployments that predate
+   * the versioned JSON response (spec 3), `'json'` otherwise. A JSON reply
+   * proves the responder runs spec 3 or later even when its `specVersion`
+   * field is missing or malformed.
+   */
+  format?: 'json' | 'text';
 }
 
 /**
@@ -304,12 +312,9 @@ async function readStreamWithTimeout(
  * Parse and validate a health check response from stream chunks.
  * Returns the parsed response or null if invalid.
  */
-function parseHealthCheckResponse(chunks: Uint8Array[]): {
-  healthy: boolean;
-  specVersion?: number;
-  workflowCoreVersion?: string;
-  encryptionPublicKey?: string;
-} | null {
+function parseHealthCheckResponse(
+  chunks: Uint8Array[]
+): Omit<HealthCheckResult, 'latencyMs' | 'error'> | null {
   if (chunks.length === 0) return null;
 
   const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
@@ -329,7 +334,7 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
     // 'Workflow SDK "..." endpoint is healthy'. Treat any non-empty
     // text response as a healthy deployment with unknown specVersion.
     if (responseText.length > 0) {
-      return { healthy: true };
+      return { healthy: true, format: 'text' };
     }
     return null;
   }
@@ -344,14 +349,9 @@ function parseHealthCheckResponse(chunks: Uint8Array[]): {
   }
 
   const r = response as Record<string, unknown>;
-  const parsed: {
-    healthy: boolean;
-    specVersion?: number;
-    workflowCoreVersion?: string;
-    encryptionPublicKey?: string;
-    hookResumeInputVersion?: number;
-  } = {
+  const parsed: Omit<HealthCheckResult, 'latencyMs' | 'error'> = {
     healthy: r.healthy as boolean,
+    format: 'json',
   };
   if (typeof r.specVersion === 'number') {
     parsed.specVersion = r.specVersion;

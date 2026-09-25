@@ -53,15 +53,37 @@ import { safeWaitUntil, waitedUntil } from './wait-until.js';
 import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
 
 /**
- * Timeout for the cross-deployment capability probe done before creating
- * the run. `healthCheck()` returns as soon as the target answers, so this
- * budget is only spent in full on a miss. It is generous because the probe
- * is no longer just an optimization: it carries the target's spec version,
- * which the run is stamped with (see `resolveCrossDeploymentSpecVersion`),
- * and a healthy target that is merely cold must not fall through to a
- * guess. Matches the budget `wf inspect` replay uses for the same probe.
+ * Timeout for the first cross-deployment capability probe to a deployment.
+ * `healthCheck()` returns as soon as the target answers, so this budget is
+ * only spent in full on a miss. It is generous because the probe is no
+ * longer just an optimization: it carries the target's spec version, which
+ * the run is stamped with (see `resolveCrossDeploymentSpecVersion`), and a
+ * healthy target that is merely cold must not fall through to a guess.
+ * Matches the budget `wf inspect` replay uses for the same probe.
+ *
+ * Only the first start to a deployment can pay it (see
+ * `crossDeploymentProbeCache`): an answer is reused, and after a miss later
+ * probes to that deployment get `CROSS_DEPLOYMENT_PROBE_RETRY_TIMEOUT_MS`.
  */
 const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Probe budget for a deployment that already missed a probe in this process.
+ * A target that predates the health check never answers, so without this
+ * every start to it would wait the full first-probe budget.
+ */
+const CROSS_DEPLOYMENT_PROBE_RETRY_TIMEOUT_MS = 2_000;
+
+/**
+ * How long a probe result is reused for. A Vercel deployment is immutable
+ * (its code, and the env that decides the spec version it mints), so an
+ * answer cannot go stale there; the bound is for Worlds whose deployment ids
+ * can be reused by a restarted process with different code.
+ */
+const CROSS_DEPLOYMENT_PROBE_CACHE_TTL_MS = 10 * 60_000;
+
+/** Upper bound on cached deployments, oldest evicted first. */
+const CROSS_DEPLOYMENT_PROBE_CACHE_MAX_ENTRIES = 256;
 
 /**
  * Wire encoding of `retention: 0`. Attribute values are strings, and the
@@ -79,6 +101,7 @@ export type SpecVersionSource =
   | 'explicit'
   | 'probe'
   | 'probe-unversioned'
+  | 'probe-malformed'
   | 'probe-miss'
   | 'no-probe-channel';
 
@@ -93,12 +116,14 @@ export type SpecVersionSource =
  * caller's World mints: the caller writes `run_created` and the arguments,
  * and must never stamp a version it could not have written itself.
  *
- * When the target does not report a version:
+ * When the target does not report a usable version:
  *
- * - a healthy reply without a usable `specVersion` is the pre-JSON
- *   plain-text format, which predates the versioned health response
- *   (spec 3), so it is stamped as event-sourced. (A JSON reply with a
- *   malformed version lands here too; that errs low, which is safe.)
+ * - a plain-text reply predates the versioned JSON health response, which
+ *   arrived with spec 3 (CBOR queue transport), so it is stamped as
+ *   event-sourced: such a target cannot read a CBOR `runInput`.
+ * - a JSON reply without a usable `specVersion` still proves the target is
+ *   at spec 3 or later, so it is stamped with CBOR queue transport rather
+ *   than losing it (and resilient start with it) to a malformed field.
  * - a probe that times out, or no probe channel at all, is a guess.
  *   `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY` is the lowest version a v5 runtime
  *   can execute on the Vercel World (it requires slot event ids), so it is
@@ -107,15 +132,18 @@ export type SpecVersionSource =
  *   run when it picks it up. No single floor serves both, which is why the
  *   probe budget is generous; the miss is logged and recorded on the span.
  *
- * TODO: once executors attest their version on `run_started` and the
- * backend re-keys a fresh run to it (vercel/workflow#4366,
- * vercel/workflow-server#1044), a v5 target heals an under-stamped run, and
- * this miss floor can drop to `SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT`.
+ * Once executors attest their version on `run_started` and the backend
+ * raises a run to it (vercel/workflow#4366, vercel/workflow-server#1044), a
+ * v5 target heals an under-stamped run, and this miss floor can drop to
+ * `SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT` with a short budget. Tracked
+ * in vercel/workflow#4401.
  *
  * Exported for tests.
  */
 export function resolveCrossDeploymentSpecVersion(
-  probe: Pick<HealthCheckResult, 'healthy' | 'specVersion'> | undefined,
+  probe:
+    | Pick<HealthCheckResult, 'healthy' | 'specVersion' | 'format'>
+    | undefined,
   callerSpecVersion: number
 ): { specVersion: number; source: SpecVersionSource } {
   let target: number;
@@ -127,6 +155,9 @@ export function resolveCrossDeploymentSpecVersion(
   ) {
     target = probe.specVersion;
     source = 'probe';
+  } else if (probe?.format === 'json') {
+    target = SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
+    source = 'probe-malformed';
   } else if (probe?.healthy) {
     target = SPEC_VERSION_SUPPORTS_EVENT_SOURCING;
     source = 'probe-unversioned';
@@ -201,6 +232,71 @@ const probeMissWarning = globalSingleton(
  */
 export function _resetProbeMissWarnForTests(): void {
   probeMissWarning.warned = false;
+}
+
+type CrossDeploymentProbeCacheEntry = {
+  at: number;
+  /** The last answer from the deployment, or undefined after a miss. */
+  probe: HealthCheckResult | undefined;
+};
+
+/**
+ * Per-process record of what each target deployment answered, so only the
+ * first cross-deployment start to a deployment waits on its probe. What the
+ * probe reports (spec version, core version, hook-resume version) is fixed
+ * for a deployment, so an answer is reused outright. That skips the probe,
+ * and the run's public key it would have carried is fetched by the regular
+ * key lookup instead. A miss is remembered too, so later probes to that
+ * deployment get the short retry budget.
+ *
+ * Keyed by World (a World instance scopes the deployments it can see), then
+ * by deployment and queue namespace.
+ */
+const crossDeploymentProbeCache = globalSingleton(
+  '@workflow/core//crossDeploymentProbeCache',
+  1,
+  () => new WeakMap<World, Map<string, CrossDeploymentProbeCacheEntry>>()
+);
+
+async function probeCrossDeployment(
+  world: World,
+  options: { deploymentId: string; runId: string; namespace?: string }
+): Promise<{ probe: HealthCheckResult | undefined; cached: boolean }> {
+  let byDeployment = crossDeploymentProbeCache.get(world);
+  if (!byDeployment) {
+    byDeployment = new Map();
+    crossDeploymentProbeCache.set(world, byDeployment);
+  }
+  const key = `${options.namespace ?? ''}\0${options.deploymentId}`;
+  const now = Date.now();
+  const entry = byDeployment.get(key);
+  const fresh =
+    entry !== undefined && now - entry.at < CROSS_DEPLOYMENT_PROBE_CACHE_TTL_MS;
+  if (fresh && entry.probe) {
+    return { probe: entry.probe, cached: true };
+  }
+
+  const probe = await healthCheck(world, {
+    deploymentId: options.deploymentId,
+    runId: options.runId,
+    timeout: fresh
+      ? CROSS_DEPLOYMENT_PROBE_RETRY_TIMEOUT_MS
+      : CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
+    namespace: options.namespace,
+  }).catch(() => undefined);
+
+  const answered = probe?.format !== undefined;
+  byDeployment.delete(key);
+  byDeployment.set(key, {
+    at: Date.now(),
+    // The run public key is per run, so it is never reused.
+    probe: answered ? { ...probe, encryptionPublicKey: undefined } : undefined,
+  });
+  if (byDeployment.size > CROSS_DEPLOYMENT_PROBE_CACHE_MAX_ENTRIES) {
+    const oldest = byDeployment.keys().next().value;
+    if (oldest !== undefined) byDeployment.delete(oldest);
+  }
+  return { probe, cached: false };
 }
 
 export interface StartOptionsBase {
@@ -528,12 +624,11 @@ export async function start<TArgs extends unknown[], TResult>(
         // already awaiting, and we can skip the key-lookup API request
         // entirely. Best-effort: on timeout or an older target, no key comes
         // back and we fall through to the regular lookup below.
-        const probe = await healthCheck(world, {
+        const { probe, cached } = await probeCrossDeployment(world, {
           deploymentId,
           runId,
-          timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
           namespace: opts.namespace,
-        }).catch(() => undefined);
+        });
         probedRunPublicKey = probe?.encryptionPublicKey;
         const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
         framedByteStreams = capabilities.framedByteStreams;
@@ -547,10 +642,11 @@ export async function start<TArgs extends unknown[], TResult>(
         ({ specVersion: targetSpecVersion, source: specVersionSource } =
           resolveCrossDeploymentSpecVersion(probe, world.specVersion));
         span?.setAttributes({
-          ...(probe?.latencyMs !== undefined
+          ...Attribute.WorkflowCapabilityProbeCached(cached),
+          ...(!cached && probe?.latencyMs !== undefined
             ? Attribute.WorkflowCapabilityProbeLatencyMs(probe.latencyMs)
             : {}),
-          ...(probe?.error
+          ...(!cached && probe?.error
             ? Attribute.WorkflowCapabilityProbeError(probe.error)
             : {}),
         });

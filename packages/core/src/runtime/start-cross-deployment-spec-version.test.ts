@@ -4,6 +4,7 @@ import {
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM,
   SPEC_VERSION_SUPPORTS_SEALED_LOG,
   SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
 } from '@workflow/world';
@@ -312,11 +313,19 @@ describe('cross-deployment start() spec version', () => {
     const warn = vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
     callerWorld(SPEC_VERSION_CURRENT, null);
 
-    for (let i = 0; i < 2; i++) {
+    // The first probe gets the full budget; after a miss, later probes to
+    // the same deployment get the short retry budget.
+    for (const waitMs of [10_500, 2_500]) {
       mockEventsCreate.mockClear();
       mockQueue.mockClear();
-      const started = start(workflow, [], { deploymentId: 'dpl_target' });
-      await vi.advanceTimersByTimeAsync(11_000);
+      let settled = false;
+      const started = start(workflow, [], { deploymentId: 'dpl_target' }).then(
+        () => {
+          settled = true;
+        }
+      );
+      await vi.advanceTimersByTimeAsync(waitMs);
+      expect(settled).toBe(true);
       await started;
 
       expect(stamped()).toEqual({
@@ -339,6 +348,95 @@ describe('cross-deployment start() spec version', () => {
       deploymentId: 'dpl_target',
       specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
     });
+  });
+
+  it('new 8/8 starter -> 7/7 executor: stamps 7', async () => {
+    // The case live on main since spec 8: without the probe the run would be
+    // stamped 8, which a 7/7 target rejects when it picks the run up.
+    callerWorld(SPEC_VERSION_SUPPORTS_HOOK_FORCE_CLAIM, {
+      specVersion: SPEC_VERSION_SUPPORTS_SEALED_LOG,
+    });
+
+    await start(workflow, [], { deploymentId: 'dpl_target' });
+
+    expect(stamped()).toEqual({
+      runCreated: SPEC_VERSION_SUPPORTS_SEALED_LOG,
+      runInput: SPEC_VERSION_SUPPORTS_SEALED_LOG,
+      queueOption: SPEC_VERSION_SUPPORTS_SEALED_LOG,
+    });
+  });
+
+  it('a JSON reply with a malformed version keeps CBOR transport', async () => {
+    // Only a spec-3+ target answers in JSON, so a bad field must not drop
+    // the run to the pre-CBOR JSON transport.
+    callerWorld(SPEC_VERSION_CURRENT, { specVersion: '7' });
+
+    await start(workflow, [], { deploymentId: 'dpl_target' });
+
+    expect(stamped().runCreated).toBe(
+      SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+    );
+    expect(stamped().runInput).toBe(SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT);
+    expect(spanAttributes).toMatchObject({
+      'workflow.run.spec_version_source': 'probe-malformed',
+    });
+  });
+
+  it('reuses an answer for later starts to the same deployment', async () => {
+    callerWorld(SPEC_VERSION_CURRENT, {
+      specVersion: SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
+    });
+
+    await start(workflow, [], { deploymentId: 'dpl_target' });
+    expect(probeSent()).toBe(true);
+    expect(spanAttributes['workflow.capability_probe.cached']).toBe(false);
+
+    mockEventsCreate.mockClear();
+    mockQueue.mockClear();
+    await start(workflow, [], { deploymentId: 'dpl_target' });
+
+    expect(probeSent()).toBe(false);
+    expect(stamped().runCreated).toBe(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY);
+    expect(spanAttributes).toMatchObject({
+      'workflow.capability_probe.cached': true,
+      'workflow.run.spec_version_source': 'probe',
+    });
+
+    // A different deployment is probed on its own.
+    mockQueue.mockClear();
+    await start(workflow, [], { deploymentId: 'dpl_other' });
+    expect(probeSent()).toBe(true);
+  });
+
+  it('caches an answer that follows a miss', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(runtimeLogger, 'warn').mockImplementation(() => {});
+    callerWorld(
+      SPEC_VERSION_CURRENT,
+      { specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT },
+      { answerAfterMs: 11_000 }
+    );
+
+    const missed = start(workflow, [], { deploymentId: 'dpl_target' });
+    await vi.advanceTimersByTimeAsync(10_500);
+    await missed;
+    expect(stamped().runCreated).toBe(SPEC_VERSION_SUPPORTS_SLOT_IDENTITY);
+
+    mockEventsCreate.mockClear();
+    const answered = start(workflow, [], { deploymentId: 'dpl_target' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await answered;
+    expect(stamped().runCreated).toBe(
+      SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+    );
+
+    mockEventsCreate.mockClear();
+    mockQueue.mockClear();
+    await start(workflow, [], { deploymentId: 'dpl_target' });
+    expect(probeSent()).toBe(false);
+    expect(stamped().runCreated).toBe(
+      SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+    );
   });
 
   it("deploymentId 'latest' resolving to another deployment probes it", async () => {
@@ -419,10 +517,26 @@ describe('resolveCrossDeploymentSpecVersion', () => {
   });
 
   it('stamps an unversioned (plain-text) reply as event-sourced', () => {
-    expect(resolveCrossDeploymentSpecVersion({ healthy: true }, 7)).toEqual({
+    expect(
+      resolveCrossDeploymentSpecVersion({ healthy: true, format: 'text' }, 7)
+    ).toEqual({
       specVersion: SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
       source: 'probe-unversioned',
     });
+  });
+
+  it('stamps a JSON reply without a usable version with CBOR transport', () => {
+    for (const specVersion of [undefined, 0, 6.5, Number.NaN]) {
+      expect(
+        resolveCrossDeploymentSpecVersion(
+          { healthy: true, format: 'json', specVersion },
+          7
+        )
+      ).toEqual({
+        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+        source: 'probe-malformed',
+      });
+    }
   });
 
   it('floors a probe miss at slot identity, not the caller version', () => {
