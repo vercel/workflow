@@ -40,6 +40,7 @@ No workflow-specific configuration is required. As soon as a tracer provider and
 | `workflow.start <name>` | internal | `start()` is called in your application code |
 | `workflow.execute <name>` | consumer (root) | a queue delivery invokes the workflow; replay, orchestration, and inline steps run under it |
 | `step.execute <name>` | internal (inline) / consumer + root (queue-delivered) | a step function executes |
+| `workflow.lifecycle.onRunCompleted` / `workflow.lifecycle.onRunFailed` | internal | registered lifecycle handlers observe a persisted terminal transition; includes parameter hydration, handler execution, and the failure-cause stream drain |
 | `http <method>` | client | the SDK calls the workflow backend (event reads/writes) |
 | `workflow.stream.write` | client | a stream chunk (or the stream close) is flushed to the backend |
 | `workflow.stream.flush` | client | a buffered batch of stream writes settles; back-dated to the batch's first `write()`, so its duration is the app-perceived batch latency (buffer dwell + RPC) |
@@ -51,6 +52,8 @@ No workflow-specific configuration is required. As soon as a tracer provider and
 `<name>` is the short function name (for example `processOrder`); the full machine name, including the source module, is available in the `workflow.name` / `step.name` attributes.
 
 Stream spans are emitted by the SDK's world backend on the client that writes or reads the stream, and (like all SDK spans) are no-ops when no OpenTelemetry SDK is registered. The `workflow.stream.read` span only appears once the first non-empty chunk arrives.
+
+[Lifecycle hook](/docs/observability/lifecycle-hooks) spans carry `workflow.run.id` and `workflow.name`. Caught handler, hydration, and stream-operation failures emit `workflow.lifecycle.failure` events with a `phase` and exception details. The span may still have OK status because reporting failures are isolated from workflow execution; inspect its failure events. A retained stream lock extends the span's duration through the drain, so follow the [stream cleanup guidance](/docs/observability/lifecycle-hooks#stream-lifetime).
 
 ## Key attributes
 

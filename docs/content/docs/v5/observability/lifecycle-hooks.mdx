@@ -15,7 +15,24 @@ Lifecycle hooks let you register global handlers that observe workflow runs comp
 
 ## Registering hooks
 
-Call `registerLifecycleHooks` from `workflow/api` early in your application's lifecycle, so the handlers exist before the first run finishes. In Next.js, [`instrumentation.ts`](https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation) is the natural place; in any other app, any module that loads at startup works.
+Call `registerLifecycleHooks` from `workflow/api` in the **host process that executes workflows**, before it handles requests. Registering in a different server or Vercel Function does not populate the executor's registry.
+
+### Framework support
+
+| Integration / deployment | Where to register | Limitations |
+| --- | --- | --- |
+| Next.js 16.3.0 and later | [`instrumentation.ts`](https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation), using the guarded dynamic import below | Earlier Next.js versions can handle a cold Vercel invocation before async instrumentation finishes, skipping hooks. Upgrade to 16.3.0 or later for this pattern. |
+| SvelteKit | `init` in `src/hooks.server.ts`, before serving requests | Re-running initialization during hot reload can append duplicate registrations. |
+| Nitro v3, including the Nitro-based Vite, TanStack Start, Express, Hono, and Fastify integrations | A server plugin with a static import and synchronous registration | Nitro does not await async plugin registration. Do not copy the Next.js dynamic-import pattern into a Nitro plugin. Vite server reloads can re-run plugins in the same process. |
+| Nuxt 4 / Nitro v2 with the Vercel preset | App startup registration is not supported for lifecycle hooks on this target | The generated standalone workflow function does not load Nitro app plugins. |
+| Astro on Vercel | App startup registration is not supported for lifecycle hooks on this target | The generated standalone workflow function does not load Astro middleware. |
+| Nest on Vercel | App startup registration is not supported for lifecycle hooks on this target | The generated standalone workflow function does not load Nest bootstrap code. |
+| CLI `vercel-build-output-api` target | App startup registration is not supported for lifecycle hooks on this target | The generated standalone workflow function does not load the application's startup module. |
+| A shared Node.js server on other hosts | Bootstrap before accepting requests | The bootstrap must run in every process serving workflow queue handlers. |
+
+The unsupported Vercel targets above emit a separate `.well-known/workflow/v1/flow.func`. App-startup hooks never reach it, so callbacks do not fire there. Do not work around this by registering at the top level of a workflow file: its VM bundle resolves `workflow/api` to a throwing stub. Registration inside a step also throws; it would otherwise accumulate a handler on every execution.
+
+### Next.js registration
 
 ```typescript title="instrumentation.ts" lineNumbers
 export async function register() {
@@ -41,6 +58,8 @@ Keep the dynamic `workflow/api` import inside the `NEXT_RUNTIME === "nodejs"` gu
 
 `registerLifecycleHooks` returns an unregister function. You can register multiple hook sets, and handlers run in registration order. Registrations are not deduplicated: register each hook set once per process, and call its unregister function before registering it again during hot reload or module re-evaluation. Otherwise, repeated registrations invoke the same handler multiple times for each transition.
 
+**Restart `next dev` after changing handlers registered by `instrumentation.ts`.** Next.js memoizes instrumentation registration per process, so edits may not take effect until restart. For other hot-reloading hosts, preserve the unregister function in process-wide state across module re-evaluation, or restart the server. A module-local variable may be reset by the reload.
+
 ## Handler parameters
 
 Both handlers receive a `workflowName` string and the [`Run`](/docs/api-reference/workflow-api/get-run) instance for the transitioned run. `workflowName` is the machine-readable workflow identifier, such as `workflow//./src/workflows/order//processOrder`. Use this parameter to filter runs without a backend read. `run.runId` is also available without a read.
@@ -50,11 +69,56 @@ The `Run` instance hydrates lazily. Accessors such as `run.workflowName`, `run.s
 `onRunFailed` additionally receives a `WorkflowRunFailedError` hydrated for reporting. Unlike `run.returnValue`, it defers readable stream I/O and uses persisted abort snapshots:
 
 - `error.errorCode`: the failure classification (`USER_ERROR`, `RUNTIME_ERROR`, `MAX_DELIVERIES_EXCEEDED`, and more). See [error codes](/docs/errors) for the full list.
-- `error.cause`: the thrown value hydrated from the persisted error data, with registered Error subclass identity, message, stack, and cause chain preserved. Readable streams load lazily when consumed, and abort signals reflect their persisted state without live subscriptions. Writable streams retain their normal forwarding pipe and lock-polling setup during hydration. If hydration fails, the cause is a generic `Error`, matching `run.returnValue`'s fallback. Any JavaScript value can be thrown, so this is typed `unknown`.
+- `error.cause`: the thrown value hydrated from the persisted error data, including its message, stack, and cause chain. Custom serialization revives registered classes using the runtime's module copy; constructor identity may differ from the handler's copy. Plain user-defined Error subclasses without custom serialization revive as generic errors with their name preserved. Readable streams load lazily when consumed, and abort signals reflect their persisted state without live subscriptions. Writable streams retain their normal forwarding setup: **writes still reach the failed run's stream, or the parent run's stream for a forwarded writable**. If hydration fails, the SDK logs the reason and supplies a generic `Error`, matching `run.returnValue`'s fallback. Any JavaScript value can be thrown, so this is typed `unknown`.
 
 In `onRunFailed`, `run.returnValue` rejects because the run failed. Use `error.cause` to inspect or report the thrown value instead of awaiting `run.returnValue`.
 
-The invocation's `waitUntil` scope includes background stream operations from the hydrated cause, even after a handler returns or throws. Close or release stream reader and writer locks when finished so that work can settle. Await other asynchronous reporting work in your handler, such as `Sentry.flush()` below, to keep it in the same lifetime scope.
+### Identifying errors across module copies
+
+Handler parameters come from the runtime's module copy. For example, Next.js bundles instrumentation separately from app routes. The shared registry connects those copies, but `run instanceof Run`, `error instanceof WorkflowRunFailedError`, and checks against custom error constructors can be false. Use `WorkflowRunFailedError.is(error)` and `FatalError.is(error.cause)` for SDK errors, and inspect `errorCode`, the cause's `name`, or your own serialized discriminator for application errors:
+
+```typescript title="report-failure.ts" lineNumbers
+import { FatalError } from "workflow";
+import { WorkflowRunFailedError } from "workflow/errors";
+
+export function reportFailure(error: unknown) {
+  if (!WorkflowRunFailedError.is(error)) return;
+  const cause = error.cause;
+  const name = typeof cause === "object" && cause !== null && "name" in cause
+    ? cause.name
+    : undefined;
+  console.error({ errorCode: error.errorCode, name, fatal: FatalError.is(cause) });
+}
+```
+
+Load this reporting module from the host registration module, using the guarded dynamic import on Next.js.
+
+### Stream lifetime
+
+On Vercel, the invocation's `waitUntil` scope drains background stream operations from **`error.cause`**, even after a handler returns or throws. This does not automatically cover pipes from `await run.returnValue` in `onRunCompleted`, or consumption scheduled after the handler returns with timers or other detached work. Await consumption and other asynchronous reporting work in the handler, such as `Sentry.flush()` below. Other hosts run handlers as detached work and may stop them when the process freezes or terminates.
+
+<Callout type="warn">
+A readable or writable lock left open can keep the drain and lifecycle span pending until the Vercel Function's maximum duration. Close or release locks when finished. If you only need part of a readable, cancel its reader in a `finally` block:
+</Callout>
+
+```typescript lineNumbers
+import type { RunFailedHookParams } from "workflow/api";
+
+async function onRunFailed({ error }: RunFailedHookParams) {
+  if (!(error.cause instanceof ReadableStream)) return;
+  const reader = error.cause.getReader();
+  try {
+    const first = await reader.read();
+    console.error(first.value);
+  } finally {
+    try {
+      await reader.cancel();
+    } finally {
+      reader.releaseLock();
+    }
+  }
+}
+```
 
 ## Reporting failed runs to Sentry
 
@@ -88,8 +152,8 @@ export async function register() {
 
 ## How handlers behave
 
-- **Host-only.** Handlers run with full Node.js access, never inside the workflow's sandboxed VM. Calling `registerLifecycleHooks` from workflow code throws.
+- **Host startup only.** Handlers run with full Node.js access, never inside the workflow's sandboxed VM. Calling `registerLifecycleHooks` from workflow or step code throws.
 - **Fire-and-forget.** Handlers cannot delay or change the run's outcome. The runtime logs and swallows a throwing handler, and the remaining handlers still run. On Vercel, `waitUntil` keeps the invocation alive while handlers finish, subject to the invocation's duration limit. On other hosts, handlers run as detached work. If the host freezes or terminates the process after the response, handlers may not complete.
 - **Best-effort delivery.** Each registered handler is invoked at most once by the invocation that writes the terminal event. For a failure, this happens after any workflow or step retries are exhausted. Callbacks are not retried if they throw or the process dies, so a callback may never run or may stop before completing. The [event log](/docs/how-it-works/event-sourcing) is the system of record, not lifecycle callbacks.
 - **Fires where the transition is recorded.** Terminal transitions recorded outside your app's compute do **not** fire handlers. For example, when you cancel a run from the CLI or the Vercel dashboard, the backend writes that transition, so no handler runs.
-- **Register everywhere your workflows run.** The terminal write can happen in any function invocation that processes the run's queue messages, so registration must run at startup in every instance of the app (which `instrumentation.ts` guarantees).
+- **Register in each executor.** The terminal write can happen in any process that handles the run's queue messages. Use the [framework support table](#framework-support) to check whether app startup reaches that process.

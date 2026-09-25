@@ -1038,13 +1038,18 @@ export async function runWorkflowWithQuickJS(params: {
 
   // Structured per-checkpoint diagnostic helper, grep-friendly by runId.
   const wfdiag = (checkpoint: string, fields: Record<string, unknown>) => {
-    runtimeLogger.debug('QUICKJS_VM_DIAG', {
-      checkpoint,
-      runId,
-      invocationId,
-      tElapsedMs: Math.round(tick() - invocationStart),
-      ...fields,
-    });
+    try {
+      runtimeLogger.debug('QUICKJS_VM_DIAG', {
+        checkpoint,
+        runId,
+        invocationId,
+        tElapsedMs: Math.round(tick() - invocationStart),
+        ...fields,
+      });
+    } catch {
+      // Diagnostics must not interrupt execution or suppress lifecycle hooks
+      // after a terminal event has already been persisted.
+    }
   };
 
   parentSpan?.setAttributes({
