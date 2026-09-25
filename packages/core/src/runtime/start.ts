@@ -15,6 +15,8 @@ import {
   SPEC_VERSION_SUPPORTS_ATTRIBUTES,
   SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
+  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+  SPEC_VERSION_SUPPORTS_SLOT_IDENTITY,
   workflowRunIdSchema,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
@@ -40,22 +42,58 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
 import { getWorldLazy } from './get-world-lazy.js';
-import { getWorkflowQueueName, healthCheck } from './helpers.js';
+import {
+  getWorkflowQueueName,
+  type HealthCheckResult,
+  healthCheck,
+} from './helpers.js';
 import { Run } from './run.js';
 import { getWorkflowVmFromEnv } from './vm-mode.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
 import { assertWorldSupportsRuntimeProtocol } from './world-compatibility.js';
 
 /**
- * Timeout for the cross-deployment capability probe done before
- * dehydrating workflow arguments. Kept tight on purpose: the probe is
- * an optimization (it lets the caller emit the framed byte-stream wire
- * format when the target supports it), and the fallback on timeout is
- * the legacy raw format which always works. Long delays here would
- * make `start({ deploymentId: ... })` slower for users whose target
- * deployments don't recognize the health check at all.
+ * Timeout for the first cross-deployment capability probe to a deployment.
+ * `healthCheck()` returns as soon as the target answers, so this budget is
+ * only spent in full on a miss. It is generous because the probe is no
+ * longer just an optimization: it carries the target's spec version, which
+ * the run is stamped with (see `resolveCrossDeploymentSpecVersion`), and a
+ * healthy target that is merely cold must not fall through to a guess.
+ * Matches the budget `wf inspect` replay uses for the same probe.
+ *
+ * Only the first start to a deployment can pay it (see
+ * `crossDeploymentProbeCache`): an answer is reused, and for
+ * `CROSS_DEPLOYMENT_PROBE_MISS_TTL_MS` after a miss later probes to that
+ * deployment get `CROSS_DEPLOYMENT_PROBE_RETRY_TIMEOUT_MS`.
  */
-const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
+const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Probe budget for a deployment that already missed a probe in this process.
+ * A target that predates the health check never answers, so without this
+ * every start to it would wait the full first-probe budget.
+ */
+const CROSS_DEPLOYMENT_PROBE_RETRY_TIMEOUT_MS = 2_000;
+
+/**
+ * How long a probe result is reused for. A Vercel deployment is immutable
+ * (its code, and the env that decides the spec version it mints), so an
+ * answer cannot go stale there; the bound is for Worlds whose deployment ids
+ * can be reused by a restarted process with different code.
+ */
+const CROSS_DEPLOYMENT_PROBE_CACHE_TTL_MS = 10 * 60_000;
+
+/**
+ * How long a miss keeps a deployment on the short retry budget, counted from
+ * the first miss. Repeated misses do not extend it, so a target that is only
+ * slow to answer when cold (longer than the retry budget) gets the full
+ * first-probe budget again once this passes, instead of being stamped with
+ * the fallback version for as long as starts keep arriving.
+ */
+const CROSS_DEPLOYMENT_PROBE_MISS_TTL_MS = 60_000;
+
+/** Upper bound on cached deployments, oldest evicted first. */
+const CROSS_DEPLOYMENT_PROBE_CACHE_MAX_ENTRIES = 256;
 
 /**
  * Wire encoding of `retention: 0`. Attribute values are strings, and the
@@ -63,6 +101,85 @@ const CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
  * travels as `'0'`, not as the name of a mode.
  */
 const RETENTION_ZERO_ATTRIBUTE_VALUE = '0';
+
+/**
+ * Where a run's stamped spec version came from, recorded on the `start()`
+ * span so "why is this run on spec N?" is answerable without reading code.
+ */
+export type SpecVersionSource =
+  | 'same-deployment'
+  | 'explicit'
+  | 'probe'
+  | 'probe-unversioned'
+  | 'probe-malformed'
+  | 'probe-miss'
+  | 'no-probe-channel';
+
+/**
+ * The spec version to stamp on a run that another deployment will execute.
+ *
+ * A run's spec version is a promise about the runtime that reads and writes
+ * its event log, and for a cross-deployment start that is the target, not
+ * this caller. The capability probe runs inside the target and reports the
+ * version the target itself mints (which already honours the target's own
+ * `WORKFLOW_SEALED_LOG` switch), so that is the answer, capped at what this
+ * caller's World mints: the caller writes `run_created` and the arguments,
+ * and must never stamp a version it could not have written itself.
+ *
+ * When the target does not report a usable version:
+ *
+ * - a plain-text reply predates the versioned JSON health response, which
+ *   arrived with spec 3 (CBOR queue transport), so it is stamped as
+ *   event-sourced: such a target cannot read a CBOR `runInput`.
+ * - a JSON reply without a usable `specVersion` still proves the target is
+ *   at spec 3 or later, so it is stamped with CBOR queue transport rather
+ *   than losing it (and resilient start with it) to a malformed field.
+ * - a probe that times out, or no probe channel at all, is a guess.
+ *   `SPEC_VERSION_SUPPORTS_SLOT_IDENTITY` is the lowest version a v5 runtime
+ *   can execute on the Vercel World (it requires slot event ids), so it is
+ *   the only floor that keeps same-major targets working. It is NOT safe for
+ *   an older-major target such as `stable` (spec 3): that target rejects the
+ *   run when it picks it up. No single floor serves both, which is why the
+ *   probe budget is generous; the miss is logged and recorded on the span.
+ *
+ * Once executors attest their version on `run_started` and the backend
+ * raises a run to it (vercel/workflow#4366, vercel/workflow-server#1044), a
+ * v5 target heals an under-stamped run, and this miss floor may drop, but
+ * only once the raise is enabled on the whole server fleet AND every v5
+ * target a caller can reach attests its version (a published beta that does
+ * not would be stamped below slot identity and fail). Even then a floor
+ * below `SPEC_VERSION_SUPPORTS_ATTRIBUTES` would refuse `attributes` on every
+ * miss. Tracked in vercel/workflow#4401.
+ *
+ * Exported for tests.
+ */
+export function resolveCrossDeploymentSpecVersion(
+  probe:
+    | Pick<HealthCheckResult, 'healthy' | 'specVersion' | 'format'>
+    | undefined,
+  callerSpecVersion: number
+): { specVersion: number; source: SpecVersionSource } {
+  let target: number;
+  let source: SpecVersionSource;
+  if (
+    typeof probe?.specVersion === 'number' &&
+    Number.isInteger(probe.specVersion) &&
+    probe.specVersion >= 1
+  ) {
+    target = probe.specVersion;
+    source = 'probe';
+  } else if (probe?.format === 'json') {
+    target = SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
+    source = 'probe-malformed';
+  } else if (probe?.healthy) {
+    target = SPEC_VERSION_SUPPORTS_EVENT_SOURCING;
+    source = 'probe-unversioned';
+  } else {
+    target = SPEC_VERSION_SUPPORTS_SLOT_IDENTITY;
+    source = probe ? 'probe-miss' : 'no-probe-channel';
+  }
+  return { specVersion: Math.min(target, callerSpecVersion), source };
+}
 
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
@@ -111,6 +228,97 @@ export function _resetLatestNoOpWarnForTests(): void {
   latestNoOpWarning.warned = false;
 }
 
+// A missed cross-deployment probe stamps the run with a guessed spec version
+// for its whole life, so say so, but once per process: a target that never
+// answers (e.g. one predating the health check) would otherwise log on
+// every `start()`. The span attributes record every occurrence.
+const probeMissWarning = globalSingleton(
+  '@workflow/core//crossDeploymentProbeMissWarning',
+  1,
+  () => ({ warned: false })
+);
+
+/**
+ * Reset the cross-deployment probe-miss warn-once guard. Test-only.
+ *
+ * @internal
+ */
+export function _resetProbeMissWarnForTests(): void {
+  probeMissWarning.warned = false;
+}
+
+type CrossDeploymentProbeCacheEntry = {
+  at: number;
+  /** The last answer from the deployment, or undefined after a miss. */
+  probe: HealthCheckResult | undefined;
+};
+
+/**
+ * Per-process record of what each target deployment answered, so only the
+ * first cross-deployment start to a deployment waits on its probe. What the
+ * probe reports (spec version, core version, hook-resume version) is fixed
+ * for a deployment, so an answer is reused outright. That skips the probe,
+ * and the run's public key it would have carried is fetched by the regular
+ * key lookup instead. A miss is remembered too, so later probes to that
+ * deployment get the short retry budget.
+ *
+ * Keyed by World (a World instance scopes the deployments it can see), then
+ * by deployment and queue namespace.
+ */
+const crossDeploymentProbeCache = globalSingleton(
+  '@workflow/core//crossDeploymentProbeCache',
+  1,
+  () => new WeakMap<World, Map<string, CrossDeploymentProbeCacheEntry>>()
+);
+
+async function probeCrossDeployment(
+  world: World,
+  options: { deploymentId: string; runId: string; namespace?: string }
+): Promise<{ probe: HealthCheckResult | undefined; cached: boolean }> {
+  let byDeployment = crossDeploymentProbeCache.get(world);
+  if (!byDeployment) {
+    byDeployment = new Map();
+    crossDeploymentProbeCache.set(world, byDeployment);
+  }
+  const key = `${options.namespace ?? ''}\0${options.deploymentId}`;
+  const now = Date.now();
+  const entry = byDeployment.get(key);
+  if (
+    entry?.probe !== undefined &&
+    now - entry.at < CROSS_DEPLOYMENT_PROBE_CACHE_TTL_MS
+  ) {
+    return { probe: entry.probe, cached: true };
+  }
+  const recentMiss =
+    entry !== undefined &&
+    entry.probe === undefined &&
+    now - entry.at < CROSS_DEPLOYMENT_PROBE_MISS_TTL_MS;
+
+  const probe = await healthCheck(world, {
+    deploymentId: options.deploymentId,
+    runId: options.runId,
+    timeout: recentMiss
+      ? CROSS_DEPLOYMENT_PROBE_RETRY_TIMEOUT_MS
+      : CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
+    namespace: options.namespace,
+  }).catch(() => undefined);
+
+  const answered = probe?.format !== undefined;
+  byDeployment.delete(key);
+  byDeployment.set(key, {
+    // A repeated miss keeps the first miss's time, so the short budget ends
+    // `CROSS_DEPLOYMENT_PROBE_MISS_TTL_MS` after it.
+    at: !answered && recentMiss ? entry.at : Date.now(),
+    // The run public key is per run, so it is never reused.
+    probe: answered ? { ...probe, encryptionPublicKey: undefined } : undefined,
+  });
+  if (byDeployment.size > CROSS_DEPLOYMENT_PROBE_CACHE_MAX_ENTRIES) {
+    const oldest = byDeployment.keys().next().value;
+    if (oldest !== undefined) byDeployment.delete(oldest);
+  }
+  return { probe, cached: false };
+}
+
 export interface StartOptionsBase {
   /**
    * The world to use for the workflow run creation,
@@ -119,7 +327,11 @@ export interface StartOptionsBase {
   world?: World;
 
   /**
-   * The spec version to use for the workflow run. Defaults to the latest version.
+   * The spec version to use for the workflow run. Defaults to the spec
+   * version of the deployment that will execute the run: the configured
+   * World's for a same-deployment start, and for a cross-deployment start
+   * (`deploymentId` naming another deployment) the version the target
+   * reports on its capability probe, capped at the configured World's.
    */
   specVersion?: number;
 
@@ -400,12 +612,20 @@ export async function start<TArgs extends unknown[], TResult>(
       // Public key of the target run, when the capability probe was able to
       // supply one (cross-deployment only).
       let probedRunPublicKey: string | undefined;
-      if (deploymentId === currentDeploymentId) {
+      // The spec version of the runtime that will execute this run: this
+      // process for a same-deployment start, the target (as reported by the
+      // probe) otherwise. See `resolveCrossDeploymentSpecVersion`.
+      let targetSpecVersion: number;
+      let specVersionSource: SpecVersionSource;
+      const crossDeployment = deploymentId !== currentDeploymentId;
+      if (!crossDeployment) {
         framedByteStreams = true;
         targetSupportsCompression = true;
         // Same deployment: this process is the consumer, so its own constant
         // is authoritative.
         targetHookResumeInputVersion = HOOK_RESUME_INPUT_VERSION;
+        targetSpecVersion = world.specVersion;
+        specVersionSource = 'same-deployment';
       } else if (typeof world.streams?.get !== 'function') {
         framedByteStreams = false;
         targetSupportsCompression = false;
@@ -413,6 +633,9 @@ export async function start<TArgs extends unknown[], TResult>(
         // honors `hookInput`; leave the marker off (older producers fail
         // closed to their sequential path).
         targetHookResumeInputVersion = undefined;
+        // Nor its spec version: no probe result to resolve from.
+        ({ specVersion: targetSpecVersion, source: specVersionSource } =
+          resolveCrossDeploymentSpecVersion(undefined, world.specVersion));
       } else {
         // Ask for this run's public key while we're here. The probe already
         // blocks `start()` on every cross-deployment call, and the responder
@@ -421,12 +644,11 @@ export async function start<TArgs extends unknown[], TResult>(
         // already awaiting, and we can skip the key-lookup API request
         // entirely. Best-effort: on timeout or an older target, no key comes
         // back and we fall through to the regular lookup below.
-        const probe = await healthCheck(world, {
+        const { probe, cached } = await probeCrossDeployment(world, {
           deploymentId,
           runId,
-          timeout: CROSS_DEPLOYMENT_CAPABILITY_PROBE_TIMEOUT_MS,
           namespace: opts.namespace,
-        }).catch(() => undefined);
+        });
         probedRunPublicKey = probe?.encryptionPublicKey;
         const capabilities = getRunCapabilities(probe?.workflowCoreVersion);
         framedByteStreams = capabilities.framedByteStreams;
@@ -437,6 +659,35 @@ export async function start<TArgs extends unknown[], TResult>(
         // `hookResumeInputVersion` reflects the consumer. Undefined on an
         // older target or a probe timeout, leaving the marker off.
         targetHookResumeInputVersion = probe?.hookResumeInputVersion;
+        ({ specVersion: targetSpecVersion, source: specVersionSource } =
+          resolveCrossDeploymentSpecVersion(probe, world.specVersion));
+        span?.setAttributes({
+          ...Attribute.WorkflowCapabilityProbeCached(cached),
+          ...(!cached && probe?.latencyMs !== undefined
+            ? Attribute.WorkflowCapabilityProbeLatencyMs(probe.latencyMs)
+            : {}),
+          ...(!cached && probe?.error
+            ? Attribute.WorkflowCapabilityProbeError(probe.error)
+            : {}),
+        });
+        if (
+          specVersionSource === 'probe-miss' &&
+          opts.specVersion === undefined &&
+          !probeMissWarning.warned
+        ) {
+          probeMissWarning.warned = true;
+          runtimeLogger.warn(
+            'The target deployment did not answer the capability probe, so ' +
+              'the run was stamped with a fallback spec version instead of ' +
+              "the target's own. A target on an older major version may not " +
+              'be able to execute it.',
+            {
+              deploymentId,
+              specVersion: targetSpecVersion,
+              error: probe?.error,
+            }
+          );
+        }
       }
 
       const ops: Promise<void>[] = [];
@@ -444,17 +695,31 @@ export async function start<TArgs extends unknown[], TResult>(
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
 
-      // Default new runs to the configured world's spec version. The world
-      // itself has already been checked against this runtime's spec version.
-      const specVersion = opts.specVersion ?? world.specVersion;
+      // Default new runs to the spec version of the deployment that will
+      // execute them: the configured world's for a same-deployment start
+      // (the world itself has already been checked against this runtime's
+      // spec version), the probed target's for a cross-deployment one. An
+      // explicit `specVersion` still wins.
+      const specVersion = opts.specVersion ?? targetSpecVersion;
+      if (opts.specVersion !== undefined) specVersionSource = 'explicit';
+      span?.setAttributes({
+        ...Attribute.WorkflowRunSpecVersion(specVersion),
+        ...Attribute.WorkflowRunSpecVersionSource(specVersionSource),
+      });
+      // Once a probe can lower the version, a failed gate below is about the
+      // target deployment, not this caller's World: say so.
+      const specGateError = (featureRequires: string) =>
+        new WorkflowRuntimeError(
+          crossDeployment && opts.specVersion === undefined
+            ? `${featureRequires} spec version ${SPEC_VERSION_SUPPORTS_ATTRIBUTES} or later, but the target deployment (${deploymentId}) runs spec version ${specVersion}.`
+            : `${featureRequires} a World that supports spec version ${SPEC_VERSION_SUPPORTS_ATTRIBUTES} or later.`
+        );
       const v1Compat = isLegacySpecVersion(specVersion);
       const allowReservedAttributes = opts.allowReservedAttributes === true;
       let attributes: Record<string, string> | undefined;
       if (opts.attributes && Object.keys(opts.attributes).length > 0) {
         if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
-          throw new WorkflowRuntimeError(
-            'Initial workflow attributes require a World that supports spec version 4 or later.'
-          );
+          throw specGateError('Initial workflow attributes require');
         }
         // `normalizeAttributeChanges` treats `undefined` as "remove this
         // key", which is meaningless at creation time. Reject it up front
@@ -498,9 +763,7 @@ export async function start<TArgs extends unknown[], TResult>(
           );
         }
         if (specVersion < SPEC_VERSION_SUPPORTS_ATTRIBUTES) {
-          throw new WorkflowRuntimeError(
-            'start({ experimental_retention }) requires a World that supports spec version 4 or later.'
-          );
+          throw specGateError('start({ experimental_retention }) requires');
         }
         retentionAttribute = {
           [RETENTION_ATTRIBUTE]: RETENTION_ZERO_ATTRIBUTE_VALUE,

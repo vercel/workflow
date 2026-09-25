@@ -1223,15 +1223,21 @@ export async function executeStep(
 
         // Start the V2 inline-loop heuristic concurrently with durability so
         // a held lock costs max(500ms, PUT RTT), not 500ms plus the PUT RTT.
+        opsSettled = false;
         const opsSettledPromise = Promise.race([
           opsPromise.then(
-            () => true as const,
+            () => {
+              opsSettled = true;
+            },
             (err) => {
-              if (isClientDisconnectError(err)) return true as const;
+              if (isClientDisconnectError(err)) {
+                opsSettled = true;
+                return;
+              }
               throw err;
             }
           ),
-          new Promise<false>((r) => setTimeout(() => r(false), 500)),
+          new Promise<void>((resolve) => setTimeout(resolve, 500)),
         ]);
         // The durability wait can outlive an immediate op rejection. Observe
         // this branch now; the awaited copy below still surfaces the error.
@@ -1239,9 +1245,10 @@ export async function executeStep(
 
         await settleReleasedStepStreams(streamStates);
 
-        // This outcome is only the inline-loop heuristic. Durability was
-        // established independently above.
-        opsSettled = await opsSettledPromise;
+        // The timeout only bounds the inline wait. Ops may have settled while
+        // the durability barrier was still waiting, so keep their live status
+        // rather than a stale timeout result when deciding whether to yield.
+        await opsSettledPromise;
       }
 
       // Optimistic start: the body ran before `step_started` was confirmed.

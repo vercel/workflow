@@ -2,6 +2,10 @@
 
 Core runtime package for [Workflow SDK](https://workflow-sdk.dev).
 
+Steps wait for released stream writers to drain before recording completion.
+Streams that finish draining after the inline wait budget expires do not force
+an extra queued continuation unless other background operations remain pending.
+
 Hook registration acknowledgements and token conflicts participate in replay
 delivery ordering alongside step results, hook payloads, and sleep completions.
 Concurrent branches awaiting `hook.getConflict()` preserve their step correlation

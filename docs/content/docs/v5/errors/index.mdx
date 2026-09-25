@@ -9,6 +9,27 @@ related:
 
 Fix common mistakes when creating and executing workflows in the **Workflow SDK**.
 
+## Error codes
+
+When a workflow run fails, its `errorCode` identifies the failure category. You can read it from [`WorkflowRunFailedError`](/docs/api-reference/workflow-errors/workflow-run-failed-error), the Workflow CLI's `error.code` field, or the `workflow.error.code` OpenTelemetry span attribute.
+
+| Code | Description |
+| --- | --- |
+| `USER_ERROR` | An error thrown by workflow or step code, including an unhandled step failure or `FatalError`. |
+| `RUNTIME_ERROR` | The Workflow runtime encountered an internal error, such as missing runtime data or an invariant failure. Persistent occurrences should be [reported](https://github.com/vercel/workflow/issues). |
+| [`CORRUPTED_EVENT_LOG`](/docs/errors/corrupted-event-log) | The run's event log cannot be replayed because it contains orphaned or mismatched events, a gap, or an unreadable stored payload. |
+| [`REPLAY_DIVERGENCE`](/docs/errors/replay-divergence) | One replay could not consume the event log deterministically. The runtime automatically retries before treating repeated divergence as a corrupted event log. |
+| `MAX_DELIVERIES_EXCEEDED` | The run exceeded the maximum number of queue deliveries, usually because a persistent failure kept causing redelivery. |
+| `MAX_EVENTS_EXCEEDED` | The run reached the World's per-run event limit. Split unbounded work into child workflows before reaching the limit. |
+| `REPLAY_TIMEOUT` | Workflow replay exceeded the configured duration limit. This measures workflow execution and event-log replay between step boundaries, not time spent inside step functions. |
+| `STREAM_ERROR` | Workflow stream infrastructure failed while reading or writing data. This is an SDK or backend failure rather than an error in workflow code. |
+| `WORLD_CONTRACT_ERROR` | A World returned data that violated the SDK contract and could not be retried safely. This usually indicates a World implementation bug. |
+| [`DEPLOYMENT_MISMATCH`](/docs/errors/deployment-mismatch) | A run was delivered to a deployment other than the one it is pinned to, and automatic re-routing did not recover it. |
+
+For guidance on catching failures, retry behavior, and inspecting `WorkflowRunFailedError`, see [Errors and retries](/docs/foundations/errors-and-retries).
+
+## Troubleshooting guides
+
 <AutoCards />
 
 ## Learn more

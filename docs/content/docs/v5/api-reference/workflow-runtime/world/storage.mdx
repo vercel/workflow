@@ -23,6 +23,7 @@ keywords:
   - Event
   - cursor pagination
   - resolveData
+  - skip-step-inputs
   - run_cancelled
   - correlation ID
   - parseStepName
@@ -94,7 +95,7 @@ const result = await world.events.list({ runId, pagination: { cursor } }); // [!
 | `params.pagination.cursor` | `string` | Cursor for the next page |
 | `params.pagination.limit` | `number` | Maximum events to return. When omitted, returns every remaining event up to the World's event ceiling. |
 | `params.pagination.sortOrder` | `"asc" \| "desc"` | Event order |
-| `params.resolveData` | `"all" \| "none"` | Include or omit event payload data |
+| `params.resolveData` | `"all" \| "none" \| "skip-step-inputs"` | Include or omit event payload data. `"skip-step-inputs"` is `"all"` without the `input` of `step_created` and `step_started` events, which replay does not read. |
 
 **Returns:** `{ data: Event[], cursor: string | null, hasMore: boolean }`
 
