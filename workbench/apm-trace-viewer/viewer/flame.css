@@ -1,0 +1,150 @@
+/* Flame graph view. Loaded after app.css, which owns the palette and topbar. */
+
+body.flamepage { display: flex; flex-direction: column; overflow: hidden; }
+.topbar .viewswitch { margin-left: 14px; font-size: 12px; color: var(--fg-dim); }
+.topbar .viewswitch:hover { color: var(--accent); }
+.rp-stat { color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+
+.flamewrap { flex: 1; display: flex; min-height: 0; }
+
+/* ---------- STSO sidebar ---------- */
+.stso {
+  width: 290px; flex: none; border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; min-height: 0; background: var(--bg-elev);
+}
+.stso-head { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.stso-head h2 { font-size: 12px; margin: 0; text-transform: uppercase; letter-spacing: 0.06em; color: var(--fg-dim); }
+.stso-head .hint { text-transform: none; letter-spacing: 0; color: var(--fg-faint); font-weight: 400; margin-left: 6px; }
+.stso-sort { display: flex; gap: 4px; margin: 8px 0 6px; }
+.stso-sort button {
+  font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 5px; cursor: pointer;
+  background: var(--bg-elev2); color: var(--fg-dim); border: 1px solid var(--border);
+}
+.stso-sort button.on { color: var(--fg); border-color: var(--border-strong); background: #262626; }
+.stso-sum { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+
+.stso-list { overflow-y: auto; min-height: 0; padding: 6px; }
+button.gap {
+  display: block; width: 100%; text-align: left; margin-bottom: 4px; padding: 6px 8px;
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+  color: var(--fg); font: inherit; cursor: pointer;
+}
+button.gap:hover { background: var(--bg-elev2); border-color: var(--border); }
+button.gap.on { background: #16273b; border-color: #2b5b8f; }
+.gtop { display: flex; justify-content: space-between; font-size: 11px; }
+.gtop .gn { color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+.gtop .gd { font-variant-numeric: tabular-nums; font-weight: 600; }
+.gnames { font-size: 11px; color: var(--fg-dim); margin: 2px 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gnames .arr { color: var(--fg-faint); }
+.gbar { height: 3px; background: var(--bg-elev2); border-radius: 2px; overflow: hidden; }
+.gbar i { display: block; height: 100%; background: #f5a623; }
+
+/* ---------- main column ---------- */
+.flamemain { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.flamebar {
+  display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+  border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.flamebar .spacer { flex: 1; }
+.flamebar button {
+  font: inherit; font-size: 11px; padding: 3px 9px; border-radius: 5px; cursor: pointer;
+  background: var(--bg-elev2); color: var(--fg-dim); border: 1px solid var(--border);
+}
+.flamebar button:hover { color: var(--fg); border-color: var(--border-strong); }
+.viewrange { color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+.crumbs { display: flex; align-items: center; gap: 4px; overflow: hidden; }
+.crumbs button {
+  background: none; border: none; color: var(--accent); font: inherit; font-size: 11px;
+  cursor: pointer; padding: 2px 4px; white-space: nowrap;
+}
+.crumbs .sep { color: var(--fg-faint); }
+
+.ruler {
+  position: relative; height: 20px; border-bottom: 1px solid var(--border);
+  flex: none; cursor: ew-resize; user-select: none; background: var(--bg-elev);
+}
+.ruler .tick { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--border); }
+.ruler .tick span { position: absolute; left: 3px; top: 2px; font-size: 10px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+.ruler .sel { position: absolute; top: 0; bottom: 0; background: rgba(0,112,243,.25); border-left: 1px solid var(--accent); border-right: 1px solid var(--accent); display: none; }
+
+/* ---------- frames ---------- */
+.flame { flex: 1; overflow: auto; min-height: 0; position: relative; }
+.frames { position: relative; }
+.fr {
+  position: absolute; height: 16px; border-radius: 2px; overflow: hidden;
+  font-size: 10px; line-height: 16px; color: #05070a; cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.35);
+}
+.fr span { padding: 0 4px; white-space: nowrap; pointer-events: none; font-weight: 500; }
+.fr:hover { filter: brightness(1.25); }
+.fr.dim { opacity: 0.16; }
+.fr.step { box-shadow: inset 0 0 0 1.5px #f5a623; }
+.fr.rp { box-shadow: inset 0 0 0 1px rgba(0,0,0,.35), inset 0 -2px 0 0 #22d3ee; }
+.fr.sel { outline: 1.5px solid #fff; outline-offset: -1px; z-index: 3; }
+.gapband {
+  position: absolute; top: 0; bottom: 0; background: rgba(245,166,35,.10);
+  border-left: 1px dashed #f5a623; border-right: 1px dashed #f5a623; z-index: 0;
+}
+.gapband span { position: absolute; top: 2px; left: 4px; font-size: 10px; color: #f5a623; white-space: nowrap; }
+
+/* ---------- breakdown ---------- */
+.breakdown {
+  flex: none; max-height: 40%; overflow: auto; border-top: 1px solid var(--border);
+  background: var(--bg-elev); padding: 8px 12px 12px;
+}
+.bhead { font-size: 12px; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; }
+.bhead .hint { color: var(--fg-faint); font-size: 11px; font-weight: 400; }
+.bhead .backb {
+  margin-left: auto; font: inherit; font-size: 11px; padding: 2px 8px; border-radius: 5px;
+  cursor: pointer; background: var(--bg-elev2); color: var(--fg-dim); border: 1px solid var(--border);
+}
+table.btable { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.btable th {
+  text-align: left; font-weight: 500; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.04em; color: var(--fg-faint); padding: 2px 8px; border-bottom: 1px solid var(--border);
+}
+table.btable td { padding: 3px 8px; border-bottom: 1px solid #1e1e1e; }
+table.btable td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.btable td.strong { font-weight: 600; }
+table.btable td.nm { max-width: 520px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+table.btable td.sv { color: var(--fg-dim); white-space: nowrap; }
+table.btable td.bx { width: 22%; }
+table.btable td.bx i { display: block; height: 7px; border-radius: 2px; }
+
+.attrs { display: grid; grid-template-columns: minmax(160px, 320px) 1fr; gap: 0 12px; font-size: 11px; }
+.attrs .arow { display: contents; }
+.attrs .ak { color: var(--fg-dim); padding: 2px 0; border-bottom: 1px solid #1e1e1e; }
+.attrs .av { padding: 2px 0; border-bottom: 1px solid #1e1e1e; word-break: break-all; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+
+/* ---------- tooltip ---------- */
+.tip {
+  position: fixed; display: none; z-index: 50; pointer-events: none;
+  background: #000; border: 1px solid var(--border-strong); border-radius: 7px;
+  padding: 8px 10px; font-size: 11px; max-width: 460px; box-shadow: 0 8px 28px rgba(0,0,0,.6);
+}
+.tip b { display: block; margin-bottom: 5px; font-size: 12px; word-break: break-all; }
+.tip .tl { display: flex; justify-content: space-between; gap: 18px; color: var(--fg-dim); }
+.tip .tl span:last-child { color: var(--fg); font-variant-numeric: tabular-nums; }
+.tip .rpnote span:last-child { color: #22d3ee; }
+.tip .hint2 { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--border); }
+.tip .hint2 span { color: var(--fg-faint) !important; }
+
+/* landing-page secondary link to the flame view */
+td.run a.altview { font-size: 10px; color: var(--fg-faint); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; margin-left: 6px; }
+td.run a.altview:hover { color: var(--accent); border-color: var(--border-strong); text-decoration: none; }
+.gnames .par { color: #f5a623; font-size: 10px; margin-left: 2px; }
+.stso-sum .warn { color: #f5a623; }
+.zoomhint { color: var(--fg-faint); font-size: 11px; margin-right: 4px; }
+
+/* deep link back to the source vendor's own UI */
+a.ddlink {
+  font-size: 10px; color: var(--fg-faint); border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 6px; margin-left: 8px; white-space: nowrap;
+}
+a.ddlink:hover { color: #a78bfa; border-color: #6d5bb0; text-decoration: none; }
+.bhead a.ddlink { margin-left: auto; }
+.bhead a.ddlink + .backb { margin-left: 8px; }
+
+/* grab-to-pan affordance; during a drag the whole surface reads as grabbing */
+.frames { cursor: grab; }
+.frames.grabbing, .frames.grabbing .fr { cursor: grabbing; }
