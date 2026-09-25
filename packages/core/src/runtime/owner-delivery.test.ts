@@ -71,3 +71,30 @@ it('does not retry definite rejection or a terminal runner fault', async () => {
     expect(deliver).toHaveBeenCalledTimes(1);
   }
 });
+
+it('reports each failed attempt before retrying the identical delivery', async () => {
+  vi.useFakeTimers();
+  const retries: { attempt: number; retryInMs: number; status?: number }[] = [];
+  let calls = 0;
+  const work = retryOwnerDelivery(
+    Date.now() + 60_000,
+    async () => {
+      if (++calls < 3)
+        throw new WorkflowWorldError('Back off', { status: 503 });
+      return 'ok';
+    },
+    ({ attempt, error, retryInMs }) =>
+      retries.push({
+        attempt,
+        retryInMs,
+        status: (error as WorkflowWorldError).status,
+      })
+  );
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(await work).toBe('ok');
+  expect(retries.map((r) => [r.attempt, r.status])).toEqual([
+    [1, 503],
+    [2, 503],
+  ]);
+  expect(retries.every((r) => r.retryInMs >= 0)).toBe(true);
+});

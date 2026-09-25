@@ -215,19 +215,47 @@ export async function executeOwnedStep(
   const current = entry;
   const deliver = async (payload: OwnedStepResult) => {
     // The cached serialized payload survives a lost invoke response in this worker.
-    await retryOwnerDelivery(input.deadline, async (timeoutMs) => {
-      const receipt = ReceiptSchema.parse(
-        await world.invoke!(envelope.runId, payload, {
-          target,
-          idempotencyKey: `step-result:${input.executionId}`,
-          timeoutMs,
+    await retryOwnerDelivery(
+      input.deadline,
+      async (timeoutMs) => {
+        const receipt = ReceiptSchema.parse(
+          await world.invoke!(envelope.runId, payload, {
+            target,
+            idempotencyKey: `step-result:${input.executionId}`,
+            timeoutMs,
+          })
+        );
+        if (receipt.status === 'pending')
+          throw new WorkflowWorldError('Step outcome not committed', {
+            status: 503,
+          });
+      },
+      // Worker-side evidence of each failed delivery attempt (for example an
+      // affinity backoff 503), before the identical payload is resent.
+      ({ attempt, error, retryInMs }) =>
+        observations.publish({
+          version: 1,
+          runId: envelope.runId,
+          ownerId: `worker:${COMPUTE_INSTANCE_ID}`,
+          phase: 'result_delivery',
+          event: 'end',
+          spanId: randomUUID(),
+          at: Date.now(),
+          stepId: step.stepId,
+          executionId: input.executionId,
+          attempt: input.attempt,
+          deliveryAttempt: attempt,
+          status: 'error',
+          errorCode:
+            (error as { code?: unknown })?.code === undefined
+              ? undefined
+              : String((error as { code?: unknown }).code),
+          httpStatus: (error as { status?: unknown })?.status,
+          retryInMs: Math.round(retryInMs),
+          parentSpanId: input.parentSpanId,
+          executionMode: input.executionMode ?? 'queued',
         })
-      );
-      if (receipt.status === 'pending')
-        throw new WorkflowWorldError('Step outcome not committed', {
-          status: 503,
-        });
-    });
+    );
     current.done = true;
     return {} as EventResult;
   };

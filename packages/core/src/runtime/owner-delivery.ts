@@ -18,11 +18,16 @@ export function isRetryableOwnerDelivery(error: unknown): boolean {
 /** Retry delivery, never the step body. The caller retains payload and identity. */
 export async function retryOwnerDelivery<T>(
   deadline: number,
-  deliver: (timeoutMs: number) => Promise<T>
+  deliver: (timeoutMs: number) => Promise<T>,
+  onRetry?: (failure: {
+    attempt: number;
+    error: unknown;
+    retryInMs: number;
+  }) => void
 ): Promise<T> {
   let delay = 100;
   let lastError: unknown;
-  for (;;) {
+  for (let attempt = 1; ; attempt++) {
     const remaining = deadline - Date.now();
     if (remaining <= 0)
       throw (
@@ -38,15 +43,12 @@ export async function retryOwnerDelivery<T>(
       lastError = error;
     }
     // Equal jitter avoids synchronized retry waves without a zero-delay spin.
-    await new Promise<void>((resolve) =>
-      setTimeout(
-        resolve,
-        Math.min(
-          Math.max(0, deadline - Date.now()),
-          delay / 2 + (Math.random() * delay) / 2
-        )
-      )
+    const retryInMs = Math.min(
+      Math.max(0, deadline - Date.now()),
+      delay / 2 + (Math.random() * delay) / 2
     );
+    onRetry?.({ attempt, error: lastError, retryInMs });
+    await new Promise<void>((resolve) => setTimeout(resolve, retryInMs));
     delay = Math.min(2000, delay * 2);
   }
 }

@@ -1561,6 +1561,12 @@ export class RetainedRunner {
                   stepId: message.stepId,
                   executionId: message.input.executionId,
                   outcome: 'uncertain',
+                  status: 'error',
+                  errorCode: (cause as { code?: unknown })?.code,
+                  httpStatus: (cause as { status?: unknown })?.status,
+                  // The attempt timeout supersedes this execution if no
+                  // result arrives by then.
+                  recoveryAt: message.input.deadline,
                 });
                 await this.armStepRecovery(message.input.deadline);
               }
