@@ -65,6 +65,12 @@ Choose your framework in the
 
 ## Run anywhere
 
+For application-level completion and failure reporting, `registerLifecycleHooks`
+from `workflow/api` registers handlers in the workflow executor's host startup.
+Calling it inside a workflow or step throws. Check the
+[lifecycle hooks guide](https://workflow-sdk.dev/v5/docs/observability/lifecycle-hooks)
+for supported framework/deployment combinations and stream cleanup requirements.
+
 Local development uses the bundled backend with no configuration. Deploy to
 Vercel for managed storage, queuing, scaling, and observability. To self-host,
 use the Postgres backend or implement a custom

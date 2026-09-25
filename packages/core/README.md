@@ -42,3 +42,6 @@ Callbacks are not retried; the event log remains the system of record.
 Hook-property getters and reporting failures are isolated from terminal writes.
 The callback's `waitUntil` scope also drains background operations for streams
 hydrated from the persisted failure, including when a handler throws.
+Register in the workflow executor's host startup, never from workflow or step
+code. Framework-specific support, hot-reload behavior, and stream cleanup are
+documented in the [lifecycle hooks guide](https://workflow-sdk.dev/v5/docs/observability/lifecycle-hooks).

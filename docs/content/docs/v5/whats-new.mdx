@@ -101,21 +101,21 @@ See [Attributes](/docs/observability/attributes).
 
 ### Richer serialization
 
-Everything that crosses a workflow/step boundary is serialized, and v5 widens what survives the trip with its identity intact. Errors, including your own classes and built-ins like `TypeError`, keep their class and `cause` chain through `WorkflowRunFailedError.cause`:
+Everything that crosses a workflow/step boundary is serialized. In v5, built-in errors such as `TypeError` preserve their type, message, stack, and `cause` chain through `WorkflowRunFailedError.cause`. Plain user-defined Error subclasses preserve their name but revive as generic errors unless they implement [custom serialization](/docs/foundations/serialization). Bundled module copies can still have distinct constructors, so use SDK error `.is()` helpers instead of `instanceof`:
 
 ```typescript lineNumbers
+import { FatalError } from "workflow";
 import { WorkflowRunFailedError } from "workflow/errors";
 import { getRun } from "workflow/api";
-declare class PaymentDeclinedError extends Error {} // @setup
 
 try {
   await getRun(runId).returnValue;
 } catch (error) {
   if (
-    error instanceof WorkflowRunFailedError &&
-    error.cause instanceof PaymentDeclinedError // [!code highlight]
+    WorkflowRunFailedError.is(error) &&
+    FatalError.is(error.cause) // [!code highlight]
   ) {
-    // your class, not a flattened generic Error
+    console.error(error.errorCode, error.cause.message);
   }
 }
 ```

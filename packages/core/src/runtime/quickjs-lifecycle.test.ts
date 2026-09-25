@@ -6,6 +6,7 @@ import {
   type World,
 } from '@workflow/world';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { runtimeLogger } from '../logger.js';
 import {
   dehydrateRunError,
   encodeWithFormatPrefix,
@@ -78,7 +79,10 @@ beforeEach(() => {
   } as unknown as World);
 });
 
-afterEach(() => setWorld(undefined));
+afterEach(() => {
+  setWorld(undefined);
+  vi.restoreAllMocks();
+});
 
 async function complete() {
   vi.mocked(startQuickJSWorkflow).mockResolvedValueOnce({
@@ -106,6 +110,24 @@ it('dispatches completion only after the terminal write lands', async () => {
   expect(dispatchRunCompletedHooks).not.toHaveBeenCalled();
   finishWrite();
   await execution;
+  expect(dispatchRunCompletedHooks).toHaveBeenCalledExactlyOnceWith(
+    runId,
+    workflowName
+  );
+});
+
+it('still dispatches completion when its diagnostic log sink throws', async () => {
+  const debug = vi
+    .spyOn(runtimeLogger, 'debug')
+    .mockImplementation((_message, fields) => {
+      if (fields?.checkpoint === 'exit_completed')
+        throw new Error('log sink failed');
+    });
+  await expect(complete()).resolves.toBeUndefined();
+  expect(debug).toHaveBeenCalledWith(
+    'QUICKJS_VM_DIAG',
+    expect.objectContaining({ checkpoint: 'exit_completed' })
+  );
   expect(dispatchRunCompletedHooks).toHaveBeenCalledExactlyOnceWith(
     runId,
     workflowName
