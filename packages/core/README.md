@@ -40,5 +40,21 @@ your app. Handlers receive the workflow name without a backend read, a lazy `Run
 instance, and, for failures, an error hydrated from the persisted payload.
 Callbacks are not retried; the event log remains the system of record.
 Hook-property getters and reporting failures are isolated from terminal writes.
-The callback's `waitUntil` scope also drains background operations for streams
-hydrated from the persisted failure, including when a handler throws.
+On Vercel, the callback's `waitUntil` scope also drains background operations for
+streams hydrated from the persisted failure, including when a handler throws.
+Cancel readers and release locks when finished; a leaked reader can hold that
+scope open until the invocation's duration limit. Streams hydrated through
+`run.returnValue` are not included in that drain.
+
+Registration must finish at startup in the workflow route's host process, and
+throws if called from a workflow or step function. Next.js on Vercel requires
+16.3.0 or newer to await instrumentation; restart `next dev` after editing
+handlers. Standalone Vercel workflow functions built by Nitro v2, Astro, Nest,
+or the CLI do not load app startup registrations. See the
+[lifecycle hooks guide](https://workflow-sdk.dev/v5/docs/observability/lifecycle-hooks)
+for framework support and hot-reload caveats.
+
+Handler parameters can come from a different module copy. Use error `.is()`
+guards and structural properties rather than `instanceof`. Lifecycle spans
+carry run identity and reporting-error events; unreadable error fields and
+hydration failures are logged without preventing later handlers from running.
