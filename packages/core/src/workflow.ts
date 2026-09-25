@@ -351,12 +351,29 @@ export async function runWorkflow(
   return result.output;
 }
 
+/**
+ * Teardown for a session the build never finished handing back, filled in by
+ * {@link createWorkflowSessionInner} as soon as it has something that outlives
+ * the throw. Passed in rather than returned because the only way out of a
+ * failed build is the throw itself.
+ */
+interface AbandonHandle {
+  current?: () => void;
+}
+
 async function createWorkflowSession(options: WorkflowSessionOptions) {
   const vmTrace = await startTraceSpan('workflow.vm.create_context');
-  return createWorkflowSessionInner(options, vmTrace.end).catch((error) => {
-    vmTrace.fail(error);
-    throw error;
-  });
+  const abandon: AbandonHandle = {};
+  return createWorkflowSessionInner(options, vmTrace.end, abandon).catch(
+    (error) => {
+      // Runs on a microtask off the rejection, so it always beats the deferred
+      // check's timer. A check that already fired is why the interruption
+      // promise carries a handler of its own (see `initialInterruption`).
+      abandon.current?.();
+      vmTrace.fail(error);
+      throw error;
+    }
+  );
 }
 
 async function createWorkflowSessionInner(
@@ -370,7 +387,8 @@ async function createWorkflowSessionInner(
     runReadyBarrier,
     worldCapabilities,
   }: WorkflowSessionOptions,
-  endVmTrace: () => void
+  endVmTrace: () => void,
+  abandon: AbandonHandle
 ): Promise<{
   session: WorkflowSession;
   execution: Promise<WorkflowResult>;
@@ -416,6 +434,16 @@ async function createWorkflowSessionInner(
   });
 
   const initialInterruption = withResolvers<never>();
+  // `waitForExecution` is what races this promise, and it is the last thing
+  // this function does. Everything between here and there can throw — the
+  // workflow not being registered in this deployment, a bundle that will not
+  // evaluate, input that will not hydrate — and by then the consumer walk is
+  // already armed and can reach `onWorkflowError` on its own timer. Rejecting
+  // a promise nothing is holding is a process-level `unhandledRejection`, so
+  // one bad run took the worker down (#4231). Keep a handler attached from
+  // creation: a rejection marked handled is still the rejection `Promise.race`
+  // observes, so the interruption a live replay is waiting on is unaffected.
+  initialInterruption.promise.catch(() => {});
   let state: WorkflowSessionState = {
     type: 'running',
     interruption: initialInterruption,
@@ -548,6 +576,20 @@ async function createWorkflowSessionInner(
     getPromiseQueue: () => promiseQueueHolder.current,
     isDeliveryIdle: () => deliveryIdleHolder.current(),
   });
+
+  // Registered before the structural consumer below subscribes, which is what
+  // starts the walk: from that point on a throw anywhere in the rest of this
+  // function leaves a consumer armed against a replay that will never run, and
+  // the caller has no other handle on it.
+  abandon.current = () => {
+    // Out of `running` as well as off the timer. The state machine is what
+    // makes `onWorkflowError` a no-op, so it covers anything else still
+    // holding this context, and `'replay'` is the same demotion `failWorkflow`
+    // makes for a control-flow signal: this session is unusable, cold-replay
+    // instead.
+    state = { type: 'replay' };
+    eventsConsumer.abandon();
+  };
 
   const workflowContext: WorkflowOrchestratorContext = {
     runId: workflowRun.runId,
