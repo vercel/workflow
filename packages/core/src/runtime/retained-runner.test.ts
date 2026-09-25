@@ -23,7 +23,11 @@ import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
 } from '../serialization.js';
-import { executeOwnedStep } from './owned-step.js';
+import {
+  executeOwnedStep,
+  type OwnedStepExecution,
+  type OwnedStepResult,
+} from './owned-step.js';
 import { RetainedRunner, withRetainedRunner } from './retained-runner.js';
 import * as stepExecutor from './step-executor.js';
 
@@ -31,6 +35,7 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 const code = `
   const createHook = globalThis[Symbol.for('WORKFLOW_CREATE_HOOK')];
@@ -163,7 +168,7 @@ it('keeps the retained session when a wake brings no new events', async () => {
   registerStepFunction('retainedWrite', async (value) => {
     values.push(value);
   });
-  const fixture = await setup();
+  const fixture = await setup(code, false, false, 500);
   await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
   await expect(fixture.send('a', 'one')).resolves.toEqual({
     status: 'accepted',
@@ -245,14 +250,18 @@ it('retries a lost result acknowledgement with the original outcome, without rer
     }
     return reply;
   };
-  await expect(
-    executeOwnedStep(fixture.world, fixture.messages[0], fixture.metadata)
-  ).rejects.toThrow('Lost ACK');
+  await executeOwnedStep(fixture.world, fixture.messages[0], fixture.metadata);
   await executeOwnedStep(fixture.world, fixture.messages[0], {
     ...fixture.metadata,
     attempt: 2,
   });
   expect(body).toHaveBeenCalledTimes(1);
+  const attempts = fixture.invoke.mock.calls.filter(
+    ([, input]) => input.type === 'step_result'
+  );
+  expect(attempts).toHaveLength(2);
+  expect(attempts[0][1]).toBe(attempts[1][1]);
+  expect(attempts[0][2].idempotencyKey).toBe(attempts[1][2].idempotencyKey);
   expect(
     fixture.owner.events.filter((event) => event.eventType === 'step_completed')
   ).toHaveLength(1);
@@ -317,6 +326,283 @@ it('holds a queued result acknowledgement behind the owner flush barrier', async
   expect((await fixture.world.runs.get(fixture.runId)).status).toBe(
     'completed'
   );
+});
+
+async function bufferedFanout(count: number) {
+  const bodies = Promise.withResolvers<void>();
+  registerStepFunction('queuedWork', async (n) => {
+    await bodies.promise;
+    return n;
+  });
+  const fixture = await setup(
+    parallelCode.replace(
+      '[work(0), work(1)]',
+      `Array.from({ length: ${count} }, (_, i) => work(i))`
+    ),
+    false,
+    'hybrid'
+  );
+  const queue = vi
+    .spyOn(fixture.world, 'queue')
+    .mockResolvedValue({ messageId: null });
+  const create = fixture.world.events.create.bind(fixture.world.events);
+  const flushes: string[][] = [];
+  let staged: string[] = [];
+  let barrier: (() => Promise<void>) | undefined;
+  fixture.world.events.createWriteSession = () => ({
+    create: (event, params) => create(fixture.runId, event, params),
+    stage: async (event, params) => {
+      const result = await create(fixture.runId, event, params);
+      staged.push(event.eventType);
+      return result;
+    },
+    flush: async () => {
+      if (staged.length) {
+        const prefix = staged;
+        staged = [];
+        flushes.push(prefix);
+        if (prefix.includes('step_completed')) await barrier?.();
+      }
+    },
+    dispose() {},
+  });
+  await fixture.owner.submit({ runId: fixture.runId }, fixture.metadata);
+  await fixture.send('fanout', 'start');
+  const messages = queue.mock.calls
+    .map(([, message]) => message)
+    .filter((message) => 'stepId' in message);
+  const completions: OwnedStepResult[] = await Promise.all(
+    messages.map(async (message) => {
+      const input = message.input as OwnedStepExecution;
+      return {
+        type: 'step_result',
+        version: 1,
+        stepId: input.step.stepId,
+        executionId: input.executionId,
+        attempt: input.attempt,
+        outcome: {
+          eventType: 'step_completed',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: input.step.stepId,
+          eventData: {
+            stepName: input.step.stepName,
+            workflowName: 'workflow',
+            result: await dehydrateStepReturnValue(
+              1,
+              fixture.runId,
+              undefined,
+              [],
+              globalThis,
+              false
+            ),
+          },
+        },
+      };
+    })
+  );
+  const submit = (input: OwnedStepResult) =>
+    fixture.owner.submit(
+      {
+        runId: fixture.runId,
+        invoke: true,
+        input,
+        requestId: `step-result:${input.executionId}`,
+      },
+      fixture.metadata
+    );
+  flushes.length = 0;
+  return {
+    ...fixture,
+    bodies,
+    flushes,
+    completions,
+    submit,
+    barrier: (fn: () => Promise<void>) => {
+      barrier = fn;
+    },
+  };
+}
+
+it('flushes a contiguous completion prefix once, holds duplicate ACKs, and advances only after durability', async () => {
+  const f = await bufferedFanout(100);
+  const gate = Promise.withResolvers<void>();
+  let atBarrier = false;
+  f.barrier(async () => {
+    atBarrier = true;
+    await gate.promise;
+  });
+  let acked = 0;
+  const passes: unknown[] = [];
+  const observe = (value: unknown) => {
+    const entry = value as { runId: string; event: string };
+    if (entry.runId === f.runId && entry.event === 'begin') passes.push(value);
+  };
+  channel('workflow.execution').subscribe(observe);
+  cleanups.push(async () => {
+    channel('workflow.execution').unsubscribe(observe);
+  });
+  // 97 completions and three identical resends: one 100-input mailbox prefix.
+  const inputs = [...f.completions, ...f.completions.slice(0, 3)];
+  const replies = inputs.map((input) =>
+    f.submit(input).then((value) => {
+      acked++;
+      return value;
+    })
+  );
+  await vi.waitFor(() => expect(atBarrier).toBe(true));
+  expect(f.flushes).toEqual([Array(97).fill('step_completed')]);
+  expect(acked).toBe(0);
+  expect(passes).toHaveLength(0);
+  gate.resolve();
+  expect(await Promise.all(replies)).toHaveLength(100);
+  expect(acked).toBe(100);
+  expect(passes).toHaveLength(1);
+  f.bodies.resolve();
+  await f.finished;
+  expect((await f.world.runs.get(f.runId)).status).toBe('completed');
+});
+
+it('stops completion batching at a noneligible mailbox input without reordering', async () => {
+  const f = await bufferedFanout(7);
+  const order: string[] = [];
+  f.barrier(async () => {
+    order.push('flush');
+  });
+  const a = f.submit(f.completions[0]);
+  const b = f.submit(f.completions[1]);
+  const boundary = f.owner.enqueue('boundary', async () => {
+    order.push('boundary');
+  });
+  const c = f.submit(f.completions[2]);
+  const d = f.submit(f.completions[3]);
+  await Promise.all([a, b, boundary, c, d]);
+  expect(order).toEqual(['flush', 'boundary', 'flush']);
+  expect(f.flushes).toEqual([
+    Array(2).fill('step_completed'),
+    Array(2).fill('step_completed'),
+  ]);
+  f.bodies.resolve();
+  await f.finished;
+});
+
+it('bounds a mailbox prefix at 100 inputs even when most are duplicate deliveries', async () => {
+  const f = await bufferedFanout(7);
+  let turns = 0;
+  const observe = (value: unknown) => {
+    const entry = value as { runId: string; phase: string; event: string };
+    if (
+      entry.runId === f.runId &&
+      entry.phase === 'turn' &&
+      entry.event === 'begin'
+    )
+      turns++;
+  };
+  channel('workflow.runner').subscribe(observe);
+  cleanups.push(async () => {
+    channel('workflow.runner').unsubscribe(observe);
+  });
+  const inputs = [...f.completions, ...Array(97).fill(f.completions[0])];
+  await Promise.all(inputs.map(f.submit));
+  expect(turns).toBe(2);
+  expect(f.flushes).toEqual([Array(4).fill('step_completed')]);
+  f.bodies.resolve();
+  await f.finished;
+});
+
+it('does not ACK earlier completions when a conflicting duplicate faults their unfinished batch', async () => {
+  const f = await bufferedFanout(7);
+  const changed = structuredClone(f.completions[0]);
+  changed.outcome.eventData.result = await dehydrateStepReturnValue(
+    2,
+    f.runId,
+    undefined,
+    [],
+    globalThis,
+    false
+  );
+  const replies = await Promise.allSettled([
+    f.submit(f.completions[0]),
+    f.submit(f.completions[1]),
+    f.submit(changed),
+  ]);
+  expect(replies.every((reply) => reply.status === 'rejected')).toBe(true);
+  expect(replies[0]).toMatchObject({
+    status: 'rejected',
+    reason: { code: 'RETAINED_RUNNER_FAILED' },
+  });
+  f.bodies.resolve();
+  await f.finished;
+});
+
+it('rejects the whole unfinished completion prefix when its durability barrier fails', async () => {
+  const f = await bufferedFanout(7);
+  f.barrier(async () => {
+    throw new Error('Batch persistence failed');
+  });
+  const replies = await Promise.allSettled(f.completions.map(f.submit));
+  expect(replies.every((reply) => reply.status === 'rejected')).toBe(true);
+  expect(f.flushes[0]).toEqual(Array(4).fill('step_completed'));
+  f.bodies.resolve();
+  await f.finished;
+  expect((await f.world.runs.get(f.runId)).status).toBe('failed');
+});
+
+it('recovers an uncertain remote dispatch by timing out its admitted attempt, without failing the run', async () => {
+  const body = vi.fn(async (n) => n);
+  registerStepFunction('queuedWork', body);
+  const f = await setup(
+    parallelCode.replace(
+      '[work(0), work(1)]',
+      'Array.from({length: 4}, (_, i) => work(i))'
+    ),
+    false,
+    'hybrid'
+  );
+  f.world.capabilities = { ...f.world.capabilities, invoke: true };
+  f.world.invoke = (runId, input, opts) =>
+    f.owner.submit(
+      { runId, input, invoke: true, requestId: opts?.idempotencyKey },
+      f.metadata
+    );
+  let uncertain: OwnedStepExecution | undefined;
+  const queue = vi
+    .spyOn(f.world, 'queue')
+    .mockImplementation(async (_name, message) => {
+      if ('stepId' in message) {
+        if (!uncertain) {
+          uncertain = message.input as OwnedStepExecution;
+          throw new WorkflowWorldError('Result delivery unavailable', {
+            status: 503,
+            code: 'INVOCATION_OUTCOME_UNKNOWN',
+          });
+        }
+        await executeOwnedStep(f.world, message, f.metadata);
+      }
+      return { messageId: null };
+    });
+  await f.owner.submit({ runId: f.runId }, f.metadata);
+  await f.send('fanout', 'start');
+  await vi.waitFor(() => expect(uncertain).toBeDefined());
+  await vi.waitFor(() =>
+    expect(
+      f.owner.events.filter((e) => e.eventType === 'step_completed')
+    ).toHaveLength(3)
+  );
+  // Drain the serialized delivery-failed notification after local completions.
+  await f.owner.enqueue('settle-dispatch', async () => {});
+  expect((await f.world.runs.get(f.runId)).status).toBe('running');
+  expect(queue.mock.calls.some(([, , opts]) => opts?.delaySeconds)).toBe(true);
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(uncertain!.deadline + 1);
+  await f.owner.submit({ runId: f.runId }, f.metadata);
+  expect(f.owner.events.some((e) => e.eventType === 'step_retrying')).toBe(
+    true
+  );
+  vi.setSystemTime(uncertain!.deadline + 1002);
+  await f.owner.submit({ runId: f.runId }, f.metadata);
+  await f.finished;
+  expect((await f.world.runs.get(f.runId)).status).toBe('completed');
+  expect(body).toHaveBeenCalledTimes(4);
 });
 
 it('does not publish queued bodies before the start prefix is durable', async () => {
@@ -1099,7 +1385,8 @@ it('opens hook inputs sealed to the run while retaining its VM', async () => {
 async function setup(
   workflowCode = code,
   ownerJournal = false,
-  queued: boolean | 'hybrid' = false
+  queued: boolean | 'hybrid' = false,
+  idleMs = queued ? 500 : 40
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'retained-runner-'));
   const world = createWorld({ dataDir: directory }) as World;
@@ -1146,7 +1433,7 @@ async function setup(
     workflowCode,
     metadata,
     retired,
-    queued ? 500 : 40
+    idleMs
   );
   const send = async (requestId: string, value: string, target = owner) => {
     const hook = target.events.find(

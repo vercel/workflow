@@ -50,6 +50,7 @@ import {
   QueuedStepPolicySchema,
   stepOutcomeDigest,
 } from './owned-step.js';
+import { isRetryableOwnerDelivery } from './owner-delivery.js';
 import { reduceStep, runFromCreation } from './owner-state.js';
 import { DEFAULT_STEP_MAX_RETRIES, executeStep } from './step-executor.js';
 import { handleSuspension } from './suspension-handler.js';
@@ -81,9 +82,23 @@ class RunnerFault extends WorkflowRuntimeError {
 }
 class InputRejected extends WorkflowWorldError {}
 
+interface MailboxBatch {
+  /** Only adjacent inputs with the same policy may share a durability barrier. */
+  key: string;
+  /** Validate and stage, without advancing the workflow or acknowledging input. */
+  apply(): Promise<unknown>;
+  /** Run once after the entire prefix is durable. */
+  finish(): Promise<void>;
+}
+const MAX_MAILBOX_BATCH = 100;
+// Extend deliberately: shared-resource operations and failure/retry decisions
+// must retain their own turn boundaries.
+const BATCHABLE_INPUT_EVENTS: readonly string[] = ['step_completed'];
+
 interface MailboxItem {
   id: string;
-  run(): Promise<unknown>;
+  run(operation?: () => Promise<unknown>): Promise<unknown>;
+  batch?: MailboxBatch;
   resolve(value: unknown): void;
   reject(error: unknown): void;
 }
@@ -326,7 +341,11 @@ export class RetainedRunner {
       });
   }
 
-  enqueue(id: string, operation: () => Promise<unknown>): Promise<unknown> {
+  enqueue(
+    id: string,
+    operation: () => Promise<unknown>,
+    batch?: MailboxBatch
+  ): Promise<unknown> {
     if (this.fault) return Promise.reject(this.fault);
     if (this.closing)
       return Promise.reject(
@@ -339,7 +358,15 @@ export class RetainedRunner {
     const completion = withResolvers<unknown>();
     this.pending.push({
       id,
-      run: AsyncResource.bind(() => this.runOperation(id, operation)),
+      run: AsyncResource.bind((batchedOperation?: () => Promise<unknown>) =>
+        this.runOperation(id, batchedOperation ?? operation)
+      ),
+      batch: batch && {
+        ...batch,
+        apply: AsyncResource.bind(() =>
+          withScopedWorld(this.facade, () => this.inTurn.run(true, batch.apply))
+        ),
+      },
       resolve: completion.resolve,
       reject: completion.reject,
     });
@@ -355,7 +382,7 @@ export class RetainedRunner {
 
   submit(message: unknown, metadata: Metadata) {
     const parsed = WorkflowInvokePayloadSchema.parse(message);
-    return this.enqueue(parsed.requestId ?? metadata.messageId, async () => {
+    const operation = async (deferAdvance = false) => {
       await this.initialize();
       if (`${this.prefix}${this.run.workflowName}` !== metadata.queueName)
         throw new InputRejected('Invocation target mismatch', { status: 409 });
@@ -367,7 +394,7 @@ export class RetainedRunner {
           (parsed.input.type === 'step_result' ||
             parsed.input.type === 'step_status')
         ) {
-          return this.receiveStepInput(parsed.input);
+          return this.receiveStepInput(parsed.input, deferAdvance);
         }
         if (
           parsed.input &&
@@ -457,7 +484,24 @@ export class RetainedRunner {
         return { status: 'accepted' };
       }
       if (!isTerminalWorkflowRunStatus(this.run.status)) await this.advance();
-    });
+    };
+    const outcome = parsed.invoke
+      ? OwnedStepResultSchema.safeParse(parsed.input)
+      : undefined;
+    const batch =
+      outcome?.success &&
+      BATCHABLE_INPUT_EVENTS.includes(outcome.data.outcome.eventType)
+        ? {
+            key: 'event-input',
+            apply: () => operation(true),
+            finish: () => this.advance(),
+          }
+        : undefined;
+    return this.enqueue(
+      parsed.requestId ?? metadata.messageId,
+      () => operation(),
+      batch
+    );
   }
 
   private async observed<T>(
@@ -1204,7 +1248,7 @@ export class RetainedRunner {
         });
   }
 
-  private async receiveStepInput(value: unknown) {
+  private async receiveStepInput(value: unknown, deferAdvance = false) {
     if (!this.queuedSteps)
       throw new InputRejected('Run does not use queued steps', { status: 409 });
     const result = OwnedStepResultSchema.safeParse(value);
@@ -1312,7 +1356,7 @@ export class RetainedRunner {
     const committed = await this.commit(event);
     // The incoming outcome is applied before a cold owner's replay/dispatch,
     // otherwise recovery could re-run the very step that just completed.
-    await this.advance();
+    if (!deferAdvance) await this.advance();
     return { status: 'accepted', eventId: committed.event?.eventId };
   }
 
@@ -1446,7 +1490,12 @@ export class RetainedRunner {
                   opts
                 );
                 if ('error' in result && result.error)
-                  throw new Error('Remote step delivery failed');
+                  throw new WorkflowWorldError('Remote step delivery failed', {
+                    status:
+                      'retryable' in result && result.retryable === true
+                        ? 503
+                        : 400,
+                  });
               },
               { parentSpanId, stepId: message.stepId, executionMode: 'remote' }
             );
@@ -1456,8 +1505,19 @@ export class RetainedRunner {
               if (
                 !this.stepOutcomes.has(message.input.executionId) &&
                 !isTerminalWorkflowRunStatus(this.run.status)
-              )
-                throw cause;
+              ) {
+                if (!isRetryableOwnerDelivery(cause)) throw cause;
+                // No outcome is not evidence of a failed body. Keep the
+                // admitted attempt running; the existing timeout will durably
+                // supersede it if its result never arrives.
+                this.observe('step_delivery', 'end', randomUUID(), {
+                  parentSpanId,
+                  stepId: message.stepId,
+                  executionId: message.input.executionId,
+                  outcome: 'uncertain',
+                });
+                await this.armStepRecovery(message.input.deadline);
+              }
             }).catch(() => {});
           } finally {
             this.workers.delete(message.stepId);
@@ -1585,6 +1645,44 @@ export class RetainedRunner {
     this.workers.set(step.stepId, work);
   }
 
+  /** One serialized, contiguous mailbox prefix; never skip an intervening input. */
+  private async runBatch(first: MailboxItem) {
+    const taken: MailboxItem[] = [];
+    const results: Array<
+      { ok: true; value: unknown } | { ok: false; error: unknown }
+    > = [];
+    try {
+      await first.run(async () => {
+        let item: MailboxItem | undefined = first;
+        while (item) {
+          taken.push(item);
+          try {
+            results.push({ ok: true, value: await item.batch!.apply() });
+          } catch (error) {
+            // Invalid input is local to its caller. Persistence/conflict faults
+            // fail the whole unfinished prefix, including duplicates in it.
+            if (!(error instanceof InputRejected)) throw error;
+            results.push({ ok: false, error });
+          }
+          item =
+            taken.length < MAX_MAILBOX_BATCH &&
+            this.pending[0]?.batch?.key === first.batch!.key
+              ? this.pending.shift()
+              : undefined;
+        }
+        await this.flushWriter();
+        await first.batch!.finish();
+      });
+      for (const [i, item] of taken.entries()) {
+        const result = results[i];
+        if (result.ok) item.resolve(result.value);
+        else item.reject(result.error);
+      }
+    } catch (error) {
+      for (const item of taken) item.reject(error);
+    }
+  }
+
   private async runOwnerLoop() {
     while (!this.closing && !this.fault) {
       const item = this.pending.shift();
@@ -1607,7 +1705,9 @@ export class RetainedRunner {
         if (!woke && this.workers.size === 0) break;
         continue;
       }
-      await item.run.call(undefined).then(item.resolve, item.reject);
+      if (item.batch && this.initialized && this.eventWriter?.stage)
+        await this.runBatch(item);
+      else await item.run.call(undefined).then(item.resolve, item.reject);
     }
     this.closing = true;
     if (

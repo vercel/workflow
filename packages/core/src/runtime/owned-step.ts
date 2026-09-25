@@ -16,6 +16,7 @@ import {
 import { z } from 'zod/v4';
 import { withTraceContext } from '../telemetry.js';
 import { COMPUTE_INSTANCE_ID } from './compute-instance.js';
+import { retryOwnerDelivery } from './owner-delivery.js';
 import { executeStep } from './step-executor.js';
 import { withScopedWorld } from './world.js';
 
@@ -214,16 +215,19 @@ export async function executeOwnedStep(
   const current = entry;
   const deliver = async (payload: OwnedStepResult) => {
     // The cached serialized payload survives a lost invoke response in this worker.
-    const receipt = ReceiptSchema.parse(
-      await world.invoke!(envelope.runId, payload, {
-        target,
-        idempotencyKey: `step-result:${input.executionId}`,
-      })
-    );
-    if (receipt.status === 'pending')
-      throw new WorkflowWorldError('Step outcome not committed', {
-        status: 503,
-      });
+    await retryOwnerDelivery(input.deadline, async (timeoutMs) => {
+      const receipt = ReceiptSchema.parse(
+        await world.invoke!(envelope.runId, payload, {
+          target,
+          idempotencyKey: `step-result:${input.executionId}`,
+          timeoutMs,
+        })
+      );
+      if (receipt.status === 'pending')
+        throw new WorkflowWorldError('Step outcome not committed', {
+          status: 503,
+        });
+    });
     current.done = true;
     return {} as EventResult;
   };

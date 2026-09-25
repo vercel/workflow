@@ -407,7 +407,7 @@ export class BufferedEventWriter implements EventWriteSession {
         (event.eventType === 'step_completed' &&
           previous?.status === 'running'));
     if (!eligible) return this.create(event, params);
-    if (this.pending.length >= 64 || this.bytes + size > 8 * 1024 * 1024)
+    if (this.pending.length >= 100 || this.bytes + size > 8 * 1024 * 1024)
       await this.drain();
 
     const occurredAt = params.occurredAt ?? new Date();
