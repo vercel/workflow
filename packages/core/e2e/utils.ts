@@ -162,14 +162,19 @@ export interface ConformanceConfig {
    */
   unsupported?: Record<string, string>;
   /**
-   * The highest spec version the app's runtime accepts (for the Python SDK,
-   * `SPEC_VERSION_MAX_SUPPORTED` at the commit the app's lockfile pins).
+   * The highest spec version the app's runtime accepts. For `workbench/python`
+   * that is `SPEC_VERSION_MAX_SUPPORTED` in vercel-py's
+   * `src/vercel-workflow/vercel/workflow/_internal/world.py`, at the commit
+   * `workbench/python/uv.lock` pins.
    *
    * The harness starts runs as the deployment under test, so `start()` takes
    * them for same-deployment starts and stamps this SDK's version. A runtime
    * that accepts less rejects every such run, and it stays `pending`. Runs are
    * stamped with the lower of the two instead (see
-   * {@link startAtTargetSpecVersion}). Raise it together with the SDK pin.
+   * {@link startAtTargetSpecVersion}). Keep it in step with the SDK pin: set
+   * too high, every run stays `pending` (see the hint in
+   * {@link warmDeployment}); set too low, runs are under-stamped and tests of
+   * newer features fail or skip.
    */
   maxSpecVersion?: number;
 }
@@ -1248,6 +1253,16 @@ export async function warmDeployment(
           `${totalBudgetMs}ms (${stalledProbeRunIds.length} abandoned); ` +
           `proceeding — the per-test pickup watchdog still guards`
       );
+      const maxSpecVersion = getConformanceConfig()?.maxSpecVersion;
+      if (maxSpecVersion !== undefined) {
+        // The failure this field exists to prevent looks exactly like a
+        // stalled queue, so name it where the stall is reported.
+        console.warn(
+          `[e2e] If the app's runtime rejects every run, check "maxSpecVersion" ` +
+            `(${maxSpecVersion}) in ${CONFORMANCE_CONFIG_FILENAME} against the ` +
+            `highest spec version its SDK accepts.`
+        );
+      }
       return;
     }
   }
