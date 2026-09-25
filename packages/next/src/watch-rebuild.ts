@@ -447,12 +447,20 @@ const removedFilesRequireFullRebuild = ({
 
 const addedFilesRequireFullRebuild = async ({
   addedFiles,
+  isEntrypoint,
   readSnapshot,
 }: {
   addedFiles: string[];
+  isEntrypoint: (file: string) => boolean;
   readSnapshot: (file: string) => Promise<SourceSnapshot>;
 }) => {
   for (const file of addedFiles) {
+    // A new framework entrypoint changes the set discovery starts from, so it
+    // has to be rediscovered even when the file declares nothing itself: the
+    // workflow it imports may be reachable for the first time.
+    if (isEntrypoint(file)) {
+      return true;
+    }
     try {
       const snapshot = await readSnapshot(file);
       if (snapshot.hasDirective || snapshot.hasSerde) {
@@ -636,6 +644,7 @@ export const classifyRebuild = async ({
   discoveredEntries,
   fileChanges,
   inputFiles,
+  isEntrypoint = () => false,
   normalizePath = defaultNormalizePath,
   parentHasChild,
   readSnapshot,
@@ -644,6 +653,11 @@ export const classifyRebuild = async ({
   discoveredEntries: DiscoveredEntriesLike;
   fileChanges: FileChanges;
   inputFiles: string[];
+  /**
+   * Whether a path is an entrypoint the framework picks up by convention.
+   * Creating one changes the input set, which only rediscovery can act on.
+   */
+  isEntrypoint?: (file: string) => boolean;
   normalizePath?: (path: string) => string;
   parentHasChild: (
     parent: string,
@@ -672,6 +686,7 @@ export const classifyRebuild = async ({
     }) ||
     (await addedFilesRequireFullRebuild({
       addedFiles: normalizedFileChanges.addedFiles,
+      isEntrypoint,
       readSnapshot,
     })) ||
     (await modifiedFilesRequireFullRebuild({

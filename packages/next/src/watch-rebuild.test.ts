@@ -386,3 +386,64 @@ export async function hmrFuzzAddedStep() {
     expect(decision.kind).toBe('none');
   });
 });
+
+describe('watch-rebuild entrypoint creation', () => {
+  const pageFile = '/app/app/page.tsx';
+  const workflowFile = '/app/workflows/order.ts';
+  const newPageFile = '/app/app/reports/page.tsx';
+
+  // A page that declares nothing itself, but pulls a workflow into reach for
+  // the first time. Only rediscovery can see that.
+  const newPageSource = `import { order } from '../../workflows/order';
+
+export default function Page() {
+  return order;
+}
+`;
+
+  const discoveredEntries = {
+    discoveredSteps: new Set<string>(),
+    discoveredWorkflows: new Set([workflowFile]),
+    discoveredSerdeFiles: new Set<string>(),
+    discoveredFiles: new Set([pageFile, workflowFile]),
+  };
+
+  const classifyAddedFile = (
+    file: string,
+    isEntrypoint?: (candidate: string) => boolean
+  ) =>
+    classifyRebuild({
+      discoveredEntries,
+      fileChanges: { addedFiles: [file], modifiedFiles: [], removedFiles: [] },
+      inputFiles: [pageFile],
+      isEntrypoint,
+      parentHasChild: () => false,
+      readSnapshot: async () =>
+        createSourceSnapshotFromSource(newPageSource, detectWorkflowPatterns),
+      sourceSnapshots: new Map<string, SourceSnapshot>(),
+    });
+
+  test('a new framework entrypoint forces rediscovery', async () => {
+    const decision = await classifyAddedFile(
+      newPageFile,
+      (candidate) => candidate === newPageFile
+    );
+
+    expect(decision.kind).toBe('full');
+  });
+
+  test('a new file that is not an entrypoint and declares nothing is ignored', async () => {
+    const decision = await classifyAddedFile(
+      '/app/app/reports/chart.tsx',
+      () => false
+    );
+
+    expect(decision.kind).toBe('none');
+  });
+
+  test('entrypoint detection is opt-in', async () => {
+    const decision = await classifyAddedFile(newPageFile);
+
+    expect(decision.kind).toBe('none');
+  });
+});

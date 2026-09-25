@@ -1489,7 +1489,12 @@ ${apiFileContent}`
           },
           {
             description: 'workflow file removed from API import',
-            expectedLogCounts: { full: 1, skip: 1 },
+            // The delete and the import edit are one change to the graph, so
+            // exactly one rediscovery is the contract. Whether the watcher also
+            // delivers a trailing notification for the same edit — which the
+            // classifier then has to recognize as a no-op — depends on how it
+            // batches; the Next watcher coalesces both into the rediscovery.
+            expectedLogCounts: { full: 1, skip: { max: 1 } },
             write: async () => {
               await fs.rm(files.addedWorkflow, { force: true });
               await fs.writeFile(

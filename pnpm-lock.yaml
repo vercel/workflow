@@ -780,15 +780,15 @@ importers:
       '@workflow/swc-plugin':
         specifier: workspace:*
         version: link:../swc-plugin-workflow
-      chokidar:
-        specifier: 4.0.3
-        version: 4.0.3
       ignore:
         specifier: 7.0.5
         version: 7.0.5
       semver:
         specifier: 'catalog:'
         version: 7.7.4
+      watchpack:
+        specifier: 2.5.1
+        version: 2.5.1
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
