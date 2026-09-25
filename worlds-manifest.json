@@ -59,6 +59,22 @@
       "requiresDeployment": true
     },
     {
+      "id": "rivet",
+      "type": "community",
+      "package": "@rivet-dev/workflow-world",
+      "name": "Rivet",
+      "description": "Workflow World powered by Rivet Actors.",
+      "repository": "https://github.com/rivet-dev/rivet/tree/main/integrations/workflow-world",
+      "docs": "https://rivet.dev/actors/integrations/workflow-sdk/",
+      "example": "https://github.com/rivet-dev/rivet/tree/main/examples/workflow-sdk",
+      "features": [],
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@rivet-dev/workflow-world",
+        "WORKFLOW_RUNTIME_URL": "http://127.0.0.1:3000"
+      },
+      "services": []
+    },
+    {
       "id": "turso",
       "type": "community",
       "package": "@workflow-worlds/turso",
