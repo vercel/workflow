@@ -22,10 +22,15 @@ import { createRequire } from 'node:module';
 import { StreamError } from '@workflow/errors';
 import { QuickJS } from 'quickjs-wasi';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { Chain } from '../chain.js';
 import {
   deserialize as referenceDeserialize,
   serialize as referenceSerialize,
 } from '../serialization/workflow-vm.js';
+import {
+  dehydrateStepReturnValue,
+  prepareReplayPayload,
+} from '../serialization.js';
 import { createQuickJSSerde, type QuickJSSerde } from './quickjs-serde.js';
 
 const require = createRequire(import.meta.url);
@@ -70,6 +75,30 @@ function checkInGuest(bytes: Uint8Array, checkFnSource: string): unknown {
 }
 
 const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+
+describe('Chain QuickJS guard', () => {
+  it('rejects the actual dedicated Chain wire type', async () => {
+    const wire = await dehydrateStepReturnValue(
+      { chain: Chain.from([1]) },
+      'wrun_test',
+      undefined,
+      [],
+      globalThis,
+      false,
+      false,
+      false,
+      undefined,
+      [],
+      'step_1'
+    );
+    const prepared = await prepareReplayPayload(wire, undefined);
+    expect(prepared.data).toBeInstanceOf(Uint8Array);
+    expect(text(prepared.data as Uint8Array)).toContain('["Chain"');
+    expect(() =>
+      checkInGuest(prepared.data as Uint8Array, '(value) => value')
+    ).toThrow('Chain is not supported by the QuickJS workflow engine');
+  });
+});
 
 describe('wire parity: guest serialize matches the reference codec', () => {
   const cases: [name: string, guestExpr: string, hostValue: () => unknown][] = [

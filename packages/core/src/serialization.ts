@@ -5,11 +5,19 @@ import {
   StreamExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
+import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { once } from '@workflow/utils';
 import type { StreamWriteSession } from '@workflow/world';
 import { envNumber } from '@workflow/world/env-config';
 import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
+import { Chain } from './chain.js';
+import {
+  CHAIN_CLASS_ID,
+  type ChainRecipe,
+  type ChainRef,
+} from './chain-ref.js';
+import { getSerializationClass } from './class-serialization.js';
 import { importKey } from './encryption.js';
 import {
   createFlushableState,
@@ -37,6 +45,10 @@ import {
   createSealSession,
   decodeRunPublicKey,
 } from './sealed-box.js';
+import {
+  splitChainEnvelope,
+  wrapChainEnvelope,
+} from './serialization/chain-envelope.js';
 import * as clientModule from './serialization/client.js';
 import {
   type CompressionStats,
@@ -1756,6 +1768,7 @@ function getAllBaseReducers(
   // Class/Instance MUST come before Error so that custom Error subclasses
   // with WORKFLOW_SERIALIZE take precedence (devalue uses first-match-wins).
   return {
+    Chain: (value) => (value instanceof Chain ? value._serializeRef() : false),
     ...getClassReducers(),
     ...getStepFunctionReducer(),
     ...getCommonReducers(global),
@@ -2178,6 +2191,10 @@ function getHostClassPrototype(
 export function getWorkflowReducers(
   global: Record<string, any> = globalThis
 ): Partial<Reducers> {
+  const workflowChainPrototype = once(() => {
+    const cls = getSerializationClass(CHAIN_CLASS_ID, global);
+    return cls ? (readProperty(cls, 'prototype') as object) : undefined;
+  });
   const readableStreamPrototype = once(() =>
     getHostClassPrototype(global, 'ReadableStream')
   );
@@ -2192,6 +2209,17 @@ export function getWorkflowReducers(
   );
   return {
     ...getAllBaseReducers(global),
+    Chain: (value) => {
+      if (global === globalThis)
+        return value instanceof Chain ? value._serializeRef() : false;
+      if (!isInstanceOfPrototype(value, workflowChainPrototype.value))
+        return false;
+      const cls = getSerializationClass(CHAIN_CLASS_ID, global);
+      const serialize = cls && readProperty(cls, WORKFLOW_SERIALIZE);
+      if (typeof serialize !== 'function')
+        throw new Error('Chain workflow serializer is not registered');
+      return serialize.call(cls, value) as ChainRef;
+    },
 
     // Readable/Writable streams from within the workflow execution environment
     // are "handles" that can be passed around to other steps.
@@ -2329,10 +2357,23 @@ function getStepReducers(
   // `run_started`. Thread the run-ready barrier into the sink so that write
   // orders after the run exists. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  outputChain?: { stepId: string; recipes: ChainRecipe[] }
 ): Partial<Reducers> {
   return {
     ...getAllBaseReducers(global),
+    Chain: (value) =>
+      value instanceof Chain
+        ? outputChain
+          ? value._serializeOutput(
+              runId,
+              outputChain.stepId,
+              outputChain.recipes
+            )
+          : (() => {
+              throw new Error('Chain is only supported in step return values');
+            })()
+        : false,
 
     ReadableStream: (value) => {
       if (!(value instanceof global.ReadableStream)) return false;
@@ -2783,6 +2824,7 @@ function reviveAbortSignal(
  */
 export function getCommonRevivers(global: Record<string, any> = globalThis) {
   return {
+    Chain: (value: unknown) => Chain._deserializeRef(value as ChainRef),
     ...getClassRevivers(global),
     ...getCommonReviversFromModule(global),
   } as const satisfies Partial<Revivers>;
@@ -3207,6 +3249,15 @@ export function getWorkflowRevivers(
 ): Partial<Revivers> {
   return {
     ...getCommonRevivers(global),
+    Chain: (value) => {
+      if (global === globalThis) return Chain._deserializeRef(value);
+      const cls = getSerializationClass(CHAIN_CLASS_ID, global);
+      if (!cls) throw new Error('Chain workflow bootstrap is not registered');
+      const deserialize = readProperty(cls, WORKFLOW_DESERIALIZE);
+      if (typeof deserialize !== 'function')
+        throw new Error('Chain workflow deserializer is not registered');
+      return deserialize.call(cls, value);
+    },
     // StepFunction reviver for workflow context - uses the modular reviver
     // which calls WORKFLOW_USE_STEP from global to reconstruct step proxies
     ...getStepFunctionReviver(global),
@@ -3357,6 +3408,11 @@ function getStepRevivers(
 ): Partial<Revivers> {
   return {
     ...getCommonRevivers(global),
+    Chain: (value) => {
+      if (value.runId !== runId)
+        throw new Error('Cross-run Chain refs are unsupported');
+      return Chain._deserializeRef(value);
+    },
 
     // StepFunction reviver for step context - returns raw step function
     // with closure variable support via AsyncLocalStorage.
@@ -3699,7 +3755,10 @@ export async function maybeDecrypt(
  * is still format-prefixed serialized bytes, not a live JavaScript value.
  */
 export interface PreparedReplayPayload {
+  /** Nested ordinary payload consumed by mode deserializers. */
   readonly data: unknown;
+  /** Lazy inert recipe parser; ordinary hydration never invokes it. */
+  readonly parseChainRecipes?: () => ChainRecipe[];
 }
 
 /**
@@ -3721,12 +3780,19 @@ export const prepareReplayPayload: ReplayPayloadPreparer = async (
   key
 ) => {
   const compressionStats: CompressionStats = {};
-  const prepared = await decompress(
+  const authenticatedPlaintext = await decompress(
     await decrypt(value, key),
     compressionStats
   );
   await recordCompression(compressionStats, 'deserialize');
-  return { data: prepared };
+  const split =
+    authenticatedPlaintext instanceof Uint8Array
+      ? splitChainEnvelope(authenticatedPlaintext)
+      : { payload: authenticatedPlaintext, parseRecipes: () => [] };
+  return {
+    data: split.payload,
+    parseChainRecipes: split.parseRecipes,
+  };
 };
 
 /**
@@ -4051,7 +4117,8 @@ export async function dehydrateStepReturnValue(
   // the backgrounded `run_started`. Threaded into the step reducers' stream
   // sink. Undefined outside turbo / on the await path.
   runReadyBarrier?: Promise<unknown>,
-  readbackOps: Promise<void>[] = ops
+  readbackOps: Promise<void>[] = ops,
+  outputStepId?: string
 ): Promise<Uint8Array | unknown> {
   if (v1Compat) {
     const str = stringify(
@@ -4070,6 +4137,7 @@ export async function dehydrateStepReturnValue(
   }
   try {
     const compressionStats: CompressionStats = {};
+    const recipes: ChainRecipe[] = [];
     const result = await stepModule.serialize(value, key, {
       global,
       extraReducers: getStreamAndRequestReducers(
@@ -4080,11 +4148,14 @@ export async function dehydrateStepReturnValue(
           key,
           framedByteStreams,
           runReadyBarrier,
-          readbackOps
+          readbackOps,
+          outputStepId ? { stepId: outputStepId, recipes } : undefined
         )
       ),
       compression,
       compressionStats,
+      wrapPlaintext: (payload) =>
+        recipes.length > 0 ? wrapChainEnvelope(payload, recipes) : payload,
     });
     await recordCompression(compressionStats, 'serialize');
     return result;
@@ -4310,6 +4381,7 @@ export async function hydrateStepReturnValue(
 // pass through the mode-specific entries as extraReducers/extraRevivers.
 
 const STREAM_AND_REQUEST_KEYS = [
+  'Chain',
   'ReadableStream',
   'WritableStream',
   'Request',

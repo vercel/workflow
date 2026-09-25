@@ -1343,17 +1343,23 @@ export const __steps_registered = true;
     // Include serde-only files for class registration side effects
     const serdeImports = buildImports(serdeOnlyFiles);
 
+    const workflowBootstrap = `import '@workflow/core/_workflow-bootstrap';`;
     const imports = serdeImports
-      ? `${workflowImports}\n// Serde files for cross-context class registration\n${serdeImports}`
-      : workflowImports;
+      ? `${workflowBootstrap}\n${workflowImports}\n// Serde files for cross-context class registration\n${serdeImports}`
+      : `${workflowBootstrap}\n${workflowImports}`;
 
     const bundleStartTime = Date.now();
     const workflowManifest: WorkflowManifest = {};
     const esbuildTsconfigOptions =
       await getEsbuildTsconfigOptions(tsconfigPath);
+    const resolvedWorkflowBootstrap = await enhancedResolve(
+      this.config.workingDir,
+      '@workflow/core/_workflow-bootstrap'
+    );
     const normalizedWorkflowSideEffectEntries = await withRealpaths([
       ...workflowFiles,
       ...serdeOnlyFiles,
+      ...(resolvedWorkflowBootstrap ? [resolvedWorkflowBootstrap] : []),
     ]);
 
     // Bundle with esbuild and our custom SWC plugin in workflow mode.

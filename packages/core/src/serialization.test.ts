@@ -11,7 +11,12 @@ import {
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { registerSerializationClass } from './class-serialization.js';
+import { Chain } from './chain.js';
+import { CHAIN_CLASS_ID } from './chain-ref.js';
+import {
+  aliasSerializationClass,
+  registerSerializationClass,
+} from './class-serialization.js';
 import { decrypt, encrypt, importKey } from './encryption.js';
 import {
   drainFlushableSnapshot,
@@ -61,6 +66,7 @@ import {
   STREAM_SERVER_RUN_ID_SYMBOL,
 } from './symbols.js';
 import { createContext } from './vm/index.js';
+import { Chain as WorkflowChain } from './workflow/chain.js';
 
 const makeMockWorld = () => ({
   streams: {
@@ -3335,6 +3341,52 @@ describe('step function serialization', () => {
         vmGlobalThis
       )
     ).rejects.toThrow('WORKFLOW_USE_STEP not found on global object');
+  });
+});
+
+describe('workflow Chain adapter dispatch', () => {
+  it('revives and reduces with the registered destination constructor', async () => {
+    const { globalThis: vmGlobalThis } = createContext({
+      seed: 'chain',
+      fixedTimestamp: 1714857600000,
+    });
+    aliasSerializationClass(CHAIN_CLASS_ID, WorkflowChain, vmGlobalThis);
+    (vmGlobalThis as any)[Symbol.for('WORKFLOW_CONTEXT')] = {
+      workflowRunId: 'wrun_test',
+    };
+    const ref = {
+      runId: 'wrun_test',
+      stepId: 'step_1',
+      slot: 'hslot_0',
+      length: 2,
+    };
+    const bytes = await dehydrateStepReturnValue(
+      { chain: Chain.from([1, 2]) },
+      'wrun_test',
+      undefined,
+      [],
+      globalThis,
+      false,
+      false,
+      false,
+      undefined,
+      [],
+      'step_1'
+    );
+    const hydrated = (await hydrateStepReturnValue(
+      bytes,
+      'wrun_test',
+      undefined,
+      vmGlobalThis
+    )) as { chain: WorkflowChain<number> };
+
+    expect(hydrated.chain).toBeInstanceOf(WorkflowChain);
+    expect(hydrated.chain.take(1).length).toBe(1);
+    expect(() => hydrated.chain.append()).toThrow('inside a step');
+    expect(() => hydrated.chain.toArray()).toThrow('inside a step');
+
+    const reducers = getWorkflowReducers(vmGlobalThis);
+    expect(reducers.Chain?.(hydrated.chain)).toEqual(ref);
   });
 });
 

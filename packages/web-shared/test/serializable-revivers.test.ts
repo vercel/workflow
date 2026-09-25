@@ -79,6 +79,14 @@ const SERIALIZABLE_PAYLOADS: Record<string, unknown[]> = {
   BigInt: [['BigInt', 1], '1'],
   BigInt64Array: [['BigInt64Array', 1], '.'],
   BigUint64Array: [['BigUint64Array', 1], '.'],
+  Chain: [
+    ['Chain', 1],
+    { runId: 2, stepId: 3, slot: 4, length: 5 },
+    'wrun_example',
+    'step_example',
+    'hslot_0',
+    2,
+  ],
   Class: [['Class', 1], { classId: 2 }, 'class//Example'],
   Date: [['Date', 1], '2025-01-01T00:00:00.000Z'],
   DOMException: [

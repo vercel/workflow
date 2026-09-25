@@ -1597,6 +1597,11 @@ export function createQuickJSSerde(
   };
 
   const revivers: Record<string, (value: any) => any> = {
+    Chain: () => {
+      throw new Error(
+        'Chain is not supported by the QuickJS workflow engine; use WORKFLOW_VM=node.'
+      );
+    },
     AbortController: (value: JSValueHandle) => {
       const controller = vm.newObject();
       const streamName = own(value, 'streamName') ?? vm.undefined;
@@ -1626,6 +1631,11 @@ export function createQuickJSSerde(
     },
     Instance: (value: JSValueHandle) => {
       const classId = ownString(value, 'classId');
+      if (classId === 'class//workflow//Chain') {
+        throw new Error(
+          'Chain is not supported by the QuickJS workflow engine; use WORKFLOW_VM=node.'
+        );
+      }
       const cls = lookupRegisteredClass(classId);
       if (!cls) {
         throw new Error(
