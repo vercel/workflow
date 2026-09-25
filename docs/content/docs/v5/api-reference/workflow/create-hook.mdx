@@ -143,6 +143,35 @@ async function processOrder(orderId: string) {
 
 Because `createHook()` alone does not suspend the workflow, awaiting `hook.getConflict()` is what actually suspends the run and commits the hook registration. It only waits for registration. To receive payload data from a future `resumeHook()` call, await the hook itself or iterate it with `for await...of`.
 
+### Registering a hook before a step uses it
+
+A hook's registration is committed alongside everything else the workflow started before it suspended, not ahead of it. When a workflow creates a hook and calls a step without awaiting anything in between, the step can start running before the hook is registered, and it can run even if the registration turns out to conflict. That matters in two cases:
+
+- The step hands the token to something that may call `resumeHook()` right away, which throws `HookNotFoundError` until the hook exists.
+- The hook guards against duplicate runs. A run that only learns of the conflict after calling the step, for example by awaiting the hook and letting `HookConflictError` end the run, may already have started that step.
+
+In either case, await `hook.getConflict()` before calling the step:
+
+```typescript lineNumbers
+import { createHook } from "workflow";
+
+declare function requestApproval(token: string): Promise<void>; // @setup
+
+async function approvalWorkflow() {
+  "use workflow";
+
+  using hook = createHook<{ approved: boolean }>();
+  await hook.getConflict(); // [!code highlight]
+
+  // The hook is registered, so an approver that resumes it immediately
+  // finds it.
+  await requestApproval(hook.token);
+
+  const { approved } = await hook;
+  return approved;
+}
+```
+
 On a conflict, the resolved value is a `Run` handle for the run that owns the token, with durable step-backed accessors. The duplicate run can decide in code how to handle it: return or log `conflict.runId`, inspect `await conflict.status`, wait on `await conflict.returnValue`, or cancel the owner with `await conflict.cancel()` and continue in the current run. See [Run idempotency](/docs/foundations/idempotency#run-idempotency) for these strategies in context.
 
 <Callout type="info">
@@ -222,7 +251,7 @@ With `experimental_force`, this run always ends up owning the token:
 - Any number of runs forcing the same token at the same time converge on a single owner. The takeovers form a chain: each run that loses the token gets `HookForceClaimedError`, exactly one run ends up owning it, and none of them can get stuck. Which run wins among simultaneous claimers is not defined; if the order matters, start them in order.
 - A finished run that still holds the token under [`experimental_minRetention`](#keep-a-token-unavailable-after-the-run-ends) is taken over silently, since there is nothing left to wake. A run can also take over a token held by its own earlier Hook.
 
-The takeover is durable. If either run's compute fails partway through, the next request for the token completes it, so the token never ends up held by nobody or by both runs. The previous owner's wake is durable too: the new owner republishes it on replay until it records its next event, and the wake is idempotent, so a crash between registering the Hook and waking the previous owner is repaired by the new owner's next invocation.
+The takeover is durable. If either run's compute fails partway through, the next request for the token completes it, so the token never ends up held by nobody or by both runs. The previous owner's wake is durable too: if the new owner's compute fails between registering the Hook and waking the previous owner, the new owner's next invocation republishes the wake, whatever else the new owner has recorded since (a step it started alongside the Hook, for example). Every invocation of the new owner within 24 hours of the takeover republishes it under the same idempotency key, which collapses the repeats into one wake; a repeat that does get through only replays the previous owner, which finds nothing new.
 
 <Callout type="info">
 A token can only be taken from a run whose runtime understands being taken from. Runs started at a Workflow spec version below 8, which includes every run started by an older SDK release, a Python SDK run, or a deployment with `WORKFLOW_SEALED_LOG=0`, would never learn that their Hook was disposed. The World declines to take their token and the forced Hook rejects with the ordinary [`HookConflictError`](/docs/api-reference/workflow-errors/hook-conflict-error) instead, exactly as if `experimental_force` had not been set. Finished runs holding a retained token are taken over at any version.

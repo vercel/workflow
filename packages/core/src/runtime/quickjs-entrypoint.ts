@@ -61,12 +61,13 @@ import { getPortLazy } from './get-port-lazy.js';
 import {
   getWorkflowQueueName,
   queueMessage,
+  REPLAY_RESOLVE_DATA,
   runDispatchContext,
   stepDispatchIdempotencyKey,
 } from './helpers.js';
 import {
   publishForceClaimVictimWake,
-  republishOwedForceClaimVictimWake,
+  republishOwedForceClaimVictimWakes,
 } from './hook-wake.js';
 import {
   dispatchRunCompletedHooks,
@@ -591,28 +592,14 @@ async function dispatchPendingOps(params: {
       }
     }
   };
-  // A forced creation owes its victim a wake, and a replay can only tell that
-  // debt is still open while the forced `hook_created` is the last event this
-  // run wrote (`forcedCreationOwingWake`). Every op below runs in parallel, so
-  // a step, wait, attribute or other hook row could otherwise land between
-  // that row and the wake and hide the debt from the replay after a crash.
-  // Token groups holding a forced creation therefore run first, one at a time
-  // (the wake is published inside `processHookOp`, before the group's next
-  // write), and nothing else is dispatched until they have all settled.
-  // Invocations without a forced hook take the parallel path unchanged.
-  const hookGroups = [...hookOpsByToken.values()];
-  const holdsForcedCreation = (group: (PendingHook | PendingHookDispose)[]) =>
-    group.some(
-      (op) =>
-        op.type === 'hook' &&
-        (op as PendingHook).force === true &&
-        !op.hasCreatedEvent
-    );
-  for (const group of hookGroups.filter(holdsForcedCreation)) {
-    await runHookGroup(group);
-  }
-  for (const group of hookGroups) {
-    if (!holdsForcedCreation(group)) opsPromises.push(runHookGroup(group));
+  // Token groups run in parallel with every other op, forced creations
+  // included. A forced creation publishes its victim's wake before its group's
+  // next write, but nothing else waits for it, and nothing needs to: a crash
+  // before the wake is repaid by the next replay from the forced
+  // `hook_created` itself, which `forcedCreationsOwingWake` finds wherever it
+  // sits in the log, so no row written after it can hide the debt.
+  for (const group of hookOpsByToken.values()) {
+    opsPromises.push(runHookGroup(group));
   }
 
   for (const op of pendingOperations) {
@@ -1121,6 +1108,7 @@ export async function runWorkflowWithQuickJS(params: {
           cursor: cursor ?? undefined,
           limit: 1000,
         },
+        resolveData: REPLAY_RESOLVE_DATA,
       });
       eventsFetchedPages++;
       allEvents.push(...response.data);
@@ -1141,16 +1129,20 @@ export async function runWorkflowWithQuickJS(params: {
   // handed back on a write that the VM has not been given yet. Every write
   // made from this view goes through `createEvent` below so it names the
   // position it was decided against and its response is queued here.
-  // Same durability contract as the node:vm suspension handler: a forced
-  // hook creation that is still the last event this run wrote owes its
-  // victim a wake, because the invocation that created it died before
-  // publishing one. Repaid here, on the log as loaded, before this
-  // invocation writes anything.
-  await republishOwedForceClaimVictimWake(world, runId, events);
+  // Same durability contract as the node:vm suspension handler: every
+  // recent forced hook creation in the log may still owe its victim a wake,
+  // because the invocation that created it may have died before publishing
+  // one, so it is republished under the hook's idempotency key (see
+  // `forcedCreationsOwingWake`). Once per invocation, on the log as loaded;
+  // the forced creations this invocation makes publish their own.
+  await republishOwedForceClaimVictimWakes(world, runId, events);
 
   const logView = new QuickJSLogView(events, loadedCursor);
   const createEvent: EventCreator = async (data, eventParams) => {
     const result = await world.events.create(runId, data, {
+      // Returned replay events only feed the log; read them the way replay
+      // reads the log.
+      resolveData: REPLAY_RESOLVE_DATA,
       ...eventParams,
       ...logView.snapshotParams(),
     });
@@ -1446,6 +1438,7 @@ export async function runWorkflowWithQuickJS(params: {
           cursor: cursor ?? undefined,
           limit: 1000,
         },
+        resolveData: REPLAY_RESOLVE_DATA,
       });
       for (const e of response.data) {
         if (e.eventId && seenEventIds.has(e.eventId)) continue;

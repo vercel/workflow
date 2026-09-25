@@ -448,7 +448,8 @@ export interface Storage {
      * batch). Events outside this list keep their own ordering requirements:
      * a caller mixing a batch with single writes (hook or attribute events)
      * owns those barriers itself: the core runtime never batches a
-     * suspension that carries hook or attribute writes.
+     * suspension that carries attribute writes, and writes a suspension's
+     * hook events through the single path concurrently with its batch.
      */
     createBatch?(
       runId: string,

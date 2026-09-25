@@ -138,6 +138,7 @@ export type {
   StreamInfoResponse,
 } from './shared.js';
 export {
+  entityResolveData,
   PaginatedResponseSchema,
   StructuredErrorSchema,
 } from './shared.js';

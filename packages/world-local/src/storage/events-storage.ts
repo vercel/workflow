@@ -17,11 +17,11 @@ import type {
   CreateEventRequest,
   Event,
   EventResult,
+  EventsResolveData,
   Hook,
   HookCreatedEventRequest,
   PaginatedResponse,
   PaginationOptions,
-  ResolveData,
   SerializedData,
   Step,
   Storage,
@@ -30,6 +30,7 @@ import type {
 } from '@workflow/world';
 import {
   applyAttributeChanges,
+  entityResolveData,
   eventIdToSlot,
   FIRST_EVENT_SLOT,
   getMaxEventsPerRun,
@@ -1252,7 +1253,7 @@ export function createEventsStorage(
               effectiveRunId,
               data,
               currentRun,
-              params
+              params && { resolveData: entityResolveData(params.resolveData) }
             );
           }
         }
@@ -3478,7 +3479,7 @@ export function createEventsStorage(
   async function reportSkippedSlots(
     result: EventResult,
     askedFor: number,
-    resolveData: ResolveData
+    resolveData: EventsResolveData
   ): Promise<EventResult> {
     if (!result.event) {
       return result;

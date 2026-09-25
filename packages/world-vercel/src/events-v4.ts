@@ -27,6 +27,7 @@ import {
   StreamError,
   WorkflowWorldError,
 } from '@workflow/errors';
+import { globalSingleton } from '@workflow/utils';
 import {
   type Event,
   type EventResult,
@@ -210,6 +211,13 @@ function eventsV4Url(
   return `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventType)}`;
 }
 
+/**
+ * `remoteRefBehavior` for event-log reads. `skip-step-inputs` resolves like
+ * `resolve` but leaves `input` out of `step_created` / `step_started`: workflow
+ * replay recomputes step arguments and never reads the recorded ones.
+ */
+export type EventsRemoteRefBehavior = 'resolve' | 'lazy' | 'skip-step-inputs';
+
 interface CreateEventV4InputBase {
   // runId is required even for run_created, because the payload is keyed under the runId
   runId: string;
@@ -224,6 +232,10 @@ interface CreateEventV4InputBase {
   /** Client-side time at which the event occurred. */
   occurredAt?: Date;
   remoteRefBehavior?: 'resolve' | 'lazy';
+  /** How the event-log page this POST returns (a replay preload or a
+   *  `sinceCursor` delta) resolves its payloads; `remoteRefBehavior` covers
+   *  the created event and entities. Omitted: the server's default. */
+  eventsRemoteRefBehavior?: EventsRemoteRefBehavior;
   deploymentId?: string;
   workflowName?: string;
   stepName?: string;
@@ -590,6 +602,9 @@ function buildPostFrameMeta(
   if (input.occurredAt !== undefined) meta.occurredAt = input.occurredAt;
   if (input.remoteRefBehavior !== undefined) {
     meta.remoteRefBehavior = input.remoteRefBehavior;
+  }
+  if (input.eventsRemoteRefBehavior !== undefined) {
+    meta.eventsRemoteRefBehavior = input.eventsRemoteRefBehavior;
   }
   if (input.deploymentId !== undefined) meta.deploymentId = input.deploymentId;
   if (input.workflowName !== undefined) meta.workflowName = input.workflowName;
@@ -1039,7 +1054,7 @@ export async function createWorkflowRunStartedEventV4(
   );
   const page = await consumeReplayLogResponse(
     response,
-    input.runId,
+    input,
     config,
     replayEventObserver
   );
@@ -1534,7 +1549,7 @@ export async function createHookReceivedPreloadEventV4(
 
   const page = await consumeReplayLogResponse(
     response,
-    input.runId,
+    input,
     config,
     replayEventObserver
   );
@@ -1623,9 +1638,12 @@ export interface ListEventsV4Params extends PaginationOptions {
    * Whether the backend resolves payload bytes into each frame body.
    * `resolve` (default) streams the bytes; `lazy` emits empty-body frames
    * (the ref descriptor stays in the frame meta), for metadata-only
-   * listings that would otherwise download and discard every payload.
+   * listings that would otherwise download and discard every payload;
+   * `skip-step-inputs` is `resolve` except that `step_created` /
+   * `step_started` frames come without their `input` (replay never reads
+   * them).
    */
-  remoteRefBehavior?: 'resolve' | 'lazy';
+  remoteRefBehavior?: EventsRemoteRefBehavior;
 }
 
 export interface ListEventsV4Result {
@@ -1793,7 +1811,10 @@ async function consumeEventFrameStream(
  */
 async function consumeReplayLogResponse(
   response: Response,
-  runId: string,
+  {
+    runId,
+    eventsRemoteRefBehavior,
+  }: Pick<CreateEventV4InputBase, 'runId' | 'eventsRemoteRefBehavior'>,
   config?: APIConfig,
   replayEventObserver?: (event: Event) => void
 ): Promise<ListEventsV4Result> {
@@ -1818,7 +1839,14 @@ async function consumeReplayLogResponse(
 
   const suffix = await getWorkflowRunEventsV4(
     runId,
-    { cursor: page.cursor, remoteRefBehavior: 'resolve' },
+    {
+      cursor: page.cursor,
+      // The suffix of a replay log is the same replay log.
+      remoteRefBehavior:
+        eventsRemoteRefBehavior === 'skip-step-inputs'
+          ? 'skip-step-inputs'
+          : 'resolve',
+    },
     config,
     replayEventObserver
   );
@@ -1852,6 +1880,106 @@ async function consumeListFrameStream(
     opName
   );
   return consumeEventFrameStream(response, opName, replayEventObserver);
+}
+
+/**
+ * Backends (by base URL) found not to accept `remoteRefBehavior=
+ * skip-step-inputs`, and when. One that predates it validates the value
+ * against `resolve` / `lazy` and answers 400. Its rejection moves this process
+ * to `resolve` for that backend, which returns the same events with their step
+ * inputs: a replay read costs what it did before, instead of failing.
+ *
+ * Remembered for {@link SKIP_STEP_INPUTS_REPROBE_MS} only, so a long-lived
+ * process that met an old instance during a rolling deploy goes back to the
+ * cheaper read once the backend has upgraded.
+ *
+ * On `globalThis` (see `globalSingleton`) so that every bundled copy of this
+ * module learns from one rejection instead of paying it once per copy.
+ */
+const skipStepInputsSupport = globalSingleton(
+  '@workflow/world-vercel//skipStepInputsSupport',
+  2,
+  () => ({ unsupportedSince: new Map<string, number>() })
+);
+
+/** How long a backend's rejection of `skip-step-inputs` is remembered. */
+export const SKIP_STEP_INPUTS_REPROBE_MS = 10 * 60_000;
+
+function skipStepInputsKnownUnsupported(baseUrl: string): boolean {
+  const since = skipStepInputsSupport.unsupportedSince.get(baseUrl);
+  if (since === undefined) return false;
+  if (Date.now() - since < SKIP_STEP_INPUTS_REPROBE_MS) return true;
+  skipStepInputsSupport.unsupportedSince.delete(baseUrl);
+  return false;
+}
+
+/** Test hook: forget which backends rejected `skip-step-inputs`. */
+export function resetSkipStepInputsSupportForTests(): void {
+  skipStepInputsSupport.unsupportedSince.clear();
+}
+
+/**
+ * The shape of an older backend's rejection of the value: a 400 whose body is
+ * `{ error: 'validation-error', details: [{ path: ['remoteRefBehavior'], … }] }`
+ * (surfaced as `code`). Other validation failures share the code, which is why
+ * a backend is only remembered once the `resolve` retry succeeds.
+ */
+function mayRejectSkipStepInputs(error: unknown): boolean {
+  return (
+    error instanceof WorkflowWorldError &&
+    error.status === 400 &&
+    error.code === 'validation-error'
+  );
+}
+
+/**
+ * Run a list request, degrading `skip-step-inputs` to `resolve` against a
+ * backend that does not accept it. The 400 arrives before any frame, so
+ * nothing has reached `replayEventObserver` when the request is retried. A
+ * 400 that was about something else fails the `resolve` retry the same way,
+ * and that error is what the caller sees.
+ */
+async function consumeListWithSkipFallback(
+  baseUrl: string,
+  requested: EventsRemoteRefBehavior | undefined,
+  buildUrl: (remoteRefBehavior: EventsRemoteRefBehavior | undefined) => string,
+  headers: Headers,
+  config: APIConfig | undefined,
+  opName: string,
+  replayEventObserver?: (event: Event) => void
+): Promise<EventFrameStreamResult> {
+  if (
+    requested === 'skip-step-inputs' &&
+    !skipStepInputsKnownUnsupported(baseUrl)
+  ) {
+    try {
+      return await consumeListFrameStream(
+        buildUrl(requested),
+        headers,
+        config,
+        opName,
+        replayEventObserver
+      );
+    } catch (error) {
+      if (!mayRejectSkipStepInputs(error)) throw error;
+    }
+    const result = await consumeListFrameStream(
+      buildUrl('resolve'),
+      headers,
+      config,
+      opName,
+      replayEventObserver
+    );
+    skipStepInputsSupport.unsupportedSince.set(baseUrl, Date.now());
+    return result;
+  }
+  return consumeListFrameStream(
+    buildUrl(requested === 'skip-step-inputs' ? 'resolve' : requested),
+    headers,
+    config,
+    opName,
+    replayEventObserver
+  );
 }
 
 /**
@@ -1901,11 +2029,13 @@ export async function getWorkflowRunEventsV4(
   let consumed: EventFrameStreamResult;
 
   do {
-    const url =
-      `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
-      paginationToQuery({ ...params, cursor: cursor ?? undefined });
-    consumed = await consumeListFrameStream(
-      url,
+    const pageCursor = cursor ?? undefined;
+    consumed = await consumeListWithSkipFallback(
+      baseUrl,
+      params.remoteRefBehavior,
+      (remoteRefBehavior) =>
+        `${baseUrl}/v4/runs/${encodeURIComponent(runId)}/events` +
+        paginationToQuery({ ...params, remoteRefBehavior, cursor: pageCursor }),
       headers,
       config,
       'listEvents',
@@ -1964,13 +2094,16 @@ export async function getEventsByCorrelationIdV4(
   config?: APIConfig
 ): Promise<ListEventsV4Result> {
   const { baseUrl, headers } = await getHttpConfig(config);
-  const sp = new URLSearchParams();
-  sp.set('correlationId', correlationId);
-  sp.set('runId', runId);
-  appendListParams(sp, params);
-  const url = `${baseUrl}/v4/events?${sp.toString()}`;
-  const consumed = await consumeListFrameStream(
-    url,
+  const consumed = await consumeListWithSkipFallback(
+    baseUrl,
+    params.remoteRefBehavior,
+    (remoteRefBehavior) => {
+      const sp = new URLSearchParams();
+      sp.set('correlationId', correlationId);
+      sp.set('runId', runId);
+      appendListParams(sp, { ...params, remoteRefBehavior });
+      return `${baseUrl}/v4/events?${sp.toString()}`;
+    },
     headers,
     config,
     'listEventsByCorrelationId'
