@@ -11,7 +11,6 @@ import {
   type HookResumeContext,
   isLegacySpecVersion,
   isTerminalWorkflowRunStatus,
-  SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
   SPEC_VERSION_SUPPORTS_COMPRESSION,
   type WorkflowInvokePayload,
@@ -38,6 +37,7 @@ import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { publishHookWakeWithRetry } from './hook-wake.js';
 import { HookInvocationResultSchema } from './invocations.js';
+import { specVersionForRunWrite } from './run-spec-version.js';
 import { safeWaitUntil, waitedUntil } from './wait-until.js';
 
 /** Monotonic ULID factory for per-call resume idempotency keys. */
@@ -912,15 +912,8 @@ async function resumeHookAttempt<T = any>(
         hook.runId,
         {
           eventType: 'hook_received',
-          // The run's version, not this SDK's, when the run's is lower: the
-          // event is read by the runtime executing the run, which may be
-          // older or another SDK entirely (the Python SDK rejects the run's
-          // whole event log over one event stamped above what it supports).
           // The payload is already encoded for the run (see `compression`).
-          specVersion: Math.min(
-            SPEC_VERSION_CURRENT,
-            resumeContext.runSpecVersion ?? SPEC_VERSION_CURRENT
-          ),
+          specVersion: specVersionForRunWrite(resumeContext.runSpecVersion),
           correlationId: hook.hookId,
           eventData: {
             ...(v1Compat ? {} : { token: hook.token }),

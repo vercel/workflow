@@ -151,6 +151,9 @@ describe('guardDeploymentAffinity', () => {
       }),
       { requestId: 'req_test' }
     );
+    // Written by a deployment that is not the run's own, so stamped with the
+    // run's version, which its pinned runtime can read.
+    expect(eventsCreate.mock.calls[0][1].specVersion).toBe(run.specVersion);
 
     const error = await hydrateFailure(eventsCreate);
     expect(WorkflowDeploymentMismatchError.is(error)).toBe(true);
