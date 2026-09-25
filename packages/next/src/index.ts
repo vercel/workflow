@@ -58,6 +58,28 @@ const BASE_PATH_SYMBOL = Symbol.for('@workflow/core/basePath');
 const globalConfig = globalThis as typeof globalThis &
   Record<symbol, string | undefined>;
 
+// Per-process record of started (or in-flight) workflow builds, keyed by
+// working dir. WORKFLOW_NEXT_PRIVATE_BUILT alone is not enough: in `next dev`,
+// any env change seen by Next's dev watcher (an `.env*` file changing, or the
+// client router filter changing because an app route was added/removed or the
+// watcher's first pass landed after the render server started) forces an
+// @next/env reload. That restores process.env to its initial snapshot, which
+// drops the flag because it's set inside the config function rather than while
+// the config module loads. If this happens before Next re-evaluates
+// next.config, we'd rebuild and start a second watcher.
+// See https://github.com/vercel/workflow/issues/4309.
+// It lives on globalThis (not module scope) so it survives the config module
+// being re-required, and it's intentionally shared by every copy of
+// @workflow/next loaded in the process.
+const WORKFLOW_BUILDS_SYMBOL = Symbol.for('@workflow/next/workflowBuilds');
+
+function getWorkflowBuilds(): Map<string, Promise<void>> {
+  const globalWithBuilds = globalThis as typeof globalThis &
+    Record<symbol, Map<string, Promise<void>> | undefined>;
+  globalWithBuilds[WORKFLOW_BUILDS_SYMBOL] ??= new Map();
+  return globalWithBuilds[WORKFLOW_BUILDS_SYMBOL];
+}
+
 // Keep this local: @workflow/next is CommonJS, while @workflow/utils is ESM-only.
 function setWorkflowBasePath(basePath: string | undefined): void {
   globalConfig[BASE_PATH_SYMBOL] = basePath ?? '';
@@ -688,9 +710,23 @@ export function withWorkflow(
       !process.env.WORKFLOW_NEXT_PRIVATE_BUILT &&
       phase !== 'phase-production-server'
     ) {
-      const workflowBuilder = await getWorkflowBuilder();
+      const builds = getWorkflowBuilds();
+      let build = builds.get(workingDir);
+      if (!build) {
+        build = (async () => {
+          const workflowBuilder = await getWorkflowBuilder();
+          await workflowBuilder.build();
+        })();
+        builds.set(workingDir, build);
+        // Allow a retry on the next evaluation if the build failed.
+        build.catch(() => {
+          if (builds.get(workingDir) === build) {
+            builds.delete(workingDir);
+          }
+        });
+      }
 
-      await workflowBuilder.build();
+      await build;
       process.env.WORKFLOW_NEXT_PRIVATE_BUILT = '1';
     }
 
