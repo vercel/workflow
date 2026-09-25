@@ -6,7 +6,12 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import { type Event, SPEC_VERSION_CURRENT, type World } from '@workflow/world';
+import {
+  type Event,
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
+  type World,
+} from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Mock version module to avoid missing generated file
@@ -35,6 +40,7 @@ import {
 } from '../serialization.js';
 import { getReturnValuePollIntervalMs, Run } from './run.js';
 import {
+  cancelRun,
   cancelRuns,
   recreateRunFromExisting,
   reenqueueRun,
@@ -178,6 +184,73 @@ describe('reenqueueRun', () => {
       { runId: 'wrun_123' },
       expect.anything()
     );
+  });
+});
+
+// A run started by a newer SDK: this one cannot write that version's format,
+// so everything it writes to the run is capped at its own.
+const NEWER_THAN_THIS_SDK = SPEC_VERSION_CURRENT + 1;
+
+describe('writes to a run started by a newer SDK', () => {
+  const waitCreated: Event = {
+    eventId: 'evnt_0',
+    runId: 'wrun_123',
+    eventType: 'wait_created',
+    correlationId: 'wait_abc',
+    eventData: { resumeAt: new Date('2024-01-01T00:00:01.000Z') },
+    createdAt: new Date(),
+  };
+
+  it("caps cancelRun's run_cancelled at this SDK's version", async () => {
+    const world = createMockWorld({
+      run: { specVersion: NEWER_THAN_THIS_SDK },
+    });
+    await cancelRun(world, 'wrun_123');
+
+    expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
+      eventType: 'run_cancelled',
+      specVersion: SPEC_VERSION_CURRENT,
+    });
+  });
+
+  it("caps wakeUpRun's wait_completed and wake at this SDK's version", async () => {
+    const world = createMockWorld({
+      run: { specVersion: NEWER_THAN_THIS_SDK },
+      events: [waitCreated],
+    });
+    await wakeUpRun(world, 'wrun_123');
+
+    expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
+      eventType: 'wait_completed',
+      specVersion: SPEC_VERSION_CURRENT,
+    });
+    expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
+      specVersion: SPEC_VERSION_CURRENT,
+    });
+  });
+
+  it("caps reenqueueRun's queue spec version at this SDK's", async () => {
+    const world = createMockWorld({
+      run: { specVersion: NEWER_THAN_THIS_SDK },
+    });
+    await reenqueueRun(world, 'wrun_123');
+
+    expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
+      specVersion: SPEC_VERSION_CURRENT,
+    });
+  });
+
+  it('still treats a run with no recorded version as legacy', async () => {
+    const world = createMockWorld({ run: { specVersion: undefined } });
+    await reenqueueRun(world, 'wrun_123');
+    await cancelRun(world, 'wrun_123');
+
+    expect(vi.mocked(world.queue).mock.calls[0][2]).toMatchObject({
+      specVersion: SPEC_VERSION_LEGACY,
+    });
+    expect(vi.mocked(world.events.create).mock.calls[0][1]).toMatchObject({
+      specVersion: SPEC_VERSION_LEGACY,
+    });
   });
 });
 
